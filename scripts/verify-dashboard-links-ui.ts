@@ -23,7 +23,6 @@ const server = Bun.serve({
           implementer: { agent: "claude", model: null },
           reviewer: { agent: "codex", model: null },
         },
-        projects: [],
       });
     if (url.pathname === "/api/runners")
       return Response.json({ setupRequired: true, workspaceReady: false, runners: [] });

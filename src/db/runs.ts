@@ -220,10 +220,7 @@ function mapRun(q: Q, row: typeof q.t.run.$inferSelect): StoredRun {
 export function* saveRunCommitPolicySteps(q: Q, id: string, policy: GitCommitPolicy): Steps<void> {
   const stored = yield* getRunSteps(q, id);
   if (!stored) throw new Error("Attribution run is missing");
-  if (
-    stored.checkpoint?.commitPolicy &&
-    JSON.stringify(stored.checkpoint.commitPolicy) !== JSON.stringify(policy)
-  )
+  if (stored.checkpoint?.commitPolicy && !Bun.deepEquals(stored.checkpoint.commitPolicy, policy))
     throw new Error("Run attribution snapshot cannot change");
   yield* saveCheckpointSteps(q, id, {
     ...(stored.checkpoint ?? { phase: "running" }),

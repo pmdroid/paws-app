@@ -14,12 +14,6 @@ export type AgentSettings = {
     reviewerFallback?: AgentProfile;
     accounts?: AccountLists;
   };
-  projects: {
-    repo: string;
-    implementer?: AgentProfile;
-    reviewer?: AgentProfile;
-    accounts?: Omit<AccountLists, "reviewerFallback">;
-  }[];
   presets?: Record<string, AgentProfile>;
   revision?: string;
   /** CI fix attempts. Missing means 3. Settings → Merging owns the other merge choices. */

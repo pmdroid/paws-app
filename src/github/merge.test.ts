@@ -487,6 +487,29 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       }
     });
 
+  test("a 60 KB summary is cut to a 32 KB commit message ending with the truncation line", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "one\n");
+      let message = "";
+      const client = mergingClient(repo.bare, [], (req) => {
+        message = (req.body as { commit_message: string }).commit_message;
+        return { status: 200, body: { merged: true, sha: "merged" } };
+      });
+      const result = await squashPull(
+        lane(repo, client, 8),
+        { head: await revParse(repo.work, "HEAD"), base: await remoteBranch(repo.bare, "main") },
+        "é".repeat(30 * 1024),
+      );
+      expect(result.merged).toBe(true);
+      expect(Buffer.byteLength(message)).toBeLessThanOrEqual(32 * 1024);
+      expect(message.startsWith("Fixes ENG-8")).toBe(true);
+      expect(message.endsWith("\n… message truncated by Paws")).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("a stop before the squash merges nothing", async () => {
     const repo = await oneClone();
     try {

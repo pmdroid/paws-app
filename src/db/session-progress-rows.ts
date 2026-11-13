@@ -60,8 +60,11 @@ export function* publishSessionMetadataSteps(q: Q, input: SessionMetadataPublish
   );
   if (
     delivered !== undefined &&
-    JSON.stringify((JSON.parse(delivered.payload) as Record<string, unknown>)[input.field]) ===
-      JSON.stringify(input.value)
+    Bun.deepEquals(
+      (JSON.parse(delivered.payload) as Record<string, unknown>)[input.field],
+      JSON.parse(JSON.stringify(input.value)),
+      true,
+    )
   ) {
     if (pending)
       yield* q.exec(

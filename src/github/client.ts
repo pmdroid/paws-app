@@ -35,11 +35,13 @@ export function createFetchGitHubClient(
         }
       }
       const retryAfterMs = retryAfterHeaderMs(response.headers.get("retry-after"));
-      return checkedResponse(
-        retryAfterMs === undefined
-          ? { status: response.status, body: parsed }
-          : { status: response.status, body: parsed, retryAfterMs },
-      );
+      const requestId = response.headers.get("x-github-request-id");
+      return checkedResponse({
+        status: response.status,
+        body: parsed,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        ...(requestId ? { requestId } : {}),
+      });
     },
   };
 }

@@ -437,6 +437,7 @@ import {
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
+  SquashServerError,
   type GitExec,
   type GitHubBinding,
   type PullRequestMember,
@@ -917,6 +918,8 @@ export class Orchestrator {
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
+  private readonly linearEvents = new Set<Promise<unknown>>();
+  private readonly heldFlushes = new Set<ReturnType<typeof setTimeout>>();
   private readonly intakeReads = new Map<
     string,
     { snapshot: EpicSnapshot; edges: DependencyEdge[] }
@@ -1031,8 +1034,19 @@ export class Orchestrator {
     return reads;
   }
 
-  async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
-    if (this.shuttingDown) throw new Error("Paws is shutting down");
+  onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+    if (this.shuttingDown) return Promise.reject(new Error("Paws is shutting down"));
+    return this.track(this.receiveLinearEvent(event));
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.linearEvents.add(work);
+    const settled = () => this.linearEvents.delete(work);
+    void work.then(settled, settled);
+    return work;
+  }
+
+  private async receiveLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     const comment = linearCommentOf(event);
     if (comment !== null) return this.receiveLinearComment(comment);
     const decision = await this.options.authorizeLinearEvent?.(event);
@@ -1306,7 +1320,13 @@ export class Orchestrator {
       this.stopTaskPlanning(),
       ...owned.map((live) => live.done),
     ]);
-    await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
+    for (const held of this.heldFlushes) clearTimeout(held);
+    this.heldFlushes.clear();
+    await Promise.allSettled([
+      ...this.linearEvents,
+      ...this.sessionEvents.values(),
+      ...this.stopEvents.values(),
+    ]);
     await this.flushPosts();
     for (const item of await this.allItems(true))
       if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
@@ -1535,20 +1555,24 @@ export class Orchestrator {
       };
       request?.signal?.addEventListener("abort", forget, { once: true });
       const held = setTimeout(() => {
+        this.heldFlushes.delete(held);
         if (!this.shuttingDown)
-          void this.flush(request?.signal, update.sessionId)
-            .catch(async (caughtError2) => {
-              journalCaught(
-                caughtError2,
-                "orchestrator.enqueueSessionProgress.flush",
-                await this.sessionItemIds(update.sessionId),
-                undefined,
-                this.options.journal,
-              );
-              return undefined;
-            })
-            .finally(forget);
+          void this.track(
+            this.flush(request?.signal, update.sessionId)
+              .catch(async (caughtError2) => {
+                journalCaught(
+                  caughtError2,
+                  "orchestrator.enqueueSessionProgress.flush",
+                  await this.sessionItemIds(update.sessionId),
+                  undefined,
+                  this.options.journal,
+                );
+                return undefined;
+              })
+              .finally(forget),
+          );
       }, FIRST_ACTIVITY_HOLD_MS);
+      this.heldFlushes.add(held);
       held.unref?.();
       return;
     }
@@ -2100,7 +2124,11 @@ export class Orchestrator {
           (await this.holdForPushOutage(job, error))
         )
           return;
-        if (this.shuttingDown || job.attempts >= job.maxAttempts || !(await context.isCurrent()))
+        if (
+          this.shuttingDown ||
+          (job.attempts >= job.maxAttempts && !(error instanceof SquashServerError)) ||
+          !(await context.isCurrent())
+        )
           throw error;
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
@@ -3154,6 +3182,7 @@ export class Orchestrator {
         item &&
         // A push outage holds the item; it never fails it (PAS-867).
         !pushOutageCause(error) &&
+        !(error instanceof SquashServerError) &&
         !this.shuttingDown &&
         (await context.isCurrent()) &&
         !this.jobContexts.has(item.id) &&
@@ -7709,24 +7738,7 @@ export class Orchestrator {
   }
 
   private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    return implementerAgentFor(
-      config,
-      await this.repositoryForItem(item),
-      this.knownProfileLabels(item),
-    );
-  }
-
-  private *implementerProfileSteps(
-    q: Q,
-    item: WorkItemRecord,
-    config: ReturnType<typeof loadConfigFile>,
-  ) {
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    return resolveAgentProfiles(
-      config,
-      repository ? `${repository.owner}/${repository.repo}` : undefined,
-      this.knownProfileLabels(item),
-    ).implementer;
+    return implementerAgentFor(config, this.knownProfileLabels(item));
   }
 
   private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
@@ -7745,7 +7757,7 @@ export class Orchestrator {
       ? yield* itemRunners(
           q,
           itemId,
-          yield* this.implementerProfileSteps(q, item, config),
+          resolveAgentProfiles(config, this.knownProfileLabels(item)).implementer,
           this.now(),
         )
       : null;
@@ -7759,11 +7771,10 @@ export class Orchestrator {
   ): Steps<boolean | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return null;
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     return yield* ownerHasRunner(
       q,
       itemId,
-      implementerAgentFor(config, repository, this.knownProfileLabels(item)),
+      implementerAgentFor(config, this.knownProfileLabels(item)),
       this.now(),
     );
   }
@@ -8019,14 +8030,12 @@ export class Orchestrator {
         return existing;
       }
     }
-    const repository = await this.repositoryForItem(item);
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
     const defaultRoles = previous?.defaultRoles;
     const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
-    const profiles = withoutLabelProblems(resolveAgentProfiles(config, repoName, profileLabels));
+    const profiles = withoutLabelProblems(resolveAgentProfiles(config, profileLabels));
     const run = await this.store.run((q) =>
       insertRunSteps(q, {
         itemId: item.id,
@@ -8100,9 +8109,7 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (!saved) return true;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = await this.repositoryForItem(item);
-    const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    let resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+    let resolved = resolveAgentProfiles(config, saved.profileLabels);
     let answered = false;
     const question = saved.profileQuestion
       ? await this.store.run((q) => getQuestionSteps(q, saved.profileQuestion!))
@@ -8121,7 +8128,7 @@ export class Orchestrator {
         );
       }
       delete saved.profileQuestion;
-      resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+      resolved = resolveAgentProfiles(config, saved.profileLabels);
     }
     const problems = resolved.labelProblems ?? [];
     if (answered || problems.length > 0) saved.profiles = withoutLabelProblems(resolved);
@@ -10454,13 +10461,9 @@ export class Orchestrator {
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
-      const repository = await this.store.run((q) => getWorkItemRepositorySteps(q, run.itemId));
       const saved = this.readProfileSnapshot(run.id);
       if (!saved) continue;
-      const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-      const profiles = withoutLabelProblems(
-        resolveAgentProfiles(config, repoName, saved.profileLabels),
-      );
+      const profiles = withoutLabelProblems(resolveAgentProfiles(config, saved.profileLabels));
       if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
@@ -10510,15 +10513,7 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = await this.store.run(function* (q) {
-      const run = yield* getRunSteps(q, runId);
-      const item = run === null ? null : yield* getWorkItemSteps(q, run.itemId);
-      return item === null ? null : yield* getWorkItemRepositorySteps(q, item.id);
-    });
-    const late = this.readProfileSnapshot(runId);
-    if (late) return late.profiles;
-    const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    const profiles = resolveAgentProfiles(config, repoName);
+    const profiles = resolveAgentProfiles(config);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
@@ -11321,14 +11316,9 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
 
 function implementerAgentFor(
   config: ReturnType<typeof loadConfigFile>,
-  repository: RepositoryBinding | null,
   labels: ProfileLabels | undefined,
 ): string {
-  return resolveAgentProfiles(
-    config,
-    repository ? `${repository.owner}/${repository.repo}` : undefined,
-    labels,
-  ).implementer.agent;
+  return resolveAgentProfiles(config, labels).implementer.agent;
 }
 
 function* closeActiveRunSteps(

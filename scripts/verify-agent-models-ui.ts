@@ -35,7 +35,6 @@ const settings = {
     implementer: { agent: "claude", model: "opus[1m]", effort: "high" },
     reviewer: { agent: "codex", model: "gpt-5.5", effort: "high" },
   },
-  projects: [],
 };
 const server = Bun.serve({
   hostname: "127.0.0.1",

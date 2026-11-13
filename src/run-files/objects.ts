@@ -248,3 +248,36 @@ export function createFakeRunFileObjects() {
     deletes: string[];
   };
 }
+
+export async function migrateRunFileObjects(
+  keys: readonly string[],
+  local: RunFileObjects,
+  remote: RunFileObjects,
+  deleteLocal: boolean,
+) {
+  const counts = { copied: 0, bytes: 0, present: 0, missing: 0, deleted: 0 };
+  const absent = (error: unknown) => {
+    if (missingRunFileObject(error)) return null;
+    throw error;
+  };
+  for (const key of keys) {
+    const bytes = await local.read(key).catch(absent);
+    if (!bytes) {
+      counts.missing++;
+      continue;
+    }
+    let stored = await remote.read(key).catch(absent);
+    if (stored) counts.present++;
+    else {
+      await remote.write(key, bytes);
+      counts.copied++;
+      counts.bytes += bytes.byteLength;
+      stored = await remote.read(key).catch(absent);
+    }
+    if (deleteLocal && stored && Buffer.from(stored).equals(Buffer.from(bytes))) {
+      await local.delete(key);
+      counts.deleted++;
+    }
+  }
+  return counts;
+}

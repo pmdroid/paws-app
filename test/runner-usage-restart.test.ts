@@ -2,8 +2,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { PawsShutdown, usageLimitNotice } from "../src/core";
 import {
   beginImplementRun,
@@ -11,12 +11,11 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   resumeUsagePauseNow,
   syncWorkspaceMember,
-  sqliteDb,
+  type PgDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -28,7 +27,8 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase, seedCandidate } from "./helpers";
+import { seedCandidate } from "./helpers";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const LIMIT = "You've hit your session limit. Retry-After: 120";
@@ -66,7 +66,7 @@ test("a run ending on Codex's usage-limit text pauses the account until the stat
     )}`,
   );
   expect(result.paused, result.detail).toEqual({ resetsAt: reset });
-  expect(result.policyAtPause?.cooldown_until, result.detail).toBe(reset);
+  expect(result.policyAtPause?.cooldownUntil, result.detail).toBe(reset);
   expect(result.limitedReceipt, result.detail).toMatchObject({ outcome: "quota_exhausted" });
   expect(result.attemptsAtPause, result.detail).toBe(1);
   expect(result.pauseNotices, result.detail).toEqual([
@@ -103,7 +103,7 @@ test("updated agent settings release a quota wait without resuming the exhausted
   expect(result.agents, result.detail).toEqual(["claude", "codex"]);
   expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
   expect(result.activePauses, result.detail).toBe(0);
-  expect(result.policyAtPause?.cooldown_until).toBeGreaterThan(result.finishedAt);
+  expect(result.policyAtPause?.cooldownUntil).toBeGreaterThan(result.finishedAt);
 }, 60_000);
 
 test("capacity returning between failed placement and pause entry resumes immediately", async () => {
@@ -178,27 +178,33 @@ async function usageLimitScenario(
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const path = join(root, "paws.db");
-  let db: Database = migratedDatabase(path);
+  const { db, close } = await tempStore();
+  type Rows = Record<string, unknown>[];
+  const rows = async (query: SQL) => {
+    const result = (await (db as PgDb).orm.execute(query)) as Rows | { rows: Rows };
+    return Array.isArray(result) ? result : result.rows;
+  };
+  const exec = rows;
+  const count = async (query: SQL) => Number((await rows(query))[0]!.count);
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await exec(sql`INSERT INTO workspace_repository VALUES(${workspace.id},'acme/fixture','team')`);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -216,16 +222,18 @@ async function usageLimitScenario(
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+  await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
+  await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
+  await exec(
+    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',1)`,
+  );
   if (switchProfiles)
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [
-      runnerId,
-    ]);
+    await exec(
+      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'codex',1)`,
+    );
   const foreignRunnerIds: string[] = [];
   if (wake === "foreign-workspace" || wake === "foreign-owner") {
-    const otherUser = await putWorkspaceUser(sqliteDb(db), {
+    const otherUser = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: "other",
       name: "Other",
@@ -233,18 +241,16 @@ async function usageLimitScenario(
     });
     const otherWorkspace =
       wake === "foreign-workspace"
-        ? await consumeWorkspaceBootstrap(sqliteDb(db), {
+        ? await consumeWorkspaceBootstrap(db, {
             id: workspaceId(),
             organizationId: "other-org",
             name: "Other",
             userId: otherUser,
-            tokenHash: workspaceTokenHash(
-              await issueWorkspaceBootstrap(sqliteDb(db), "other-org", now),
-            ),
+            tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "other-org", now)),
             now,
           })
         : workspace;
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: otherWorkspace.id,
       userId: otherUser,
       role: "member",
@@ -255,17 +261,18 @@ async function usageLimitScenario(
     for (let index = 0; index < 2; index++) {
       const id = `foreign-${index}`;
       foreignRunnerIds.push(id);
-      db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-        [id, otherWorkspace.id, otherUser, id, now, now],
+      await exec(
+        sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(${id},${otherWorkspace.id},${otherUser},${id},'active',${now},${now})`,
       );
-      db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
-      db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',0)", [id]);
+      await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${id})`);
+      await exec(
+        sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${id},'claude',0)`,
+      );
     }
   }
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -273,13 +280,13 @@ async function usageLimitScenario(
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, {
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, {
     owner: "acme",
     repo: "fixture",
     remoteUrl: GITHUB_URL,
   });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
+  await exec(sql`UPDATE work_item SET owner_user_id=${userId} WHERE id=${item.id}`);
   mkdirSync(join(root, "runs"), { recursive: true });
 
   const keys = generateKeyPairSync("ed25519");
@@ -290,16 +297,16 @@ async function usageLimitScenario(
   let limitedPlacementReads = 0;
   function open() {
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ store: sqliteDb(db), work });
-    const health = createRunnerHealth({ store: sqliteDb(db), work });
-    const placement = createRunnerPlacement({ store: sqliteDb(db) });
+    const results = createRunnerResults({ store: db, work });
+    const health = createRunnerHealth({ store: db, work });
+    const placement = createRunnerPlacement({ store: db });
     const backend = createRemoteAgentRunner({
-      store: sqliteDb(db),
+      store: db,
       work,
       results,
       health,
@@ -309,9 +316,8 @@ async function usageLimitScenario(
         async candidates(input) {
           if (limitedAt) limitedPlacementReads++;
           if (wake === "before-pause" && limitedPlacementReads === 2 && !recoveredBeforePause) {
-            db.run(
-              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
-              [runnerId],
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
             );
             recoveredBeforePause = true;
           }
@@ -340,15 +346,29 @@ async function usageLimitScenario(
   }
   let services = open();
 
-  const receipt = (commandId: string) =>
-    db.query("SELECT * FROM runner_execution_usage WHERE command_id=?").get(commandId) as Record<
-      string,
-      unknown
-    > | null;
-  const policy = () =>
-    db
-      .query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent='claude'")
-      .get(runnerId) as Record<string, unknown> | null;
+  const receipt = async (commandId: string): Promise<Record<string, unknown> | null> =>
+    (await db.run((q) =>
+      q.one(
+        q.orm
+          .select()
+          .from(q.t.runnerExecutionUsage)
+          .where(eq(q.t.runnerExecutionUsage.commandId, commandId)),
+      ),
+    )) ?? null;
+  const policy = async (): Promise<Record<string, unknown> | null> =>
+    (await db.run((q) =>
+      q.one(
+        q.orm
+          .select()
+          .from(q.t.runnerAgentPolicy)
+          .where(
+            and(
+              eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+              eq(q.t.runnerAgentPolicy.agent, "claude"),
+            ),
+          ),
+      ),
+    )) ?? null;
   const sim = {
     stopped: false,
     paused: false,
@@ -368,37 +388,36 @@ async function usageLimitScenario(
       if (!sim.paused) {
         const { work, results } = services;
         await work.heartbeat(runnerId);
-        const pause = db
-          .query<{ runId: string; resetsAt: number }, []>(
-            "SELECT run_id AS runId,resets_at AS resetsAt FROM usage_pause",
-          )
-          .get();
+        const pause = await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ runId: q.t.usagePause.runId, resetsAt: q.t.usagePause.resetsAt })
+              .from(q.t.usagePause),
+          ),
+        );
         if (pause && !sim.pause) {
-          sim.pause = { resetsAt: pause.resetsAt };
+          sim.pause = { resetsAt: pause.resetsAt! };
           attemptsAtPause = agents.length;
-          sim.policyAtPause = policy();
+          sim.policyAtPause = await policy();
           pauseObservedAt = Date.now();
           if (switchProfiles) selectedAgent = "codex";
-          else if (wake === "resume")
-            await resumeUsagePauseNow(sqliteDb(db), pause.runId, Date.now());
+          else if (wake === "resume") await resumeUsagePauseNow(db, pause.runId, Date.now());
           else if (wake === "cooldown")
-            db.run(
-              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
-              [runnerId],
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
             );
         }
         if (foreignRunnerIds.length && pauseObservedAt) {
           const elapsed = Date.now() - pauseObservedAt;
           if (foreignReady < 2 && elapsed >= 150 + foreignReady * 300) {
-            db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [
-              foreignRunnerIds[foreignReady]!,
-            ]);
+            await exec(
+              sql`UPDATE runner_agent_policy SET ready=1 WHERE runner_id=${foreignRunnerIds[foreignReady]!}`,
+            );
             foreignReady++;
           }
           if (elapsed >= 900)
-            db.run(
-              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
-              [runnerId],
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
             );
         }
         for (const envelope of await work.commands(runnerId)) {
@@ -476,24 +495,19 @@ async function usageLimitScenario(
           (error: unknown) => error,
         );
       sim.paused = true;
-      receiptBeforeRestart = receipt(limitedCommand);
-      policyBeforeRestart = policy();
-      detachedCancels = db
-        .query<{ count: number }, []>(
-          "SELECT count(*) AS count FROM runner_command WHERE kind='cancel'",
-        )
-        .get()!.count;
-      db.close();
-      db = openDatabase(path);
+      receiptBeforeRestart = await receipt(limitedCommand);
+      policyBeforeRestart = await policy();
+      detachedCancels = await count(
+        sql`SELECT count(*) AS count FROM runner_command WHERE kind='cancel'`,
+      );
+      // The restarted process opens the same database: new services over the same store.
       services = open();
       sim.paused = false;
     }
     finished = await services.backend.forItem(item.id)(options(new AbortController().signal));
-    const cancel = db
-      .query<{ acknowledged: number | null }, [string]>(
-        "SELECT acknowledged_at AS acknowledged FROM runner_command WHERE kind='cancel' AND generation=(SELECT generation FROM runner_command WHERE id=?)",
-      )
-      .get(limitedCommand);
+    const [cancel] = await rows(
+      sql`SELECT acknowledged_at AS acknowledged FROM runner_command WHERE kind='cancel' AND generation=(SELECT generation FROM runner_command WHERE id=${limitedCommand})`,
+    );
     return {
       candidateSha,
       pauseEvents,
@@ -503,35 +517,31 @@ async function usageLimitScenario(
       recoveredBeforePause,
       agents,
       finishedAt: Date.now(),
-      activePauses: db
-        .query<{ count: number }, []>("SELECT count(*) AS count FROM usage_pause")
-        .get()!.count,
+      activePauses: await count(sql`SELECT count(*) AS count FROM usage_pause`),
       limitedAt,
       shutdown: shutdownError,
       detachedCancels,
       receiptBeforeRestart,
       policyBeforeRestart,
-      limitedReceipt: receipt(limitedCommand),
+      limitedReceipt: await receipt(limitedCommand),
       policyAtPause: sim.policyAtPause,
-      receipts: db
-        .query<{ count: number }, []>("SELECT count(*) AS count FROM runner_execution_usage")
-        .get()!.count,
+      receipts: await count(sql`SELECT count(*) AS count FROM runner_execution_usage`),
       paused: sim.pause,
       cancelAcknowledged: cancel?.acknowledged !== null && cancel?.acknowledged !== undefined,
       finished,
       head: seeded.head(),
       detail: JSON.stringify({
-        receipts: db
-          .query("SELECT command_id,outcome,ended_at,resets_at FROM runner_execution_usage")
-          .all(),
-        commands: db.query("SELECT kind,generation,acknowledged_at FROM runner_command").all(),
+        receipts: await rows(
+          sql`SELECT command_id,outcome,ended_at,resets_at FROM runner_execution_usage`,
+        ),
+        commands: await rows(sql`SELECT kind,generation,acknowledged_at FROM runner_command`),
         shutdown: String(shutdownError),
       }),
     };
   } finally {
     sim.stopped = true;
     await runner;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }

@@ -27,6 +27,7 @@ import {
   mainMovedSteps,
   type QueueConflictSweep,
 } from "../merge";
+import { SquashServerError } from "../github";
 import { askSteps } from "./operations";
 import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDeliverySteps } from "./pull-reviews";
@@ -75,12 +76,15 @@ export async function retryMergeLater(
   delayMs: number,
   error: unknown,
 ): Promise<boolean> {
+  const attempts =
+    error instanceof SquashServerError ? Math.max(0, job.attempts - 1) : job.attempts;
   return await store.run((q) =>
     retryLeasedJobSteps(
       q,
       job,
       now + delayMs,
       error instanceof Error ? error.message : String(error),
+      attempts,
     ),
   );
 }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { eq, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +12,10 @@ import {
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
-import { legacyMigrate, sqliteDb } from "../src/db";
+import { legacyMigrate, sqliteDb, type Db } from "../src/db";
+import { seed, withoutForeignKeys } from "./dialects";
 import { legacyTempDb, tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const MARKER = Buffer.from("PLAINTEXT_TRANSCRIPT_MARKER_51c9");
@@ -31,8 +34,48 @@ const objectName = (runId: string, offset: number, bytes: Buffer) =>
 
 class Refused extends Error {}
 
+const jobs = (database: Database) =>
+  database
+    .query<{ queue: string; status: string }, [string]>(
+      "SELECT queue,status FROM job WHERE job_key=?",
+    )
+    .all(RUNNER_TRANSCRIPT_ENCRYPT_JOB);
+
+/** The legacy SQLite migration that enqueues the job; Postgres starts from its baseline. */
+describe("the migration that enqueues transcript encryption", () => {
+  test("enqueues the job once when chunks were stored before encryption", async () => {
+    const db = legacyTempDb();
+    try {
+      db.exec("PRAGMA foreign_keys=OFF");
+      for (const runId of RUNS)
+        db.run(
+          `INSERT INTO runner_transcript_chunk(run_id,generation,offset,size_bytes,sha256)
+          VALUES(?,1,0,?,?)`,
+          [runId, first.length, sha(first)],
+        );
+      db.run("DELETE FROM schema_migration WHERE id=?", [MIGRATION]);
+      legacyMigrate(db);
+      expect(jobs(db)).toEqual([{ queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB, status: "pending" }]);
+      expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a database with no plaintext chunks gets no job", async () => {
+    const fresh = legacyTempDb();
+    try {
+      expect(jobs(fresh)).toEqual([]);
+      expect(await runnerTranscriptsEncrypted(sqliteDb(fresh))).toBe(true);
+    } finally {
+      fresh.close();
+    }
+  });
+});
+
 describe("encrypting runner transcripts stored before encryption", () => {
-  let db: Database;
+  let db: Db;
+  let close: () => Promise<void>;
   let key: Buffer;
   let home: string;
   let local: RunFileObjects;
@@ -40,39 +83,55 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   /**
    * Each run's transcript as PAS-865 found it, chunk rows without a key ID and plaintext objects,
-   * before the migration runs.
+   * with the job the migration enqueues still pending.
    */
   beforeEach(async () => {
-    db = legacyTempDb();
-    db.exec("PRAGMA foreign_keys=OFF");
+    ({ db, close } = await tempStore());
+    await withoutForeignKeys(db);
     key = randomBytes(32);
     home = tempHome();
     local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
     remote = createFakeRunnerTranscriptObjects();
     for (const runId of RUNS) {
-      db.run(
-        `INSERT INTO runner_transcript(run_id,generation,command_id,workspace_id,execution_id,
-        size_bytes,sealed_size,sha256,uri) VALUES(?,1,?,'workspace',?,?,?,?,'s3://legacy')`,
-        [runId, `command-${runId}`, `execution-${runId}`, whole.length, whole.length, sha(whole)],
+      await seed(db, (q) =>
+        q.orm.insert(q.t.runnerTranscript).values({
+          runId,
+          generation: 1,
+          commandId: `command-${runId}`,
+          workspaceId: "workspace",
+          executionId: `execution-${runId}`,
+          sizeBytes: whole.length,
+          sealedSize: whole.length,
+          sha256: sha(whole),
+          uri: "s3://legacy",
+        }),
       );
       for (const [offset, bytes] of [
         [0, first],
         [RUN_FILE_CHUNK_BYTES, second],
       ] as const) {
-        db.run(
-          `INSERT INTO runner_transcript_chunk(run_id,generation,offset,size_bytes,sha256)
-          VALUES(?,1,?,?,?)`,
-          [runId, offset, bytes.length, sha(bytes)],
+        await seed(db, (q) =>
+          q.orm
+            .insert(q.t.runnerTranscriptChunk)
+            .values({ runId, generation: 1, offset, sizeBytes: bytes.length, sha256: sha(bytes) }),
         );
         // run-c was stored in S3; the others in the local directory.
         await (runId === "run-c" ? remote : local).write(objectName(runId, offset, bytes), bytes);
       }
     }
-    db.run("DELETE FROM schema_migration WHERE id=?", [MIGRATION]);
-    legacyMigrate(db);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.job).values({
+        queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB,
+        jobKey: RUNNER_TRANSCRIPT_ENCRYPT_JOB,
+        priority: 9,
+        runAt: Date.now(),
+        maxAttempts: 1000,
+        createdAt: Date.now(),
+      }),
+    );
   });
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await close();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -87,14 +146,14 @@ describe("encrypting runner transcripts stored before encryption", () => {
   };
   async function read(runId: string) {
     const files = createRunFileChunks({
-      store: sqliteDb(db),
+      store: db,
       kind: "transcript",
       objects: fallback,
       key,
       refused: () => {
         throw new Refused();
       },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(sqliteDb(db))),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
     });
     const parts: Uint8Array[] = [];
     for await (const part of files.read(
@@ -105,14 +164,24 @@ describe("encrypting runner transcripts stored before encryption", () => {
       parts.push(part);
     return Buffer.concat(parts);
   }
-  const unconverted = () =>
-    db
-      .query<{ count: number }, []>(
-        "SELECT count(*) AS count FROM runner_transcript_chunk WHERE key_id IS NULL",
+  const unconverted = async () =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ runId: q.t.runnerTranscriptChunk.runId })
+            .from(q.t.runnerTranscriptChunk)
+            .where(isNull(q.t.runnerTranscriptChunk.keyId)),
+        ),
       )
-      .get()!.count;
+    ).length;
   const finish = () =>
-    db.run("UPDATE job SET status='done' WHERE job_key=?", [RUNNER_TRANSCRIPT_ENCRYPT_JOB]);
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.job)
+        .set({ status: "done" })
+        .where(eq(q.t.job.jobKey, RUNNER_TRANSCRIPT_ENCRYPT_JOB)),
+    );
   function plaintextOnDisk() {
     const directory = join(home, "runner-transcripts");
     return readdirSync(directory).filter(
@@ -120,46 +189,28 @@ describe("encrypting runner transcripts stored before encryption", () => {
     );
   }
 
-  const jobs = (database: Database) =>
-    database
-      .query<{ queue: string; status: string }, [string]>(
-        "SELECT queue,status FROM job WHERE job_key=?",
-      )
-      .all(RUNNER_TRANSCRIPT_ENCRYPT_JOB);
-
-  test("the migration enqueues the job once, and plaintext reads until it is done", async () => {
-    expect(jobs(db)).toEqual([{ queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB, status: "pending" }]);
-    expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(false);
+  test("plaintext reads until the job is done", async () => {
+    expect(await runnerTranscriptsEncrypted(db)).toBe(false);
     expect(await read("run-a")).toEqual(whole);
-    finish();
-    expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(true);
+    await finish();
+    expect(await runnerTranscriptsEncrypted(db)).toBe(true);
     await expect(read("run-a")).rejects.toThrow("Runner transcript storage is unavailable");
-  });
-
-  test("a database with no plaintext chunks gets no job", async () => {
-    const fresh = legacyTempDb();
-    try {
-      expect(jobs(fresh)).toEqual([]);
-      expect(await runnerTranscriptsEncrypted(sqliteDb(fresh))).toBe(true);
-    } finally {
-      fresh.close();
-    }
   });
 
   test("plaintext chunks are converted, local and S3, and no plaintext is left on disk", async () => {
     expect(plaintextOnDisk()).toHaveLength(4);
     const result = await encryptRunnerTranscripts({
-      store: sqliteDb(db),
+      store: db,
       stores: [local, remote],
       key,
     });
     expect(result).toEqual({ converted: 6, skipped: 0 });
-    expect(unconverted()).toBe(0);
+    expect(await unconverted()).toBe(0);
     expect(plaintextOnDisk()).toEqual([]);
     expect(readdirSync(join(home, "runner-transcripts"))).toHaveLength(4);
     for (const bytes of remote.objects.values())
       expect(Buffer.from(bytes).includes(MARKER)).toBe(false);
-    finish();
+    await finish();
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
   });
 
@@ -179,9 +230,9 @@ describe("encrypting runner transcripts stored before encryption", () => {
       },
     };
     await expect(
-      encryptRunnerTranscripts({ store: sqliteDb(db), stores: [stopping, remote], key }),
+      encryptRunnerTranscripts({ store: db, stores: [stopping, remote], key }),
     ).rejects.toThrow("Paws stopped");
-    expect(unconverted()).toBe(4);
+    expect(await unconverted()).toBe(4);
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
 
     // A stop requested between chunks also leaves the rest for the next run.
@@ -189,37 +240,37 @@ describe("encrypting runner transcripts stored before encryption", () => {
     abort.abort();
     await expect(
       encryptRunnerTranscripts({
-        store: sqliteDb(db),
+        store: db,
         stores: [local, remote],
         key,
         signal: abort.signal,
       }),
     ).rejects.toThrow();
-    expect(unconverted()).toBe(4);
+    expect(await unconverted()).toBe(4);
 
     const result = await encryptRunnerTranscripts({
-      store: sqliteDb(db),
+      store: db,
       stores: [local, remote],
       key,
     });
     expect(result).toEqual({ converted: 4, skipped: 0 });
-    expect(unconverted()).toBe(0);
+    expect(await unconverted()).toBe(0);
     expect(plaintextOnDisk()).toEqual([]);
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
-    finish();
+    await finish();
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
   });
 
   test("a read that began before its chunk was sealed still returns the transcript", async () => {
     const files = createRunFileChunks({
-      store: sqliteDb(db),
+      store: db,
       kind: "transcript",
       objects: local,
       key,
       refused: () => {
         throw new Refused();
       },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(sqliteDb(db))),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
     });
     const reading = files.read(
       { runId: "run-a", generation: 1, prefix: prefix("run-a") },
@@ -228,16 +279,21 @@ describe("encrypting runner transcripts stored before encryption", () => {
     );
     // The reader has its chunk rows, without key IDs, when the job seals the objects.
     const parts = [(await reading.next()).value!];
-    await encryptRunnerTranscripts({ store: sqliteDb(db), stores: [local], key });
-    expect(unconverted()).toBe(2);
+    await encryptRunnerTranscripts({ store: db, stores: [local], key });
+    expect(await unconverted()).toBe(2);
     for await (const part of reading) parts.push(part);
     expect(Buffer.concat(parts)).toEqual(whole);
   });
 
   test("after the job is done, a chunk without a key ID is refused", async () => {
-    await encryptRunnerTranscripts({ store: sqliteDb(db), stores: [local, remote], key });
-    finish();
-    db.run("UPDATE runner_transcript_chunk SET key_id=NULL WHERE run_id='run-a'");
+    await encryptRunnerTranscripts({ store: db, stores: [local, remote], key });
+    await finish();
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerTranscriptChunk)
+        .set({ keyId: null })
+        .where(eq(q.t.runnerTranscriptChunk.runId, "run-a")),
+    );
     await local.write(objectName("run-a", 0, first), first);
     await expect(read("run-a")).rejects.toThrow("Runner transcript storage is unavailable");
   });
@@ -245,11 +301,11 @@ describe("encrypting runner transcripts stored before encryption", () => {
   test("a chunk with no readable copy is left for reads to refuse, and the job still ends", async () => {
     await local.delete(objectName("run-b", RUN_FILE_CHUNK_BYTES, second));
     const result = await encryptRunnerTranscripts({
-      store: sqliteDb(db),
+      store: db,
       stores: [local, remote],
       key,
     });
     expect(result).toEqual({ converted: 5, skipped: 1 });
-    expect(unconverted()).toBe(1);
+    expect(await unconverted()).toBe(1);
   });
 });

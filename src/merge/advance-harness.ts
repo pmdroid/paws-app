@@ -207,6 +207,8 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
     dropMergeResponse: false,
     mergeResponseStatus: 200,
     mergeDenial: null as (() => Promise<GitHubResponse | null>) | null,
+    /** Waits the lane asked for, in milliseconds. */
+    sleeps: [] as number[],
     mergeState: null as string | null,
     /** Runs before each operation token the lane acquires, with its purpose. */
     beforeMergeToken: (_purpose?: string): void => {},
@@ -309,6 +311,8 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
         if (denied) return denied;
         const body = req.body as { sha: string; commit_title: string };
         const number = Number(req.path.split("/").at(-2));
+        if (state.handMerged.has(number))
+          return { status: 405, body: { message: "not mergeable" } };
         const result = await github.merge({
           repository: "acme/app",
           number,
@@ -366,6 +370,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
       status: 200,
       body: {
         state: "open",
+        merged: state.handMerged.has(number),
         mergeable: merges,
         mergeable_state:
           state.mergeState ?? (merges ? (state.upToDateRule ? "behind" : "clean") : "dirty"),
@@ -495,6 +500,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
     return {
       ask,
       now: () => clock.now(),
+      sleep: async (ms) => void state.sleeps.push(ms),
       // Like the orchestrator, a stop that cancelled or paused the item stops the lane as well as the flag.
       stopped: async () => {
         const current = await store.run((q) => getWorkItemSteps(q, id));

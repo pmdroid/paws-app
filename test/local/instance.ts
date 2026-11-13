@@ -461,7 +461,6 @@ try {
               implementer: { agent: "claude", model: null },
               reviewer: { agent: "codex", model: null },
             },
-            projects: [],
           }),
       agentSettings,
     );
@@ -535,16 +534,9 @@ try {
     });
     const codex = await scenario("codex", "[]", "codex", {
       defaults: {
-        implementer: { agent: "claude", model: null },
-        reviewer: { agent: "codex", model: null },
+        implementer: { agent: "codex", model: "test-codex-implementer" },
+        reviewer: { agent: "codex", model: "test-codex-reviewer" },
       },
-      projects: [
-        {
-          repo: "local/fixture",
-          implementer: { agent: "codex", model: "test-codex-implementer" },
-          reviewer: { agent: "codex", model: "test-codex-reviewer" },
-        },
-      ],
     });
     observe(
       "advertised Codex implementer completes independent review",

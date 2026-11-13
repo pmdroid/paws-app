@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { Window } from "happy-dom";
 import {
   createRetro,
   insertQueuedItem,
   listImprovementDeliveries,
   retroArtifact,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   deliverImprovements,
@@ -51,8 +52,11 @@ import {
   ONLY_A,
   START,
   accept,
+  insertMergeFact,
+  insertPullRequest,
   seedDaily,
-  world,
+  updateWorkItem,
+  worldPg,
   type Json,
 } from "./improvement-fixtures";
 import { rmSync } from "node:fs";
@@ -92,7 +96,21 @@ afterEach(async () => {
   await settleReactWork();
   for (const name of DOM_GLOBALS) (globalThis as Record<string, unknown>)[name] = saved.get(name);
   await window.happyDOM.close();
+  for (const close of stores.splice(0)) await close();
 });
+
+const stores: (() => Promise<void>)[] = [];
+
+function setMemberActive(db: Db, userId: string, active: boolean) {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.workspaceMember)
+        .set({ active: active ? 1 : 0 })
+        .where(eq(q.t.workspaceMember.userId, userId)),
+    ),
+  );
+}
 
 const MERGE = "c0ffee1234567890c0ffee1234567890c0ffee12";
 const SCHEDULE = {
@@ -127,9 +145,10 @@ async function harness() {
     starts.push(target.id);
     return { id: `session-${starts.length}`, url: null };
   };
-  const w = await world({ linear, startSession, dashboardUrl: "https://paws.test/" });
+  const w = await worldPg({ linear, startSession, dashboardUrl: "https://paws.test/" });
+  stores.push(w.close);
   await seedDaily(w.db);
-  const retros = createRetroReviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root, now: w.now });
+  const retros = createRetroReviewHttp({ store: w.db, artifactRoot: w.root, now: w.now });
   const requests: { method: string; path: string }[] = [];
   const holds: { path: string; release: () => void }[] = [];
   let hold: RegExp | null = null;
@@ -218,14 +237,14 @@ async function harness() {
   };
   const deliver = (now = END + 60 * 60_000) =>
     deliverImprovements({
-      store: sqliteDb(w.db),
+      store: w.db,
       owner: "test",
       linearFor: async () => linear,
       sourceUrl: (id) => `https://paws.test/dashboard/improvements/${id}`,
       now: () => now,
     });
   const sync = () =>
-    syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
+    syncImprovementOutcomes({ store: w.db, linearFor: async () => linear, now: w.now });
   return {
     w,
     linear,
@@ -289,7 +308,7 @@ describe("improvement inbox contract", () => {
     expect(parseImprovementDetail(await read(`/api/improvements/${id}`)).ok).toBe(true);
     expect(parseFollowThrough(await read(`/api/improvements/${id}/follow-through`)).ok).toBe(true);
     expect(parseAttention(await read("/api/improvements/attention")).ok).toBe(true);
-    const retros = createRetroReviewHttp({ store: sqliteDb(t.w.db), artifactRoot: t.w.root });
+    const retros = createRetroReviewHttp({ store: t.w.db, artifactRoot: t.w.root });
     const retro = async (path: string) =>
       (await retros(new Request(`http://paws.test${path}`), t.w.people.ada!, ONLY_A))!.json();
     expect(parseRetroHistory(await retro("/api/retros/history")).ok).toBe(true);
@@ -303,7 +322,9 @@ describe("improvement inbox", () => {
     const t = await harness();
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
       .id as string;
-    t.w.db.run("UPDATE finding_group SET status = 'filed', filed_issue = 'PAS-77'");
+    await t.w.db.run((q) =>
+      q.exec(q.orm.update(q.t.findingGroup).set({ status: "filed", filedIssue: "PAS-77" })),
+    );
     await t.open(`/improvements/${daily}`);
     expect(t.text()).toContain("Handled in Findings");
     expect(t.text()).toContain("PAS-77");
@@ -332,7 +353,9 @@ describe("improvement inbox", () => {
     const t = await harness();
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
       .id as string;
-    t.w.db.run("UPDATE finding_group SET status = 'dismissed', status_reason = 'Noise'");
+    await t.w.db.run((q) =>
+      q.exec(q.orm.update(q.t.findingGroup).set({ status: "dismissed", statusReason: "Noise" })),
+    );
     await t.open(`/improvements/${daily}`);
     const detail = t.find("[data-improvement]").textContent ?? "";
     expect(detail).toContain("Dismissed from Findings");
@@ -408,23 +431,16 @@ describe("improvement inbox", () => {
     expect(t.starts).toHaveLength(1);
     expect(t.root.querySelector('[data-improvement-action="delegate"]')).toBeNull();
 
-    const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
+    const issueId = (await listImprovementDeliveries(t.w.db, id))[0]!.remoteId!;
     await insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
-    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
-      issueId,
-    ]);
+    await updateWorkItem(t.w.db, "work-x", { linearIssueId: issueId, state: "running" });
     await t.sync();
     await t.poll();
     expect(t.text()).toContain("Working");
 
-    t.w.db.run("UPDATE work_item SET state = 'merged' WHERE id = 'work-x'");
-    t.w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 42, 'https://gh/pull/42', ?)", [
-      END,
-    ]);
-    t.w.db.run(
-      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
-      [MERGE, END + 3_000],
-    );
+    await updateWorkItem(t.w.db, "work-x", { state: "merged" });
+    await insertPullRequest(t.w.db, "work-x", 42, END);
+    await insertMergeFact(t.w.db, "work-x", MERGE, END + 3_000);
     await t.sync();
     await t.poll();
     expect(t.text()).toContain("Merged · awaiting verification");
@@ -479,9 +495,9 @@ describe("improvement inbox", () => {
     t.type('[data-improvement-draft="criterion"]', "No timing finding in src/a.ts for a week.");
     await t.submit('[data-improvement-form="link"]');
     expect(t.text()).toContain("Accepted. Paws confirms the link");
-    expect(
-      (await listImprovementDeliveries(sqliteDb(t.w.db), daily)).map((d) => d.operation).sort(),
-    ).toEqual(["evidence_comment", "link_issue"]);
+    expect((await listImprovementDeliveries(t.w.db, daily)).map((d) => d.operation).sort()).toEqual(
+      ["evidence_comment", "link_issue"],
+    );
   });
 
   test("reject asks for a reason, files nothing and stays in history", async () => {
@@ -494,7 +510,7 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="reject"]');
     expect(t.text()).toContain("Rejected by");
     expect(t.text()).toContain("No issue was filed");
-    expect(await listImprovementDeliveries(sqliteDb(t.w.db), id)).toEqual([]);
+    expect(await listImprovementDeliveries(t.w.db, id)).toEqual([]);
   });
 
   test("a decision from another tab answers stale and shows the current state", async () => {
@@ -509,7 +525,7 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="create"]');
     expect(t.text()).toContain("Someone changed this improvement after you opened it");
     expect(t.text()).toContain("Covered by PAS-60");
-    expect(await listImprovementDeliveries(sqliteDb(t.w.db), id)).toEqual([]);
+    expect(await listImprovementDeliveries(t.w.db, id)).toEqual([]);
   });
 
   test("late answers for an earlier selection, page or version are dropped", async () => {
@@ -571,7 +587,7 @@ describe("improvement inbox", () => {
     expect(t.text()).toContain("Retro not available");
     expect(t.text()).toContain("Return to the history");
     await t.open("/improvements");
-    t.w.db.run("UPDATE workspace_member SET active = 0 WHERE user_id = 'user-ada'");
+    await setMemberActive(t.w.db, "user-ada", false);
     await t.poll();
     expect(t.text()).toContain("Your workspace access changed");
     expect(t.text()).toContain("Showing the last list Paws read");
@@ -581,10 +597,10 @@ describe("improvement inbox", () => {
     const t = await harness();
     await t.open("/improvements");
     expect(t.counts.at(-1)).toBe(2);
-    t.w.db.run("UPDATE workspace_member SET active = 0 WHERE user_id = 'user-ada'");
+    await setMemberActive(t.w.db, "user-ada", false);
     await t.poll();
     expect(t.counts.at(-1)).toBe(0);
-    t.w.db.run("UPDATE workspace_member SET active = 1 WHERE user_id = 'user-ada'");
+    await setMemberActive(t.w.db, "user-ada", true);
     t.holdOn(/\/attention$/);
     const late = t.page.refreshCount("http://paws.test");
     await settle();
@@ -754,24 +770,16 @@ async function filedWork(t: Awaited<ReturnType<typeof harness>>, state: string) 
   const id = t.w.retro.a;
   expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
   await t.deliver();
-  const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
+  const issueId = (await listImprovementDeliveries(t.w.db, id))[0]!.remoteId!;
   await insertQueuedItem(t.w.db, {
     id: "work-x",
     sessionKey: "session-a",
     now: END + 2 * 3_600_000,
   });
-  t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-x'", [
-    issueId,
-    state,
-  ]);
+  await updateWorkItem(t.w.db, "work-x", { linearIssueId: issueId, state });
   if (state === "merged") {
-    t.w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 42, 'https://gh/pull/42', ?)", [
-      END,
-    ]);
-    t.w.db.run(
-      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
-      [MERGE, END + 3_000],
-    );
+    await insertPullRequest(t.w.db, "work-x", 42, END);
+    await insertMergeFact(t.w.db, "work-x", MERGE, END + 3_000);
   }
   await t.sync();
   return id;
@@ -834,7 +842,7 @@ describe("retro history", () => {
       ["r0", -1],
       ["r2", 1],
     ] as const)
-      await createRetro(sqliteDb(t.w.db), {
+      await createRetro(t.w.db, {
         id,
         workspaceId: "ws",
         windowStart: START + weeks * 7 * DAY,
@@ -853,7 +861,7 @@ describe("retro history", () => {
       ).response.json();
     const first = await page(null);
     expect(first.retros.map((r: { id: string }) => r.id)).toEqual(["r2"]);
-    await createRetro(sqliteDb(t.w.db), {
+    await createRetro(t.w.db, {
       id: "r3",
       workspaceId: "ws",
       windowStart: START + 14 * DAY,
@@ -921,13 +929,19 @@ describe("retro history", () => {
     expect(t.saved[0]!.name).toBe("retro-r1-digest.json");
     expect(JSON.parse(t.saved[0]!.text).records).toHaveLength(4);
 
-    rmSync(join(t.w.root, (await retroArtifact(sqliteDb(t.w.db), "r1", "prompt"))!.fileName));
+    rmSync(join(t.w.root, (await retroArtifact(t.w.db, "r1", "prompt"))!.fileName));
     await reopen(t, "/improvements/reports/r1");
     expect(t.find('[data-retro-artifact="prompt"]').textContent).toContain(
       "the stored file is unavailable",
     );
 
-    t.w.db.run("DELETE FROM workspace_repository WHERE repository = 'acme/b'");
+    await t.w.db.run((q) =>
+      q.exec(
+        q.orm
+          .delete(q.t.workspaceRepository)
+          .where(eq(q.t.workspaceRepository.repository, "acme/b")),
+      ),
+    );
     await t.click('[data-improvement-action="download"][data-file="report"]');
     await settle();
     expect(t.saved).toHaveLength(1);

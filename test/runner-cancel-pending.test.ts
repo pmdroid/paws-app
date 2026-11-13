@@ -3,69 +3,94 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import {
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   releaseRunCapacity,
   runnerCancelPending,
   runnerOccupancy,
   runnerSlotFree,
+  openPawsStore,
   runnerSlotsHeldBetweenCommands,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createRunnerWork, createRunnerWorkHttp, RunnerTeardownPending } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
+import { jsonValue, seed, withoutForeignKeys } from "./dialects";
+import { copyMigratedPglite, tempStore } from "./pglite";
+
+async function runnerWork(db: Db) {
+  const [row] = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          endedAt: q.t.runnerWork.endedAt,
+          confirmed: q.t.runnerWork.teardownConfirmedAt,
+        })
+        .from(q.t.runnerWork),
+    ),
+  );
+  return row!;
+}
 
 test("real cancellation retains ownership through receipt, expiry, live reports and server reopen", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-cancel-pending-"));
-  const path = join(root, "paws.sqlite");
-  let db = openDatabase(path);
+  const dir = join(root, "pglite");
+  await copyMigratedPglite(dir);
+  let store = await openPawsStore({ url: null, pgliteDir: dir });
+  let db = store.store;
   let now = Date.now();
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
     createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: () => now,
     });
   try {
-    migrate(db);
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: "me",
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+    const workspace = await consumeWorkspaceBootstrap(db, {
       id: "ws",
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
       now,
     });
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('box',?,?,'box','active',?,?)",
-      [workspace.id, userId, now, now],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: "box",
+          workspaceId: workspace.id,
+          ownerUserId: userId,
+          name: "box",
+          status: "active",
+          createdAt: now,
+          lastSeenAt: now,
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
     );
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
     const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -73,14 +98,14 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    await bindWorkItemRepository(db, item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" }> = {
       id: "work-1",
       type: "run",
@@ -97,7 +122,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     };
     let work = controller();
     await work.assign(command);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(1);
     await work.acknowledge("box", command.id);
     await work.heartbeat(
       "box",
@@ -123,23 +148,21 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       expiresAt: now + 60_000,
     };
     await work.enqueue(cancel);
-    expect(
-      db.query<{ endedAt: number }, []>("SELECT ended_at AS endedAt FROM runner_work").get()!
-        .endedAt,
-    ).toBe(now);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
-    expect(await runnerSlotsHeldBetweenCommands(sqliteDb(db), "box", now)).toBe(0);
+    expect((await runnerWork(db)).endedAt).toBe(now);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(1);
+    expect(await runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(0);
     await work.acknowledge("box", cancel.id);
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
+    expect(await runnerCancelPending(db, "box")).toBe(true);
     now = cancel.expiresAt + 1;
     const report = [{ runId: run.id, generation: 1 }];
     const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, report);
-    expect(await runnerSlotFree(sqliteDb(db), ["box"], now, run.id)).toBe(false);
-    db.close();
-    db = openDatabase(path);
+    expect(await runnerSlotFree(db, ["box"], now, run.id)).toBe(false);
+    await store.close();
+    store = await openPawsStore({ url: null, pgliteDir: dir });
+    db = store.store;
     work = controller();
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
+    expect(await runnerCancelPending(db, "box")).toBe(true);
     const next = {
       ...command,
       id: "work-2",
@@ -150,7 +173,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     await expect(work.assign(next)).rejects.toThrow(RunnerTeardownPending);
     // Absence also cannot erase the durable cleanup obligation.
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, []);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(1);
     const termination = { runId: run.id, generation: 1, commandId: command.id };
     const http = createRunnerWorkHttp(work);
     const response = await http(
@@ -163,15 +186,11 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     );
     expect(response!.status).toBe(200);
     expect(((await response!.json()) as { terminated: unknown }).terminated).toEqual([termination]);
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(0);
+    expect(await runnerCancelPending(db, "box")).toBe(false);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(0);
     // Between-command ownership survives until the owning run ends.
-    expect(await runnerSlotsHeldBetweenCommands(sqliteDb(db), "box", now)).toBe(1);
-    const confirmed = db
-      .query<{ confirmed: number }, []>(
-        "SELECT teardown_confirmed_at AS confirmed FROM runner_work",
-      )
-      .get()!.confirmed;
+    expect(await runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(1);
+    const { confirmed } = await runnerWork(db);
     now++;
     await work.heartbeat(
       "box",
@@ -185,14 +204,10 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       undefined,
       [termination],
     );
-    expect(
-      db
-        .query<{ confirmed: number }, []>(
-          "SELECT teardown_confirmed_at AS confirmed FROM runner_work",
-        )
-        .get()!.confirmed,
-    ).toBe(confirmed);
-    db.run("UPDATE runner_work SET lost_at=1 WHERE run_id=?", [run.id]);
+    expect((await runnerWork(db)).confirmed).toBe(confirmed);
+    await seed(db, (q) =>
+      q.orm.update(q.t.runnerWork).set({ lostAt: 1 }).where(eq(q.t.runnerWork.runId, run.id)),
+    );
     await work.assign(next);
     await work.enqueue({
       ...cancel,
@@ -214,11 +229,11 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       undefined,
       [termination],
     );
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
+    expect(await runnerCancelPending(db, "box")).toBe(true);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
-    await releaseRunCapacity(sqliteDb(db), run.id, now);
-    expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(false);
+    await releaseRunCapacity(db, run.id, now);
+    expect(await runnerSlotFree(db, ["box"], now)).toBe(false);
     await work.heartbeat(
       "box",
       1,
@@ -231,10 +246,10 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       undefined,
       [{ runId: run.id, generation: 2, commandId: "cancel-2" }],
     );
-    expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(true);
+    expect(await runnerSlotFree(db, ["box"], now)).toBe(true);
     const other = await insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
-    const retry = (await beginImplementRun(sqliteDb(db), other.id, now)).run;
-    await recordLinearInstallation(sqliteDb(db), {
+    const retry = (await beginImplementRun(db, other.id, now)).run;
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -242,10 +257,10 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session-2", other.delegationId, {
+    await bindLinearSessionTask(db, "session-2", other.delegationId, {
       actorId: "owner",
     });
-    await bindWorkItemRepository(sqliteDb(db), other.id, repository);
+    await bindWorkItemRepository(db, other.id, repository);
     const undelivered = {
       ...command,
       id: "work-3",
@@ -256,13 +271,15 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       expiresAt: now + 120_000,
     };
     await work.assign(undelivered);
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, retry.id]);
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
+    await seed(db, (q) =>
+      q.orm.update(q.t.runnerWork).set({ endedAt: now }).where(eq(q.t.runnerWork.runId, retry.id)),
+    );
+    expect(await runnerCancelPending(db, "box")).toBe(true);
     await expect(work.assign({ ...undelivered, id: "work-4", generation: 2 })).rejects.toThrow(
       RunnerTeardownPending,
     );
     now = undelivered.expiresAt + 1;
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
+    expect(await runnerCancelPending(db, "box")).toBe(true);
     await work.heartbeat(
       "box",
       1,
@@ -275,8 +292,8 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       undefined,
       [],
     );
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(0);
+    expect(await runnerCancelPending(db, "box")).toBe(false);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(0);
     const reported = {
       ...undelivered,
       id: "work-4",
@@ -288,7 +305,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
       { runId: retry.id, generation: 2 },
     ]);
-    await releaseRunCapacity(sqliteDb(db), retry.id, now);
+    await releaseRunCapacity(db, retry.id, now);
     now = reported.expiresAt + 1;
     await work.heartbeat(
       "box",
@@ -302,42 +319,71 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       undefined,
       [],
     );
-    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
-    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
+    expect(await runnerCancelPending(db, "box")).toBe(true);
+    expect((await runnerOccupancy(db, "box", now)).occupied).toBe(1);
   } finally {
-    db.close();
+    await store.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a runner that never reported terminations keeps the legacy release on cancel receipt or loss", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
-    db.run("PRAGMA foreign_keys=OFF");
-    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('old',1)");
+    await withoutForeignKeys(db);
     const ended = (runId: string, lostAt: number | null) =>
-      db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,lost_at) VALUES(?,'old','ws',1,0,?,2000,1000,?)",
-        [runId, `work-${runId}`, lostAt],
+      seed(db, (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId,
+          runnerId: "old",
+          workspaceId: "ws",
+          generation: 1,
+          runnerFence: 0,
+          commandId: `work-${runId}`,
+          leaseUntil: 2000,
+          endedAt: 1000,
+          lostAt,
+        }),
       );
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('old','ws','me','old','active',0,1000)",
+    const since = (terminationsSince: number) =>
+      seed(db, (q) => q.orm.update(q.t.runner).set({ terminationsSince }));
+    await seed(
+      db,
+      (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "old", capacity: 1 }),
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: "old",
+          workspaceId: "ws",
+          ownerUserId: "me",
+          name: "old",
+          status: "active",
+          createdAt: 0,
+          lastSeenAt: 1000,
+        }),
     );
-    ended("cancelled", null);
-    db.run(
-      "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('cancel','old','cancelled',1,'cancel','{}',5000,1100)",
+    await ended("cancelled", null);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerCommand).values({
+        id: "cancel",
+        runnerId: "old",
+        runId: "cancelled",
+        generation: 1,
+        kind: "cancel",
+        envelope: jsonValue(q, {}),
+        expiresAt: 5000,
+        acknowledgedAt: 1100,
+      }),
     );
-    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
-    ended("lost", 1200);
-    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
-    db.run("UPDATE runner SET terminations_since=1050");
-    expect((await runnerOccupancy(sqliteDb(db), "old", 1300)).occupied).toBe(2);
-    db.run("UPDATE runner SET terminations_since=1150");
-    expect((await runnerOccupancy(sqliteDb(db), "old", 1300)).occupied).toBe(1);
-    db.run("UPDATE runner SET terminations_since=1250");
-    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
+    expect(await runnerCancelPending(db, "old")).toBe(false);
+    await ended("lost", 1200);
+    expect(await runnerCancelPending(db, "old")).toBe(false);
+    await since(1050);
+    expect((await runnerOccupancy(db, "old", 1300)).occupied).toBe(2);
+    await since(1150);
+    expect((await runnerOccupancy(db, "old", 1300)).occupied).toBe(1);
+    await since(1250);
+    expect(await runnerCancelPending(db, "old")).toBe(false);
   } finally {
-    db.close();
+    await close();
   }
 });

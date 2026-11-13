@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
-import { sqliteDb, listJobs, type Job } from "../src/db";
+import { eq } from "drizzle-orm";
+import { listJobs, pgSchema, type Job, type PgDb } from "../src/db";
 import {
   AGENT_QUEUES,
   FIXTURES,
@@ -14,6 +15,7 @@ import {
   dump,
   factsOf,
   failWrites,
+  injectedWriteFailure,
   unexpectedViolations,
   violations,
   type Fixture,
@@ -31,7 +33,7 @@ const ENTRIES: Record<string, Entry> = {
   crash: {
     startup: true,
     run: async (w) => {
-      w.crash();
+      await w.crash();
       await w.start();
     },
   },
@@ -46,7 +48,7 @@ const ENTRIES: Record<string, Entry> = {
     startup: true,
     run: async (w) => {
       for (let n = 0; n < 3; n++) {
-        w.crash();
+        await w.crash();
         w.advance(MINUTE);
         await w.start();
       }
@@ -57,7 +59,7 @@ const ENTRIES: Record<string, Entry> = {
     run: async (w) => {
       for (let elapsed = 0; elapsed < SETTLE_MS; elapsed += MINUTE) {
         w.advance(MINUTE);
-        w.renewJobLeases();
+        await w.renewJobLeases();
         await w.sweep();
       }
     },
@@ -65,7 +67,7 @@ const ENTRIES: Record<string, Entry> = {
   clock_back: {
     startup: true,
     run: async (w) => {
-      w.crash();
+      await w.crash();
       w.advance(-HOUR);
       await w.start();
     },
@@ -85,13 +87,13 @@ const ENTRIES: Record<string, Entry> = {
       {
         startup: true,
         run: async (w: World) => {
-          w.crash();
-          const before = dump(w.db);
-          failWrites(w.db, point);
-          await expect(w.start()).rejects.toThrow("injected write failure");
-          allowWrites(w.db);
-          expect(dump(w.db)).toEqual(before);
-          w.crash();
+          await w.crash();
+          const before = await dump(w.db);
+          await failWrites(w.db, point);
+          expect(injectedWriteFailure(await w.start().catch((error: unknown) => error))).toBe(true);
+          await allowWrites(w.db);
+          expect(await dump(w.db)).toEqual(before);
+          await w.crash();
           await w.start();
         },
       },
@@ -119,9 +121,7 @@ const KEEP_PLACE: readonly Fixture[] = ["merge_queue", "merge_inflight"];
 const WAITERS: readonly Fixture[] = ["parked_wait", "transient_retry"];
 
 async function itemJobs(w: World, id: string): Promise<Job[]> {
-  return (await listJobs(sqliteDb(w.db))).filter(
-    (job) => (job.payload as { itemId?: string }).itemId === id,
-  );
+  return (await listJobs(w.db)).filter((job) => (job.payload as { itemId?: string }).itemId === id);
 }
 
 function live(jobs: Job[]): Job[] {
@@ -184,7 +184,7 @@ type InitialFacts = { facts: Awaited<ReturnType<typeof factsOf>>; jobs: Job[]; j
 describe("every combined state through every recovery entry", () => {
   for (const [name, entry] of Object.entries(ENTRIES))
     test(name, async () => {
-      const w = await new World().seed(FIXTURES);
+      const w = await World.seeded(FIXTURES);
       try {
         expect(await violations(w.db, w.now)).toEqual([]);
         const initial = new Map<Fixture, InitialFacts>();
@@ -200,7 +200,7 @@ describe("every combined state through every recovery entry", () => {
         expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
         await expectations(w, entry, initial);
       } finally {
-        w.close();
+        await w.close();
       }
     });
 });
@@ -209,28 +209,28 @@ describe("preserved reproducers for open gaps", () => {
   test.failing(
     `${STARTUP_RESUME_DUPLICATE} (fix pending; remove .failing when it lands)`,
     async () => {
-      const w = await new World().seed(["recovering"]);
+      const w = await World.seeded(["recovering"]);
       try {
-        w.crash();
+        await w.crash();
         await w.start();
         expect(await violations(w.db, w.now)).toEqual([]);
       } finally {
-        w.close();
+        await w.close();
       }
     },
   );
 
   test.failing(`${ORPHANED_MERGE_CALL} (fix pending; remove .failing when it lands)`, async () => {
-    const w = await new World().seed(["merge_inflight"]);
+    const w = await World.seeded(["merge_inflight"]);
     try {
-      w.db.run(
-        "UPDATE job SET status='dead', last_error='attempts exhausted', finished_at=? WHERE queue=?",
-        [w.now, JOB_KIND.merge],
-      );
+      await (w.db as PgDb).orm
+        .update(pgSchema.job)
+        .set({ status: "dead", lastError: "attempts exhausted", finishedAt: w.now })
+        .where(eq(pgSchema.job.queue, JOB_KIND.merge));
       await w.settle();
       expect(await violations(w.db, w.now)).toEqual([]);
     } finally {
-      w.close();
+      await w.close();
     }
   });
 });

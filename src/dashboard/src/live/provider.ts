@@ -1503,7 +1503,8 @@ export async function doingFor(
   const facts = await store.run((q) => itemActivityFactsSteps(q, record, input.now));
   const phase = record.state === "running" ? await runnerPhase(store, record.currentRunId) : null;
   const doing = doingOf({ ...input, state: record.state, facts, phase });
-  return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
+  const activeMs = Math.max(0, Math.round(record.awakeMs));
+  return doing === undefined ? { activeMs } : { doing, activeMs };
 }
 
 function stageTimesOf(record: WorkItemRecord): StatusStageTimes {

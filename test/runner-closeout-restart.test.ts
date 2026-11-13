@@ -2,8 +2,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { and, count, eq, isNotNull } from "drizzle-orm";
 import { git, runDir, type AcpEvent, type RunAgentOptions } from "../src/acp";
 import { PawsShutdown, RunnerCapacityWait } from "../src/core";
 import {
@@ -16,13 +16,13 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  openDatabase,
+  openPawsStore,
   prepareShutdown,
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
   saveCheckpoint,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -37,7 +37,9 @@ import {
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase, seedCandidate } from "./helpers";
+import { seedCandidate } from "./helpers";
+import { seed } from "./dialects";
+import { copyMigratedPglite } from "./pglite";
 
 const REMOTE = "https://github.com/acme/fixture.git";
 const REVIEW_TEXT = "[]";
@@ -68,27 +70,33 @@ async function fixture(agentRead?: AgentRead) {
   // Paws holds the candidate in the bare mirror; the checkout only made the commits.
   seedCandidate(root, "item", worktree, { owner: "acme", repo: "fixture" });
 
-  const path = join(root, "paws.db");
-  let db: Database = migratedDatabase(path);
+  const dir = join(root, "pglite");
+  await copyMigratedPglite(dir);
+  let store = await openPawsStore({ url: null, pgliteDir: dir });
+  let db: Db = store.store;
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -103,16 +111,19 @@ async function fixture(agentRead?: AgentRead) {
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
-  db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'9.0.0',?)",
-    [runnerId, now],
+  await seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId, runnerVersion: "9.0.0", reportedAt: now }),
   );
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -120,16 +131,18 @@ async function fixture(agentRead?: AgentRead) {
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, {
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, {
     owner: "acme",
     repo: "fixture",
     remoteUrl: REMOTE,
   });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, item.id)),
+  );
   // The agent's turn ended and Closeout is checking its candidate.
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  await saveCheckpoint(sqliteDb(db), item.id, {
+  await applyWorkItemEvent(db, item.id, "turn_ended");
+  await saveCheckpoint(db, item.id, {
     phase: "verifying",
     baseSha: base,
     wipCommit: head,
@@ -138,18 +151,18 @@ async function fixture(agentRead?: AgentRead) {
   const keys = generateKeyPairSync("ed25519");
   function open() {
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ store: sqliteDb(db), work });
+    const results = createRunnerResults({ store: db, work });
     const backend = createRemoteAgentRunner({
-      store: sqliteDb(db),
+      store: db,
       work,
       results,
-      health: createRunnerHealth({ store: sqliteDb(db), work }),
-      placement: createRunnerPlacement({ store: sqliteDb(db) }),
+      health: createRunnerHealth({ store: db, work }),
+      placement: createRunnerPlacement({ store: db }),
       pollIntervalMs: 5,
       ...(agentRead ? { agentRead } : {}),
       // The check run reports the head the worktree already holds.
@@ -161,11 +174,12 @@ async function fixture(agentRead?: AgentRead) {
 
   // The runner keeps heartbeating and acknowledging while Paws restarts.
   const placed: CloseoutCommand[] = [];
-  const sim = { stopped: false, paused: false };
+  const sim = { stopped: false, paused: false, busy: false };
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
       if (!sim.paused) {
+        sim.busy = true;
         const { work } = services;
         await work.heartbeat(runnerId);
         for (const envelope of await work.commands(runnerId)) {
@@ -190,6 +204,7 @@ async function fixture(agentRead?: AgentRead) {
             );
           if (command.type === "run" || command.type === "review") placed.push(command);
         }
+        sim.busy = false;
       }
       await Bun.sleep(5);
     }
@@ -226,22 +241,35 @@ async function fixture(agentRead?: AgentRead) {
     // The orchestrator authorizes the candidate import; the fake fetch needs no network.
     networkGit: async () => "",
   });
-  const until = async (ready: () => boolean) => {
-    for (let i = 0; i < 2_000 && !ready(); i++) await Bun.sleep(5);
-    if (!ready()) throw new Error("Timed out");
+  const until = async (ready: () => boolean | Promise<boolean>) => {
+    for (let i = 0; i < 2_000; i++) {
+      if (await ready()) return;
+      await Bun.sleep(5);
+    }
+    throw new Error("Timed out");
   };
-  const commandCount = (kind?: string) =>
-    db
-      .query<{ count: number }, [string]>(
-        "SELECT count(*) AS count FROM runner_command WHERE ?1='' OR kind=?1",
-      )
-      .get(kind ?? "")!.count;
-  const consumed = () =>
-    db
-      .query<{ sequence: number }, [string]>(
-        "SELECT consumed_sequence AS sequence FROM runner_work WHERE run_id=?",
-      )
-      .get(run.id)?.sequence ?? 0;
+  const commandCount = async (kind?: string) => {
+    const [row] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.runnerCommand)
+          .where(kind === undefined ? undefined : eq(q.t.runnerCommand.kind, kind)),
+      ),
+    );
+    return Number(row!.n);
+  };
+  const consumed = async () => {
+    const [row] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ sequence: q.t.runnerWork.consumedSequence })
+          .from(q.t.runnerWork)
+          .where(eq(q.t.runnerWork.runId, run.id)),
+      ),
+    );
+    return row?.sequence ?? 0;
+  };
   const grant = async (command: CloseoutCommand) =>
     (
       await services.work.issueGrant({
@@ -264,10 +292,22 @@ async function fixture(agentRead?: AgentRead) {
     until,
     commandCount,
     consumed,
-    cancelAcknowledged: () =>
-      db
-        .query("SELECT 1 FROM runner_command WHERE kind='cancel' AND acknowledged_at IS NOT NULL")
-        .get() !== null,
+    cancelAcknowledged: async () =>
+      (
+        await db.run((q) =>
+          q.all(
+            q.orm
+              .select({ id: q.t.runnerCommand.id })
+              .from(q.t.runnerCommand)
+              .where(
+                and(
+                  eq(q.t.runnerCommand.kind, "cancel"),
+                  isNotNull(q.t.runnerCommand.acknowledgedAt),
+                ),
+              ),
+          ),
+        )
+      ).length > 0,
     get db() {
       return db;
     },
@@ -307,17 +347,19 @@ async function fixture(agentRead?: AgentRead) {
         },
       });
     },
-    restart() {
+    async restart() {
       sim.paused = true;
-      db.close();
-      db = openDatabase(path);
+      while (sim.busy) await Bun.sleep(1);
+      await store.close();
+      store = await openPawsStore({ url: null, pgliteDir: dir });
+      db = store.store;
       services = open();
       sim.paused = false;
     },
     async close() {
       sim.stopped = true;
       await runner;
-      db.close();
+      await store.close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -337,30 +379,30 @@ async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => 
   await f.until(() => f.placed.length === 1);
   const command = f.placed[0]!;
   await f.say(command, 1, "Before the restart.");
-  await f.until(() => f.consumed() === 1);
+  await f.until(async () => (await f.consumed()) === 1);
   shutdown.abort(new PawsShutdown());
   expect(await first).not.toBeNull();
   return command;
 }
 
 async function restartWithRunnerHolding(f: Fixture) {
-  expect(f.commandCount("cancel")).toBe(0);
-  await prepareShutdown(sqliteDb(f.db));
-  expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+  expect(await f.commandCount("cancel")).toBe(0);
+  await prepareShutdown(f.db);
+  expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
     state: "verifying",
     recoveryAttempts: 0,
   });
-  expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
-  f.restart();
-  expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
+  expect((await getRun(f.db, f.run.id))?.status).toBe("active");
+  await f.restart();
+  expect(await recoverOnStartup(f.db)).toEqual([{ type: "reverify" }]);
   // A second start before the re-verify ran does not queue another one.
-  expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
-  expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+  expect(await recoverOnStartup(f.db)).toEqual([{ type: "reverify" }]);
+  expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
     state: "verifying",
     recoveryAttempts: 0,
   });
   expect(
-    (await listJobs(sqliteDb(f.db))).filter(
+    (await listJobs(f.db)).filter(
       (job) => job.queue === "run.reverify" && job.status === "pending",
     ),
   ).toHaveLength(1);
@@ -375,15 +417,32 @@ const messages = (events: AcpEvent[], text: string) =>
       event.update.content.text === text,
   );
 
-const results = (f: Fixture) =>
-  f.db.query("SELECT 1 FROM runner_result WHERE run_id=?").all(f.run.id).length;
-
-const ended = (f: Fixture) =>
-  f.db
-    .query<{ endedAt: number | null }, [string]>(
-      "SELECT ended_at AS endedAt FROM runner_work WHERE run_id=?",
+const results = async (f: Fixture) =>
+  (
+    await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ runId: q.t.runnerResult.runId })
+          .from(q.t.runnerResult)
+          .where(eq(q.t.runnerResult.runId, f.run.id)),
+      ),
     )
-    .get(f.run.id)?.endedAt ?? null;
+  ).length;
+
+const ended = async (f: Fixture) => {
+  const [row] = await f.db.run((q) =>
+    q.all(
+      q.orm
+        .select({ endedAt: q.t.runnerWork.endedAt })
+        .from(q.t.runnerWork)
+        .where(eq(q.t.runnerWork.runId, f.run.id)),
+    ),
+  );
+  return row?.endedAt ?? null;
+};
+
+const runnerVersion = (f: Fixture, version: string) =>
+  seed(f.db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion: version }));
 
 test("a Closeout review keeps running through a Paws restart and its result is used once", async () => {
   const f = await fixture();
@@ -394,7 +453,7 @@ test("a Closeout review keeps running through a Paws restart and its result is u
 
     // The runner delivers the review it finished while Paws was down.
     expect(await f.finish(command, { reviewText: REVIEW_TEXT })).toEqual({ duplicate: false });
-    const commands = f.commandCount();
+    const commands = await f.commandCount();
     f.events.length = 0;
     const result = await f.services.backend.forItem(f.item.id)(
       f.review(new AbortController().signal),
@@ -402,11 +461,11 @@ test("a Closeout review keeps running through a Paws restart and its result is u
 
     expect(result).toMatchObject({ stopReason: "end_turn", agentExited: true, cancelled: false });
     expect(f.placed).toHaveLength(1);
-    expect(f.commandCount()).toBe(commands);
+    expect(await f.commandCount()).toBe(commands);
     expect(messages(f.events, REVIEW_TEXT)).toHaveLength(1);
     expect(f.events.filter((event) => event.type === "prompt_complete")).toHaveLength(1);
-    expect(results(f)).toBe(1);
-    expect(ended(f)).not.toBeNull();
+    expect(await results(f)).toBe(1);
+    expect(await ended(f)).not.toBeNull();
   } finally {
     await f.close();
   }
@@ -419,7 +478,7 @@ test("a Closeout check run keeps running through a Paws restart and its report i
     expect(command.type).toBe("run");
     await restartWithRunnerHolding(f);
 
-    const commands = f.commandCount();
+    const commands = await f.commandCount();
     f.events.length = 0;
     const resumed = f.services.backend.forItem(f.item.id)(f.checks(new AbortController().signal));
     expect(await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT })).toEqual({
@@ -429,10 +488,10 @@ test("a Closeout check run keeps running through a Paws restart and its report i
 
     expect(result).toMatchObject({ stopReason: "end_turn", closeoutReport: REPORT });
     expect(f.placed).toHaveLength(1);
-    expect(f.commandCount()).toBe(commands);
+    expect(await f.commandCount()).toBe(commands);
     expect(f.events.filter((event) => event.type === "prompt_complete")).toHaveLength(1);
-    expect(results(f)).toBe(1);
-    expect(ended(f)).not.toBeNull();
+    expect(await results(f)).toBe(1);
+    expect(await ended(f)).not.toBeNull();
   } finally {
     await f.close();
   }
@@ -466,7 +525,7 @@ test("a delivered Closeout result has only one backend importer", async () => {
       await reader;
     }
     expect(f.services.backend.runInProgress(f.run.id)).toBe(false);
-    expect(ended(f)).not.toBeNull();
+    expect(await ended(f)).not.toBeNull();
     expect(f.placed).toHaveLength(1);
   } finally {
     await f.close();
@@ -488,7 +547,7 @@ test("a kept Closeout command for another head is cancelled and the checks are p
       return attempt();
     });
     await f.until(() => f.placed.length === 2);
-    expect(f.commandCount("cancel")).toBe(1);
+    expect(await f.commandCount("cancel")).toBe(1);
     const placed = f.placed[1]!;
     expect(placed.prompt).toBe(`Run the Closeout checks at ${f.head}.`);
     expect(placed.generation).toBe(stale.generation + 1);
@@ -503,30 +562,26 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
   const f = await fixture();
   try {
     await shutDownMidCommand(f, f.review);
-    expect(f.commandCount("cancel")).toBe(0);
+    expect(await f.commandCount("cancel")).toBe(0);
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
-    await prepareShutdown(sqliteDb(f.db), later);
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    await prepareShutdown(f.db, later);
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "verifying",
       checkpoint: { phase: "verifying", wipCommit: f.head },
     });
-    expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("lost");
-    f.restart();
-    expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
-      { type: "reverify", resumed: true },
-    ]);
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    expect((await getRun(f.db, f.run.id))?.status).toBe("lost");
+    await f.restart();
+    expect(await recoverOnStartup(f.db, later)).toEqual([{ type: "reverify", resumed: true }]);
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "verifying",
       recoveryAttempts: 1,
     });
-    const open = (await listJobs(sqliteDb(f.db))).filter((job) => job.status === "pending");
+    const open = (await listJobs(f.db)).filter((job) => job.status === "pending");
     expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });
-    f.restart();
-    expect(await recoverOnStartup(sqliteDb(f.db), later + 1_000)).toEqual([
-      { type: "ask_restart" },
-    ]);
-    expect((await listJobs(sqliteDb(f.db))).some((job) => job.queue === "run.resume")).toBe(false);
+    await f.restart();
+    expect(await recoverOnStartup(f.db, later + 1_000)).toEqual([{ type: "ask_restart" }]);
+    expect((await listJobs(f.db)).some((job) => job.queue === "run.resume")).toBe(false);
   } finally {
     await f.close();
   }
@@ -548,7 +603,7 @@ test("a review command carries the brief and earlier findings only to a runner t
   ] as const) {
     const f = await fixture();
     try {
-      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      await runnerVersion(f, version);
       const options = f.review(new AbortController().signal);
       const base = options.reviewCommand!.base;
       const running = f.services.backend.forItem(f.item.id)({
@@ -573,7 +628,7 @@ test("a checks run asks for rules first only on a runner that accepts it", async
   ] as const) {
     const f = await fixture();
     try {
-      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      await runnerVersion(f, version);
       const running = f.services.backend.forItem(f.item.id)({
         ...f.checks(new AbortController().signal),
         closeoutRulesFirst: true,
@@ -616,7 +671,7 @@ test("a turn on a runner that takes it gets one read token and its prompt line; 
     const read = recordingAgentRead();
     const f = await fixture(read.agentRead);
     try {
-      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      await runnerVersion(f, version);
       const running = f.services.backend.forItem(f.item.id)({
         ...f.checks(new AbortController().signal),
         githubRead: { prompt: READ_PROMPT },
@@ -626,7 +681,7 @@ test("a turn on a runner that takes it gets one read token and its prompt line; 
       expect(command.type === "run" && command.githubRead).toBe(current ? true : undefined);
       expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(current);
       await f.say(command, 1, `gh printed ${READ_TOKEN}`);
-      await f.until(() => f.consumed() === 1);
+      await f.until(async () => (await f.consumed()) === 1);
       await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });
       expect(read.opened).toEqual(

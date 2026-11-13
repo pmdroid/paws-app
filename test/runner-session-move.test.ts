@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
+import { sql, type SQL } from "drizzle-orm";
 import { RunnerCapacityWait } from "../src/core";
 import {
   beginImplementRun,
@@ -13,11 +14,9 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -27,30 +26,33 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 type Setup = Awaited<ReturnType<typeof setup>>;
+
+const execute = (db: Db, query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 
 async function setup() {
   const root = mkdtempSync(join(tmpdir(), "paws-session-move-"));
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  const exec = (query: SQL) => execute(db, query);
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const otherUserId = await putWorkspaceUser(sqliteDb(db), {
+  const otherUserId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",
     email: "other@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",
@@ -58,11 +60,9 @@ async function setup() {
     tokenHash: workspaceTokenHash(bootstrap),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "fixture-team",
-  ]);
+  await exec(
+    sql`INSERT INTO workspace_repository VALUES(${workspace.id},'fixture/repository','fixture-team')`,
+  );
   const principal = {
     workspaceId: workspace.id,
     userId,
@@ -73,7 +73,7 @@ async function setup() {
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -89,25 +89,25 @@ async function setup() {
         token: (await control.createEnrollment(principal, pending)).token,
       })
     ).runnerId;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runners[name]]);
+    await exec(sql`UPDATE runner SET status='active' WHERE id=${runners[name]}`);
   }
   // Placement breaks a tie on runner id, and two ids minted in one millisecond order at random.
   // A is the runner that wins the tie, so the first turn always lands on it.
   if (runners.b < runners.a) {
     [runners.a, runners.b] = [runners.b, runners.a];
-    db.run("UPDATE runner SET name='A' WHERE id=?", [runners.a]);
-    db.run("UPDATE runner SET name='B' WHERE id=?", [runners.b]);
+    await exec(sql`UPDATE runner SET name='A' WHERE id=${runners.a}`);
+    await exec(sql`UPDATE runner SET name='B' WHERE id=${runners.b}`);
   }
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
+  const results = createRunnerResults({ store: db, work, now: () => now });
+  const health = createRunnerHealth({ store: db, work, now: () => now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -144,7 +144,7 @@ async function setup() {
   const mirror = mirrorPath(root, "fixture", "repository");
   run(["clone", "-q", "--bare", source, mirror]);
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
@@ -178,15 +178,15 @@ async function setup() {
   let sequence = 0;
   async function item() {
     run(["-C", source, "reset", "-q", "--hard", base]);
-    db.run(
-      "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
+    await exec(
+      sql`UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)`,
     );
     const id = `item-${++sequence}`;
     run(["--git-dir", mirror, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
     const record = await insertQueuedItem(db, { id, now, sessionKey });
-    const { run: started } = await beginImplementRun(sqliteDb(db), id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run: started } = await beginImplementRun(db, id, now);
+    await recordLinearInstallation(db, {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -194,11 +194,11 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+    await bindLinearSessionTask(db, sessionKey, record.delegationId, {
       actorId: "owner",
     });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await exec(sql`UPDATE work_item SET owner_user_id=${userId} WHERE id=${id}`);
+    await bindWorkItemRepository(db, id, {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
@@ -211,34 +211,28 @@ async function setup() {
    */
   async function reset() {
     for (const runnerId of Object.values(runners)) {
-      db.run("UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=? WHERE id=?", [
-        userId,
-        runnerId,
-      ]);
-      await work.heartbeat(runnerId);
-      db.run(
-        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.46',?)
-         ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
-        [runnerId, now],
+      await exec(
+        sql`UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=${userId} WHERE id=${runnerId}`,
       );
-      db.run("DELETE FROM runner_agent_policy WHERE runner_id=?", [runnerId]);
-      db.run("DELETE FROM runner_agent WHERE runner_id=?", [runnerId]);
+      await work.heartbeat(runnerId);
+      await exec(sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},'0.1.46',${now})
+         ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`);
+      await exec(sql`DELETE FROM runner_agent_policy WHERE runner_id=${runnerId}`);
+      await exec(sql`DELETE FROM runner_agent WHERE runner_id=${runnerId}`);
       for (const [agent, version] of [
         ["claude", "2.1.7"],
         ["codex", "2.1.1"],
         ["grok", "1.0.50"],
       ]) {
-        db.run(
-          "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,?,1,0)",
-          [runnerId, agent!],
+        await exec(
+          sql`INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(${runnerId},${agent!},1,0)`,
         );
-        db.run(
-          "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,?,?,'current',?)",
-          [runnerId, agent!, version!, now],
+        await exec(
+          sql`INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(${runnerId},${agent!},${version!},'current',${now})`,
         );
       }
     }
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 1, runners.b]);
+    await exec(sql`UPDATE runner SET last_seen_at=${now - 1} WHERE id=${runners.b}`);
   }
   /** A finished turn: optional runner events, then the result. */
   async function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
@@ -319,7 +313,7 @@ async function setup() {
     /** The run's agent; Claude when unset. */
     agent?: "claude" | "codex" | "grok";
     snapshot?: boolean;
-    change?: () => void;
+    change?: () => Promise<unknown>;
     events?: RunnerEvent[];
     /** A stays online, so the next turn stays on it. */
     stay?: boolean;
@@ -329,7 +323,7 @@ async function setup() {
     await reset();
     // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
     // stays offline until A has run the first turn.
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
+    await exec(sql`UPDATE runner SET last_seen_at=${now - 60_001} WHERE id=${runners.b}`);
     const record = await item();
     const notices: string[] = [];
     const turn = () =>
@@ -348,10 +342,10 @@ async function setup() {
       });
     // B waits out the first turn: runners enrolled in the same millisecond tie on everything but
     // their ids, so placement could otherwise start the run on B.
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+    await exec(sql`UPDATE runner SET status='paused' WHERE id=${runners.b}`);
     const first = turn();
     const onA = (await next(runners.a)) as RunCommand;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+    await exec(sql`UPDATE runner SET status='active' WHERE id=${runners.b}`);
     const sealed =
       options.snapshot === false ? undefined : await seal(onA, options.agent ?? "claude");
     await finish(onA, runners.a);
@@ -360,15 +354,15 @@ async function setup() {
     notices.length = 0;
     await work.heartbeat(runners.b);
     if (!options.stay)
-      db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.a]);
-    options.change?.();
+      await exec(sql`UPDATE runner SET last_seen_at=${now - 60_001} WHERE id=${runners.a}`);
+    await options.change?.();
     const second = turn();
     const target = options.stay ? runners.a : runners.b;
     const onB = (await next(target)) as RunCommand;
     await options.dispatched?.(onB, target);
     await finish(onB, target, options.events);
     await second;
-    db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+    await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
     return { record, onA, onB, sealed, notices };
   }
   return {
@@ -393,8 +387,8 @@ async function setup() {
     finish,
     reset,
     move,
-    cleanup() {
-      db.close();
+    async cleanup() {
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -405,6 +399,8 @@ beforeAll(async () => {
   context = await setup();
 });
 afterAll(() => context.cleanup());
+
+const exec = (query: SQL) => execute(context.db, query);
 
 const FALLBACK =
   "Moved this run to B because A is offline. Starting a new session from the last pushed commit: the earlier session couldn't be restored";
@@ -447,44 +443,44 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
 });
 
 test("each ineligible move falls back with its reason and no restoreSession", async () => {
-  const { db, runners, otherUserId } = context;
+  const { runners, otherUserId } = context;
   const cases: [string, Parameters<Setup["move"]>[0]][] = [
     ["no saved session", { snapshot: false }],
     [
       "B's runner is too old",
       {
         change: () =>
-          db.run("UPDATE runner_host_status SET runner_version='0.1.42' WHERE runner_id=?", [
-            runners.b,
-          ]),
+          exec(
+            sql`UPDATE runner_host_status SET runner_version='0.1.42' WHERE runner_id=${runners.b}`,
+          ),
       },
     ],
     [
       "B is signed in to a different Claude account",
       {
         change: () =>
-          db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE status='sealed'", [
-            otherUserId,
-          ]),
+          exec(
+            sql`UPDATE agent_session_snapshot SET owner_user_id=${otherUserId} WHERE status='sealed'`,
+          ),
       },
     ],
     [
       "B isn't signed in to Claude",
       {
         change: () =>
-          db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]),
+          exec(sql`UPDATE runner_agent_policy SET ready=0 WHERE runner_id=${runners.b}`),
       },
     ],
     [
       "B isn't signed in to Claude",
       {
         change: () =>
-          db.run("UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=?", [runners.b]),
+          exec(sql`UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=${runners.b}`),
       },
     ],
     [
       "Claude isn't installed on B",
-      { change: () => db.run("DELETE FROM runner_agent WHERE runner_id=?", [runners.b]) },
+      { change: () => exec(sql`DELETE FROM runner_agent WHERE runner_id=${runners.b}`) },
     ],
   ];
   for (const [reason, options] of cases) {
@@ -492,15 +488,15 @@ test("each ineligible move falls back with its reason and no restoreSession", as
     expect(onB.restoreSession).toBeUndefined();
     expect(onB.resumeSessionId).toBeUndefined();
     expect(notices).toEqual([`${FALLBACK} (${reason}).\n`]);
-    db.run("DELETE FROM agent_session_snapshot_chunk");
-    db.run("DELETE FROM agent_session_snapshot");
+    await exec(sql`DELETE FROM agent_session_snapshot_chunk`);
+    await exec(sql`DELETE FROM agent_session_snapshot`);
   }
 });
 
 test("another Claude version still restores, and a failed load names both versions", async () => {
-  const { db, runners } = context;
+  const { runners } = context;
   const { onB, notices } = await context.move({
-    change: () => db.run("UPDATE runner_agent SET version='2.2.0' WHERE runner_id=?", [runners.b]),
+    change: () => exec(sql`UPDATE runner_agent SET version='2.2.0' WHERE runner_id=${runners.b}`),
     events: [{ type: "session_restore", restored: false, reason: "load" }],
   });
   expect(onB.restoreSession?.agentVersion).toBe("2.1.7");
@@ -554,13 +550,11 @@ test("a moved Codex run restores its rollout on a runner from 0.1.45", async () 
 });
 
 test("a Codex run never restores on a runner that only restores Claude", async () => {
-  const { db, runners } = context;
+  const { runners } = context;
   const { onB, notices } = await context.move({
     agent: "codex",
     change: () =>
-      db.run("UPDATE runner_host_status SET runner_version='0.1.44' WHERE runner_id=?", [
-        runners.b,
-      ]),
+      exec(sql`UPDATE runner_host_status SET runner_version='0.1.44' WHERE runner_id=${runners.b}`),
   });
   expect(onB.restoreSession).toBeUndefined();
   expect(onB.resumeSessionId).toBeUndefined();
@@ -568,13 +562,13 @@ test("a Codex run never restores on a runner that only restores Claude", async (
 });
 
 test("another Codex version still restores, and a failed load names both versions", async () => {
-  const { db, runners } = context;
+  const { runners } = context;
   const { onB, notices } = await context.move({
     agent: "codex",
     change: () =>
-      db.run("UPDATE runner_agent SET version='2.2.2' WHERE runner_id=? AND agent='codex'", [
-        runners.b,
-      ]),
+      exec(
+        sql`UPDATE runner_agent SET version='2.2.2' WHERE runner_id=${runners.b} AND agent='codex'`,
+      ),
     events: [{ type: "session_restore", restored: false, reason: "load" }],
   });
   expect(onB.restoreSession?.agentVersion).toBe("2.1.1");
@@ -604,13 +598,11 @@ test("a moved Grok run restores its session folder on a runner from 0.1.46", asy
 });
 
 test("a Grok run never restores on a runner that only restores Claude and Codex", async () => {
-  const { db, runners } = context;
+  const { runners } = context;
   const { onB, notices } = await context.move({
     agent: "grok",
     change: () =>
-      db.run("UPDATE runner_host_status SET runner_version='0.1.45' WHERE runner_id=?", [
-        runners.b,
-      ]),
+      exec(sql`UPDATE runner_host_status SET runner_version='0.1.45' WHERE runner_id=${runners.b}`),
   });
   expect(onB.restoreSession).toBeUndefined();
   expect(onB.resumeSessionId).toBeUndefined();
@@ -618,26 +610,26 @@ test("a Grok run never restores on a runner that only restores Claude and Codex"
 });
 
 test("a Grok run never restores onto another member's runner", async () => {
-  const { db, otherUserId } = context;
+  const { otherUserId } = context;
   const { onB, notices } = await context.move({
     agent: "grok",
     change: () =>
-      db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE status='sealed'", [
-        otherUserId,
-      ]),
+      exec(
+        sql`UPDATE agent_session_snapshot SET owner_user_id=${otherUserId} WHERE status='sealed'`,
+      ),
   });
   expect(onB.restoreSession).toBeUndefined();
   expect(notices).toEqual([`${FALLBACK} (B is signed in to a different Grok account).\n`]);
 });
 
 test("another Grok version still restores, and a failed load names both versions", async () => {
-  const { db, runners } = context;
+  const { runners } = context;
   const { onB, notices } = await context.move({
     agent: "grok",
     change: () =>
-      db.run("UPDATE runner_agent SET version='1.0.51' WHERE runner_id=? AND agent='grok'", [
-        runners.b,
-      ]),
+      exec(
+        sql`UPDATE runner_agent SET version='1.0.51' WHERE runner_id=${runners.b} AND agent='grok'`,
+      ),
     events: [{ type: "session_restore", restored: false, reason: "load" }],
   });
   expect(onB.restoreSession?.agentVersion).toBe("1.0.50");
@@ -653,7 +645,7 @@ test("another Grok version still restores, and a failed load names both versions
 async function mergeQueueItemOnFullRunner() {
   const { db, runners, backend, root } = context;
   await context.reset();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await exec(sql`UPDATE runner SET status='paused' WHERE id=${runners.b}`);
   const record = await context.item();
   const turn = (options: { checkpoint?: false } = {}) =>
     backend.forItem(record.id)({
@@ -671,29 +663,24 @@ async function mergeQueueItemOnFullRunner() {
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.finish(onA, runners.a);
   await first;
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  await exec(sql`UPDATE runner SET status='active' WHERE id=${runners.b}`);
   await context.work.heartbeat(runners.a);
   await context.work.heartbeat(runners.b);
   // A re-verify moves the first item in the merge queue to verifying; it keeps its place.
-  db.run("UPDATE work_item SET state='verifying' WHERE id=?", [record.id]);
-  db.run("INSERT INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [
-    record.id,
-    "fixture/repository",
-    context.now,
-  ]);
-  const other = await insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
-  const busy = (await beginImplementRun(sqliteDb(db), other.id, context.now)).run.id;
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,?,workspace_id,1,0,?,? FROM runner WHERE id=?",
-    [busy, runners.a, `busy-${record.id}`, context.now + 60 * 60_000, runners.a],
+  await exec(sql`UPDATE work_item SET state='verifying' WHERE id=${record.id}`);
+  await exec(
+    sql`INSERT INTO merge_queue_entry(item_id,repository,ready_at) VALUES(${record.id},'fixture/repository',${context.now})`,
   );
-  const freeA = () => {
-    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
-      context.now,
-      context.now,
-      busy,
-    ]);
-    db.run("UPDATE run SET status='ended' WHERE id=?", [busy]);
+  const other = await insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
+  const busy = (await beginImplementRun(db, other.id, context.now)).run.id;
+  await exec(
+    sql`INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ${busy},${runners.a},workspace_id,1,0,${`busy-${record.id}`},${context.now + 60 * 60_000} FROM runner WHERE id=${runners.a}`,
+  );
+  const freeA = async () => {
+    await exec(
+      sql`UPDATE runner_work SET ended_at=${context.now},teardown_confirmed_at=${context.now} WHERE run_id=${busy}`,
+    );
+    await exec(sql`UPDATE run SET status='ended' WHERE id=${busy}`);
   };
   return { record, turn, freeA };
 }
@@ -709,8 +696,8 @@ test("a merge-queue re-verify's checks run on a free runner while the pinned run
     await context.finish(onB, runners.b);
     await checks;
   } finally {
-    freeA();
-    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+    await freeA();
+    await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
   }
 });
 
@@ -725,8 +712,8 @@ test("a merge-queue agent turn that continues the session still waits for its pi
     expect(fix).toBeInstanceOf(RunnerCapacityWait);
     expect((fix as RunnerCapacityWait).runnerIds).toEqual([runners.a]);
   } finally {
-    freeA();
-    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+    await freeA();
+    await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
   }
 });
 
@@ -738,7 +725,7 @@ test("after checks ran on another runner, the next agent turn returns to the run
     const onB = (await context.next(runners.b)) as RunCommand;
     await context.finish(onB, runners.b);
     await checks;
-    freeA();
+    await freeA();
     const fix = turn();
     const onA = (await context.next(runners.a)) as RunCommand;
     expect(onA.runnerId).toBe(runners.a);
@@ -746,7 +733,7 @@ test("after checks ran on another runner, the next agent turn returns to the run
     await context.finish(onA, runners.a);
     await fix;
   } finally {
-    freeA();
-    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+    await freeA();
+    await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
   }
 });

@@ -45,9 +45,12 @@ import {
   worktreePath,
 } from "./acp";
 import { policyCheckPaths } from "./closeout";
+import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
+  closeoutRecordObjects,
   createEvidenceStore,
   EvidenceRejectedError,
+  migrateCloseoutEvidence,
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
   type EvidenceObjects,
@@ -78,6 +81,7 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
+  journalRetiredAgentProjects,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -120,7 +124,6 @@ import {
   roleRunsJobs,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
-  listRepositoryCatalogSteps,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -358,6 +361,7 @@ import {
 import {
   loadRunnerTranscriptStores,
   loadRunnerTranscriptS3,
+  migrateRunnerStorage,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
 import {
@@ -522,6 +526,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    journalRetiredAgentProjects(paths.configFile, journal);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }
@@ -949,12 +954,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   };
   const evidenceObjects: EvidenceObjects =
     options?.evidenceObjects ??
-    (() => {
-      const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
-      if (!s3) return null;
-      const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
-      return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
-    });
+    (options?.runnerTranscriptObjects ? () => null : sealedEvidenceObjects(paths));
   void uploadLocalEvidence(store, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
@@ -962,11 +962,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,
   };
+  useEvidenceRecordObjects(closeoutRecordObjects(store, closeoutEvidence));
   void uploadLocalCloseoutEvidence(store, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
-  const catalogRepositories = async () =>
-    (await store.run(listRepositoryCatalogSteps)).map((entry) => `${entry.owner}/${entry.repo}`);
   let runner: RunnerCoordinator | undefined;
   if (runnerConfig !== null)
     periodic.push(
@@ -1067,7 +1066,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     },
     publicUrl: runtime.publicUrl,
     runnerUrl: runnerConfig?.url ?? null,
-    repositories: catalogRepositories,
     latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
       const coordinator = await runnerReady;
@@ -2549,9 +2547,12 @@ Commands:
   paws install                  set up the env file, config.toml and the user service
   paws install secrets          set the GitHub App, Linear, webhook and other secrets
   paws review-score [--since D] count review escapes, found after merge and after the PR
+  paws evidence migrate         copy local Closeout evidence records to the object store
   paws login slack              connect Slack
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
+  paws runner-storage migrate [--delete-local]
+                                copy local transcripts and agent sessions to S3
   paws public-tls validate      check the public HTTPS certificate
   paws probes collect <owner/repo>
                                 draft Closeout probe rules into probes.proposed.yaml
@@ -2646,6 +2647,39 @@ async function reviewScoreMain(args: string[]): Promise<number> {
   });
 }
 
+function sealedEvidenceObjects(paths: { home: string; secretsDir: string }): EvidenceObjects {
+  return () => {
+    const s3 = loadRunnerTranscriptS3(paths.home);
+    if (!s3) return null;
+    const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
+    return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
+  };
+}
+
+async function evidenceMain(args: string[]): Promise<number> {
+  if (args.length !== 1 || args[0] !== "migrate") {
+    console.error("usage: paws evidence migrate");
+    return 1;
+  }
+  const paths = pawsPaths(loadEnv(process.env).home);
+  const storage = {
+    root: join(paths.home, "closeout", "evidence"),
+    objects: sealedEvidenceObjects(paths),
+  };
+  try {
+    const counts = await withCommandStore("evidence migrate", (store) =>
+      migrateCloseoutEvidence(store, storage),
+    );
+    console.log(
+      `Copied ${counts.copied} Closeout evidence records to the object store; ${counts.skipped} were already there.`,
+    );
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws evidence migrate failed.", null);
+    return 1;
+  }
+}
+
 async function withCommandStore<T>(command: string, work: (store: Db) => Promise<T>): Promise<T> {
   const runtime = loadRuntime(process.env);
   if (runtime.databaseUrl === null)
@@ -2660,6 +2694,25 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
     return await work(database.store);
   } finally {
     await database.close();
+  }
+}
+
+async function runnerStorageMigrateMain(argv: string[]): Promise<number> {
+  try {
+    if (argv.some((arg) => arg !== "--delete-local"))
+      throw new Error("usage: paws runner-storage migrate [--delete-local]");
+    const home = loadEnv(process.env).home;
+    const report = await withCommandStore("runner-storage migrate", (store) =>
+      migrateRunnerStorage({ home, store, deleteLocal: argv.length > 0 }),
+    );
+    for (const [name, counts] of Object.entries(report))
+      console.log(
+        `${name}: ${counts.copied} copied (${counts.bytes} bytes), ${counts.present} already present, ${counts.missing} not local, ${counts.deleted} local files deleted`,
+      );
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws runner-storage migrate failed.", null);
+    return 1;
   }
 }
 
@@ -2735,6 +2788,8 @@ if (import.meta.main) {
   const command = argv[0];
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
+  if (command === "runner-storage" && argv[1] === "migrate")
+    process.exit(await runnerStorageMigrateMain(argv.slice(2)));
   if (command === "runner-storage")
     process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
   if (command === "runner-authority") {
@@ -2785,6 +2840,7 @@ if (import.meta.main) {
     process.exit(await runInstallCli(argv.slice(1), process.env));
   if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "review-score") process.exit(await reviewScoreMain(argv.slice(1)));
+  if (command === "evidence") process.exit(await evidenceMain(argv.slice(1)));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");

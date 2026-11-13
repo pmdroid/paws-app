@@ -461,7 +461,6 @@ function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
       implementer: { agent: "claude", model: "acme-claude" },
       reviewer: { agent: "codex", model: "acme-review" },
     },
-    projects: [],
     ...(presets ? { presets: { Codex: { agent: "codex", model: "acme-codex" } } } : {}),
   });
   const tracker = createFakeTracker();

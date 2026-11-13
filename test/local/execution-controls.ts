@@ -1,9 +1,8 @@
-import type { Database } from "bun:sqlite";
-import { and, asc, eq, like, sql } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { and, asc, eq, like, sql } from "drizzle-orm";
 import { FakeClock } from "../../src/core";
 import {
   JobLoop,
@@ -25,7 +24,6 @@ import {
   workspaceSessionIds,
   sqliteDb,
   type Db,
-  type Q,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createFakeTracker, createLinearMembershipReads } from "../../src/linear";
@@ -40,54 +38,58 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { seed } from "../dialects";
 import { tempStore } from "../pglite";
 
-type FixtureOptions = {
+type ExecutionControlsFixtureOptions = {
   interruptItem?: (id: string) => Promise<void>;
   onMemberRevoked?: () => Promise<void>;
 };
 
-export async function createExecutionControlsFixture(root: string, options: FixtureOptions = {}) {
+export async function createExecutionControlsFixture(
+  root: string,
+  options: ExecutionControlsFixtureOptions = {},
+) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "controls.sqlite"));
   migrate(db);
   return {
     db,
-    ...(await executionControlsFixture(db, sqliteDb(db), root, options, async () => db.close())),
+    ...(await executionControlsFixture(sqliteDb(db), root, options, async () => db.close())),
   };
 }
 
-export async function createExecutionControlsFixturePg(root: string, options: FixtureOptions = {}) {
+export async function createExecutionControlsFixturePg(
+  root: string,
+  options: ExecutionControlsFixtureOptions & {
+    database?: { db: Db; close(): Promise<void> };
+  } = {},
+) {
   mkdirSync(root, { recursive: true });
-  const { db, close } = await tempStore();
-  return { db, ...(await executionControlsFixture(db, db, root, options, close)) };
-}
-
-function write(db: Db, query: (q: Q) => PromiseLike<unknown>) {
-  return db.run((q) => q.exec(query(q)));
-}
-
-function setMemberActive(db: Db, userId: string, active: number) {
-  return write(db, (q) =>
-    q.orm
-      .update(q.t.workspaceMember)
-      .set({ active })
-      .where(
-        and(
-          eq(q.t.workspaceMember.workspaceId, "workspace"),
-          eq(q.t.workspaceMember.userId, userId),
-        ),
-      ),
-  );
+  const { db, close } = options.database ?? (await tempStore());
+  return { db, ...(await executionControlsFixture(db, root, options, close)) };
 }
 
 async function executionControlsFixture(
-  handle: Database | Db,
   db: Db,
   root: string,
-  options: FixtureOptions,
+  options: ExecutionControlsFixtureOptions,
   closeDb: () => Promise<void>,
 ) {
+  const deactivate = (userId: string) =>
+    db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(
+            and(
+              eq(q.t.workspaceMember.workspaceId, workspaceId),
+              eq(q.t.workspaceMember.userId, userId),
+            ),
+          ),
+      ),
+    );
   const now = Date.now();
   const workspaceId = "workspace";
   await putWorkspaceUser(db, {
@@ -127,7 +129,7 @@ async function executionControlsFixture(
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const userId of ["admin", "member", "inactive", "outside"])
     sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
-  await setMemberActive(db, "inactive", 0);
+  await deactivate("inactive");
   for (const [id, organizationId] of [
     ["controlled", "org"],
     ["foreign", "foreign"],
@@ -150,19 +152,21 @@ async function executionControlsFixture(
     await bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
   }
   const item = (await getWorkItem(db, "controlled"))!;
-  await write(db, (q) =>
-    q.orm.insert(q.t.workItem).values({
-      id: "other",
-      delegationId: item.delegationId,
-      linearIssueId: "other",
-      linearIdentifier: "other",
-      title: "Unrelated item",
-      state: "queued",
-      branchName: "paws/other",
-      position: 1,
-      createdAt: now,
-      sessionKey: item.sessionKey,
-    }),
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workItem).values({
+        id: "other",
+        delegationId: item.delegationId,
+        linearIssueId: "other",
+        linearIdentifier: "other",
+        title: "Unrelated item",
+        state: "queued",
+        branchName: "paws/other",
+        position: 1,
+        createdAt: now,
+        sessionKey: item.sessionKey,
+      }),
+    ),
   );
   await bindWorkItemRepository(db, "unmapped", {
     owner: "fixture",
@@ -180,8 +184,8 @@ async function executionControlsFixture(
   const orchestrator = new Orchestrator({
     store: db,
     clock,
-    jobs: new JobLoop(handle, clock),
-    outbox: new OutboxDispatcher(handle, clock),
+    jobs: new JobLoop(db, clock),
+    outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
     tracker: createFakeTracker(),
     scheduling: async () => ({}),
@@ -189,14 +193,15 @@ async function executionControlsFixture(
   let joining: Promise<void> | null = null;
   let revokeOnResume = false;
   const controls = createExecutionControls({
-    db: handle,
+    db,
     bus: orchestrator.bus,
     getPort: () => ({
       pauseItem: (id, canAct, onCommitted) => orchestrator.pauseItem(id, canAct, onCommitted),
-      async resumeItem(id, canAct, onCommitted) {
+      resumeItem(id, canAct, onCommitted) {
         const resumed = orchestrator.resumeItem(id, canAct, onCommitted);
-        if (revokeOnResume) await setMemberActive(db, "member", 0);
-        return resumed;
+        if (!revokeOnResume) return resumed;
+        const revoked = deactivate("member");
+        return Promise.all([resumed, revoked]).then(([value]) => value);
       },
       async interruptItem(id) {
         if (joining) await joining;
@@ -210,7 +215,7 @@ async function executionControlsFixture(
   const server = startServer({
     hostname: "127.0.0.1",
     port: 0,
-    db: handle,
+    db,
     webhooks: false,
     statusEnv: {},
     workspaceAccess: ready.promise,
@@ -253,7 +258,6 @@ async function executionControlsFixture(
     });
   }
   return {
-    store: db,
     orchestrator,
     origin,
     runId: run.id,
@@ -275,10 +279,32 @@ async function executionControlsFixture(
   };
 }
 
+function setItemState(db: Db, state: string): Promise<void> {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ state, cancelRequested: 0 })
+      .where(eq(q.t.workItem.id, "controlled")),
+  );
+}
+
+function setMemberActive(db: Db, userId: string, active: number): Promise<void> {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.workspaceMember)
+      .set({ active })
+      .where(
+        and(
+          eq(q.t.workspaceMember.workspaceId, "workspace"),
+          eq(q.t.workspaceMember.userId, userId),
+        ),
+      ),
+  );
+}
+
 export async function probeExecutionControls(root: string) {
   const fixture = await createExecutionControlsFixturePg(root);
   const { db, call } = fixture;
-  assert(db.dialect === "postgres");
   const observations: { name: string; passed: boolean; observed: unknown }[] = [];
   const observe = (name: string, observed: unknown) =>
     observations.push({ name, passed: true, observed });
@@ -321,7 +347,7 @@ export async function probeExecutionControls(root: string) {
     assert.equal((await call("resume_now")).status, 200);
     assert((await usagePause(db, fixture.runId))!.resumeAt <= Date.now());
     assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
-    await write(db, (q) => q.orm.delete(q.t.usagePause));
+    await seed(db, (q) => q.orm.delete(q.t.usagePause));
     assert.equal((await call("resume_now")).status, 409);
     observe("Resume now ends a usage-limit wait without changing the item state", {
       state: "running",
@@ -336,20 +362,26 @@ export async function probeExecutionControls(root: string) {
     observe("Cross-origin, CSRF and workspace-selection violations fail before canonical effects", {
       state: "running",
     });
-    await db.orm.execute(
-      sql.raw(
-        "CREATE FUNCTION reject_control_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture audit failure'; END $$",
-      ),
-    );
-    await db.orm.execute(
-      sql.raw(
-        "CREATE TRIGGER reject_control_audit BEFORE INSERT ON workspace_access_audit FOR EACH ROW WHEN (NEW.action='execution.pause') EXECUTE FUNCTION reject_control_audit()",
-      ),
+    await seed(
+      db,
+      (q) =>
+        q.orm.execute(
+          sql.raw(
+            "CREATE FUNCTION reject_control_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'execution.pause' THEN RAISE EXCEPTION 'fixture audit failure'; END IF; RETURN NEW; END $$",
+          ),
+        ),
+      (q) =>
+        q.orm.execute(
+          sql.raw(
+            "CREATE TRIGGER reject_control_audit BEFORE INSERT ON workspace_access_audit FOR EACH ROW EXECUTE FUNCTION reject_control_audit()",
+          ),
+        ),
     );
     assert.equal((await call("pause")).status, 503);
     assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
-    await db.orm.execute(sql.raw("DROP TRIGGER reject_control_audit ON workspace_access_audit"));
-    await db.orm.execute(sql.raw("DROP FUNCTION reject_control_audit()"));
+    await seed(db, (q) =>
+      q.orm.execute(sql.raw("DROP TRIGGER reject_control_audit ON workspace_access_audit")),
+    );
     observe("Audit failure rolls back the actual canonical pause transaction before live effects", {
       state: "running",
     });
@@ -394,7 +426,7 @@ export async function probeExecutionControls(root: string) {
             .where(eq(q.t.outbox.deliveryKind, "stop")),
         ),
       )
-    ).map((row) => ({ body: (row.payload as { body?: string } | null)?.body ?? null }));
+    ).map((row) => ({ body: (row.payload as { body?: string }).body ?? null }));
     assert(messages.some((row) => row.body?.startsWith("Stopped from Paws. ")));
     observe(
       "Selected-item Stop commits and awaits interruption, preserves unrelated work and branch, and attributes the Linear response to Paws",
@@ -405,12 +437,7 @@ export async function probeExecutionControls(root: string) {
         messages,
       },
     );
-    await write(db, (q) =>
-      q.orm
-        .update(q.t.workItem)
-        .set({ state: "paused", cancelRequested: 0 })
-        .where(eq(q.t.workItem.id, "controlled")),
-    );
+    await setItemState(db, "paused");
     fixture.revokeDuringResume();
     assert.equal((await call("resume")).status, 409);
     assert.equal((await getWorkItem(db, "controlled"))!.state, "paused");
@@ -419,9 +446,7 @@ export async function probeExecutionControls(root: string) {
       { state: "paused" },
     );
     await setMemberActive(db, "member", 1);
-    await write(db, (q) =>
-      q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, "controlled")),
-    );
+    await setItemState(db, "running");
     const stopRequest = new Request(fixture.origin + "/api/execution-controls", {
       method: "POST",
       headers: fixture.headers(),

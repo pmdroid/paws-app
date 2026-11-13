@@ -14,22 +14,21 @@ import {
   completeArtifactAttempt,
   insertQueuedItem,
   listArtifacts,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  openPawsStore,
 } from "../src/db";
 import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
 import { createLinearArtifactPublisher, deliverLinearOutbox } from "../src/loop";
 import { tempHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 
 async function setup() {
   const home = tempHome();
   const workspace = join(home, "workspace");
   mkdirSync(workspace);
-  const database = join(home, "paws.db");
-  let db = openDatabase(database);
-  migrate(db);
-  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let database = await openPawsStore({ url: null, pgliteDir });
+  await insertQueuedItem(database.store, { id: "item", sessionKey: "session" });
   let uploadFailure = false;
   let sequence = 0;
   const files = createLinearFileTransfer({
@@ -57,15 +56,17 @@ async function setup() {
   });
   return {
     get db() {
-      return db;
+      return database.store;
+    },
+    async close() {
+      await database.close();
     },
     failUpload(value: boolean) {
       uploadFailure = value;
     },
-    reopen() {
-      db.close();
-      db = openDatabase(database);
-      migrate(db);
+    async reopen() {
+      await database.close();
+      database = await openPawsStore({ url: null, pgliteDir });
     },
     async run(steps: FakeScript["steps"]) {
       const script = join(home, `script-${++sequence}.json`);
@@ -84,7 +85,7 @@ async function setup() {
         args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
         publishArtifact: await createLinearArtifactPublisher({
-          store: sqliteDb(db),
+          store: database.store,
           files,
           secretsDir: join(home, "secrets"),
           itemId: "item",
@@ -103,18 +104,18 @@ test("a missing file invocation remains required after end_turn and database reo
     const first = await f.run([{ type: "publish_artifact", path: "shot.png" }]);
     expect(first.result.stopReason).toBe("end_turn");
     expect(first.trace.artifact.ok).toBe(false);
-    expect(await listArtifacts(sqliteDb(f.db), "item")).toHaveLength(0);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
-    f.reopen();
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
+    expect(await listArtifacts(f.db, "item")).toHaveLength(0);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
+    await f.reopen();
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
     await f.run([
       { type: "fs_write", path: "shot.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "shot.png" },
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
-    expect((await listArtifacts(sqliteDb(f.db), "item"))[0]?.state).toBe("uploaded");
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
+    expect((await listArtifacts(f.db, "item"))[0]?.state).toBe("uploaded");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -128,16 +129,16 @@ test("a corrected unsafe path recovers the same explicit deliverable without sto
         displayName: "Screenshot.png",
       },
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
-    const rows = f.db.query("SELECT * FROM linear_artifact_attempt").all();
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
+    const rows = await f.db.run((q) => q.all(q.orm.select().from(q.t.linearArtifactAttempt)));
     expect(JSON.stringify(rows)).not.toContain("/private/secrets");
     await f.run([
       { type: "fs_write", path: "safe.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "safe.png", displayName: "Screenshot.png" },
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -149,15 +150,15 @@ test("another deliverable with the same basename cannot clear a missing publicat
       { type: "fs_write", path: "other/proof.png", content: "Other bytes" },
       { type: "publish_artifact", path: "other/proof.png" },
     ]);
-    expect((await listArtifacts(sqliteDb(f.db), "item"))[0]?.state).toBe("uploaded");
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
+    expect((await listArtifacts(f.db, "item"))[0]?.state).toBe("uploaded");
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
     await f.run([
       { type: "fs_write", path: "required/proof.png", content: "Required bytes" },
       { type: "publish_artifact", path: "required/proof.png" },
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -169,36 +170,36 @@ test("a failed PUT at an old path is superseded by the same named deliverable at
       { type: "fs_write", path: "old.png", content: "Old bytes" },
       { type: "publish_artifact", path: "old.png", displayName: "Screenshot.png" },
     ]);
-    expect((await listArtifacts(sqliteDb(f.db), "item"))[0]?.state).toBe("failed");
-    f.reopen();
+    expect((await listArtifacts(f.db, "item"))[0]?.state).toBe("failed");
+    await f.reopen();
     f.failUpload(false);
     await f.run([
       { type: "fs_write", path: "correct.png", content: "Correct bytes" },
       { type: "publish_artifact", path: "correct.png", displayName: "Screenshot.png" },
     ]);
-    expect((await listArtifacts(sqliteDb(f.db), "item")).map((row) => row.state).sort()).toEqual([
+    expect((await listArtifacts(f.db, "item")).map((row) => row.state).sort()).toEqual([
       "failed",
       "uploaded",
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a late earlier success does not resolve a newer failed invocation of the same deliverable", async () => {
   const f = await setup();
   try {
-    const first = await beginArtifactAttempt(sqliteDb(f.db), "item", "same-identity");
-    const retry = await beginArtifactAttempt(sqliteDb(f.db), "item", "same-identity");
-    await completeArtifactAttempt(sqliteDb(f.db), "item", "same-identity", first);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
-    f.reopen();
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
-    await completeArtifactAttempt(sqliteDb(f.db), "item", "same-identity", retry);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
+    const first = await beginArtifactAttempt(f.db, "item", "same-identity");
+    const retry = await beginArtifactAttempt(f.db, "item", "same-identity");
+    await completeArtifactAttempt(f.db, "item", "same-identity", first);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
+    await f.reopen();
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
+    await completeArtifactAttempt(f.db, "item", "same-identity", retry);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -213,14 +214,14 @@ test("requested issue cards survive a missing file and reopen before a corrected
         attachToIssue: true,
       },
     ]);
-    expect(await listOutbox(sqliteDb(f.db), "session")).toHaveLength(0);
-    f.reopen();
+    expect(await listOutbox(f.db, "session")).toHaveLength(0);
+    await f.reopen();
     await f.run([
       { type: "fs_write", path: "fixed.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "fixed.png", displayName: "Screenshot.png" },
     ]);
-    const artifact = (await listArtifacts(sqliteDb(f.db), "item"))[0]!;
-    const cards = (await listOutbox(sqliteDb(f.db), "session")).filter(
+    const artifact = (await listArtifacts(f.db, "item"))[0]!;
+    const cards = (await listOutbox(f.db, "session")).filter(
       (row) => row.op === "linear.attachment",
     );
     expect(cards).toHaveLength(1);
@@ -248,10 +249,10 @@ test("requested issue cards survive a missing file and reopen before a corrected
       },
     ]);
     expect(
-      (await listOutbox(sqliteDb(f.db), "session")).filter((row) => row.op === "linear.attachment"),
+      (await listOutbox(f.db, "session")).filter((row) => row.op === "linear.attachment"),
     ).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -262,11 +263,9 @@ test("ordinary publication does not create a requested issue card", async () => 
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "proof.png" },
     ]);
-    expect((await listOutbox(sqliteDb(f.db), "session")).map((row) => row.op)).toEqual([
-      "activity",
-    ]);
+    expect((await listOutbox(f.db, "session")).map((row) => row.op)).toEqual(["activity"]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -278,7 +277,7 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
       { type: "publish_artifact", path: "proof.png", attachToIssue: true },
     ]);
     const now = Date.now();
-    await enqueueOutbox(sqliteDb(f.db), {
+    await enqueueOutbox(f.db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -296,19 +295,16 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
     });
     expect((await dispatcher.tick())[0]!.op).toBe("linear.attachment");
     await dispatcher.idle();
-    f.reopen();
-    expect(await claimOutboxHeads(sqliteDb(f.db), { now: now + 1 })).toHaveLength(0);
+    await f.reopen();
+    expect(await claimOutboxHeads(f.db, { now: now + 1 })).toHaveLength(0);
     expect(
-      (await listOutbox(sqliteDb(f.db), "session")).find((row) => row.idempotencyKey === "final")
-        ?.status,
+      (await listOutbox(f.db, "session")).find((row) => row.idempotencyKey === "final")?.status,
     ).toBe("pending");
-    await stopOutboxSession(sqliteDb(f.db), "linear", "session", now + 2);
-    expect(await claimOutboxHeads(sqliteDb(f.db), { now: now + 2000 })).toHaveLength(0);
-    expect(
-      (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
-    ).toBe(true);
+    await stopOutboxSession(f.db, "linear", "session", now + 2);
+    expect(await claimOutboxHeads(f.db, { now: now + 2000 })).toHaveLength(0);
+    expect((await listOutbox(f.db, "session")).every((row) => row.status === "dropped")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -319,8 +315,8 @@ test("exhausted attachment and image delivery preserve a claimable final respons
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "proof.png", attachToIssue: true },
     ]);
-    f.db.run("UPDATE outbox SET max_attempts = 1");
-    await enqueueOutbox(sqliteDb(f.db), {
+    await f.db.run((q) => q.exec(q.orm.update(q.t.outbox).set({ maxAttempts: 1 })));
+    await enqueueOutbox(f.db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -335,13 +331,14 @@ test("exhausted attachment and image delivery preserve a claimable final respons
       expect((await dispatcher.tick())[0]?.op).toBe(op);
       await dispatcher.idle();
     }
-    f.reopen();
-    expect(
-      (await listOutbox(sqliteDb(f.db), "session")).slice(0, 2).map((row) => row.status),
-    ).toEqual(["dead", "dead"]);
-    expect((await claimOutboxHeads(sqliteDb(f.db)))[0]?.idempotencyKey).toBe("final");
+    await f.reopen();
+    expect((await listOutbox(f.db, "session")).slice(0, 2).map((row) => row.status)).toEqual([
+      "dead",
+      "dead",
+    ]);
+    expect((await claimOutboxHeads(f.db))[0]?.idempotencyKey).toBe("final");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -352,14 +349,14 @@ test("a malformed attachment flag still leaves its publication attempt required"
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
       { type: "publish_artifact", path: "proof.png", attachToIssue: "true" as unknown as boolean },
     ]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(false);
-    expect(await listOutbox(sqliteDb(f.db), "session")).toHaveLength(0);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(false);
+    expect(await listOutbox(f.db, "session")).toHaveLength(0);
     await f.run([{ type: "publish_artifact", path: "proof.png" }]);
-    expect(await artifactPublicationReady(sqliteDb(f.db), "item")).toBe(true);
-    expect(
-      (await listOutbox(sqliteDb(f.db), "session")).some((row) => row.op === "linear.attachment"),
-    ).toBe(false);
+    expect(await artifactPublicationReady(f.db, "item")).toBe(true);
+    expect((await listOutbox(f.db, "session")).some((row) => row.op === "linear.attachment")).toBe(
+      false,
+    );
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

@@ -629,8 +629,10 @@ export function createRemoteAgentRunner(options: {
         const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now(), runId);
         const pending = (yield* unassignedSteps(q, runId)).get(runner.id) ?? 0;
         const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), runId);
+        const holders = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now());
         const pinned = yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now());
-        return occupied + pending + between + pinned < capacity
+        const holdsOwnSlot = holders > between && occupied + pending < capacity;
+        return holdsOwnSlot || occupied + pending + between + pinned < capacity
           ? null
           : `${NO_FREE_CAPACITY} (work ${occupied}, unassigned ${pending}, between commands ${between}, pinned ${pinned} of ${capacity})`;
       }

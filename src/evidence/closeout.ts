@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   closeoutTasksOfItemSteps,
   getCloseoutEvidenceObjectSteps,
@@ -11,7 +11,7 @@ import {
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { RunFileObjects } from "../run-files";
+import { missingRunFileObject, type RunFileObjects } from "../run-files";
 import {
   readChunks,
   removeEvidenceChunks,
@@ -216,4 +216,92 @@ export async function uploadLocalCloseoutEvidence(
     }
   }
   return uploaded;
+}
+
+type EvidenceRecordObjects = {
+  list(): Promise<string[]>;
+  read(path: string): Promise<string | null>;
+  write(path: string, body: string): Promise<void>;
+};
+
+export function closeoutRecordObjects(
+  db: Db,
+  storage: EvidenceStorage,
+  now: () => number = Date.now,
+): (root: string) => EvidenceRecordObjects | null {
+  return (root) => {
+    const task = basename(root);
+    if (resolve(dirname(root)) !== resolve(storage.root) || !safeTask(task)) return null;
+    const objects = storage.objects?.();
+    if (!objects) return null;
+    const record = (path: string) =>
+      path.startsWith("evidence/") && path.endsWith(".json") && safePath(path);
+    return {
+      async list() {
+        const rows = await db.run((q) => listCloseoutEvidenceObjectsSteps(q, [task]));
+        return rows.map((row) => row.path).filter(record);
+      },
+      async read(path) {
+        const row = await db.run((q) => getCloseoutEvidenceObjectSteps(q, task, path));
+        if (row === null) return null;
+        const parts: Uint8Array[] = [];
+        try {
+          for await (const bytes of readChunks(objects, row, 0, row.sizeBytes - 1))
+            parts.push(bytes);
+        } catch (error) {
+          if (missingRunFileObject(error)) return null;
+          throw error;
+        }
+        const body = Buffer.concat(parts);
+        if (createHash("sha256").update(body).digest("hex") !== row.sha256)
+          throw new Error("Closeout evidence object failed its integrity check");
+        return body.toString("utf8");
+      },
+      async write(path, body) {
+        if (!record(path)) throw new Error("evidence path is invalid");
+        if (await db.run((q) => getCloseoutEvidenceObjectSteps(q, task, path)))
+          throw new Error(`evidence file already exists: ${basename(path)}`);
+        const bytes = Buffer.from(body, "utf8");
+        const prefix = ["closeout", "evidence", task, path].join("/");
+        const sizeBytes = await writeEvidenceChunks(objects, prefix, [bytes]);
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const at = now();
+        const row = { task, path, prefix, sizeBytes, sha256, modifiedAt: at, storedAt: at };
+        if (!(await db.run((q) => insertCloseoutEvidenceObjectSteps(q, row))))
+          throw new Error(`evidence file already exists: ${basename(path)}`);
+      },
+    };
+  };
+}
+
+export async function migrateCloseoutEvidence(
+  db: Db,
+  storage: EvidenceStorage,
+): Promise<{ copied: number; skipped: number }> {
+  if (!storage.objects?.())
+    throw new Error("No object store is configured; run paws runner-storage configure first");
+  const counts = { copied: 0, skipped: 0 };
+  const objectsOf = closeoutRecordObjects(db, storage);
+  let entries;
+  try {
+    entries = await readdir(storage.root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return counts;
+    throw error;
+  }
+  for (const entry of entries) {
+    const objects = entry.isDirectory() ? objectsOf(join(storage.root, entry.name)) : null;
+    if (objects === null) continue;
+    const stored = new Set(await objects.list());
+    for await (const parts of files(join(storage.root, entry.name, "evidence"))) {
+      const path = ["evidence", ...parts].join("/");
+      if (!path.endsWith(".json") || !safePath(path)) continue;
+      if (stored.has(path)) counts.skipped++;
+      else {
+        await objects.write(path, await Bun.file(join(storage.root, entry.name, path)).text());
+        counts.copied++;
+      }
+    }
+  }
+  return counts;
 }

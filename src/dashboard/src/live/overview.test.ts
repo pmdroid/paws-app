@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   appendCloseoutOutput,
   applyWorkItemEvent,
@@ -172,6 +173,17 @@ describe("overview resource", () => {
     expect(parsed.response.issues.find((issue) => issue.id === "ENG-2")?.verdict?.decision).toBe(
       (await live.issues()).verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
     );
+  });
+
+  test("reports a negative awake time as 0 active and still passes the contract", async () => {
+    const db = await fixture();
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ awakeMs: -300 }).where(eq(q.t.workItem.id, "ENG-2")),
+    );
+    const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
+    const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(await live.overview())));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.response.issues.find((issue) => issue.id === "ENG-2")?.activeMs).toBe(0);
   });
 
   test("keeps the risk decision card anchor and does not call a held reviewer check failed", async () => {

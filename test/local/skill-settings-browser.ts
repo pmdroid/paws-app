@@ -64,7 +64,6 @@ const server = Bun.serve({
           implementer: { agent: "claude", model: null },
           reviewer: { agent: "codex", model: null },
         },
-        projects: [],
         merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
       });
     if (url.pathname === "/api/runners/models") return Response.json({ catalogs: [] });

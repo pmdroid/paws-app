@@ -1,16 +1,13 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   bindWorkItemRepository,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { verifyRunnerCommand } from "../src/runner-protocol";
@@ -26,6 +23,8 @@ import {
 } from "../src/runner-repository-commands";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import { workspaceId } from "../src/workspace";
+import { seed } from "./dialects";
+import { pgliteServer, tempStore } from "./pglite";
 
 const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
 const repository = {
@@ -34,19 +33,32 @@ const repository = {
   remoteUrl: "https://github.com/fixture/repository.git",
 };
 
-async function fixture(file = ":memory:") {
-  const db = openDatabase(file);
-  migrate(db);
+function setRunnerVersion(db: Db, runnerVersion: string) {
+  return seed(db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion }));
+}
+
+function setBranch(db: Db, branchName: string) {
+  return seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ branchName }).where(eq(q.t.workItem.id, "item-1")),
+  );
+}
+
+async function fixture(store?: Db) {
+  const db = store ?? (await tempStore()).db;
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "repository-commands-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
   const workspace = workspaceId();
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Fixture", now]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: workspace, linearOrganizationId: workspace, name: "Fixture", createdAt: now }),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: workspace,
     userId,
     role: "admin",
@@ -55,28 +67,36 @@ async function fixture(file = ":memory:") {
     now,
   });
   const runners = ["runner-a", "runner-b"];
-  for (const runnerId of runners) {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [runnerId, workspace, userId, runnerId, now, now],
+  for (const runnerId of runners)
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: runnerId,
+          workspaceId: workspace,
+          ownerUserId: userId,
+          name: runnerId,
+          status: "active",
+          createdAt: now,
+          lastSeenAt: now,
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({ runnerId, runnerVersion: "0.1.63", reportedAt: now }),
     );
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.63',?)",
-      [runnerId, now],
-    );
-  }
   const item = await insertQueuedItem(db, { id: "item-1", now, branchName: "paws/item-1" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+  await bindWorkItemRepository(db, item.id, repository);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const workHttp = createRunnerWorkHttp(work);
-  const commandsHttp = createRepositoryCommandsHttp({ store: sqliteDb(db), now: () => now });
+  const commandsHttp = createRepositoryCommandsHttp({ store: db, now: () => now });
   const github = createFakeGitHub();
   const mint = github.mintInstallationToken;
   github.mintInstallationToken = async (input) => ({
@@ -84,14 +104,14 @@ async function fixture(file = ":memory:") {
     expiresAt: now + 30 * 60_000,
   });
   const access = createRepositoryCommandAccess({
-    store: sqliteDb(db),
+    store: db,
     github,
     installationForRepository: async () => "installation",
     checkpointBot: async () => bot,
     now: () => now,
   });
   const enqueue = (expiresIn = 120_000, title?: string) =>
-    enqueueRepositoryCommand(sqliteDb(db), {
+    enqueueRepositoryCommand(db, {
       runnerId: "runner-a",
       workspaceId: workspace,
       itemId: item.id,
@@ -171,17 +191,17 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
   expect(delivered).toHaveLength(1);
   expect(delivered[0]).toMatchObject({ id, type: "rebase", branch: "paws/item-1" });
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("delivered");
+  expect(await repositoryCommandState(f.db, id)).toBe("delivered");
   expect((await f.ack(id, "runner-b"))!.status).toBe(403);
   expect((await f.ack(id, "runner-a"))!.status).toBe(200);
 });
 
 test("the pull request title goes only to a runner that accepts it", async () => {
   const f = await fixture();
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
+  await setRunnerVersion(f.db, "0.1.75");
   await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.76'");
+  await setRunnerVersion(f.db, "0.1.76");
   await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
 });
@@ -215,7 +235,7 @@ test("a grant and a credential go only to the delivered runner while the command
     repository: "fixture/repository",
     installationId: "installation",
   });
-  f.db.run("UPDATE work_item SET branch_name='paws/other' WHERE id='item-1'");
+  await setBranch(f.db, "paws/other");
   expect((await f.credential(id, issued.body.token))!.status).toBe(403);
   expect((await f.grant(id)).status).toBe(403);
 });
@@ -223,7 +243,7 @@ test("a grant and a credential go only to the delivered runner while the command
 test("a posted result completes waitForRepositoryCommand and replays only unchanged", async () => {
   const f = await fixture();
   const id = await f.enqueue();
-  const waiting = waitForRepositoryCommand(sqliteDb(f.db), id);
+  const waiting = waitForRepositoryCommand(f.db, id);
   const early = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
     head: "c".repeat(40),
@@ -244,7 +264,7 @@ test("a posted result completes waitForRepositoryCommand and replays only unchan
     reason: "other",
   });
   expect(changed!.status).toBe(403);
-  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("done");
+  expect(await repositoryCommandState(f.db, id)).toBe("done");
 });
 
 test("a command past expiresAt is expired and its credential route refuses", async () => {
@@ -255,8 +275,8 @@ test("a command past expiresAt is expired and its credential route refuses", asy
   expect(issued.status).toBe(200);
   f.advance(60_000);
   expect((await f.credential(id, issued.body.token))!.status).toBe(403);
-  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("expired");
-  expect(await waitForRepositoryCommand(sqliteDb(f.db), id)).toEqual({ outcome: "expired" });
+  expect(await repositoryCommandState(f.db, id)).toBe("expired");
+  expect(await waitForRepositoryCommand(f.db, id)).toEqual({ outcome: "expired" });
   expect((await f.grant(id)).status).toBe(403);
   const late = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
@@ -270,15 +290,15 @@ test("an undelivered command past expiresAt is never delivered", async () => {
   const id = await f.enqueue(60_000);
   f.advance(60_000);
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("expired");
+  expect(await repositoryCommandState(f.db, id)).toBe("expired");
 });
 
 test("a branch outside paws/ or an old runner is refused at enqueue", async () => {
   const f = await fixture();
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.62'");
+  await setRunnerVersion(f.db, "0.1.62");
   await expect(f.enqueue()).rejects.toThrow(/runner 0\.1\.63/);
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
-  f.db.run("UPDATE work_item SET branch_name='main' WHERE id='item-1'");
+  await setRunnerVersion(f.db, "0.1.63");
+  await setBranch(f.db, "main");
   await expect(f.enqueue()).rejects.toThrow();
 });
 
@@ -286,7 +306,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   const f = await fixture();
   const rebase = (runnerId = "runner-a", signal?: AbortSignal) =>
     rebaseOnRunner(
-      sqliteDb(f.db),
+      f.db,
       {
         runnerId,
         workspaceId: f.workspace,
@@ -303,7 +323,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   const rebased = rebase();
   const [command] = await f.poll("runner-a");
   await recordRepositoryCommandResult(
-    sqliteDb(f.db),
+    f.db,
     {
       runnerId: "runner-a",
       commandId: command!.id,
@@ -331,7 +351,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   expect(issued.status).toBe(200);
   granted.abort(new Error("item stopped"));
   await expect(late).rejects.toThrow("item stopped");
-  expect(await repositoryCommandState(sqliteDb(f.db), delivered!.id, f.now())).toBe("expired");
+  expect(await repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
   expect((await f.credential(delivered!.id, issued.body.token))!.status).toBe(403);
   expect((await f.grant(delivered!.id)).status).toBe(403);
 
@@ -342,12 +362,12 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
 });
 
 test("a rebase whose result arrives on another instance resolves within a second", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "paws-repository-commands-"));
+  const server = await pgliteServer();
+  const other = await openPawsStore({ url: server.url, pgliteDir: "" });
   try {
-    const f = await fixture(join(dir, "paws.sqlite"));
-    const other = openDatabase(join(dir, "paws.sqlite"));
-    const otherHttp = createRepositoryCommandsHttp({ store: sqliteDb(other), now: f.now });
-    const rebased = rebaseOnRunner(sqliteDb(f.db), {
+    const f = await fixture(server.store);
+    const otherHttp = createRepositoryCommandsHttp({ store: other.store, now: f.now });
+    const rebased = rebaseOnRunner(f.db, {
       runnerId: "runner-a",
       workspaceId: f.workspace,
       itemId: f.item.id,
@@ -371,9 +391,8 @@ test("a rebase whose result arrives on another instance resolves within a second
     const started = performance.now();
     expect(await rebased).toEqual({ outcome: "rebased", head: "c".repeat(40) });
     expect(performance.now() - started).toBeLessThan(1_000);
-    other.close();
-    f.db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await other.close();
+    await server.close();
   }
 });

@@ -1,4 +1,5 @@
 import { chromium, expect, type Page } from "@playwright/test";
+import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startDashboardFixture } from "../test/dashboard-fixture";
@@ -7,11 +8,6 @@ const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-dashboard-ui-${Date.now()}`);
 mkdirSync(out, { recursive: true });
 const f = await startDashboardFixture();
-const query = f.db.query.bind(f.db);
-const prepare = f.db.prepare.bind(f.db);
-let statements = 0;
-f.db.query = ((sql: string) => (statements++, query(sql))) as typeof f.db.query;
-f.db.prepare = ((sql: string) => (statements++, prepare(sql))) as typeof f.db.prepare;
 
 const browser = await chromium.launch({
   headless: true,
@@ -55,7 +51,7 @@ async function open(width: number) {
 
 async function visit(page: Page, width: number, name: string, path: string, heading: string) {
   current = `${name}@${width}`;
-  const before = { requests: requests.length, statements };
+  const before = { requests: requests.length, statements: f.statements() };
   await page.goto(`${f.origin}${f.fill(path)}`);
   await expect(page.locator("#content h1").first()).toHaveText(heading);
   await page.waitForTimeout(5_600);
@@ -65,7 +61,7 @@ async function visit(page: Page, width: number, name: string, path: string, head
     width,
     requests: seen.length,
     bytes: seen.reduce((sum, request) => sum + request.bytes, 0),
-    statements: statements - before.statements,
+    statements: f.statements() - before.statements,
   });
   await page.screenshot({ path: join(out, `${name}-${width}.png`), fullPage: true });
   return seen;
@@ -118,7 +114,6 @@ try {
             implementer: { agent: "claude", model: "opus" },
             reviewer: { agent: "codex", model: "gpt-5.4" },
           },
-          projects: [],
           presets: {
             Opus: { agent: "claude", model: "opus", effort: "high" },
             Codex: { agent: "codex", model: "gpt-5.4", effort: "high" },
@@ -248,9 +243,14 @@ try {
 
   const page = await open(1440);
   current = "retry-closeout@1440";
-  f.db.run("UPDATE question SET kind = 'closeout-help', options = ? WHERE id = 'q-PAS-1'", [
-    JSON.stringify(["Retry Closeout"]),
-  ]);
+  await f.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.question)
+        .set({ kind: "closeout-help", options: ["Retry Closeout"] })
+        .where(eq(q.t.question.id, "q-PAS-1")),
+    ),
+  );
   await page.goto(`${f.origin}/dashboard/questions/q-PAS-1`);
   const card = page.locator("#q-q-PAS-1");
   const retry = card.getByRole("button", { name: /Retry Closeout/ });
