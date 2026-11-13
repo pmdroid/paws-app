@@ -8,7 +8,10 @@ import {
   createGitHubRepositorySetup,
   createGitHubStatusCache,
   createHostedGitHubConnect,
+  createInstallationRepositoryCache,
+  refreshingInstallations,
   type GitHubStatusCache,
+  type InstallationRepositoryCache,
 } from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
@@ -141,6 +144,10 @@ async function fixture() {
   const github = {
     repoStatus: 200,
     suspended: false,
+    installed: [
+      { id: 1, full_name: "acme/widgets", private: true },
+      { id: 4, full_name: "acme/old", archived: true },
+    ] as Record<string, unknown>[],
   };
   const provider = Bun.serve({
     hostname: "127.0.0.1",
@@ -212,6 +219,26 @@ async function fixture() {
           { permissions: { admin: false, pull: true } },
           { status: github.repoStatus },
         );
+      if (url.pathname === "/installation/repositories")
+        return Response.json({
+          total_count: github.installed.length,
+          repositories: github.installed.map((entry) => ({
+            ...entry,
+            name: String(entry.full_name).split("/")[1],
+            owner: { login: "acme" },
+            clone_url: `https://github.com/${String(entry.full_name)}.git`,
+            default_branch: "main",
+          })),
+        });
+      if (url.pathname === "/app/installations/22/access_tokens" && !body.includes("repositories"))
+        return Response.json(
+          {
+            token: "scripted-list-token",
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+            permissions: { metadata: "read" },
+          },
+          { status: 201 },
+        );
       if (url.pathname === "/app/installations/22/access_tokens") {
         const name = (JSON.parse(body) as { repositories: string[] }).repositories[0];
         maxTokensInFlight = Math.max(maxTokensInFlight, ++tokensInFlight);
@@ -279,9 +306,12 @@ async function fixture() {
     sessions,
     begin,
     handler,
-    setup: (cache?: GitHubStatusCache) =>
+    installations: () =>
+      createInstallationRepositoryCache({ fetch: scriptedFetch, now: () => now }),
+    setup: (cache?: GitHubStatusCache, installations?: InstallationRepositoryCache) =>
       createGitHubRepositorySetup({
         cache,
+        installations,
         store: db,
         home,
         env,
@@ -987,3 +1017,122 @@ for (const mode of ["first setup", "after first setup"])
         await f.close();
       }
     });
+
+async function connectedWorkspace() {
+  const f = await fixture();
+  await clearRepositories(f.db);
+  await signInForRepositorySetup(f);
+  expect((await saveSetup(f))?.status).toBe(200);
+  const installations = f.installations();
+  const get = async (role = "admin") => {
+    const response = await f.setup(
+      undefined,
+      installations,
+    )(f.request(role, "https://paws.example/api/workspaces/github-setup"));
+    return { status: response!.status, body: (await response!.json()) as Record<string, unknown> };
+  };
+  const listed = async () =>
+    ((await get()).body.repositories as { repository: string }[]).map((repo) => repo.repository);
+  const put = (repositories: string[]) =>
+    f.setup(
+      undefined,
+      installations,
+    )(
+      f.request("admin", "https://paws.example/api/workspaces/github-setup", {
+        method: "PUT",
+        headers: {
+          origin: "https://paws.example",
+          "content-type": "application/json",
+          "x-paws-csrf": f.sessions.admin!.session.csrfToken,
+        },
+        body: JSON.stringify({
+          mappings: repositories.map((repository) => ({ repository, teamId: "team" })),
+        }),
+      }),
+    );
+  return { f, installations, get, listed, put };
+}
+const gadgets = { id: 2, full_name: "acme/gadgets" };
+
+test("after first setup an admin lists and saves cached repositories without GitHub sign-in", async () => {
+  const { f, get, put } = await connectedWorkspace();
+  try {
+    f.github.installed.push(gadgets, { id: 5, full_name: "acme/frozen", disabled: true });
+    const before = f.calls.length;
+    expect(await get()).toEqual({
+      status: 200,
+      body: {
+        signedIn: true,
+        cached: true,
+        installationId: "22",
+        repositories: [
+          { repository: "acme/gadgets", private: false },
+          { repository: "acme/widgets", private: true },
+        ],
+        teams: [{ id: "team", name: "Engineering", key: "ENG" }],
+        mappings: [{ repository: "acme/widgets", teamId: "team" }],
+        refreshedAt: expect.any(Number),
+      },
+    });
+    expect((await put(["acme/widgets", "acme/gadgets"]))?.status).toBe(200);
+    expect(await repositoryCount(f.db)).toBe(2);
+    const paths = f.calls.slice(before).map((call) => call.path);
+    expect(paths).toContain("/repos/acme/gadgets/installation");
+    expect(paths.some((path) => /^\/(user|login)|^\/repos\/acme\/[a-z]+$/.test(path))).toBe(false);
+    const member = await get("member");
+    expect(member.status).toBe(403);
+    expect(member.body.repositories).toBeUndefined();
+    await clearRepositories(f.db);
+    expect(await get()).toEqual({ status: 200, body: { signedIn: false, mappings: [] } });
+    expect(await (await put(["acme/widgets"]))!.json()).toMatchObject({
+      code: "github_signin_required",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+for (const cause of ["outside the installation", "suspended"])
+  test(`after first setup a repository ${cause} is refused without a sign-in`, async () => {
+    const { f, put } = await connectedWorkspace();
+    try {
+      if (cause === "suspended") f.github.installed.push(gadgets);
+      f.github.suspended = cause === "suspended";
+      const refused = await put(["acme/gadgets"]);
+      expect(refused?.status).toBe(409);
+      expect(await refused!.json()).toEqual({
+        error: "The GitHub App is not installed on acme/gadgets, or the installation is suspended.",
+      });
+      expect(await repositoryCount(f.db)).toBe(1);
+      expect((await connection(f.db))?.generation).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("an installation_repositories webhook and the ten-minute sweep refresh the cached list", async () => {
+  const { f, installations, listed } = await connectedWorkspace();
+  try {
+    expect(await listed()).toEqual(["acme/widgets"]);
+    f.github.installed.push(gadgets);
+    await refreshingInstallations(installations, { accept: async () => null })!.accept({
+      deliveryId: "delivery",
+      event: "installation_repositories",
+      payload: JSON.stringify({ action: "added", installation: { id: 22 } }),
+    });
+    let before = f.calls.length;
+    expect(await listed()).toEqual(["acme/gadgets", "acme/widgets"]);
+    expect(f.calls.length).toBe(before);
+    f.github.installed.pop();
+    f.advance(599_000);
+    await installations.sweep();
+    expect(await listed()).toEqual(["acme/gadgets", "acme/widgets"]);
+    f.advance(2_000);
+    await installations.sweep();
+    before = f.calls.length;
+    expect(await listed()).toEqual(["acme/widgets"]);
+    expect(f.calls.length).toBe(before);
+  } finally {
+    await f.close();
+  }
+});

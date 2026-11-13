@@ -5,6 +5,11 @@ import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
+import {
+  createInstallationRepositoryCache,
+  refreshingInstallations,
+  type InstallationRepositoryCache,
+} from "./github-installation-cache";
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
@@ -217,7 +222,10 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const port = options.port ?? DEFAULT_PORT;
   const linearWebhookSecret = options.linearWebhookSecret ?? null;
   const slackSigningSecret = options.slackSigningSecret ?? null;
-  const githubWebhook = options.githubWebhook;
+  const installations = createInstallationRepositoryCache();
+  const sweep = setInterval(() => void installations.sweep(), 60_000);
+  sweep.unref();
+  const githubWebhook = refreshingInstallations(installations, options.githubWebhook);
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
@@ -301,6 +309,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(store ? { store } : {}),
           ...(statusEnv ? { statusEnv } : {}),
           githubStatus,
+          installations,
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
@@ -319,6 +328,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const stop = server.stop.bind(server);
   server.stop = async (closeActiveConnections) => {
     stopping = true;
+    clearInterval(sweep);
     await stop(closeActiveConnections);
     await Promise.allSettled([...requests]);
   };
@@ -366,6 +376,7 @@ type Secrets = {
   store?: Db;
   statusEnv?: Record<string, string | undefined>;
   githubStatus?: GitHubStatusCache;
+  installations?: InstallationRepositoryCache;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
@@ -429,6 +440,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         origin: workspace.origin,
         teams: (setupRequest, signal) => workspace.repositoryTeams(setupRequest, signal),
         cache: secrets.githubStatus,
+        installations: secrets.installations,
       })(request);
       if (setup) return setup;
       return (await createHostedGitHubConnect({
