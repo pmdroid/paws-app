@@ -53,8 +53,8 @@ export async function createLinearSessionProgress(
   return {
     steps: progress,
     plan: (plan: readonly SessionPlanStep[]) => store.transaction((q) => progress.plan(q, plan)),
-    wait: (step: string | null, title: string) =>
-      store.transaction((q) => progress.wait(q, step, title)),
+    wait: (step: string | null, title: string, replace = false) =>
+      store.transaction((q) => progress.wait(q, step, title, replace)),
     restart: (reason: string, round: number, version: number, limit = 3) =>
       store.transaction((q) => progress.restart(q, reason, round, version, limit)),
     phase: (next: Phase) => store.transaction((q) => progress.phase(q, next)),
@@ -168,8 +168,8 @@ export function* linearSessionProgressSteps(
     );
   }
 
-  function* publishPlan(q: Q, final = false): Steps<void> {
-    yield* preserveHostProgress(q);
+  function* publishPlan(q: Q, final = false, preserved = false): Steps<void> {
+    if (!preserved) yield* preserveHostProgress(q);
     if (started) endWaits();
     const phaseIndex =
       phase === "fixing"
@@ -213,15 +213,16 @@ export function* linearSessionProgressSteps(
       steps = plan;
       yield* publishPlan(q);
     },
-    *wait(q: Q, step: string | null, title: string): Steps<void> {
+    *wait(q: Q, step: string | null, title: string, replace = false): Steps<void> {
       yield* preserveHostProgress(q);
       started = false;
       const last = waits.at(-1);
       if (step !== null && (last?.content !== step || last.status !== "inProgress")) {
-        endWaits();
+        if (replace && last?.status === "inProgress") waits = waits.slice(0, -1);
+        else endWaits();
         waits.push({ content: step, status: "inProgress" });
       }
-      yield* publishPlan(q);
+      yield* publishPlan(q, false, true);
       if (!(yield* afterPr(q)))
         yield* publish(q, "linear.session.summary", { sessionId, summary: title.slice(0, 255) });
     },

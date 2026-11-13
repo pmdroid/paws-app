@@ -175,8 +175,10 @@ import {
   recoverOnStartupSteps,
   registerInstanceSteps,
   runPendingJobNowSteps,
+  runRunnerAvailability,
   stopInstanceSteps,
   takeOverGoneRunsSteps,
+  enqueueRunnerSetupChecks,
   type Steps,
 } from "./db";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
@@ -1639,6 +1641,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 store.run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
               repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
                 store.run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
+              runnerSignIn: async (runId: string, agent: string, signal: AbortSignal) => {
+                const [placed, coordinator] = await Promise.all([
+                  runRunnerAvailability(store, runId),
+                  runnerReady,
+                ]);
+                if (!placed || !coordinator) return null;
+                return {
+                  runner: placed.name,
+                  signedIn: await coordinator.health.signedIn(placed.id, agent, signal),
+                };
+              },
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },
@@ -2033,6 +2046,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
       await registerScheduler(created.jobs, () => attached.reconcileExecution());
+      await enqueueRunnerSetupChecks(store, Date.now());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
       created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());

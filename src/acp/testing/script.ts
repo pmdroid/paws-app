@@ -32,7 +32,12 @@ export type FakeStep =
     }
   | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
   | { type: "update_plan"; steps: readonly { content: string; status: string }[] }
-  | { type: "open_pull_request"; title: string; body: string }
+  | {
+      type: "open_pull_request";
+      title: string;
+      body: string;
+      remaining?: readonly { title: string; scope: string }[];
+    }
   | { type: "post_update"; text: string }
   | { type: "reply"; text: string }
   | { type: "start_work"; plan: string }
@@ -47,6 +52,7 @@ export type FakeStep =
   | { type: "get_closeout" }
   | { type: "run_closeout"; id: string; model?: string }
   | { type: "hang" }
+  | { type: "auth_error" }
   | {
       type: "end";
       updatesAfterResponse?: Record<string, unknown>[];

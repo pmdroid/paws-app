@@ -20,7 +20,9 @@ function view(data: AgentSettings | null = settings()) {
       agent: "claude",
       updatedAt: 1,
       efforts: [{ id: "high", name: "High" }],
-      models: [{ id: "sonnet", name: "Sonnet", efforts: [{ id: "high", name: "High" }] }],
+      models: [
+        { id: "sonnet", name: "Sonnet", fast: true, efforts: [{ id: "high", name: "High" }] },
+      ],
     },
     {
       agent: "codex",
@@ -223,7 +225,19 @@ test("waiting-run toggle is off by default and save feedback includes the run co
   );
 });
 
-test("preset rows render, add, remove, save and show API name errors on the row", async () => {
+test("Fast mode shows only for a model with fast support and keeps a hidden saved value", () => {
+  const data = settings();
+  data.defaults.implementer = { agent: "claude", model: "sonnet" };
+  data.defaults.reviewer = { agent: "codex", model: "gpt-5.4", fast: true };
+  const markup = renderAgentSettings(view(data));
+  expect(markup).toContain('id="defaults-implementer-fast"');
+  expect(markup).not.toContain('id="defaults-reviewer-fast"');
+  expect(markup).toContain("Fast mode isn't available for this model");
+  data.defaults.implementer.fast = true;
+  expect(renderAgentSettings(view(data))).toMatch(/id="defaults-implementer-fast"[^>]*checked/);
+});
+
+test("preset rows render both roles, add, remove, save and show errors on the row", async () => {
   const { Window } = await import("happy-dom");
   const { createAgentSettings } = await import("./agent-settings");
   const win = new Window();
@@ -246,7 +260,12 @@ test("preset rows render, add, remove, save and show API name errors on the row"
   const originalFetch = globalThis.fetch;
   const data = {
     ...settings(),
-    presets: { Opus: { agent: "claude" as const, model: "sonnet", effort: "high" } },
+    presets: {
+      Opus: {
+        implementer: { agent: "claude" as const, model: "sonnet", effort: "high" },
+        reviewer: { agent: "codex" as const, model: "gpt-5.4" },
+      },
+    },
   };
   let body: AgentSettings | undefined;
   let error: string | undefined;
@@ -261,11 +280,19 @@ test("preset rows render, add, remove, save and show API name errors on the row"
   const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
   try {
     const root = win.document.createElement("div") as unknown as HTMLElement;
-    // A detached root avoids starting the catalog polling timer.
+    win.document.body.appendChild(root as never);
     createAgentSettings(() => {}).mount(root, "http://localhost:8787");
     await settle();
+    root.remove();
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Opus");
     expect(root.querySelector("#preset-0-implementer-effort")?.innerHTML).toContain("high");
+    expect(root.querySelector<HTMLSelectElement>("#preset-0-reviewer-model")?.value).toBe(
+      "gpt-5.4",
+    );
+    expect(root.querySelector("#preset-0-reviewer-fast")).toBeNull();
+    const fast = root.querySelector<HTMLInputElement>("#preset-0-implementer-fast")!;
+    fast.checked = true;
+    fast.dispatchEvent(new win.Event("change", { bubbles: true }) as never);
     const click = (action: string) =>
       (root.querySelector(`[data-settings="${action}"]`) as HTMLElement).click();
     click("add-preset");
@@ -278,10 +305,25 @@ test("preset rows render, add, remove, save and show API name errors on the row"
         .dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as never);
     submit();
     await settle();
-    expect(body?.presets).toEqual({ Opus: data.presets.Opus, Codex: data.defaults.implementer });
+    expect(body?.presets).toEqual({
+      Opus: { ...data.presets.Opus, implementer: { ...data.presets.Opus.implementer, fast: true } },
+      Codex: { implementer: data.defaults.implementer, reviewer: data.defaults.reviewer },
+    });
     expect(body).not.toHaveProperty("projects");
     click("remove-preset");
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Codex");
+    const agent = root.querySelector<HTMLSelectElement>("#preset-0-reviewer-agent")!;
+    agent.value = "claude";
+    agent.dispatchEvent(new win.Event("change", { bubbles: true }) as never);
+    const alert = root.querySelector('[data-preset-row="0"] [role="alert"]');
+    expect(alert?.textContent).toBe(
+      "Choose a different reviewer agent or model for independent review.",
+    );
+    expect(alert?.previousElementSibling?.querySelector("#preset-0-reviewer-agent")).not.toBeNull();
+    expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    const back = root.querySelector<HTMLSelectElement>("#preset-0-reviewer-agent")!;
+    back.value = "codex";
+    back.dispatchEvent(new win.Event("change", { bubbles: true }) as never);
     const name = root.querySelector<HTMLInputElement>("#preset-0-name")!;
     name.value = "opus";
     name.dispatchEvent(new win.Event("input", { bubbles: true }) as never);

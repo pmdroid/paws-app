@@ -13,6 +13,7 @@ test/member-vm-delete.test.ts # create not requested within 5 ms; store closed u
 test/member-vm.test.ts # VM not created within 5 ms; store closed under a query
 test/onboarding-runner-step.test.ts # runner step still "needed" when the page repaints
 test/runner-fault-matrix.test.ts # one faulted attempt recorded where three are expected
+test/runner-handover-resume.test.ts # moves, start_work slot waits and question replays time out; connection closed under a query
 test/runner-setup-hold-queue.test.ts # setup hold not written after one tick
 # Two concurrent confirmations both succeed on a server; on PGlite one is refused.
 test/decision-memory.test.ts # concurrent suggestion confirmation accepts twice

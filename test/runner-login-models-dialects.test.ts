@@ -461,7 +461,7 @@ forEachDialect((open) => {
     const db = await opened(open);
     const state = () => db.run((q) => runnerAgentPolicyStateSteps(q, "box", "codex"));
     expect(await state()).toBeNull();
-    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", false));
+    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", false, 0));
     expect(await state()).toEqual({
       ready: 0,
       authExpired: 1,
@@ -473,7 +473,7 @@ forEachDialect((open) => {
     await db.run(function* (q) {
       yield* q.exec(q.orm.update(q.t.runnerAgentPolicy).set({ extraUsage: 1, cooldownUntil: 9 }));
     });
-    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", true));
+    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", true, 0));
     expect(await state()).toMatchObject({
       ready: 1,
       authExpired: 0,

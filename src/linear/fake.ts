@@ -285,6 +285,13 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
           key: request.key,
           blockedBy: draft.blockedBy.map((position) => ids[position]!),
         });
+        byId.set(filed.id, {
+          linearIssueId: filed.id,
+          identifier,
+          title: draft.title,
+          description: draft.description,
+          subIssues: [],
+        });
         if (request.repository)
           repositoryLabels.push({ issueId: filed.id, repository: request.repository });
         return filed;

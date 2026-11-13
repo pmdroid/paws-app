@@ -133,7 +133,9 @@ async function fixture() {
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
   let installationStatus = 200;
-  let tokenDelay = 0;
+  let tokenGate: ((inFlight: number) => Promise<void>) | undefined;
+  let tokensInFlight = 0;
+  let maxTokensInFlight = 0;
   let catalogPages: boolean | "duplicate" = false;
   let catalogPermissions: unknown = INSTALLATION_PERMISSIONS;
   const provider = Bun.serve({
@@ -199,7 +201,9 @@ async function fixture() {
         return Response.json({ state: "active", role: "admin" });
       if (url.pathname === "/app/installations/22/access_tokens") {
         const name = (JSON.parse(body) as { repositories: string[] }).repositories[0];
-        await Bun.sleep(tokenDelay);
+        maxTokensInFlight = Math.max(maxTokensInFlight, ++tokensInFlight);
+        await tokenGate?.(tokensInFlight);
+        tokensInFlight--;
         return Response.json(
           {
             token: "scripted-installation-token",
@@ -285,8 +289,11 @@ async function fixture() {
     setCatalogPermissions(value: unknown) {
       catalogPermissions = value;
     },
-    setTokenDelay(value: number) {
-      tokenDelay = value;
+    setTokenGate(value: (inFlight: number) => Promise<void>) {
+      tokenGate = value;
+    },
+    get maxTokensInFlight() {
+      return maxTokensInFlight;
     },
     setInstallationStatus(value: number) {
       installationStatus = value;
@@ -507,17 +514,16 @@ test("GitHub status checks repositories concurrently and serves a minute-long ca
     await write(f.db, (q) =>
       q.orm.update(q.t.workspaceGithubConnection).set({ repositories: JSON.stringify(names) }),
     );
-    f.setTokenDelay(100);
+    const limit = Math.min(8, names.length);
+    const opened = Promise.withResolvers<void>();
+    f.setTokenGate(async (inFlight) => {
+      if (inFlight >= limit) opened.resolve();
+      await opened.promise;
+    });
     const cache = createGitHubStatusCache();
     const status = async () => (await f.handler(cache)(automaticRequest(f, "GET")))!.json();
-    let elapsed = Infinity;
-    for (let attempt = 0; attempt < 3 && elapsed >= 400; attempt++) {
-      cache.clear("ws");
-      const started = performance.now();
-      expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
-      elapsed = performance.now() - started;
-    }
-    expect(elapsed).toBeLessThan(400);
+    expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
+    expect(f.maxTokensInFlight).toBe(limit);
     let calls = f.calls.length;
     f.advance(59_000);
     expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });

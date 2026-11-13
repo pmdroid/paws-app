@@ -359,7 +359,7 @@ async function setup() {
     return wip;
   }
   // A handed-over run waits for a runner until it stops, so every test stops its runs.
-  const stops = new Set<AbortController>();
+  const stops = new Map<AbortController, Promise<unknown>>();
   let sequence = 0;
   /**
    * Both runners active, online and signed in to Claude; only A is free until `start` places.
@@ -441,10 +441,9 @@ async function setup() {
       | "open"
       | "stale"
       | "waiting"
-      | ((request: { question: string }) => Promise<{ answer: string }>),
+      | ((request: { question: string }, signal: AbortSignal) => Promise<{ answer: string }>),
   ) {
     const stop = new AbortController();
-    stops.add(stop);
     const running = backend
       .forItem(record.id)({
         profile: { agent: "claude", model: "model" },
@@ -468,7 +467,7 @@ async function setup() {
                         once: true,
                       }),
                     );
-                  if (typeof question === "function") return question(request);
+                  if (typeof question === "function") return question(request, stop.signal);
                   await insertQuestion(db, {
                     itemId: record.id,
                     runId: record.runId,
@@ -486,6 +485,7 @@ async function setup() {
         },
       })
       .catch((error: unknown) => error);
+    stops.set(stop, running);
     return { running, stop };
   }
   /**
@@ -551,8 +551,9 @@ async function setup() {
     submit,
     handOverTurn,
     turn,
-    stopAll() {
-      for (const stop of stops) stop.abort();
+    async stopAll() {
+      for (const stop of stops.keys()) stop.abort();
+      await Promise.all(stops.values());
       stops.clear();
     },
     async cleanup() {
@@ -568,7 +569,7 @@ beforeAll(async () => {
 });
 afterEach(() => context.stopAll());
 afterAll(async () => {
-  context.stopAll();
+  await context.stopAll();
   await context.cleanup();
 });
 
@@ -980,17 +981,20 @@ async function twoRunningOnA(notices: string[] = []) {
 }
 
 /** A takes both handover commands, in whichever order Paws sent them, and hands both over. */
-async function handOverBoth(turns: { onA: RunCommand }[]) {
+async function handOverBoth(turns: { onA: RunCommand }[], landOn?: string) {
   const handovers = [await context.next(context.runners.a), await context.next(context.runners.a)];
   const wips: string[] = [];
-  for (const { onA } of turns)
+  const landed: RunCommand[] = [];
+  for (const { onA } of turns) {
     wips.push(
       await context.handOver(
         onA,
         handovers.find((command) => command && "runId" in command && command.runId === onA.runId),
       ),
     );
-  return wips;
+    if (landOn) landed.push((await context.next(landOn)) as RunCommand);
+  }
+  return { wips, landed };
 }
 
 test("Move running work on a draining runner moves both sessions to the second runner, and A is drained", async () => {
@@ -1015,11 +1019,7 @@ test("Move running work on a draining runner moves both sessions to the second r
     moving: 0,
   });
 
-  const wips = await handOverBoth(turns);
-  const landed = [
-    (await context.next(runners.b)) as RunCommand,
-    (await context.next(runners.b)) as RunCommand,
-  ];
+  const { wips, landed } = await handOverBoth(turns, runners.b);
   await moves.settled();
   const runIds = turns.map(({ onA }) => onA.runId).sort();
   expect(landed.map((command) => command.runId).sort()).toEqual(runIds);
@@ -1169,7 +1169,7 @@ test("replayed questions attach to the open answer without asking or cancelling 
   const record = await context.item();
   await setRunner(context.db, runners.b, { status: "paused" });
   let asks = 0;
-  const ask = async (request: { question: string }) => {
+  const ask = async (request: { question: string }, signal: AbortSignal) => {
     asks++;
     await insertQuestion(db, {
       itemId: record.id,
@@ -1181,7 +1181,7 @@ test("replayed questions attach to the open answer without asking or cancelling 
     for (;;) {
       const row = await openedQuestion(db, record.runId);
       if (row?.answer) return { answer: row.answer };
-      await delay(1);
+      await delay(1, undefined, { signal });
     }
   };
   const first = context.turn(record, [], ask);
@@ -1232,9 +1232,10 @@ test("different text while a question is open still fails as overlapping questio
   const turn = context.turn(
     record,
     [],
-    async () =>
-      new Promise((resolve) => {
+    async (_, signal) =>
+      new Promise((resolve, reject) => {
         release = resolve;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       }),
   );
   const command = (await context.next(runners.a)) as RunCommand;

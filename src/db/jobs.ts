@@ -605,6 +605,17 @@ export async function hasLiveJob(
   return store.run((q) => hasLiveJobSteps(q, itemId, now, exceptJobId));
 }
 
+export function* pendingItemJobSteps(q: Q, queue: string, itemId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(job)
+      .where(and(eq(job.queue, queue), eq(job.status, "pending"), eq(jobItemId(q), itemId))),
+  );
+  return row === undefined ? null : mapJob(q, row);
+}
+
 export function* hasOpenItemJobSteps(q: Q, queue: string, itemId: string, exceptJobId?: number) {
   const { job } = q.t;
   const row = yield* q.one(

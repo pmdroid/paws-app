@@ -12,6 +12,7 @@ import {
 } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 
 export const MEMBER_VM_DELETE_STEPS = ["drain", "tailnet", "revoke", "destroy", "clear"] as const;
 export type MemberVmDeleteStep = (typeof MEMBER_VM_DELETE_STEPS)[number];
@@ -310,8 +311,10 @@ export function* advanceMemberVmStepSteps(
       .update(m)
       .set({ step: to, stepStartedAt: now, [STEP_AT[to]]: now, updatedAt: now })
       .where(and(eq(m.id, id), eq(m.step, from), isNull(m.failure)))
-      .returning({ id: m.id }),
+      .returning({ runnerId: m.runnerId, ownerUserId: m.userId }),
   );
+  if (to === "ready" && from !== "ready")
+    for (const row of rows) yield* enqueueRunnerSetupChecksSteps(q, now, row);
   return rows.length;
 }
 

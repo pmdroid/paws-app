@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
 import { type Q, type Steps, type Db } from "./db";
@@ -227,4 +227,49 @@ export async function enqueueRunnerSetupCheck(
 ): Promise<void> {
   if (await store.run((q) => enqueueRunnerSetupCheckSteps(q, ownerUserId, now)))
     emitJobReady(store);
+}
+
+export function* enqueueRunnerSetupChecksSteps(
+  q: Q,
+  now: number,
+  serves?: { runnerId: string | null; ownerUserId?: string | null },
+): Steps<boolean> {
+  const { runnerSetupHold: h, runner, runnerPolicy } = q.t;
+  let owners: string[] | undefined;
+  if (serves) {
+    const id = serves.runnerId ?? "";
+    const own = yield* q.one(
+      q.orm.select({ owner: runner.ownerUserId }).from(runner).where(eq(runner.id, id)),
+    );
+    const shared = yield* q.one(
+      q.orm
+        .select({ one: sql`1` })
+        .from(runnerPolicy)
+        .where(and(eq(runnerPolicy.runnerId, id), eq(runnerPolicy.sharing, 1))),
+    );
+    if (!shared)
+      owners = [own?.owner, serves.ownerUserId].filter(
+        (owner): owner is string => typeof owner === "string",
+      );
+    if (owners?.length === 0) return false;
+  }
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ id: h.ownerUserId })
+      .from(h)
+      .where(
+        and(
+          isNotNull(h.ownerUserId),
+          owners === undefined ? undefined : inArray(h.ownerUserId, owners),
+        ),
+      ),
+  );
+  let queued = false;
+  for (const row of rows)
+    if (row.id !== null && (yield* enqueueRunnerSetupCheckSteps(q, row.id, now))) queued = true;
+  return queued;
+}
+
+export async function enqueueRunnerSetupChecks(store: Db, now: number): Promise<void> {
+  if (await store.transaction((q) => enqueueRunnerSetupChecksSteps(q, now))) emitJobReady(store);
 }

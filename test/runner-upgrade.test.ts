@@ -18,6 +18,6 @@ test("a runner upgrade prepares before it stops the runner, switches the agent t
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 15 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 17 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
