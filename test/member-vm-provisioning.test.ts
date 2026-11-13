@@ -69,6 +69,10 @@ test("each missing prerequisite is named before any exe.dev call", async () => {
       /latest runner release/,
     ],
     [{ installer: () => null }, /install-runner\.sh/],
+    [
+      { repositories: async () => [] },
+      /^Create VM needs at least one repository\. Connect GitHub and choose repositories in Settings › Repositories first\.$/,
+    ],
   ];
   for (const [overrides, message] of cases) {
     const { value, exeDev } = source(overrides);
