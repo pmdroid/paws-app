@@ -1094,7 +1094,7 @@ WantedBy=multi-user.target
 
 def fake_install(order=None):
     """install() without the release: runs `prepare`, then starts the stop-to-start phase it would stop the runner in."""
-    def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None):
+    def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None, defer=None):
         prepared = prepare()
         journal.start("stop-to-start")
         if order is not None:
@@ -1787,6 +1787,27 @@ class RunnerUpgrade(unittest.TestCase):
         self.assertEqual(environments, ["grant"])
         self.assertFalse(marker.exists())
         self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.3"))
+
+    def test_an_execution_that_starts_before_the_stop_defers_configure_and_leaves_the_runner_running(self):
+        def prepare_agents(artifact):
+            self.systemctl.active = b"paws-agent@01K00000000000000000000000.service loaded active running\n"
+            return {"agents": {}}
+        with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}):
+            self.assertEqual(self.configure(prepare_agents), {"installed": False, "pending": True})
+        self.assertNotIn("stop", self.systemctl.verbs())
+        self.assertEqual(self.systemctl.calls[-1], ("start", "--no-block", "--", "paws-runner-agents.service"))
+        self.assertEqual(json.loads((self.state / "configure-pending.json").read_text()), {"docker": "grant"})
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
+        self.assertFalse((self.state / "release.json").exists())
+
+    def test_a_failure_after_the_stop_starts_the_runner_again(self):
+        def switch(unpacked, destination, pointers):
+            raise OSError("switch failed")
+        with mock.patch.object(self, "switch", switch), self.assertRaisesRegex(OSError, "switch failed"):
+            self.configure(lambda artifact: {"agents": {}})
+        verbs = self.systemctl.verbs()
+        self.assertLess(verbs.index("stop"), verbs.index("start"))
+        self.assertEqual(self.systemctl.calls[-1], ("start", "--", "paws-runner.service"))
 
     def test_configure_without_an_active_execution_writes_no_marker(self):
         self.configure(lambda artifact: {"agents": {}})

@@ -613,11 +613,25 @@ def apply_pending_configure(run=run_package_configure, sleep=time.sleep):
         run({**release.COMMAND_ENV, DOCKER_ACCESS_ENV: pending.get("docker") or ""})
 
 
+def defer_configure(docker):
+    write_atomic(pending_configure(), json.dumps({"docker": docker}).encode(), 0o600)
+    release.command(["/usr/bin/systemctl", "start", "--no-block", "--", "paws-runner-agents.service"])
+    return {"installed": False, "pending": True}
+
+
+def installed_units(units):
+    existing = release.command(["/usr/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager"]).decode()
+    return [unit for unit in units if any(line.split()[0] == unit for line in existing.splitlines() if line.split())]
+
+
+def restart_runner():
+    if installed_units(["paws-runner.service"]):
+        release.command(["/usr/bin/systemctl", "start", "--", "paws-runner.service"])
+
+
 def stop_for_install():
     refuse_active_executions()
-    units = ["paws-runner.service", "paws-runner-broker.socket", "paws-runner-broker.service"]
-    existing = release.command(["/usr/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager"]).decode()
-    present = [unit for unit in units if any(line.split()[0] == unit for line in existing.splitlines() if line.split())]
+    present = installed_units(["paws-runner.service", "paws-runner-broker.socket", "paws-runner-broker.service"])
     if present:
         release.command(["/usr/bin/systemctl", "stop", "--", *present])
     refuse_active_executions()
@@ -851,7 +865,7 @@ def lock_install():
     return lock
 
 
-def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None):
+def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None, defer=None):
     """Put the release in place beside the running one and run `prepare`, then stop the runner and switch `current`.
 
     Anything that fails before the stop leaves the runner running on the release it had. Returns what
@@ -911,12 +925,18 @@ def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: No
             journal.start("agents")
             prepared = prepare()
             journal.end("agents")
+            if defer is not None and active_executions():
+                return defer(), prepared
             # deb-control.py ends this phase once the runner has started again.
             journal.start("stop-to-start")
-            stop_for_install()
-            write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
-            switch_release(unpacked, destination, pointers)
-            write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
+            try:
+                stop_for_install()
+                write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
+                switch_release(unpacked, destination, pointers)
+                write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
+            except BaseException:
+                restart_runner()
+                raise
         login_prefix = "/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
         login_commands = {"claude": login_prefix + "/opt/paws-runner/bin/claude auth login", "codex": login_prefix + "/opt/paws-runner/bin/codex login --device-auth"}
         return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "providerLoginCommands": login_commands}, prepared
