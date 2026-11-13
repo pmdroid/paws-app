@@ -8,6 +8,7 @@ test/improvement-inbox-ui.test.ts # dashboard reads still loading when the test 
 test/improvement-review.test.ts # filing not recorded after one tick; store closed under a query
 test/linear-lifecycle-delivery.test.ts # old intake failure posts after the newer generation
 test/linear-poller.test.ts # shutdown aborts the handler before the "shutting down" check
+test/loop-keepalive.test.ts # flaky: the keepalive callback is not awaited before the outbox drain
 test/member-vm-delete.test.ts # create not requested within 5 ms; store closed under a query
 test/member-vm.test.ts # VM not created within 5 ms; store closed under a query
 test/onboarding-runner-step.test.ts # runner step still "needed" when the page repaints
