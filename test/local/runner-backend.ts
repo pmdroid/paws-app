@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import type { Database } from "bun:sqlite";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  openDatabase,
-  migrate,
   putWorkspaceUser,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
@@ -27,7 +25,8 @@ import {
   runnerOccupancy,
   enqueueOutbox,
   listOutbox,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -61,13 +60,15 @@ import {
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
 } from "../../src/runner-transcripts";
 import { openQuestionSteps } from "../../src/questions";
-import { answerQuestion, ask as askQuestion } from "../questions";
+import { answerQuestionPg as answerQuestion, askPg as askQuestion } from "../questions";
+import { tempStore } from "../pglite";
+import { seed } from "../dialects";
 import { applyWorkItemEvent, applyWorkItemEventSteps } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
 
 async function slotsTaken(
-  db: Database,
+  db: Db,
   hostIds: readonly string[],
   now: number,
   occupied: boolean,
@@ -75,8 +76,8 @@ async function slotsTaken(
   let total = 0;
   for (const id of hostIds)
     total +=
-      (occupied ? (await runnerOccupancy(sqliteDb(db), id, now)).occupied : 0) +
-      (await runnerSlotsHeldBetweenCommands(sqliteDb(db), id, now));
+      (occupied ? (await runnerOccupancy(db, id, now)).occupied : 0) +
+      (await runnerSlotsHeldBetweenCommands(db, id, now));
   return total;
 }
 
@@ -89,17 +90,98 @@ export async function probeRunnerBackend(
     join(root, "config.toml"),
     '[checkout.projects."fixture/repository"]\nexclude = ["large"]\n',
   );
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  type Runner = Partial<Q["t"]["runner"]["$inferInsert"]>;
+  const setRunner = (id: string, values: Runner) =>
+    seed(db, (q) => q.orm.update(q.t.runner).set(values).where(eq(q.t.runner.id, id)));
+  const setRunStatus = (id: string, status: string) =>
+    seed(db, (q) => q.orm.update(q.t.run).set({ status }).where(eq(q.t.run.id, id)));
+  const reportRunnerVersion = (runnerId: string, runnerVersion: string, reportedAt: number) =>
+    seed(db, (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId, runnerVersion, reportedAt })
+        .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } }),
+    );
+  const clearHostStatus = (runnerId: string) =>
+    seed(db, (q) =>
+      q.orm.delete(q.t.runnerHostStatus).where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
+    );
+  const runnerWorkOf = async (runId: string) =>
+    (
+      await db.run((q) =>
+        q.all(q.orm.select().from(q.t.runnerWork).where(eq(q.t.runnerWork.runId, runId))),
+      )
+    )[0];
+  const questionAnswer = async (runId: string, sequence: number) =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ answer: q.t.runnerQuestionAnswer.answer })
+            .from(q.t.runnerQuestionAnswer)
+            .where(
+              and(
+                eq(q.t.runnerQuestionAnswer.runId, runId),
+                eq(q.t.runnerQuestionAnswer.sequence, sequence),
+              ),
+            ),
+        ),
+      )
+    )[0];
+  const busyWork = (runId: string, runnerId: string, workspace: string, commandId: string) =>
+    seed(db, (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId,
+        runnerId,
+        workspaceId: workspace,
+        generation: 1,
+        runnerFence: 0,
+        commandId,
+        leaseUntil: Date.now() + 3_600_000,
+      }),
+    );
+  const leaseUntil = (runId: string, until: number) =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerWork)
+        .set({ leaseUntil: until })
+        .where(eq(q.t.runnerWork.runId, runId)),
+    );
+  const memberChecked = () =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.workspaceMember)
+        .set({ checkedAt: now })
+        .where(eq(q.t.workspaceMember.userId, principal.userId)),
+    );
+  /** Two reads see one transaction id only inside a transaction: outside, each commits on its own. */
+  function* inTransaction(q: Q) {
+    const xid = () =>
+      q.one(
+        q.orm
+          .select({ id: sql<string>`txid_current()::text` })
+          .from(q.t.runner)
+          .limit(1),
+      );
+    return (yield* xid())?.id === (yield* xid())?.id;
+  }
+  const endWork = (commandIds: string[]) =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerWork)
+        .set({ endedAt: Date.now(), teardownConfirmedAt: Date.now() })
+        .where(inArray(q.t.runnerWork.commandId, commandIds)),
+    );
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",
@@ -117,7 +199,7 @@ export async function probeRunnerBackend(
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -131,17 +213,17 @@ export async function probeRunnerBackend(
       token: (await control.createEnrollment(principal, pending)).token,
     })
   ).runnerId;
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await setRunner(runnerId, { status: "active" });
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
+  const results = createRunnerResults({ store: db, work, now: () => now });
+  const health = createRunnerHealth({ store: db, work, now: () => now });
   await work.heartbeat(runnerId);
   const source = join(root, "source");
   async function git(args: string[]) {
@@ -196,7 +278,7 @@ export async function probeRunnerBackend(
       return bot;
     },
     artifacts,
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
@@ -205,10 +287,7 @@ export async function probeRunnerBackend(
     async fetchCandidate(candidate) {
       assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
       assert.equal(candidate.networkGit, networkGit);
-      assert.equal(
-        candidate.branch,
-        (await getWorkItem(sqliteDb(db), candidate.itemId))?.branchName,
-      );
+      assert.equal(candidate.branch, (await getWorkItem(db, candidate.itemId))?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
       fetched++;
@@ -227,9 +306,16 @@ export async function probeRunnerBackend(
     selectedRunnerId: string,
     command: { id: string; runId: string; generation: number },
   ) {
-    const lastSeen = db
-      .query<{ at: number | null }, [string]>("SELECT last_seen_at AS at FROM runner WHERE id=?")
-      .get(selectedRunnerId)?.at;
+    const lastSeen = (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ at: q.t.runner.lastSeenAt })
+            .from(q.t.runner)
+            .where(eq(q.t.runner.id, selectedRunnerId)),
+        ),
+      )
+    )[0]?.at;
     await work.heartbeat(
       selectedRunnerId,
       1,
@@ -242,7 +328,7 @@ export async function probeRunnerBackend(
       undefined,
       [{ runId: command.runId, generation: command.generation, commandId: command.id }],
     );
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [lastSeen ?? null, selectedRunnerId]);
+    await setRunner(selectedRunnerId, { lastSeenAt: lastSeen ?? null });
   }
   async function drainCancels(selectedRunnerId: string) {
     for (const envelope of await work.commands(selectedRunnerId)) {
@@ -285,10 +371,26 @@ export async function probeRunnerBackend(
   }
   let sequence = 0;
   const finishRuns = async () => {
-    for (const { id } of db.query<{ id: string }, []>("SELECT id FROM runner").all())
+    for (const { id } of await db.run((q) =>
+      q.all(q.orm.select({ id: q.t.runner.id }).from(q.t.runner)),
+    ))
       await drainCancels(id);
-    db.run(
-      "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.run)
+        .set({ status: "ended" })
+        .where(
+          and(
+            eq(q.t.run.status, "active"),
+            inArray(
+              q.t.run.id,
+              q.orm
+                .select({ id: q.t.runnerWork.runId })
+                .from(q.t.runnerWork)
+                .where(isNotNull(q.t.runnerWork.endedAt)),
+            ),
+          ),
+        ),
     );
   };
   async function item() {
@@ -296,7 +398,7 @@ export async function probeRunnerBackend(
       sessionId = `session-${sequence}`;
     await finishRuns();
     const record = await insertQueuedItem(db, { id, now, sessionKey: sessionId });
-    const { run } = await beginImplementRun(sqliteDb(db), id, now);
+    const { run } = await beginImplementRun(db, id, now);
     const linked = Bun.spawnSync([
       "/usr/bin/git",
       "--git-dir",
@@ -306,7 +408,7 @@ export async function probeRunnerBackend(
       "refs/heads/main",
     ]);
     assert.equal(linked.exitCode, 0, linked.stderr.toString());
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -314,9 +416,11 @@ export async function probeRunnerBackend(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, { actorId: "owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    await sqliteDb(db).transaction((q) =>
+    await bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "owner" });
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+    );
+    await db.transaction((q) =>
       bindWorkItemRepositorySteps(q, id, {
         owner: "fixture",
         repo: "repository",
@@ -361,11 +465,13 @@ export async function probeRunnerBackend(
       /No available paired runner .*outside the runner workspace repository access/,
     );
     assert.equal((await work.commands(runnerId)).length, 0);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "fixture-team",
-    ]);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "fixture-team",
+      }),
+    );
     observe("remote selection denies unmapped Linear repositories before dispatch", true, {
       commands: 0,
     });
@@ -422,7 +528,7 @@ export async function probeRunnerBackend(
         },
         closeoutProgress: {
           async record(progress) {
-            await recordAgentCloseout(sqliteDb(db), first.run.id, first.id, progress, Date.now());
+            await recordAgentCloseout(db, first.run.id, first.id, progress, Date.now());
           },
         },
         publishArtifact: {
@@ -584,35 +690,23 @@ export async function probeRunnerBackend(
     const completed = await running;
     assert.equal(completed.stopReason, "end_turn");
     assert.equal(published, true);
-    const refusal = db
-      .query<{ answer: string }, [string]>(
-        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=3",
-      )
-      .get(assigned.runId);
+    const refusal = await questionAnswer(assigned.runId, 3);
     assert.deepEqual(JSON.parse(refusal!.answer), { error: "The file is larger than 200 MB." });
-    const dropped = db
-      .query<{ answer: string }, [string]>(
-        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=4",
-      )
-      .get(assigned.runId);
+    const dropped = await questionAnswer(assigned.runId, 4);
     assert.deepEqual(JSON.parse(dropped!.answer), {
       error: "reports/extra.png was not published: Paws keeps at most 20 artifacts per run.",
     });
-    const publicationAnswer = db
-      .query<{ answer: string }, [string]>(
-        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=2",
-      )
-      .get(assigned.runId);
+    const publicationAnswer = await questionAnswer(assigned.runId, 2);
     assert.equal(JSON.parse(publicationAnswer!.answer).url, "https://linear.app/artifact/backend");
     assert.equal(fetched, 1);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
-    assert.equal((await getWorkItem(sqliteDb(db), first.id))?.state, "running");
+    assert.equal((await getWorkItem(db, first.id))?.state, "running");
     await assert.rejects(work.currentAsync(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
     assert.deepEqual(replies, [
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
     ]);
-    const status = createLiveStatusProvider(sqliteDb(db));
+    const status = createLiveStatusProvider(db);
     const listed = (await status.issues()).agentCloseout.find(
       (entry) => entry.runId === first.run.id,
     );
@@ -640,12 +734,8 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
     const stopped = await item();
-    const runnerAt = (version: string) =>
-      db.run(
-        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-        [runnerId, version, Date.now()],
-      );
-    runnerAt("0.1.75");
+    const runnerAt = (version: string) => reportRunnerVersion(runnerId, version, Date.now());
+    await runnerAt("0.1.75");
     const stoppedAgent = backend.forItem(stopped.id);
     const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
@@ -681,8 +771,8 @@ export async function probeRunnerBackend(
     let resumed = await next();
     if (resumed.type === "cancel") resumed = await next();
     if (resumed.type !== "run") throw new Error("Expected one restarted implementation");
-    assert.equal((await getWorkItem(sqliteDb(db), stopped.id))?.state, "running");
-    assert.equal((await getWorkItem(sqliteDb(db), stopped.id))?.checkpoint?.wipCommit, head);
+    assert.equal((await getWorkItem(db, stopped.id))?.state, "running");
+    assert.equal((await getWorkItem(db, stopped.id))?.checkpoint?.wipCommit, head);
     assert.equal(resumed.repository.baseSha, head);
     const resumedToken = await work.issueGrant({
       runnerId,
@@ -706,7 +796,7 @@ export async function probeRunnerBackend(
       result: { ...result(resumed), stopReason: "cancelled", cancelled: true, interrupted: true },
     });
     assert.equal((await early).stopReason, "cancelled");
-    assert.equal((await getWorkItem(sqliteDb(db), stopped.id))?.checkpoint?.wipCommit, head);
+    assert.equal((await getWorkItem(db, stopped.id))?.checkpoint?.wipCommit, head);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
     assert.equal(fetched, fetchedBefore);
     fetched = fetchedBefore;
@@ -746,12 +836,12 @@ export async function probeRunnerBackend(
     // from the previously recorded checkpoint. A failed save, missing stop evidence and a
     // runner too old to tell a failed save from nothing to save fail closed too.
     for (const publication of ["refused", "failed", "missing", "older"] as const) {
-      if (publication === "older") runnerAt("0.1.74");
+      if (publication === "older") await runnerAt("0.1.74");
       const record = await item();
       const publicationRun = backend.forItem(record.id)(input(record));
       const command = await next();
       if (command.type !== "run") throw new Error("Expected implementation");
-      const previousWip = (await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit;
+      const previousWip = (await getWorkItem(db, record.id))?.checkpoint?.wipCommit;
       const publicationGrant = await work.issueGrant({
         runnerId,
         runId: command.runId,
@@ -788,12 +878,9 @@ export async function probeRunnerBackend(
         result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
       });
       assert.equal((await publicationRun).stopReason, "cancelled");
-      assert.equal(
-        (await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit,
-        previousWip,
-      );
+      assert.equal((await getWorkItem(db, record.id))?.checkpoint?.wipCommit, previousWip);
     }
-    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    await clearHostStatus(runnerId);
     observe(
       "a refused, failed or missing stop checkpoint, or an older runner, prevents interruption retry",
       true,
@@ -825,10 +912,7 @@ export async function probeRunnerBackend(
       "limited-session",
     );
     const tooLong = await stoppedWith("Prompt is too long", "too-long-session");
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-      [runnerId, "0.1.24", Date.now()],
-    );
+    await reportRunnerVersion(runnerId, "0.1.24", Date.now());
     const continued: Record<string, string | null> = {};
     for (const [name, record] of [
       ["ended", first],
@@ -838,7 +922,7 @@ export async function probeRunnerBackend(
     ] as const) {
       const stop = new AbortController();
       await finishRuns();
-      db.run("UPDATE run SET status='active' WHERE id=?", [record.run.id]);
+      await setRunStatus(record.run.id, "active");
       const again = backend.forItem(record.id)(input(record, { signal: stop.signal }));
       void again.catch(() => undefined);
       let command = await next();
@@ -854,7 +938,7 @@ export async function probeRunnerBackend(
       { agent: "claude", model: "new-model" },
     ] as const) {
       await finishRuns();
-      db.run("UPDATE run SET status='active' WHERE id=?", [first.run.id]);
+      await setRunStatus(first.run.id, "active");
       const stop = new AbortController();
       const again = backend.forItem(first.id)(input(first, { profile, signal: stop.signal }));
       void again.catch(() => undefined);
@@ -870,7 +954,7 @@ export async function probeRunnerBackend(
       await again.catch(() => undefined);
     }
     while ((await work.commands(runnerId)).length) await next();
-    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    await clearHostStatus(runnerId);
     observe(
       "a later run resumes the agent session of the item's last run unless that run errored other than at the usage limit",
       continued.ended === "first-session" &&
@@ -882,10 +966,7 @@ export async function probeRunnerBackend(
     const runtimeCommands: Record<string, unknown> = {};
     const runtimeLines: string[] = [];
     for (const version of ["0.1.26", "0.1.25"]) {
-      db.run(
-        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-        [runnerId, version, Date.now()],
-      );
+      await reportRunnerVersion(runnerId, version, Date.now());
       const record = await item();
       const stop = new AbortController();
       const sent = backend.forItem(record.id)(
@@ -911,7 +992,7 @@ export async function probeRunnerBackend(
       runtimeCommands[version] = command.runtimes ?? null;
     }
     while ((await work.commands(runnerId)).length) await next();
-    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    await clearHostStatus(runnerId);
     observe(
       "a run carries the repository's runtime list to a runner that accepts it and posts its notices",
       JSON.stringify(runtimeCommands["0.1.26"]) ===
@@ -932,7 +1013,7 @@ export async function probeRunnerBackend(
       { runtimeCommands, runtimeLines },
     );
     await saveHook(
-      sqliteDb(db),
+      db,
       {
         id: "uploaded-guard",
         event: "after_edit",
@@ -944,16 +1025,13 @@ export async function probeRunnerBackend(
       },
       Date.now(),
     );
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-      [runnerId, "0.1.52", Date.now()],
-    );
+    await reportRunnerVersion(runnerId, "0.1.52", Date.now());
     const oldHookRun = await item();
     await assert.rejects(
       backend.forItem(oldHookRun.id)(input(oldHookRun)),
       /needs runner 0.1.53 or later to run skill hooks/,
     );
-    db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
+    await reportRunnerVersion(runnerId, "0.1.53", Date.now());
     const hookRun = await item();
     const hookStop = new AbortController();
     const hooked = backend.forItem(hookRun.id)(
@@ -967,8 +1045,8 @@ export async function probeRunnerBackend(
     hookStop.abort();
     await hooked.catch(() => undefined);
     while ((await work.commands(runnerId)).length) await next();
-    await deleteHook(sqliteDb(db), "uploaded-guard");
-    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    await deleteHook(db, "uploaded-guard");
+    await clearHostStatus(runnerId);
     await git(["-C", source, "reset", "--hard", base]);
     const detached = await item();
     const shutdown = new AbortController();
@@ -1002,12 +1080,7 @@ export async function probeRunnerBackend(
     for (let attempt = 0; attempt < 500 && beforeEvents.length === 0; attempt++) await delay(2);
     shutdown.abort(new PawsShutdown());
     await beforeRestart.catch(() => undefined);
-    const leftLive =
-      db
-        .query<{ ended: number | null }, [string]>(
-          "SELECT ended_at AS ended FROM runner_work WHERE run_id=?",
-        )
-        .get(detachedCommand.runId)?.ended === null;
+    const leftLive = (await runnerWorkOf(detachedCommand.runId))?.endedAt === null;
     const cancelSent = (await work.commands(runnerId)).length > 0;
     const afterEvents: string[] = [];
     const afterRestart = backend.forItem(detached.id)(
@@ -1069,7 +1142,7 @@ export async function probeRunnerBackend(
         publishArtifact: {
           async publish() {
             replayPublications++;
-            await enqueueOutbox(sqliteDb(db), {
+            await enqueueOutbox(db, {
               target: "linear",
               op: "activity",
               orderingKey: `session-${replayed.id}`,
@@ -1129,7 +1202,12 @@ export async function probeRunnerBackend(
     replayShutdown.abort(new PawsShutdown());
     await beforeReplay.catch(() => undefined);
     // Paws stopped after the effects and before the cursor moved past them.
-    db.run("UPDATE runner_work SET consumed_sequence=0 WHERE run_id=?", [replayCommand.runId]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerWork)
+        .set({ consumedSequence: 0 })
+        .where(eq(q.t.runnerWork.runId, replayCommand.runId)),
+    );
     const afterReplay = backend.forItem(replayed.id)(replayInput());
     for (let attempt = 0; attempt < 500 && origins.length < 2; attempt++) await delay(2);
     await results.submit({
@@ -1142,12 +1220,8 @@ export async function probeRunnerBackend(
     const fetchedBeforeReplay = fetched;
     const replayResult = await afterReplay;
     fetched = fetchedBeforeReplay;
-    const replayRows = (await listOutbox(sqliteDb(db), `session-${replayed.id}`)).length;
-    const replayAnswer = db
-      .query<{ answer: string }, [string]>(
-        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=1",
-      )
-      .get(replayCommand.runId)?.answer;
+    const replayRows = (await listOutbox(db, `session-${replayed.id}`)).length;
+    const replayAnswer = (await questionAnswer(replayCommand.runId, 1))?.answer;
     const sameOrigin = {
       runId: replayCommand.runId,
       generation: replayCommand.generation,
@@ -1302,10 +1376,7 @@ export async function probeRunnerBackend(
         .forItem(record.id)(input(record, { ...overrides, reviewCommand: { base: reviewBase } }))
         .catch((error: Error) => refusedReviews.push(error.message));
     }
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-      [runnerId, "0.1.46", Date.now()],
-    );
+    await reportRunnerVersion(runnerId, "0.1.46", Date.now());
     const oldRunner = await item();
     const tooOld = await backend
       .forItem(oldRunner.id)(reviewCommandInput(oldRunner))
@@ -1313,10 +1384,7 @@ export async function probeRunnerBackend(
         () => "",
         (error: Error) => error.message,
       );
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-      [runnerId, "0.1.47", Date.now()],
-    );
+    await reportRunnerVersion(runnerId, "0.1.47", Date.now());
     const commandReviewer = await item();
     let commandText = "";
     const commandReviewed = backend.forItem(commandReviewer.id)({
@@ -1347,7 +1415,7 @@ export async function probeRunnerBackend(
       result: { ...result(commandReview, "reviewer"), reviewText: "[]" },
     });
     await commandReviewed;
-    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    await clearHostStatus(runnerId);
     observe(
       "a review command is sent as a review on its runner with the diff base, and only to a runner release that runs it",
       commandReview.reviewCommand?.base === reviewBase &&
@@ -1361,7 +1429,7 @@ export async function probeRunnerBackend(
     );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
     const transcripts = createRunnerTranscripts({
-      store: sqliteDb(db),
+      store: db,
       work,
       objects: transcriptObjects,
       key: randomBytes(32),
@@ -1373,10 +1441,17 @@ export async function probeRunnerBackend(
         async download(runId, generation, executionId) {
           const bytes = await transcripts.download(runId, generation, executionId);
           if (cancelDuringDownload) {
-            const current = db
-              .query<{ itemId: string }, [string]>("SELECT item_id AS itemId FROM run WHERE id=?")
-              .get(runId)!;
-            db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [current.itemId]);
+            await seed(db, (q) =>
+              q.orm
+                .update(q.t.workItem)
+                .set({ cancelRequested: 1 })
+                .where(
+                  inArray(
+                    q.t.workItem.id,
+                    q.orm.select({ id: q.t.run.itemId }).from(q.t.run).where(eq(q.t.run.id, runId)),
+                  ),
+                ),
+            );
           }
           return bytes;
         },
@@ -1410,7 +1485,7 @@ export async function probeRunnerBackend(
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
         const task = await item();
-        await saveTaskMode(sqliteDb(db), task.id, purpose, 0, withRepository);
+        await saveTaskMode(db, task.id, purpose, 0, withRepository);
         const directory = join(root, `response-${task.id}`);
         mkdirSync(directory, { mode: 0o700 });
         if (withRepository)
@@ -1658,7 +1733,7 @@ export async function probeRunnerBackend(
           "source inspected",
         );
         assert.equal(fetched, beforeFetch);
-        assert.equal((await getWorkItem(sqliteDb(db), task.id))?.checkpoint, null);
+        assert.equal((await getWorkItem(db, task.id))?.checkpoint, null);
         await assert.rejects(work.currentAsync(command.runId, command.generation), /fenced/);
         observe(
           `remote ${purpose} task with repository=${withRepository} returns complete sealed text and tool history`,
@@ -1673,15 +1748,18 @@ export async function probeRunnerBackend(
       }
     }
     const changedTask = await item();
-    await saveTaskMode(sqliteDb(db), changedTask.id, "answer");
+    await saveTaskMode(db, changedTask.id, "answer");
     await assert.rejects(
       sealedBackend.forItem(changedTask.id)(
         input(changedTask, {
           readOnly: true,
           async prepareInputFiles({ prompt }) {
-            db.run("UPDATE linear_session SET generation=generation+1 WHERE session_id=?", [
-              `session-${sequence}`,
-            ]);
+            await seed(db, (q) =>
+              q.orm
+                .update(q.t.linearSession)
+                .set({ generation: sql`${q.t.linearSession.generation} + 1` })
+                .where(eq(q.t.linearSession.sessionId, `session-${sequence}`)),
+            );
             return { prompt, inputFiles: [] };
           },
         }),
@@ -1695,7 +1773,7 @@ export async function probeRunnerBackend(
       { commands: 0 },
     );
     const unsafeTask = await item();
-    await saveTaskMode(sqliteDb(db), unsafeTask.id, "artifact", 0, true);
+    await saveTaskMode(db, unsafeTask.id, "artifact", 0, true);
     const unsafeDirectory = join(root, "unsafe-response");
     mkdirSync(unsafeDirectory, { mode: 0o700 });
     writeFileSync(
@@ -1716,7 +1794,7 @@ export async function probeRunnerBackend(
     for (const kind of ["run", "review", "answer", "artifact"] as const) {
       const record = await item();
       const isTask = kind === "answer" || kind === "artifact";
-      if (isTask) await saveTaskMode(sqliteDb(db), record.id, kind);
+      if (isTask) await saveTaskMode(db, record.id, kind);
       const directory = isTask ? join(root, `inputs-${record.id}`) : source;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       if (!isTask) await git(["-C", source, "reset", "--hard", base]);
@@ -2040,7 +2118,7 @@ export async function probeRunnerBackend(
       observe(
         `remote transcript ${failure} cannot publish sealed history or complete the assignment`,
         true,
-        { canonicalState: (await getWorkItem(sqliteDb(db), rejected.id))?.state },
+        { canonicalState: (await getWorkItem(db, rejected.id))?.state },
       );
     }
     const prepared = await item();
@@ -2085,11 +2163,20 @@ export async function probeRunnerBackend(
                 },
               );
               assert.equal(asked2.question.context, "Rows 1-16 are listed in report.md.");
-              contextBody = db
-                .query<{ body: string }, [string]>(
-                  "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE op='elicitation' AND idempotency_key=?",
-                )
-                .get(`question:${asked2.question.id}`)?.body;
+              const [elicitation] = await db.run((q) =>
+                q.all(
+                  q.orm
+                    .select({ payload: q.t.outbox.payload })
+                    .from(q.t.outbox)
+                    .where(
+                      and(
+                        eq(q.t.outbox.op, "elicitation"),
+                        eq(q.t.outbox.idempotencyKey, `question:${asked2.question.id}`),
+                      ),
+                    ),
+                ),
+              );
+              contextBody = (elicitation?.payload as { body?: string } | undefined)?.body;
               await answerQuestion(db, asked2.question.id, {
                 answer: "all",
                 answeredBy: "owner",
@@ -2100,7 +2187,7 @@ export async function probeRunnerBackend(
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
             assert.equal(request.context, undefined);
-            const question = await sqliteDb(db).transaction(function* (q) {
+            const question = await db.transaction(function* (q) {
               yield* applyWorkItemEventSteps(q, asked.id, "blocking_question");
               return yield* openQuestionSteps(q, {
                 itemId: asked.id,
@@ -2113,7 +2200,7 @@ export async function probeRunnerBackend(
             opened = true;
             await delay(10, undefined, { signal: context.signal });
             await answerQuestion(db, question.id, { answer: "yes", answeredBy: "owner", now });
-            await applyWorkItemEvent(sqliteDb(db), asked.id, "answer_received");
+            await applyWorkItemEvent(db, asked.id, "answer_received");
             return { answer: "yes" };
           },
         },
@@ -2199,7 +2286,7 @@ export async function probeRunnerBackend(
     observe(
       "remote questions use the existing Linear question channel and immutable answer sequence",
       true,
-      { opened, answered, canonicalState: (await getWorkItem(sqliteDb(db), asked.id))?.state },
+      { opened, answered, canonicalState: (await getWorkItem(db, asked.id))?.state },
     );
     observe(
       "a remote question without context, as an older runner sends it, is still accepted",
@@ -2279,7 +2366,7 @@ export async function probeRunnerBackend(
     await mismatchRejection;
     const mismatchCancel = await next();
     assert.equal(mismatchCancel.type, "cancel");
-    assert.equal((await getWorkItem(sqliteDb(db), mismatched.id))?.state, "running");
+    assert.equal((await getWorkItem(db, mismatched.id))?.state, "running");
     importWrongHead = false;
     observe("candidate import mismatch rejects completion and fences the assignment", true, {
       head: await git(["-C", source, "rev-parse", "HEAD"]),
@@ -2308,7 +2395,7 @@ export async function probeRunnerBackend(
     observe(
       "successful implementation without a candidate cannot finish or approve the task",
       true,
-      { canonicalState: (await getWorkItem(sqliteDb(db), absent.id))?.state },
+      { canonicalState: (await getWorkItem(db, absent.id))?.state },
     );
     const unauthorized = await item();
     const beforeUnauthorized = fetched;
@@ -2352,7 +2439,7 @@ export async function probeRunnerBackend(
     await rejection;
     const cancel = await next();
     assert.equal(cancel.type, "cancel");
-    assert.equal((await getWorkItem(sqliteDb(db), cancelled.id))?.state, "running");
+    assert.equal((await getWorkItem(db, cancelled.id))?.state, "running");
     observe("cancellation queues a fenced stop without approving the canonical run", true, {
       cancelType: cancel.type,
       canonicalState: "running",
@@ -2393,14 +2480,17 @@ export async function probeRunnerBackend(
     const observedFailures: string[] = [];
     const failoverItem = await item();
     for (const [index, id] of hostIds.entries()) {
-      db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
-      db.run(
-        "INSERT INTO runner_agent_policy(runner_id,agent,ready,virtual_finish) VALUES(?,'codex',1,?)",
-        [id, index * 10],
+      await seed(
+        db,
+        (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id }),
+        (q) =>
+          q.orm
+            .insert(q.t.runnerAgentPolicy)
+            .values({ runnerId: id, agent: "codex", ready: 1, virtualFinish: index * 10 }),
       );
     }
     const placement = createRunnerPlacement({
-      store: sqliteDb(db),
+      store: db,
       now: () => now,
     });
     let selectionReads = 0;
@@ -2412,21 +2502,35 @@ export async function probeRunnerBackend(
           return placement.candidates(request);
         },
         *startedSteps(q, request) {
-          assert(db.inTransaction);
+          assert(yield* inTransaction(q));
           assert(
-            db
-              .query(
-                request.purpose === "work"
-                  ? "SELECT 1 FROM runner_work WHERE command_id=? AND runner_id=?"
-                  : "SELECT 1 FROM runner_command WHERE id=? AND runner_id=?",
-              )
-              .get(request.commandId, request.runnerId),
+            yield* q.one(
+              request.purpose === "work"
+                ? q.orm
+                    .select({ id: q.t.runnerWork.commandId })
+                    .from(q.t.runnerWork)
+                    .where(
+                      and(
+                        eq(q.t.runnerWork.commandId, request.commandId),
+                        eq(q.t.runnerWork.runnerId, request.runnerId),
+                      ),
+                    )
+                : q.orm
+                    .select({ id: q.t.runnerCommand.id })
+                    .from(q.t.runnerCommand)
+                    .where(
+                      and(
+                        eq(q.t.runnerCommand.id, request.commandId),
+                        eq(q.t.runnerCommand.runnerId, request.runnerId),
+                      ),
+                    ),
+            ),
           );
           yield* placement.startedSteps(q, request);
           placements.push(request.runnerId);
         },
         *finishedSteps(q, observation) {
-          assert(db.inTransaction);
+          assert(yield* inTransaction(q));
           const disposition = yield* placement.finishedSteps(q, observation);
           if (disposition.retryable)
             observedFailures.push(
@@ -2446,11 +2550,7 @@ export async function probeRunnerBackend(
           await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
-      for (const host of hostIds)
-        db.run(
-          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.26',?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-          [host, now],
-        );
+      for (const host of hostIds) await reportRunnerVersion(host, "0.1.26", now);
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
         const record = await item();
         const affinityNotices: string[] = [];
@@ -2512,11 +2612,9 @@ export async function probeRunnerBackend(
           `agent-${implemented.id}`,
         );
         affinityNotices.length = 0;
-        if (unavailable === "offline")
-          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, firstHost]);
-        else if (unavailable === "revoked")
-          db.run("UPDATE runner SET revoked_at=? WHERE id=?", [now, firstHost]);
-        else db.run("UPDATE runner SET status=? WHERE id=?", [unavailable, firstHost]);
+        if (unavailable === "offline") await setRunner(firstHost, { lastSeenAt: now - 60_001 });
+        else if (unavailable === "revoked") await setRunner(firstHost, { revokedAt: now });
+        else await setRunner(firstHost, { status: unavailable });
         const replacement = (
           await placement.candidates({
             itemId: record.id,
@@ -2529,10 +2627,10 @@ export async function probeRunnerBackend(
         assert.notEqual(replacement, firstHost);
         const moved = await step(replacement, "reviewer");
         assert(!("resumeSessionId" in moved));
-        assert.equal(await runnerSlotsHeldBetweenCommands(sqliteDb(db), firstHost, now), 0);
+        assert.equal(await runnerSlotsHeldBetweenCommands(db, firstHost, now), 0);
         // Reviewer preflight after a moved review/ejection must not use cached model evidence
         // or the checkout pin. A revoked previous generation must not prevent reviewerPreparation.
-        db.run("UPDATE runner_agent_policy SET resolved_model='model'");
+        await seed(db, (q) => q.orm.update(q.t.runnerAgentPolicy).set({ resolvedModel: "model" }));
         const prepareRequest = {
           itemId: record.id,
           profile: { agent: "codex" as const, model: null },
@@ -2557,20 +2655,16 @@ export async function probeRunnerBackend(
         });
         assert.equal((await reviewerPreparation).stopReason, "end_turn");
         // Bringing the original host back must not pull the run back or repeat its notice.
-        db.run("UPDATE runner SET status='active',revoked_at=NULL,last_seen_at=? WHERE id=?", [
-          now,
-          firstHost,
-        ]);
+        await setRunner(firstHost, { status: "active", revokedAt: null, lastSeenAt: now });
         const fixed = await step(replacement, "implementer");
         assert(!("resumeSessionId" in fixed));
         assert.equal(
           affinityNotices.filter((notice) => notice.startsWith("Starting a new session on")).length,
           1,
         );
-        db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
+        await setRunStatus(record.run.id, "ended");
       }
-      for (const host of hostIds)
-        db.run("DELETE FROM runner_host_status WHERE runner_id=?", [host]);
+      for (const host of hostIds) await clearHostStatus(host);
       observe(
         "Implementation, review and fixes keep one runner slot, replacing unavailable hosts once",
         true,
@@ -2585,7 +2679,7 @@ export async function probeRunnerBackend(
       });
       for (const purpose of ["answer", "artifact"] as const) {
         const record = await item();
-        await saveTaskMode(sqliteDb(db), record.id, purpose);
+        await saveTaskMode(db, record.id, purpose);
         const host = (
           await placement.candidates({
             itemId: record.id,
@@ -2634,7 +2728,7 @@ export async function probeRunnerBackend(
           await affinityTurn;
           assert.equal(await slotsTaken(db, hostIds, now, false), 1);
         }
-        db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
+        await setRunStatus(record.run.id, "ended");
       }
       observe("Response tasks keep the run's runner and a single slot across turns", true, {
         modes: ["answer", "artifact"],
@@ -2652,10 +2746,7 @@ export async function probeRunnerBackend(
             delayedPreparation = true;
             now += 16_000;
             for (const hostId of hostIds) await work.heartbeat(hostId);
-            db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [
-              now,
-              principal.userId,
-            ]);
+            await memberChecked();
           }
           return { prompt, inputFiles: [] };
         },
@@ -2700,22 +2791,12 @@ export async function probeRunnerBackend(
       let index = 0;
       index < 1000 &&
       (!existsSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`) ||
-        (db
-          .query<{ consumed: number }, [string]>(
-            "SELECT consumed_sequence AS consumed FROM runner_work WHERE run_id=?",
-          )
-          .get(firstAttempt.runId)?.consumed ?? 0) < 1);
+        ((await runnerWorkOf(firstAttempt.runId))?.consumedSequence ?? 0) < 1);
       index++
     )
       await delay(1);
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
-      now - 60_000 - RUNNER_LEASE_GRACE_MS,
-      hostIds[0]!,
-    ]);
-    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-      now - RUNNER_LEASE_GRACE_MS,
-      firstAttempt.runId,
-    ]);
+    await setRunner(hostIds[0]!, { lastSeenAt: now - 60_000 - RUNNER_LEASE_GRACE_MS });
+    await leaseUntil(firstAttempt.runId, now - RUNNER_LEASE_GRACE_MS);
     const firstStop = await next(hostIds[0]!, false);
     assert.equal(firstStop.type, "cancel");
     await delay(10);
@@ -2776,14 +2857,14 @@ export async function probeRunnerBackend(
       }
     }
     // An online pin waits out its quota instead of taking the idle third runner.
-    for (let poll = 0; poll < 500 && !(await usagePause(sqliteDb(db), failoverItem.run.id)); poll++)
+    for (let poll = 0; poll < 500 && !(await usagePause(db, failoverItem.run.id)); poll++)
       await delay(1);
-    const pinnedPause = await usagePause(sqliteDb(db), failoverItem.run.id);
+    const pinnedPause = await usagePause(db, failoverItem.run.id);
     assert(pinnedPause);
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
     now = pinnedPause.resumeAt;
     for (const hostId of hostIds) await work.heartbeat(hostId);
-    db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
+    await memberChecked();
     const thirdAttempt = await next(hostIds[1]!);
     if (thirdAttempt.type !== "run") throw new Error("Expected third failover work");
     assert.equal(thirdAttempt.generation, secondAttempt.generation + 1);
@@ -2816,10 +2897,7 @@ export async function probeRunnerBackend(
       token: thirdToken.token,
       result: { ...result(thirdAttempt), candidateSha: head },
     });
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
-      now - 60_001 - RUNNER_LEASE_GRACE_MS,
-      hostIds[1]!,
-    ]);
+    await setRunner(hostIds[1]!, { lastSeenAt: now - 60_001 - RUNNER_LEASE_GRACE_MS });
     assert.equal((await failover).stopReason, "end_turn");
     assert.match(
       readFileSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`, "utf8"),
@@ -2828,10 +2906,7 @@ export async function probeRunnerBackend(
     assert.deepEqual(placements, [hostIds[0]!, hostIds[1]!, hostIds[1]!]);
     assert.deepEqual(observedFailures, ["heartbeat_lost", "quota_exhausted"]);
     assert.equal(fetched, beforeFailoverImports + 1);
-    assert.equal(
-      (await getWorkItem(sqliteDb(db), failoverItem.id))?.currentRunId,
-      failoverItem.run.id,
-    );
+    assert.equal((await getWorkItem(db, failoverItem.id))?.currentRunId, failoverItem.run.id);
     observe(
       "An offline host moves once and quota recovery retains the online replacement with one candidate import",
       true,
@@ -2880,8 +2955,8 @@ export async function probeRunnerBackend(
         },
         askTeam: {
           async ask(request, context) {
-            const sessionId = (await getWorkItem(sqliteDb(db), artifactItem.id))!.sessionKey!;
-            const question = await sqliteDb(db).transaction(function* (q) {
+            const sessionId = (await getWorkItem(db, artifactItem.id))!.sessionKey!;
+            const question = await db.transaction(function* (q) {
               yield* applyWorkItemEventSteps(q, artifactItem.id, "blocking_question");
               return yield* openQuestionSteps(q, {
                 itemId: artifactItem.id,
@@ -2899,7 +2974,7 @@ export async function probeRunnerBackend(
               answeredBy: "owner",
               now,
             });
-            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "answer_received");
+            await applyWorkItemEvent(db, artifactItem.id, "answer_received");
             return { answer: continuationState.answer };
           },
         },
@@ -2955,10 +3030,7 @@ export async function probeRunnerBackend(
         errorMessage: "You've hit your session limit. Retry-After: 120",
       },
     });
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
-      now - 60_001 - RUNNER_LEASE_GRACE_MS,
-      hostIds[0]!,
-    ]);
+    await setRunner(hostIds[0]!, { lastSeenAt: now - 60_001 - RUNNER_LEASE_GRACE_MS });
     const artifactStop = await next(hostIds[0]!, false);
     assert.equal(artifactStop.type, "cancel");
     for (const envelope of await work.commands(hostIds[0]!)) {
@@ -2972,7 +3044,7 @@ export async function probeRunnerBackend(
     }
     for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
     assert(continuationState.questionId);
-    assert.equal((await getWorkItem(sqliteDb(db), artifactItem.id))?.state, "awaiting_input");
+    assert.equal((await getWorkItem(db, artifactItem.id))?.state, "awaiting_input");
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
     assert.equal(publications, 1);
     continuationState.answer = "Keep the existing artifact and continue without republishing it.";
@@ -3100,11 +3172,16 @@ export async function probeRunnerBackend(
       assert(!reviewEvents.some((message) => message.includes("Conflicting review")));
       assert(reviewEvents.includes("Independent approval"));
       assert.equal(
-        db
-          .query<{ outcome: string }, [string]>(
-            "SELECT outcome FROM runner_execution_usage WHERE command_id=?",
+        (
+          await db.run((q) =>
+            q.all(
+              q.orm
+                .select({ outcome: q.t.runnerExecutionUsage.outcome })
+                .from(q.t.runnerExecutionUsage)
+                .where(eq(q.t.runnerExecutionUsage.commandId, conflicting.id)),
+            ),
           )
-          .get(conflicting.id)!.outcome,
+        )[0]!.outcome,
         "model_conflict",
       );
       observe(
@@ -3114,11 +3191,7 @@ export async function probeRunnerBackend(
       );
     }
     {
-      const pinnedReviewHost = db
-        .query<{ runnerId: string }, [string]>(
-          "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
-        )
-        .get(artifactItem.run.id)!.runnerId;
+      const pinnedReviewHost = (await runnerWorkOf(artifactItem.run.id))!.runnerId;
       const rejectedReviewEvents: string[] = [];
       const repeatedConflict = placedBackend.forItem(artifactItem.id)(
         input(artifactItem, {
@@ -3173,14 +3246,7 @@ export async function probeRunnerBackend(
       assert(
         !rejectedReviewEvents.some((event) => event.includes("Conflicting review remains private")),
       );
-      assert.equal(
-        db
-          .query<{ runnerId: string }, [string]>(
-            "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
-          )
-          .get(artifactItem.run.id)!.runnerId,
-        pinnedReviewHost,
-      );
+      assert.equal((await runnerWorkOf(artifactItem.run.id))!.runnerId, pinnedReviewHost);
       observe(
         "Repeated model conflicts retry fresh sessions on the online pin within the retry budget",
         true,
@@ -3189,7 +3255,12 @@ export async function probeRunnerBackend(
     }
     {
       const coolDown = (until: number) =>
-        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex'", [until]);
+        seed(db, (q) =>
+          q.orm
+            .update(q.t.runnerAgentPolicy)
+            .set({ cooldownUntil: until })
+            .where(eq(q.t.runnerAgentPolicy.agent, "codex")),
+        );
       const dispatched = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds) if ((await work.commands(hostId)).length) return hostId;
@@ -3199,14 +3270,14 @@ export async function probeRunnerBackend(
       };
       for (const hostId of hostIds) await work.heartbeat(hostId);
       const paused = async (runId: string) => {
-        for (let attempt = 0; attempt < 500 && !(await usagePause(sqliteDb(db), runId)); attempt++)
+        for (let attempt = 0; attempt < 500 && !(await usagePause(db, runId)); attempt++)
           await delay(2);
-        return await usagePause(sqliteDb(db), runId);
+        return await usagePause(db, runId);
       };
       const limited = await item();
       const limitAbort = new AbortController();
       const lines: string[] = [];
-      coolDown(now + 120_000);
+      await coolDown(now + 120_000);
       const limitedRun = placedBackend.forItem(limited.id)(
         input(limited, {
           signal: limitAbort.signal,
@@ -3221,9 +3292,7 @@ export async function probeRunnerBackend(
         () => (finished = true),
         () => (finished = true),
       );
-      const limitedPause = await paused(
-        (await getWorkItem(sqliteDb(db), limited.id))!.currentRunId!,
-      );
+      const limitedPause = await paused((await getWorkItem(db, limited.id))!.currentRunId!);
       assert.equal(limitedPause?.resumeAt, now + 180_000);
       await delay(20);
       assert.equal(finished, false);
@@ -3238,10 +3307,10 @@ export async function probeRunnerBackend(
       ]);
       now += 180_000;
       for (const hostId of hostIds) await work.heartbeat(hostId);
-      db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
+      await memberChecked();
       const placedOn = await dispatched();
       assert(placedOn);
-      assert.equal(await usagePause(sqliteDb(db), limitedPause!.runId), null);
+      assert.equal(await usagePause(db, limitedPause!.runId), null);
       assert.equal(lines.length, 2);
       limitAbort.abort();
       await limitedRun.catch(() => undefined);
@@ -3255,34 +3324,30 @@ export async function probeRunnerBackend(
 
       const exhausted = await item();
       const exhaustedAbort = new AbortController();
-      coolDown(now + 3_600_000);
+      await coolDown(now + 3_600_000);
       const exhaustedRun = placedBackend.forItem(exhausted.id)(
         input(exhausted, { signal: exhaustedAbort.signal }),
       );
       void exhaustedRun.catch(() => undefined);
-      const exhaustedRunId = (await getWorkItem(sqliteDb(db), exhausted.id))!.currentRunId!;
+      const exhaustedRunId = (await getWorkItem(db, exhausted.id))!.currentRunId!;
       assert(await paused(exhaustedRunId));
       for (const hostId of hostIds) while ((await work.commands(hostId)).length) await next(hostId);
       await delay(20);
       for (const hostId of hostIds) assert.equal((await work.commands(hostId)).length, 0);
-      assert.equal(await resumeUsagePauseNow(sqliteDb(db), exhaustedRunId, now), true);
+      assert.equal(await resumeUsagePauseNow(db, exhaustedRunId, now), true);
       assert(await dispatched());
       exhaustedAbort.abort();
       await exhaustedRun.catch(() => undefined);
-      coolDown(0);
+      await coolDown(0);
       observe("Resume now ends a usage-limit wait and lifts the agent cooldown", true, {});
       const occupied: string[] = [];
       for (const hostId of hostIds) {
         const busy = await item();
-        db.run(
-          "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
-          [
-            (await getWorkItem(sqliteDb(db), busy.id))!.currentRunId!,
-            hostId,
-            workspace.id,
-            `busy-${hostId}`,
-            Date.now() + 3_600_000,
-          ],
+        await busyWork(
+          (await getWorkItem(db, busy.id))!.currentRunId!,
+          hostId,
+          workspace.id,
+          `busy-${hostId}`,
         );
         occupied.push(`busy-${hostId}`);
       }
@@ -3293,14 +3358,20 @@ export async function probeRunnerBackend(
       assert(fullWait instanceof RunnerCapacityWait);
       assert(fullWait.runnerIds.length > 0);
       assert(fullWait.runnerIds.every((id) => hostIds.includes(id)));
-      db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id=?", [
-        Date.now(),
-        Date.now(),
-        occupied[0]!,
-      ]);
-      db.run(
-        "UPDATE run SET status='ended' WHERE id=(SELECT run_id FROM runner_work WHERE command_id=?)",
-        [occupied[0]!],
+      await endWork([occupied[0]!]);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.run)
+          .set({ status: "ended" })
+          .where(
+            inArray(
+              q.t.run.id,
+              q.orm
+                .select({ id: q.t.runnerWork.runId })
+                .from(q.t.runnerWork)
+                .where(eq(q.t.runnerWork.commandId, occupied[0]!)),
+            ),
+          ),
       );
       const waitAbort = new AbortController();
       const waitingRun = placedBackend.forItem(queued.id)(
@@ -3310,21 +3381,14 @@ export async function probeRunnerBackend(
       assert.equal(placedWhenFree, hostIds[0]);
       waitAbort.abort();
       await waitingRun.catch(() => undefined);
-      db.run(
-        `UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id IN (${occupied.map(() => "?").join(",")})`,
-        [Date.now(), Date.now(), ...occupied],
-      );
+      await endWork(occupied);
       observe(
         "a full runner ends placement with a wait naming the busy runners, and places once a slot frees",
         true,
         { placedWhenFree },
       );
-      const reportVersion = (version: string) => {
-        for (const hostId of hostIds)
-          db.run(
-            "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
-            [hostId, version, now],
-          );
+      const reportVersion = async (version: string) => {
+        for (const hostId of hostIds) await reportRunnerVersion(hostId, version, now);
       };
       const firstDispatch = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
@@ -3340,10 +3404,10 @@ export async function probeRunnerBackend(
       };
       const sent = async (version: string, checkpointBase = base) => {
         await drain();
-        reportVersion(version);
+        await reportVersion(version);
         for (const hostId of hostIds) await work.heartbeat(hostId);
         const record = await item();
-        await saveCheckpoint(sqliteDb(db), record.id, {
+        await saveCheckpoint(db, record.id, {
           phase: "running",
           baseSha: checkpointBase,
           wipCommit: head,
@@ -3412,10 +3476,7 @@ export async function probeRunnerBackend(
       );
       void restartedRun.catch((error: unknown) => (restartFailure = error));
       const firstPlacement = await nextRun();
-      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-        now - 1 - RUNNER_LEASE_GRACE_MS,
-        firstPlacement.runId,
-      ]);
+      await leaseUntil(firstPlacement.runId, now - 1 - RUNNER_LEASE_GRACE_MS);
       for (const hostId of hostIds) await work.heartbeat(hostId);
       await delay(50);
       assert.equal(restartFailure, null);
@@ -3431,8 +3492,7 @@ export async function probeRunnerBackend(
         { generations: [firstPlacement.generation, secondPlacement.generation] },
       );
       const offlineAt = now - 120_000;
-      for (const hostId of hostIds)
-        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
+      for (const hostId of hostIds) await setRunner(hostId, { lastSeenAt: offlineAt });
       const offline = await item();
       const placementLogs: unknown[][] = [];
       const warn = console.warn;
@@ -3451,9 +3511,14 @@ export async function probeRunnerBackend(
       assert.deepEqual(offlineWait.runnerIds, []);
       assert.equal(placementLogs.length, 1);
       for (const hostId of hostIds) {
-        const name = db
-          .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
-          .get(hostId)!.name;
+        const [{ name }] = (await db.run((q) =>
+          q.all(
+            q.orm
+              .select({ name: q.t.runner.name })
+              .from(q.t.runner)
+              .where(eq(q.t.runner.id, hostId)),
+          ),
+        )) as [{ name: string }];
         assert(offlineWait.message.includes(`${name}: offline`));
         assert(JSON.stringify(placementLogs).includes(`${name}: offline`));
       }
@@ -3481,15 +3546,11 @@ export async function probeRunnerBackend(
             if (!filled.length)
               for (const hostId of hostIds) {
                 const busy = await item();
-                db.run(
-                  "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
-                  [
-                    (await getWorkItem(sqliteDb(db), busy.id))!.currentRunId!,
-                    hostId,
-                    workspace.id,
-                    `raced-${hostId}`,
-                    Date.now() + 3_600_000,
-                  ],
+                await busyWork(
+                  (await getWorkItem(db, busy.id))!.currentRunId!,
+                  hostId,
+                  workspace.id,
+                  `raced-${hostId}`,
                 );
                 filled.push(`raced-${hostId}`);
               }
@@ -3499,10 +3560,7 @@ export async function probeRunnerBackend(
       );
       await racedRun.catch((error: unknown) => (racedFailure = error));
       assert(racedFailure instanceof RunnerCapacityWait);
-      db.run(
-        `UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
-        [Date.now(), Date.now(), ...filled],
-      );
+      await endWork(filled);
       await finishRuns();
       const retriedRun = placedBackend.forItem(raced.id)(
         input(raced, { signal: racedAbort.signal }),
@@ -3521,7 +3579,7 @@ export async function probeRunnerBackend(
   } finally {
     failoverAbort.abort();
     await pendingFailover?.catch(() => undefined);
-    db.close();
+    await close();
   }
 }
 
