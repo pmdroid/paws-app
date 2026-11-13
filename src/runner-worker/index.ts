@@ -863,6 +863,7 @@ export async function executeRunnerCommand(
   const workStart = new AbortController();
   let githubRead: GitHubReadConfig | undefined;
   let checkout: string | undefined;
+  let runTemp: string | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
       ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
@@ -1227,6 +1228,9 @@ export async function executeRunnerCommand(
       MISE_CACHE_DIR: mise.cacheDir,
     });
     agentEnv.PATH = withoutRunnerBin(agentEnv.PATH);
+    runTemp = join(task ? worktree : options.workRoot, ".paws", "runs", job.executionId, "tmp");
+    mkdirSync(runTemp, { recursive: true, mode: 0o700 });
+    Object.assign(agentEnv, { TMPDIR: runTemp, TMP: runTemp, TEMP: runTemp });
     if (command.type === "run" && command.githubRead && options.githubRead)
       githubRead = openGitHubReadConfig(
         join(options.workRoot, `.gh-${command.runId}`),
@@ -2446,6 +2450,7 @@ export async function executeRunnerCommand(
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
+    if (runTemp) rmSync(runTemp, { recursive: true, force: true });
     if (options.owners && process.getuid?.() !== options.owners.runnerUid) {
       if (checkout) openRunnerCheckoutToGroup(checkout);
       openRunnerRunStatesToGroup(options.workRoot);

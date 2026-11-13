@@ -182,6 +182,19 @@ test("the sweep removes run state idle for over three days, unless its execution
   );
 });
 
+test("the sweep removes a recent run's temporary folder once no execution holds it", async () => {
+  const { root, cleaner, lines } = fixture([EXECUTION]);
+  const ended = runState(root, "01M5G3S8FR2T339ZX2RTA5K2MZ", 1);
+  const active = runState(root, EXECUTION, 1);
+  for (const path of [ended, active]) checkout(path, "tmp", 0);
+  await cleaner.sweep();
+  expect(existsSync(join(ended, "tmp"))).toBe(false);
+  expect([ended, join(active, "tmp")].map((path) => existsSync(path))).toEqual([true, true]);
+  expect(lines).toContainEqual(
+    expect.stringContaining("removed name=.paws/runs/01M5G3S8FR2T339ZX2RTA5K2MZ/tmp reason=ended"),
+  );
+});
+
 test("the sweep does not follow .paws or .paws/runs when either is a symbolic link", async () => {
   const { root, cleaner } = fixture();
   const outside = mkdtempSync(join(tmpdir(), "paws-outside-"));

@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { journalCaught } from "../../journal";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -29,6 +30,7 @@ const state: FakeResult = {
     sshAuthSock: present("SSH_AUTH_SOCK"),
     aws: Object.keys(process.env).some((key) => key.startsWith("AWS_") && present(key)),
   },
+  temp: [process.env.TMPDIR, process.env.TMP, process.env.TEMP],
   mcpServers: [],
   permissions: [],
   fs: [],
@@ -359,8 +361,9 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       continue;
     }
     if (step.type === "write_file") {
-      mkdirSync(dirname(step.path), { recursive: true });
-      writeFileSync(step.path, step.content);
+      const path = step.path.replace(/^\$TMPDIR\//, `${process.env.TMPDIR ?? tmpdir()}/`);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, step.content);
       continue;
     }
     if (step.type === "terminal") {
