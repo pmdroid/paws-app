@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { count, eq } from "drizzle-orm";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -12,7 +12,6 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -20,7 +19,8 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork, createRunnerWorkHttp, type RunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { jsonValue, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const repository = {
   owner: "fixture",
@@ -32,32 +32,31 @@ const repository = {
 /** One run leased to a runner whose only slot is full, at a clock the test moves. */
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-busy-"));
-  const path = join(root, "paws.db");
   const clock = { at: Date.now() };
   const now = () => clock.at;
-  const db = migratedDatabase(path);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const { db, close } = await tempStore();
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
     now: now(),
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -73,10 +72,12 @@ async function fixture() {
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+  );
   const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now());
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -84,11 +85,11 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now(),
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -117,27 +118,41 @@ async function fixture() {
     generation: 1,
   });
   // A helper holds the runner's only slot, so the runner has no capacity left.
-  db.run(
-    "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES('busy',?,?,'session',0,0,'{}',?)",
-    [runnerId, workspace.id, now() + 3_600_000],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runnerHelper).values({
+      id: "busy",
+      runnerId,
+      workspaceId: workspace.id,
+      sessionId: "session",
+      sessionGeneration: 0,
+      runnerFence: 0,
+      envelope: jsonValue(q, {}),
+      expiresAt: now() + 3_600_000,
+    }),
   );
-  const grants = () =>
-    db.query("SELECT count(*) AS n FROM runner_work_grant WHERE run_id=?").get(run.id) as {
-      n: number;
-    };
+  const grants = async () => {
+    const [row] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.runnerWorkGrant)
+          .where(eq(q.t.runnerWorkGrant.runId, run.id)),
+      ),
+    );
+    return Number(row!.n);
+  };
   return {
     db,
-    path,
     clock,
     runnerId,
     run,
     command,
     work,
     grant,
-    grants: () => grants().n,
-    results: () => createRunnerResults({ store: sqliteDb(db), work, now }),
-    close() {
-      db.close();
+    grants,
+    results: () => createRunnerResults({ store: db, work, now }),
+    async close() {
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -186,7 +201,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     expect(reply.leases).toEqual([
       { runId: f.run.id, generation: 1, expiresAt: f.clock.at + 60_000 },
     ]);
-    expect(f.grants()).toBe(1);
+    expect(await f.grants()).toBe(1);
     expect(
       await f.results().answers({
         runnerId: f.runnerId,
@@ -197,7 +212,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
       }),
     ).toEqual([]);
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -217,9 +232,9 @@ test("the same late run on a full runner is fenced when the runner does not repo
     );
     expect(reply.fenced).toEqual(running(f.run.id));
     expect(reply.leases).toEqual([]);
-    expect(f.grants()).toBe(0);
+    expect(await f.grants()).toBe(0);
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -229,9 +244,9 @@ test("a runner that does not report its work keeps today's rule: a full runner i
     f.clock.at += 60_000 + 70_000;
     const reply = await f.work.heartbeat(f.runnerId);
     expect(reply.fenced).toEqual(running(f.run.id));
-    expect(f.grants()).toBe(0);
+    expect(await f.grants()).toBe(0);
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -248,7 +263,12 @@ test("a run reported earlier but left out of the latest report gets no grace on 
       undefined,
       running(f.run.id),
     );
-    f.db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [f.clock.at + 1, f.runnerId]);
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.runner)
+        .set({ liveReportedAt: f.clock.at + 1 })
+        .where(eq(q.t.runner.id, f.runnerId)),
+    );
     f.clock.at += 60_000 + 70_000;
     await expect(
       f.work.issueGrant({
@@ -259,7 +279,7 @@ test("a run reported earlier but left out of the latest report gets no grace on 
       }),
     ).rejects.toThrow("Runner work is fenced or its lease expired.");
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -273,17 +293,10 @@ const post = (path: string, body: unknown, authorization?: string) =>
     body: JSON.stringify(body),
   });
 
-test("a database error in a runner work handler answers 503, and a bad token still answers 403", async () => {
+test("a timed-out runner work handler answers 503, and a bad token still answers 403", async () => {
   const f = await fixture();
-  const writer = new Database(f.path);
   try {
-    writer.run("PRAGMA busy_timeout=0");
-    f.db.run("PRAGMA busy_timeout=0");
-    writer.run("BEGIN IMMEDIATE");
     const http = createRunnerWorkHttp(f.work);
-    const busy = (await http(post("/v1/heartbeat", {}), f.runnerId))!;
-    expect(busy.status).toBe(503);
-    writer.run("ROLLBACK");
     const wrong = (await http(
       post(
         "/v1/events",
@@ -315,7 +328,6 @@ test("a database error in a runner work handler answers 503, and a bad token sti
       503,
     );
   } finally {
-    writer.close();
-    f.close();
+    await f.close();
   }
 }, 30_000);

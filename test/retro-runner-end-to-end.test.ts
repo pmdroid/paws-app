@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getRetro, listRetroItems, openDatabase, sqliteDb } from "../src/db";
+import { eq } from "drizzle-orm";
+import { getRetro, listRetroItems, openPawsStore, type Db } from "../src/db";
 import { RunnerRequestError } from "../src/runner-daemon";
 import { readRunnerJob, readRunnerJobInputs } from "../src/runner-execution";
 import {
@@ -16,15 +17,45 @@ import {
 import { openRunnerRetroRuntime, type RunnerRetroDaemon } from "../src/runner-retro-runtime";
 import { executeRetroCommand } from "../src/runner-worker";
 import type { createRetroDispatcher } from "../src/retros";
-import { addRunner, trustedKeys, world } from "../src/retros/dispatch.fixtures";
+import { addRunnerPg as addRunner, trustedKeys, worldPg } from "../src/retros/dispatch.fixtures";
 import { fixturePattern } from "../src/retros/result.fixtures";
+import { seed } from "./dialects";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 const nonRootLinux = process.platform === "linux" && process.getuid!() > 0 && process.getgid!() > 0;
 const OUTPUT = JSON.stringify({ patterns: [fixturePattern()], workedWell: [] });
 const roots: string[] = [];
-afterEach(() => {
+const closes: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closes.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+async function reopen(root: string) {
+  const opened = await openPawsStore({ url: null, pgliteDir: join(root, "pglite") });
+  return { db: opened.store, close: opened.close };
+}
+
+async function world(options: { retries?: number; restartable?: boolean } = {}) {
+  const created = await worldPg(
+    options.restartable
+      ? {
+          open: async (root) => {
+            await copyMigratedPglite(join(root, "pglite"));
+            return reopen(root);
+          },
+          reopen,
+        }
+      : { open: () => tempStore() },
+    options,
+  );
+  roots.push(created.root);
+  closes.push(() => created.close());
+  return created;
+}
+
+const seen = (db: Db, now: number) =>
+  seed(db, (q) => q.orm.update(q.t.runner).set({ lastSeenAt: now }).where(eq(q.t.runner.id, "R1")));
 
 type Dispatcher = ReturnType<typeof createRetroDispatcher>;
 
@@ -215,7 +246,8 @@ function runnerHost(
 test.skipIf(!nonRootLinux)(
   "a retro waits, runs on the paired runner, survives both restarts and publishes once",
   async () => {
-    const w = await world();
+    const w = await world({ restartable: true });
+    let db = w.db;
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
     const control = { dispatcher: w.open(w.db) };
@@ -224,9 +256,8 @@ test.skipIf(!nonRootLinux)(
       state: "waiting_for_runner",
     });
 
-    addRunner(w.db, { id: "R1" });
-    const seen = () => w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
-    seen();
+    await addRunner(db, { id: "R1" });
+    await seen(db, w.clock.now);
     await control.dispatcher.tick();
     expect(await control.dispatcher.generation("r1")).toMatchObject({
       state: "generating",
@@ -250,18 +281,18 @@ test.skipIf(!nonRootLinux)(
     expect(host.starts).toHaveLength(1);
     expect(runtime.status().active).toMatchObject([{ phase: "running" }]);
 
-    control.dispatcher = w.open(openDatabase(w.path));
+    db = await w.restart();
+    control.dispatcher = w.open(db);
     await runtime.stop();
     runtime = await open();
     expect(runtime.status().active).toMatchObject([{ phase: "reporting" }]);
-    seen();
+    await seen(db, w.clock.now);
     await runtime.tick();
     expect(calls.filter((name) => name === "result")).toHaveLength(1);
     expect(runtime.status().active).toEqual([]);
 
-    const reopened = openDatabase(w.path);
-    expect((await getRetro(sqliteDb(reopened), "r1"))?.state).toBe("published");
-    const items = (await listRetroItems(sqliteDb(reopened), "r1")).length;
+    expect((await getRetro(db, "r1"))?.state).toBe("published");
+    const items = (await listRetroItems(db, "r1")).length;
     expect(items).toBeGreaterThan(0);
     expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
 
@@ -271,7 +302,7 @@ test.skipIf(!nonRootLinux)(
     expect(await daemon.postRetroResult(result)).toEqual({ duplicate: true });
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
-    expect(await listRetroItems(sqliteDb(reopened), "r1")).toHaveLength(items);
+    expect(await listRetroItems(db, "r1")).toHaveLength(items);
     expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
     await runtime.stop();
   },
@@ -283,8 +314,8 @@ test.skipIf(!nonRootLinux)(
     const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
-    addRunner(w.db, { id: "R1" });
-    w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
+    await addRunner(w.db, { id: "R1" });
+    await seen(w.db, w.clock.now);
     const control = { dispatcher: w.open(w.db) };
     await control.dispatcher.tick();
     const host = runnerHost(root, { crash: true });
@@ -318,8 +349,8 @@ test.skipIf(!nonRootLinux)(
     const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
-    addRunner(w.db, { id: "R1" });
-    w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
+    await addRunner(w.db, { id: "R1" });
+    await seen(w.db, w.clock.now);
     const control = { dispatcher: w.open(w.db) };
     await control.dispatcher.tick();
     const host = runnerHost(root, { failStart: true, stopFailures: 1 });
