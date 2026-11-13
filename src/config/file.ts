@@ -624,7 +624,7 @@ function assignConfig(
 
 function hasExplicitAgentProfiles(text: string): boolean {
   const agents = (Bun.TOML.parse(text) as { agents?: Record<string, unknown> }).agents;
-  return agents?.defaults !== undefined || agents?.projects !== undefined;
+  return agents?.defaults !== undefined;
 }
 
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */

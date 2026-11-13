@@ -7738,24 +7738,7 @@ export class Orchestrator {
   }
 
   private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    return implementerAgentFor(
-      config,
-      await this.repositoryForItem(item),
-      this.knownProfileLabels(item),
-    );
-  }
-
-  private *implementerProfileSteps(
-    q: Q,
-    item: WorkItemRecord,
-    config: ReturnType<typeof loadConfigFile>,
-  ) {
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    return resolveAgentProfiles(
-      config,
-      repository ? `${repository.owner}/${repository.repo}` : undefined,
-      this.knownProfileLabels(item),
-    ).implementer;
+    return implementerAgentFor(config, this.knownProfileLabels(item));
   }
 
   private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
@@ -7774,7 +7757,7 @@ export class Orchestrator {
       ? yield* itemRunners(
           q,
           itemId,
-          yield* this.implementerProfileSteps(q, item, config),
+          resolveAgentProfiles(config, this.knownProfileLabels(item)).implementer,
           this.now(),
         )
       : null;
@@ -7788,11 +7771,10 @@ export class Orchestrator {
   ): Steps<boolean | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return null;
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     return yield* ownerHasRunner(
       q,
       itemId,
-      implementerAgentFor(config, repository, this.knownProfileLabels(item)),
+      implementerAgentFor(config, this.knownProfileLabels(item)),
       this.now(),
     );
   }
@@ -8048,14 +8030,12 @@ export class Orchestrator {
         return existing;
       }
     }
-    const repository = await this.repositoryForItem(item);
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
     const defaultRoles = previous?.defaultRoles;
     const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
-    const profiles = withoutLabelProblems(resolveAgentProfiles(config, repoName, profileLabels));
+    const profiles = withoutLabelProblems(resolveAgentProfiles(config, profileLabels));
     const run = await this.store.run((q) =>
       insertRunSteps(q, {
         itemId: item.id,
@@ -8129,9 +8109,7 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (!saved) return true;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = await this.repositoryForItem(item);
-    const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    let resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+    let resolved = resolveAgentProfiles(config, saved.profileLabels);
     let answered = false;
     const question = saved.profileQuestion
       ? await this.store.run((q) => getQuestionSteps(q, saved.profileQuestion!))
@@ -8150,7 +8128,7 @@ export class Orchestrator {
         );
       }
       delete saved.profileQuestion;
-      resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+      resolved = resolveAgentProfiles(config, saved.profileLabels);
     }
     const problems = resolved.labelProblems ?? [];
     if (answered || problems.length > 0) saved.profiles = withoutLabelProblems(resolved);
@@ -10483,13 +10461,9 @@ export class Orchestrator {
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
-      const repository = await this.store.run((q) => getWorkItemRepositorySteps(q, run.itemId));
       const saved = this.readProfileSnapshot(run.id);
       if (!saved) continue;
-      const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-      const profiles = withoutLabelProblems(
-        resolveAgentProfiles(config, repoName, saved.profileLabels),
-      );
+      const profiles = withoutLabelProblems(resolveAgentProfiles(config, saved.profileLabels));
       if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
@@ -10539,15 +10513,7 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = await this.store.run(function* (q) {
-      const run = yield* getRunSteps(q, runId);
-      const item = run === null ? null : yield* getWorkItemSteps(q, run.itemId);
-      return item === null ? null : yield* getWorkItemRepositorySteps(q, item.id);
-    });
-    const late = this.readProfileSnapshot(runId);
-    if (late) return late.profiles;
-    const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    const profiles = resolveAgentProfiles(config, repoName);
+    const profiles = resolveAgentProfiles(config);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
@@ -11350,14 +11316,9 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
 
 function implementerAgentFor(
   config: ReturnType<typeof loadConfigFile>,
-  repository: RepositoryBinding | null,
   labels: ProfileLabels | undefined,
 ): string {
-  return resolveAgentProfiles(
-    config,
-    repository ? `${repository.owner}/${repository.repo}` : undefined,
-    labels,
-  ).implementer.agent;
+  return resolveAgentProfiles(config, labels).implementer.agent;
 }
 
 function* closeActiveRunSteps(

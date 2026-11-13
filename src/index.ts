@@ -78,6 +78,7 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
+  journalRetiredAgentProjects,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -522,6 +523,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    journalRetiredAgentProjects(paths.configFile, journal);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }

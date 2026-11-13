@@ -57,7 +57,6 @@ try {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "claude", model: "opus" },
       },
-      projects: [],
     });
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
@@ -88,7 +87,6 @@ try {
             implementer: { agent: "codex", model: "gpt" },
             reviewer: { agent: "codex", model: "gpt" },
           },
-          projects: [],
         }),
       });
       return `${response.status} ${((await response.json()) as { error: string }).error}`;

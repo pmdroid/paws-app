@@ -29,9 +29,6 @@ const settings: AgentSettings = {
     implementer: { agent: "grok", model: "grok-4", effort: "high" },
     reviewer: { agent: "codex", model: null },
   },
-  projects: [
-    { repo: "pmdroid/barkvisor", reviewer: { agent: "claude", model: null, effort: "low" } },
-  ],
 };
 
 function request(
@@ -48,7 +45,7 @@ function request(
 }
 
 describe("local agent settings API", () => {
-  test("GET returns profiles and inherited configured projects without any vendor settings", async () => {
+  test("GET returns the global profiles without any vendor settings or projects", async () => {
     const { options } = fixture();
     writeFileSync(
       options.configPath,
@@ -63,11 +60,6 @@ describe("local agent settings API", () => {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "codex", model: null },
       },
-      projects: [
-        { repo: "pmdroid/other" },
-        { repo: "pmdroid/library" },
-        { repo: "pmdroid/barkvisor" },
-      ],
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -451,20 +443,13 @@ describe("reviewer profile validation", () => {
         implementer: { agent: "claude", model: "opus" },
         reviewer: { agent: "claude", model: "opus" },
       },
-      projects: [],
     };
     const response = await put(same, options);
     expect(response?.status).toBe(400);
     expect(await response!.json()).toEqual({
       error: "Implementer and reviewer must use different agents or different models",
     });
-    const project = await put(
-      {
-        ...settings,
-        projects: [{ repo: "pmdroid/barkvisor", reviewer: settings.defaults.implementer }],
-      },
-      options,
-    );
+    const project = await put({ ...settings, projects: [] }, options);
     expect(project?.status).toBe(400);
     expect(readFileSync(options.configPath, "utf8")).toBe("[caps]\nmax_turns = 31\n");
   });
@@ -486,16 +471,13 @@ describe("reviewer profile validation", () => {
     expect(((await response!.json()) as { warnings: unknown }).warnings).toEqual([
       "No active runner has codex signed in and ready to review: laptop, studio.",
     ]);
-    expect(asked.sort()).toEqual(["claude", "codex"]);
+    expect(asked).toEqual(["codex"]);
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
 
     options.runnerReadiness = () => [];
     expect(
       ((await (await put(settings, options))!.json()) as { warnings: unknown }).warnings,
-    ).toEqual([
-      "No active runner can review with codex yet: there is no active runner.",
-      "No active runner can review with claude yet: there is no active runner.",
-    ]);
+    ).toEqual(["No active runner can review with codex yet: there is no active runner."]);
   });
 
   test("a valid reviewer that a runner has ready saves without warnings", async () => {

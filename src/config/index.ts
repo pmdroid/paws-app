@@ -42,18 +42,13 @@ export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app
 export type { GitHubAppCredentials } from "./github-app";
 
 export {
+  journalRetiredAgentProjects,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,
   writeAgentSettings,
 } from "./agents";
-export type {
-  AgentLabelProblem,
-  AgentProfile,
-  AgentProfiles,
-  AgentSettings,
-  ProjectAgentProfiles,
-} from "./agents";
+export type { AgentLabelProblem, AgentProfile, AgentProfiles, AgentSettings } from "./agents";
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
