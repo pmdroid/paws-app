@@ -1,20 +1,14 @@
 import {
   agentCredentialCiphertextSteps,
   writeAgentCredentialCiphertextSteps,
+  type AgentCredentialCiphertext,
   type AgentCredentialWrite,
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
 import { openSecret, sealSecret } from "./files";
 
-export type AgentCredential = {
-  agent: RunnerCodingAgent;
-  blob: string;
-  version: number;
-  updatedAt: number;
-  runnerId: string | null;
-};
+export type AgentCredential = Omit<AgentCredentialCiphertext, "ciphertext"> & { blob: string };
 
 export function* readAgentCredentialSteps(
   q: Q,
