@@ -39,7 +39,6 @@ const INSTALLER = '#!/bin/sh\nset -eu\necho "installing $1"\n';
 const CONFIG = JSON.stringify({
   controlPlaneUrl: "https://paws.example.com",
   runnerApiUrl: "https://paws.example.com:8788",
-  allowedRepositories: [],
 });
 const CONFIG_SHA = createHash("sha256").update(`${CONFIG}\n`).digest("hex");
 
@@ -500,7 +499,6 @@ test("unpinned or invalid inputs are refused before any command runs", () => {
     { runnerApiUrl: "http://paws.example.com:8788" },
     { controlPlaneUrl: "not a url" },
     { serverCa: "secret" },
-    { allowedRepositories: ["no-slash"] },
   ];
   for (const change of invalid) {
     let step: string | null = null;
@@ -515,7 +513,7 @@ test("unpinned or invalid inputs are refused before any command runs", () => {
   expect(exe.calls).toEqual([]);
 });
 
-test("the config carries the server CA and allowed repositories but no secret", async () => {
+test("the config carries the server CA but no repository list or secret", async () => {
   const exe = setup();
   const ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
   exe.scriptExec(VM, PROBE, { stdout: probe({}) });
@@ -525,12 +523,10 @@ test("the config carries the server CA and allowed repositories but no secret", 
   await createExeDevBootstrap({
     ...options(exe),
     serverCa: ca,
-    allowedRepositories: ["pmdroid/paws-app"],
   }).startInstall(VM, TOKEN);
   const config = JSON.stringify({
     controlPlaneUrl: "https://paws.example.com",
     runnerApiUrl: "https://paws.example.com:8788",
-    allowedRepositories: ["pmdroid/paws-app"],
     serverCa: ca,
   });
   expect(commands(exe)[1]).toContain(
