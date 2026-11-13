@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openDatabase, migrate, sqliteDb } from "../src/db";
 import {
   handleAgentSettingsRequest,
+  handleBriefSettingsRequest,
   handleCheckoutSettingsRequest,
   handleHookSettingsRequest,
   handleTimeLimitSettingsRequest,
@@ -51,6 +52,7 @@ const server = Bun.serve({
       });
     return (
       (await handleCheckoutSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
+      (await handleBriefSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
       (await handleAgentSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
       (await handleTimeLimitSettingsRequest(request, {
         configPath,
@@ -101,6 +103,7 @@ try {
       await page.locator("#queue-owner-cap").fill("2");
       await page.getByRole("button", { name: "Save queue settings" }).click();
       await expect(page.locator("#queue-settings").getByText("Saved")).toBeVisible();
+      await expect(page.locator("#time-limit-settings").getByText(/project/i)).toHaveCount(0);
       await page.locator("#time-default-implementation").fill("240");
       await page.getByRole("button", { name: "Save time limits" }).click();
       await expect(page.locator("#time-limit-settings").getByText("Saved")).toBeVisible();
@@ -117,6 +120,14 @@ try {
         .toBe(true);
       await page.screenshot({
         path: join(directory, `limits-${width}-${scheme}.png`),
+        fullPage: true,
+      });
+
+      await page.goto(`${base}/brief`);
+      await expect(page.getByRole("heading", { name: "Agent brief" })).toBeVisible();
+      await expect(page.locator('[name="brief-scope"], [name="brief-repository"]')).toHaveCount(0);
+      await page.screenshot({
+        path: join(directory, `brief-${width}-${scheme}.png`),
         fullPage: true,
       });
       await page.close();
