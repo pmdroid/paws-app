@@ -284,6 +284,19 @@ export function* applyWorkItemEventSteps(
       q.orm.delete(itemReconciliationRequest).where(eq(itemReconciliationRequest.itemId, id)),
     );
   const next = yield* requireWorkItemSteps(q, id);
+  if (
+    isTerminalWorkItemState(next.state) &&
+    !isTerminalWorkItemState(current.state) &&
+    next.branchName
+  ) {
+    const endedAt = record.now ?? Date.now();
+    yield* q.exec(
+      q.orm
+        .insert(q.t.checkpointRefCleanup)
+        .values({ itemId: id, endedAt })
+        .onConflictDoUpdate({ target: q.t.checkpointRefCleanup.itemId, set: { endedAt } }),
+    );
+  }
   const ended = FIX_ENDINGS[next.state];
   if (ended) yield* closeFixRecordsSteps(q, id, { outcome: ended, now: record.now ?? Date.now() });
   yield* q.exec(
