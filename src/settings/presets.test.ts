@@ -22,7 +22,6 @@ test("agents settings save and return presets and refuse duplicate names", async
       implementer: { agent: "claude", model: "opus" },
       reviewer: { agent: "codex", model: "review" },
     },
-    projects: [{ repo: "acme/app" }],
     presets: {
       Opus: { agent: "claude", model: "opus" },
       Codex: { agent: "codex", model: "codex" },

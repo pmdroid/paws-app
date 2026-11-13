@@ -117,7 +117,6 @@ async function fixture() {
         headers: { "Content-Type": "application/json", "x-paws-csrf": "test" },
         body: JSON.stringify({
           defaults: profiles,
-          projects: [],
           ...(applyToWaiting === undefined ? {} : { applyToWaiting }),
         }),
       }),
@@ -214,7 +213,7 @@ test("agent change announces once at session start, including after a new run", 
 test("a retry resolves profiles from Settings, not the previous run's snapshot", async () => {
   const f = await fixture();
   const failed = await f.seed("running");
-  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
   await setRun(f.db, failed.run.id, "lost");
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -245,7 +244,7 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   const next = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
   // Settings moved back to the original agent: there is no switch left to announce.
-  writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles });
   await setRun(f.db, next.id, "lost");
   const back = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
@@ -256,7 +255,6 @@ test("model-only changes preserve candidate and do not announce an agent switch"
   const waiting = await f.seed("paused");
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
-    projects: [],
   });
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
   expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toEqual({
@@ -284,7 +282,6 @@ test("an existing remote invocation resolves updated waiting profiles and role-s
   const reviewerFallback = { agent: "codex", model: "fallback-review" } as const;
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: { ...profiles, reviewerFallback },
-    projects: [],
   });
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
   expect(await f.calls[0]!.resolveProfiles!()).toEqual({
@@ -301,14 +298,14 @@ test.each([false, true])(
   "config edits reconcile a waiting run before it starts, prior observation=%s",
   async (observed) => {
     const f = await fixture();
-    writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+    writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles });
     const waiting = await f.seed("paused");
     const internals = f.orchestrator as unknown as {
       ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
       remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
     };
     if (observed) await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-    writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+    writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
     await setItem(f.db, waiting.item.id, { state: "running" });
     expect((await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!)).id).toBe(
       waiting.run.id,
@@ -333,7 +330,7 @@ test.each([false, true])(
 test("automatic reconciliation waits for a live runner lease to end", async () => {
   const f = await fixture();
   const waiting = await f.seed("running");
-  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
   await withoutForeignKeys(f.db);
   await leaseRun(f.db, waiting.run.id, "command", 2000);
   const internals = f.orchestrator as unknown as {
@@ -354,7 +351,7 @@ test("automatic reconciliation waits for a live runner lease to end", async () =
 test("a retired account order in config.toml changes no waiting run and reaches no runner", async () => {
   const f = await fixture();
   const config = join(f.root, "config.toml");
-  writeAgentSettings(config, { defaults: oldProfiles, projects: [] });
+  writeAgentSettings(config, { defaults: oldProfiles });
   const waiting = await f.seed("paused");
   const before = readFileSync(waiting.file, "utf8");
   writeFileSync(
@@ -381,7 +378,6 @@ test("Acme labels change only the next run and a failed Linear read retains its 
   const f = await fixture();
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
-    projects: [],
     presets: {
       Opus: { agent: "claude", model: "opus" },
       Codex: { agent: "codex", model: "acme-codex" },
@@ -438,7 +434,6 @@ async function labelled() {
   const f = await fixture();
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
-    projects: [],
     presets,
   });
   const failed = await f.seed("running");

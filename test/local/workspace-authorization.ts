@@ -570,7 +570,6 @@ export async function probeWorkspaceAuthorization(
           implementer: { agent: "claude", model: null },
           reviewer: { agent: "codex", model: null },
         },
-        projects: [],
       }),
     });
     observe(

@@ -9,27 +9,15 @@ const ROLES: AgentRole[] = ["implementer", "reviewer"];
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
-  const profiles = [
-    { name: "Global defaults", ...settings.defaults },
-    ...settings.projects.map((project) => ({
-      name: project.repo,
-      implementer: project.implementer ?? settings.defaults.implementer,
-      reviewer: project.reviewer ?? settings.defaults.reviewer,
-    })),
-  ];
-  return profiles
-    .filter(
-      ({ implementer, reviewer }) =>
-        implementer.agent === reviewer.agent && implementer.model === reviewer.model,
-    )
-    .map(
-      ({ name }) => `${name}: choose a different reviewer agent or model for independent review.`,
-    );
+  const { implementer, reviewer } = settings.defaults;
+  return implementer.agent === reviewer.agent && implementer.model === reviewer.model
+    ? ["Global defaults: choose a different reviewer agent or model for independent review."]
+    : [];
 }
 
-function clearAccounts(settings: AgentSettings, scope: string, role: string): void {
-  const owner = scope === "defaults" ? settings.defaults : settings.projects[Number(scope)];
-  if (!owner?.accounts) return;
+function clearAccounts(settings: AgentSettings, role: string): void {
+  const owner = settings.defaults;
+  if (!owner.accounts) return;
   const lists: Record<string, unknown> = { ...owner.accounts };
   delete lists[role];
   if (Object.keys(lists).length) owner.accounts = lists as typeof owner.accounts;
@@ -75,7 +63,6 @@ type SettingsView = {
   denied?: boolean;
   catalogs?: AgentModelCatalog[];
   catalogError?: string | null;
-  repoDraft?: string;
 };
 
 export function renderAgentSettings(view: SettingsView): string {
@@ -91,28 +78,7 @@ export function renderAgentSettings(view: SettingsView): string {
       : "";
   return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
-      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by projects that inherit these roles. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], null, view.catalogs)).join("")}</div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Project overrides</h2><p class="sub">Set a profile for an individual repository, or inherit its global default.</p></div><div class="col">
-      ${
-        view.data.projects.length
-          ? view.data.projects
-              .map(
-                (project, index) =>
-                  `<section class="settings-project"><h3>${esc(project.repo)}</h3><div class="settings-roles">${ROLES.map(
-                    (role) =>
-                      profileFields(
-                        String(index),
-                        role,
-                        project[role] ?? view.data!.defaults[role],
-                        project[role] === undefined,
-                        view.catalogs,
-                      ),
-                  ).join("")}</div></section>`,
-              )
-              .join("")
-          : '<p class="sub">No project overrides.</p>'
-      }
-      <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by every repository. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], view.catalogs)).join("")}</div></section>
       <section class="settings-section"><div class="settings-label"><h2>Label presets</h2><p class="sub">Add a label to a Linear issue in the Implementer or Reviewer group with a preset's name to run that issue with it. A change applies from the issue's next run.</p></div><div class="col">
       ${(
         view.presetRows ??
@@ -122,7 +88,7 @@ export function renderAgentSettings(view: SettingsView): string {
           const key = `preset-${index}`;
           const error = presetError(view.error, row.name);
           return `<section class="settings-project" data-preset-row="${index}"><div class="settings-field"><label for="${key}-name">Name</label><input id="${key}-name" name="${key}-name" value="${esc(row.name)}" autocapitalize="none" spellcheck="false" ${error ? `aria-invalid="true" aria-describedby="${key}-error"` : ""}></div>
-        ${profileFields(key, "implementer", row.profile, null, view.catalogs, "Profile")}
+        ${profileFields(key, "implementer", row.profile, view.catalogs, "Profile")}
         ${error ? `<p id="${key}-error" class="settings-message err" role="alert">${esc(error)}</p>` : ""}
         <button class="btn" type="button" data-settings="remove-preset" data-index="${index}">Remove preset</button></section>`;
         })
@@ -139,12 +105,10 @@ function profileFields(
   scope: string,
   role: AgentRole,
   profile: AgentProfile,
-  inherited: boolean | null,
   catalogs: AgentModelCatalog[] = [],
   heading?: string,
 ): string {
   const key = `${scope}-${role}`;
-  const disabled = inherited ? "disabled" : "";
   const label = heading ?? (role === "implementer" ? "Implementer" : "Reviewer");
   const catalog = catalogs.find((value) => value.agent === profile.agent);
   const selected = catalog?.models.find((model) => model.id === profile.model);
@@ -164,10 +128,10 @@ function profileFields(
     if (value && !available.some((option) => option.id === value))
       available.unshift({ id: value, name: value });
     const hint = field === "model" && longContext ? ` aria-describedby="${key}-model-hint"` : "";
-    return `<select id="${key}-${field}" name="${key}-${field}"${hint} ${disabled || (options == null ? "disabled" : "")}><option value="" ${value ? "" : "selected"}>Agent default</option>${available.map((option) => `<option value="${esc(option.id)}" ${option.id === value ? "selected" : ""}>${esc(option.name)}</option>`).join("")}</select>`;
+    return `<select id="${key}-${field}" name="${key}-${field}"${hint} ${options == null ? "disabled" : ""}><option value="" ${value ? "" : "selected"}>Agent default</option>${available.map((option) => `<option value="${esc(option.id)}" ${option.id === value ? "selected" : ""}>${esc(option.name)}</option>`).join("")}</select>`;
   };
-  return `<div class="settings-profile"><div class="settings-role"><h3>${label}</h3>${inherited !== null ? `<label class="settings-inherit"><input type="checkbox" name="${key}-inherit" ${inherited ? "checked" : ""}>Use global default</label>` : ""}</div>
-    <div class="settings-controls"><div class="settings-field"><label for="${key}-agent">Agent</label><select id="${key}-agent" name="${key}-agent" ${disabled}>${Object.entries(
+  return `<div class="settings-profile"><div class="settings-role"><h3>${label}</h3></div>
+    <div class="settings-controls"><div class="settings-field"><label for="${key}-agent">Agent</label><select id="${key}-agent" name="${key}-agent">${Object.entries(
       AGENTS,
     )
       .map(
@@ -251,14 +215,6 @@ export function createAgentSettings(
     };
     for (const role of ROLES)
       view.data.defaults[role] = read(`defaults-${role}`, view.data.defaults[role]);
-    view.data.projects.forEach((project, index) => {
-      for (const role of ROLES) {
-        const key = `${index}-${role}`;
-        if (form.querySelector<HTMLInputElement>(`[name="${key}-inherit"]`)?.checked)
-          delete project[role];
-        else project[role] = read(key, project[role] ?? view.data!.defaults[role]);
-      }
-    });
     view.presetRows?.forEach((row, index) => {
       row.name =
         form.querySelector<HTMLInputElement>(`[name="preset-${index}-name"]`)?.value ?? row.name;
@@ -266,7 +222,6 @@ export function createAgentSettings(
     });
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
-    view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;
   };
@@ -377,19 +332,6 @@ export function createAgentSettings(
       view.presetRows?.splice(Number(button.dataset.index), 1);
       paint();
     }
-    if (action === "add" && view.data) {
-      const input = root?.querySelector<HTMLInputElement>("#settings-repo");
-      const repo = input?.value.trim().toLowerCase() ?? "";
-      if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repo))
-        view.error = "Enter a repository as owner/repository.";
-      else if (view.data.projects.some((project) => project.repo === repo))
-        view.error = "This project is already listed.";
-      else {
-        view.data.projects.push({ repo });
-        view.repoDraft = "";
-      }
-      paint();
-    }
   };
   const submit = (event: Event) => {
     event.preventDefault();
@@ -451,17 +393,13 @@ export function createAgentSettings(
       const key = name.replace(/-(agent|model)$/, "");
       const [scope, role] = key.split("-") as [string, AgentRole];
       const profile =
-        scope === "preset"
-          ? view.presetRows?.[Number(role)]?.profile
-          : scope === "defaults"
-            ? view.data?.defaults[role]
-            : view.data?.projects[Number(scope)]?.[role];
+        scope === "preset" ? view.presetRows?.[Number(role)]?.profile : view.data?.defaults[role];
       if (profile) {
         delete profile.effort;
         if (name.endsWith("-agent")) profile.model = null;
       }
       if (scope !== "preset" && name.endsWith("-agent") && view.data)
-        clearAccounts(view.data, scope, role);
+        clearAccounts(view.data, role);
       const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) effort.value = "";
     }
@@ -476,7 +414,6 @@ export function createAgentSettings(
       if (save) save.disabled = problems.length > 0;
       return;
     }
-    if (name === "repo") return;
     paint();
     requestAnimationFrame(() => {
       const field = root?.querySelector<HTMLElement>(`[name="${name}"]`);

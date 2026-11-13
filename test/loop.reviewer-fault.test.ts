@@ -170,7 +170,6 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     ) as { profiles: AgentProfiles };
     writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
       defaults: { ...profiles, reviewer: { agent: "codex", model: "a-working-reviewer" } },
-      projects: [],
     });
     gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
     const changed = Date.now();

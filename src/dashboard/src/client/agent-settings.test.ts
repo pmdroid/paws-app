@@ -11,7 +11,6 @@ function settings(): AgentSettings {
       implementer: { agent: "claude", model: null },
       reviewer: { agent: "codex", model: "gpt-5.4" },
     },
-    projects: [{ repo: "pmdroid/barkvisor" }],
   };
 }
 
@@ -41,14 +40,8 @@ function view(data: AgentSettings | null = settings()) {
 }
 
 describe("agent settings", () => {
-  test("global defaults and effective project overrides must have independent profiles", () => {
+  test("global defaults must have independent profiles", () => {
     const data = settings();
-    expect(settingsProblems(data)).toEqual([]);
-    data.projects[0]!.reviewer = { agent: "claude", model: null };
-    expect(settingsProblems(data)).toEqual([
-      "pmdroid/barkvisor: choose a different reviewer agent or model for independent review.",
-    ]);
-    data.projects[0]!.reviewer.model = "another-model";
     expect(settingsProblems(data)).toEqual([]);
     data.defaults.reviewer = { ...data.defaults.implementer };
     expect(settingsProblems(data)[0]).toStartWith("Global defaults:");
@@ -89,10 +82,11 @@ describe("agent settings", () => {
     expect(rendered.content).toContain('id="agent-settings"');
   });
 
-  test("rendering explains inheritance and preserves empty model as agent default", () => {
+  test("rendering has only global profiles and preserves empty model as agent default", () => {
     const html = renderAgentSettings(view());
-    expect(html).toContain('name="0-reviewer-inherit" checked');
-    expect(html).toContain('name="0-reviewer-agent" disabled');
+    expect(html).not.toContain("Project overrides");
+    expect(html).not.toContain("Use global default");
+    expect(html).not.toContain('id="settings-repo"');
     expect(html).toContain('<option value="" selected>Agent default</option>');
     expect(html).toContain('<select id="defaults-implementer-model"');
     expect(html).toContain('class="settings-roles"');
@@ -105,12 +99,11 @@ describe("agent settings", () => {
     expect(renderAgentSettings(view(data))).toContain('type="submit" disabled');
   });
 
-  test("saved effort stays in the field and inherited roles stay locked", () => {
+  test("saved effort stays in the field", () => {
     const state = view();
     state.data!.defaults.reviewer.effort = "high";
     const saved = renderAgentSettings(state);
     expect(saved).toContain('<option value="high" selected>High</option>');
-    expect(saved).toContain('id="0-reviewer-effort" name="0-reviewer-effort" disabled');
     expect(saved).not.toContain("Test connection");
   });
 
@@ -146,7 +139,6 @@ describe("agent settings", () => {
         },
       );
       current.data!.defaults.implementer = { agent: "claude", model };
-      current.data!.projects = [];
       return renderAgentSettings(current);
     };
     const standard = withLongContext("opus");
@@ -167,8 +159,7 @@ describe("agent settings", () => {
 
   test("persisted values escape untrusted text", () => {
     const state = view();
-    state.data!.projects[0]!.repo = '<img src=x onerror="alert(1)">';
-    state.data!.defaults.reviewer.model = "<script>";
+    state.data!.defaults.reviewer.model = '<script><img src=x onerror="alert(1)">';
     state.data!.defaults.reviewer.effort = '<bad"effort>';
     const html = renderAgentSettings(state);
     expect(html).not.toContain("<script>");
@@ -288,6 +279,7 @@ test("preset rows render, add, remove, save and show API name errors on the row"
     submit();
     await settle();
     expect(body?.presets).toEqual({ Opus: data.presets.Opus, Codex: data.defaults.implementer });
+    expect(body).not.toHaveProperty("projects");
     click("remove-preset");
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Codex");
     const name = root.querySelector<HTMLInputElement>("#preset-0-name")!;

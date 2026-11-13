@@ -387,32 +387,29 @@ test("doctor is green with no claude when the implementer is grok", async () => 
   expect(text).not.toContain("missing");
 });
 
-test("doctor requires providers used by either default role and project overrides", () => {
+test("doctor requires providers used by either default role", () => {
   const config = emptyConfigFile();
-  config.agentSettings = {
-    defaults: {
-      implementer: { agent: "claude", model: "model-a" },
-      reviewer: { agent: "claude", model: "model-b" },
-    },
-    projects: [],
-  };
+  const defaults = {
+    implementer: { agent: "claude", model: "model-a" },
+    reviewer: { agent: "claude", model: "model-b" },
+  } as const;
+  config.agentSettings = { defaults };
   const ready = probe(true);
   ready.facts.codexAdapter = { ok: false, detail: "Codex adapter absent" };
   ready.facts.codexLogin = { ok: false, detail: "Codex login absent" };
-  const defaults = doctorChecks(ready, { config });
-  expect(defaults.every((item) => item.ok)).toBe(true);
-  expect(defaults.find((item) => item.name === "codex")?.note).toBe(true);
-  config.agentSettings.projects.push({
-    repo: "pmdroid/barkvisor",
-    reviewer: { agent: "grok", model: null },
-  });
+  const claudeOnly = doctorChecks(ready, { config });
+  expect(claudeOnly.every((item) => item.ok)).toBe(true);
+  expect(claudeOnly.find((item) => item.name === "codex")?.note).toBe(true);
+  config.agentSettings = { defaults: { ...defaults, reviewer: { agent: "grok", model: null } } };
   const missingGrok = doctorChecks(ready, { config });
   expect(missingGrok.find((item) => item.name === "grok")?.ok).toBe(false);
   expect(missingGrok.find((item) => item.name === "codex")?.note).toBe(true);
-  config.agentSettings.projects.push({
-    repo: "pmdroid/paws-app",
-    implementer: { agent: "codex", model: null },
-  });
+  config.agentSettings = {
+    defaults: {
+      implementer: { agent: "codex", model: null },
+      reviewer: { agent: "grok", model: null },
+    },
+  };
   const missingBoth = doctorChecks(ready, { config });
   expect(missingBoth.filter((item) => !item.ok).map((item) => item.name)).toEqual([
     "codex-acp",

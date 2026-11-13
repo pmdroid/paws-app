@@ -217,7 +217,7 @@ Placement (`src/runner-placement/placement.ts`) offers each runner that passes t
 
 Assignment rechecks the choice inside the same `BEGIN IMMEDIATE` transaction that signs and stores the command: the runner's sign-in is still outside its cooldown, its health does not block it, and the command names no account. If a check fails, the whole assignment rolls back with a `PlacementRaceError`, so no runner slot is held, and the work is placed again.
 
-The reviewer fallback profile in Settings › Agents still moves a review to its agent when the reviewer's agent is at its usage limit on every runner. `config.toml` account lists (`[agents.defaults.accounts]`, `[agents.projects."owner/repo".accounts]`) are accepted and ignored, and the next save of agent settings leaves them out.
+The reviewer fallback profile in Settings › Agents still moves a review to its agent when the reviewer's agent is at its usage limit on every runner. `config.toml` account lists in `[agents.defaults.accounts]` are accepted and ignored, and the next save of agent settings leaves them out.
 
 ### Account health
 
