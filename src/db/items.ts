@@ -1572,7 +1572,10 @@ function* commitFailureSteps(
             eq(outbox.target, "linear"),
             eq(outbox.orderingKey, sessionId),
             eq(outbox.deliveryGeneration, generation),
-            likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+            or(
+              likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+              likeText(q, outbox.idempotencyKey, "pull-request-opened:%"),
+            ),
             ne(outbox.status, "dropped"),
           ),
         )

@@ -4,6 +4,7 @@ import {
   keepTaskLinearReadSteps,
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
+  readSessionDone,
   saveCandidatePathsSteps,
   saveCandidateRiskSteps,
 } from "../db";
@@ -90,6 +91,7 @@ import {
   hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
+import { finishOpenedSessions } from "./session-done";
 import { createHash, randomUUID } from "node:crypto";
 import { askSteps, restartSteps, awaitQuestionSteps } from "./operations";
 import {
@@ -2131,6 +2133,7 @@ export class Orchestrator {
         return;
       }
       let waiting: MergeWait | undefined;
+      if (ownerId !== null) await this.finishOpenedSessions(ownerId);
       try {
         await this.mergeAttempt(job, context, (wait) => {
           waiting = wait;
@@ -6283,9 +6286,10 @@ export class Orchestrator {
       ? await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionKey))
       : 0;
     const runs = await this.store.run((q) => listRunsSteps(q, item.id));
+    const sessionDone = (await readSessionDone(this.store)).sessionDone;
     await this.post(
       item,
-      "response",
+      sessionDone === "pull_request" ? "response" : "thought",
       await pullRequestReadyResponse({
         itemId: item.id,
         head: published.head,
@@ -6298,7 +6302,7 @@ export class Orchestrator {
           (await this.riskDisplay(item.id, published.head))?.detail ?? "Manual approval required",
         journal: this.options.journal,
       }),
-      `pull-request-ready:${item.id}:${generation}`,
+      `${sessionDone === "pull_request" ? "pull-request-ready" : "pull-request-opened"}:${item.id}:${generation}`,
       {},
       "ordered",
     );
@@ -7790,7 +7794,10 @@ export class Orchestrator {
       ...(await this.options.scheduling?.()),
       ...(merge ? { parallelFiles: (repository: string) => parallelFiles(merge, repository) } : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
-      onWaits: (waits) => this.noteWaits(waits),
+      onWaits: async (waits) => {
+        await this.noteWaits(waits);
+        await this.finishOpenedSessions();
+      },
       ...(itemRunners
         ? {
             itemRunners: (q: Q, itemId: string) =>
@@ -8594,7 +8601,8 @@ export class Orchestrator {
       (kind === "thought" ||
         kind === "action" ||
         (yield* this.hasPublishedPullRequestSteps(q, sessionId))) &&
-      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
+      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key)) &&
+      !(kind === "thought" && key.startsWith("pull-request-opened:"))
     )
       return;
     return yield* enqueueOutboxOnceSteps(q, {
@@ -8606,6 +8614,38 @@ export class Orchestrator {
       payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
+  }
+
+  private async finishOpenedSessions(itemId?: string): Promise<void> {
+    await finishOpenedSessions(
+      this.store,
+      {
+        now: () => this.now(),
+        readPullCi: async (item, pull) => {
+          const repository = await this.repositoryForItem(item);
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!repository || !github)
+            return { state: "unknown", message: "GitHub App is not configured." };
+          return readPullCi({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pull.number,
+            head: pull.head,
+            ...this.gitHubCredentials(github),
+          });
+        },
+      },
+      itemId,
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.finishOpenedSessions",
+        itemId ?? null,
+        undefined,
+        this.options.journal,
+      ),
+    );
   }
 
   private *canReportProgressSteps(q: Q, itemId: string): Steps<boolean> {
@@ -8631,8 +8671,12 @@ export class Orchestrator {
 
   /** The item opened a pull request in some generation of its session. A new turn starts a new generation. */
   private async hasOpenedPullRequest(itemId: string): Promise<boolean> {
-    const prefix = `pull-request-ready:${itemId}:`;
-    return await this.store.run((q) => linearOutboxKeyedSteps(q, prefix));
+    return await this.store.run(function* (q) {
+      return (
+        (yield* linearOutboxKeyedSteps(q, `pull-request-ready:${itemId}:`)) ||
+        (yield* linearOutboxKeyedSteps(q, `pull-request-opened:${itemId}:`))
+      );
+    });
   }
 
   private *announceMergedSteps(q: Q, item: WorkItemRecord): Steps<void> {
