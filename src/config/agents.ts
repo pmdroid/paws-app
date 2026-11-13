@@ -225,13 +225,20 @@ export function parseAgentSettingsToml(
   );
 }
 
-function legacyPreset(implementer: unknown, defaults: Record<string, unknown>): unknown {
-  const pair = { implementer, reviewer: defaults.reviewer };
+function legacyPreset(profile: unknown, defaults: Record<string, unknown>): unknown {
+  const normal = (value: unknown) => {
+    const parsed = profileSchema.safeParse(value);
+    return parsed.success ? parsed.data : value;
+  };
+  const implementer = normal(profile);
+  const pair = { implementer, reviewer: normal(defaults.reviewer) };
   try {
     validateIndependence(pair as AgentPreset);
     return pair;
   } catch {
-    return defaults.reviewerFallback ? { implementer, reviewer: defaults.reviewerFallback } : pair;
+    return defaults.reviewerFallback
+      ? { implementer, reviewer: normal(defaults.reviewerFallback) }
+      : pair;
   }
 }
 

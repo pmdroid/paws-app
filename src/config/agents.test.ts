@@ -136,6 +136,10 @@ test("a legacy single-profile preset loads with the default reviewer, else the f
     implementer: { agent: "codex", model: "review" },
     reviewer: settings.defaults.reviewerFallback,
   });
+  expect(legacy("codex", " review ")).toEqual({
+    implementer: { agent: "codex", model: "review" },
+    reviewer: settings.defaults.reviewerFallback,
+  });
   const noFallback = renderAgentSettingsText("", {
     defaults: { implementer: settings.defaults.implementer, reviewer: settings.defaults.reviewer },
   });
