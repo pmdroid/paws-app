@@ -284,6 +284,7 @@ export type Proof = {
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
   member?: { login: string; token: string; refused?: number };
+  runnerSignIn?: { runner: string; signedIn: boolean };
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
 };
@@ -368,6 +369,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     }),
     launch,
     ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
+    ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
   });
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];

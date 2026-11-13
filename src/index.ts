@@ -165,6 +165,7 @@ import {
   recoverOnStartupSteps,
   registerInstanceSteps,
   runPendingJobNowSteps,
+  runRunnerAvailability,
   stopInstanceSteps,
   takeOverGoneRunsSteps,
   type Steps,
@@ -1592,6 +1593,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 store.run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
               repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
                 store.run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
+              runnerSignIn: async (runId: string, agent: string, signal: AbortSignal) => {
+                const [placed, coordinator] = await Promise.all([
+                  runRunnerAvailability(store, runId),
+                  runnerReady,
+                ]);
+                if (!placed || !coordinator) return null;
+                return {
+                  runner: placed.name,
+                  signedIn: await coordinator.health.signedIn(placed.id, agent, signal),
+                };
+              },
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },
