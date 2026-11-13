@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { createRunners, type Runner } from "./runners";
+import { createRunners, type MemberVm, type Runner } from "./runners";
 import { settleReactWork } from "./settle-react";
 
 const realFetch = globalThis.fetch;
@@ -225,4 +225,105 @@ test("members who do not manage runners see the versions without Update all runn
   const dialog = root.querySelector("#agents-dialog")!;
   expect(dialog.textContent).toContain("Offered 2.1.0");
   expect(dialog.querySelector("[data-agents-update-all]")).toBeNull();
+});
+
+const memberVm = (id: string, step: MemberVm["step"], patch: Partial<MemberVm> = {}): MemberVm => ({
+  id,
+  vmName: `${id}-paws`,
+  userId: "owner",
+  step,
+  failure: null,
+  runnerId: null,
+  steps: [
+    { step: "create", state: step === "create" ? "running" : "done", elapsedMs: 1000 },
+    { step: "install", state: "pending", elapsedMs: null },
+    { step: "enroll", state: "pending", elapsedMs: null },
+    { step: "health", state: "pending", elapsedMs: null },
+  ],
+  ...patch,
+});
+
+async function mountWithVms(vms: MemberVm[], selected: string | null, refusal?: string) {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    const path = new URL(String(url), ORIGIN).pathname;
+    if (path === "/api/runners/vm/pools")
+      return Response.json({
+        available: true,
+        pools: [{ name: "build", region: null, status: null }],
+      });
+    if (!path.startsWith("/api/runners/vm")) return fallback(url as string, init);
+    if (init?.method === "POST") requests.push({ url: path, init });
+    if (refusal && init?.method === "POST")
+      return Response.json({ error: refusal }, { status: 403 });
+    return Response.json({ available: true, vm: null, vms, size: { cpu: 2 } });
+  }) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", selected);
+  await settle();
+  return root;
+}
+
+const posted = (path: string) =>
+  requests
+    .filter((request) => request.url === path)
+    .map((request) => JSON.parse(String(request.init!.body)));
+
+test("only VMs that are not Ready get a card, and Retry posts the card's id", async () => {
+  const root = await mountWithVms(
+    [
+      memberVm("ready", "ready", { runnerId: RUNNER }),
+      memberVm("setup", "create"),
+      memberVm("broken", "install", { failure: "install failed" }),
+    ],
+    null,
+  );
+  expect([...root.querySelectorAll("[data-member-vm]")].map((card) => card.textContent)).toEqual([
+    expect.stringContaining("setup-paws"),
+    expect.stringContaining("broken-paws"),
+  ]);
+  expect(root.textContent).not.toContain("ready-paws");
+  expect(root.querySelectorAll("[data-vm-retry]")).toHaveLength(1);
+  root.querySelector<HTMLElement>('[data-vm-retry="broken"]')!.click();
+  await settle();
+  expect(posted("/api/runners/vm/retry")).toEqual([{ id: "broken" }]);
+});
+
+test("Create VM sits in the header, names size and pool in its dialog, posts and shows a refusal", async () => {
+  const refusal = "You already have 5 VMs. Delete one to create another.";
+  const root = await mountWithVms(
+    [memberVm("ready", "ready", { runnerId: RUNNER })],
+    null,
+    refusal,
+  );
+  const header = root.querySelector("[data-runner-add]")!.parentElement!;
+  expect(header.querySelector("[data-vm-create]")).not.toBeNull();
+  expect(root.querySelector("[data-vm-delete]")).toBeNull();
+  expect(root.querySelector("#vm-create-size")).toBeNull();
+  root.querySelector<HTMLElement>("[data-vm-create]")!.click();
+  await settle();
+  const dialog = root.querySelector("#vm-create-dialog")!;
+  expect(dialog.querySelector("#vm-create-size")?.textContent).toContain("2 CPUs");
+  expect(dialog.querySelector("[data-vm-pool]")).not.toBeNull();
+  dialog.querySelector<HTMLElement>("[data-vm-create-confirm]")!.click();
+  await settle();
+  expect(posted("/api/runners/vm")).toEqual([{}]);
+  expect(root.querySelector("#vm-create-dialog")).toBeNull();
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(refusal);
+});
+
+test("a VM runner's page offers Delete VM and posts the VM's id", async () => {
+  const root = await mountWithVms([memberVm("mine", "ready", { runnerId: RUNNER })], RUNNER);
+  root.querySelector<HTMLElement>('[data-vm-delete="mine"]')!.click();
+  await settle();
+  root.querySelector<HTMLElement>("[data-vm-delete-confirm]")!.click();
+  await settle();
+  expect(posted("/api/runners/vm/delete")).toEqual([{ id: "mine" }]);
+});
+
+test("a runner that is not a member VM has no Delete VM", async () => {
+  const root = await mountWithVms([memberVm("other", "ready", { runnerId: "elsewhere" })], RUNNER);
+  expect(root.textContent).toContain("Execution history");
+  expect(root.querySelector("[data-vm-delete]")).toBeNull();
 });
