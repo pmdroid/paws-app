@@ -153,17 +153,22 @@ export async function readBranchWork(
 }
 
 export async function readBranchTip(input: HeadRead & { branch: string }): Promise<string | null> {
+  return readRef({ ...input, ref: `refs/heads/${input.branch}` });
+}
+
+export async function readRef(input: HeadRead & { ref: string }): Promise<string | null> {
   input.signal?.throwIfAborted();
+  if (!input.ref.startsWith("refs/")) throw new Error(`${input.ref} is not a full ref name`);
   const token = await acquireOperationToken(input, "pr");
   const read = await input.client.request({
     method: "GET",
-    path: repoApiPath(input.owner, input.repo, `/git/ref/heads/${input.branch}`),
+    path: repoApiPath(input.owner, input.repo, `/git/ref/${input.ref.slice("refs/".length)}`),
     token,
     signal: input.signal,
   });
   if (read.status === 404) return null;
   const object = (read.body as { object?: { sha?: unknown; type?: unknown } } | null)?.object;
   if (read.status !== 200 || object?.type !== "commit" || typeof object.sha !== "string")
-    throw new Error(`Could not read the tip of ${input.branch}`);
+    throw new Error(`Could not read ${input.ref}`);
   return object.sha.toLowerCase();
 }

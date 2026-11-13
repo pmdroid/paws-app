@@ -3972,6 +3972,7 @@ export class Orchestrator {
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
+        ...(this.storedCandidates() ? { storedCandidate: true } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -4566,6 +4567,15 @@ export class Orchestrator {
         ? {
             path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
             ref: candidateRef(itemPathId(item)),
+            ...(this.storedCandidates()
+              ? {
+                  head: async () => {
+                    const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
+                    if (!recorded) throw new Error(`${item.id} has no recorded candidate commit`);
+                    return recorded.sha;
+                  },
+                }
+              : {}),
           }
         : undefined;
     const policy = await this.commitPolicy(item);

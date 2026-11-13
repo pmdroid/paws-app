@@ -224,6 +224,7 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
    * mirror, and this directory only holds the files staged for the agent.
    */
   workspace?: string;
+  storedCandidate?: boolean;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
 }
 

@@ -64,7 +64,7 @@ export type CandidateIdentity = {
 };
 
 /** A runner-backed item's bare mirror and the candidate ref that names its head there. */
-export type CloseoutMirror = { path: string; ref: string };
+export type CloseoutMirror = { path: string; ref: string; head?: () => Promise<string> };
 
 export type CloseoutItem = {
   id: string;

@@ -204,6 +204,8 @@ import {
   revokeInstallationToken,
   githubHttpsUrl,
   createGitHubGitReader,
+  branchContains,
+  readRef,
   useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
@@ -385,6 +387,7 @@ import {
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
+  type GitHubCommits,
   remoteCommandsGoneSteps,
 } from "./runner-backend";
 
@@ -1204,6 +1207,28 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
+  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
+    const read = () => {
+      const binding = githubBinding(
+        authProvider(
+          runtime,
+          { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
+          "read",
+          resolveApp,
+        ),
+      );
+      if (!binding)
+        throw new Error(
+          `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
+        );
+      return { ...binding, ...repository };
+    };
+    return {
+      ref: (ref, signal) => readRef({ ...read(), ref, signal }),
+      contains: async (tip, sha, signal) =>
+        (await branchContains({ ...read(), branch: tip, sha, signal })).contains,
+    };
+  };
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -1214,6 +1239,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
+            ...(loadConfigFile(paths.configFile).githubMirrors === false
+              ? { storedCandidates: githubCommits }
+              : {}),
             placement,
             instanceId: instance.id,
           }),

@@ -164,6 +164,7 @@ export {
   hasOpenPullOnPrefix,
   readBranchTip,
   readBranchWork,
+  readRef,
   readOpenPullHead,
 } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { getItemCandidate, recordItemCandidate } from "../src/db";
-import { pushBranch, readBranchTip, type GitHubClient } from "../src/github";
+import { pushBranch, readBranchTip, readRef, type GitHubClient } from "../src/github";
+import {
+  ensureStoredStartOnGitHub,
+  RemoteStartUnverified,
+  type GitHubCommits,
+} from "../src/runner-backend";
 import { forEachDialect, insertWorkItem, type DialectDb } from "./dialects";
 
 const opened: DialectDb[] = [];
@@ -25,6 +30,7 @@ function fakeRefs(branches: Record<string, string>) {
           ? { status: 200, body: { object: { sha: sha.toUpperCase(), type: "commit" } } }
           : { status: 404, body: { message: "Not Found" } };
       }
+      if (method === "GET") return { status: 404, body: { message: "Not Found" } };
       const { ref, sha } = body as { ref?: string; sha: string };
       if (method === "POST" && route === "/git/refs" && ref) {
         branches[ref.replace("refs/heads/", "")] = sha;
@@ -137,4 +143,86 @@ forEachDialect((open) => {
     await publish(github.client, stored!.sha);
     expect(github.branches["paws/acme-1"]).toBe(CANDIDATE);
   });
+});
+
+test("a hidden checkpoint ref reads through the refs API", async () => {
+  const { client, calls } = fakeRefs({});
+  expect(
+    await readRef({
+      client,
+      owner: "acme",
+      repo: "app",
+      ref: "refs/paws/checkpoints/paws/acme-1",
+      tokenProvider,
+    }),
+  ).toBeNull();
+  expect(calls).toEqual(["GET /repos/acme/app/git/ref/paws/checkpoints/paws/acme-1"]);
+});
+
+function commits(refs: Record<string, string>, history: Record<string, string[]>): GitHubCommits {
+  return {
+    ref: async (name) => refs[name] ?? null,
+    contains: async (tip, sha) => tip === sha || (history[tip] ?? []).includes(sha),
+  };
+}
+
+function startInput(github: GitHubCommits, moved: string[], saved: string[]) {
+  return {
+    head: CANDIDATE,
+    branch: "paws/acme-1",
+    github,
+    baseSha: MAIN,
+    persistFallback: async (fallback: { start: string }) => void saved.push(fallback.start),
+    moveCandidate: async (sha: string) => void moved.push(sha),
+    signal: new AbortController().signal,
+  };
+}
+
+test("a stored head GitHub holds starts as is", async () => {
+  const moved: string[] = [];
+  const github = commits(
+    { "refs/heads/main": MAIN, "refs/heads/paws/acme-1": CANDIDATE },
+    { [CANDIDATE]: [MAIN] },
+  );
+  expect(await ensureStoredStartOnGitHub(startInput(github, moved, []))).toEqual({
+    status: "remote",
+    head: CANDIDATE,
+  });
+  expect(moved).toEqual([]);
+});
+
+test("a stored head GitHub lacks falls back to the branch tip and moves the candidate", async () => {
+  const tip = "d".repeat(40);
+  const moved: string[] = [];
+  const saved: string[] = [];
+  const github = commits(
+    { "refs/heads/main": MAIN, "refs/heads/paws/acme-1": tip },
+    { [tip]: [MAIN] },
+  );
+  expect(await ensureStoredStartOnGitHub(startInput(github, moved, saved))).toMatchObject({
+    status: "fallback",
+    head: CANDIDATE,
+    start: tip,
+  });
+  expect(saved).toEqual([tip]);
+  expect(moved).toEqual([tip]);
+});
+
+test("a stored head with no branch falls back to its base on main", async () => {
+  const moved: string[] = [];
+  const github = commits({ "refs/heads/main": MAIN }, {});
+  expect(await ensureStoredStartOnGitHub(startInput(github, moved, []))).toMatchObject({
+    status: "fallback",
+    start: MAIN,
+  });
+  expect(moved).toEqual([MAIN]);
+});
+
+test("a stored head with nothing on GitHub to start from is unverified", async () => {
+  const moved: string[] = [];
+  const github = commits({ "refs/heads/main": "e".repeat(40) }, {});
+  await expect(
+    ensureStoredStartOnGitHub({ ...startInput(github, moved, []), baseSha: "f".repeat(40) }),
+  ).rejects.toBeInstanceOf(RemoteStartUnverified);
+  expect(moved).toEqual([]);
 });

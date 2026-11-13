@@ -175,3 +175,43 @@ function permissionRefusal(error: string): boolean {
     error,
   );
 }
+
+export type GitHubCommits = {
+  ref(name: string, signal: AbortSignal): Promise<string | null>;
+  contains(tip: string, sha: string, signal: AbortSignal): Promise<boolean>;
+};
+
+export async function ensureStoredStartOnGitHub(input: {
+  head: string;
+  branch: string;
+  github: GitHubCommits;
+  wipCommit?: string;
+  baseSha?: string;
+  persistFallback: (fallback: { head: string; start: string; lost: string[] }) => Promise<void>;
+  moveCandidate: (start: string) => Promise<void>;
+  signal: AbortSignal;
+}): Promise<StartCommit> {
+  const { github, head, signal } = input;
+  const branchHead = await github.ref(`refs/heads/${input.branch}`, signal).catch(() => null);
+  const mainHead = await github.ref("refs/heads/main", signal).catch(() => null);
+  const tips = [branchHead, mainHead].filter((tip): tip is string => tip !== null);
+  if (!tips.length)
+    throw new RemoteStartUnverified(head, `GitHub has neither ${input.branch} nor main`);
+  const onRemote = async (sha: string) => {
+    for (const tip of tips) if (await github.contains(tip, sha, signal)) return true;
+    signal.throwIfAborted();
+    return false;
+  };
+  if (await onRemote(head)) return { status: "remote", head };
+  let start: string | undefined;
+  for (const candidate of [branchHead, input.wipCommit, input.baseSha])
+    if (candidate && (candidate === branchHead || (await onRemote(candidate)))) {
+      start = candidate;
+      break;
+    }
+  const error = "the head is not on GitHub and Paws keeps no mirror to push it from";
+  if (!start) throw new RemoteStartUnverified(head, `no earlier commit is on GitHub; ${error}`);
+  await input.persistFallback({ head, start, lost: [] });
+  await input.moveCandidate(start);
+  return { status: "fallback", head, start, lost: [], error };
+}

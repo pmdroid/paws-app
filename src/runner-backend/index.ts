@@ -62,6 +62,7 @@ import {
   clearRunnerSessionMoveSteps,
   noteRunnerSessionMoveSteps,
   recordItemCandidateSteps,
+  getItemCandidateSteps,
   releaseRunnerReservation,
   releaseRunnerReservationSteps,
   reserveRunnerSlot,
@@ -134,8 +135,10 @@ import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
   CheckpointLookupFailed,
   ensureStartOnRemote,
+  ensureStoredStartOnGitHub,
   lostCommitsNote,
   RemoteStartUnverified,
+  type GitHubCommits,
 } from "./start-commit";
 import {
   planSessionRestoreSteps,
@@ -319,6 +322,7 @@ export function createRemoteAgentRunner(options: {
   checkpointBot?: (
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
+  storedCandidates?: (repository: { owner: string; repo: string }) => GitHubCommits;
   now?: () => number;
   mono?: () => number;
   pollIntervalMs?: number;
@@ -790,7 +794,15 @@ export function createRemoteAgentRunner(options: {
           mirror: mirrorPath(input.pawsRoot, repository.owner, repository.repo),
           ref: candidateRef(input.itemId),
         });
+        const storedCandidates = options.storedCandidates;
+        const recordCandidate = (sha: string, branch: string) =>
+          store.run((q) => recordItemCandidateSteps(q, { itemId, sha, branch, recordedAt: now() }));
         const candidateHead = async (repository: { owner: string; repo: string }) => {
+          if (storedCandidates) {
+            const recorded = await store.run((q) => getItemCandidateSteps(q, itemId));
+            if (!recorded) throw new Error(`Item ${itemId} has no recorded candidate commit`);
+            return recorded.sha;
+          }
           const { mirror, ref } = itemCandidate(repository);
           return (
             await git(["--git-dir", mirror, "rev-parse", "--verify", `${ref}^{commit}`])
@@ -1060,6 +1072,40 @@ export function createRemoteAgentRunner(options: {
             }
             throw new RemotePreparationTimeout();
           }
+          const importStoredCheckpoint = async (
+            github: GitHubCommits,
+            branch: string,
+            repository: { owner: string; repo: string },
+          ): Promise<{ sha: string; branch: string } | undefined> => {
+            let head = await candidateHead(repository);
+            const tip = branch ? await github.ref(`refs/heads/${branch}`, signal) : null;
+            if (tip && tip !== head && (await github.contains(tip, head, signal))) {
+              await recordCandidate(tip, branch);
+              head = tip;
+            }
+            const wip = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint
+              ?.wipCommit;
+            if (!wip || wip === head || (await github.contains(head, wip, signal))) return;
+            const hidden = branch
+              ? await github.ref(checkpointRef(branch), signal).catch((error: unknown) => {
+                  throw new CheckpointLookupFailed(branch, { cause: error });
+                })
+              : null;
+            if (hidden === wip) {
+              if (versionAtLeast(await hostVersion(selected.id), HIDDEN_CHECKPOINT_RUNNER_VERSION))
+                return { sha: wip, branch };
+              throw new RetryableRunnerError(
+                selected.id,
+                `Runner ${selected.id} is older than ${HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".")} and cannot restore the saved work at ${wip.slice(0, 7)} without putting it on ${branch}`,
+              );
+            }
+            if (!tip || !(await github.contains(tip, wip, signal)))
+              throw new Error(
+                `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${branch}: GitHub does not hold it`,
+              );
+            await recordCandidate(wip, branch);
+            return undefined;
+          };
           /**
            * Brings a WIP commit a runner published after the item's candidate into it, so a
            * restarted turn starts from the work a stopped or lost one saved.
@@ -1069,6 +1115,12 @@ export function createRemoteAgentRunner(options: {
           ): Promise<{ sha: string; branch: string } | undefined> => {
             const scoped = await work.scope(selected.runId, selected.workspaceId);
             if (!scoped.repository) return;
+            if (storedCandidates)
+              return importStoredCheckpoint(
+                storedCandidates(scoped.repository),
+                scoped.item.branchName,
+                scoped.repository,
+              );
             const { mirror, ref } = itemCandidate(scoped.repository);
             if (scoped.item.branchName)
               await fastForwardToBranchTip({
@@ -1163,26 +1215,44 @@ export function createRemoteAgentRunner(options: {
               return pending;
             let lostCommits: string | undefined;
             let repeated = false;
-            const start = await ensureStartOnRemote({
-              ...itemCandidate(scoped.repository),
-              branch: scoped.item.branchName,
-              remoteUrl: scoped.repository!.remoteUrl,
-              networkGit,
+            const persistFallback = async (fallback: {
+              head: string;
+              start: string;
+              lost: string[];
+            }) => {
+              const note = lostCommitsNote(fallback.start, fallback.lost);
+              // A stop after this save but before the reset repeats the same fallback.
+              repeated = pending?.includes(note) === true;
+              lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
+              await saveCheckpoint(store, itemId, {
+                ...checkpoint,
+                wipCommit: fallback.start,
+                lostCommits,
+              });
+            };
+            const branch = scoped.item.branchName;
+            const startInput = {
+              branch,
               ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
               ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
-              persistFallback: async (fallback) => {
-                const note = lostCommitsNote(fallback.start, fallback.lost);
-                // A stop after this save but before the reset repeats the same fallback.
-                repeated = pending?.includes(note) === true;
-                lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
-                await saveCheckpoint(store, itemId, {
-                  ...checkpoint,
-                  wipCommit: fallback.start,
-                  lostCommits,
-                });
-              },
+              persistFallback,
               signal,
-            }).catch((error: unknown) => {
+            };
+            const start = await (
+              storedCandidates
+                ? ensureStoredStartOnGitHub({
+                    ...startInput,
+                    head: await candidateHead(scoped.repository),
+                    github: storedCandidates(scoped.repository),
+                    moveCandidate: (sha) => recordCandidate(sha, branch),
+                  })
+                : ensureStartOnRemote({
+                    ...startInput,
+                    ...itemCandidate(scoped.repository),
+                    remoteUrl: scoped.repository.remoteUrl,
+                    networkGit,
+                  })
+            ).catch((error: unknown) => {
               // No runner gets a commit GitHub may lack; the item retries later.
               if (error instanceof RemoteStartUnverified)
                 journal(`item ${itemId}: ${error.message}`);
@@ -1244,22 +1314,20 @@ export function createRemoteAgentRunner(options: {
                   : undefined;
               const mirror = taskScope ? undefined : itemCandidate(scoped.repository!).mirror;
               const head = taskScope ? undefined : await candidateHead(scoped.repository!);
+              const github =
+                !taskScope && storedCandidates ? storedCandidates(scoped.repository!) : undefined;
+              const descends = (ancestor: string, tip: string) =>
+                github
+                  ? github.contains(tip, ancestor, signal).catch((caughtError) => {
+                      journalCaught(caughtError, "runner-backend.forItem.contains", itemId);
+                      return false;
+                    })
+                  : git(["--git-dir", mirror!, "merge-base", "--is-ancestor", ancestor, tip]).then(
+                      () => true,
+                      () => false,
+                    );
               // A session snapshot is conversation state, never authority for an unverified start.
-              if (
-                restorePlan?.eligible &&
-                head &&
-                !(await git([
-                  "--git-dir",
-                  mirror!,
-                  "merge-base",
-                  "--is-ancestor",
-                  restorePlan.commitSha,
-                  head,
-                ]).then(
-                  () => true,
-                  () => false,
-                ))
-              )
+              if (restorePlan?.eligible && head && !(await descends(restorePlan.commitSha, head)))
                 restorePlan = { eligible: false, failure: "no_snapshot" };
               const baseSha = taskScope
                 ? taskScope.repository
@@ -1274,38 +1342,29 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && versionAtLeast(await hostVersion(selected.id), REBASE_RUNNER_VERSION);
               const checkpointBase = (await store.run((q) => getWorkItemSteps(q, itemId)))
                 ?.checkpoint?.baseSha;
-              const upstreamMain = acceptsRebase
-                ? await git([
-                    "--git-dir",
-                    mirror!,
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    "refs/paws/upstream-main^{commit}",
-                  ]).then(
-                    (sha) => sha.trim() || undefined,
-                    (caughtError1) => {
-                      journalCaught(caughtError1, "runner-backend.forItem.git", itemId);
-                      return undefined;
-                    },
-                  )
-                : undefined;
+              const upstreamMain = !acceptsRebase
+                ? undefined
+                : github
+                  ? ((await github.ref("refs/heads/main", signal).catch((caughtError1) => {
+                      journalCaught(caughtError1, "runner-backend.forItem.mainRef", itemId);
+                      return null;
+                    })) ?? undefined)
+                  : await git([
+                      "--git-dir",
+                      mirror!,
+                      "rev-parse",
+                      "--verify",
+                      "--quiet",
+                      "refs/paws/upstream-main^{commit}",
+                    ]).then(
+                      (sha) => sha.trim() || undefined,
+                      (caughtError1) => {
+                        journalCaught(caughtError1, "runner-backend.forItem.git", itemId);
+                        return undefined;
+                      },
+                    );
               const fetchedMain =
-                upstreamMain &&
-                checkpointBase &&
-                (await git([
-                  "--git-dir",
-                  mirror!,
-                  "merge-base",
-                  "--is-ancestor",
-                  upstreamMain,
-                  checkpointBase,
-                ])
-                  .then(() => true)
-                  .catch((caughtError1) => {
-                    journalCaught(caughtError1, "runner-backend.forItem.then", itemId);
-                    return false;
-                  }))
+                upstreamMain && checkpointBase && (await descends(upstreamMain, checkpointBase))
                   ? undefined
                   : upstreamMain;
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
@@ -1314,20 +1373,7 @@ export function createRemoteAgentRunner(options: {
                 baseSha &&
                 mainCandidate &&
                 mainCandidate !== baseSha &&
-                (acceptsRebase ||
-                  (await git([
-                    "--git-dir",
-                    mirror!,
-                    "merge-base",
-                    "--is-ancestor",
-                    mainCandidate,
-                    baseSha,
-                  ])
-                    .then(() => true)
-                    .catch((caughtError2) => {
-                      journalCaught(caughtError2, "runner-backend.forItem.then", itemId);
-                      return false;
-                    })))
+                (acceptsRebase || (await descends(mainCandidate, baseSha)))
                   ? mainCandidate
                   : undefined;
               if (
@@ -1417,7 +1463,9 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer"
                   ? await snapshotImplementationSkills({
                       pawsRoot: input.pawsRoot,
-                      worktree: itemCandidate(scoped.repository!).mirror,
+                      worktree: storedCandidates
+                        ? input.worktreePath
+                        : itemCandidate(scoped.repository!).mirror,
                       repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
                       signal,
                     })
@@ -2448,27 +2496,47 @@ export function createRemoteAgentRunner(options: {
           if (complete.candidateSha) {
             if (assigned.type !== "run" || !input.networkGit)
               throw new Error("Runner candidate requires an authorized implementation import.");
-            const imported = itemCandidate(assigned.repository);
-            await options.fetchCandidate({
-              itemId,
-              ...imported,
-              baseSha: baseSha!,
-              ...(mainSha ? { mainSha } : {}),
-              candidateSha: complete.candidateSha,
-              branch: scoped.item.branchName,
-              remoteUrl: assigned.repository.remoteUrl,
-              networkGit: input.networkGit,
-              signal,
-            });
-            signal.throwIfAborted();
-            await work.currentAsync(assigned.runId, assigned.generation);
-            if ((await candidateHead(assigned.repository)) !== complete.candidateSha)
-              throw new Error("Fetched runner candidate HEAD does not match");
-            await assertDescendsFromAny(
-              (args) => git(["--git-dir", imported.mirror, ...args]),
-              mainSha ? [baseSha!, mainSha] : [baseSha!],
-              complete.candidateSha,
-            );
+            if (storedCandidates) {
+              if ((await candidateHead(assigned.repository)) !== baseSha)
+                throw new Error("Runner candidate base changed.");
+              const github = storedCandidates(assigned.repository);
+              const bases = mainSha ? [baseSha!, mainSha] : [baseSha!];
+              if (complete.candidateSha !== baseSha) {
+                const tip = await github.ref(`refs/heads/${scoped.item.branchName}`, signal);
+                if (tip !== complete.candidateSha)
+                  throw new Error("Fetched runner candidate does not match.");
+                let descends = false;
+                for (const base of bases)
+                  if (await github.contains(complete.candidateSha, base, signal)) descends = true;
+                if (!descends)
+                  throw new Error(
+                    `Commit ${complete.candidateSha} does not descend from ${bases.join(" or ")}.`,
+                  );
+              }
+              signal.throwIfAborted();
+            } else {
+              const imported = itemCandidate(assigned.repository);
+              await options.fetchCandidate({
+                itemId,
+                ...imported,
+                baseSha: baseSha!,
+                ...(mainSha ? { mainSha } : {}),
+                candidateSha: complete.candidateSha,
+                branch: scoped.item.branchName,
+                remoteUrl: assigned.repository.remoteUrl,
+                networkGit: input.networkGit,
+                signal,
+              });
+              signal.throwIfAborted();
+              await work.currentAsync(assigned.runId, assigned.generation);
+              if ((await candidateHead(assigned.repository)) !== complete.candidateSha)
+                throw new Error("Fetched runner candidate HEAD does not match");
+              await assertDescendsFromAny(
+                (args) => git(["--git-dir", imported.mirror, ...args]),
+                mainSha ? [baseSha!, mainSha] : [baseSha!],
+                complete.candidateSha,
+              );
+            }
             await work.currentAsync(assigned.runId, assigned.generation);
             const candidate = {
               itemId,
@@ -2787,7 +2855,12 @@ export function createConversationTurns(options: {
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";
-export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
+export {
+  ensureStartOnRemote,
+  ensureStoredStartOnGitHub,
+  RemoteStartUnverified,
+  type GitHubCommits,
+} from "./start-commit";
 
 export { remoteCommandsGoneSteps } from "./released";
 
