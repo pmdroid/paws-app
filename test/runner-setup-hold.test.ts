@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
+import { sql, type SQL } from "drizzle-orm";
 import { JOB_KIND, systemClock, type LinearCommand } from "../src/core";
 import {
   JobLoop,
@@ -20,7 +21,9 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  type Db,
   sqliteDb,
+  type PgDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -35,7 +38,8 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const RUNNERS_URL = "https://paws.example/dashboard/runners";
@@ -51,13 +55,33 @@ afterAll(() => {
   });
 });
 
+type Rows = Record<string, unknown>[];
+const rows = async (db: Db, query: SQL): Promise<Rows> => {
+  if (db.dialect === "sqlite") return db.sync((orm) => orm.all<Rows[number]>(query));
+  const result = (await (db as PgDb).orm.execute(query)) as Rows | { rows: Rows };
+  return Array.isArray(result) ? result : result.rows;
+};
+
+/**
+ * Postgres has no counterpart yet to the SQLite triggers that end a hold when its item leaves
+ * `queued` (`runner_setup_hold_ends`) or check holds when an agent signs in
+ * (`runner_setup_check_agent_added`), so the tests that rely on them stay on SQLite.
+ */
+async function sqliteStore() {
+  const database = tempDb();
+  return { db: sqliteDb(database), close: async () => database.close() };
+}
+
 type DelegatorRunner = "none" | "unsigned" | "busy" | "offline" | "reviewer-signed-out";
 
 /**
  * A workspace where the owner's runner is online and free, and a member delegates ENG-1. The
  * member has no runner, a runner whose agent is not signed in, or a signed-in runner that is busy.
  */
-async function delegate(delegatorRunner: DelegatorRunner) {
+async function delegate(
+  delegatorRunner: DelegatorRunner,
+  open: () => Promise<{ db: Db; close(): Promise<void> }> = tempStore,
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-setup-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -92,29 +116,30 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await open();
+  const exec = (query: SQL) => rows(db, query);
   const now = Date.now();
-  const ownerId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -122,10 +147,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     teamIds: ["team"],
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await exec(sql`INSERT INTO workspace_repository VALUES(${workspace.id},'acme/fixture','team')`);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -150,17 +175,16 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         )
       ).token,
     });
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    db.run("UPDATE runner SET owner_user_id=? WHERE id=?", [userId, runnerId]);
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',?)", [
-      runnerId,
-      ready,
-    ]);
+    await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
+    await exec(sql`UPDATE runner SET owner_user_id=${userId} WHERE id=${runnerId}`);
+    await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
+    await exec(
+      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',${ready})`,
+    );
     return runnerId;
   };
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -172,32 +196,30 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     const ready = delegatorRunner === "busy" || delegatorRunner === "reviewer-signed-out";
     memberRunner = await pair("member-vm", memberId, ready ? 1 : 0);
     if (delegatorRunner === "reviewer-signed-out")
-      db.run(
-        "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'codex',0,1)",
-        [memberRunner],
+      await exec(
+        sql`INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(${memberRunner},'codex',0,1)`,
       );
     if (delegatorRunner === "offline")
-      db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 10 * 60_000, memberRunner]);
+      await exec(sql`UPDATE runner SET last_seen_at=${now - 10 * 60_000} WHERE id=${memberRunner}`);
     else await work.heartbeat(memberRunner, 1);
   }
   if (delegatorRunner === "busy") {
     const other = await insertQueuedItem(db, { id: "other", now });
-    const otherRun = await insertRun(sqliteDb(db), { itemId: other.id, now, status: "active" });
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'other',?)",
-      [otherRun.id, memberRunner, workspace.id, now + 60 * 60_000],
+    const otherRun = await insertRun(db, { itemId: other.id, now, status: "active" });
+    await exec(
+      sql`INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(${otherRun.id},${memberRunner},${workspace.id},1,0,'other',${now + 60 * 60_000})`,
     );
   }
 
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
     pollIntervalMs: 5,
-    placement: createRunnerPlacement({ store: sqliteDb(db) }),
+    placement: createRunnerPlacement({ store: db }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
@@ -221,9 +243,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     get(target, key, receiver) {
       const value = Reflect.get(target, key, receiver);
       if (typeof value !== "function") return value;
-      return (...args: unknown[]) => {
+      return async (...args: unknown[]) => {
         linearCalls.push(String(key));
-        if (db.query("SELECT 1 FROM runner_setup_hold").get()) linearWhileHeld.push(String(key));
+        if ((await exec(sql`SELECT 1 FROM runner_setup_hold`)).length > 0)
+          linearWhileHeld.push(String(key));
         return value.apply(target, args);
       };
     },
@@ -231,7 +254,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   const jobs = new JobLoop(db, systemClock, { concurrency: 2, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     pawsRoot: root,
@@ -257,7 +280,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         }
       : {}),
     eligibleRunner: async (itemId, agent, at) =>
-      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
+      db.run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -318,8 +341,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     updatedAtMs: Date.now(),
     payload: "{}",
   });
-  const item = (await listWorkItems(sqliteDb(db))).find((row) => row.sessionKey === "session-1")!;
-  await recordLinearInstallation(sqliteDb(db), {
+  const item = (await listWorkItems(db)).find((row) => row.sessionKey === "session-1")!;
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -327,9 +350,9 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "member" });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [memberId, item.id]);
-  await syncItemDependencies(sqliteDb(db), {
+  await bindLinearSessionTask(db, "session-1", item.delegationId, { actorId: "member" });
+  await exec(sql`UPDATE work_item SET owner_user_id=${memberId} WHERE id=${item.id}`);
+  await syncItemDependencies(db, {
     itemId: item.id,
     workspaceId: workspace.id,
     expectedGeneration: 0,
@@ -343,15 +366,14 @@ async function delegate(delegatorRunner: DelegatorRunner) {
       projectId: "project",
     }),
   });
-  await dispatch(sqliteDb(db), { now: Date.now() });
+  await dispatch(db, { now: Date.now() });
 
   const controller = new AbortController();
   const loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
   const settled = async () => {
-    const current = (await getWorkItem(sqliteDb(db), item.id))!;
-    if ((await getRunnerSetupHold(sqliteDb(db), item.id)) && current.state === "queued")
-      return true;
-    return (await listJobs(sqliteDb(db))).some(
+    const current = (await getWorkItem(db, item.id))!;
+    if ((await getRunnerSetupHold(db, item.id)) && current.state === "queued") return true;
+    return (await listJobs(db)).some(
       (job) =>
         (job.queue === JOB_KIND.resume ||
           (job.payload as { capacityWait?: unknown }).capacityWait !== undefined) &&
@@ -373,21 +395,19 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     linearWhileHeld,
     linearCalls,
     thoughts: async () =>
-      (await listOutbox(sqliteDb(db), "session-1"))
+      (await listOutbox(db, "session-1"))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === "thought")
         .map((payload) => payload.body),
     itemJobs: async () =>
-      (await listJobs(sqliteDb(db))).filter(
-        (job) => (job.payload as { itemId?: string }).itemId === item.id,
-      ),
+      (await listJobs(db)).filter((job) => (job.payload as { itemId?: string }).itemId === item.id),
     async close() {
       controller.abort();
       sim.stopped = true;
       await heartbeats;
       await orchestrator.shutdown().catch(() => undefined);
       await loop;
-      db.close();
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -398,12 +418,12 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
   try {
     const { db, itemId } = fixture;
     const detail = JSON.stringify({
-      item: await getWorkItem(sqliteDb(db), itemId),
+      item: await getWorkItem(db, itemId),
       jobs: (await fixture.itemJobs()).map((job) => `${job.queue}:${job.status}`),
       thoughts: await fixture.thoughts(),
     });
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state, detail).toBe("queued");
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
+    expect((await getWorkItem(db, itemId))!.state, detail).toBe("queued");
+    expect(await getRunnerSetupHold(db, itemId), detail).toMatchObject({
       reason: "no-runner",
       ownerUserId: fixture.memberId,
       notifiedAt: expect.any(Number),
@@ -413,35 +433,39 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     ]);
     // No runner slot is held: nothing on any runner, no admission, no live run.
     expect(
-      db
-        .query("SELECT 1 FROM runner_work WHERE run_id IN (SELECT id FROM run WHERE item_id=?)")
-        .all(itemId),
+      await rows(
+        db,
+        sql`SELECT 1 FROM runner_work WHERE run_id IN (SELECT id FROM run WHERE item_id=${itemId})`,
+      ),
     ).toEqual([]);
     expect(
-      db
-        .query("SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning')")
-        .all(itemId),
+      await rows(
+        db,
+        sql`SELECT 1 FROM run WHERE item_id=${itemId} AND status IN ('active','provisioning')`,
+      ),
     ).toEqual([]);
 
     // A day later the scheduler neither starts it nor counts it as waiting, so no queue notice,
     // no start timeout and no retry job.
-    const outboxBefore = (await listOutbox(sqliteDb(db))).length;
+    const outboxBefore = (await listOutbox(db)).length;
     const waiting: string[] = [];
     for (const offset of [60_000, 2 * 60 * 60_000, DAY_MS, DAY_MS + 60_000]) {
-      const admitted = await dispatch(sqliteDb(db), {
+      const admitted = await dispatch(db, {
         now: Date.now() + offset,
         onWaiting: (ids) => waiting.push(...ids),
       });
       expect(admitted).not.toContain(itemId);
     }
     expect(waiting).not.toContain(itemId);
-    expect(db.query("SELECT 1 FROM scheduler_admission WHERE item_id=?").all(itemId)).toEqual([]);
+    expect(await rows(db, sql`SELECT 1 FROM scheduler_admission WHERE item_id=${itemId}`)).toEqual(
+      [],
+    );
     expect((await fixture.itemJobs()).filter((job) => job.status === "running")).toEqual([]);
     expect(
       (await fixture.itemJobs()).filter((job) => job.status === "pending").map((job) => job.queue),
     ).toEqual([JOB_KIND.resume]);
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("queued");
-    expect((await listOutbox(sqliteDb(db))).length).toBe(outboxBefore);
+    expect((await getWorkItem(db, itemId))!.state).toBe("queued");
+    expect((await listOutbox(db)).length).toBe(outboxBefore);
     expect((await fixture.thoughts()).join("\n")).not.toMatch(
       /Stopped after|couldn't start|Queued:/,
     );
@@ -454,8 +478,8 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
   const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("queued");
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toMatchObject({
+    expect((await getWorkItem(db, itemId))!.state).toBe("queued");
+    expect(await getRunnerSetupHold(db, itemId)).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: fixture.memberRunner,
       agent: "claude",
@@ -473,13 +497,13 @@ test("a reviewer preflight on a runner whose reviewer agent is signed out holds 
   try {
     const { db, itemId } = fixture;
     const detail = JSON.stringify(await fixture.thoughts());
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state, detail).toBe("queued");
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
+    expect((await getWorkItem(db, itemId))!.state, detail).toBe("queued");
+    expect(await getRunnerSetupHold(db, itemId), detail).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: fixture.memberRunner,
       agent: "codex",
     });
-    expect(db.query("SELECT 1 FROM question WHERE item_id=?").all(itemId)).toEqual([]);
+    expect(await rows(db, sql`SELECT 1 FROM question WHERE item_id=${itemId}`)).toEqual([]);
     expect(await fixture.thoughts()).toEqual([
       `Your runner member-vm needs Codex signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
     ]);
@@ -492,7 +516,7 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
   const fixture = await delegate("busy");
   try {
     const { db, itemId } = fixture;
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
+    expect(await getRunnerSetupHold(db, itemId)).toBeNull();
     expect(
       (await fixture.itemJobs())
         .filter(
@@ -519,7 +543,7 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
   const fixture = await delegate("offline");
   try {
     const { db, itemId } = fixture;
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
+    expect(await getRunnerSetupHold(db, itemId)).toBeNull();
     expect(
       (await fixture.itemJobs())
         .filter(
@@ -538,57 +562,63 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
 }, 60_000);
 
 test("Stop ends the hold", async () => {
-  const fixture = await delegate("none");
+  const fixture = await delegate("none", sqliteStore);
   try {
     const { db, itemId } = fixture;
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
+    expect(await getRunnerSetupHold(db, itemId)).not.toBeNull();
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
-    expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("paused");
+    expect((await applyLinearCommand(db, stop)).applied).toBe(true);
+    expect(await getRunnerSetupHold(db, itemId)).toBeNull();
+    expect((await getWorkItem(db, itemId))!.state).toBe("paused");
   } finally {
     await fixture.close();
   }
 }, 60_000);
 
 test("undelegation cancels a held item and ends its hold", async () => {
-  const fixture = await delegate("none");
+  const fixture = await delegate("none", sqliteStore);
   try {
     const { db, itemId } = fixture;
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
+    expect(await getRunnerSetupHold(db, itemId)).not.toBeNull();
     await stopUndelegatedIssue(
-      sqliteDb(db),
+      db,
       { organizationId: "org", appUserId: "app-user", issueId: "issue-1", createdAtMs: Date.now() },
       { notify() {} },
     );
-    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("cancelled");
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
+    expect((await getWorkItem(db, itemId))!.state).toBe("cancelled");
+    expect(await getRunnerSetupHold(db, itemId)).toBeNull();
   } finally {
     await fixture.close();
   }
 }, 60_000);
 
 test("signing the agent in resumes the held item in the same run and session, without reading Linear", async () => {
-  const fixture = await delegate("unsigned");
+  const fixture = await delegate("unsigned", sqliteStore);
   try {
     const { db, itemId } = fixture;
-    const hold = (await getRunnerSetupHold(sqliteDb(db), itemId))!;
-    const item = (await getWorkItem(sqliteDb(db), itemId))!;
+    const hold = (await getRunnerSetupHold(db, itemId))!;
+    const item = (await getWorkItem(db, itemId))!;
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
 
-    db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [fixture.memberRunner]);
+    await rows(
+      db,
+      sql`UPDATE runner_agent_policy SET ready=1 WHERE runner_id=${fixture.memberRunner}`,
+    );
     const deadline = Date.now() + 20_000;
-    const active = () =>
-      db.query("SELECT 1 FROM run WHERE id=? AND status='active'").get(hold.runId!) !== null;
-    while (Date.now() < deadline && !active()) await Bun.sleep(10);
+    const active = async () =>
+      (await rows(db, sql`SELECT 1 FROM run WHERE id=${hold.runId!} AND status='active'`)).length >
+      0;
+    while (Date.now() < deadline && !(await active())) await Bun.sleep(10);
 
-    const resumed = (await getWorkItem(sqliteDb(db), itemId))!;
-    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
-    expect(active()).toBe(true);
+    const resumed = (await getWorkItem(db, itemId))!;
+    expect(await getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await active()).toBe(true);
     expect(resumed.currentRunId).toBe(hold.runId);
     expect(resumed.sessionKey).toBe("session-1");
-    expect(db.query("SELECT count(*) AS n FROM run WHERE item_id=?").get(itemId)).toEqual({ n: 1 });
+    expect(
+      await rows(db, sql`SELECT CAST(count(*) AS integer) AS n FROM run WHERE item_id=${itemId}`),
+    ).toEqual([{ n: 1 }]);
     expect((await fixture.thoughts()).slice(0, 2)).toEqual([
       `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
       "Starting ENG-1 on member-vm.",
