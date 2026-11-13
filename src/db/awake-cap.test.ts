@@ -463,6 +463,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     finish();
     await running;
+    await close();
   });
 
   for (const state of ["running", "recovering"] as const) {
@@ -607,6 +608,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       closeoutMs: 2 * MINUTE,
       waitingMs: 30 * MINUTE,
     });
+    await close();
   });
 
   test("a CI wait clears its pending job and cannot leak into a new claim", async () => {
