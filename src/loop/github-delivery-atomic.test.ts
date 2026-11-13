@@ -1,7 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   beginImplementRun,
@@ -13,52 +11,52 @@ import {
   joinMergeQueue,
   listGitHubDeliveries,
   listJobs,
-  migrate,
-  openDatabase,
   pendingChangeRequests,
   pendingPullComments,
   recordItemPullRequest,
   recordPullReview,
-  sqliteDb,
+  type Db,
+  type PgDb,
 } from "../db";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
 
-async function setup(file = ":memory:") {
-  const db = openDatabase(file);
-  migrate(db);
+async function setup() {
+  const { db, close } = await tempStore();
   for (const id of ["first", "second"]) {
     await insertQueuedItem(db, { id, now: 1 });
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await bindWorkItemRepository(db, id, {
       owner: "acme",
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
-    await beginImplementRun(sqliteDb(db), id, 1);
-    await enterMergeQueue(sqliteDb(db), id, {
+    await beginImplementRun(db, id, 1);
+    await enterMergeQueue(db, id, {
       phase: "merge_queue",
       baseSha: "base",
       wipCommit: "head",
     });
-    await joinMergeQueue(sqliteDb(db), {
+    await joinMergeQueue(db, {
       itemId: id,
       repository: "acme/one",
       now: id === "first" ? 1 : 2,
     });
-    await recordItemPullRequest(sqliteDb(db), {
+    await recordItemPullRequest(db, {
       itemId: id,
       pullNumber: id === "first" ? 7 : 8,
       pullUrl: null,
       openedAt: 1,
     });
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: id, head: "head" },
       now: 1,
       runAt: 90_000,
     });
   }
-  await recordPullReview(sqliteDb(db), {
+  await recordPullReview(db, {
     reviewId: 40,
     itemId: "first",
     state: "changes_requested",
@@ -68,7 +66,7 @@ async function setup(file = ":memory:") {
     body: "Earlier feedback",
     receivedAt: 1,
   });
-  const branch = worktreeBranch((await getWorkItem(sqliteDb(db), "first"))!);
+  const branch = worktreeBranch((await getWorkItem(db, "first"))!);
   const delivery = (kind: string) => ({
     deliveryId: "delivery",
     event:
@@ -101,153 +99,161 @@ async function setup(file = ":memory:") {
       comment: { id: 43, body: "Fix it", user: { login: "reviewer" } },
     }),
   });
-  return { db, delivery };
+  return { db, close, delivery };
 }
+
+const exec = (db: Db, statement: string) => (db as PgDb).orm.execute(sql.raw(statement));
+
+async function failAt(db: Db, message: string, point: string) {
+  const [on, when] = point.split(" WHEN ");
+  await exec(db, "SET session_replication_role = origin");
+  await exec(
+    db,
+    `CREATE FUNCTION fail_delivery() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION '${message}'; END $$ LANGUAGE plpgsql`,
+  );
+  await exec(
+    db,
+    `CREATE TRIGGER fail_delivery ${on} FOR EACH ROW ${when ? `WHEN ${when}` : ""} EXECUTE FUNCTION fail_delivery()`,
+  );
+  return () => exec(db, `DROP TRIGGER fail_delivery ON ${on!.split(" ON ")[1]}`);
+}
+
+async function rejects(work: Promise<unknown>, message: string) {
+  const error = await work.then(
+    () => null,
+    (caught: unknown) => caught,
+  );
+  expect(error).toMatchObject({ cause: { message } });
+}
+
 const failures = [
   ["receipt", "AFTER INSERT ON github_delivery", "review"],
   ["review", "AFTER INSERT ON pull_review", "review"],
-  ["review job", `AFTER INSERT ON job WHEN NEW.queue = '${JOB_KIND.pullReview}'`, "review"],
-  ["review deferral", `AFTER UPDATE ON job WHEN OLD.queue = '${JOB_KIND.pullReview}'`, "review"],
+  ["review job", `AFTER INSERT ON job WHEN (NEW.queue = '${JOB_KIND.pullReview}')`, "review"],
+  ["review deferral", `AFTER UPDATE ON job WHEN (OLD.queue = '${JOB_KIND.pullReview}')`, "review"],
   ["comment", "AFTER INSERT ON pull_comment", "comment"],
-  ["comment deferral", `AFTER UPDATE ON job WHEN OLD.queue = '${JOB_KIND.pullReview}'`, "comment"],
-  ["comment job", `AFTER INSERT ON job WHEN NEW.queue = '${JOB_KIND.pullComments}'`, "comment"],
+  [
+    "comment deferral",
+    `AFTER UPDATE ON job WHEN (OLD.queue = '${JOB_KIND.pullReview}')`,
+    "comment",
+  ],
+  ["comment job", `AFTER INSERT ON job WHEN (NEW.queue = '${JOB_KIND.pullComments}')`, "comment"],
   ...["main", "push"].map((kind) => [
     `${kind} sweep`,
-    `AFTER INSERT ON job WHEN NEW.queue = '${JOB_KIND.queueConflicts}'`,
+    `AFTER INSERT ON job WHEN (NEW.queue = '${JOB_KIND.queueConflicts}')`,
     kind,
   ]),
   ...["review", "comment", "main"].map((kind) => [
     `${kind} second wake`,
-    `AFTER UPDATE ON job WHEN OLD.queue = '${JOB_KIND.merge}' AND json_extract(OLD.payload, '$.itemId') = 'second'`,
+    `AFTER UPDATE ON job WHEN (OLD.queue = '${JOB_KIND.merge}' AND OLD.payload->>'itemId' = 'second')`,
     kind,
   ]),
 ];
+
+async function expectUntouched(db: Db, before: unknown) {
+  expect(await listGitHubDeliveries(db)).toEqual([]);
+  expect((await pendingChangeRequests(db, "first")).map((r) => r.reviewId)).toEqual([40]);
+  expect(await pendingPullComments(db, "first")).toEqual([]);
+  expect(await listJobs(db)).toEqual(before);
+}
+
 for (const [name, point, kind] of failures) {
   test(`delivery retries atomically after failure at ${name}`, async () => {
-    const { db, delivery } = await setup();
+    const { db, close, delivery } = await setup();
     try {
-      const before = await listJobs(sqliteDb(db));
-      db.run(
-        `CREATE TEMP TRIGGER fail_delivery ${point} BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
-      );
-      await expect(acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 1_000)).rejects.toThrow(
-        "injected failure",
-      );
-      expect(await listGitHubDeliveries(sqliteDb(db))).toEqual([]);
-      expect((await pendingChangeRequests(sqliteDb(db), "first")).map((r) => r.reviewId)).toEqual([
-        40,
-      ]);
-      expect(await pendingPullComments(sqliteDb(db), "first")).toEqual([]);
-      expect(await listJobs(sqliteDb(db))).toEqual(before);
-      db.run("DROP TRIGGER fail_delivery");
-      expect(await acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 1_000)).toBe(true);
-      expect(await listGitHubDeliveries(sqliteDb(db))).toHaveLength(1);
-      expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(
-        kind === "review" ? 2 : 1,
-      );
-      expect(await pendingPullComments(sqliteDb(db), "first")).toHaveLength(
-        kind === "comment" ? 1 : 0,
-      );
+      const before = await listJobs(db);
+      const drop = await failAt(db, "injected failure", point!);
+      await rejects(acceptGitHubDelivery(db, delivery(kind!), 1_000), "injected failure");
+      await expectUntouched(db, before);
+      await drop();
+      expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
+      expect(await listGitHubDeliveries(db)).toHaveLength(1);
+      expect(await pendingChangeRequests(db, "first")).toHaveLength(kind === "review" ? 2 : 1);
+      expect(await pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
       const queue =
         kind === "review"
           ? JOB_KIND.pullReview
           : kind === "comment"
             ? JOB_KIND.pullComments
             : JOB_KIND.queueConflicts;
-      expect((await listJobs(sqliteDb(db))).filter((j) => j.queue === queue)).toHaveLength(
+      expect((await listJobs(db)).filter((j) => j.queue === queue)).toHaveLength(
         kind === "review" ? 2 : 1,
       );
       expect(
-        (await listJobs(sqliteDb(db)))
-          .filter((j) => j.queue === JOB_KIND.merge)
-          .map((j) => j.runAt),
+        (await listJobs(db)).filter((j) => j.queue === JOB_KIND.merge).map((j) => j.runAt),
       ).toEqual(kind === "push" ? [90_000, 90_000] : [1_000, 1_000]);
-      const committed = await listJobs(sqliteDb(db));
-      expect(await acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 2_000)).toBe(false);
-      expect(await listJobs(sqliteDb(db))).toEqual(committed);
+      const committed = await listJobs(db);
+      expect(await acceptGitHubDelivery(db, delivery(kind!), 2_000)).toBe(false);
+      expect(await listJobs(db)).toEqual(committed);
     } finally {
-      db.close();
+      await close();
     }
   });
 }
+
 test("failure after receipt insertion leaves the delivery retryable", async () => {
-  const { db, delivery } = await setup();
+  const { db, close, delivery } = await setup();
   try {
-    db.run(
-      "INSERT INTO github_delivery (delivery_id, event, payload, received_at) VALUES ('expired', 'push', '{}', -300000000)",
+    await seed(db, (q) =>
+      q.orm.insert(q.t.githubDelivery).values({
+        deliveryId: "expired",
+        event: "push",
+        payload: "{}",
+        receivedAt: -300_000_000,
+      }),
     );
-    db.run(
-      "CREATE TEMP TRIGGER fail_prune BEFORE DELETE ON github_delivery BEGIN SELECT RAISE(ABORT, 'after receipt'); END",
-    );
-    await expect(acceptGitHubDelivery(sqliteDb(db), delivery("review"), 1_000)).rejects.toThrow(
-      "after receipt",
-    );
-    expect((await listGitHubDeliveries(sqliteDb(db))).map((row) => row.deliveryId)).toEqual([
-      "expired",
-    ]);
-    db.run("DROP TRIGGER fail_prune");
-    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("review"), 1_000)).toBe(true);
-    expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(2);
+    const drop = await failAt(db, "after receipt", "BEFORE DELETE ON github_delivery");
+    await rejects(acceptGitHubDelivery(db, delivery("review"), 1_000), "after receipt");
+    expect((await listGitHubDeliveries(db)).map((row) => row.deliveryId)).toEqual(["expired"]);
+    await drop();
+    expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
+    expect(await pendingChangeRequests(db, "first")).toHaveLength(2);
   } finally {
-    db.close();
+    await close();
   }
 });
+
 for (const kind of ["review", "comment", "main"]) {
-  test(`process death during ${kind} rolls back receipt and effects on reopen`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "paws-delivery-crash-"));
-    const file = join(root, "paws.db");
+  test(`a ${kind} delivery that dies before commit rolls back receipt and effects`, async () => {
+    const { db, close, delivery } = await setup();
     try {
-      const { db, delivery } = await setup(file);
-      const before = await listJobs(sqliteDb(db));
+      const before = await listJobs(db);
       const input = delivery(kind);
-      db.close();
-      const child = Bun.spawnSync([
-        process.execPath,
-        "-e",
-        `
-        import { openDatabase, sqliteDb } from ${JSON.stringify(new URL("../db/index.ts", import.meta.url).pathname)};
-        import { acceptGitHubDelivery } from ${JSON.stringify(new URL("./merge-jobs.ts", import.meta.url).pathname)};
-        const db = openDatabase(${JSON.stringify(file)});
-        const prepare = db.prepare.bind(db);
-        db.prepare = (sql, ...args) => {
-          const statement = prepare(sql, ...args);
-          if (!/update "job" set "run_at" = CASE/i.test(sql)) return statement;
-          const run = statement.run.bind(statement);
-          statement.run = (...values) => {
-            const result = run(...values);
-            process.kill(process.pid, "SIGKILL");
-            return result;
-          };
-          return statement;
-        };
-        await acceptGitHubDelivery(sqliteDb(db), ${JSON.stringify(input)}, 1000);
-        process.exit(99);
-      `,
-      ]);
-      expect(child.signalCode, child.stderr.toString()).toBe("SIGKILL");
-      const reopened = openDatabase(file);
-      try {
-        expect(await listGitHubDeliveries(sqliteDb(reopened))).toEqual([]);
-        expect(await listJobs(sqliteDb(reopened))).toEqual(before);
-        expect(
-          (await pendingChangeRequests(sqliteDb(reopened), "first")).map((r) => r.reviewId),
-        ).toEqual([40]);
-        expect(await pendingPullComments(sqliteDb(reopened), "first")).toEqual([]);
-        expect(await acceptGitHubDelivery(sqliteDb(reopened), input, 1_000)).toBe(true);
-        expect(await acceptGitHubDelivery(sqliteDb(reopened), input, 2_000)).toBe(false);
-      } finally {
-        reopened.close();
-      }
+      const dying: Db = {
+        ...db,
+        transaction: (body) =>
+          db.transaction(function* (q) {
+            yield* body(q);
+            throw new Error("died before commit");
+          }),
+      } as Db;
+      await expect(acceptGitHubDelivery(dying, input, 1_000)).rejects.toThrow("died before commit");
+      await expectUntouched(db, before);
+      expect(await acceptGitHubDelivery(db, input, 1_000)).toBe(true);
+      expect(await acceptGitHubDelivery(db, input, 2_000)).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      await close();
     }
   });
 }
+
 test("filter and identity refresh callbacks run outside the write transaction, never for duplicates", async () => {
-  const { db, delivery } = await setup();
+  const { db, close, delivery } = await setup();
+  let open = 0;
+  const store = {
+    ...db,
+    transaction: async (body) => {
+      open += 1;
+      try {
+        return await db.transaction(body);
+      } finally {
+        open -= 1;
+      }
+    },
+  } as Db;
   const calls: string[] = [];
   const check = (name: string) => {
-    expect(db.inTransaction).toBe(false);
+    expect(open).toBe(0);
     calls.push(name);
   };
   const filter = {
@@ -273,17 +279,13 @@ test("filter and identity refresh callbacks run outside the write transaction, n
     },
   };
   try {
-    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("comment"), 1_000, filter)).toBe(true);
+    expect(await acceptGitHubDelivery(store, delivery("comment"), 1_000, filter)).toBe(true);
     expect(calls).toContain("identity refresh");
-    expect(
-      (await listJobs(sqliteDb(db))).find((j) => j.queue === JOB_KIND.pullComments)?.runAt,
-    ).toBe(1_020);
+    expect((await listJobs(db)).find((j) => j.queue === JOB_KIND.pullComments)?.runAt).toBe(1_020);
     const before = [...calls];
-    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("comment"), 2_000, filter)).toBe(
-      false,
-    );
+    expect(await acceptGitHubDelivery(store, delivery("comment"), 2_000, filter)).toBe(false);
     expect(calls).toEqual(before);
   } finally {
-    db.close();
+    await close();
   }
 });
