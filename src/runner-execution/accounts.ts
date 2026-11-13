@@ -196,7 +196,17 @@ export function runnerAgentCredentials(
     },
     busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
     remove(account, agent) {
-      for (const { target } of files(account, agent)) rmSync(target, { force: true });
+      for (const { path, target } of files(account, agent)) {
+        const live = path === CLAUDE_STATE ? readCredentialFile(target) : null;
+        if (!live) {
+          rmSync(target, { force: true });
+          continue;
+        }
+        const { oauthAccount: _, ...state } = JSON.parse(live.toString("utf8")) as {
+          oauthAccount?: unknown;
+        };
+        writeSharedFile(target, JSON.stringify(state), owners, 0o660);
+      }
     },
   };
 }

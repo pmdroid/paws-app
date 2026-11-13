@@ -169,6 +169,11 @@ test("a stored sign-in is written for the run, refreshed files go back at versio
       oauthAccount: { id: "a" },
     });
 
+    const state = join(accountHome, ".claude/.claude.json");
+    writeFileSync(
+      state,
+      JSON.stringify({ ...JSON.parse(readFileSync(state, "utf8")), hasCompletedOnboarding: true }),
+    );
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}');
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toEqual([]);
@@ -202,7 +207,9 @@ test("a stored sign-in is written for the run, refreshed files go back at versio
       },
     ]);
     expect(existsSync(credentials)).toBe(false);
-    expect(existsSync(join(accountHome, ".claude/.claude.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(accountHome, ".claude/.claude.json"), "utf8"))).toEqual({
+      hasCompletedOnboarding: true,
+    });
 
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toHaveLength(2);
