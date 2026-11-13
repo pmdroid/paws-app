@@ -27,6 +27,10 @@ function hash(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function runFileObjectKey(prefix: string, chunk: { offset: number; sha256: string }) {
+  return `${prefix}/${chunk.offset}-${chunk.sha256}`;
+}
+
 /**
  * Sealed, chunked run files of one kind. Every chunk is stored encrypted under the kind's key and
  * recorded with its size, plaintext sha256 and key ID. The kind owns its file row and who may
@@ -51,9 +55,7 @@ export function createRunFileChunks(options: {
   function unavailable(): never {
     throw new RunFileStorageError(`${title} storage is unavailable`);
   }
-  function objectKey(prefix: string, chunk: { offset: number; sha256: string }) {
-    return `${prefix}/${chunk.offset}-${chunk.sha256}`;
-  }
+  const objectKey = runFileObjectKey;
 
   function matches(bytes: Uint8Array, chunk: Chunk) {
     return bytes.length === chunk.sizeBytes && hash(bytes) === chunk.sha256;

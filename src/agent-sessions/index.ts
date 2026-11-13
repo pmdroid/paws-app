@@ -4,6 +4,7 @@ import {
   createS3RunFileObjects,
   loadRunFileKey,
   RUN_FILE_KINDS,
+  runFileObjectKey,
   type RunFileObjects,
 } from "../run-files";
 
@@ -17,6 +18,7 @@ export {
   type AgentSessionFinish,
   type AgentSessionRead,
 } from "./schema";
+import { agentSessionPrefix } from "./store";
 export {
   createAgentSessions,
   AgentSessionRefusedError,
@@ -39,3 +41,6 @@ export const createS3AgentSessionObjects = (
   options: Parameters<typeof createS3RunFileObjects>[1],
 ) => createS3RunFileObjects("agent_session", options);
 export const createFakeAgentSessionObjects = createFakeRunFileObjects;
+export const agentSessionObjectKey = (
+  chunk: Parameters<typeof agentSessionPrefix>[0] & { offset: number; sha256: string },
+) => runFileObjectKey(agentSessionPrefix(chunk), chunk);

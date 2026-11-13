@@ -22,6 +22,10 @@ import {
   type AgentSessionFinish,
 } from "./schema";
 
+type SnapshotFile = Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">;
+export const agentSessionPrefix = (row: SnapshotFile) =>
+  `paws/agent-sessions/${row.workspaceId}/${row.runId}/${row.generation}`;
+
 export class AgentSessionRefusedError extends Error {}
 
 type Access = { runnerId: string; runId: string; token: string };
@@ -86,11 +90,11 @@ export function createAgentSessions(options: {
   function snapshot(runId: string, generation: number) {
     return store.run((q) => snapshotSteps(q, runId, generation));
   }
-  function file(row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">) {
+  function file(row: SnapshotFile) {
     return {
       runId: row.runId,
       generation: row.generation,
-      prefix: `paws/agent-sessions/${row.workspaceId}/${row.runId}/${row.generation}`,
+      prefix: agentSessionPrefix(row),
     };
   }
   /** The writer's row for its own generation, created on first contact. */
