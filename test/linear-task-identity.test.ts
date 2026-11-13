@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { and, asc, count, eq, notInArray, sql } from "drizzle-orm";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -14,18 +15,31 @@ import {
   putWorkspaceUser,
   saveTaskClassification,
   listPendingLinearTurns,
-  legacyMigrate,
-  migrations,
-  openDatabase,
   recordLinearTurn,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { intakeDelegatedIssue } from "../src/intake";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { systemClock } from "../src/core";
-import { legacyTempDb } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+const setState = (db: Db, id: string, state: string) =>
+  seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id)));
+
+const ownerOf = async (db: Db, id: string) =>
+  (
+    await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ owner: q.t.workItem.ownerUserId })
+          .from(q.t.workItem)
+          .where(eq(q.t.workItem.id, id)),
+      ),
+    )
+  )?.owner;
 
 const snapshot = {
   linearIssueId: "issue",
@@ -35,8 +49,8 @@ const snapshot = {
   subIssues: [],
 };
 
-async function task(db: ReturnType<typeof legacyTempDb>, key?: string) {
-  const result = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([snapshot]), {
+async function task(db: Db, key?: string) {
+  const result = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
     linearIssueId: "issue",
     taskKey: key,
   });
@@ -44,136 +58,61 @@ async function task(db: ReturnType<typeof legacyTempDb>, key?: string) {
   return result;
 }
 
-test("identity migration preserves existing rows, run foreign keys and original intake dedupe", async () => {
-  const db = openDatabase(":memory:");
-  try {
-    db.run(
-      "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
-    );
-    for (const migration of migrations.filter((entry) => entry.id < "012_linear_task_identity")) {
-      db.run(migration.sql);
-      db.run("INSERT INTO schema_migration VALUES (?,0)", [migration.id]);
-    }
-    db.run(
-      "INSERT INTO epic (id,linear_issue_id,linear_identifier,title,state,created_at) VALUES ('epic','issue','ENG-1','Original','done',1)",
-    );
-    db.run(
-      "INSERT INTO work_item (id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES ('item','epic','issue','ENG-1','Original','merged','paws/eng-1',0,1,'session')",
-    );
-    db.run(
-      "INSERT INTO run (id,item_id,kind,agent,status,created_at,updated_at) VALUES ('run','item','implement','claude','ended',1,1)",
-    );
-    for (const [id, state, position] of [
-      ["running", "running", 1],
-      ["queued", "queued", 2],
-    ] as const)
-      db.run(
-        "INSERT INTO work_item (id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES (?,'epic',?,'ENG-2','Child',?,'paws/eng-2',?,1,'session')",
-        [id, id, state, position],
-      );
-    for (const [id, source, session] of [
-      ["github", "github:owner/repo#1", "github:owner/repo#1"],
-      ["comments", "comment-issue", "comment-issue"],
-    ]) {
-      db.run(
-        "INSERT INTO epic (id,linear_issue_id,linear_identifier,title,state,created_at) VALUES (?,?,'ENG-3','Synthetic','running',1)",
-        [id!, source!],
-      );
-      db.run(
-        "INSERT INTO work_item (id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES (?,?,?,'ENG-3','Synthetic','queued','paws/eng-3',0,1,?)",
-        [id!, id!, source!, session!],
-      );
-    }
-    legacyMigrate(db);
-    expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
-    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
-    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merged");
-    expect((await getLinearSession(sqliteDb(db), "session"))?.delegationId).toBe("epic");
-    expect((await getLinearSession(sqliteDb(db), "session"))?.activeItemId).toBe("running");
-    await activateLinearItem(sqliteDb(db), "session", "running");
-    await expect(activateLinearItem(sqliteDb(db), "session", "queued")).rejects.toThrow(
-      "still active",
-    );
-    db.run("UPDATE work_item SET state = 'failed' WHERE id = 'running'");
-    await activateLinearItem(sqliteDb(db), "session", "queued");
-    expect((await getLinearSession(sqliteDb(db), "session"))?.activeItemId).toBe("queued");
-    expect(await getLinearSession(sqliteDb(db), "github:owner/repo#1")).toBeNull();
-    expect(await getLinearSession(sqliteDb(db), "comment-issue")).toBeNull();
-    expect((await task(db)).alreadyExisted).toBe(true);
-    expect((await task(db, "turn:correction")).alreadyExisted).toBe(false);
-    expect(
-      db
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM work_item WHERE linear_issue_id = 'issue'",
-        )
-        .get()?.n,
-    ).toBe(2);
-    expect(
-      db.query<{ item_id: string }, []>("SELECT item_id FROM run WHERE id = 'run'").get()?.item_id,
-    ).toBe("item");
-    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merged");
-  } finally {
-    db.close();
-  }
-});
-
 test("new tasks keep source IDs and get separate worktree identities while intake replay is stable", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   try {
     const initial = await task(db);
-    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [initial.items[0]!.id]);
+    await setState(db, initial.items[0]!.id, "merged");
     const later = await task(db, "turn:followup");
     const replay = await task(db, "turn:followup");
     expect(replay.delegation.id).toBe(later.delegation.id);
     expect(initial.delegation.id).not.toBe(later.delegation.id);
-    const first = (await getWorkItem(sqliteDb(db), initial.items[0]!.id))!;
-    const next = (await getWorkItem(sqliteDb(db), later.items[0]!.id))!;
+    const first = (await getWorkItem(db, initial.items[0]!.id))!;
+    const next = (await getWorkItem(db, later.items[0]!.id))!;
     expect(first.linearIssueId).toBe(next.linearIssueId);
     expect(itemPathId(first)).toBe("ENG-1");
     expect(itemPathId(next)).toContain(next.id);
     expect(itemPathId(first)).not.toBe(itemPathId(next));
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("session ownership and active child routing remain separate from shared issue identity", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   try {
     const first = await task(db);
-    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [first.items[0]!.id]);
+    await setState(db, first.items[0]!.id, "merged");
     const second = await task(db, "session:second");
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "first",
       issueId: "issue",
       organizationId: "org",
       appUserId: "app",
       creatorId: "human",
     });
-    await bindLinearSessionTask(sqliteDb(db), "first", first.delegation.id);
-    await activateLinearItem(sqliteDb(db), "first", first.items[0]!.id);
-    await ensureLinearSession(sqliteDb(db), { sessionId: "second", issueId: "issue" });
-    await bindLinearSessionTask(sqliteDb(db), "second", second.delegation.id);
-    await activateLinearItem(sqliteDb(db), "second", second.items[0]!.id);
-    expect(await delegatedLinearUserId(sqliteDb(db), first.items[0]!.id)).toBe("human");
-    expect(await delegatedLinearUserId(sqliteDb(db), second.items[0]!.id)).toBeNull();
+    await bindLinearSessionTask(db, "first", first.delegation.id);
+    await activateLinearItem(db, "first", first.items[0]!.id);
+    await ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
+    await bindLinearSessionTask(db, "second", second.delegation.id);
+    await activateLinearItem(db, "second", second.items[0]!.id);
+    expect(await delegatedLinearUserId(db, first.items[0]!.id)).toBe("human");
+    expect(await delegatedLinearUserId(db, second.items[0]!.id)).toBeNull();
     await expect(
-      ensureLinearSession(sqliteDb(db), { sessionId: "first", organizationId: "other" }),
+      ensureLinearSession(db, { sessionId: "first", organizationId: "other" }),
     ).rejects.toThrow("ownership changed");
-    await expect(
-      bindLinearSessionTask(sqliteDb(db), "second", first.delegation.id),
-    ).rejects.toThrow();
-    await expect(activateLinearItem(sqliteDb(db), "second", first.items[0]!.id)).rejects.toThrow(
+    await expect(bindLinearSessionTask(db, "second", first.delegation.id)).rejects.toThrow();
+    await expect(activateLinearItem(db, "second", first.items[0]!.id)).rejects.toThrow(
       "route changed",
     );
-    expect((await getWorkItem(sqliteDb(db), first.items[0]!.id))?.sessionKey).toBe("first");
+    expect((await getWorkItem(db, first.items[0]!.id))?.sessionKey).toBe("first");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("prompt before hydration persists, ordered duplicates apply once and Stop fences pending turns", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   try {
     const turn = (eventKey: string, createdAtMs: number) => ({
       eventKey,
@@ -184,42 +123,41 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
       payload: "{}",
       createdAtMs,
     });
-    await recordLinearTurn(sqliteDb(db), turn("later", 20));
-    await recordLinearTurn(sqliteDb(db), turn("earlier", 10));
-    await recordLinearTurn(sqliteDb(db), { ...turn("later", 20), body: "Edited comment" });
-    expect((await getLinearSession(sqliteDb(db), "session"))?.delegationId).toBeNull();
-    expect(
-      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.body),
-    ).toEqual(["earlier", "later"]);
+    await recordLinearTurn(db, turn("later", 20));
+    await recordLinearTurn(db, turn("earlier", 10));
+    await recordLinearTurn(db, { ...turn("later", 20), body: "Edited comment" });
+    expect((await getLinearSession(db, "session"))?.delegationId).toBeNull();
+    expect((await listPendingLinearTurns(db, "session")).map((entry) => entry.body)).toEqual([
+      "earlier",
+      "later",
+    ]);
     const result = await task(db);
-    await bindLinearSessionTask(sqliteDb(db), "session", result.delegation.id, {
+    await bindLinearSessionTask(db, "session", result.delegation.id, {
       actorId: "human",
     });
     const itemId = result.items[0]!.id;
-    await activateLinearItem(sqliteDb(db), "session", itemId);
-    await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
-    await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
-    expect(
-      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
-    ).toEqual(["later"]);
-    expect(
-      await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 30 }),
-    ).toBe(1);
-    expect(await getLinearSessionGeneration(sqliteDb(db), "session")).toBe(1);
-    expect(await listPendingLinearTurns(sqliteDb(db), "session")).toEqual([]);
-    await recordLinearTurn(sqliteDb(db), turn("after-stop", 40));
-    expect(
-      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
-    ).toEqual(["after-stop"]);
+    await activateLinearItem(db, "session", itemId);
+    await applyLinearTurns(db, "session", ["earlier"], itemId);
+    await applyLinearTurns(db, "session", ["earlier"], itemId);
+    expect((await listPendingLinearTurns(db, "session")).map((entry) => entry.eventKey)).toEqual([
+      "later",
+    ]);
+    expect(await advanceLinearSessionGeneration(db, "session", { stop: true, now: 30 })).toBe(1);
+    expect(await getLinearSessionGeneration(db, "session")).toBe(1);
+    expect(await listPendingLinearTurns(db, "session")).toEqual([]);
+    await recordLinearTurn(db, turn("after-stop", 40));
+    expect((await listPendingLinearTurns(db, "session")).map((entry) => entry.eventKey)).toEqual([
+      "after-stop",
+    ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a second session for an active issue is rejected and a prompt still hydrates after that item is cancelled", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker: createFakeTracker([snapshot]),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
@@ -244,17 +182,26 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       }),
     });
     await orchestrator.onLinearEvent(created("first"));
-    const first = (await getLinearSession(sqliteDb(db), "first"))!;
+    const first = (await getLinearSession(db, "first"))!;
     expect(first.activeItemId).not.toBeNull();
     expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
-    ).toBeNull();
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ name: sql<string>`table_name` })
+            .from(sql`information_schema.tables`)
+            .where(sql`table_name = 'epic'`),
+        ),
+      ),
+    ).toEqual([]);
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
       "ENG-1 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.",
     );
-    expect((await getLinearSession(sqliteDb(db), "second"))?.delegationId ?? null).toBeNull();
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
-    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.activeItemId]);
+    expect((await getLinearSession(db, "second"))?.delegationId ?? null).toBeNull();
+    expect((await db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.workItem))))?.n).toBe(
+      1,
+    );
+    await setState(db, first.activeItemId, "cancelled");
     await orchestrator.onLinearEvent({
       ...created("before-created"),
       dedupeKey: "activity:early",
@@ -262,35 +209,35 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       activityId: "early",
       body: "Do this after hydration",
     });
-    expect((await listPendingLinearTurns(sqliteDb(db), "before-created"))[0]?.body).toBe(
+    expect((await listPendingLinearTurns(db, "before-created"))[0]?.body).toBe(
       "Do this after hydration",
     );
     await orchestrator.onLinearEvent(created("before-created"));
-    expect((await getLinearSession(sqliteDb(db), "before-created"))?.activeItemId).not.toBeNull();
-    expect(await listPendingLinearTurns(sqliteDb(db), "before-created")).toHaveLength(1);
+    expect((await getLinearSession(db, "before-created"))?.activeItemId).not.toBeNull();
+    expect(await listPendingLinearTurns(db, "before-created")).toHaveLength(1);
     expect(
       await delegatedLinearUserId(
-        sqliteDb(db),
-        (await getLinearSession(sqliteDb(db), "before-created"))!.activeItemId!,
+        db,
+        (await getLinearSession(db, "before-created"))!.activeItemId!,
       ),
     ).toBe("human");
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("a redirect cancels the previous item before the replacement is inserted", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker: createFakeTracker([snapshot]),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
     pawsRoot: "/tmp/unused-redirect-fixture",
   });
   try {
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "session",
       issueId: "issue",
       organizationId: "org",
@@ -298,40 +245,50 @@ test("a redirect cancels the previous item before the replacement is inserted", 
     });
     const initial = await task(db, "original");
     const previousId = initial.items[0]!.id;
-    await saveTaskClassification(sqliteDb(db), "original", {
+    await saveTaskClassification(db, "original", {
       mode: "code",
       redirect: { taskKey: "resolved:original", itemId: previousId },
     });
     const replaced = await orchestrator.intakeLinearTask("issue", "session", "original");
     expect(replaced.ok).toBe(true);
     if (!replaced.ok) return;
-    expect((await getWorkItem(sqliteDb(db), previousId))?.state).toBe("cancelled");
+    expect((await getWorkItem(db, previousId))?.state).toBe("cancelled");
     expect(replaced.items).toHaveLength(1);
     expect(replaced.items[0]?.id).not.toBe(previousId);
     expect(replaced.items[0]?.state).toBe("queued");
     expect(replaced.items[0]?.linearIssueId).toBe("issue");
     expect(
-      db
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM work_item WHERE linear_issue_id = 'issue' AND state NOT IN ('completed', 'merged', 'cancelled')",
+      (
+        await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ n: count() })
+              .from(q.t.workItem)
+              .where(
+                and(
+                  eq(q.t.workItem.linearIssueId, "issue"),
+                  notInArray(q.t.workItem.state, ["completed", "merged", "cancelled"]),
+                ),
+              ),
+          ),
         )
-        .get()?.n,
+      )?.n,
     ).toBe(1);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("intake sets the session owner's workspace user on each new solo item and leaves an unknown actor unset", async () => {
-  const db = legacyTempDb();
-  await putWorkspaceUser(sqliteDb(db), {
+  const { db, close } = await tempStore();
+  await putWorkspaceUser(db, {
     id: "delegate-user",
     linearUserId: "delegate",
     name: "Delegate",
     email: "delegate@example.test",
   });
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "human-user",
     linearUserId: "human",
     name: "Human",
@@ -348,7 +305,7 @@ test("intake sets the session owner's workspace user on each new solo item and l
     ],
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker: createFakeTracker([
       parent,
       {
@@ -373,19 +330,19 @@ test("intake sets the session owner's workspace user on each new solo item and l
       syncSteps(() => (sessionId === "delegated" ? "delegate" : undefined)),
   });
   try {
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "delegated",
       issueId: "parent",
       organizationId: "org",
       creatorId: "human",
     });
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "ghost-session",
       issueId: "ghost-issue",
       organizationId: "org",
       creatorId: "ghost",
     });
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "human-session",
       issueId: "human-issue",
       organizationId: "org",
@@ -399,11 +356,17 @@ test("intake sets the session owner's workspace user on each new solo item and l
       "child-b",
     ]);
     expect(
-      db
-        .query<{ linear_issue_id: string; owner_user_id: string | null }, []>(
-          "SELECT linear_issue_id, owner_user_id FROM work_item ORDER BY linear_issue_id",
-        )
-        .all(),
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({
+              linear_issue_id: q.t.workItem.linearIssueId,
+              owner_user_id: q.t.workItem.ownerUserId,
+            })
+            .from(q.t.workItem)
+            .orderBy(asc(q.t.workItem.linearIssueId)),
+        ),
+      ),
     ).toEqual([
       { linear_issue_id: "child-a", owner_user_id: "delegate-user" },
       { linear_issue_id: "child-b", owner_user_id: "delegate-user" },
@@ -411,25 +374,13 @@ test("intake sets the session owner's workspace user on each new solo item and l
     const ghost = await orchestrator.intakeLinearTask("ghost-issue", "ghost-session", "ghost-task");
     expect(ghost.ok).toBe(true);
     if (!ghost.ok) return;
-    expect(
-      db
-        .query<{ owner_user_id: string | null }, [string]>(
-          "SELECT owner_user_id FROM work_item WHERE id=?",
-        )
-        .get(ghost.items[0]!.id)?.owner_user_id,
-    ).toBeNull();
+    expect(await ownerOf(db, ghost.items[0]!.id)).toBeNull();
     const human = await orchestrator.intakeLinearTask("human-issue", "human-session", "human-task");
     expect(human.ok).toBe(true);
     if (!human.ok) return;
-    expect(
-      db
-        .query<{ owner_user_id: string | null }, [string]>(
-          "SELECT owner_user_id FROM work_item WHERE id=?",
-        )
-        .get(human.items[0]!.id)?.owner_user_id,
-    ).toBe("human-user");
+    expect(await ownerOf(db, human.items[0]!.id)).toBe("human-user");
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 });
