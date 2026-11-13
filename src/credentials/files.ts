@@ -35,10 +35,24 @@ export function storedSecrets(): { name: string; ciphertext: string }[] | null {
   return table && [...table.rows].map(([name, ciphertext]) => ({ name, ciphertext }));
 }
 
+const FILE_STORES = [
+  "linear-inputs/",
+  "linear-artifacts/",
+  "runner-identity/inputs/",
+  "runner-identity/artifacts/",
+];
+
+export function isStoredSecretName(name: string): boolean {
+  const path = name.split("\\").join("/");
+  return !FILE_STORES.some((prefix) => path.startsWith(prefix));
+}
+
 function tableName(path: string): string | null {
   if (table === null) return null;
   const name = relative(resolve(table.dir), resolve(path));
-  return name === "" || name.startsWith("..") || isAbsolute(name) ? null : name;
+  return name === "" || name.startsWith("..") || isAbsolute(name) || !isStoredSecretName(name)
+    ? null
+    : name;
 }
 
 export function secretFileExists(path: string): boolean {

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   copySecretRowsSteps,
@@ -8,7 +8,16 @@ import {
   type SecretRow,
 } from "../db";
 import { journal } from "../journal";
-import { openSecretAt, SECRET_PREFIX, sealSecret, storedSecrets, useSecretTable } from "./files";
+import {
+  isStoredSecretName,
+  openSecretAt,
+  SECRET_PREFIX,
+  sealSecret,
+  storedSecrets,
+  useSecretTable,
+} from "./files";
+
+const MAX_SECRET_BYTES = 1_048_576;
 
 export async function useDatabaseSecrets(
   store: Db,
@@ -45,6 +54,8 @@ export function secretFiles(dir: string): SecretRow[] {
   return readdirSync(dir, { recursive: true, withFileTypes: true }).flatMap((entry) => {
     const path = join(entry.parentPath, entry.name);
     if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
+    if (!isStoredSecretName(relative(dir, path)) || statSync(path).size > MAX_SECRET_BYTES)
+      return [];
     const text = readFileSync(path, "utf8");
     const ciphertext = text.startsWith(SECRET_PREFIX)
       ? text
