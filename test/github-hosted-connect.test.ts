@@ -1,20 +1,21 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { count as countRows, eq, sql } from "drizzle-orm";
 import { createGitHubRepositorySetup, createHostedGitHubConnect } from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   consumeWorkspaceBootstrap,
   deleteWorkspaceSession,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordGitHubDelivery,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -23,41 +24,78 @@ import {
   WORKSPACE_COOKIE,
 } from "../src/workspace";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
+import { copyMigratedPglite } from "./pglite";
 
 const key = generateKeyPairSync("rsa", {
   modulusLength: 2048,
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
   publicKeyEncoding: { type: "spki", format: "pem" },
 }).privateKey;
+
+const rows = <R>(db: Db, query: (q: Q) => PromiseLike<R[]>) => db.run((q) => q.all(query(q)));
+const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
+const oauthCount = async (db: Db) =>
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceGithubOauth)))[0]!.n;
+const connectionCount = async (db: Db) =>
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceGithubConnection)))[0]!
+    .n;
+const repositoryCount = async (db: Db) =>
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceRepository)))[0]!.n;
+const connection = async (db: Db) =>
+  (await rows(db, (q) => q.orm.select().from(q.t.workspaceGithubConnection)))[0];
+const demote = (db: Db, userId: string) =>
+  write(db, (q) =>
+    q.orm
+      .update(q.t.workspaceMember)
+      .set({ role: "member" })
+      .where(eq(q.t.workspaceMember.userId, userId)),
+  );
+// No Drizzle builder creates a trigger, so this one statement is raw SQL through the Db.
+const refuseActivation = async (db: Db) => {
+  if (db.dialect !== "postgres") throw new Error("This fixture runs on Postgres.");
+  await db.orm.execute(
+    sql.raw(
+      "CREATE FUNCTION refuse_activation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic rollback'; END $$",
+    ),
+  );
+  await db.orm.execute(
+    sql.raw(
+      "CREATE TRIGGER refuse_activation BEFORE UPDATE ON workspace_github_connection FOR EACH ROW EXECUTE FUNCTION refuse_activation()",
+    ),
+  );
+};
+const clearRepositories = (db: Db) => write(db, (q) => q.orm.delete(q.t.workspaceRepository));
+
 async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "paws-hosted-app-"));
   writeFileSync(join(home, "key.pem"), key, { mode: 0o600 });
-  const path = join(home, "db.sqlite");
-  let db = openDatabase(path);
-  migrate(db);
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let database = await openPawsStore({ url: null, pgliteDir });
+  let db = database.store;
   let now = Date.now();
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "owner",
     email: "owner@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "ws",
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const role of ["admin", "member"] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id: role,
       linearUserId: role,
       name: role,
       email: `${role}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: role,
       role,
@@ -66,7 +104,7 @@ async function fixture() {
       now,
     });
   }
-  await replaceWorkspaceRepositories(sqliteDb(db), {
+  await replaceWorkspaceRepositories(db, {
     workspaceId: "ws",
     actorId: "owner",
     repositories: [{ repository: "acme/widgets", teamId: "team" }],
@@ -81,7 +119,7 @@ async function fixture() {
   };
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const role of ["owner", "admin", "member"])
-    sessions[role] = await issueWorkspaceSession(sqliteDb(db), {
+    sessions[role] = await issueWorkspaceSession(db, {
       workspaceId: "ws",
       userId: role,
       now,
@@ -174,7 +212,7 @@ async function fixture() {
     )) as typeof fetch;
   const handler = () =>
     createHostedGitHubConnect({
-      store: sqliteDb(db),
+      store: db,
       home,
       env,
       origin: "https://paws.example",
@@ -215,7 +253,7 @@ async function fixture() {
     handler,
     setup: () =>
       createGitHubRepositorySetup({
-        store: sqliteDb(db),
+        store: db,
         home,
         env,
         origin: "https://paws.example",
@@ -245,13 +283,15 @@ async function fixture() {
     setHold(value: Promise<void>) {
       hold = value;
     },
-    restart() {
-      db.close();
-      db = openDatabase(path);
+    pgliteDir,
+    async restart() {
+      await database.close();
+      database = await openPawsStore({ url: null, pgliteDir });
+      db = database.store;
     },
     async close() {
       await provider.stop(true);
-      db.close();
+      await database.close();
       rmSync(home, { recursive: true, force: true });
     },
   };
@@ -265,26 +305,28 @@ test("hosted App OAuth survives restart, verifies real scripted HTTP, encrypts a
       "https://paws.example/auth/github-app/callback",
     );
     expect(flow.authorize.searchParams.get("code_challenge_method")).toBe("S256");
-    f.restart();
+    await f.restart();
     const callback = await f.handler()(f.request("admin", flow.callback.href));
     expect(callback?.status).toBe(303);
-    const active = await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve(
+    const active = await createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve(
       "acme/widgets",
     );
     expect(active.installationId).toBe("22");
     expect(active.generation).toBe(1);
-    f.db.run("UPDATE workspace_repository SET repository='Acme/Widgets'");
-    f.db.run("UPDATE workspace_github_connection SET repositories='[\"Acme/Widgets\"]'");
+    await write(f.db, (q) =>
+      q.orm.update(q.t.workspaceRepository).set({ repository: "Acme/Widgets" }),
+    );
+    await write(f.db, (q) =>
+      q.orm.update(q.t.workspaceGithubConnection).set({ repositories: '["Acme/Widgets"]' }),
+    );
     expect(
-      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+      (await createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets"))
         .generation,
     ).toBe(1);
     expect((await f.handler()(f.request("admin", flow.callback.href)))?.status).toBe(403);
-    const row = f.db
-      .query<{ secret_id: string }, []>("SELECT secret_id FROM workspace_github_connection")
-      .get()!;
+    const row = (await connection(f.db))!;
     const encrypted = readFileSync(
-      join(f.home, "secrets", `github-connect-${row.secret_id}`),
+      join(f.home, "secrets", `github-connect-${row.secretId}`),
       "utf8",
     );
     expect(encrypted).not.toContain("scripted-client-secret");
@@ -306,11 +348,7 @@ test("concurrent admin callbacks cannot overwrite the first activated generation
     const second = await f.begin("admin");
     expect((await f.handler()(f.request("owner", first.callback.href)))?.status).toBe(303);
     expect((await f.handler()(f.request("admin", second.callback.href)))?.status).toBe(409);
-    expect(
-      f.db
-        .query<{ generation: number }, []>("SELECT generation FROM workspace_github_connection")
-        .get()?.generation,
-    ).toBe(1);
+    expect((await connection(f.db))?.generation).toBe(1);
   } finally {
     await f.close();
   }
@@ -331,11 +369,10 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       )
         await Bun.sleep(1);
       if (invalidation === "logout")
-        await deleteWorkspaceSession(sqliteDb(f.db), f.sessions.admin!.session.tokenHash);
-      if (invalidation === "demotion")
-        f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
+        await deleteWorkspaceSession(f.db, f.sessions.admin!.session.tokenHash);
+      if (invalidation === "demotion") await demote(f.db, "admin");
       if (invalidation === "repositories")
-        await replaceWorkspaceRepositories(sqliteDb(f.db), {
+        await replaceWorkspaceRepositories(f.db, {
           workspaceId: "ws",
           actorId: "owner",
           repositories: [],
@@ -347,12 +384,7 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       gate.resolve();
       const response = await result;
       expect(response?.status).toBe(invalidation === "session" ? 303 : 403);
-      if (invalidation !== "session")
-        expect(
-          f.db
-            .query<{ generation: number }, []>("SELECT generation FROM workspace_github_connection")
-            .get()?.generation,
-        ).toBe(0);
+      if (invalidation !== "session") expect((await connection(f.db))?.generation).toBe(0);
     } finally {
       await f.close();
     }
@@ -362,7 +394,7 @@ test("hosted connection reports missing server credentials as JSON without chang
   const f = await fixture();
   try {
     const handler = createHostedGitHubConnect({
-      store: sqliteDb(f.db),
+      store: f.db,
       home: f.home,
       env: {},
       origin: "https://paws.example",
@@ -381,10 +413,8 @@ test("hosted connection reports missing server credentials as JSON without chang
     expect(await response?.json()).toEqual({
       error: "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
     });
-    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({ n: 0 });
-    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_connection").get()).toEqual({
-      n: 0,
-    });
+    expect(await oauthCount(f.db)).toBe(0);
+    expect(await connectionCount(f.db)).toBe(0);
     expect(f.calls).toEqual([]);
   } finally {
     await f.close();
@@ -434,7 +464,7 @@ test("GitHub setup discovers the approved installation and exposes status withou
       lastDelivery: null,
     });
     await recordGitHubDelivery(
-      sqliteDb(f.db),
+      f.db,
       { deliveryId: "d-1", event: "check_suite", payload: "{}" },
       5_000,
     );
@@ -458,10 +488,8 @@ test("missing installations offer a verified GitHub install URL without persisti
     expect(await response?.json()).toEqual({
       installationUrl: "https://github.com/apps/fixture-paws/installations/new",
     });
-    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({ n: 0 });
-    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_connection").get()).toEqual({
-      n: 0,
-    });
+    expect(await oauthCount(f.db)).toBe(0);
+    expect(await connectionCount(f.db)).toBe(0);
   } finally {
     await f.close();
   }
@@ -495,13 +523,10 @@ for (const change of ["logout", "demotion", "repositories", "credentials", "expi
       const pending = f.handler()(automaticRequest(f));
       await entered.promise;
       if (change === "logout")
-        await deleteWorkspaceSession(sqliteDb(f.db), f.sessions.owner!.session.tokenHash);
-      if (change === "demotion")
-        f.db.run(
-          "UPDATE workspace_member SET role='member' WHERE workspace_id='ws' AND user_id='owner'",
-        );
+        await deleteWorkspaceSession(f.db, f.sessions.owner!.session.tokenHash);
+      if (change === "demotion") await demote(f.db, "owner");
       if (change === "repositories")
-        await replaceWorkspaceRepositories(sqliteDb(f.db), {
+        await replaceWorkspaceRepositories(f.db, {
           workspaceId: "ws",
           actorId: "owner",
           repositories: [],
@@ -514,9 +539,7 @@ for (const change of ["logout", "demotion", "repositories", "credentials", "expi
       expect(response?.status).toBe(
         change === "repositories" || change === "credentials" ? 409 : 403,
       );
-      expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({
-        n: 0,
-      });
+      expect(await oauthCount(f.db)).toBe(0);
     } finally {
       released.resolve();
       await f.close();
@@ -534,15 +557,16 @@ for (const repository of [
   test(`automatic discovery rejects an unsafe repository before App requests: ${repository}`, async () => {
     const f = await fixture();
     try {
-      f.db.run("UPDATE workspace_repository SET repository=? WHERE workspace_id='ws'", [
-        repository,
-      ]);
+      await write(f.db, (q) =>
+        q.orm
+          .update(q.t.workspaceRepository)
+          .set({ repository })
+          .where(eq(q.t.workspaceRepository.workspaceId, "ws")),
+      );
       const response = await f.handler()(automaticRequest(f));
       expect(response?.status).toBe(503);
       expect(f.calls).toEqual([]);
-      expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({
-        n: 0,
-      });
+      expect(await oauthCount(f.db)).toBe(0);
     } finally {
       await f.close();
     }
@@ -600,7 +624,7 @@ for (const permissions of [
   test("repository setup shows accessible repositories with missing permissions and blocks activation until approved", async () => {
     const f = await fixture();
     try {
-      f.db.run("DELETE FROM workspace_repository");
+      await clearRepositories(f.db);
       f.setCatalogPermissions(permissions);
       await signInForRepositorySetup(f);
       const response = await f.setup()(
@@ -617,8 +641,8 @@ for (const permissions of [
       const denied = await saveSetup(f);
       expect(denied?.status).toBe(409);
       expect(await denied!.json()).toMatchObject({ code: "github_permissions_required" });
-      expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
-      expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+      expect(await repositoryCount(f.db)).toBe(0);
+      expect(await connectionCount(f.db)).toBe(0);
       expect(f.calls.some((call) => call.path.endsWith("/access_tokens"))).toBe(false);
       f.setCatalogPermissions(INSTALLATION_PERMISSIONS);
       expect((await saveSetup(f))?.status).toBe(200);
@@ -630,12 +654,12 @@ for (const permissions of [
 test("GitHub sign-in precedes repository approval and activates selected matches atomically", async () => {
   const f = await fixture();
   try {
-    f.db.run("DELETE FROM workspace_repository");
+    await clearRepositories(f.db);
     const callback = await signInForRepositorySetup(f);
-    expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
-    expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+    expect(await repositoryCount(f.db)).toBe(0);
+    expect(await connectionCount(f.db)).toBe(0);
     expect((await f.setup()(f.request("owner", callback.href)))?.status).toBe(403);
-    f.restart();
+    await f.restart();
     const catalog = await f.setup()(
       f.request("owner", "https://paws.example/api/workspaces/github-setup"),
     );
@@ -650,15 +674,25 @@ test("GitHub sign-in precedes repository approval and activates selected matches
     });
     expect(JSON.stringify(body)).not.toContain("scripted-user-token");
     expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
-    expect(
-      readFileSync(join(f.home, "db.sqlite")).includes(Buffer.from("scripted-user-token")),
-    ).toBe(false);
+    const stored = readdirSync(f.pgliteDir, { recursive: true, encoding: "utf8" })
+      .map((name) => join(f.pgliteDir, name))
+      .filter((path) => statSync(path).isFile());
+    expect(stored.length).toBeGreaterThan(0);
+    for (const path of stored)
+      expect(readFileSync(path).includes(Buffer.from("scripted-user-token"))).toBe(false);
     expect((await saveSetup(f))?.status).toBe(200);
     expect(
-      f.db.query("SELECT repository,team_id AS teamId FROM workspace_repository").all(),
+      await rows(f.db, (q) =>
+        q.orm
+          .select({
+            repository: q.t.workspaceRepository.repository,
+            teamId: q.t.workspaceRepository.teamId,
+          })
+          .from(q.t.workspaceRepository),
+      ),
     ).toEqual([{ repository: "acme/widgets", teamId: "team" }]);
     expect(
-      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+      (await createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets"))
         .installationId,
     ).toBe("22");
     expect(
@@ -666,7 +700,7 @@ test("GitHub sign-in precedes repository approval and activates selected matches
         ?.status,
     ).toBe(200);
     expect((await saveSetup(f, []))?.status).toBe(200);
-    expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
+    expect(await repositoryCount(f.db)).toBe(0);
   } finally {
     await f.close();
   }
@@ -688,14 +722,10 @@ for (const scenario of [
     try {
       await signInForRepositorySetup(f);
       if (scenario === "expired") f.advance(600_001);
-      if (scenario === "demoted")
-        f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='owner'");
-      if (scenario === "scope") f.db.run("DELETE FROM workspace_repository");
+      if (scenario === "demoted") await demote(f.db, "owner");
+      if (scenario === "scope") await clearRepositories(f.db);
       if (scenario === "credentials") f.env.PAWS_GITHUB_CLIENT_SECRET = "rotated-scripted-secret";
-      if (scenario === "rollback")
-        f.db.run(
-          "CREATE TRIGGER refuse_activation BEFORE UPDATE ON workspace_github_connection BEGIN SELECT RAISE(ABORT,'synthetic rollback'); END",
-        );
+      if (scenario === "rollback") await refuseActivation(f.db);
       let response: Response | null;
       if (scenario === "member")
         response = await f.setup()(
@@ -720,10 +750,8 @@ for (const scenario of [
           scenario === "wrong-installation" ? "999" : "22",
         );
       expect([400, 403, 409]).toContain(response!.status);
-      expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
-      expect(f.db.query("SELECT count(*) AS n FROM workspace_repository").get()).toEqual({
-        n: scenario === "scope" ? 0 : 1,
-      });
+      expect(await connectionCount(f.db)).toBe(0);
+      expect(await repositoryCount(f.db)).toBe(scenario === "scope" ? 0 : 1);
     } finally {
       await f.close();
     }
@@ -733,11 +761,9 @@ test("repository setup rechecks owner authority while GitHub verification is hel
   const f = await fixture();
   try {
     await signInForRepositorySetup(f);
-    f.setBeforeInstallation(async () => {
-      f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='owner'");
-    });
+    f.setBeforeInstallation(() => demote(f.db, "owner"));
     expect((await saveSetup(f))?.status).toBe(403);
-    expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+    expect(await connectionCount(f.db)).toBe(0);
   } finally {
     await f.close();
   }

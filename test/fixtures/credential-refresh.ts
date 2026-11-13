@@ -1,15 +1,14 @@
 import "../quiet-journal";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../../src/db";
+import { openPawsStore } from "../../src/db";
 import { refreshCredential } from "../../src/credentials";
 import { readStoredTokenSteps, refreshLinearToken, writeStoredTokenSteps } from "../../src/linear";
 
-const [home, endpoint, crash] = process.argv.slice(2) as [string, string, string];
-const db = openDatabase(join(home, "paws.db"));
-migrate(db);
+const [home, url, endpoint, crash] = process.argv.slice(2) as [string, string, string, string];
+const database = await openPawsStore({ url, pgliteDir: "" });
 const secretsDir = join(home, "secrets");
 await refreshCredential({
-  db,
+  db: database.store,
   identity: "linear",
   read: (q) => readStoredTokenSteps(q, secretsDir),
   write: (q, token) => writeStoredTokenSteps(q, secretsDir, token),
@@ -30,4 +29,4 @@ await refreshCredential({
     }),
 });
 console.log("refresh complete");
-db.close();
+await database.close();

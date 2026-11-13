@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import { accountAgentEnv } from "../src/acp";
 import {
   AgentAccountError,
@@ -8,17 +7,16 @@ import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   createAgentAccount,
+  ensureLegacyAgentBinding,
   insertQueuedItem,
   legacyAgentAccountId,
   legacyAgentBindingId,
   listAgentAccounts,
   listAgentBindings,
-  legacyMigrate,
   putWorkspaceUser,
   recordCommandAccount,
   recordLinearInstallation,
   recordRunnerAccountCapability,
-  sqliteDb,
 } from "../src/db";
 import { runnerAccountHome } from "../src/runner-execution";
 import {
@@ -240,122 +238,40 @@ test("every advertised adapter isolates a binding's config, sessions and caches 
   expect(runnerAccountAgentUnsupported("gemini" as never)).not.toBeNull();
 });
 
-test("a legacy installation upgrades to default sign-in accounts and rolls back without losing history", async () => {
-  const db = new Database(":memory:");
-  db.run("PRAGMA foreign_keys=ON");
-  try {
-    legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
-    );
-    db.run(
-      "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('u','l','U','u@example.com')",
-    );
-    db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES('w','u','admin','manual',1,1)",
-    );
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('r','w','u','R','active',1)",
-    );
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,ready,quota_state,cooldown_until) VALUES('r','claude',1,'exhausted',99)",
-    );
-    db.run(
-      "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('old','r','probe','{}',9)",
-    );
-    db.run(
-      "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,role,purpose,started_at,ended_at,outcome) VALUES('old','r','u','claude','implementer','check',1,2,'ok')",
-    );
-
-    legacyMigrate(db);
-    const legacy = legacyAgentAccountId("w", "claude");
-    expect(await listAgentAccounts(sqliteDb(db), "w")).toMatchObject([
-      { id: legacy, legacy: true, enabled: true },
-    ]);
-    expect(await listAgentBindings(sqliteDb(db), "w")).toMatchObject([
-      {
-        id: legacyAgentBindingId("r", "claude"),
-        accountId: legacy,
-        quotaScope: "unknown",
-        legacy: true,
-      },
-    ]);
-    expect(
-      db
-        .query("SELECT quota_state AS quota,cooldown_until AS cooldown FROM runner_agent_policy")
-        .get(),
-    ).toEqual({ quota: "exhausted", cooldown: 99 });
-    expect(db.query("SELECT command_id AS id,outcome FROM runner_execution_usage").all()).toEqual([
-      { id: "old", outcome: "ok" },
-    ]);
-
-    db.run("UPDATE runner SET last_seen_at=1");
-    const named = await createAgentAccount(sqliteDb(db), {
-      workspaceId: "w",
-      agent: "claude",
-      label: "A",
-      now: 10,
-    });
-    const binding = await bindAgentAccount(sqliteDb(db), {
-      workspaceId: "w",
-      accountId: named.id,
-      runnerId: "r",
-      now: 10,
-    });
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('r','0.1.61',10)",
-    );
-    await recordRunnerAccountCapability(
-      sqliteDb(db),
-      "r",
-      { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
-      10,
-    );
-    await recordCommandAccount(
-      sqliteDb(db),
-      {
-        id: "named",
-        runnerId: "r",
-        workspaceId: "w",
-        issuedAt: 10,
-        expiresAt: 20,
-        type: "probe",
-        profile: { agent: "claude", model: null },
-        account: { accountId: named.id, bindingId: binding.id },
-      } as RunnerCommand,
-      10,
-    );
-    const applied = () => db.query("SELECT id FROM schema_migration ORDER BY id").all();
-    const before = applied();
-    legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
-    expect(applied()).toEqual(before);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('r','codex',1)");
-    db.run(
-      "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('older','r','probe','{}',30)",
-    );
-    db.run(
-      "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,role,purpose,started_at) VALUES('older','r','u','claude','implementer','check',30)",
-    );
-    expect(() => db.run("DELETE FROM agent_account WHERE id=?", [named.id])).toThrow(
-      "removed, not deleted",
-    );
-    expect(() => db.run("DELETE FROM runner_command_account")).toThrow("retained");
-
-    legacyMigrate(db);
-    expect(applied()).toEqual(before);
-    expect((await listAgentAccounts(sqliteDb(db), "w")).map((row) => row.id).sort()).toEqual(
-      [legacy, legacyAgentAccountId("w", "codex"), named.id].sort(),
-    );
-    expect(
-      db.query("SELECT command_id AS id,account_id AS account FROM runner_command_account").all(),
-    ).toEqual([{ id: "named", account: named.id }]);
-
-    expect(await admitAgentAccounts(sqliteDb(db), "w", "claude")).toEqual({
-      agent: "claude",
-      eligible: [legacy],
-      skipped: [],
-    });
-  } finally {
-    db.close();
-  }
+test("a runner's default sign-in is a legacy account beside named ones and is admitted by default", async () => {
+  const f = await fixture();
+  const legacy = await ensureLegacyAgentBinding(f.db, "R1", "claude", f.now());
+  await ensureLegacyAgentBinding(f.db, "R1", "claude", f.now());
+  await ensureLegacyAgentBinding(f.db, "R2", "codex", f.now());
+  expect(legacy).toMatchObject({
+    id: legacyAgentBindingId("R1", "claude"),
+    accountId: f.accounts.legacy,
+    quotaScope: "unknown",
+    legacy: true,
+  });
+  expect((await listAgentAccounts(f.db, f.workspaceId)).map((row) => row.id).sort()).toEqual(
+    [
+      f.accounts.legacy,
+      legacyAgentAccountId(f.workspaceId, "codex"),
+      f.accounts.a,
+      f.accounts.b,
+    ].sort(),
+  );
+  expect(
+    (await listAgentAccounts(f.db, f.workspaceId)).find((row) => row.id === f.accounts.legacy),
+  ).toMatchObject({ legacy: true, enabled: true });
+  expect(
+    (await listAgentBindings(f.db, f.workspaceId)).filter((row) => row.legacy).map((row) => row.id),
+  ).toEqual(
+    expect.arrayContaining([
+      legacyAgentBindingId("R1", "claude"),
+      legacyAgentBindingId("R2", "codex"),
+    ]),
+  );
+  expect(await admitAgentAccounts(f.db, f.workspaceId, "claude")).toEqual({
+    agent: "claude",
+    eligible: [f.accounts.legacy],
+    skipped: [],
+  });
+  await f.close();
 });
