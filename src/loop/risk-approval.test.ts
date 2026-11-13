@@ -1,6 +1,7 @@
 import { RiskDisplayReader } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { eq, like, sql } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +23,6 @@ import {
   listJobs,
   listWorkItemEventRows,
   listOutbox,
-  migrate,
-  openDatabase,
   saveCandidateRisk,
   getCandidateRisk,
   saveCandidatePaths,
@@ -31,7 +30,8 @@ import {
   getCloseoutProgress,
   listCloseoutProgress,
   saveCheckpoint,
-  sqliteDb,
+  type Db,
+  type PgDb,
 } from "../db";
 import { findOpenQuestion, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContextSteps } from "../scheduler";
@@ -48,6 +48,8 @@ import {
 } from "./risk-approval";
 
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 const PUBLIC_URL = "https://paws.example/";
@@ -122,44 +124,49 @@ afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
 /** Closeout accepted high-risk head S, its pull request is open, and the lane holds it. */
 async function held(head = heads.s, base = heads.base) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, {
     id: "ENG-106",
     sessionKey: "ses_1",
     title: "Token rotation",
   });
-  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-  await saveCheckpoint(sqliteDb(db), item.id, {
+  await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(db, item.id, "closeout_accepted");
+  await saveCheckpoint(db, item.id, {
     phase: "merge_queue",
     baseSha: base,
     wipCommit: head,
   });
-  db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  await sqliteDb(db).run((q) =>
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.workItem)
+        .set({ delegatedBy: "delegator" })
+        .where(eq(q.t.workItem.id, item.id)),
+    ),
+  );
+  await db.run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
   );
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-    "user-lead",
-    "lead",
-    "Lea",
-    "lea@example.com",
-  ]);
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({ id: "user-lead", linearUserId: "lead", name: "Lea", email: "lea@example.com" }),
+  );
   // The merge job that published the pull request, and its response in Linear.
-  await enqueueJob(sqliteDb(db), {
+  await enqueueJob(db, {
     queue: JOB_KIND.merge,
     payload: { itemId: item.id },
     now: NOW - 5,
   });
-  await enqueueOutboxOnce(sqliteDb(db), {
+  await enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -168,11 +175,40 @@ async function held(head = heads.s, base = heads.base) {
     now: NOW - 4,
   });
   await classify(db, head, base);
-  return { db, itemId: item.id };
+  return { db, close, itemId: item.id };
 }
 
-async function classify(db: ReturnType<typeof openDatabase>, head: string, base: string) {
-  await saveCandidateRisk(sqliteDb(db), {
+const exec = (db: Db, statement: ReturnType<typeof sql>) => (db as PgDb).orm.execute(statement);
+
+function rowsOf<T>(result: unknown): T[] {
+  return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
+}
+
+/** Every table's contents as one digest, to show a read wrote nothing. */
+async function contents(db: Db): Promise<string> {
+  const [row] = rowsOf<{ digest: string }>(
+    await exec(
+      db,
+      sql`SELECT string_agg(table_name || ':' || md5(query_to_xml(format('SELECT * FROM %I', table_name), false, false, '')::text), ',' ORDER BY table_name) AS digest FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`,
+    ),
+  );
+  return row!.digest;
+}
+
+function updateStep(db: Db, stepId: string, set: Record<string, unknown>) {
+  return db.run((q) =>
+    q.exec(q.orm.update(q.t.closeoutStep).set(set).where(eq(q.t.closeoutStep.stepId, stepId))),
+  );
+}
+
+function deleteStep(db: Db, stepId: string) {
+  return db.run((q) =>
+    q.exec(q.orm.delete(q.t.closeoutStep).where(eq(q.t.closeoutStep.stepId, stepId))),
+  );
+}
+
+async function classify(db: Db, head: string, base: string) {
+  await saveCandidateRisk(db, {
     itemId: "ENG-106",
     head,
     base,
@@ -184,18 +220,18 @@ async function classify(db: ReturnType<typeof openDatabase>, head: string, base:
 
 async function asked(head = heads.s) {
   const fixture = await held(head);
-  const outcome = await askRiskApproval(sqliteDb(fixture.db), {
-    item: (await getWorkItem(sqliteDb(fixture.db), fixture.itemId))!,
+  const outcome = await askRiskApproval(fixture.db, {
+    item: (await getWorkItem(fixture.db, fixture.itemId))!,
     head,
     publicUrl: PUBLIC_URL,
     now: NOW,
   });
   expect(outcome).toBe("asked");
-  return { ...fixture, question: (await findOpenQuestion(sqliteDb(fixture.db), "ses_1"))! };
+  return { ...fixture, question: (await findOpenQuestion(fixture.db, "ses_1"))! };
 }
 
-function approval(db: ReturnType<typeof openDatabase>, head: string) {
-  return riskApprovalFor(sqliteDb(db), {
+function approval(db: Db, head: string) {
+  return riskApprovalFor(db, {
     itemId: "ENG-106",
     head,
     publicUrl: PUBLIC_URL,
@@ -207,12 +243,8 @@ function approval(db: ReturnType<typeof openDatabase>, head: string) {
 const HIGH_RISK = ["session.ts", "src/auth/**"];
 
 /** `riskApprovalFor` as the orchestrator wires it: the fix's own files, classified. */
-function approvalWithFixes(
-  db: ReturnType<typeof openDatabase>,
-  head: string,
-  globs: readonly string[] = HIGH_RISK,
-) {
-  return riskApprovalFor(sqliteDb(db), {
+function approvalWithFixes(db: Db, head: string, globs: readonly string[] = HIGH_RISK) {
+  return riskApprovalFor(db, {
     itemId: "ENG-106",
     head,
     publicUrl: PUBLIC_URL,
@@ -235,7 +267,7 @@ function approvalWithFixes(
 /** A person approved S on the Risk card. */
 async function riskApproved() {
   const fixture = await asked();
-  await decideLinkAsk(sqliteDb(fixture.db), {
+  await decideLinkAsk(fixture.db, {
     questionId: fixture.question.id,
     decision: "approve",
     note: null,
@@ -247,15 +279,15 @@ async function riskApproved() {
 }
 
 /** The fix at `head` passed Closeout and the lane holds it again. */
-async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
-  if ((await getWorkItem(sqliteDb(db), "ENG-106"))?.state === "verifying")
-    await applyWorkItemEvent(sqliteDb(db), "ENG-106", "closeout_accepted");
-  await saveCheckpoint(sqliteDb(db), "ENG-106", {
+async function fixAccepted(db: Db, head: string, base: string) {
+  if ((await getWorkItem(db, "ENG-106"))?.state === "verifying")
+    await applyWorkItemEvent(db, "ENG-106", "closeout_accepted");
+  await saveCheckpoint(db, "ENG-106", {
     phase: "merge_queue",
     baseSha: base,
     wipCommit: head,
   });
-  await saveCandidateRisk(sqliteDb(db), {
+  await saveCandidateRisk(db, {
     itemId: "ENG-106",
     head,
     base,
@@ -265,8 +297,8 @@ async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, ba
   });
 }
 
-async function activities(db: ReturnType<typeof openDatabase>) {
-  return (await listOutbox(sqliteDb(db)))
+async function activities(db: Db) {
+  return (await listOutbox(db))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("risk-approval:"))
     .map((row) => {
       const payload = row.payload as { kind: string; body: string };
@@ -274,8 +306,8 @@ async function activities(db: ReturnType<typeof openDatabase>) {
     });
 }
 
-async function resumes(db: ReturnType<typeof openDatabase>) {
-  return (await listJobs(sqliteDb(db)))
+async function resumes(db: Db) {
+  return (await listJobs(db))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 }
@@ -283,16 +315,16 @@ async function resumes(db: ReturnType<typeof openDatabase>) {
 test("a high-risk head is asked with a link: Markdown, no options, the link on the session", async () => {
   const { db, itemId, question } = await asked();
   expect(await approval(db, heads.s)).toBe("missing");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.s,
     link: "https://paws.example/dashboard/issues/ENG-106#risk",
     answerers: ["delegator", "lead"],
     detail: "High-risk paths changed: `session.ts`.",
   });
-  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(db)).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
   expect(payload.options).toEqual([]);
@@ -302,14 +334,14 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
     "Decide in Paws: https://paws.example/dashboard/issues/ENG-106#risk",
   );
   expect(payload.body).toContain("A reply here cannot approve the risk.");
-  expect(
-    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt,
-  ).toBe(NOW + LINK_ASK_REMINDER_MS);
+  expect((await listJobs(db)).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt).toBe(
+    NOW + LINK_ASK_REMINDER_MS,
+  );
 });
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
   const { db } = await held();
-  await saveCandidateRisk(sqliteDb(db), {
+  await saveCandidateRisk(db, {
     itemId: "ENG-106",
     head: heads.s,
     base: heads.base,
@@ -320,7 +352,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await approval(db, heads.s)).toBe("not_required");
   await classify(db, heads.s, heads.base);
   const local = (publicUrl: string | null) =>
-    riskApprovalFor(sqliteDb(db), {
+    riskApprovalFor(db, {
       itemId: "ENG-106",
       head: heads.s,
       publicUrl,
@@ -329,8 +361,8 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await local(null)).toBe("not_required");
   expect(await local("http://127.0.0.1:8787")).toBe("not_required");
   expect(
-    await askRiskApproval(sqliteDb(db), {
-      item: (await getWorkItem(sqliteDb(db), "ENG-106"))!,
+    await askRiskApproval(db, {
+      item: (await getWorkItem(db, "ENG-106"))!,
       head: heads.s,
       publicUrl: null,
       now: NOW,
@@ -342,7 +374,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
 
 test("Approve on the Risk card binds to S and sends the item back to the merge queue", async () => {
   const { db, itemId, question } = await asked();
-  const outcome = await decideLinkAsk(sqliteDb(db), {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -352,9 +384,9 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   });
   expect(outcome).toBe("answered");
   expect(await approval(db, heads.s)).toBe("approved");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
+  expect((await getWorkItem(db, itemId))?.state).toBe("verifying");
   expect(
-    (await listWorkItemEventRows(sqliteDb(db), itemId))
+    (await listWorkItemEventRows(db, itemId))
       .slice(-2)
       .map((row) => [row.fromState, row.event, row.toState]),
   ).toEqual([
@@ -362,7 +394,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
     ["awaiting_input", "reverify_requested", "verifying"],
   ]);
   expect(
-    (await listJobs(sqliteDb(db)))
+    (await listJobs(db))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => [job.jobKey, job.payload]),
   ).toEqual([[`risk-approved:${question.id}`, { itemId, decide: true }]]);
@@ -376,7 +408,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   ]);
   // The link leaves the session once the approval is decided.
   expect(
-    (await listOutbox(sqliteDb(db))).some(
+    (await listOutbox(db)).some(
       (row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`,
     ),
   ).toBe(true);
@@ -384,7 +416,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
 
 test("Request changes on the Risk card restarts the item with the note", async () => {
   const { db, itemId, question } = await asked();
-  await decideLinkAsk(sqliteDb(db), {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "Keep the old tokens valid for a day.",
@@ -392,7 +424,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
     actor,
     now: NOW + 100,
   });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({
       reason: "review",
@@ -407,7 +439,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
 test("a Linear reply requests changes and never approves, even when it says approve", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await guideLinkAsk(sqliteDb(db), {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "reply-1",
       body: "approve",
@@ -416,12 +448,12 @@ test("a Linear reply requests changes and never approves, even when it says appr
     }),
   ).toBe(true);
   expect(await approval(db, heads.s)).toBe("missing");
-  expect(await sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId))).toEqual([]);
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await db.run((q) => riskApprovalsSteps(q, itemId))).toEqual([]);
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     decision: null,
     closedReason: "guidance",
   });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
   ]);
@@ -432,7 +464,7 @@ test("a Linear reply requests changes and never approves, even when it says appr
 
 test("Stop stops the item and leaves the pull request open", async () => {
   const { db, itemId, question } = await asked();
-  const outcome = await decideLinkAsk(sqliteDb(db), {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "stop",
     note: null,
@@ -441,15 +473,13 @@ test("Stop stops the item and leaves the pull request open", async () => {
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("cancelled");
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect((await getWorkItem(db, itemId))?.state).toBe("cancelled");
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     closedReason: "cancelled",
     decidedBy: "lead",
   });
-  expect(
-    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.closeStoppedPull),
-  ).toEqual([]);
-  const stopped = (await listOutbox(sqliteDb(db))).find((row) =>
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.closeStoppedPull)).toEqual([]);
+  const stopped = (await listOutbox(db)).find((row) =>
     row.idempotencyKey.startsWith("command:stop:"),
   );
   const payload = stopped?.payload as { kind: string; body: string } | undefined;
@@ -461,7 +491,7 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
   const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "stop"] as const)
     expect(
-      await decideLinkAsk(sqliteDb(db), {
+      await decideLinkAsk(db, {
         questionId: question.id,
         decision,
         note: decision === "changes" ? "Rewrite it." : null,
@@ -471,15 +501,22 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
       }),
     ).toBe("forbidden");
   expect(await approval(db, heads.s)).toBe("missing");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
-  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
+  expect((await getLinkAsk(db, question.id))?.closedAt).toBeNull();
 });
 
 test("Stop only fits a risk approval", async () => {
   const { db, question } = await asked();
-  db.run("UPDATE link_ask SET kind = 'screenshots' WHERE question_id = ?", [question.id]);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.linkAsk)
+        .set({ kind: "screenshots" })
+        .where(eq(q.t.linkAsk.questionId, question.id)),
+    ),
+  );
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -492,7 +529,7 @@ test("Stop only fits a risk approval", async () => {
 
 test("a new head after the approval needs a new approval; a rebase onto main keeps it", async () => {
   const { db, question } = await asked();
-  await decideLinkAsk(sqliteDb(db), {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -513,10 +550,10 @@ test("the ask, its link and the decision reach Linear after the pull request res
   const tracker = createFakeTracker();
   const delivered = new Set<number>();
   const deliver = async () => {
-    for (const row of await listOutbox(sqliteDb(db), "ses_1")) {
+    for (const row of await listOutbox(db, "ses_1")) {
       if (delivered.has(row.id)) continue;
       delivered.add(row.id);
-      await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
+      await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     }
   };
   await deliver();
@@ -528,7 +565,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
       ],
     }),
   );
-  await decideLinkAsk(sqliteDb(db), {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "Split it.",
@@ -537,7 +574,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
     now: NOW + 100,
   });
   // Ordinary progress stays quiet after the pull request response.
-  await enqueueOutboxOnce(sqliteDb(db), {
+  await enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -570,7 +607,7 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
     }),
   ).toEqual({ ok: true });
   // The carry-over names the approved head and why.
-  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toMatchObject({
+  expect(await getRiskFix(db, itemId, heads.ciFix)).toMatchObject({
     approvedHead: heads.s,
     changed: ["test/x.test.ts"],
     paths: [],
@@ -579,10 +616,8 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
     `The approval of ${heads.s.slice(0, 7)} carried over: none of the files the fix changed since then is a high-risk path (\`test/x.test.ts\`).`,
   );
   // Nobody is asked again.
-  expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toHaveLength(
-    1,
-  );
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("merge_queue");
+  expect((await listOutbox(db)).filter((row) => row.op === "elicitation")).toHaveLength(1);
+  expect((await getWorkItem(db, itemId))?.state).toBe("merge_queue");
 });
 
 test("a fix that changes a high-risk path asks again and lists only that change", async () => {
@@ -590,23 +625,23 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   await fixAccepted(db, heads.authFix, heads.base);
   expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
   expect(
-    await askRiskApproval(sqliteDb(db), {
-      item: (await getWorkItem(sqliteDb(db), itemId))!,
+    await askRiskApproval(db, {
+      item: (await getWorkItem(db, itemId))!,
       head: heads.authFix,
       publicUrl: PUBLIC_URL,
       now: NOW + 600,
     }),
   ).toBe("asked");
-  const ask = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
+  const ask = (await findOpenQuestion(db, "ses_1"))!;
   const detail = `High-risk paths the fix changed since the approved ${heads.s.slice(0, 7)}: \`src/auth/session.ts\`.`;
-  expect(await getLinkAsk(sqliteDb(db), ask.id)).toMatchObject({
+  expect(await getLinkAsk(db, ask.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.authFix,
     detail,
   });
   // The whole pull request also changes `session.ts`; the ask leaves it out.
-  expect((await getLinkAsk(sqliteDb(db), ask.id))?.detail).not.toContain("`session.ts`");
-  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
+  expect((await getLinkAsk(db, ask.id))?.detail).not.toContain("`session.ts`");
+  const elicitations = (await listOutbox(db)).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(2);
   expect((elicitations[1]!.payload as { body: string }).body).toContain(detail);
 });
@@ -615,13 +650,11 @@ test("a CI fix on a rebased head counts only the fix's own files, not main's", a
   const { db, itemId } = await riskApproved();
   await fixAccepted(db, heads.rebasedCiFix, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
-  expect((await getRiskFix(sqliteDb(db), itemId, heads.rebasedCiFix))?.changed).toEqual([
-    "test/x.test.ts",
-  ]);
+  expect((await getRiskFix(db, itemId, heads.rebasedCiFix))?.changed).toEqual(["test/x.test.ts"]);
   // A rebase alone still follows samePatch and records no fix.
   await fixAccepted(db, heads.rebased, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebased)).toBe("approved");
-  expect(await getRiskFix(sqliteDb(db), itemId, heads.rebased)).toBeNull();
+  expect(await getRiskFix(db, itemId, heads.rebased)).toBeNull();
 });
 
 test("without an approval, or when the fix cannot be read, a fix asks", async () => {
@@ -631,7 +664,7 @@ test("without an approval, or when the fix cannot be read, a fix asks", async ()
   const fixture = await riskApproved();
   await fixAccepted(fixture.db, heads.ciFix, heads.base);
   expect(
-    await riskApprovalFor(sqliteDb(fixture.db), {
+    await riskApprovalFor(fixture.db, {
       itemId: "ENG-106",
       head: heads.ciFix,
       publicUrl: PUBLIC_URL,
@@ -647,11 +680,11 @@ test("a carried-over approval is checked again against the high-risk paths in fo
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   // Settings now lists the tests too: the same fix no longer keeps the approval.
   expect(await approvalWithFixes(db, heads.ciFix, [...HIGH_RISK, "test/**"])).toBe("missing");
-  expect((await getRiskFix(sqliteDb(db), itemId, heads.ciFix))?.paths).toEqual(["test/x.test.ts"]);
+  expect((await getRiskFix(db, itemId, heads.ciFix))?.paths).toEqual(["test/x.test.ts"]);
   // A fix Paws can no longer read forgets the earlier carry-over instead of trusting it.
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   expect(
-    await riskApprovalFor(sqliteDb(db), {
+    await riskApprovalFor(db, {
       itemId: "ENG-106",
       head: heads.ciFix,
       publicUrl: PUBLIC_URL,
@@ -659,13 +692,13 @@ test("a carried-over approval is checked again against the high-risk paths in fo
       fixRisk: async () => null,
     }),
   ).toBe("missing");
-  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toBeNull();
+  expect(await getRiskFix(db, itemId, heads.ciFix)).toBeNull();
 });
 
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
   const { db, itemId } = await asked(heads.both);
-  const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
-  await decideLinkAsk(sqliteDb(db), {
+  const question = (await findOpenQuestion(db, "ses_1"))!;
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -678,14 +711,14 @@ test("a rebase that changed the patch asks again, even when the change is only a
   expect(await samePatch(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBe(false);
   expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
   expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
-  expect(await getRiskFix(sqliteDb(db), itemId, heads.absorbed)).toBeNull();
+  expect(await getRiskFix(db, itemId, heads.absorbed)).toBeNull();
 });
 
 /** Stored results, as reported through Closeout's real progress adapter. */
 async function cleanRiskFixture() {
   const fixture = await held();
   const { db, itemId } = fixture;
-  await saveCandidatePaths(sqliteDb(db), {
+  await saveCandidatePaths(db, {
     itemId,
     head: heads.s,
     paths: ["session.ts"],
@@ -698,7 +731,7 @@ async function cleanRiskFixture() {
     policyDigest: "policy",
     policyPath: null,
   };
-  const progress = createDbCloseoutProgress(sqliteDb(db), itemId, () => NOW);
+  const progress = createDbCloseoutProgress(db, itemId, () => NOW);
   await progress.begin(identity);
   const step = (
     id: string,
@@ -730,7 +763,7 @@ async function cleanRiskFixture() {
   await step("independent-review");
   await progress.finish(identity, "accepted");
   const read = (overrides: Partial<Parameters<typeof riskApprovalFor>[1]> = {}) =>
-    riskApprovalFor(sqliteDb(db), {
+    riskApprovalFor(db, {
       itemId,
       head: heads.s,
       publicUrl: PUBLIC_URL,
@@ -751,7 +784,7 @@ async function cleanRiskFixture() {
     text = "Review detail",
     at = NOW,
   ) => {
-    await recordReviewFindings(sqliteDb(db), {
+    await recordReviewFindings(db, {
       itemId,
       repository: "acme/repo",
       head: heads.s,
@@ -787,28 +820,26 @@ async function automaticMerge(f: Awaited<ReturnType<typeof cleanRiskFixture>>) {
   });
   if (!verdict.ok && verdict.block === "risk_approval") {
     expect(
-      await askRiskApproval(sqliteDb(f.db), {
-        item: (await getWorkItem(sqliteDb(f.db), f.itemId))!,
+      await askRiskApproval(f.db, {
+        item: (await getWorkItem(f.db, f.itemId))!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
         now: NOW,
       }),
     ).toBe("asked");
-    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).not.toBeNull();
+    expect(await findOpenQuestion(f.db, "ses_1")).not.toBeNull();
   }
   return verdict;
 }
 
 test("opt-in clean reviews at S pass mergeable without a question, writes or approval", async () => {
   const f = await cleanRiskFixture();
-  const before = f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total;
+  const before = await contents(f.db);
   expect(await automaticMerge(f)).toEqual({ ok: true });
-  expect(f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total).toBe(
-    before,
-  );
-  expect(await sqliteDb(f.db).run((q) => riskApprovalsSteps(q, f.itemId))).toEqual([]);
-  expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
-  f.db.close();
+  expect(await contents(f.db)).toBe(before);
+  expect(await f.db.run((q) => riskApprovalsSteps(q, f.itemId))).toEqual([]);
+  expect(await findOpenQuestion(f.db, "ses_1")).toBeNull();
+  await f.close();
 });
 
 for (const review of ["security-review", "independent-review"]) {
@@ -817,13 +848,13 @@ for (const review of ["security-review", "independent-review"]) {
     await f.step(review, "Display text is not a severity source", ["P2"]);
     await f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-    f.db.close();
+    await f.close();
   });
   test(`missing ${review} asks`, async () => {
     const f = await cleanRiskFixture();
-    f.db.run("DELETE FROM closeout_step WHERE step_id = ?", [review]);
+    await deleteStep(f.db, review);
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-    f.db.close();
+    await f.close();
   });
 }
 
@@ -848,14 +879,14 @@ for (const policyPath of [
   test(`changing ${policyPath} always asks`, async () => {
     const f = await cleanRiskFixture();
     // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
-    await saveCandidatePaths(sqliteDb(f.db), {
+    await saveCandidatePaths(f.db, {
       itemId: f.itemId,
       head: heads.s,
       paths: ["session.ts", policyPath],
       recordedAt: NOW,
     });
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-    f.db.close();
+    await f.close();
   });
 }
 
@@ -867,7 +898,7 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
   expect(await f.read({ policyDigest: "new-policy" })).toBe("missing");
   expect(await f.read({ policyDigest: null })).toBe("missing");
   expect(await f.read({ policyPaths: null })).toBe("missing");
-  await saveCandidateRisk(sqliteDb(f.db), {
+  await saveCandidateRisk(f.db, {
     itemId: f.itemId,
     head: heads.s,
     base: heads.newMain,
@@ -879,17 +910,15 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
   await classify(f.db, heads.s, heads.base);
   await f.progress.begin(f.identity);
   expect(await f.read()).toBe("missing");
-  f.db.close();
+  await f.close();
 });
 
 test("a failed rule probe asks even if the run was accepted", async () => {
   const f = await cleanRiskFixture();
   await f.step("rule-probe");
-  f.db.run(
-    "UPDATE closeout_step SET kind = 'command', state = 'failed' WHERE step_id = 'rule-probe'",
-  );
+  await updateStep(f.db, "rule-probe", { kind: "command", state: "failed" });
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-  f.db.close();
+  await f.close();
 });
 
 test("P3 snapshots pass before the shared finding import, regardless of display text", async () => {
@@ -899,11 +928,11 @@ test("P3 snapshots pass before the shared finding import, regardless of display 
     "P3 session.ts:12: Notes\nP1 and P10 are terms in the explanation",
     ["P3"],
   );
-  expect(await listReviewFindings(sqliteDb(f.db))).toEqual([]);
+  expect(await listReviewFindings(f.db)).toEqual([]);
   expect(await f.read()).toBe("approved");
   await f.step("security-review", "A completely different display format", ["P3"]);
   expect(await f.read()).toBe("approved");
-  f.db.close();
+  await f.close();
 });
 
 test("legacy, malformed and wrong-attempt review snapshots fail closed", async () => {
@@ -914,17 +943,17 @@ test("legacy, malformed and wrong-attempt review snapshots fail closed", async (
     "{bad",
     JSON.stringify({ reviewSnapshot: 1, attempt: 2, text: null, severities: [] }),
   ]) {
-    f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
+    await updateStep(f.db, "security-review", { findings });
     expect(await f.read()).toBe("missing");
   }
-  f.db.run("DROP TABLE closeout_step");
+  await exec(f.db, sql`DROP TABLE closeout_step CASCADE`);
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-  f.db.close();
+  await f.close();
 });
 
 test("review snapshots use the row's resolved attempt and hide invalid envelopes", async () => {
   const f = await cleanRiskFixture();
-  const step = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+  const step = (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
   await f.progress.step(f.identity, {
@@ -934,7 +963,7 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
     findingSeverities: ["P3"],
   });
   expect(
-    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+    (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
       (s) => s.id === "security-review",
     ),
   ).toMatchObject({ attempt: 1, findings: "Current notes", findingSeverities: ["P3"] });
@@ -943,15 +972,15 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
     JSON.stringify({ reviewSnapshot: 2 }),
     JSON.stringify({ reviewSnapshot: 1, attempt: 9, text: "Stale", severities: [] }),
   ]) {
-    f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
+    await updateStep(f.db, "security-review", { findings });
     expect(
-      (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+      (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
         (s) => s.id === "security-review",
       )!.findings,
     ).toBe(findings === "{broken" ? findings : null);
     expect(await f.read()).toBe("missing");
   }
-  f.db.close();
+  await f.close();
 });
 
 test("a later clean attempt clears prior findings even without a running update", async () => {
@@ -960,26 +989,24 @@ test("a later clean attempt clears prior findings even without a running update"
   expect(await f.read()).toBe("missing");
   await f.step("security-review", null, [], 2);
   expect(
-    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.steps.find(
+    (await getCloseoutProgress(f.db, f.itemId, heads.s))?.steps.find(
       (s) => s.id === "security-review",
     ),
   ).toMatchObject({ attempt: 2, findings: null, findingSeverities: [] });
   expect(await f.read()).toBe("approved");
-  f.db.close();
+  await f.close();
 });
 
 test("a cached review keeps only the snapshot of its unchanged attempt", async () => {
   const f = await cleanRiskFixture();
   await f.step("security-review", "P3 notes", ["P3"]);
-  const cached = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+  const cached = (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
-  f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [
-    '{"example":1}',
-  ]);
+  await updateStep(f.db, "security-review", { findings: '{"example":1}' });
   await f.progress.step(f.identity, { ...cached, findings: null, findingSeverities: undefined });
   expect(
-    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+    (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
       (s) => s.id === "security-review",
     )!.findings,
   ).toBe('{"example":1}');
@@ -1004,7 +1031,7 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
     findingSeverities: undefined,
   });
   expect(await f.read()).toBe("missing");
-  f.db.close();
+  await f.close();
 });
 
 for (const severity of ["P2", "P3"] as const) {
@@ -1013,7 +1040,7 @@ for (const severity of ["P2", "P3"] as const) {
     await f.step("security-review", "Original report", [severity]);
     await f.report("security-review", severity, "Same finding");
     await insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
-    await recordReviewFindings(sqliteDb(f.db), {
+    await recordReviewFindings(f.db, {
       itemId: "other-item",
       repository: "acme/repo",
       head: heads.changed,
@@ -1030,11 +1057,9 @@ for (const severity of ["P2", "P3"] as const) {
       ],
       reviewed: [],
     });
-    expect((await listReviewFindings(sqliteDb(f.db)))[0]?.severity).toBe(
-      severity === "P2" ? "P3" : "P2",
-    );
+    expect((await listReviewFindings(f.db))[0]?.severity).toBe(severity === "P2" ? "P3" : "P2");
     expect(await f.read()).toBe("missing");
-    f.db.close();
+    await f.close();
   });
 }
 
@@ -1044,8 +1069,8 @@ for (const severity of ["P0", "P1", "P2"] as const) {
     await f.step("independent-review", "P3 misleading display text", [severity]);
     await f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
-    const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
-    await setReviewFindingStatus(sqliteDb(f.db), {
+    const finding = (await listReviewFindings(f.db))[0]!;
+    await setReviewFindingStatus(f.db, {
       id: finding.id,
       status: "dismissed",
       reason: "Acknowledged",
@@ -1053,38 +1078,45 @@ for (const severity of ["P0", "P1", "P2"] as const) {
       now: NOW,
     });
     expect(await f.read()).toBe("missing");
-    f.db.close();
+    await f.close();
   });
 }
 
 test("unknown or malformed candidate paths never reuse another head's path list", async () => {
   const f = await cleanRiskFixture();
-  f.db.run("DELETE FROM candidate_paths");
-  await saveCandidatePaths(sqliteDb(f.db), {
+  await f.db.run((q) => q.exec(q.orm.delete(q.t.candidatePaths)));
+  await saveCandidatePaths(f.db, {
     itemId: f.itemId,
     head: heads.changed,
     paths: ["session.ts"],
     recordedAt: NOW + 1,
   });
-  expect(await getCandidatePaths(sqliteDb(f.db), f.itemId, heads.s)).toBeNull();
+  expect(await getCandidatePaths(f.db, f.itemId, heads.s)).toBeNull();
   expect(await f.read()).toBe("missing");
-  await saveCandidatePaths(sqliteDb(f.db), {
+  await saveCandidatePaths(f.db, {
     itemId: f.itemId,
     head: heads.s,
     paths: ["session.ts"],
     recordedAt: NOW,
   });
-  f.db.run("UPDATE candidate_paths SET paths = '{}' WHERE head_sha = ?", [heads.s]);
+  await f.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.candidatePaths)
+        .set({ paths: {} })
+        .where(eq(q.t.candidatePaths.headSha, heads.s)),
+    ),
+  );
   const lines: string[] = [];
   expect(await f.read({ journal: (line) => lines.push(line) })).toBe("missing");
   expect(lines.some((line) => line.includes("Invalid stored candidate paths"))).toBe(true);
-  f.db.close();
+  await f.close();
 });
 
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
   const f = await cleanRiskFixture();
   await classify(f.db, heads.rebased, heads.newMain);
-  await saveCandidatePaths(sqliteDb(f.db), {
+  await saveCandidatePaths(f.db, {
     itemId: f.itemId,
     head: heads.rebased,
     paths: ["session.ts"],
@@ -1105,31 +1137,34 @@ test("a carried acceptance after rebase does not substitute for exact-head revie
       riskApproval,
     }),
   ).toEqual({ ok: false, block: "risk_approval" });
-  f.db.close();
+  await f.close();
 });
 
 test("differently named reviews do not substitute for the two required reviews", async () => {
   const f = await cleanRiskFixture();
-  f.db.run("UPDATE closeout_step SET step_id = 'review' WHERE step_id = 'security-review'");
+  await updateStep(f.db, "security-review", { stepId: "review" });
   expect(await f.read()).toBe("missing");
-  f.db.close();
+  await f.close();
 });
 
 test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", async () => {
   const f = await cleanRiskFixture();
-  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s)).toEqual(
-    (await listCloseoutProgress(sqliteDb(f.db)))[0]!,
+  expect(await getCloseoutProgress(f.db, f.itemId, heads.s)).toEqual(
+    (await listCloseoutProgress(f.db))[0]!,
   );
-  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.rebased)).toBeNull();
-  expect(await getCloseoutProgress(sqliteDb(f.db), "another-item", heads.s)).toBeNull();
+  expect(await getCloseoutProgress(f.db, f.itemId, heads.rebased)).toBeNull();
+  expect(await getCloseoutProgress(f.db, "another-item", heads.s)).toBeNull();
   await f.progress.begin({ ...f.identity, policyDigest: "other-policy" });
-  f.db.run("UPDATE closeout_progress SET updated_at = ? WHERE policy_digest = 'other-policy'", [
-    NOW + 1,
-  ]);
-  expect((await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.policyDigest).toBe(
-    "other-policy",
+  await f.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.closeoutProgress)
+        .set({ updatedAt: NOW + 1 })
+        .where(eq(q.t.closeoutProgress.policyDigest, "other-policy")),
+    ),
   );
-  f.db.close();
+  expect((await getCloseoutProgress(f.db, f.itemId, heads.s))?.policyDigest).toBe("other-policy");
+  await f.close();
 });
 
 test("a new or reopened finding at S revokes automatic eligibility", async () => {
@@ -1137,8 +1172,8 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
   expect(await f.read()).toBe("approved");
   await f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
-  const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
-  await setReviewFindingStatus(sqliteDb(f.db), {
+  const finding = (await listReviewFindings(f.db))[0]!;
+  await setReviewFindingStatus(f.db, {
     id: finding.id,
     status: "dismissed",
     reason: "Reviewed",
@@ -1146,14 +1181,14 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
     now: NOW,
   });
   expect(await f.read()).toBe("approved");
-  await setReviewFindingStatus(sqliteDb(f.db), {
+  await setReviewFindingStatus(f.db, {
     id: finding.id,
     status: "open",
     by: "user-lead",
     now: NOW + 1,
   });
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
-  f.db.close();
+  await f.close();
 });
 
 for (const enabled of [undefined, false]) {
@@ -1161,14 +1196,14 @@ for (const enabled of [undefined, false]) {
     const f = await cleanRiskFixture();
     expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
     expect(
-      await askRiskApproval(sqliteDb(f.db), {
-        item: (await getWorkItem(sqliteDb(f.db), f.itemId))!,
+      await askRiskApproval(f.db, {
+        item: (await getWorkItem(f.db, f.itemId))!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
         now: NOW,
       }),
     ).toBe("asked");
-    f.db.close();
+    await f.close();
   });
 }
 
@@ -1176,7 +1211,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
   test(`the sole PR response uses the shared risk explanation for ${scenario}`, async () => {
     const f = await cleanRiskFixture();
     const display = new RiskDisplayReader({
-      store: sqliteDb(f.db),
+      store: f.db,
       configPath: "/tmp/pas934-no-config",
       readSettings: () => ({ autoApproveHighRisk: scenario !== "off", repositories: {} }),
       publicUrl: PUBLIC_URL,
@@ -1188,10 +1223,9 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         policyPaths: ["tools/rules.ts"],
       });
       if (scenario === "P2") await f.step("security-review", "Unsafe access", ["P2"]);
-      if (scenario === "missing security")
-        f.db.run("DELETE FROM closeout_step WHERE step_id = 'security-review'");
+      if (scenario === "missing security") await deleteStep(f.db, "security-review");
       if (scenario === "rules change")
-        await saveCandidatePaths(sqliteDb(f.db), {
+        await saveCandidatePaths(f.db, {
           itemId: f.itemId,
           head: heads.s,
           paths: ["tools/rules.ts"],
@@ -1210,21 +1244,27 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         head: heads.s,
         pull: { number: 1 },
         riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
-        risk: await getCandidateRisk(sqliteDb(f.db), f.itemId, heads.s),
+        risk: await getCandidateRisk(f.db, f.itemId, heads.s),
         openLine: "",
       });
       expect(body).toContain(expected);
       // Deliver the production PR response through canReportProgress, then try a later thought.
-      f.db.run("UPDATE outbox SET payload = ? WHERE idempotency_key LIKE 'pull-request-ready:%'", [
-        JSON.stringify({
-          id: crypto.randomUUID(),
-          sessionId: "ses_1",
-          itemId: f.itemId,
-          kind: "response",
-          body,
-        }),
-      ]);
-      await enqueueOutboxOnce(sqliteDb(f.db), {
+      const payload = {
+        id: crypto.randomUUID(),
+        sessionId: "ses_1",
+        itemId: f.itemId,
+        kind: "response",
+        body,
+      };
+      await f.db.run((q) =>
+        q.exec(
+          q.orm
+            .update(q.t.outbox)
+            .set({ payload })
+            .where(like(q.t.outbox.idempotencyKey, "pull-request-ready:%")),
+        ),
+      );
+      await enqueueOutboxOnce(f.db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",
@@ -1238,8 +1278,8 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         now: NOW,
       });
       const tracker = createFakeTracker();
-      for (const row of await listOutbox(sqliteDb(f.db), "ses_1"))
-        await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(f.db));
+      for (const row of await listOutbox(f.db, "ses_1"))
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, f.db);
       expect(tracker.progress).toHaveLength(1);
       expect(tracker.progress[0]?.body).toBe(body);
       expect(await f.read({ autoApproveHighRisk: scenario !== "off" })).toBe(
@@ -1247,15 +1287,15 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       );
     } finally {
       display.close();
-      f.db.close();
+      await f.close();
     }
   });
 }
 
-test("a corrupt risk row cannot prevent the sole pull-request response", async () => {
+test("an unreadable risk row cannot prevent the sole pull-request response", async () => {
   const f = await cleanRiskFixture();
   const display = new RiskDisplayReader({
-    store: sqliteDb(f.db),
+    store: f.db,
     configPath: "/tmp/pas934-no-config",
     publicUrl: PUBLIC_URL,
     readSettings: () => ({ autoApproveHighRisk: true, repositories: {} }),
@@ -1266,9 +1306,7 @@ test("a corrupt risk row cannot prevent the sole pull-request response", async (
       policyDigest: "policy",
       policyPaths: [],
     });
-    f.db.run("PRAGMA ignore_check_constraints=ON");
-    f.db.run("PRAGMA ignore_check_constraints=ON");
-    f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.itemId]);
+    await exec(f.db, sql`ALTER TABLE candidate_risk RENAME COLUMN paths TO unreadable_paths`);
     const body = await pullRequestReadyResponse({
       itemId: f.itemId,
       head: heads.s,
@@ -1293,6 +1331,6 @@ test("a corrupt risk row cannot prevent the sole pull-request response", async (
     ).toContain("Manual approval required");
   } finally {
     display.close();
-    f.db.close();
+    await f.close();
   }
 });
