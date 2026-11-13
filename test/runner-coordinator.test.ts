@@ -13,7 +13,7 @@ test("the coordinator composes persistent signing identity, enrollment and fence
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 7);
+    assert.equal(observations.length, 8);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
