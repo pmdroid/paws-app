@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import type { Db } from "../db";
-import { systemClock, type Clock } from "../core";
-import { HostSupervisor } from "./supervisor";
+import { sleep, systemClock, type Clock } from "../core";
+import { HostSupervisor, restartDelayMs } from "./supervisor";
 import { WakeDetector } from "./wake";
 
 export { HostSupervisor } from "./supervisor";
@@ -14,6 +14,7 @@ export function startHost(input: {
   pollMs?: number;
   /** Stops a live agent whose run ended at the time limit. */
   stopAgent?: (itemId: string) => void;
+  sleeper?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }): { stop: () => void; supervisor: HostSupervisor } {
   const clock = input.clock ?? systemClock;
   const supervisor = new HostSupervisor(
@@ -23,11 +24,20 @@ export function startHost(input: {
     input.pollMs,
     input.stopAgent,
   );
-  const task = supervisor.run(input.signal);
-  void task.catch((caughtError1) => {
-    journalCaught(caughtError1, "host.startHost", null);
-    return undefined;
-  });
+  const sleeper = input.sleeper ?? sleep;
+  void (async () => {
+    let failures = 0;
+    while (!input.signal.aborted) {
+      try {
+        await supervisor.run(input.signal, sleeper);
+        return;
+      } catch (caughtError1) {
+        failures += 1;
+        journalCaught(caughtError1, "host.startHost", null);
+        await sleeper(restartDelayMs(failures), input.signal);
+      }
+    }
+  })();
   return {
     supervisor,
     stop() {
