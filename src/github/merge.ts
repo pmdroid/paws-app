@@ -8,7 +8,8 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitEnv, gitFailureReason, redact, withCredential } from "./git";
-import { mainOverlap, readUpToDateRule } from "./overlap";
+import { repositoryGet } from "./compare";
+import { comparedOverlap, mainOverlap, readUpToDateRule } from "./overlap";
 import { pushDenial, pushWithLease } from "./push";
 import { gitTempDirectory } from "./temp";
 import { pushOutageCause } from "./transport";
@@ -63,7 +64,7 @@ export type SerialMergeInput = {
    * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
    * grouped by these package roots, when S is behind main.
    */
-  overlap?: { packages: readonly string[]; anyFiles?: boolean };
+  overlap?: { packages: readonly string[]; anyFiles?: boolean; fromGitHub?: boolean };
 };
 
 /** What the merge lane reads about the branch head S under the repository lock. */
@@ -136,7 +137,9 @@ export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsR
   });
   const review = await readPullReview({ ...input, tokenProvider: input.tokenProvider });
   const overlap =
-    input.overlap && !containsMain ? await readOverlap(input, token, gitExec) : undefined;
+    input.overlap && !containsMain
+      ? await readOverlap(input, token, gitExec, { main: base, head })
+      : undefined;
   return { kind: "facts", branch, head, base, containsMain, ...overlap, readiness, review };
 }
 
@@ -148,10 +151,19 @@ async function readOverlap(
   input: SerialMergeInput,
   token: string,
   gitExec: GitExec,
+  heads: { main: string; head: string },
 ): Promise<Pick<PullFacts, "apart" | "shared" | "upToDateRule">> {
+  const packages = input.overlap?.packages ?? [];
   const { shared } = input.overlap?.anyFiles
     ? { shared: [] as string[] }
-    : await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec, input.ref);
+    : input.overlap?.fromGitHub
+      ? await comparedOverlap(
+          repositoryGet({ client: input.client, token, owner: input.owner, repo: input.repo }),
+          heads.main,
+          heads.head,
+          packages,
+        )
+      : await mainOverlap(input.worktree, packages, gitExec, input.ref);
   if (shared.length > 0) return { apart: false, shared };
   const rule = await readUpToDateRule({
     client: input.client,

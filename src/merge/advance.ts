@@ -132,6 +132,7 @@ export type MergeCapabilities = OrderCapabilities & {
   ): MergeResultPolicyError | undefined | Promise<MergeResultPolicyError | undefined>;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
+  changedFilesFromGitHub?(): boolean;
   assertReady(item: WorkItemRecord): Promise<void>;
   /** Whether head S needs, and has, a person's risk approval in Paws. */
   riskApproval(item: WorkItemRecord, published: MergePublication): Promise<RiskApproval>;
@@ -291,6 +292,7 @@ export async function advanceMerge(
           overlap: {
             packages: caps.packages(`${repository.owner}/${repository.repo}`),
             anyFiles: mergeSettings.mainMoved === "green",
+            ...(caps.changedFilesFromGitHub?.() ? { fromGitHub: true } : {}),
           },
         }
       : {}),
