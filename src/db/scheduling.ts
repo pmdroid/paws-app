@@ -325,6 +325,7 @@ export function* pendingRunnerWaitsSteps(q: Q, seenAfter: number) {
         runnerId: w.runnerId,
         online: num(sql`r.id IS NOT NULL`),
         merging: num(sql`EXISTS(SELECT 1 FROM merge_queue_entry e WHERE e.item_id=i.id)`),
+        verifying: num(sql`i.state='verifying'`),
         payload: jsonText(q, j.payload),
       })
       .from(i)
