@@ -66,6 +66,7 @@ import {
 
 const TICK = JOB_KIND.schedulerTick;
 const RUNNER_SEEN_MS = 60_000;
+const CLOSEOUT_SLOT_WAIT_MS = 30 * 60_000;
 type Item = SchedulerItem;
 type Admission = {
   itemId: string;
@@ -327,6 +328,7 @@ type PinnedWait = {
   jobId: number;
   /** The pinned runner, or for unpinned merge-queue work every busy runner it may use. */
   runnerIds: readonly string[];
+  closeoutSince?: number;
 };
 
 /**
@@ -338,9 +340,16 @@ type PinnedWait = {
  */
 function* pinnedWaits(q: Q, now: number): Steps<PinnedWait[]> {
   return (yield* pendingRunnerWaitsSteps(q, now - RUNNER_SEEN_MS)).flatMap(
-    ({ payload, runnerId, online, merging, ...wait }): PinnedWait[] => {
+    ({ payload, runnerId, online, merging, verifying, ...wait }): PinnedWait[] => {
       const capacity = runnerCapacityWait(JSON.parse(payload));
       if (!capacity || now - capacity.since >= (capacity.holdMs ?? Infinity)) return [];
+      if (
+        verifying &&
+        !merging &&
+        capacity.runnerIds.length &&
+        now - capacity.since < CLOSEOUT_SLOT_WAIT_MS
+      )
+        return [{ ...wait, runnerIds: capacity.runnerIds, closeoutSince: capacity.since }];
       const pinned = online && runnerId !== null && capacity.runnerIds.includes(runnerId);
       if (pinned && (!merging || capacity.runnerIds.length === 1))
         return [{ ...wait, runnerIds: [runnerId] }];
@@ -634,10 +643,19 @@ async function admit(
       choices.set(itemId, runnerId);
       return true;
     }
+    const pinTier = (pin: PinnedWait) =>
+      pin.closeoutSince !== undefined ? 1 : byId.get(pin.itemId)!.mergeAt !== null ? 0 : 2;
     const pins = slots
       ? (yield* pinnedWaits(q, now))
           .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
-          .sort((a, b) => rank(byId.get(a.itemId)!, byId.get(b.itemId)!))
+          .sort(
+            (a, b) =>
+              pinTier(a) - pinTier(b) ||
+              (a.closeoutSince ?? 0) - (b.closeoutSince ?? 0) ||
+              (a.closeoutSince === undefined
+                ? rank(byId.get(a.itemId)!, byId.get(b.itemId)!)
+                : a.jobId - b.jobId),
+          )
       : [];
     let pinned = 0;
     const reservedSlots = new Map<number, PinnedSlot>();
@@ -649,7 +667,8 @@ async function admit(
     function* claimPinned(before?: Item): Steps<void> {
       for (; pinned < pins.length; pinned += 1) {
         const pin = pins[pinned]!;
-        if (before && rank(byId.get(pin.itemId)!, before) > 0) return;
+        if (before && pin.closeoutSince === undefined && rank(byId.get(pin.itemId)!, before) > 0)
+          return;
         const runnerId =
           pin.runnerIds.length === 1
             ? pin.runnerIds[0]!

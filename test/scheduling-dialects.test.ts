@@ -358,6 +358,7 @@ forEachDialect((connect) => {
         runnerId: "box",
         online: 1,
         merging: 0,
+        verifying: 0,
         payload: { itemId: "waiting", n: 2 },
       },
     ]);
