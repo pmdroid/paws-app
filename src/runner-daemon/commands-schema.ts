@@ -33,7 +33,7 @@ export const agentCredential = sqliteTable("agent_credential", {
   agent: text("agent").notNull(),
   version: integer("version").notNull(),
   digest: text("digest").notNull(),
-  wrote: integer("wrote").notNull(),
   commands: text("commands").notNull(),
   upload: text("upload"),
+  latest: text("latest"),
 });

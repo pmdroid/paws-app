@@ -173,42 +173,47 @@ export function runnerAgentCredentials(
         let folder = home;
         for (const part of relative(home, dirname(target)).split(sep).filter(Boolean))
           credentialFolder((folder = join(folder, part)), owners);
-        let data = Buffer.from(file.data, "base64");
-        if (file.path === CLAUDE_STATE) {
-          const live = readCredentialFile(target);
-          const state = live ? (JSON.parse(live.toString("utf8")) as object) : {};
-          data = Buffer.from(JSON.stringify({ ...state, ...JSON.parse(data.toString("utf8")) }));
-        }
-        writeSharedFile(target, data, owners, 0o660);
+        if (file.path === CLAUDE_STATE && present(target)) continue;
+        writeSharedFile(target, Buffer.from(file.data, "base64"), owners, 0o660);
       }
-    },
-    read(account, agent) {
-      const read: RunnerAgentCredentialFiles = [];
-      for (const { path, target } of files(account, agent)) {
-        let data = readCredentialFile(target);
-        if (data && path === CLAUDE_STATE) {
-          const { oauthAccount } = JSON.parse(data.toString("utf8")) as { oauthAccount?: unknown };
-          data = oauthAccount === undefined ? null : Buffer.from(JSON.stringify({ oauthAccount }));
-        }
-        if (data) read.push({ path, data: data.toString("base64") });
-      }
-      return read;
     },
     busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
     remove(account, agent) {
-      for (const { path, target } of files(account, agent)) {
-        const live = path === CLAUDE_STATE ? readCredentialFile(target) : null;
-        if (!live) {
-          rmSync(target, { force: true });
-          continue;
-        }
-        const { oauthAccount: _, ...state } = JSON.parse(live.toString("utf8")) as {
-          oauthAccount?: unknown;
-        };
-        writeSharedFile(target, JSON.stringify(state), owners, 0o660);
-      }
+      for (const { path, target } of files(account, agent))
+        if (path !== CLAUDE_STATE) rmSync(target, { force: true });
     },
   };
+}
+
+export function returnRunnerAgentCredentials(
+  home: string,
+  agent: RunnerCodingAgent,
+  executionId: string,
+  publish: (files: RunnerAgentCredentialFiles) => void,
+): void {
+  const read: RunnerAgentCredentialFiles = [];
+  for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent]) {
+    let data = readCredentialFile(join(home, path));
+    if (data && path === CLAUDE_STATE) {
+      const { oauthAccount } = JSON.parse(data.toString("utf8")) as { oauthAccount?: unknown };
+      data = oauthAccount === undefined ? null : Buffer.from(JSON.stringify({ oauthAccount }));
+    }
+    if (data) read.push({ path, data: data.toString("base64") });
+  }
+  publish(read);
+  if (activeExecutions(home, executionId).length > 0) return;
+  for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent])
+    if (path !== CLAUDE_STATE) rmSync(join(home, path), { force: true });
+}
+
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function credentialFolder(path: string, owners: RunnerAccountOwners): void {

@@ -87,6 +87,7 @@ import {
   createRunnerResultDirectory,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
+  returnRunnerAgentCredentials,
   openRunnerCheckoutToGroup,
   openRunnerRunStatesToGroup,
   publishRunnerAccountHome,
@@ -800,6 +801,22 @@ export async function executeRunnerCommand(
         ...(options.owners ? { owners: options.owners } : {}),
       })
     : options.home;
+  let credentialsReturned = false;
+  const returnCredentials = () => {
+    if (credentialsReturned || job.credentials !== true || !binding) return;
+    credentialsReturned = true;
+    try {
+      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
+        replaceOutputFile(options, "credentials.json", JSON.stringify(files)),
+      );
+    } catch (error) {
+      journalCaught(
+        error,
+        "runner-worker.returnCredentials",
+        "itemId" in command ? command.itemId : null,
+      );
+    }
+  };
   const homeEnv = binding
     ? accountAgentEnv(home)
     : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
@@ -926,6 +943,7 @@ export async function executeRunnerCommand(
                         binding.agent,
                         options.owners,
                       );
+                      returnCredentials();
                     },
                     options.owners,
                   ),
@@ -2392,6 +2410,7 @@ export async function executeRunnerCommand(
     const redacted = readRedactor()?.(serialized) ?? serialized;
     if (Buffer.byteLength(redacted) > 1_048_576)
       throw new Error("Runner result exceeds size limit");
+    returnCredentials();
     const stagingName = `.result-${randomUUID()}.tmp`;
     const stagingPath = join(options.outputDirectory, stagingName);
     try {
@@ -2432,6 +2451,7 @@ export async function executeRunnerCommand(
         agentExited: true,
       },
     };
+    returnCredentials();
     const staging = `.failure-${randomUUID()}.tmp`;
     const fd = outputFile(options.outputDirectory, staging, options.resultsGid);
     try {
@@ -2446,6 +2466,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    returnCredentials();
     githubRead?.close();
     previewStart.abort();
     await (await preview)?.stop("run_ended");

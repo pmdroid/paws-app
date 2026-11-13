@@ -22,6 +22,7 @@ import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runn
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
+  readRunnerCredentials,
   readRunnerResultFile,
   readRunnerResultRange,
   type RunnerBrokerClient,
@@ -228,6 +229,8 @@ export async function openRunnerRuntime(options: {
         | "repositoryCommandCredential"
         | "postRepositoryCommandResult"
         | "githubReadCredential"
+        | "carriesCredential"
+        | "returnCredentials"
       >
     >;
   spool: RunnerSpool;
@@ -668,6 +671,7 @@ export async function openRunnerRuntime(options: {
     const tail = (broker.log?.(execution.id) ?? "")
       .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
       .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
+    returnCredentials(execution);
     journal.saveResult(
       execution.id,
       RunnerResultSchema.parse({
@@ -689,6 +693,11 @@ export async function openRunnerRuntime(options: {
       true,
     );
     await deliverResult(execution);
+  }
+  function returnCredentials(execution: Execution) {
+    const { id } = execution.command;
+    if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
+    options.daemon.returnCredentials(id, readRunnerCredentials(options.results, execution.id));
   }
   function readWorkerResult(execution: Execution) {
     const worker = workerResult.parse(
@@ -733,6 +742,7 @@ export async function openRunnerRuntime(options: {
         run.timedOut ||
         run.cancelled)
     ) {
+      returnCredentials(execution);
       journal.saveResult(
         execution.id,
         RunnerResultSchema.parse({
@@ -1388,7 +1398,13 @@ export async function openRunnerRuntime(options: {
       if (command.expiresAt <= now()) throw new Error("Runner command expired before dispatch");
       publishRunnerJob(
         options.spool,
-        { executionId: entry.execution.id, command: entry.execution.command },
+        {
+          executionId: entry.execution.id,
+          command: entry.execution.command,
+          ...(options.daemon.carriesCredential?.(entry.execution.command.id)
+            ? { credentials: true as const }
+            : {}),
+        },
         {
           repositoryBundle: bundle,
           ...(blobs ? { repositoryBlobs: blobs } : {}),
@@ -1897,6 +1913,7 @@ export async function openRunnerRuntime(options: {
       check(entry);
     }
     await drainTranscript(entry, true);
+    returnCredentials(entry.execution);
     journal.saveResult(entry.execution.id, result);
     retire(entry);
     await deliverResult(entry.execution);

@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { journalCaught } from "../journal";
 import { ExecutionIdSchema } from "./jobs";
 import { openSharedDirectory, sharedDirectoryAllowed, type SharedDirectoryRule } from "./shared";
 import { RUNNER_ARTIFACT_LIMITS, RunnerArtifactSchema } from "../runner-protocol";
@@ -111,6 +112,7 @@ export function readRunnerResultFile(
   executionId: string,
   name:
     | "candidate.bundle"
+    | "credentials.json"
     | "events.jsonl"
     | "result.json"
     | "phase.txt"
@@ -122,6 +124,7 @@ export function readRunnerResultFile(
 ): Buffer {
   const limits = {
     "candidate.bundle": 536_870_912,
+    "credentials.json": 1_310_720,
     "events.jsonl": 16_777_216,
     "result.json": 1_048_576,
     "phase.txt": 32,
@@ -163,6 +166,15 @@ export function readRunnerResultFile(
   } finally {
     if (fd !== undefined) closeSync(fd);
     closeSync(directory);
+  }
+}
+
+export function readRunnerCredentials(options: RunnerResults, executionId: string): Buffer | null {
+  try {
+    return readRunnerResultFile(options, executionId, "credentials.json");
+  } catch (error) {
+    journalCaught(error, "results.readRunnerCredentials", null, "optional file may be absent");
+    return null;
   }
 }
 

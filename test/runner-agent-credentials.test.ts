@@ -13,7 +13,11 @@ import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRunnerDaemon } from "../src/runner-daemon";
-import { openRunnerAccountHome, runnerAgentCredentials } from "../src/runner-execution";
+import {
+  openRunnerAccountHome,
+  returnRunnerAgentCredentials,
+  runnerAgentCredentials,
+} from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
   agentCredentialContext,
@@ -142,6 +146,28 @@ async function withRunner(
   }
 }
 
+const token = (value: string) =>
+  Buffer.from(`{"claudeAiOauth":{"refreshToken":"${value}"}}`).toString("base64");
+
+function agentTurn(daemon: ReturnType<typeof openRunnerDaemon>, home: string, commandId: string) {
+  let returned: Buffer | null = null;
+  returnRunnerAgentCredentials(
+    join(home, ".paws-accounts", account.bindingId),
+    "claude",
+    "01J0000000000000000000EXE1",
+    (files) => {
+      returned = Buffer.from(JSON.stringify(files));
+    },
+  );
+  daemon.returnCredentials(commandId, returned);
+}
+
+const sent = (uploads: unknown[]) =>
+  (uploads as { version: number; files: { data: string }[] }[]).map(({ version, files }) => [
+    version,
+    files[0]!.data,
+  ]);
+
 const command = (id: string, type: "login" | "login_check"): RunnerCommand => ({
   id,
   type,
@@ -153,73 +179,62 @@ const command = (id: string, type: "login" | "login_check"): RunnerCommand => ({
   account,
 });
 
-test("a stored sign-in is written for the run, refreshed files go back at version + 1, then leave the disk", async () => {
+test("a stored sign-in is written for the run, an agent-owned 0600 refresh reaches Paws at version + 1, and the tokens leave the disk", async () => {
   await withRunner(async ({ daemon, home, uploads, plane }) => {
     plane.commands = () => [command("check-1", "login_check")];
     const polled = await daemon.pollCommands();
     expect(polled.rejected).toEqual([]);
     expect(polled.commands.map(({ id }) => id)).toEqual(["check-1"]);
+    expect(daemon.carriesCredential("check-1")).toBe(true);
 
     const accountHome = openRunnerAccountHome(home, account, "claude");
     const credentials = join(accountHome, ".claude/.credentials.json");
+    const state = join(accountHome, ".claude/.claude.json");
     expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
     expect(statSync(credentials).mode & 0o777).toBe(0o660);
     expect(statSync(credentials).gid).toBe(process.getgid!());
-    expect(JSON.parse(readFileSync(join(accountHome, ".claude/.claude.json"), "utf8"))).toEqual({
-      oauthAccount: { id: "a" },
-    });
+    expect(JSON.parse(readFileSync(state, "utf8"))).toEqual({ oauthAccount: { id: "a" } });
 
-    const state = join(accountHome, ".claude/.claude.json");
+    rmSync(credentials);
+    writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
     writeFileSync(
       state,
-      JSON.stringify({ ...JSON.parse(readFileSync(state, "utf8")), hasCompletedOnboarding: true }),
+      JSON.stringify({ oauthAccount: { id: "a" }, hasCompletedOnboarding: true }),
     );
-    writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}');
-    await daemon.heartbeat(undefined, undefined, undefined, []);
-    expect(uploads).toEqual([]);
-    expect(existsSync(credentials)).toBe(true);
+    agentTurn(daemon, home, "check-1");
+    expect(existsSync(credentials)).toBe(false);
+    expect(JSON.parse(readFileSync(state, "utf8")).hasCompletedOnboarding).toBe(true);
 
-    await daemon.acknowledgeCommand("check-1");
     plane.failUploads = true;
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toEqual([]);
-    expect(existsSync(credentials)).toBe(true);
 
     plane.failUploads = false;
     plane.receipt = "stale_version";
     await daemon.heartbeat(undefined, undefined, undefined, []);
-    expect(uploads).toHaveLength(1);
-    expect(existsSync(credentials)).toBe(true);
+    expect(sent(uploads)).toEqual([[4, token("r2")]]);
 
     plane.receipt = "written";
     await daemon.heartbeat(undefined, undefined, undefined, []);
-    expect(uploads.slice(1)).toEqual([
-      {
-        accountId: account.accountId,
-        version: 4,
-        files: [
-          {
-            path: ".claude/.credentials.json",
-            data: Buffer.from('{"claudeAiOauth":{"refreshToken":"r2"}}').toString("base64"),
-          },
-          stored[1],
-        ],
-      },
-    ]);
-    expect(existsSync(credentials)).toBe(false);
-    expect(JSON.parse(readFileSync(join(accountHome, ".claude/.claude.json"), "utf8"))).toEqual({
-      hasCompletedOnboarding: true,
+    expect(uploads.at(-1)).toEqual({
+      accountId: account.accountId,
+      version: 4,
+      files: [{ path: ".claude/.credentials.json", data: token("r2") }, stored[1]],
     });
 
+    await daemon.acknowledgeCommand("check-1");
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toHaveLength(2);
+    expect(daemon.carriesCredential("check-1")).toBe(false);
+    expect(JSON.parse(readFileSync(state, "utf8")).hasCompletedOnboarding).toBe(true);
   });
 }, 30_000);
 
-test("an unchanged sign-in is not uploaded and still leaves the disk", async () => {
+test("a missing credentials result keeps the stored version and the runner's copy still leaves", async () => {
   await withRunner(async ({ daemon, home, uploads, plane }) => {
     plane.commands = () => [command("check-2", "login_check")];
     await daemon.pollCommands();
+    daemon.returnCredentials("check-2", null);
     await daemon.acknowledgeCommand("check-2");
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toEqual([]);
@@ -236,7 +251,10 @@ test("a sign-in on the runner uploads the new files as the first stored version"
     plane.commands = () => [command("login-1", "login")];
     await daemon.pollCommands();
     const accountHome = openRunnerAccountHome(home, account, "claude", { signIn: true });
-    writeFileSync(join(accountHome, ".claude/.credentials.json"), '{"claudeAiOauth":{}}');
+    writeFileSync(join(accountHome, ".claude/.credentials.json"), '{"claudeAiOauth":{}}', {
+      mode: 0o600,
+    });
+    agentTurn(daemon, home, "login-1");
     await daemon.acknowledgeCommand("login-1");
     await daemon.heartbeat(undefined, undefined, undefined, []);
     expect(uploads).toEqual([
@@ -268,7 +286,7 @@ test("a command whose sign-in can't be written is refused and accepted when it c
   });
 }, 30_000);
 
-test("an upload whose answer was lost is sent again unchanged before newer files", async () => {
+test("an upload whose answer was lost is sent again unchanged, and the next command gets the newest refresh", async () => {
   await withRunner(async ({ daemon, home, uploads, plane }) => {
     plane.commands = () => [command("check-4", "login_check")];
     await daemon.pollCommands();
@@ -276,21 +294,18 @@ test("an upload whose answer was lost is sent again unchanged before newer files
       openRunnerAccountHome(home, account, "claude"),
       ".claude/.credentials.json",
     );
-    const token = (value: string) =>
-      Buffer.from(`{"claudeAiOauth":{"refreshToken":"${value}"}}`).toString("base64");
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}');
-    await daemon.acknowledgeCommand("check-4");
+    agentTurn(daemon, home, "check-4");
     plane.receipt = "busy";
     await daemon.heartbeat(undefined, undefined, undefined, []).catch(() => {});
+    plane.commands = () => [command("check-5", "login_check")];
+    await daemon.pollCommands();
+    expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r2"}}');
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r3"}}');
+    agentTurn(daemon, home, "check-5");
     plane.receipt = "written";
     await daemon.heartbeat(undefined, undefined, undefined, []);
-    expect(
-      (uploads as { version: number; files: { data: string }[] }[]).map(({ version, files }) => [
-        version,
-        files[0]!.data,
-      ]),
-    ).toEqual([
+    expect(sent(uploads)).toEqual([
       [4, token("r2")],
       [4, token("r2")],
       [5, token("r3")],

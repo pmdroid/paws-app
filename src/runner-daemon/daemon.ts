@@ -26,6 +26,7 @@ import {
   openForRunner,
   runnerCommandAccount,
   type RunnerAgentCredential,
+  type RunnerAgentCredentialFiles,
   type RunnerAgentCredentialStore,
   type RunnerCodingAgent,
   type RunnerAccountCapability,
@@ -414,40 +415,37 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return [];
     }
   }
+  const credentialFiles = (text: string) =>
+    RunnerAgentCredentialFilesSchema.parse(JSON.parse(text));
   function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
     const named = runnerCommandAccount(command);
     const files = options.agentCredentials;
     if (!named || !files) return;
     const { accountId, bindingId } = named.account;
-    const held = q
-      .select()
-      .from(agentCredential)
-      .where(eq(agentCredential.bindingId, bindingId))
-      .get();
-    if (held) {
-      if (held.accountId !== accountId) throw new Error("Agent account binding changed.");
-      const commands = JSON.stringify([...(JSON.parse(held.commands) as string[]), command.id]);
-      yield* tx.exec(
-        q.update(agentCredential).set({ commands }).where(eq(agentCredential.bindingId, bindingId)),
-      );
-      return;
-    }
-    let digest: string;
+    const where = eq(agentCredential.bindingId, bindingId);
+    const held = q.select().from(agentCredential).where(where).get();
+    if (held && held.accountId !== accountId) throw new Error("Agent account binding changed.");
+    let written: RunnerAgentCredentialFiles = [];
     try {
-      if (credential.sealed) {
+      const newest = held?.latest ?? held?.upload;
+      if (newest) written = credentialFiles(newest);
+      else if (credential.sealed && !held) {
         const context = agentCredentialContext(command.id, accountId, credential.version);
-        const blob = openForRunner(localKey(options.root), credential.sealed, context);
-        files.write(
-          named.account,
-          named.agent,
-          RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)),
+        written = credentialFiles(
+          openForRunner(localKey(options.root), credential.sealed, context),
         );
       }
-      digest = agentCredentialDigest(files.read(named.account, named.agent));
+      if (written.length && !files.busy(named.account))
+        files.write(named.account, named.agent, written);
     } catch (error) {
       journalCaught(error, "daemon.receiveCredential", null);
-      if (credential.sealed) files.remove(named.account, named.agent);
+      if (!held) files.remove(named.account, named.agent);
       throw new CredentialUnavailable();
+    }
+    if (held) {
+      const commands = JSON.stringify([...(JSON.parse(held.commands) as string[]), command.id]);
+      yield* tx.exec(q.update(agentCredential).set({ commands }).where(where));
+      return;
     }
     yield* tx.exec(
       q.insert(agentCredential).values({
@@ -455,11 +453,38 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         accountId,
         agent: named.agent,
         version: credential.version,
-        digest,
-        wrote: credential.sealed ? 1 : 0,
+        digest: agentCredentialDigest(written),
         commands: JSON.stringify([command.id]),
       }),
     );
+  }
+  function heldCredential(commandId: string) {
+    return q
+      .select()
+      .from(agentCredential)
+      .all()
+      .find((row) => (JSON.parse(row.commands) as string[]).includes(commandId));
+  }
+  function returnCredentials(commandId: string, returned: Buffer | null) {
+    const row = heldCredential(commandId);
+    if (!row) return;
+    let files: RunnerAgentCredentialFiles;
+    try {
+      if (returned === null) throw new Error("credentials.json is missing");
+      files = credentialFiles(returned.toString("utf8"));
+    } catch (error) {
+      journal(
+        `runner.agent_credential.not_returned binding=${row.bindingId} command=${commandId} reason=${error instanceof Error ? error.message : "unreadable"}`,
+      );
+      return;
+    }
+    const newest = row.latest ?? row.upload;
+    const known = newest ? agentCredentialDigest(credentialFiles(newest)) : row.digest;
+    if (files.length === 0 || agentCredentialDigest(files) === known) return;
+    q.update(agentCredential)
+      .set({ latest: JSON.stringify(files) })
+      .where(eq(agentCredential.bindingId, row.bindingId))
+      .run();
   }
   let syncing = false;
   async function syncCredentials(live: readonly { runId: string; generation: number }[]) {
@@ -475,47 +500,51 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return "generation" in command && running.has(`${command.runId}:${command.generation}`);
     };
     try {
-      for (const row of q.select().from(agentCredential).all()) {
-        const account = { accountId: row.accountId, bindingId: row.bindingId };
-        const agent = row.agent as RunnerCodingAgent;
+      for (const { bindingId } of q
+        .select({ bindingId: agentCredential.bindingId })
+        .from(agentCredential)
+        .all()) {
+        const where = eq(agentCredential.bindingId, bindingId);
         try {
-          if ((JSON.parse(row.commands) as string[]).some(waiting) || files.busy(account)) continue;
-          const where = eq(agentCredential.bindingId, row.bindingId);
-          let { version, wrote, digest: stored } = row;
-          let upload = row.upload;
-          const current = files.read(account, agent);
-          const digest = agentCredentialDigest(current);
-          if (upload === null && current.length > 0 && digest !== stored) {
-            upload = JSON.stringify(current);
-            q.update(agentCredential).set({ upload }).where(where).run();
-          }
-          while (upload !== null) {
-            const sent = RunnerAgentCredentialFilesSchema.parse(JSON.parse(upload));
-            const { result } = RunnerAgentCredentialReceiptSchema.parse(
-              await authenticated("/v1/agent-credentials", "POST", {
-                accountId: row.accountId,
-                version: version + 1,
-                files: sent,
-              }),
-            );
-            if (result !== "written") {
-              journal(`runner.agent_credential.kept binding=${row.bindingId} result=${result}`);
-              break;
+          for (;;) {
+            const row = q.select().from(agentCredential).where(where).get();
+            if (!row) break;
+            if (row.upload === null && row.latest !== null) {
+              q.update(agentCredential)
+                .set({ upload: row.latest, latest: null })
+                .where(where)
+                .run();
+              continue;
             }
-            version += 1;
-            wrote = 1;
-            stored = agentCredentialDigest(sent);
-            upload = current.length > 0 && digest !== stored ? JSON.stringify(current) : null;
-            q.update(agentCredential)
-              .set({ version, wrote, digest: stored, upload })
-              .where(where)
-              .run();
+            if (row.upload !== null) {
+              const sent = credentialFiles(row.upload);
+              const { result } = RunnerAgentCredentialReceiptSchema.parse(
+                await authenticated("/v1/agent-credentials", "POST", {
+                  accountId: row.accountId,
+                  version: row.version + 1,
+                  files: sent,
+                }),
+              );
+              if (result !== "written") {
+                journal(`runner.agent_credential.kept binding=${bindingId} result=${result}`);
+                break;
+              }
+              q.update(agentCredential)
+                .set({
+                  version: row.version + 1,
+                  digest: agentCredentialDigest(sent),
+                  upload: null,
+                })
+                .where(where)
+                .run();
+              continue;
+            }
+            const account = { accountId: row.accountId, bindingId };
+            if ((JSON.parse(row.commands) as string[]).some(waiting) || files.busy(account)) break;
+            files.remove(account, row.agent as RunnerCodingAgent);
+            q.delete(agentCredential).where(where).run();
+            break;
           }
-          if (upload !== null) continue;
-          const latest = q.select().from(agentCredential).where(where).get();
-          if (latest?.commands !== row.commands) continue;
-          if (wrote) files.remove(account, agent);
-          q.delete(agentCredential).where(eq(agentCredential.bindingId, row.bindingId)).run();
         } catch (error) {
           journalCaught(error, "daemon.syncCredentials", null);
         }
@@ -693,6 +722,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     return false;
   }
   const api = {
+    carriesCredential: (commandId: string) =>
+      options.agentCredentials !== undefined && heldCredential(commandId) !== undefined,
+    returnCredentials,
     status,
     identityRetryIn,
     identityReplaced() {
