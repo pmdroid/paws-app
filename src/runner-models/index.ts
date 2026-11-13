@@ -20,6 +20,7 @@ import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
+import { BUNDLED_MODELS, MODELS_DEV_URL, bundledList, mergeModelsDev } from "./defaults";
 
 type Agent = AgentModelSource["agent"];
 type Choice = { id: string; name: string };
@@ -39,9 +40,26 @@ const retryMs = 10 * 60_000;
 const concrete = (id: string) =>
   !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id.toLowerCase());
 
-export function createRunnerModels(options: { store: Db; work: RunnerWork; now?: () => number }) {
+export function createRunnerModels(options: {
+  store: Db;
+  work: RunnerWork;
+  now?: () => number;
+  fetch?: typeof fetch;
+}) {
   const { store, work } = options;
   const now = options.now ?? Date.now;
+  let bundled = bundledList();
+  let bundledAt = 0;
+  async function refreshDefaults() {
+    try {
+      const response = await (options.fetch ?? fetch)(MODELS_DEV_URL);
+      if (!response.ok) throw new Error(`models.dev answered ${response.status}.`);
+      bundled = mergeModelsDev(await response.json());
+      bundledAt = now();
+    } catch (caught) {
+      journalCaught(caught, "runner-models.refreshDefaults", null);
+    }
+  }
   function* sourcesSteps(q: Q, at: number): Steps<Source[]> {
     const usable: Source[] = [];
     for (const source of yield* agentModelSourcesSteps(q, at))
@@ -164,7 +182,24 @@ export function createRunnerModels(options: { store: Db; work: RunnerWork; now?:
     const catalogs: AgentModelCatalog[] = [];
     for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const header = rows.find((row) => row.agent === agent && row.model === "");
-      if (!header) continue;
+      if (!header) {
+        if (agent === "opencode") continue;
+        const choices = (ids: string[]) => ids.map((id) => ({ id, name: id }));
+        const { efforts, defaultModel } = BUNDLED_MODELS[agent];
+        catalogs.push({
+          agent,
+          updatedAt: bundledAt,
+          efforts: choices(efforts),
+          defaultModel,
+          models: choices(bundled[agent]).map((model) => ({
+            ...model,
+            longContext: false,
+            efforts: choices(efforts),
+            defaultEffort: null,
+          })),
+        });
+        continue;
+      }
       const result = RunnerHealthResultSchema.parse(JSON.parse(header.resultJson));
       const probed = (model: string) => {
         const row = rows.find((entry) => entry.agent === agent && entry.model === model);
@@ -192,6 +227,7 @@ export function createRunnerModels(options: { store: Db; work: RunnerWork; now?:
   }
   return {
     refresh,
+    refreshDefaults,
     readSteps,
     read: (principal: { workspaceId: string; userId: string }) =>
       store.run((q) => readSteps(q, principal)),

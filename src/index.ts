@@ -976,6 +976,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         run: async () => (await runnerReady)?.models.refresh(),
       },
       {
+        queue: "runner.models.defaults",
+        everyMs: 24 * 60 * 60 * 1000,
+        atStartup: true,
+        run: async () => (await runnerReady)?.models.refreshDefaults(),
+      },
+      {
         queue: "runner.signin.refresh",
         everyMs: 15_000,
         atStartup: true,
