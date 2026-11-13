@@ -184,6 +184,9 @@ const TAILSCALE_JOIN_TIMEOUT_MS = 180_000;
 /** `systemctl enable --now` plus about 30 s for the tailscaled socket to answer. */
 const TAILSCALED_START_TIMEOUT_MS = 90_000;
 const TAILNET_REACH_TIMEOUT_MS = 240_000;
+const RESOLVED_SETUP_TIMEOUT_MS = 300_000;
+const EXE_DEV_RESOLVER = "169.254.169.254";
+const RESOLVED_UPSTREAM_CONF = "/etc/systemd/resolved.conf.d/paws-upstream.conf";
 
 const Enrolled = z.strictObject({
   paired: z.literal(true),
@@ -360,6 +363,15 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
         if (installed.exitCode !== 0)
           throw failure("tailnet", vm, "tailnet: could not install Tailscale", installed);
       }
+      const resolver = await detached(
+        "tailnet",
+        "resolved-setup",
+        vm,
+        RESOLVED_SETUP_COMMAND,
+        RESOLVED_SETUP_TIMEOUT_MS,
+      );
+      if (resolver.exitCode !== 0)
+        throw failure("tailnet", vm, "tailnet: could not set up systemd-resolved", resolver);
       let result: JoinTailnetResult = "member";
       if (state.backend !== "Running") {
         // A matching version skips the install, which is what starts tailscaled. On a retry, after a
@@ -389,6 +401,9 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       );
       if (reached.exitCode !== 0)
         throw failure("tailnet", vm, "tailnet: the VM cannot reach this Paws", reached);
+      const resolved = await exec("tailnet", vm, resolveCommand(pinned.controlPlaneUrl));
+      if (resolved.exitCode !== 0)
+        throw failure("tailnet", vm, "tailnet: the VM cannot resolve *.localhost names", resolved);
       return result;
     },
 
@@ -557,6 +572,7 @@ function failure(
 }
 
 type DetachedStep =
+  | "resolved-setup"
   | "tailscale-install"
   | "tailscaled-start"
   | "tailnet-join"
@@ -782,6 +798,30 @@ function tailscaleInstallCommand(release: Required<TailscaleRelease>): string {
     `systemctl restart ${TAILSCALED_SERVICE}`,
   ].join("\n");
   return `sudo sh -c ${shellQuote(script)}`;
+}
+
+const RESOLVED_SETUP_COMMAND = `sudo sh -c ${shellQuote(
+  [
+    "set -eu",
+    "changed=0",
+    `conf=$(printf '[Resolve]\\nDNS=%s\\n' ${EXE_DEV_RESOLVER})`,
+    `if [ "$(cat ${RESOLVED_UPSTREAM_CONF} 2>/dev/null)" != "$conf" ]; then install -d -o root -g root -m 0755 /etc/systemd/resolved.conf.d; printf '%s\\n' "$conf" > ${RESOLVED_UPSTREAM_CONF}; chmod 0644 ${RESOLVED_UPSTREAM_CONF}; changed=1; fi`,
+    `if ! dpkg-query -W -f='\${db:Status-Status}' systemd-resolved 2>/dev/null | grep -qx installed; then export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y systemd-resolved; changed=1; fi`,
+    "systemctl enable --now systemd-resolved.service",
+    `if [ "$(readlink /etc/resolv.conf)" != ../run/systemd/resolve/stub-resolv.conf ]; then ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf; changed=1; fi`,
+    `if [ "$changed" = 1 ]; then systemctl restart systemd-resolved.service; if systemctl is-active --quiet ${TAILSCALED_SERVICE}; then systemctl restart ${TAILSCALED_SERVICE}; fi; fi`,
+  ].join("\n"),
+)}`;
+
+function resolveCommand(controlPlaneUrl: string): string {
+  const host = new URL(controlPlaneUrl).hostname;
+  return `sh -c ${shellQuote(
+    [
+      `for name in github.com ${shellQuote(host)}; do timeout 5 getent hosts "$name" >/dev/null 2>&1 || { echo "cannot resolve $name" >&2; exit 2; }; done`,
+      "addr=$(timeout 5 getent hosts probe.localhost 2>/dev/null | head -n 1 | cut -d' ' -f1)",
+      `case "$addr" in 127.*|::1) ;; *) echo "probe.localhost resolved to \${addr:-nothing}, not loopback" >&2; exit 3 ;; esac`,
+    ].join("; "),
+  )}`;
 }
 
 /**
