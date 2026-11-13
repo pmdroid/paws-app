@@ -4,9 +4,13 @@ import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { decodeSecretEnvelope, writeSecretFile } from "../credentials";
+import { agentSessionObjectKey, createLocalAgentSessionObjects } from "../agent-sessions";
+import { sealedRunFileChunkObjects, type Db } from "../db";
+import { migrateRunFileObjects, type RunFileObjects } from "../run-files";
 import {
   createLocalRunnerTranscriptObjects,
   createS3RunnerTranscriptObjects,
+  runnerTranscriptObjectKey,
   withLocalRunnerTranscriptFallback,
 } from "../runner-transcripts";
 
@@ -84,6 +88,32 @@ export function loadRunnerTranscriptStores(home: string) {
 
 export function loadRunnerTranscriptObjects(home: string) {
   return loadRunnerTranscriptStores(home).objects;
+}
+
+export async function migrateRunnerStorage(options: {
+  home: string;
+  store: Db;
+  deleteLocal: boolean;
+  remote?: RunFileObjects;
+}) {
+  const s3 = options.remote ? null : loadRunnerTranscriptS3(options.home);
+  const remote = options.remote ?? (s3 && createS3RunnerTranscriptObjects(s3));
+  if (!remote) throw new Error("Runner storage is not configured for S3.");
+  const chunks = await sealedRunFileChunkObjects(options.store);
+  return {
+    transcripts: await migrateRunFileObjects(
+      chunks.transcript.map(runnerTranscriptObjectKey),
+      createLocalRunnerTranscriptObjects(join(options.home, "runner-transcripts")),
+      remote,
+      options.deleteLocal,
+    ),
+    agentSessions: await migrateRunFileObjects(
+      chunks.agentSession.map(agentSessionObjectKey),
+      createLocalAgentSessionObjects(join(options.home, "agent-sessions")),
+      remote,
+      options.deleteLocal,
+    ),
+  };
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {

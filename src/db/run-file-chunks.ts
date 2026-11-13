@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunFileChunkKind = "transcript" | "agent_session";
@@ -139,4 +139,39 @@ export async function setRunFileChunkKey(
   keyId: string,
 ): Promise<void> {
   await store.run((q) => setRunFileChunkKeySteps(q, file, chunk, keyId));
+}
+
+export async function sealedRunFileChunkObjects(store: Db) {
+  return store.run(function* (q) {
+    const { runnerTranscript: t, runnerTranscriptChunk: c } = q.t;
+    const { agentSessionSnapshot: s, agentSessionSnapshotChunk: a } = q.t;
+    const transcript = yield* q.all(
+      q.orm
+        .select({
+          offset: c.offset,
+          sha256: c.sha256,
+          workspaceId: t.workspaceId,
+          commandId: t.commandId,
+          executionId: t.executionId,
+        })
+        .from(c)
+        .innerJoin(t, and(eq(t.runId, c.runId), eq(t.generation, c.generation)))
+        .where(isNotNull(c.keyId))
+        .orderBy(asc(c.runId), asc(c.generation), asc(c.offset)),
+    );
+    const agentSession = yield* q.all(
+      q.orm
+        .select({
+          offset: a.offset,
+          sha256: a.sha256,
+          runId: a.runId,
+          generation: a.generation,
+          workspaceId: s.workspaceId,
+        })
+        .from(a)
+        .innerJoin(s, and(eq(s.runId, a.runId), eq(s.generation, a.generation)))
+        .orderBy(asc(a.runId), asc(a.generation), asc(a.offset)),
+    );
+    return { transcript, agentSession };
+  });
 }

@@ -4,6 +4,7 @@ import {
   createS3RunFileObjects,
   loadRunFileKey,
   RUN_FILE_KINDS,
+  runFileObjectKey,
   type RunFileObjects,
 } from "../run-files";
 
@@ -15,6 +16,7 @@ export {
   type RunnerTranscriptChunk,
   type RunnerTranscriptFinish,
 } from "./schema";
+import { transcriptPrefix } from "./store";
 export {
   createRunnerTranscripts,
   runnerTranscriptsEncrypted,
@@ -35,3 +37,6 @@ export const createS3RunnerTranscriptObjects = (
   options: Parameters<typeof createS3RunFileObjects>[1],
 ) => createS3RunFileObjects("transcript", options);
 export const createFakeRunnerTranscriptObjects = createFakeRunFileObjects;
+export const runnerTranscriptObjectKey = (
+  chunk: Parameters<typeof transcriptPrefix>[0] & { offset: number; sha256: string },
+) => runFileObjectKey(transcriptPrefix(chunk), chunk);

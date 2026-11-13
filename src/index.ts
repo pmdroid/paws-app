@@ -358,6 +358,7 @@ import {
 import {
   loadRunnerTranscriptStores,
   loadRunnerTranscriptS3,
+  migrateRunnerStorage,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
 import {
@@ -2550,6 +2551,8 @@ Commands:
   paws login slack              connect Slack
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
+  paws runner-storage migrate [--delete-local]
+                                copy local transcripts and agent sessions to S3
   paws public-tls validate      check the public HTTPS certificate
   paws probes collect <owner/repo>
                                 draft Closeout probe rules into probes.proposed.yaml
@@ -2661,6 +2664,25 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   }
 }
 
+async function runnerStorageMigrateMain(argv: string[]): Promise<number> {
+  try {
+    if (argv.some((arg) => arg !== "--delete-local"))
+      throw new Error("usage: paws runner-storage migrate [--delete-local]");
+    const home = loadEnv(process.env).home;
+    const report = await withCommandStore("runner-storage migrate", (store) =>
+      migrateRunnerStorage({ home, store, deleteLocal: argv.length > 0 }),
+    );
+    for (const [name, counts] of Object.entries(report))
+      console.log(
+        `${name}: ${counts.copied} copied (${counts.bytes} bytes), ${counts.present} already present, ${counts.missing} not local, ${counts.deleted} local files deleted`,
+      );
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws runner-storage migrate failed.", null);
+    return 1;
+  }
+}
+
 /** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
 async function probesMain(argv: string[]): Promise<number> {
   let command: ProbesCommand;
@@ -2733,6 +2755,8 @@ if (import.meta.main) {
   const command = argv[0];
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
+  if (command === "runner-storage" && argv[1] === "migrate")
+    process.exit(await runnerStorageMigrateMain(argv.slice(2)));
   if (command === "runner-storage")
     process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
   if (command === "runner-authority") {
