@@ -135,9 +135,10 @@ export function createRunnerWorkCleaner(options: {
     reason: string,
     idleBefore?: number,
     runStates?: string,
+    inner = "",
   ): Promise<boolean> {
-    const key = runStates ? `.paws/runs/${name}` : name;
-    const path = join(runStates ?? options.workRoot, name);
+    const key = runStates ? `.paws/runs/${join(name, inner)}` : name;
+    const path = join(runStates ?? options.workRoot, name, inner);
     if (name.startsWith(".") || name.includes("/") || collecting.has(key)) return false;
     const stop = () => options.signal?.aborted === true || options.holds().has(name);
     if (stop()) return false;
@@ -200,7 +201,10 @@ export function createRunnerWorkCleaner(options: {
         await yieldToLoop();
         if (options.signal?.aborted) return;
         const idleBefore = now() - RUN_STATE_IDLE_MS;
-        if (!(await collect(name, "sweep", idleBefore, `/proc/self/fd/${runs}`))) continue;
+        if (!(await collect(name, "sweep", idleBefore, `/proc/self/fd/${runs}`))) {
+          await collect(name, "ended", undefined, `/proc/self/fd/${runs}`, "tmp");
+          continue;
+        }
         attempted++;
         if (failed.delete(`.paws/runs/${name}`)) stuck.set(name, changed);
       }

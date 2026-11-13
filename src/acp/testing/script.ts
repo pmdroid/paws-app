@@ -89,6 +89,7 @@ export interface FakeResult {
   /** The cwd the client sent with session/new or session/load. */
   sessionCwd?: string;
   authenticate?: unknown;
+  temp?: (string | undefined)[];
   env?: {
     xaiApiKey: boolean;
     ghToken: boolean;
