@@ -267,6 +267,32 @@ test("a posted result completes waitForRepositoryCommand and replays only unchan
   expect(await repositoryCommandState(f.db, id)).toBe("done");
 });
 
+test("waitForRepositoryCommand returns only after its database poll has settled", async () => {
+  const f = await fixture();
+  const id = await f.enqueue();
+  await f.poll("runner-a");
+  const run = f.db.run.bind(f.db);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  f.db.run = (async (...args: Parameters<typeof run>) => {
+    f.db.run = run;
+    await gate;
+    return run(...args);
+  }) as typeof run;
+  const waiting = waitForRepositoryCommand(f.db, id);
+  const result = { outcome: "rebased" as const, head: "c".repeat(40) };
+  expect(
+    await (await f.post(`/v1/repository-commands/${id}/result`, "runner-a", result))!.json(),
+  ).toEqual({ duplicate: false });
+  const first = await Promise.race([
+    waiting.then(() => "returned"),
+    Bun.sleep(200).then(() => "held"),
+  ]);
+  release();
+  expect(first).toBe("held");
+  expect(await waiting).toEqual(result);
+});
+
 test("a command past expiresAt is expired and its credential route refuses", async () => {
   const f = await fixture();
   const id = await f.enqueue(60_000);
