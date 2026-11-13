@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import {
@@ -43,8 +43,20 @@ function setBranch(db: Db, branchName: string) {
   );
 }
 
+const stores: (() => Promise<void>)[] = [];
+
+// Each test's store closes after it, with no poll or expiry still querying it.
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
+});
+
 async function fixture(store?: Db) {
-  const db = store ?? (await tempStore()).db;
+  let db = store;
+  if (!db) {
+    const opened = await tempStore();
+    stores.push(opened.close);
+    db = opened.db;
+  }
   let now = Date.now();
   const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
