@@ -20,7 +20,7 @@ Paws runs work only for a configured Linear workspace. `bun run paws doctor` rep
 
 ### Upgrading
 
-Read [CHANGELOG.md](CHANGELOG.md) before upgrading; breaking changes come first in each entry. Every `config.toml` setting is in the [configuration reference](docs/configuration.md).
+Read [CHANGELOG.md](CHANGELOG.md) before upgrading; breaking changes come first in each entry. Every setting, on the dashboard's Settings pages and in `config.toml`, is in the [configuration reference](docs/configuration.md).
 
 Paws requires a configured Linear workspace. An existing install that runs from environment variables alone, without `PAWS_PUBLIC_DASHBOARD=1`, keeps serving the dashboard after the upgrade but starts no work and logs how to configure a workspace. Set up [Workspace access](docs/workspace-access.md), restart Paws, sign in as a Linear workspace admin, then run `bun run paws doctor` and check that `linear-workspace` is ok.
 
@@ -31,7 +31,7 @@ To start work, delegate an issue to the Paws app in Linear. Delegation is the ap
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `~/.paws/pglite/`             | The embedded Postgres (PGlite) database, unless `[database] url` names a server ([Database](docs/postgres.md))   |
-| `~/.paws/config.toml`         | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
+| `~/.paws/config.toml`         | Linear team and credential file paths, GitHub repositories, and the settings no Settings page holds              |
 | `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, the envelope key and any GitHub App key. Mode `0700` |
 | `~/.paws/repos/`              | One bare mirror per repository; a runner-backed item's head is its `refs/paws/candidates/<item>` ref there       |
 | `~/.paws/worktrees/`          | One git worktree per item that runs locally; runner-backed items get none                                        |

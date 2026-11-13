@@ -109,7 +109,7 @@ Each comment is one `linear_comment` row keyed by its id, so a webhook redeliver
 
 An agent in `comment_agents` is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too.
 
-One `linear.comments` job per item gathers queued comments with the pull request feedback wait (`[merge] comment_quiet_seconds` after the latest, `comment_max_wait_seconds` at most), then:
+One `linear.comments` job per item gathers queued comments with the pull request feedback wait (Settings › Merging › Pull request comments: Quiet time after the latest, Longest wait at most), then:
 
 - **Running:** it waits. A runner follow-up interrupts the agent's prompt, so comments are not pushed into a turn; they go out with the next handoff once the turn has ended.
 - **Verifying or recovering, or a job still running for the item:** it waits.
@@ -182,7 +182,7 @@ The item's question card in the dashboard shows Retry Closeout as a button that 
 
 ### GitHub refuses the merge
 
-When GitHub refuses the squash with a status other than 401, 403, 408, 409 or 5xx (usually 405), the merge lane first reads the pull request again. If GitHub reports it `behind` its base and the branch does not contain main, that counts as main moving: the lane reads main again and rebases through the `[merge] main_moved` path, and nobody is asked. Otherwise the lane asks a `ci-help` question with reason `merge_denied` (`mergeDeniedQuestion` in `src/merge/merge-denied.ts`). The question gives the status, GitHub's `message` and first `errors[].message` (at most 500 characters), the pull request link and the head. It says what usually fixes the refusal: approving the review, or changing branch protection or the allowed merge methods. The item leaves the merge queue and waits in `awaiting_input`.
+When GitHub refuses the squash with a status other than 401, 403, 408, 409 or 5xx (usually 405), the merge lane first reads the pull request again. If GitHub reports it `behind` its base and the branch does not contain main, that counts as main moving: the lane reads main again and rebases through the `main_moved` path (Settings › Merging), and nobody is asked. Otherwise the lane asks a `ci-help` question with reason `merge_denied` (`mergeDeniedQuestion` in `src/merge/merge-denied.ts`). The question gives the status, GitHub's `message` and first `errors[].message` (at most 500 characters), the pull request link and the head. It says what usually fixes the refusal: approving the review, or changing branch protection or the allowed merge methods. The item leaves the merge queue and waits in `awaiting_input`.
 
 - **Retry merge**, or a reply that is exactly `retry`, applies `closeout_accepted` and queues the merge again on the accepted head (`mergeAcceptedWork`). No agent turn runs and Closeout does not run again. The dashboard shows it as an option button.
 - Any other reply is guidance, and `restart()` sends the task back to its agent.

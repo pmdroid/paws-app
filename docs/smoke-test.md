@@ -64,7 +64,7 @@ This run proves a stop from Linear pauses the item and a reply or re-delegation 
 
 ## Merge lane
 
-These runs prove that every merged head is one Closeout accepted, that a review reaches the agent without a Linear paste, and that a conflict loop ends in one question. Terms are in [GLOSSARY.md](../GLOSSARY.md); the flow is in [After acceptance](closeout.md#after-acceptance). Use the demo repository with `[merge] order = "queue"`, the default. Reset the demo first, and for each run create a fresh issue in the sandbox team and delegate it to the Paws app.
+These runs prove that every merged head is one Closeout accepted, that a review reaches the agent without a Linear paste, and that a conflict loop ends in one question. Terms are in [GLOSSARY.md](../GLOSSARY.md); the flow is in [After acceptance](closeout.md#after-acceptance). Use the demo repository with Merge order set to the merge queue in Settings › Merging, the default. Reset the demo first, and for each run create a fresh issue in the sandbox team and delegate it to the Paws app.
 
 Hold an item in the merge queue while you act: in the demo repository's branch protection on `main`, require one approving review. Branch protection then keeps `mergeable(S)` false. Release the hold by approving the pull request when the step says so.
 
