@@ -1,6 +1,5 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
-import { migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   createInboxStore,
   handleLinearWebhook,
@@ -11,6 +10,7 @@ import {
   parseLinearUndelegation,
   type AcceptedLinearEvent,
 } from "../src/linear";
+import { tempStore } from "./pglite";
 
 const scope = {
   organizationId: "organization",
@@ -172,9 +172,8 @@ describe("Linear administration event normalization", () => {
   test.each(["team", "issue", "event"])(
     "signed contradictory %s ownership cannot persist session installation scope",
     async (contradiction) => {
-      const db = openDatabase(":memory:");
+      const db = await tempStore();
       try {
-        migrate(db);
         const source = {
           ...payload,
           type: "AgentSessionEvent",
@@ -199,7 +198,7 @@ describe("Linear administration event normalization", () => {
           }),
           "fake-webhook-secret",
           {
-            store: createInboxStore(sqliteDb(db)),
+            store: createInboxStore(db.db),
             now: () => at,
             onEvent(input) {
               received = true;
@@ -214,18 +213,17 @@ describe("Linear administration event normalization", () => {
         expect(response.status).toBe(200);
         expect(received).toBe(true);
       } finally {
-        db.close();
+        await db.close();
       }
     },
   );
 
   test("the webhook authenticates and persists the administrative payload before dispatch", async () => {
-    const db = openDatabase(":memory:");
+    const db = await tempStore();
     try {
-      migrate(db);
       const raw = JSON.stringify(payload);
       const accepted: AcceptedLinearEvent[] = [];
-      const store = createInboxStore(sqliteDb(db));
+      const store = createInboxStore(db.db);
       const deps = {
         store,
         now: () => at,
@@ -251,7 +249,7 @@ describe("Linear administration event normalization", () => {
       expect(accepted).toHaveLength(1);
       expect(parseLinearAdministration(accepted[0]!)?.kind).toBe("teams");
     } finally {
-      db.close();
+      await db.close();
     }
   });
 });
