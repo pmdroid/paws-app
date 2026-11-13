@@ -20,6 +20,7 @@ export async function startLoops(input: {
   signal: AbortSignal;
   clock?: Clock;
   concurrency?: number;
+  mergeParallel?: () => number;
   prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void | Promise<void>;
 }): Promise<{
   stop: () => Promise<void>;
@@ -35,6 +36,7 @@ export async function startLoops(input: {
     concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
     pollMs: JOB_IDLE_CLAIM_MS,
+    ...(input.mergeParallel ? { mergeParallel: input.mergeParallel } : {}),
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
     ...(input.store ? { store: input.store } : {}),

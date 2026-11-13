@@ -47,6 +47,7 @@ import {
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
+import { mergesAlongside } from "./batch";
 import {
   askMergeHelpSteps,
   rebaseBudgetForSteps,
@@ -283,6 +284,7 @@ export type OrderCapabilities = {
    * repository-wide lane.
    */
   mergeLane(item: WorkItemRecord): Promise<string>;
+  mergeParallel?(): number;
   restart?: MergeRestart;
   voice: MergeVoice;
 };
@@ -459,6 +461,7 @@ export async function mergeQueueTurn(
     await store.run((q) => markMergeQueueNotifiedSteps(q, item.id, place.position));
   }
   if (place.nextItemId === null) return undefined;
+  if (await mergesAlongside({ store, item, caps }, place, pull, held)) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
 }
 

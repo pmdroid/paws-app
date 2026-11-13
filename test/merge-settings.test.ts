@@ -60,6 +60,7 @@ packages = ["apps/*", "packages/*"]
       projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 2,
+      parallel: 1,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(config.ignoredMergeOverrides).toBe(true);
@@ -69,6 +70,14 @@ packages = ["apps/*", "packages/*"]
       "packages/*",
     ]);
     expect(repositoryPackages(readMergeSettings(config), "acme/web")).toEqual([]);
+  });
+
+  test("[merge] parallel reads from 1 to 5", () => {
+    const config = parseConfigToml("[merge]\nparallel = 3\n");
+    expect(readMergeSettings(config).parallel).toBe(3);
+    expect(storedMerge(config).parallel).toBe(3);
+    expect(() => parseConfigToml("[merge]\nparallel = 0\n")).toThrow("from 1 to 5");
+    expect(() => parseConfigToml("[merge]\nparallel = 6\n")).toThrow("from 1 to 5");
   });
 
   test("a repository's ignored comment bots replace the default status bots", () => {
@@ -412,6 +421,7 @@ describe("Merging settings API", () => {
       projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 5,
+      parallel: 1,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(audits).toEqual([

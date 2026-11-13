@@ -133,7 +133,10 @@ export type Readiness = {
   unresolvedThreads?: number;
   /** Every check on the head with its conclusion, set when CI is green. */
   passed?: PassedCheck[];
+  main?: MainCi;
 };
+
+export type MainCi = "green" | "pending" | "failed";
 
 /** A check that reported green on the head. `conclusion` is GitHub's, such as `SUCCESS`. */
 export type PassedCheck = { name: string; conclusion: string; url: string | null };
@@ -318,21 +321,25 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       conclusion: check.result ?? "",
       url: check.url,
     }));
-    return unresolved > 0
-      ? {
-          outcome: "pending",
-          message: `Waiting for ${unresolved} unresolved review thread(s).`,
-          unresolvedThreads: unresolved,
-          passed,
-        }
-      : {
-          outcome: "ready",
-          message:
-            checks.length === 0
-              ? ci.message
-              : `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
-          passed,
-        };
+    const main = mainCi(latestPerName(baseChecks, (check) => check));
+    return {
+      ...(unresolved > 0
+        ? {
+            outcome: "pending",
+            message: `Waiting for ${unresolved} unresolved review thread(s).`,
+            unresolvedThreads: unresolved,
+            passed,
+          }
+        : {
+            outcome: "ready",
+            message:
+              checks.length === 0
+                ? ci.message
+                : `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
+            passed,
+          }),
+      ...(main ? { main } : {}),
+    };
   } catch (error) {
     journalCaught(error, "readiness.readMergeReadiness.token", null);
     if (error instanceof Error && LINEAR_WAIT.test(error.message))
@@ -346,6 +353,12 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
 }
 
 const LINEAR_WAIT = /Linear GraphQL: RATELIMITED|Linear publication freshness is pending/;
+
+function mainCi(checks: readonly Check[]): MainCi | undefined {
+  if (checks.length === 0) return undefined;
+  if (checks.some((check) => FAILED.has(check.result ?? ""))) return "failed";
+  return checks.every((check) => GREEN.has(check.result ?? "")) ? "green" : "pending";
+}
 
 function unreadable(): Readiness {
   return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
@@ -697,7 +710,7 @@ async function readRequiredChecks(
 
 /** CI on the pull request's head, read once: review threads do not count. */
 export type PullCi =
-  | { state: "green"; checks: PassedCheck[] }
+  | { state: "green"; checks: PassedCheck[]; main?: MainCi }
   | { state: "pending"; message: string }
   | {
       state: "failed";
@@ -728,7 +741,8 @@ export async function readPullCi(input: {
     head: input.head,
     token: () => acquireOperationToken(input, "merge"),
   });
-  if (read.passed !== undefined) return { state: "green", checks: read.passed };
+  if (read.passed !== undefined)
+    return { state: "green", checks: read.passed, ...(read.main ? { main: read.main } : {}) };
   if (read.outcome === "ci_failed")
     return {
       state: "failed",

@@ -6519,6 +6519,7 @@ export class Orchestrator {
         if (admitted.ok || admitted.held !== "blocked") return null;
         return yield* blockingIssuesSteps(q, id);
       },
+      mergeParallel: () => this.readMergePolicy().parallel,
       mergeLane: async (item) =>
         mergeLaneKey(
           await this.store.run(function* (q) {
