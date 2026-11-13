@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
+import { and, count, eq, gt, isNull } from "drizzle-orm";
 import { runAgent, type RunAgentOptions } from "../src/acp";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
@@ -17,7 +18,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   resumeUsagePauseNow,
-  sqliteDb,
+  type Q,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import {
@@ -41,7 +42,7 @@ import { createRunnerWork, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { CHECKPOINT_COMMIT_MESSAGE } from "../src/runner-worker";
 import { restoredCheckpointNote } from "../src/runner-backend";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { tempStore } from "./pglite";
 
 type Fault =
   | "fenced"
@@ -318,26 +319,34 @@ async function runRemoteFault(fault: Fault) {
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "team" }),
+    ),
+  );
+  const runnerRow = (q: Q, values: Partial<typeof q.t.runner.$inferInsert>) =>
+    q.exec(q.orm.update(q.t.runner).set(values).where(eq(q.t.runner.id, runnerId)));
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -357,21 +366,20 @@ async function runRemoteFault(fault: Fault) {
     ...enrollment,
     token: (await control.createEnrollment(owner, enrollment)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  for (const agent of ["claude", "codex"])
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [
-      runnerId,
-      agent,
-    ]);
+  await db.run(function* (q) {
+    yield* runnerRow(q, { status: "active" });
+    yield* q.exec(q.orm.insert(q.t.runnerPolicy).values({ runnerId }));
+    for (const agent of ["claude", "codex"])
+      yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent, ready: 1 }));
+  });
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",
@@ -420,12 +428,12 @@ async function runRemoteFault(fault: Fault) {
     );
   const clock = { held: null as number | null, skipped: 0 };
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     now: () => (clock.held ?? Date.now()) - clock.skipped,
     work,
     results,
     health,
-    placement: createRunnerPlacement({ store: sqliteDb(db) }),
+    placement: createRunnerPlacement({ store: db }),
     pollIntervalMs: 5,
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
     ...(hung ? { hungRunMs: HUNG_RUN_MS } : {}),
@@ -436,11 +444,21 @@ async function runRemoteFault(fault: Fault) {
     async checkpointBot() {
       if (fault === "busy" && runner.faulty) {
         runner.faultedAttempts++;
-        db.run(
-          "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,'session',0,0,'{}',?)",
-          // Held until `recover` sees the deferred start, so a slow machine cannot free the slot
-          // before placement looks at it.
-          [`helper-${runner.faultedAttempts}`, runnerId, workspace.id, Date.now() + 60_000],
+        await db.run((q) =>
+          q.exec(
+            q.orm.insert(q.t.runnerHelper).values({
+              id: `helper-${runner.faultedAttempts}`,
+              runnerId,
+              workspaceId: workspace.id,
+              sessionId: "session",
+              sessionGeneration: 0,
+              runnerFence: 0,
+              envelope: {},
+              // Held until `recover` sees the deferred start, so a slow machine cannot free the slot
+              // before placement looks at it.
+              expiresAt: Date.now() + 60_000,
+            }),
+          ),
         );
       }
       if (fault === "linear-503" && runner.faulty) {
@@ -471,7 +489,7 @@ async function runRemoteFault(fault: Fault) {
   const outbox = new OutboxDispatcher(db, systemClock);
   let reviews = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     pawsRoot: root,
@@ -520,22 +538,28 @@ async function runRemoteFault(fault: Fault) {
     },
   });
 
-  if (fault === "unpaired") db.run("UPDATE runner SET status='paused' WHERE id=?", [runnerId]);
+  if (fault === "unpaired") await db.run((q) => runnerRow(q, { status: "paused" }));
   if (fault === "silent-hung-checkpoint")
-    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-      runnerId,
-      HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
-      Date.now(),
-    ]);
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.runnerHostStatus).values({
+          runnerId,
+          runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
+          reportedAt: Date.now(),
+        }),
+      ),
+    );
   async function recover() {
     if (!runner.faulty) return;
-    const paused = db.query<{ runId: string }, []>("SELECT run_id AS runId FROM usage_pause").get();
+    const paused = await db.run((q) =>
+      q.one(q.orm.select({ runId: q.t.usagePause.runId }).from(q.t.usagePause)),
+    );
     if (paused) {
       runner.faulty = false;
-      await resumeUsagePauseNow(sqliteDb(db), paused.runId, Date.now());
+      await resumeUsagePauseNow(db, paused.runId, Date.now());
       return;
     }
-    const deferred = (await listJobs(sqliteDb(db))).find(
+    const deferred = (await listJobs(db)).find(
       (job) =>
         job.queue === JOB_KIND.resume ||
         (job.status === "pending" &&
@@ -545,17 +569,38 @@ async function runRemoteFault(fault: Fault) {
     if (fault === "unpaired") runner.faultedAttempts++;
     runner.faulty = false;
     runner.deferredState = (await getWorkItem(
-      sqliteDb(db),
+      db,
       (deferred.payload as { itemId: string }).itemId,
     ))!.state;
     if (fault === "busy")
-      db.run("UPDATE runner_helper SET ended_at=? WHERE ended_at IS NULL", [Date.now()]);
-    runner.heldSlots = db
-      .query<{ held: number }, [number]>(
-        "SELECT count(*) AS held FROM runner_work WHERE ended_at IS NULL AND lease_until>?",
-      )
-      .get(Date.now())!.held;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+      await db.run((q) =>
+        q.exec(
+          q.orm
+            .update(q.t.runnerHelper)
+            .set({ endedAt: Date.now() })
+            .where(isNull(q.t.runnerHelper.endedAt)),
+        ),
+      );
+    runner.heldSlots = (await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ held: count() })
+          .from(q.t.runnerWork)
+          .where(and(isNull(q.t.runnerWork.endedAt), gt(q.t.runnerWork.leaseUntil, Date.now()))),
+      ),
+    ))!.held;
+    await db.run((q) => runnerRow(q, { status: "active" }));
+  }
+  async function expireLease(runId: string, seenAgo: number, leaseAgo: number) {
+    await db.run(function* (q) {
+      yield* runnerRow(q, { lastSeenAt: Date.now() - seenAgo });
+      yield* q.exec(
+        q.orm
+          .update(q.t.runnerWork)
+          .set({ leaseUntil: Date.now() - leaseAgo })
+          .where(eq(q.t.runnerWork.runId, runId)),
+      );
+    });
   }
   const handled = new Set<string>();
   let unreachable: { command: RunnerCommand; since: number } | undefined;
@@ -604,9 +649,7 @@ async function runRemoteFault(fault: Fault) {
     }
   }
   async function checkpoint(command: Extract<RunnerCommand, { type: "run" }>) {
-    const branch = db
-      .query<{ branch: string }, [string]>("SELECT branch_name AS branch FROM work_item WHERE id=?")
-      .get(command.itemId)!.branch;
+    const branch = (await getWorkItem(db, command.itemId))!.branchName;
     await git(["-C", source, "checkout", "-q", "--detach", command.repository.baseSha]);
     writeFileSync(join(source, "saved.txt"), "saved before the agent hung\n");
     await git(["-C", source, "add", "saved.txt"]);
@@ -649,11 +692,14 @@ async function runRemoteFault(fault: Fault) {
       if (!runner.stale) {
         const lostBefore =
           fault === "restarted" && runner.lostBeforeLease === null
-            ? db
-                .query<{ leaseUntil: number }, []>(
-                  "SELECT lease_until AS leaseUntil FROM runner_work WHERE ended_at IS NULL",
-                )
-                .get()
+            ? await db.run((q) =>
+                q.one(
+                  q.orm
+                    .select({ leaseUntil: q.t.runnerWork.leaseUntil })
+                    .from(q.t.runnerWork)
+                    .where(isNull(q.t.runnerWork.endedAt)),
+                ),
+              )
             : null;
         const reply = await heartbeat();
         if (lostBefore && reply.fenced.length)
@@ -715,14 +761,11 @@ async function runRemoteFault(fault: Fault) {
         if (fault === "fenced" && runner.faulty) {
           runner.faultedAttempts++;
           runner.stale = true;
-          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
-            Date.now() - 60_001 - RUNNER_LEASE_GRACE_MS,
-            runnerId,
-          ]);
-          db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-            Date.now() - 1 - RUNNER_LEASE_GRACE_MS,
+          await expireLease(
             command.runId,
-          ]);
+            60_001 + RUNNER_LEASE_GRACE_MS,
+            1 + RUNNER_LEASE_GRACE_MS,
+          );
           continue;
         }
         if (fault === "restarted" && runner.faulty) {
@@ -734,10 +777,14 @@ async function runRemoteFault(fault: Fault) {
             generation: command.generation,
             commandId: command.id,
           });
-          db.run("UPDATE runner_command SET acknowledged_at=? WHERE id=?", [
-            Date.now() - 2 * RUNNER_LIVE_GRACE_MS,
-            command.id,
-          ]);
+          await db.run((q) =>
+            q.exec(
+              q.orm
+                .update(q.t.runnerCommand)
+                .set({ acknowledgedAt: Date.now() - 2 * RUNNER_LIVE_GRACE_MS })
+                .where(eq(q.t.runnerCommand.id, command.id)),
+            ),
+          );
           continue;
         }
         if (fault === "silent-live" && runner.faulty) {
@@ -766,11 +813,7 @@ async function runRemoteFault(fault: Fault) {
         if (fault === "outage" && runner.faulty) {
           runner.faultedAttempts++;
           runner.stale = true;
-          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now() - 120_000, runnerId]);
-          db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-            Date.now() - 60_000,
-            command.runId,
-          ]);
+          await expireLease(command.runId, 120_000, 60_000);
           unreachable = { command, since: Date.now() };
           continue;
         }
@@ -797,8 +840,8 @@ async function runRemoteFault(fault: Fault) {
       updatedAtMs: Date.now(),
       payload: "{}",
     });
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
-    await recordLinearInstallation(sqliteDb(db), {
+    const item = (await listWorkItems(db))[0]!;
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -806,9 +849,13 @@ async function runRemoteFault(fault: Fault) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-    await syncItemDependencies(sqliteDb(db), {
+    await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await db.run((q) =>
+      q.exec(
+        q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, item.id)),
+      ),
+    );
+    await syncItemDependencies(db, {
       itemId: item.id,
       workspaceId: workspace.id,
       expectedGeneration: 0,
@@ -820,7 +867,7 @@ async function runRemoteFault(fault: Fault) {
     while (
       Date.now() < deadline &&
       !["merge_queue", "merged", "failed", "awaiting_input"].includes(
-        (await getWorkItem(sqliteDb(db), item.id))?.state ?? "",
+        (await getWorkItem(db, item.id))?.state ?? "",
       )
     ) {
       const ran = await jobs.tick();
@@ -834,14 +881,14 @@ async function runRemoteFault(fault: Fault) {
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
-      state: (await getWorkItem(sqliteDb(db), item.id))?.state ?? null,
+      state: (await getWorkItem(db, item.id))?.state ?? null,
       thoughts: progress("thought"),
       errors: progress("error"),
-      retries: (await listJobs(sqliteDb(db)))
+      retries: (await listJobs(db))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
-      runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
-      runIds: (await listRuns(sqliteDb(db))).map((run) => run.id),
+      runs: (await listRuns(db)).map((run) => `${run.kind}:${run.status}`),
+      runIds: (await listRuns(db)).map((run) => run.id),
       faultedAttempts: runner.faultedAttempts,
       deferredState: runner.deferredState,
       heldSlots: runner.heldSlots,
@@ -849,18 +896,24 @@ async function runRemoteFault(fault: Fault) {
       hungStopped: runner.hungStopped,
       checkpointSha: runner.checkpointSha,
       recovered: runner.recovered,
-      questions: db
-        .query<{ kind: string; reason: string; body: string }, []>(
-          "SELECT kind, reason, body FROM question",
-        )
-        .all(),
-      pendingJobs: (await listJobs(sqliteDb(db)))
+      questions: await db.run((q) =>
+        q.all(
+          q.orm
+            .select({
+              kind: q.t.question.kind,
+              reason: q.t.question.reason,
+              body: q.t.question.body,
+            })
+            .from(q.t.question),
+        ),
+      ),
+      pendingJobs: (await listJobs(db))
         .filter((job) => job.status === "pending" && job.queue !== JOB_KIND.reverify)
         .map((job) => job.queue),
       detail: JSON.stringify({
-        state: (await getWorkItem(sqliteDb(db), item.id))?.state,
-        runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
-        jobs: (await listJobs(sqliteDb(db))).map(
+        state: (await getWorkItem(db, item.id))?.state,
+        runs: (await listRuns(db)).map((run) => `${run.kind}:${run.status}`),
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
@@ -871,7 +924,7 @@ async function runRemoteFault(fault: Fault) {
     runner.stopped = true;
     await loop;
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }

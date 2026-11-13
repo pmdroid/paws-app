@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { PawsShutdown } from "../src/core";
 import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
@@ -15,12 +16,11 @@ import {
   getWorkItem,
   insertQueuedItem,
   listRunnerOverview,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../src/db";
 import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -36,24 +36,108 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 type Setup = Awaited<ReturnType<typeof setup>>;
 
+function setRunner(db: Db, id: string, values: Partial<Q["t"]["runner"]["$inferInsert"]>) {
+  return db.run((q) => q.exec(q.orm.update(q.t.runner).set(values).where(eq(q.t.runner.id, id))));
+}
+
+function setAgentReady(db: Db, runnerId: string, ready: number) {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.runnerAgentPolicy)
+        .set({ ready })
+        .where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
+    ),
+  );
+}
+
+function setRunnerVersion(db: Db, runnerId: string, runnerVersion: string) {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.runnerHostStatus)
+        .set({ runnerVersion })
+        .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
+    ),
+  );
+}
+
+function setWorkItem(db: Db, id: string, values: Partial<Q["t"]["workItem"]["$inferInsert"]>) {
+  return db.run((q) =>
+    q.exec(q.orm.update(q.t.workItem).set(values).where(eq(q.t.workItem.id, id))),
+  );
+}
+
+function endRun(db: Db, id: string) {
+  return db.run((q) =>
+    q.exec(q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.id, id))),
+  );
+}
+
+function insertQuestion(
+  db: Db,
+  values: { itemId: string; runId: string; sessionId: string; body: string; status: string },
+) {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.question)
+        .values({ id: workspaceId(), kind: "agent", createdAt: context.now, ...values }),
+    ),
+  );
+}
+
+function answerQuestion(db: Db, runId: string, answer: string) {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.question)
+        .set({ status: "answered", answer })
+        .where(eq(q.t.question.runId, runId)),
+    ),
+  );
+}
+
+function openedQuestion(db: Db, runId: string) {
+  return db.run((q) =>
+    q.one(
+      q.orm
+        .select({ answer: q.t.question.answer })
+        .from(q.t.question)
+        .where(eq(q.t.question.runId, runId)),
+    ),
+  );
+}
+
+function questionAnswers(db: Db, runId: string) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.runnerQuestionAnswer)
+        .where(eq(q.t.runnerQuestionAnswer.runId, runId)),
+    ),
+  );
+}
+
 async function setup() {
   const root = mkdtempSync(join(tmpdir(), "paws-handover-resume-"));
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",
@@ -61,11 +145,15 @@ async function setup() {
     tokenHash: workspaceTokenHash(bootstrap),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "fixture-team",
-  ]);
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "fixture-team",
+      }),
+    ),
+  );
   const principal = {
     workspaceId: workspace.id,
     userId,
@@ -75,7 +163,7 @@ async function setup() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -94,14 +182,14 @@ async function setup() {
   }
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
+  const results = createRunnerResults({ store: db, work, now: () => now });
+  const health = createRunnerHealth({ store: db, work, now: () => now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -137,13 +225,13 @@ async function setup() {
   const checkout = join(root, "runner-a");
   git(["clone", "-q", source, checkout]);
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
     now: () => now,
     pollIntervalMs: 1,
-    placement: createRunnerPlacement({ store: sqliteDb(db), now: () => now }),
+    placement: createRunnerPlacement({ store: db, now: () => now }),
     async fetchCandidate(candidate) {
       git(["-C", candidate.mirror, "fetch", "-q", checkout, candidate.candidateSha]);
       git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
@@ -183,11 +271,21 @@ async function setup() {
   async function events(command: RunCommand, runnerId: string, list: RunnerEvent[]) {
     const token = await grant(command, runnerId);
     const after =
-      db
-        .query<{ sequence: number }, [string, number]>(
-          "SELECT last_sequence AS sequence FROM runner_work WHERE run_id=? AND generation=?",
+      (
+        await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ sequence: q.t.runnerWork.lastSequence })
+              .from(q.t.runnerWork)
+              .where(
+                and(
+                  eq(q.t.runnerWork.runId, command.runId),
+                  eq(q.t.runnerWork.generation, command.generation),
+                ),
+              ),
+          ),
         )
-        .get(command.runId, command.generation)?.sequence ?? 0;
+      )?.sequence ?? 0;
     for (const [index, event] of list.entries())
       await work.event({
         runnerId,
@@ -270,34 +368,52 @@ async function setup() {
   async function item(alongside = false) {
     if (!alongside) {
       git(["-C", checkout, "reset", "-q", "--hard", base]);
-      db.run("UPDATE run SET status='ended' WHERE status='active'");
-      db.run("DELETE FROM runner_capacity");
+      await db.run(function* (q) {
+        yield* q.exec(
+          q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.status, "active")),
+        );
+        yield* q.exec(q.orm.delete(q.t.runnerCapacity));
+      });
     }
     for (const runnerId of Object.values(runners)) {
-      db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
+      await setRunner(db, runnerId, { status: "active", ownerUserId: userId });
       await work.heartbeat(runnerId);
-      db.run(
-        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.44',?)
-         ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
-        [runnerId, now],
-      );
-      db.run("DELETE FROM runner_agent_policy WHERE runner_id=?", [runnerId]);
-      db.run(
-        "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',1,0)",
-        [runnerId],
-      );
-      db.run("DELETE FROM runner_agent WHERE runner_id=?", [runnerId]);
-      db.run(
-        "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,'claude','2.1.7','current',?)",
-        [runnerId, now],
-      );
+      await db.run(function* (q) {
+        yield* q.exec(
+          q.orm
+            .insert(q.t.runnerHostStatus)
+            .values({ runnerId, runnerVersion: "0.1.44", reportedAt: now })
+            .onConflictDoUpdate({
+              target: q.t.runnerHostStatus.runnerId,
+              set: { runnerVersion: "0.1.44" },
+            }),
+        );
+        yield* q.exec(
+          q.orm.delete(q.t.runnerAgentPolicy).where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
+        );
+        yield* q.exec(
+          q.orm
+            .insert(q.t.runnerAgentPolicy)
+            .values({ runnerId, agent: "claude", ready: 1, authExpired: 0 }),
+        );
+        yield* q.exec(q.orm.delete(q.t.runnerAgent).where(eq(q.t.runnerAgent.runnerId, runnerId)));
+        yield* q.exec(
+          q.orm.insert(q.t.runnerAgent).values({
+            runnerId,
+            agent: "claude",
+            version: "2.1.7",
+            status: "current",
+            reportedAt: now,
+          }),
+        );
+      });
     }
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
     const record = await insertQueuedItem(db, { id, now, sessionKey });
-    const { run } = await beginImplementRun(sqliteDb(db), id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, id, now);
+    await recordLinearInstallation(db, {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -305,11 +421,11 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+    await bindLinearSessionTask(db, sessionKey, record.delegationId, {
       actorId: "owner",
     });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await setWorkItem(db, id, { ownerUserId: userId });
+    await bindWorkItemRepository(db, id, {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
@@ -353,19 +469,13 @@ async function setup() {
                       }),
                     );
                   if (typeof question === "function") return question(request);
-                  db.run(
-                    `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
-                     VALUES(?,?,?,?,'agent',?,?,?)`,
-                    [
-                      workspaceId(),
-                      record.id,
-                      record.runId,
-                      `session-${record.id}`,
-                      request.question,
-                      question,
-                      now,
-                    ],
-                  );
+                  await insertQuestion(db, {
+                    itemId: record.id,
+                    runId: record.runId,
+                    sessionId: `session-${record.id}`,
+                    body: request.question,
+                    status: question,
+                  });
                   return { answer: "Use the default." };
                 },
               },
@@ -383,16 +493,19 @@ async function setup() {
    * turn lands on A, then `whileMoving` sets it up before Paws looks for another runner. With
    * `question`, A asks first and the question is answered or still open at the handover.
    */
-  async function handOverTurn(whileMoving: () => void = () => {}, question?: "answered" | "open") {
+  async function handOverTurn(
+    whileMoving: () => Promise<unknown> = async () => {},
+    question?: "answered" | "open",
+  ) {
     const record = await item();
     const notices: string[] = [];
     const prompts: string[] = [];
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+    await setRunner(db, runners.b, { status: "paused" });
     const { running, stop } = turn(record, notices, question);
     const onA = (await next(runners.a)) as RunCommand;
     prompts.push(onA.prompt);
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-    whileMoving();
+    await setRunner(db, runners.b, { status: "active" });
+    await whileMoving();
     await events(onA, runners.a, [
       ...(question ? [{ type: "question" as const, text: "Which delimiter?", options: [] }] : []),
       {
@@ -404,11 +517,7 @@ async function setup() {
       },
     ]);
     if (question)
-      for (
-        let index = 0;
-        index < 5000 && !db.query("SELECT 1 FROM question WHERE run_id=?").get(record.runId);
-        index++
-      )
+      for (let index = 0; index < 5000 && !(await openedQuestion(db, record.runId)); index++)
         await delay(1);
     const handing = backend.handOverItem(record.id);
     const wip = await handOver(onA);
@@ -446,8 +555,8 @@ async function setup() {
       for (const stop of stops) stop.abort();
       stops.clear();
     },
-    cleanup() {
-      db.close();
+    async cleanup() {
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -458,9 +567,9 @@ beforeAll(async () => {
   context = await setup();
 });
 afterEach(() => context.stopAll());
-afterAll(() => {
+afterAll(async () => {
   context.stopAll();
-  context.cleanup();
+  await context.cleanup();
 });
 
 test("a handed-over session continues on the second runner from its WIP commit, with its conversation", async () => {
@@ -483,7 +592,7 @@ test("a handed-over session continues on the second runner from its WIP commit, 
   await context.submit(onB, runners.b, { candidateSha: wip });
   const result = await running;
   expect(result).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
-  expect((await getWorkItem(sqliteDb(context.db), record.id))?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(context.db, record.id))?.checkpoint?.wipCommit).toBe(wip);
   expect(notices.filter((notice) => notice.startsWith("Moved"))).toEqual([
     `Moved from A to B. Continuing the agent's session from turn ${onA.generation}.\n`,
   ]);
@@ -526,7 +635,7 @@ test("a reviewer after a moved session never carries the implementer's native se
 test("with no eligible runner the session waits, says why once, and moves when one fits", async () => {
   const { db, runners } = context;
   const { onA, wip, notices, running } = await context.handOverTurn(() =>
-    db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]),
+    setAgentReady(db, runners.b, 0),
   );
   // Neither runner gets the work while B is signed out, and the run does not fail.
   expect(await context.next(runners.b, 300)).toBeNull();
@@ -535,7 +644,7 @@ test("with no eligible runner the session waits, says why once, and moves when o
     "Waiting to move this session from A: Sign in to Claude on another runner. Paws moves it as soon as a runner fits.\n",
   ]);
   expect(await Promise.race([running, delay(1, "waiting")])).toBe("waiting");
-  db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [runners.b]);
+  await setAgentReady(db, runners.b, 1);
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.runId).toBe(onA.runId);
   expect(onB.repository.baseSha).toBe(wip);
@@ -547,7 +656,7 @@ test("with no eligible runner the session waits, says why once, and moves when o
 test("a run that stops while it waits for a runner ends with the stop, not a failure", async () => {
   const { db, runners } = context;
   const { running, stop, notices } = await context.handOverTurn(() =>
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]),
+    setRunner(db, runners.b, { status: "paused" }),
   );
   for (
     let index = 0;
@@ -588,11 +697,8 @@ test("only a runner that ends the turn at a question is told to; an older one ke
     [QUESTION_ENDS_TURN_RUNNER_VERSION.join("."), true],
   ] as const) {
     const record = await context.item();
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-    db.run("UPDATE runner_host_status SET runner_version=? WHERE runner_id=?", [
-      version,
-      runners.a,
-    ]);
+    await setRunner(db, runners.b, { status: "paused" });
+    await setRunnerVersion(db, runners.a, version);
     const { running } = context.turn(record, [], "open");
     const onA = (await context.next(runners.a)) as RunCommand;
     expect(onA.questionEndsTurn).toBe(told);
@@ -604,8 +710,8 @@ test("only a runner that ends the turn at a question is told to; an older one ke
 test("a question that cannot be asked keeps the turn's work as a WIP commit before the cancel", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
+  await setRunner(db, runners.b, { status: "paused" });
+  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running } = context.turn(record, [], "stale");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [
@@ -617,14 +723,14 @@ test("a question that cannot be asked keeps the turn's work as a WIP commit befo
   await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   expect(await running).toMatchObject({ message: "Question owner is stale" });
-  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(wip);
 });
 
 test("a Paws shutdown while the run waits on its question keeps the turn's work before the cancel", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
+  await setRunner(db, runners.b, { status: "paused" });
+  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running, stop } = context.turn(record, [], "waiting");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [
@@ -633,24 +739,31 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   for (
     let index = 0;
     index < 5000 &&
-    !db.query("SELECT 1 FROM runner_work WHERE run_id=? AND consumed_sequence>0").get(onA.runId);
+    !(await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ runId: q.t.runnerWork.runId })
+          .from(q.t.runnerWork)
+          .where(and(eq(q.t.runnerWork.runId, onA.runId), gt(q.t.runnerWork.consumedSequence, 0))),
+      ),
+    ));
     index++
   )
     await delay(1);
-  db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [record.id]);
+  await setWorkItem(db, record.id, { state: "awaiting_input" });
   stop.abort(new PawsShutdown());
   expect(await context.next(runners.a)).toMatchObject({ type: "checkpoint", runId: onA.runId });
   const wip = "b".repeat(40);
   await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   await running;
-  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(wip);
 });
 
 test("after a restart the handed-over run still avoids the runner it left and waits", async () => {
   const { db, runners } = context;
   const { record, onA, wip, notices, stop, running } = await context.handOverTurn(() =>
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]),
+    setRunner(db, runners.b, { status: "paused" }),
   );
   for (
     let index = 0;
@@ -669,7 +782,7 @@ test("after a restart the handed-over run still avoids the runner it left and wa
   expect(again.filter((notice) => notice.startsWith("Waiting"))).toEqual([
     "Waiting to move this session from A: No other runner is online. Paws moves it as soon as a runner fits.\n",
   ]);
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.b, { status: "active" });
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.runId).toBe(onA.runId);
   expect(onB.repository.baseSha).toBe(wip);
@@ -689,7 +802,7 @@ function moveRequest(runnerId: string, runId: string) {
 /** The sessions `runnerId`'s card lists. */
 async function card(runnerId: string) {
   return (
-    (await listRunnerOverview(sqliteDb(context.db), context.workspaceId, context.now)).find(
+    (await listRunnerOverview(context.db, context.workspaceId, context.now)).find(
       (runner) => runner.id === runnerId,
     )?.running ?? []
   );
@@ -699,10 +812,10 @@ async function card(runnerId: string) {
 async function runningOnA(notices: string[] = []) {
   const { db, runners } = context;
   const record = await context.item();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.b, { status: "paused" });
   const { running } = context.turn(record, notices);
   const onA = (await context.next(runners.a)) as RunCommand;
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.b, { status: "active" });
   return { record, running, onA };
 }
 
@@ -716,7 +829,7 @@ async function finish(onA: RunCommand, running: Promise<unknown>) {
 /** The move route over the fixture's backend; every request here is its route. */
 function sessionMoves() {
   const moves = createRunnerSessionMoves({
-    store: sqliteDb(context.db),
+    store: context.db,
     handOver: (itemId, signal) => context.backend.handOverItem(itemId, signal),
     now: () => context.now,
   });
@@ -764,7 +877,7 @@ test("with no eligible runner the card row says why, as Linear hears it", async 
   const moves = sessionMoves();
   const notices: string[] = [];
   const { record, onA } = await runningOnA(notices);
-  db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]);
+  await setAgentReady(db, runners.b, 0);
   expect((await moves.fetch(moveRequest(runners.a, record.runId), context.principal)).status).toBe(
     202,
   );
@@ -793,13 +906,13 @@ test("a member's or inactive admin's move request is refused and the runner is n
     ["member", "member", true],
     ["inactive", "admin", false],
   ] as const) {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `${name}-${record.id}`,
       name,
       email: `${name}-${record.id}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: context.workspaceId,
       userId,
       role,
@@ -851,8 +964,15 @@ async function twoRunningOnA(notices: string[] = []) {
     const record = await context.item(alongside);
     // Each runner has two slots, so both sessions fit on A and then on B.
     for (const runnerId of Object.values(runners))
-      db.run("INSERT OR REPLACE INTO runner_capacity(runner_id,capacity) VALUES(?,2)", [runnerId]);
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+      await db.run((q) =>
+        q.exec(
+          q.orm
+            .insert(q.t.runnerCapacity)
+            .values({ runnerId, capacity: 2 })
+            .onConflictDoUpdate({ target: q.t.runnerCapacity.runnerId, set: { capacity: 2 } }),
+        ),
+      );
+    await setRunner(db, runners.b, { status: "paused" });
     const { running } = context.turn(record, notices);
     turns.push({ record, running, onA: (await context.next(runners.a)) as RunCommand });
   }
@@ -877,8 +997,8 @@ test("Move running work on a draining runner moves both sessions to the second r
   const { db, runners } = context;
   const moves = sessionMoves();
   const turns = await twoRunningOnA();
-  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.a, { status: "draining" });
+  await setRunner(db, runners.b, { status: "active" });
   expect(await card(runners.a)).toHaveLength(2);
 
   const response = await moves.fetch(moveAllRequest(runners.a), context.principal);
@@ -910,7 +1030,7 @@ test("Move running work on a draining runner moves both sessions to the second r
       .map(({ runId, movable, move }) => ({ runId, movable, move }))
       .sort((left, right) => left.runId.localeCompare(right.runId)),
   ).toEqual(runIds.map((runId) => ({ runId, movable: true, move: null })));
-  const overview = await listRunnerOverview(sqliteDb(db), context.workspaceId, context.now);
+  const overview = await listRunnerOverview(db, context.workspaceId, context.now);
   expect(overview.find((runner) => runner.id === runners.a)).toMatchObject({
     status: "draining",
     slots: { used: 0 },
@@ -931,9 +1051,9 @@ test("with no eligible runner both sessions stay on the draining card with the r
   const moves = sessionMoves();
   const notices: string[] = [];
   const turns = await twoRunningOnA(notices);
-  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-  db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]);
+  await setRunner(db, runners.a, { status: "draining" });
+  await setRunner(db, runners.b, { status: "active" });
+  await setAgentReady(db, runners.b, 0);
   expect((await moves.fetch(moveAllRequest(runners.a), context.principal)).status).toBe(202);
   await handOverBoth(turns);
   await moves.settled();
@@ -970,14 +1090,14 @@ test("Move running work needs a draining runner and an admin", async () => {
   expect(await refused.json()).toEqual({
     error: "Drain this runner before moving all of its running work.",
   });
-  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  await setRunner(db, runners.a, { status: "draining" });
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: `inactive-all-${record.id}`,
     name: "inactive",
     email: `inactive-all-${record.id}@example.invalid`,
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: context.workspaceId,
     userId,
     role: "admin",
@@ -994,29 +1114,29 @@ test("Move running work needs a draining runner and an admin", async () => {
   await moves.settled();
   expect(await card(runners.a)).toMatchObject([{ runId: record.runId, move: null }]);
   expect(await context.next(runners.a, 50)).toBeNull();
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.a]);
+  await setRunner(db, runners.a, { status: "active" });
   await finish(onA, running);
 });
 
 test("the work turn after start_work waits for a slot on the session's runner, then resumes the same session", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.b, { status: "paused" });
   const first = context.turn(record, []);
   const earlier = (await context.next(runners.a)) as RunCommand;
   await context.submit(earlier, runners.a, { candidateSha: context.base });
   expect(await first.running).toMatchObject({ stopReason: "end_turn" });
   // restart() ends the conversation's run; the work turn starts the item's next run.
-  db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
-  db.run("UPDATE work_item SET state='queued' WHERE id=?", [record.id]);
+  await endRun(db, record.runId);
+  await setWorkItem(db, record.id, { state: "queued" });
   const next = {
     id: record.id,
-    runId: (await beginImplementRun(sqliteDb(db), record.id, context.now)).run.id,
+    runId: (await beginImplementRun(db, record.id, context.now)).run.id,
   };
 
   // Another item takes A's only work slot; B stays paused.
   const busy = await context.item(true);
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await setRunner(db, runners.b, { status: "paused" });
   const other = context.turn(busy, []);
   const busyOnA = (await context.next(runners.a)) as RunCommand;
   expect(busyOnA.runId).toBe(busy.runId);
@@ -1031,7 +1151,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
 
   await context.submit(busyOnA, runners.a, { candidateSha: context.base });
   await other.running;
-  db.run("UPDATE run SET status='ended' WHERE id=?", [busy.runId]);
+  await endRun(db, busy.runId);
   const work = context.turn(next, []);
   const onA = (await context.next(runners.a)) as RunCommand;
   expect(onA).toMatchObject({
@@ -1047,18 +1167,19 @@ test("the work turn after start_work waits for a slot on the session's runner, t
 test("replayed questions attach to the open answer without asking or cancelling again", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await setRunner(context.db, runners.b, { status: "paused" });
   let asks = 0;
   const ask = async (request: { question: string }) => {
     asks++;
-    db.run(
-      "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
-      [workspaceId(), record.id, record.runId, record.id, request.question, context.now],
-    );
+    await insertQuestion(db, {
+      itemId: record.id,
+      runId: record.runId,
+      sessionId: record.id,
+      body: request.question,
+      status: "open",
+    });
     for (;;) {
-      const row = db
-        .query<{ answer: string | null }, [string]>("SELECT answer FROM question WHERE run_id=?")
-        .get(record.runId);
+      const row = await openedQuestion(db, record.runId);
       if (row?.answer) return { answer: row.answer };
       await delay(1);
     }
@@ -1075,17 +1196,13 @@ test("replayed questions attach to the open answer without asking or cancelling 
   await context.events(command, runners.a, [event, event]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(1);
-  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
-    record.runId,
-  ]);
+  await answerQuestion(db, record.runId, "Use commas.");
   for (let i = 0; i < 1000; i++) {
     if (await context.results.answered(command.runId, command.generation, 3)) break;
     await delay(1);
   }
   expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
-  expect(
-    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
-  ).toHaveLength(3);
+  expect(await questionAnswers(db, record.runId)).toHaveLength(3);
   expect(
     (await context.answers(command)).map(({ sequence, answer }) => ({ sequence, answer })),
   ).toEqual([1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })));
@@ -1110,7 +1227,7 @@ test("replayed questions attach to the open answer without asking or cancelling 
 test("different text while a question is open still fails as overlapping questions", async () => {
   const { runners } = context;
   const record = await context.item();
-  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  await setRunner(context.db, runners.b, { status: "paused" });
   let release!: (answer: { answer: string }) => void;
   const turn = context.turn(
     record,
@@ -1133,13 +1250,23 @@ test("different text while a question is open still fails as overlapping questio
 test("a replay attaches to a question already stored by an earlier attachment", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  db.run(
-    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
-    [workspaceId(), record.id, record.runId, record.sessionKey, "Which delimiter?", context.now],
-  );
+  await setRunner(context.db, runners.b, { status: "paused" });
+  await insertQuestion(db, {
+    itemId: record.id,
+    runId: record.runId,
+    sessionId: record.sessionKey,
+    body: "Which delimiter?",
+    status: "open",
+  });
   // Opening the question bumped the item version; that alone must not make the replay stale.
-  db.run("UPDATE work_item SET version=version+1 WHERE id=?", [record.id]);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.workItem)
+        .set({ version: sql`${q.t.workItem.version} + 1` })
+        .where(eq(q.t.workItem.id, record.id)),
+    ),
+  );
   let asks = 0;
   const turn = context.turn(record, [], async () => {
     asks++;
@@ -1159,17 +1286,13 @@ test("a replay attaches to a question already stored by an earlier attachment", 
     { type: "question", text: "Which delimiter?", options: [] },
   ]);
   expect(await context.next(runners.a, 50)).toBeNull();
-  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
-    record.runId,
-  ]);
+  await answerQuestion(db, record.runId, "Use commas.");
   for (let i = 0; i < 1000; i++) {
     if (await context.results.answered(command.runId, command.generation, 2)) break;
     await delay(1);
   }
   expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
-  expect(
-    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
-  ).toHaveLength(2);
+  expect(await questionAnswers(db, record.runId)).toHaveLength(2);
   expect(await context.next(runners.a, 50)).toBeNull();
   await context.submit(command, runners.a, { candidateSha: context.base });
   expect(
@@ -1180,51 +1303,43 @@ test("a replay attaches to a question already stored by an earlier attachment", 
 });
 
 for (const [owner, change] of [
-  ["is cancelled", "cancel_requested=1"],
-  ["has no current run", "current_run_id=NULL"],
+  ["is cancelled", { cancelRequested: 1 }],
+  ["has no current run", { currentRunId: null }],
 ] as const) {
   test(`a replay gets no answer when the item ${owner}, before or after attaching`, async () => {
     for (const whileAttached of [false, true]) {
       const { db, runners } = context;
       const record = await context.item();
-      db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-      db.run(
-        "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
-        [
-          workspaceId(),
-          record.id,
-          record.runId,
-          record.sessionKey,
-          "Which delimiter?",
-          context.now,
-        ],
-      );
+      await setRunner(db, runners.b, { status: "paused" });
+      await insertQuestion(db, {
+        itemId: record.id,
+        runId: record.runId,
+        sessionId: record.sessionKey,
+        body: "Which delimiter?",
+        status: "open",
+      });
       let asks = 0;
       const turn = context.turn(record, [], async () => {
         asks++;
         return { answer: "Never asked." };
       });
       const command = (await context.next(runners.a)) as RunCommand;
-      const stale = () => db.run(`UPDATE work_item SET ${change} WHERE id=?`, [record.id]);
+      const stale = () => setWorkItem(db, record.id, change);
       await context.events(command, runners.a, [
         { type: "question", text: "Which delimiter?", options: [] },
       ]);
       // Nothing awaits before this `stale()`, so the backend has not read the event yet.
-      if (!whileAttached) stale();
+      if (!whileAttached) await stale();
       else {
         expect(await context.next(runners.a, 50)).toBeNull();
-        stale();
-        db.run("UPDATE question SET status='answered',answer='Too late.' WHERE run_id=?", [
-          record.runId,
-        ]);
+        await stale();
+        await answerQuestion(db, record.runId, "Too late.");
       }
       expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
       // The run's lease checks may refuse this turn before the question owner check does.
       expect(await turn.running).toBeInstanceOf(Error);
       expect(asks).toBe(0);
-      expect(
-        db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
-      ).toEqual([]);
+      expect(await questionAnswers(db, record.runId)).toEqual([]);
     }
   });
 }
@@ -1232,11 +1347,14 @@ for (const [owner, change] of [
 test("a replay fails as stale when the open question belongs to an earlier session", async () => {
   const { db, runners } = context;
   const record = await context.item();
-  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  db.run(
-    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
-    [workspaceId(), record.id, record.runId, "earlier-session", "Which delimiter?", context.now],
-  );
+  await setRunner(db, runners.b, { status: "paused" });
+  await insertQuestion(db, {
+    itemId: record.id,
+    runId: record.runId,
+    sessionId: "earlier-session",
+    body: "Which delimiter?",
+    status: "open",
+  });
   let asks = 0;
   const turn = context.turn(record, [], async () => {
     asks++;
@@ -1249,7 +1367,5 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
   expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
   expect(asks).toBe(0);
-  expect(db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId)).toEqual(
-    [],
-  );
+  expect(await questionAnswers(db, record.runId)).toEqual([]);
 });
