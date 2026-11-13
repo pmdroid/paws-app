@@ -101,14 +101,12 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     await seed(db, (q) =>
-      q.orm
-        .insert(q.t.workspace)
-        .values({
-          id: "workspace",
-          linearOrganizationId: "org",
-          name: "Workspace",
-          createdAt: 1000,
-        }),
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
     );
     await recordLinearInstallation(db, {
       organizationId: "org",
