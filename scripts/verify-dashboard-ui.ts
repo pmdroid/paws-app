@@ -30,9 +30,9 @@ let current = "";
 const PAGE_RESOURCE =
   /^\/api\/(overview|issues|questions|merge-queue|evidence(\/[^/]+\/metadata)?$|status)/;
 
-async function open(width: number) {
+async function open(width: number, cookie = f.cookie) {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
-  await context.setExtraHTTPHeaders({ cookie: f.cookie });
+  await context.setExtraHTTPHeaders({ cookie });
   const page = await context.newPage();
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", async (response) => {
@@ -53,7 +53,9 @@ async function visit(page: Page, width: number, name: string, path: string, head
   current = `${name}@${width}`;
   const before = { requests: requests.length, statements: f.statements() };
   await page.goto(`${f.origin}${f.fill(path)}`);
-  await expect(page.locator("#content h1").first()).toHaveText(heading);
+  await expect(page.locator("#content h1, .settings-link[aria-current]").first()).toHaveText(
+    heading,
+  );
   await page.waitForTimeout(5_600);
   const seen = requests.slice(before.requests);
   visits.push({
@@ -107,7 +109,8 @@ try {
       if (name.startsWith("evidence")) expect([name, loads]).toEqual([name, 1]);
       else expect([name, loads > 1]).toEqual([name, true]);
     }
-    await page.route("**/api/settings/agents", (route) =>
+    const admin = await open(width, f.adminCookie);
+    await admin.route("**/api/settings/agents", (route) =>
       route.fulfill({
         json: {
           defaults: {
@@ -115,13 +118,19 @@ try {
             reviewer: { agent: "codex", model: "gpt-5.4" },
           },
           presets: {
-            Opus: { agent: "claude", model: "opus", effort: "high" },
-            Codex: { agent: "codex", model: "gpt-5.4", effort: "high" },
+            Opus: {
+              implementer: { agent: "claude", model: "opus", effort: "high" },
+              reviewer: { agent: "codex", model: "gpt-5.4", effort: "high" },
+            },
+            Codex: {
+              implementer: { agent: "codex", model: "gpt-5.4", effort: "high" },
+              reviewer: { agent: "claude", model: "opus", effort: "high" },
+            },
           },
         },
       }),
     );
-    await page.route("**/api/runners/models", (route) =>
+    await admin.route("**/api/runners/models", (route) =>
       route.fulfill({
         json: {
           catalogs: [
@@ -141,21 +150,29 @@ try {
         },
       }),
     );
-    await visit(page, width, "settings-agents", "/dashboard/settings/agents", "Agents");
-    await expect(page.locator("#preset-0-name")).toHaveValue("Opus");
-    await expect(page.locator("#preset-1-name")).toHaveValue("Codex");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+    await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
+    await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
+    await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
+    await expect(admin.locator(".settings-nav a")).toHaveCount(9);
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await page.unroute("**/api/settings/agents");
-    await page.unroute("**/api/runners/models");
+    await admin.unroute("**/api/settings/agents");
+    await admin.unroute("**/api/runners/models");
     for (const [name, path, heading] of [
       ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],
+    ] as const)
+      await visit(page, width, name, path, heading);
+    for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
     ] as const)
-      await visit(page, width, name, path, heading);
+      await visit(admin, width, name, path, heading);
+    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
+    await expect(page.locator(".settings-nav a")).toHaveText(["Your account"]);
+    await expect(page.locator("#merge-settings")).toHaveCount(0);
+    await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 
     current = `links@${width}`;

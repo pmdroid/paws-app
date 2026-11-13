@@ -2,10 +2,12 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { createBriefSettings } from "./brief-settings";
 import { createHookSettings, type HookListing } from "./hooks";
+import { render } from "./render";
 import { parseRoute } from "./route";
-import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
+import { SETTINGS_PAGES, renderSettingsPage, setSettingsAdmin } from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
 import { settleReactWork } from "./settle-react";
+import { initializeWorkspaceAccess } from "./workspace";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
 
@@ -68,6 +70,23 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   );
 });
 
+test("a member opening any settings page gets only Your account", () => {
+  setSettingsAdmin(false);
+  for (const page of SETTINGS_PAGES) {
+    const doc = new Window().document;
+    doc.body.innerHTML = renderSettingsPage(page.id);
+    expect(navLinks(doc)).toEqual(["Your account"]);
+    expect(doc.querySelector("a[aria-current]")?.textContent).toBe("Your account");
+    expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
+      `<p class="sub">${SETTINGS_PAGES.find((entry) => entry.id === "account")!.description}</p>`,
+    );
+  }
+  const route = { view: "settings", page: "merging" } as const;
+  expect(render({ route, phase: "ready", error: null, engineUrl: ENGINE }).title).toBe(
+    "Paws status · Your account",
+  );
+});
+
 test("the Agents page holds no brief, skills or hooks", () => {
   const html = renderSettingsPage("agents");
   for (const id of MOVED) expect(html).not.toContain(`id="${id}"`);
@@ -121,6 +140,7 @@ let requests: { method: string; path: string }[];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  setSettingsAdmin(true);
   window = new Window({ url: `${ENGINE}/settings/brief` });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
@@ -140,6 +160,27 @@ beforeEach(() => {
       path.endsWith("/brief") ? BRIEF : path.endsWith("/skills") ? SKILLS : HOOKS,
     );
   }) as typeof fetch;
+});
+
+function navLinks(doc: { querySelectorAll(selector: string): Iterable<Element> }) {
+  return [...doc.querySelectorAll("nav a")].map((link) => link.textContent);
+}
+
+test("settings list the admin pages only once the session says admin", async () => {
+  for (const role of ["admin", "member"]) {
+    let respond = (_: Response) => {};
+    globalThis.fetch = (() =>
+      new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
+    const loaded = initializeWorkspaceAccess(() => null);
+    window.document.body.innerHTML = renderSettingsPage("merging");
+    expect(navLinks(window.document)).toEqual(["Your account"]);
+    respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
+    expect(await loaded).toBe(true);
+    window.document.body.innerHTML = renderSettingsPage("merging");
+    expect(navLinks(window.document)).toEqual(
+      role === "admin" ? SETTINGS_PAGES.map((page) => page.name) : ["Your account"],
+    );
+  }
 });
 
 afterEach(async () => {

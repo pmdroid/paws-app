@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { SettingsPage } from "./settings-pages";
+import { setSettingsAdmin, type SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
@@ -51,6 +51,7 @@ export function takeSignInReturn(): string | null {
 
 export async function initializeWorkspaceAccess(page: () => SettingsPage | null): Promise<boolean> {
   signedInReader = "";
+  setSettingsAdmin(false);
   const root = document.querySelector<HTMLElement>("#workspace-access");
   let response: Response;
   try {
@@ -73,6 +74,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   }
   if (response.status === 404) {
     signedInReader = "local";
+    setSettingsAdmin(true);
     if (root) {
       root.dataset.loaded = "true";
       renderMarkup(
@@ -152,6 +154,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   }
   const session = (await response.json()) as BrowserSession;
   signedInReader = JSON.stringify([session.userId ?? null, session.workspaceId, session.role]);
+  setSettingsAdmin(session.role === "admin");
   document.body.classList.remove("paws-login");
   setLoginLayout(false);
   const csrf = document.querySelector('meta[name="paws-csrf"]');
