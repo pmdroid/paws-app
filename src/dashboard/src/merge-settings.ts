@@ -14,6 +14,8 @@ export type MergeSettings = {
    */
   commentWait?: CommentWait;
   ignoredComments?: IgnoredComments[];
+  /** Conflict-prone files Paws does not hold work for, per repository. Replaces every list. */
+  parallelFiles?: { repository: string; paths: string[] }[];
 };
 export type IgnoredComments = {
   repository: string;
@@ -46,6 +48,8 @@ export type HotFile = {
   items: string[];
   /** Current overlap holds on the file: `held` waits for `holder` to merge. */
   holds?: { held: string; holder: string }[];
+  /** False when the file is in the repository's `parallel_files`. */
+  held?: boolean;
 };
 export type MergeSettingsView = Omit<MergeSettings, "highRiskPaths"> & {
   /** Missing from an engine that does not list them; the page then leaves them alone. */

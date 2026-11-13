@@ -169,6 +169,7 @@ import {
   agentReadAllowed,
   loadConfigFile,
   mergeLaneKey,
+  parallelFiles,
   readMergeSettings,
   repositoryPackages,
   reviewApps,
@@ -7759,10 +7760,12 @@ export class Orchestrator {
   private async dispatch(): Promise<void> {
     const { ownerHasRunner, itemRunners } = this.options;
     let config: ReturnType<typeof loadConfigFile> | null = null;
+    let merge: MergeSettings | null = null;
     try {
       await this.reconcileAgentSettings();
-      if (ownerHasRunner || this.options.itemRunners)
-        config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      const loaded = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      merge = readMergeSettings(loaded);
+      if (ownerHasRunner || this.options.itemRunners) config = loaded;
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
@@ -7780,6 +7783,7 @@ export class Orchestrator {
       handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
       sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
       ...(await this.options.scheduling?.()),
+      ...(merge ? { parallelFiles: (repository: string) => parallelFiles(merge, repository) } : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
       ...(itemRunners

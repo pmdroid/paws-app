@@ -92,6 +92,8 @@ export type SchedulerOptions = {
   itemRunners?: (q: Q, itemId: string) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
+  /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
+  parallelFiles?: (repository: string) => readonly string[];
   log?: (line: string) => void;
 };
 
@@ -127,9 +129,15 @@ type Overlap = { blocker: string; files: string[]; start?: true };
  * keeps its merge-queue place, such as one sent back for a conflict, is held only by an item
  * ahead of it in that queue: anything behind it, or not queued yet, merges after it.
  */
-function* overlapGate(q: Q, now: number, waiters: readonly Item[]) {
+function* overlapGate(
+  q: Q,
+  now: number,
+  waiters: readonly Item[],
+  parallelFiles?: SchedulerOptions["parallelFiles"],
+) {
   const hot = new Map<string, Set<string>>();
   for (const file of yield* hotFilesSteps(q, now)) {
+    if (parallelFiles?.(file.repository).includes(file.path)) continue;
     const key = file.repository.toLowerCase();
     hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
   }
@@ -722,7 +730,7 @@ async function admit(
       )
         waiters.push(item);
     }
-    const overlapping = yield* overlapGate(q, now, waiters);
+    const overlapping = yield* overlapGate(q, now, waiters, options.parallelFiles);
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||

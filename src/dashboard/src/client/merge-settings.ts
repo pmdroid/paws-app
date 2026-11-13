@@ -206,7 +206,7 @@ export function renderMergeSettings(view: View): string {
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.ignoredComments ? ignoredSection(data.ignoredComments, view) : ""}
-      ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
+      ${data.hotFiles ? hotFileSection(data.hotFiles, data.parallelFiles !== undefined) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
@@ -217,21 +217,29 @@ function issueLink(id: string): string {
   return `<a class="lin-id" href="${esc(routeHref({ view: "issues", id }))}">${esc(id)}</a>`;
 }
 
-function hotFileRow(file: HotFile): string {
-  const holds = (file.holds ?? [])
-    .map((hold) => `<p>Holding ${issueLink(hold.held)} until ${issueLink(hold.holder)} merges</p>`)
-    .join("");
-  return `<li class="hot-file"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${holds}</li>`;
+const MIGRATION_META = /^src\/db\/drizzle[^/]*\/meta\/[^/]+$/;
+
+function hotFileRow(file: HotFile, editable: boolean): string {
+  const held = file.held !== false;
+  const holds = held
+    ? (file.holds ?? [])
+        .map(
+          (hold) => `<p>Holding ${issueLink(hold.held)} until ${issueLink(hold.holder)} merges</p>`,
+        )
+        .join("")
+    : "";
+  const toggle = `<label><input type="checkbox" name="hot-hold" data-repository="${esc(file.repository)}" data-path="${esc(file.path)}"${held ? " checked" : ""}${editable ? "" : " disabled"}> Hold work that changes this file</label>${held ? "" : '<span class="sub">Not held</span>'}${MIGRATION_META.test(file.path) ? '<p class="sub">Migrations made side by side need a manual rebase</p>' : ""}`;
+  return `<li class="hot-file${held ? "" : " opacity-60"}"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${toggle}${holds}</li>`;
 }
 
-function hotFileSection(files: readonly HotFile[]): string {
+function hotFileSection(files: readonly HotFile[], editable: boolean): string {
   const sorted = [...files].sort(
     (left, right) =>
       Number(Boolean(right.holds?.length)) - Number(Boolean(left.holds?.length)) ||
       right.conflicts - left.conflicts,
   );
   const rows = (list: readonly HotFile[]) =>
-    `<ul class="risk-file">${list.map(hotFileRow).join("")}</ul>`;
+    `<ul class="risk-file">${list.map((file) => hotFileRow(file, editable)).join("")}</ul>`;
   const rest = sorted.slice(HOT_FILES_SHOWN);
   const body = sorted.length
     ? `${rows(sorted.slice(0, HOT_FILES_SHOWN))}${rest.length ? `<details><summary>Show all ${sorted.length}</summary>${rows(rest)}</details>` : ""}`
@@ -302,7 +310,24 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
         }
       : {}),
     ...(data.ignoredComments ? { ignoredComments: data.ignoredComments } : {}),
+    ...(data.parallelFiles ? { parallelFiles: data.parallelFiles } : {}),
   };
+}
+
+function parallelToggle(
+  lists: readonly { repository: string; paths: string[] }[],
+  repository: string,
+  path: string,
+  parallel: boolean,
+): { repository: string; paths: string[] }[] {
+  const key = repository.toLowerCase();
+  const current = lists.find((entry) => entry.repository.toLowerCase() === key);
+  const rest = (current?.paths ?? []).filter((entry) => entry !== path);
+  const paths = parallel ? [...rest, path] : rest;
+  return [
+    ...lists.filter((entry) => entry.repository.toLowerCase() !== key),
+    ...(paths.length ? [{ repository: current?.repository ?? repository, paths }] : []),
+  ];
 }
 
 export async function mergeSettingsRequest(
@@ -392,6 +417,15 @@ export function createMergeSettings(invalidate: () => void): {
       }
       return next;
     });
+    for (const box of form.querySelectorAll<HTMLInputElement>('[name="hot-hold"]')) {
+      const { repository = "", path = "" } = box.dataset;
+      data.parallelFiles = parallelToggle(data.parallelFiles ?? [], repository, path, !box.checked);
+      data.hotFiles = data.hotFiles?.map((file) =>
+        file.repository === repository && file.path === path
+          ? { ...file, held: box.checked }
+          : file,
+      );
+    }
     if (view.ciFix && "attempts" in view.ciFix) {
       const text = value("merge-ci-fix-attempts")?.trim();
       if (text !== undefined) view.ciFix.attempts = text === "" ? NaN : Number(text);
