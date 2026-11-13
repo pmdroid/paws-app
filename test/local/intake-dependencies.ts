@@ -277,11 +277,11 @@ export async function probeDependencySnapshots(
         await tx.execute(sql`LOCK TABLE task_block, item_dependency_snapshot IN EXCLUSIVE MODE`);
         blocked = refresh();
         await Bun.sleep(50);
-        const held = await tx
+        const locked = await tx
           .select({ generation: pgSchema.itemDependencySnapshot.generation })
           .from(pgSchema.itemDependencySnapshot)
           .where(eq(pgSchema.itemDependencySnapshot.itemId, focus));
-        assert.equal(held[0]?.generation, beforeBusy);
+        assert.equal(locked[0]?.generation, beforeBusy);
       });
     } finally {
       await owner.close();

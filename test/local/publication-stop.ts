@@ -40,8 +40,8 @@ export async function probePublicationStop(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const { db, close } = await tempStore();
-  const change = (update: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(update(q)));
-  const jobs = (where: SQL | undefined) =>
+  const write = (update: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(update(q)));
+  const jobRows = (where: SQL | undefined) =>
     db.run((q) =>
       q.all(
         q.orm
@@ -86,7 +86,7 @@ export async function probePublicationStop(
     ).length;
   type ItemRow = typeof workItem.$inferInsert;
   const insertItem = (row: Omit<ItemRow, "linearIdentifier" | "title"> & Partial<ItemRow>) =>
-    change((q) =>
+    write((q) =>
       q.orm.insert(q.t.workItem).values({
         linearIdentifier: row.delegationId,
         title: row.delegationId,
@@ -94,7 +94,7 @@ export async function probePublicationStop(
       }),
     );
   const specify = (itemId: string, hash: string, present: number) =>
-    change((q) =>
+    write((q) =>
       q.orm.insert(q.t.workItemSpecification).values({ itemId, hash, revision: 1, present }),
     );
   const clock = new FakeClock(1000);
@@ -242,7 +242,7 @@ export async function probePublicationStop(
     observe(
       "canonical Stop and pull cleanup roll back in the same transaction",
       (await getWorkItem(db, "item"))?.state === "merge_queue" &&
-        (await jobs(eq(job.queue, "github.close_stopped"))).length === 0,
+        (await jobRows(eq(job.queue, "github.close_stopped"))).length === 0,
       (await getWorkItem(db, "item"))?.state,
     );
     await current.orchestrator.onLinearEvent({
@@ -262,8 +262,8 @@ export async function probePublicationStop(
     observe(
       "a Linear Stop pauses the item, cancels canonical merge work and leaves the pull request open",
       (await getWorkItem(db, "item"))?.state === "paused" &&
-        (await jobs(eq(job.jobKey, "old-merge")))[0]?.status === "cancelled" &&
-        (await jobs(eq(job.queue, "github.close_stopped"))).length === 0 &&
+        (await jobRows(eq(job.jobKey, "old-merge")))[0]?.status === "cancelled" &&
+        (await jobRows(eq(job.queue, "github.close_stopped"))).length === 0 &&
         open &&
         calls.length === 0,
       { calls, joined },
@@ -288,7 +288,7 @@ export async function probePublicationStop(
     observe(
       "a GitHub outage retains durable stopped PR cleanup without failing the item",
       (await getWorkItem(db, "item"))?.state === "cancelled" &&
-        (await jobs(eq(job.queue, "github.close_stopped")))[0]?.status === "pending" &&
+        (await jobRows(eq(job.queue, "github.close_stopped")))[0]?.status === "pending" &&
         open,
       { calls, open },
     );
@@ -299,7 +299,7 @@ export async function probePublicationStop(
       "restart retries close only the owned Paws PR after remote joining",
       !open &&
         joined >= 2 &&
-        (await jobs(eq(job.queue, "github.close_stopped")))[0]?.status === "done" &&
+        (await jobRows(eq(job.queue, "github.close_stopped")))[0]?.status === "done" &&
         calls
           .filter((call) => call.method === "PATCH")
           .every(
@@ -400,7 +400,7 @@ export async function probePublicationStop(
     const beforePending = calls.length;
     await current.jobs.tick();
     await current.jobs.tick();
-    const successors = await jobs(
+    const successors = await jobRows(
       and(eq(job.jobKey, `merge-reconciliation:${pendingJob}`), eq(job.status, "pending")),
     );
     const successor = { n: successors.length, runAt: successors[0]?.runAt };
@@ -454,7 +454,7 @@ export async function probePublicationStop(
       });
       await saveTaskMode(db, `cycle-${id}`, "code");
     }
-    await change((q) =>
+    await write((q) =>
       q.orm.insert(q.t.workspace).values({
         id: "cycle-workspace",
         linearOrganizationId: "cycle-org",
@@ -506,7 +506,9 @@ export async function probePublicationStop(
     const cycleQuestion = await cycleNotices();
     const openQuestions = await cycleQuestions(true);
     const freeJob = (
-      await jobs(and(eq(job.queue, "item.start"), forItem("cycle-free"), eq(job.status, "pending")))
+      await jobRows(
+        and(eq(job.queue, "item.start"), forItem("cycle-free"), eq(job.status, "pending")),
+      )
     ).length;
     observe(
       "authoritative cycles notice once while unaffected queued work remains dispatchable",
@@ -540,7 +542,7 @@ export async function probePublicationStop(
         await specify(`${delegationId}-${suffix}`, suffix, present);
       }
     }
-    await change((q) =>
+    await write((q) =>
       q.orm
         .update(q.t.workItem)
         .set({ state: "cancelled" })
@@ -548,7 +550,8 @@ export async function probePublicationStop(
     );
     pendingEpics.add("all-removed");
     await current.orchestrator.reconcileExecution();
-    const restored = (await jobs(and(forItem("restored-new"), eq(job.status, "pending")))).length;
+    const restored = (await jobRows(and(forItem("restored-new"), eq(job.status, "pending"))))
+      .length;
     observe(
       "restored child dispatch ignores archived history while refresh holds empty epics",
       restored === 1 &&
@@ -622,13 +625,13 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "a refresh arriving during token acquisition defers without consuming job retries",
-      (await jobs(eq(job.id, tokenRace)))[0]?.status === "done" &&
+      (await jobRows(eq(job.id, tokenRace)))[0]?.status === "done" &&
         (
-          await jobs(
+          await jobRows(
             and(eq(job.jobKey, `merge-reconciliation:${tokenRace}`), eq(job.status, "pending")),
           )
         ).length === 1,
-      await jobs(or(eq(job.id, tokenRace), eq(job.jobKey, `merge-reconciliation:${tokenRace}`))),
+      await jobRows(or(eq(job.id, tokenRace), eq(job.jobKey, `merge-reconciliation:${tokenRace}`))),
     );
     pendingEpics.delete("owned-refresh");
     freshness = async () => {
@@ -646,7 +649,7 @@ export async function probePublicationStop(
       "pending reconciliation retains required verification rather than skipping its successor",
       (await getWorkItem(db, "owned-refresh-item"))?.state === "verifying" &&
         (
-          await jobs(
+          await jobRows(
             and(
               eq(job.jobKey, `merge-reconciliation:${verifyingRace}`),
               eq(job.queue, JOB_KIND.reverify),
@@ -654,7 +657,7 @@ export async function probePublicationStop(
             ),
           )
         ).length === 1,
-      (await jobs(eq(job.jobKey, `merge-reconciliation:${verifyingRace}`)))[0],
+      (await jobRows(eq(job.jobKey, `merge-reconciliation:${verifyingRace}`)))[0],
     );
     await applyWorkItemEvent(db, "owned-refresh-item", "closeout_accepted");
     let shared: Promise<void> | undefined;
@@ -768,7 +771,7 @@ export async function probePublicationStop(
           await setCurrentRun(db, itemId, producer.id);
         }
       }
-      await change((q) =>
+      await write((q) =>
         q.orm.insert(q.t.taskBlock).values({
           blockerLinearIssueId: `${delegationId}-issue`,
           blockedLinearIssueId: `${delegationId}-consumer`,
