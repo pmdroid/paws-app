@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { and, eq, isNull, like } from "drizzle-orm";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
   JobLoop,
@@ -21,15 +21,12 @@ import {
   listVisualReviewMarks,
   listVisualReviews,
   listWorkItems,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   releaseRunCapacity,
   runnerHasCapacity,
   saveCheckpoint,
   saveCloseoutRecovery,
-  sqliteDb,
-  syncWorkspaceMember,
+  type Db,
 } from "../src/db";
 import {
   createFakeCloseoutGate,
@@ -64,7 +61,10 @@ import {
 import { saveSchedulingContextSteps } from "../src/scheduler";
 import { githubClient } from "./e2e-harness";
 import { screenshotPng, type Rect } from "./png";
+import { jsonValue, seed } from "./dialects";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
+import { seedRunnerLease } from "./runner-lease-seed";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -103,20 +103,20 @@ function publishTwo(worktree: string, n: number): Step[] {
 test("two screenshots published 10 s apart end the turn with one link ask that names both", async () => {
   const f = await pausedForReview();
   try {
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const item = (await listWorkItems(f.db))[0]!;
     expect(item.state).toBe("awaiting_input");
     expect(item.checkpoint?.phase).toBe("awaiting_input");
-    expect((await getRun(sqliteDb(f.db), item.currentRunId!))?.status).toBe("ended");
-    expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
-    const [first, second] = await listEvidence(sqliteDb(f.db), item.id);
+    expect((await getRun(f.db, item.currentRunId!))?.status).toBe("ended");
+    expect(await runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
+    const [first, second] = await listEvidence(f.db, item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
       /^\[shot-2\.png\]\(<https:\/\/paws\.example\/evidence\/[^>]+>\)$/,
     );
 
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     expect(open.kind).toBe("link");
-    expect(await getLinkAsk(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getLinkAsk(f.db, open.id)).toMatchObject({
       kind: "screenshots",
       headCommit: item.checkpoint?.wipCommit,
     });
@@ -137,7 +137,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
       await f.tickAll();
     }
     expect(f.log).toHaveLength(posted);
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
   } finally {
     await f.close();
   }
@@ -148,17 +148,13 @@ test("a Paws without an https dashboard link leaves the check unapproved and ask
   try {
     await f.until(() => f.notes(VISUAL_REVIEW_NEEDS_LINK) === 1);
     // Nothing in Linear can approve the screens: Closeout stays blocked on the check.
-    expect(
-      await listVisualReviews(sqliteDb(f.db), (await listWorkItems(sqliteDb(f.db)))[0]!.id),
-    ).toEqual([]);
+    expect(await listVisualReviews(f.db, (await listWorkItems(f.db))[0]!.id)).toEqual([]);
     expect(f.tracker.questions.every((question) => !question.options?.length)).toBe(true);
     expect(f.tracker.questions.map((question) => question.body.split("\n")[0])).toEqual([
       "Closeout needs your help.",
     ]);
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
-    expect(
-      await listVisualReviews(sqliteDb(f.db), (await listWorkItems(sqliteDb(f.db)))[0]!.id),
-    ).toEqual([]);
+    expect(await listVisualReviews(f.db, (await listWorkItems(f.db))[0]!.id)).toEqual([]);
     expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
@@ -168,21 +164,19 @@ test("a Paws without an https dashboard link leaves the check unapproved and ask
 test("a reply from someone who can't answer gets a note; the delegator's reply requests changes", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     await f.orchestrator.onLinearEvent(prompted("Accept", "someone-else"));
-    expect((await getQuestion(sqliteDb(f.db), open.id))?.status).toBe("open");
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
-    expect(
-      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toHaveLength(0);
+    expect((await getQuestion(f.db, open.id))?.status).toBe("open");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
+    expect((await listJobs(f.db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
     expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(1);
 
     await f.orchestrator.onLinearEvent(prompted("Looks good", "delegator-1", "activity:ok"));
-    expect(await getQuestion(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getQuestion(f.db, open.id)).toMatchObject({
       status: "answered",
       answeredBy: "delegator-1",
     });
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "changes_requested",
       feedback: "Looks good",
     });
@@ -195,11 +189,11 @@ test("a reply from someone who can't answer gets a note; the delegator's reply r
 test("the project lead can approve on the page and nobody else can", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     expect(await f.approve("someone-else")).toBe("forbidden");
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.outcome).toBeNull();
+    expect((await getVisualReview(f.db, open.id))?.outcome).toBeNull();
     expect(await f.approve("lead-1")).toBe("answered");
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "accepted",
       answeredBy: "lead-1",
     });
@@ -231,8 +225,8 @@ test("the reminder is posted once after 24 hours, without buttons", async () => 
       "Decide in Paws: https://paws.example/dashboard/issues/ENG-7#visual-review",
     );
     expect(last).not.toHaveProperty("options");
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
-    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).not.toBeNull();
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
+    expect(await findOpenQuestion(f.db, "ses_1")).not.toBeNull();
   } finally {
     await f.close();
   }
@@ -241,20 +235,20 @@ test("the reminder is posted once after 24 hours, without buttons", async () => 
 test("a Linear stop holds the review until the task resumes", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     await f.orchestrator.onLinearEvent({
       ...prompted("", "delegator-1"),
       body: null,
       signal: "stop",
     });
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("paused");
-    expect((await getQuestion(sqliteDb(f.db), open.id))?.status).toBe("open");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("paused");
+    expect((await getQuestion(f.db, open.id))?.status).toBe("open");
 
     f.advance(VISUAL_REVIEW_REMINDER_MS);
     await f.tickAll();
     expect(f.reminders()).toBe(0);
     expect(await f.approve("delegator-1", open.id)).toBe("rejected");
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.outcome).toBeNull();
+    expect((await getVisualReview(f.db, open.id))?.outcome).toBeNull();
   } finally {
     await f.close();
   }
@@ -263,11 +257,11 @@ test("a Linear stop holds the review until the task resumes", async () => {
 test("Approve on the page records the approval, passes the check and opens the pull request", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
     const wip = item.checkpoint?.wipCommit;
     expect(wip).toMatch(/^[0-9a-f]{40}$/);
-    await putWorkspaceUser(sqliteDb(f.db), {
+    await putWorkspaceUser(f.db, {
       id: "user-ada",
       linearUserId: "delegator-1",
       name: "Ada Reviewer",
@@ -275,13 +269,13 @@ test("Approve on the page records the approval, passes the check and opens the p
     });
 
     expect(await f.approve()).toBe("answered");
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "accepted",
       answeredBy: "delegator-1",
       headCommit: wip,
-      evidenceIds: (await listEvidence(sqliteDb(f.db), item.id)).map((row) => row.id),
+      evidenceIds: (await listEvidence(f.db, item.id)).map((row) => row.id),
     });
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.answeredAt).toBeNumber();
+    expect((await getVisualReview(f.db, open.id))?.answeredAt).toBeNumber();
 
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.github.opened).toHaveLength(1);
@@ -294,7 +288,7 @@ test("Approve on the page records the approval, passes the check and opens the p
     // Approve completes the evaluation of the reviewed head: no agent turn.
     expect(f.prompts).toHaveLength(1);
     expect(f.tracker.questions).toHaveLength(1);
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).not.toBe("awaiting_input");
+    expect((await getWorkItem(f.db, item.id))?.state).not.toBe("awaiting_input");
   } finally {
     await f.close();
   }
@@ -303,13 +297,13 @@ test("Approve on the page records the approval, passes the check and opens the p
 test("Accept replied in Linear requests changes and never approves", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "changes_requested",
       feedback: "Accept",
     });
-    expect((await getLinkAsk(sqliteDb(f.db), open.id))?.closedReason).toBe("guidance");
+    expect((await getLinkAsk(f.db, open.id))?.closedReason).toBe("guidance");
     await f.until(() => f.notes(VISUAL_REVIEW_REPLY_NOTE) === 1);
     expect(f.github.opened).toHaveLength(0);
   } finally {
@@ -320,18 +314,18 @@ test("Accept replied in Linear requests changes and never approves", async () =>
 test("a reply in Linear requests changes, and new screenshots ask again", async () => {
   const f = await pausedForReview();
   try {
-    const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const first = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
 
     await f.orchestrator.onLinearEvent(
       prompted("Make the hint under Model shorter", "delegator-1", "activity:changes"),
     );
-    expect(await getVisualReview(sqliteDb(f.db), first.id)).toMatchObject({
+    expect(await getVisualReview(f.db, first.id)).toMatchObject({
       outcome: "changes_requested",
       feedback: "Make the hint under Model shorter",
     });
-    const before = (await listEvidence(sqliteDb(f.db), item.id)).map((row) => row.id);
-    const rejectedBefore = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
+    const before = (await listEvidence(f.db, item.id)).map((row) => row.id);
+    const rejectedBefore = await f.db.run((q) => rejectedEvidenceIdsSteps(q, item.id));
     expect([...rejectedBefore].sort()).toEqual(before.sort());
 
     await f.driveUntil(() => f.tracker.questions.length === 2);
@@ -341,10 +335,10 @@ test("a reply in Linear requests changes, and new screenshots ask again", async 
     expect(second.body).toContain("shot-3.png");
     expect(second.body).toContain("shot-4.png");
     expect(second.body).not.toContain("shot-1.png");
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
-    const rejected = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
+    const rejected = await f.db.run((q) => rejectedEvidenceIdsSteps(q, item.id));
     expect(
-      (await listEvidence(sqliteDb(f.db), item.id))
+      (await listEvidence(f.db, item.id))
         .filter((row) => !rejected.has(row.id))
         .map((row) => row.displayName),
     ).toEqual(["shot-3.png", "shot-4.png"]);
@@ -364,9 +358,9 @@ test("Request changes from the run page hands the marked screenshot and note to 
     },
   });
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
-    const shot = (await listEvidence(sqliteDb(f.db), item.id))[1]!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
+    const shot = (await listEvidence(f.db, item.id))[1]!;
     const marked = Buffer.concat([PNG, Buffer.from("red circle")]);
     const mark = {
       id: "01JAAAAAAAAAAAAAAAAAAAAAAA",
@@ -386,8 +380,8 @@ test("Request changes from the run page hands the marked screenshot and note to 
         actor: await f.actor("someone-else"),
       }),
     ).toBe("forbidden");
-    expect((await getQuestion(sqliteDb(f.db), open.id))?.status).toBe("open");
-    expect(await listVisualReviewMarks(sqliteDb(f.db), open.id)).toEqual([]);
+    expect((await getQuestion(f.db, open.id))?.status).toBe("open");
+    expect(await listVisualReviewMarks(f.db, open.id)).toEqual([]);
 
     expect(
       await f.orchestrator.requestVisualReviewChanges({
@@ -396,12 +390,12 @@ test("Request changes from the run page hands the marked screenshot and note to 
         actor: await f.actor("delegator-1"),
       }),
     ).toBe("answered");
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "changes_requested",
       answeredBy: "delegator-1",
       feedback: "Move the save button left",
     });
-    expect(await listVisualReviewMarks(sqliteDb(f.db), open.id)).toEqual([mark]);
+    expect(await listVisualReviewMarks(f.db, open.id)).toEqual([mark]);
     expect(
       await f.orchestrator.requestVisualReviewChanges({
         ...request,
@@ -451,9 +445,9 @@ test("after three rounds of changes Paws asks whether to keep going instead of r
     const asked = f.tracker.questions.at(-1)!;
     expect(asked.body).toContain(visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS));
     expect(asked.options).toEqual(["Keep going"]);
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
     expect(
-      (await listJobs(sqliteDb(f.db))).filter(
+      (await listJobs(f.db)).filter(
         (job) => job.queue === JOB_KIND.resume && job.finishedAt === null,
       ),
     ).toEqual([]);
@@ -483,17 +477,17 @@ test("a change under the check's paths after acceptance asks again", async () =>
     },
   });
   try {
-    const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const first = (await findOpenQuestion(f.db, "ses_1"))!;
     expect(await f.approve()).toBe("answered");
     await f.orchestrator.onLinearEvent(followUp());
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
-    expect((await getVisualReview(sqliteDb(f.db), first.id))?.outcome).toBe("stale");
+    expect((await getVisualReview(f.db, first.id))?.outcome).toBe("stale");
     expect(f.github.opened).toHaveLength(0);
     expect(f.prompts).toHaveLength(3);
     expect(f.prompts[2]).toContain("changed after its visual review was accepted");
     expect(f.tracker.questions[1]!.body).toContain("shot-3.png");
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
 
     expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
@@ -506,8 +500,8 @@ test("a change under the check's paths after acceptance asks again", async () =>
 test("a review accepted for some of the files asks again about the rest instead of blocking Closeout", async () => {
   const f = await pausedForReview();
   try {
-    const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const first = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
     await coverOnlyFirstShot(f.db, item.id, first.id);
 
     expect(await f.approve()).toBe("answered");
@@ -515,8 +509,8 @@ test("a review accepted for some of the files asks again about the rest instead 
 
     expectReviewOfSecondShot(f.tracker.questions[1]!);
     expect(f.log.at(-1)?.kind).toBe("elicitation");
-    expect((await getVisualReview(sqliteDb(f.db), first.id))?.outcome).toBe("accepted");
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
+    expect((await getVisualReview(f.db, first.id))?.outcome).toBe("accepted");
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
 
     expect(await f.approve()).toBe("answered");
@@ -530,18 +524,22 @@ test("a review accepted for some of the files asks again about the rest instead 
 test("retry on a task Closeout blocked for an uncovered file asks a new review round about it", async () => {
   const f = await pausedForReview();
   try {
-    const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const first = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
     await coverOnlyFirstShot(f.db, item.id, first.id);
     expect(await f.approve()).toBe("answered");
-    f.db.run("DELETE FROM job WHERE queue = ? AND finished_at IS NULL", [JOB_KIND.resume]);
-    const blocked = await openQuestion(sqliteDb(f.db), {
+    await seed(f.db, (q) =>
+      q.orm
+        .delete(q.t.job)
+        .where(and(eq(q.t.job.queue, JOB_KIND.resume), isNull(q.t.job.finishedAt))),
+    );
+    const blocked = await openQuestion(f.db, {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Closeout needs your help.",
       now: Date.now(),
     });
-    await saveCloseoutRecovery(sqliteDb(f.db), {
+    await saveCloseoutRecovery(f.db, {
       questionId: blocked.id,
       taskId: item.id,
       itemId: item.id,
@@ -552,13 +550,13 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
       retryBaseline: [],
       summary: "Closeout: blocked\nvisual-proof: missing",
     });
-    await applyWorkItemEvent(sqliteDb(f.db), item.id, "blocking_question");
+    await applyWorkItemEvent(f.db, item.id, "blocking_question");
 
     await f.orchestrator.onLinearEvent(prompted("retry", "delegator-1", "activity:retry"));
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
     expectReviewOfSecondShot(f.tracker.questions[1]!);
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
@@ -568,22 +566,22 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
 test("an accepted review at an unchanged head stays accepted when the checkpoint names another commit", async () => {
   const f = await pausedForReview();
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
     const head = item.checkpoint!.wipCommit!;
     const base = item.checkpoint!.baseSha!;
     expect(head).not.toBe(base);
-    await saveCheckpoint(sqliteDb(f.db), item.id, {
+    await saveCheckpoint(f.db, item.id, {
       phase: "awaiting_input",
       baseSha: base,
       wipCommit: base,
     });
 
     expect(await f.approve()).toBe("answered");
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.headCommit).toBe(head);
+    expect((await getVisualReview(f.db, open.id))?.headCommit).toBe(head);
 
     await f.driveUntil(() => f.github.opened.length > 0 || f.tracker.questions.length > 1);
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.outcome).toBe("accepted");
+    expect((await getVisualReview(f.db, open.id))?.outcome).toBe("accepted");
     expect(f.tracker.questions).toHaveLength(1);
     expect(f.github.opened).toHaveLength(1);
   } finally {
@@ -613,12 +611,12 @@ test("4 screens published 3 times ask one review of the 4 latest files, and Acce
     implement: (worktree, n) => (n === 1 ? publishScreensThreeTimes(worktree) : []),
   });
   try {
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
-    const rows = await listEvidence(sqliteDb(f.db), item.id);
+    const item = (await listWorkItems(f.db))[0]!;
+    const rows = await listEvidence(f.db, item.id);
     expect(rows).toHaveLength(12);
     const latest = rows.slice(8).map((row) => row.id);
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.evidenceIds).toEqual(latest);
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    expect((await getVisualReview(f.db, open.id))?.evidenceIds).toEqual(latest);
     const [question] = f.tracker.questions;
     expect(question!.body).toContain(`4 changed screens for visual-proof: ${SCREENS.join(", ")}.`);
 
@@ -671,19 +669,19 @@ async function republishedAfterAcceptance(again: Record<string, Buffer>) {
       return n === 3 ? publishScreens(worktree, n, again) : [];
     },
   });
-  await putWorkspaceUser(sqliteDb(f.db), {
+  await putWorkspaceUser(f.db, {
     id: "user-ada",
     linearUserId: "delegator-1",
     name: "Ada Reviewer",
     email: "ada@example.invalid",
   });
-  const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+  const first = (await findOpenQuestion(f.db, "ses_1"))!;
   expect(await f.approve()).toBe("answered");
   await f.orchestrator.onLinearEvent(followUp());
   await f.driveUntil(
     () => f.prompts.length === 3 && f.github.opened.length + f.tracker.questions.length > 1,
   );
-  expect((await getVisualReview(sqliteDb(f.db), first.id))?.outcome).toBe("stale");
+  expect((await getVisualReview(f.db, first.id))?.outcome).toBe("stale");
   return { f, first };
 }
 
@@ -695,22 +693,27 @@ test("republished screenshots with identical bytes pass visual-proof with no que
   try {
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.tracker.questions).toHaveLength(1);
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
-    const republished = (await listEvidence(sqliteDb(f.db), item.id)).slice(2);
-    const carried = f.db
-      .query<{ question_id: string }, [string]>(
-        "SELECT question_id FROM visual_review WHERE item_id = ? AND question_id LIKE 'carry_%'",
-      )
-      .all(item.id);
+    const item = (await listWorkItems(f.db))[0]!;
+    const republished = (await listEvidence(f.db, item.id)).slice(2);
+    const carried = await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ questionId: q.t.visualReview.questionId })
+          .from(q.t.visualReview)
+          .where(
+            and(eq(q.t.visualReview.itemId, item.id), like(q.t.visualReview.questionId, "carry_%")),
+          ),
+      ),
+    );
     expect(carried).toHaveLength(1);
-    const review = (await getVisualReview(sqliteDb(f.db), carried[0]!.question_id))!;
+    const review = (await getVisualReview(f.db, carried[0]!.questionId))!;
     expect(review).toMatchObject({
       outcome: "accepted",
       answeredBy: "delegator-1",
       evidenceIds: republished.map((row) => row.id),
     });
-    const approvedAt = (await getVisualReview(sqliteDb(f.db), first.id))!.answeredAt!;
-    const earlier = await listEvidence(sqliteDb(f.db), item.id);
+    const approvedAt = (await getVisualReview(f.db, first.id))!.answeredAt!;
+    const earlier = await listEvidence(f.db, item.id);
     expect(review.carried).toEqual(
       republished.map((row, index) => ({
         evidenceId: row.id,
@@ -755,18 +758,18 @@ test("a screen within tolerance carries over, and a visibly changed one is asked
     expect(question.body).toContain(
       "1 changed screen for visual-proof: Settings 390. Unchanged since your approval, so not asked again: Settings desktop.",
     );
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
-    const [desktop, narrow] = (await listEvidence(sqliteDb(f.db), item.id)).slice(2);
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const review = (await getVisualReview(sqliteDb(f.db), open.id))!;
+    const item = (await listWorkItems(f.db))[0]!;
+    const [desktop, narrow] = (await listEvidence(f.db, item.id)).slice(2);
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    const review = (await getVisualReview(f.db, open.id))!;
     expect(review.evidenceIds).toEqual([desktop!.id, narrow!.id]);
     expect(review.carried).toEqual([
       {
         evidenceId: desktop!.id,
-        fromEvidenceId: (await listEvidence(sqliteDb(f.db), item.id))[0]!.id,
+        fromEvidenceId: (await listEvidence(f.db, item.id))[0]!.id,
         approvalId: first.id,
         approvedBy: "delegator-1",
-        approvedAt: (await getVisualReview(sqliteDb(f.db), first.id))!.answeredAt!,
+        approvedAt: (await getVisualReview(f.db, first.id))!.answeredAt!,
         match: "similar",
       },
     ]);
@@ -794,7 +797,7 @@ test("a screen with a new name is always asked", async () => {
     expect(question.body).toContain(
       "1 changed screen for visual-proof: Settings dark. Unchanged since your approval, so not asked again: Settings desktop.",
     );
-    expect((await listWorkItems(sqliteDb(f.db)))[0]!.state).toBe("awaiting_input");
+    expect((await listWorkItems(f.db))[0]!.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
@@ -854,22 +857,20 @@ test("the visual review waits beside the commands and the independent review of 
   const f = await pausedForReview({ gate });
   try {
     await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const item = (await listWorkItems(f.db))[0]!;
     // Both are in flight: the question is open while Closeout runs on the same head.
     expect(item.state).toBe("verifying");
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
     expect(open.kind).toBe("link");
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.headCommit).toBe(
-      gate.runs[0]!.headSha,
-    );
+    expect((await getVisualReview(f.db, open.id))?.headCommit).toBe(gate.runs[0]!.headSha);
 
     gate.next = pendingHuman(gate.runs[0]!.headSha);
     release();
     await f.turn;
     await f.tickAll();
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
-    expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.id).toBe(open.id);
-    expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
+    expect((await findOpenQuestion(f.db, "ses_1"))?.id).toBe(open.id);
+    expect(await runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
 
     // The gate reads approvals: once the person accepts, later runs pass the check.
     gate.decided = ACCEPTED;
@@ -893,7 +894,7 @@ test("Accept while the commands still run passes the check, and the evaluation c
   try {
     await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
     expect(await f.approve()).toBe("answered");
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const item = (await listWorkItems(f.db))[0]!;
     expect(item.state).toBe("verifying");
     expect(gate.decisions).toHaveLength(0);
 
@@ -923,27 +924,28 @@ test("Request changes while the commands still run restarts the item for review"
     await f.orchestrator.onLinearEvent(
       prompted("Make the hint under Model shorter", "delegator-1", "activity:changes"),
     );
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const item = (await listWorkItems(f.db))[0]!;
     expect(item.state).toBe("queued");
     expect(
-      f.db
-        .query<{ reason: string }, [string]>(
-          "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart'",
-        )
-        .all(item.id),
+      await f.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ reason: q.t.workItemEvent.reason })
+            .from(q.t.workItemEvent)
+            .where(
+              and(eq(q.t.workItemEvent.itemId, item.id), eq(q.t.workItemEvent.kind, "restart")),
+            ),
+        ),
+      ),
     ).toEqual([{ reason: "review" }]);
     release();
     await f.turn;
     // The accepted verdict of the replaced head does not reach the merge queue.
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).not.toBe("merge_queue");
+    expect((await getWorkItem(f.db, item.id))?.state).not.toBe("merge_queue");
     expect(f.github.opened).toHaveLength(0);
     gate.next = pendingHuman("");
     // The runner settles the stopped work, and the scheduler places the restarted item.
-    await releaseRunCapacity(
-      sqliteDb(f.db),
-      (await getWorkItem(sqliteDb(f.db), item.id))!.currentRunId!,
-      Date.now(),
-    );
+    await releaseRunCapacity(f.db, (await getWorkItem(f.db, item.id))!.currentRunId!, Date.now());
     await f.orchestrator.reconcileExecution();
     await f.driveUntil(() => f.prompts.length === 2);
     expect(f.prompts[1]).toContain("Make the hint under Model shorter");
@@ -978,10 +980,10 @@ async function headOf(worktree: string): Promise<string> {
 }
 
 /** The item verifies its current head again, as after a rebase in the lane. */
-async function reverifyNow(db: Database, itemId: string, key: string): Promise<void> {
-  await applyWorkItemEvent(sqliteDb(db), itemId, "answer_received");
-  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
-  await enqueueJobOnce(sqliteDb(db), {
+async function reverifyNow(db: Db, itemId: string, key: string): Promise<void> {
+  await applyWorkItemEvent(db, itemId, "answer_received");
+  await applyWorkItemEvent(db, itemId, "turn_ended");
+  await enqueueJobOnce(db, {
     queue: JOB_KIND.reverify,
     jobKey: key,
     payload: { itemId },
@@ -1001,9 +1003,9 @@ test("a rebase that keeps the patch-id keeps the pending visual review open for 
     },
   });
   try {
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
-    const reviewed = (await getVisualReview(sqliteDb(f.db), open.id))!.headCommit!;
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
+    const reviewed = (await getVisualReview(f.db, open.id))!.headCommit!;
     expect(item.state).toBe("awaiting_input");
 
     await rebaseOntoNewMain(f, worktree);
@@ -1014,15 +1016,15 @@ test("a rebase that keeps the patch-id keeps the pending visual review open for 
 
     expect(gate.runs.map((entry) => entry.headSha).at(-1)).toBe(rebased);
     expect(f.tracker.questions).toHaveLength(1);
-    expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.id).toBe(open.id);
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
+    expect((await findOpenQuestion(f.db, "ses_1"))?.id).toBe(open.id);
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
 
     // The gate reads approvals: once the person accepts, later runs pass the check.
     gate.decided = ACCEPTED;
     gate.next = ACCEPTED;
     expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
-    expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
+    expect(await getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "accepted",
       headCommit: reviewed,
     });
@@ -1045,17 +1047,17 @@ test("a rebase that keeps the patch-id carries an accepted visual review to the 
     },
   });
   try {
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const item = (await listWorkItems(f.db))[0]!;
     // Accepted while Closeout still ran on the reviewed head; the head then moves.
-    const open = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    await applyWorkItemEvent(sqliteDb(f.db), item.id, "answer_received");
-    await applyWorkItemEvent(sqliteDb(f.db), item.id, "turn_ended");
+    const open = (await findOpenQuestion(f.db, "ses_1"))!;
+    await applyWorkItemEvent(f.db, item.id, "answer_received");
+    await applyWorkItemEvent(f.db, item.id, "turn_ended");
     expect(await f.approve()).toBe("answered");
-    expect((await getVisualReview(sqliteDb(f.db), open.id))?.outcome).toBe("accepted");
+    expect((await getVisualReview(f.db, open.id))?.outcome).toBe("accepted");
     await rebaseOntoNewMain(f, worktree);
     const rebased = await headOf(worktree);
     gate.decided = ACCEPTED;
-    await enqueueJobOnce(sqliteDb(f.db), {
+    await enqueueJobOnce(f.db, {
       queue: JOB_KIND.reverify,
       jobKey: "rebased",
       payload: { itemId: item.id },
@@ -1086,8 +1088,8 @@ test("a new head with a different patch-id cancels the pending visual review and
     },
   });
   try {
-    const first = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
-    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
+    const first = (await findOpenQuestion(f.db, "ses_1"))!;
+    const item = (await listWorkItems(f.db))[0]!;
     await writeFile(path.join(worktree, "settings.html"), "<p>new layout</p>\n");
     await exec("git", ["-C", worktree, "add", "."]);
     await exec("git", [...IDENTITY, "-C", worktree, "commit", "-m", "New layout"]);
@@ -1095,23 +1097,25 @@ test("a new head with a different patch-id cancels the pending visual review and
     await reverifyNow(f.db, item.id, "changed");
     await f.tickAll();
 
-    expect((await getQuestion(sqliteDb(f.db), first.id))?.status).toBe("cancelled");
+    expect((await getQuestion(f.db, first.id))?.status).toBe("cancelled");
     expect(f.tracker.questions).toHaveLength(2);
-    const second = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
+    const second = (await findOpenQuestion(f.db, "ses_1"))!;
     expect(second.id).not.toBe(first.id);
-    expect((await getVisualReview(sqliteDb(f.db), second.id))?.headCommit).toBe(changed);
-    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
+    expect((await getVisualReview(f.db, second.id))?.headCommit).toBe(changed);
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
   } finally {
     await f.close();
   }
 }, 120_000);
 
-async function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): Promise<void> {
-  const [shot] = await listEvidence(sqliteDb(db), itemId);
-  db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
-    JSON.stringify([shot!.id]),
-    questionId,
-  ]);
+async function coverOnlyFirstShot(db: Db, itemId: string, questionId: string): Promise<void> {
+  const [shot] = await listEvidence(db, itemId);
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.visualReview)
+      .set({ evidenceIds: jsonValue(q, [shot!.id]) })
+      .where(eq(q.t.visualReview.questionId, questionId)),
+  );
 }
 
 /** shot-1.png carries its acceptance over; only shot-2.png is asked. */
@@ -1158,14 +1162,13 @@ async function pausedForReview(
   };
   let offset = 0;
   const clock: Clock = { now: () => Date.now() + offset, mono: () => performance.now() + offset };
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close: closeDb } = await tempStore();
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const evidenceRoot = path.join(layout.pawsRoot, "evidence");
   let spacing = 0;
   const store = createEvidenceStore({
-    store: sqliteDb(db),
+    store: db,
     root: evidenceRoot,
     now: () => clock.now() + spacing,
   });
@@ -1225,7 +1228,7 @@ async function pausedForReview(
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1256,9 +1259,9 @@ async function pausedForReview(
     ...(options.gate ? { closeoutGate: () => options.gate! } : {}),
   });
   await orchestrator.onLinearEvent(created());
-  db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
-  const itemId = (await listWorkItems(sqliteDb(db)))[0]!.id;
-  await sqliteDb(db).run((q) =>
+  await seed(db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
+  const itemId = (await listWorkItems(db))[0]!.id;
+  await db.run((q) =>
     saveSchedulingContextSteps(q, {
       itemId,
       projectId: "project-1",
@@ -1271,7 +1274,7 @@ async function pausedForReview(
     await running;
     await outboxIdle(outbox);
     expect(
-      (await listEvidence(sqliteDb(db), (await listWorkItems(sqliteDb(db)))[0]!.id)).length,
+      (await listEvidence(db, (await listWorkItems(db))[0]!.id)).length,
     ).toBeGreaterThanOrEqual(2);
   }
   return {
@@ -1311,12 +1314,10 @@ async function pausedForReview(
     async driveUntil(done: () => boolean) {
       const deadline = Date.now() + 90_000;
       while (!done()) {
-        if (Date.now() > deadline) throw new Error(JSON.stringify(await listJobs(sqliteDb(db))));
-        const state = (await listWorkItems(sqliteDb(db)))[0]!.state;
+        if (Date.now() > deadline) throw new Error(JSON.stringify(await listJobs(db)));
+        const state = (await listWorkItems(db))[0]!.state;
         if (state === "failed")
-          throw new Error(
-            `task ${state}: ${JSON.stringify((await listWorkItems(sqliteDb(db)))[0])}`,
-          );
+          throw new Error(`task ${state}: ${JSON.stringify((await listWorkItems(db))[0])}`);
         const job = await jobs.tick();
         await outboxIdle(outbox);
         if (job === null) await Bun.sleep(20);
@@ -1327,22 +1328,31 @@ async function pausedForReview(
     },
     /** The signed-in Paws account of Linear user `by`, for the Audit history row. */
     async actor(by: string) {
+      const [existing] = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: q.t.workspaceUser.id })
+            .from(q.t.workspaceUser)
+            .where(eq(q.t.workspaceUser.linearUserId, by)),
+        ),
+      );
       const userId =
-        db
-          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
-          .get(by)?.id ??
-        (await putWorkspaceUser(sqliteDb(db), {
+        existing?.id ??
+        (await putWorkspaceUser(db, {
           id: `user-${by}`,
           linearUserId: by,
           name: by,
           email: `${by}@example.invalid`,
         }));
-      const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
+      const [workspace] = await db.run((q) =>
+        q.all(q.orm.select({ id: q.t.workspace.id }).from(q.t.workspace)),
+      );
+      const workspaceId = workspace!.id;
       return { workspaceId, userId, name: by };
     },
     /** Approve on the item page: the only way a person approves the screens. */
     async approve(by = "delegator-1", chosen?: string) {
-      const questionId = chosen ?? (await findOpenQuestion(sqliteDb(db), "ses_1"))?.id;
+      const questionId = chosen ?? (await findOpenQuestion(db, "ses_1"))?.id;
       if (questionId === undefined) throw new Error("No visual review is waiting");
       return orchestrator.decideLinkAsk({
         questionId,
@@ -1363,7 +1373,7 @@ async function pausedForReview(
     },
     async close() {
       await orchestrator.shutdown();
-      db.close();
+      await closeDb();
       await layout.cleanup();
     },
   };
@@ -1377,66 +1387,38 @@ async function outboxIdle(outbox: OutboxDispatcher): Promise<void> {
   }
 }
 
-function leaseActiveRun(db: Database): Promise<string> {
+function leaseActiveRun(db: Db): Promise<string> {
   return (async () => {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
-      const item = (await listWorkItems(sqliteDb(db)))[0];
-      const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
-      if (run?.status === "active") return await attachLease(db, run.id);
+      const item = (await listWorkItems(db))[0];
+      const run = item?.currentRunId ? await getRun(db, item.currentRunId) : null;
+      if (run?.status === "active")
+        return await seedRunnerLease(db, run.id, { teardownConfirmed: true });
       await Bun.sleep(10);
     }
     throw new Error("implement run did not become active");
   })();
 }
 
-async function attachLease(db: Database, runId: string): Promise<string> {
-  const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
-    id: "user-1",
-    linearUserId: "user-linear",
-    name: "Owner",
-    email: "owner@example.invalid",
-  });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  await syncWorkspaceMember(sqliteDb(db), {
-    workspaceId: "ws-1",
-    userId,
-    role: "admin",
-    active: true,
-    teamIds: [],
-    now,
-  });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-    ["runner-1", "ws-1", userId, "Runner", now, now],
-  );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,teardown_confirmed_at) VALUES(?,?,?,1,0,?,?,0,?)",
-    [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 60_000, now],
-  );
-  return "runner-1";
-}
-
 async function repoLayout(policy: string) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-visual-review-"));
   const bare = path.join(root, "origin.git");
-  const seed = path.join(root, "seed");
+  const clone = path.join(root, "seed");
   const pawsRoot = path.join(root, "paws");
   const home = path.join(root, "home");
   await mkdir(home, { recursive: true });
   await mkdir(pawsRoot, { recursive: true });
   await exec("git", ["init", "--bare", "-b", "main", bare]);
-  await exec("git", ["clone", bare, seed]);
-  await exec("git", ["-C", seed, "config", "user.email", "paws-test@example.com"]);
-  await exec("git", ["-C", seed, "config", "user.name", "Paws Test"]);
-  await exec("git", ["-C", seed, "config", "commit.gpgsign", "false"]);
-  await mkdir(path.join(seed, ".agents"), { recursive: true });
-  await writeFile(path.join(seed, ".agents", "closeout.yaml"), policy);
-  await writeFile(path.join(seed, "README.md"), "paws demo\n");
-  await exec("git", ["-C", seed, "add", "."]);
-  await exec("git", ["-C", seed, "commit", "-m", "init"]);
-  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+  await exec("git", ["clone", bare, clone]);
+  await exec("git", ["-C", clone, "config", "user.email", "paws-test@example.com"]);
+  await exec("git", ["-C", clone, "config", "user.name", "Paws Test"]);
+  await exec("git", ["-C", clone, "config", "commit.gpgsign", "false"]);
+  await mkdir(path.join(clone, ".agents"), { recursive: true });
+  await writeFile(path.join(clone, ".agents", "closeout.yaml"), policy);
+  await writeFile(path.join(clone, "README.md"), "paws demo\n");
+  await exec("git", ["-C", clone, "add", "."]);
+  await exec("git", ["-C", clone, "commit", "-m", "init"]);
+  await exec("git", ["-C", clone, "push", "origin", "HEAD:main"]);
   return { root, bare, pawsRoot, home, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
