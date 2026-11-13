@@ -3,13 +3,46 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HostDiskFullError, isDiskFullText } from "../core";
 import { journal, journalCaught } from "../journal";
+import { repoApiPath } from "./client";
 import { gitTempDirectory } from "./temp";
-import { GitCommandError, type GitExec } from "./types";
+import { GitCommandError, type GitExec, type GitHubClient } from "./types";
 
 /** A branch literally named `HEAD`, which some repositories carry by accident. */
 const HEAD_BRANCH = "refs/heads/HEAD";
 /** Where a candidate pushed from a named ref lands in the publication repository. */
 const STAGED_CANDIDATE = "refs/paws/staged-candidate";
+
+export async function moveBranchToCandidate(input: {
+  client: GitHubClient;
+  owner: string;
+  repo: string;
+  branch: string;
+  sha: string;
+  token: string;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const call = (method: "GET" | "POST" | "PATCH", suffix: string, body?: unknown) =>
+    input.client.request({
+      method,
+      path: repoApiPath(input.owner, input.repo, suffix),
+      token: input.token,
+      signal: input.signal,
+      ...(body === undefined ? {} : { body }),
+    });
+  const read = await call("GET", `/git/ref/heads/${input.branch}`);
+  const tip = (read.body as { object?: { sha?: unknown } } | null)?.object?.sha;
+  if (read.status === 200 && typeof tip === "string" && tip.toLowerCase() === input.sha) return;
+  if (read.status !== 200 && read.status !== 404)
+    throw new Error(`reading ${input.branch} failed with status ${read.status}`);
+  const moved =
+    read.status === 404
+      ? await call("POST", "/git/refs", { ref: `refs/heads/${input.branch}`, sha: input.sha })
+      : await call("PATCH", `/git/refs/heads/${input.branch}`, { sha: input.sha, force: true });
+  if (moved.status !== 200 && moved.status !== 201)
+    throw new Error(
+      `moving ${input.branch} to ${input.sha.slice(0, 7)} failed with status ${moved.status}`,
+    );
+}
 
 export function publicationEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {

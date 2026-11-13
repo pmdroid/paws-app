@@ -151,3 +151,19 @@ export async function readBranchWork(
     throw new Error(`Could not compare ${input.branch} with main`);
   return { pull, commits: ahead };
 }
+
+export async function readBranchTip(input: HeadRead & { branch: string }): Promise<string | null> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/git/ref/heads/${input.branch}`),
+    token,
+    signal: input.signal,
+  });
+  if (read.status === 404) return null;
+  const object = (read.body as { object?: { sha?: unknown; type?: unknown } } | null)?.object;
+  if (read.status !== 200 || object?.type !== "commit" || typeof object.sha !== "string")
+    throw new Error(`Could not read the tip of ${input.branch}`);
+  return object.sha.toLowerCase();
+}

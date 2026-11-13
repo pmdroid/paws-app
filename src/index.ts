@@ -1971,6 +1971,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
+        githubMirrors: loadConfigFile(paths.configFile).githubMirrors !== false,
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
           limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),

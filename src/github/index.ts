@@ -159,7 +159,13 @@ export { useGitTempDirectory } from "./temp";
 export { closeStoppedPull } from "./stopped";
 export { deleteHiddenRef } from "./hidden-ref";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
-export { branchContains, hasOpenPullOnPrefix, readBranchWork, readOpenPullHead } from "./pull-head";
+export {
+  branchContains,
+  hasOpenPullOnPrefix,
+  readBranchTip,
+  readBranchWork,
+  readOpenPullHead,
+} from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";
 export {
   createGitHubGitReader,
