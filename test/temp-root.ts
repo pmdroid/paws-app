@@ -1,3 +1,4 @@
+import { afterAll } from "bun:test";
 import {
   lstatSync,
   mkdtempSync,
@@ -74,6 +75,7 @@ for (const role of ["AUTHOR", "COMMITTER"]) {
   process.env[`GIT_${role}_EMAIL`] = "test@paws.invalid";
 }
 const removeRoot = () => rmSync(root, { recursive: true, force: true });
+afterAll(removeRoot);
 process.on("exit", removeRoot);
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
