@@ -14,6 +14,8 @@ import {
   runnerCommandAccount,
   type RunnerLoginUpdate,
   isRunnerToken,
+  agentCredentialReturnContext,
+  sealForRunner,
 } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
@@ -803,11 +805,20 @@ export async function executeRunnerCommand(
     : options.home;
   let credentialsReturned = false;
   const returnCredentials = () => {
-    if (credentialsReturned || job.credentials !== true || !binding) return;
+    const recipient = job.credentials?.certificate;
+    if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
     try {
       returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
-        replaceOutputFile(options, "credentials.json", JSON.stringify(files)),
+        replaceOutputFile(
+          options,
+          "credentials.json",
+          sealForRunner(
+            recipient,
+            JSON.stringify(files),
+            agentCredentialReturnContext(job.executionId),
+          ),
+        ),
       );
     } catch (error) {
       journalCaught(

@@ -238,6 +238,7 @@ export {
   RunnerAgentCredentialReceiptSchema,
   RunnerAgentCredentialUploadSchema,
   agentCredentialContext,
+  agentCredentialReturnContext,
   agentCredentialDigest,
   openForRunner,
   sealForRunner,

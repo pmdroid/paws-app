@@ -124,7 +124,7 @@ export function readRunnerResultFile(
 ): Buffer {
   const limits = {
     "candidate.bundle": 536_870_912,
-    "credentials.json": 1_310_720,
+    "credentials.json": 2_097_152,
     "events.jsonl": 16_777_216,
     "result.json": 1_048_576,
     "phase.txt": 32,

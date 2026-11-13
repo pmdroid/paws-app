@@ -21,6 +21,7 @@ import {
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
   agentCredentialContext,
+  agentCredentialReturnContext,
   sealForRunner,
   signRunnerCommand,
   type RunnerCommand,
@@ -149,17 +150,31 @@ async function withRunner(
 const token = (value: string) =>
   Buffer.from(`{"claudeAiOauth":{"refreshToken":"${value}"}}`).toString("base64");
 
+const EXECUTION = "01J0000000000000000000EXE1";
+
 function agentTurn(daemon: ReturnType<typeof openRunnerDaemon>, home: string, commandId: string) {
   let returned: Buffer | null = null;
   returnRunnerAgentCredentials(
     join(home, ".paws-accounts", account.bindingId),
     "claude",
-    "01J0000000000000000000EXE1",
+    EXECUTION,
     (files) => {
-      returned = Buffer.from(JSON.stringify(files));
+      returned = Buffer.from(
+        sealForRunner(
+          daemon.credentialRecipient(),
+          JSON.stringify(files),
+          agentCredentialReturnContext(EXECUTION),
+        ),
+      );
     },
   );
-  daemon.returnCredentials(commandId, returned);
+  expect(String(returned)).not.toContain("refreshToken");
+  daemon.returnCredentials(commandId, EXECUTION, returned);
+}
+
+async function sync(daemon: ReturnType<typeof openRunnerDaemon>) {
+  await daemon.heartbeat(undefined, undefined, undefined, []);
+  await daemon.credentialSync();
 }
 
 const sent = (uploads: unknown[]) =>
@@ -206,16 +221,16 @@ test("a stored sign-in is written for the run, an agent-owned 0600 refresh reach
     expect(JSON.parse(readFileSync(state, "utf8")).hasCompletedOnboarding).toBe(true);
 
     plane.failUploads = true;
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(uploads).toEqual([]);
 
     plane.failUploads = false;
     plane.receipt = "stale_version";
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(sent(uploads)).toEqual([[4, token("r2")]]);
 
     plane.receipt = "written";
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(uploads.at(-1)).toEqual({
       accountId: account.accountId,
       version: 4,
@@ -223,7 +238,7 @@ test("a stored sign-in is written for the run, an agent-owned 0600 refresh reach
     });
 
     await daemon.acknowledgeCommand("check-1");
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(uploads).toHaveLength(2);
     expect(daemon.carriesCredential("check-1")).toBe(false);
     expect(JSON.parse(readFileSync(state, "utf8")).hasCompletedOnboarding).toBe(true);
@@ -234,9 +249,9 @@ test("a missing credentials result keeps the stored version and the runner's cop
   await withRunner(async ({ daemon, home, uploads, plane }) => {
     plane.commands = () => [command("check-2", "login_check")];
     await daemon.pollCommands();
-    daemon.returnCredentials("check-2", null);
+    daemon.returnCredentials("check-2", EXECUTION, null);
     await daemon.acknowledgeCommand("check-2");
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(uploads).toEqual([]);
     expect(existsSync(join(home, ".paws-accounts/binding-1/.claude/.credentials.json"))).toBe(
       false,
@@ -256,7 +271,7 @@ test("a sign-in on the runner uploads the new files as the first stored version"
     });
     agentTurn(daemon, home, "login-1");
     await daemon.acknowledgeCommand("login-1");
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(uploads).toEqual([
       {
         accountId: account.accountId,
@@ -297,19 +312,34 @@ test("an upload whose answer was lost is sent again unchanged, and the next comm
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}');
     agentTurn(daemon, home, "check-4");
     plane.receipt = "busy";
-    await daemon.heartbeat(undefined, undefined, undefined, []).catch(() => {});
+    await sync(daemon);
     plane.commands = () => [command("check-5", "login_check")];
     await daemon.pollCommands();
     expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r2"}}');
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r3"}}');
     agentTurn(daemon, home, "check-5");
     plane.receipt = "written";
-    await daemon.heartbeat(undefined, undefined, undefined, []);
+    await sync(daemon);
     expect(sent(uploads)).toEqual([
       [4, token("r2")],
       [4, token("r2")],
       [5, token("r3")],
     ]);
     expect(existsSync(credentials)).toBe(false);
+  });
+}, 30_000);
+
+test("an unchanged sign-in the agent removed is written again for the next command", async () => {
+  await withRunner(async ({ daemon, home, uploads, plane }) => {
+    plane.commands = () => [command("check-6", "login_check")];
+    await daemon.pollCommands();
+    const credentials = join(home, ".paws-accounts/binding-1/.claude/.credentials.json");
+    agentTurn(daemon, home, "check-6");
+    expect(existsSync(credentials)).toBe(false);
+    plane.commands = () => [command("check-7", "login_check")];
+    expect((await daemon.pollCommands()).rejected).toEqual([]);
+    expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
+    await sync(daemon);
+    expect(uploads).toEqual([]);
   });
 }, 30_000);

@@ -36,4 +36,5 @@ export const agentCredential = sqliteTable("agent_credential", {
   commands: text("commands").notNull(),
   upload: text("upload"),
   latest: text("latest"),
+  files: text("files"),
 });

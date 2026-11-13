@@ -22,6 +22,7 @@ import {
   RunnerAgentCredentialFilesSchema,
   RunnerAgentCredentialReceiptSchema,
   agentCredentialContext,
+  agentCredentialReturnContext,
   agentCredentialDigest,
   openForRunner,
   runnerCommandAccount,
@@ -427,9 +428,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (held && held.accountId !== accountId) throw new Error("Agent account binding changed.");
     let written: RunnerAgentCredentialFiles = [];
     try {
-      const newest = held?.latest ?? held?.upload;
-      if (newest) written = credentialFiles(newest);
-      else if (credential.sealed && !held) {
+      if (held?.files) written = credentialFiles(held.files);
+      else if (credential.sealed) {
         const context = agentCredentialContext(command.id, accountId, credential.version);
         written = credentialFiles(
           openForRunner(localKey(options.root), credential.sealed, context),
@@ -455,6 +455,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         version: credential.version,
         digest: agentCredentialDigest(written),
         commands: JSON.stringify([command.id]),
+        ...(written.length ? { files: JSON.stringify(written) } : {}),
       }),
     );
   }
@@ -465,13 +466,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       .all()
       .find((row) => (JSON.parse(row.commands) as string[]).includes(commandId));
   }
-  function returnCredentials(commandId: string, returned: Buffer | null) {
+  function returnCredentials(commandId: string, executionId: string, returned: Buffer | null) {
     const row = heldCredential(commandId);
     if (!row) return;
     let files: RunnerAgentCredentialFiles;
     try {
       if (returned === null) throw new Error("credentials.json is missing");
-      files = credentialFiles(returned.toString("utf8"));
+      files = credentialFiles(
+        openForRunner(
+          localKey(options.root),
+          returned.toString("utf8"),
+          agentCredentialReturnContext(executionId),
+        ),
+      );
     } catch (error) {
       journal(
         `runner.agent_credential.not_returned binding=${row.bindingId} command=${commandId} reason=${error instanceof Error ? error.message : "unreadable"}`,
@@ -480,17 +487,23 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     }
     const newest = row.latest ?? row.upload;
     const known = newest ? agentCredentialDigest(credentialFiles(newest)) : row.digest;
-    if (files.length === 0 || agentCredentialDigest(files) === known) return;
+    if (files.length === 0) return;
+    const changed = agentCredentialDigest(files) !== known;
     q.update(agentCredential)
-      .set({ latest: JSON.stringify(files) })
+      .set({ files: JSON.stringify(files), ...(changed ? { latest: JSON.stringify(files) } : {}) })
       .where(eq(agentCredential.bindingId, row.bindingId))
       .run();
   }
-  let syncing = false;
-  async function syncCredentials(live: readonly { runId: string; generation: number }[]) {
+  let syncing: Promise<void> | undefined;
+  function syncCredentials(live: readonly { runId: string; generation: number }[]) {
+    syncing ??= uploadCredentials(live).finally(() => {
+      syncing = undefined;
+    });
+    return syncing;
+  }
+  async function uploadCredentials(live: readonly { runId: string; generation: number }[]) {
     const files = options.agentCredentials;
-    if (!files || syncing) return;
-    syncing = true;
+    if (!files) return;
     const running = new Set(live.map(({ runId, generation }) => `${runId}:${generation}`));
     const waiting = (id: string) => {
       const row = q.select().from(pendingCommand).where(eq(pendingCommand.id, id)).get();
@@ -549,8 +562,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           journalCaught(error, "daemon.syncCredentials", null);
         }
       }
-    } finally {
-      syncing = false;
+    } catch (error) {
+      journalCaught(error, "daemon.uploadCredentials", null);
     }
   }
   async function pollCommands(path: string) {
@@ -722,6 +735,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     return false;
   }
   const api = {
+    credentialRecipient: () => paired().certificate,
+    credentialSync: () => syncing ?? Promise.resolve(),
     carriesCredential: (commandId: string) =>
       options.agentCredentials !== undefined && heldCredential(commandId) !== undefined,
     returnCredentials,
@@ -866,7 +881,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
-      if (live) await syncCredentials(live);
+      if (live) void syncCredentials(live);
       return response;
     },
     /** The bundle bytes as Paws sent them. The caller checks size and checksum before using them. */

@@ -99,3 +99,7 @@ export function openForRunner(privateKey: string | KeyObject, sealed: string, co
 export function agentCredentialContext(commandId: string, accountId: string, version: number) {
   return `paws-agent-credential:${commandId}:${accountId}:${version}`;
 }
+
+export function agentCredentialReturnContext(executionId: string) {
+  return `paws-agent-credential-return:${executionId}`;
+}

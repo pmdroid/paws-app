@@ -230,6 +230,7 @@ export async function openRunnerRuntime(options: {
         | "postRepositoryCommandResult"
         | "githubReadCredential"
         | "carriesCredential"
+        | "credentialRecipient"
         | "returnCredentials"
       >
     >;
@@ -697,7 +698,11 @@ export async function openRunnerRuntime(options: {
   function returnCredentials(execution: Execution) {
     const { id } = execution.command;
     if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
-    options.daemon.returnCredentials(id, readRunnerCredentials(options.results, execution.id));
+    options.daemon.returnCredentials(
+      id,
+      execution.id,
+      readRunnerCredentials(options.results, execution.id),
+    );
   }
   function readWorkerResult(execution: Execution) {
     const worker = workerResult.parse(
@@ -1401,8 +1406,9 @@ export async function openRunnerRuntime(options: {
         {
           executionId: entry.execution.id,
           command: entry.execution.command,
-          ...(options.daemon.carriesCredential?.(entry.execution.command.id)
-            ? { credentials: true as const }
+          ...(options.daemon.credentialRecipient &&
+          options.daemon.carriesCredential?.(entry.execution.command.id)
+            ? { credentials: { certificate: options.daemon.credentialRecipient() } }
             : {}),
         },
         {

@@ -98,6 +98,7 @@ export async function openRunnerHealthRuntime(options: {
         | "postHelperResult"
         | "exchangeLogin"
         | "carriesCredential"
+        | "credentialRecipient"
         | "returnCredentials"
       >
     >;
@@ -228,7 +229,11 @@ export async function openRunnerHealthRuntime(options: {
   function returnCredentials(entry: Entry) {
     const { id } = entry.command;
     if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
-    options.daemon.returnCredentials(id, readRunnerCredentials(options.results, entry.id));
+    options.daemon.returnCredentials(
+      id,
+      entry.id,
+      readRunnerCredentials(options.results, entry.id),
+    );
   }
   function saveLogin(entry: Entry, state: "connected" | "failed") {
     entry.login = { state, terminal: "", authorization: null, inputId: null };
@@ -517,7 +522,9 @@ export async function openRunnerHealthRuntime(options: {
         publishRunnerJob(options.spool, {
           executionId: id,
           command,
-          ...(options.daemon.carriesCredential?.(command.id) ? { credentials: true as const } : {}),
+          ...(options.daemon.credentialRecipient && options.daemon.carriesCredential?.(command.id)
+            ? { credentials: { certificate: options.daemon.credentialRecipient() } }
+            : {}),
         });
         check(entry);
         const receipt = await broker.start(id);
