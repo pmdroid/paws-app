@@ -578,4 +578,34 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     expect(await resumes(h)).toEqual([]);
     expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
   });
+
+  test("an UNKNOWN pull request waits for CI and is read again on the next poll", async () => {
+    const h = await queued();
+    h.state.ci = pendingCi;
+    h.state.mergeState = "dirty";
+    h.state.lazyMergeable.set(1, 100);
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    const reads = h.state.pullReads.get(1) ?? 0;
+    expect(reads).toBeGreaterThan(0);
+    expect(await resumes(h)).toEqual([]);
+    h.state.lazyMergeable.set(1, 0);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.state.pullReads.get(1)).toBeGreaterThan(reads);
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual([]);
+  });
+
+  test("a head sent back once goes back again when it conflicts with a newer main", async () => {
+    const h = await start({ settings: { order: "queue", mainMoved: "green" } });
+    await h.addItem("ENG-1");
+    h.state.ci = pendingCi;
+    h.state.mergeState = "dirty";
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    await h.requeue("ENG-1");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await resumes(h)).toHaveLength(1);
+    await h.moveMain("other.txt", "main\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(await resumes(h)).toHaveLength(2);
+    expect((await listRebaseReturns(h.db, "ENG-1", 0)).map((row) => row.base)).toHaveLength(2);
+  });
 });

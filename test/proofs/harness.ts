@@ -152,6 +152,8 @@ function fixtureGitHub(input: {
     }
     const required = fakeRequiredChecks(request);
     if (required) return required;
+    if (method === "GET" && path.endsWith("/protection/required_status_checks"))
+      return { status: 404, body: { message: "Branch not protected" } };
     const number = Number(/\/(?:pulls|issues)\/(\d+)/.exec(path)?.[1]);
     if (method === "POST" && path.endsWith("/pulls")) {
       if (request.token === input.refusedToken?.token)
