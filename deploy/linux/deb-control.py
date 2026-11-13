@@ -64,6 +64,11 @@ def admit():
 
 def configure():
     docker = installer.docker_access_choice()
+    if installer.active_executions():
+        installer.write_atomic(installer.pending_configure(), json.dumps({"docker": docker}).encode(), 0o600)
+        installer.release.command(["/usr/bin/systemctl", "start", "--no-block", "--", "paws-runner-agents.service"])
+        print(json.dumps({"installed": False, "pending": True}))
+        return
     journal = installer.Journal()
     arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("signature", "manifest.sig"), ("artifact", "artifact.tar"), ("release_key", "release.pub"))})
     with tempfile.TemporaryDirectory(prefix="paws-debian-") as temporary:
@@ -79,6 +84,7 @@ def configure():
         # Before the runner starts again, so it comes back without a docker group membership Paws removed.
         installed["docker"] = installer.configure_docker_access(docker)
     restore()
+    installer.pending_configure().unlink(missing_ok=True)
     journal.end("stop-to-start")
     # Agent versions sent from the Runners page install through this path unit (install.py agent-requests).
     installer.release.command(["/usr/bin/systemctl", "enable", "--now", "--", "paws-runner-agents.path"])
