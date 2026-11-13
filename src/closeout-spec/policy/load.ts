@@ -50,7 +50,7 @@ export async function loadPolicy(input: LoadPolicyInput): Promise<PolicyLoadOutc
   if (input.policyRoot !== undefined) return loadLocalPolicy(input.policyRoot);
   const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return blocked("repo", confirmed.message);
-  const staged = materialize(input.git, input.repo, confirmed.commit);
+  const staged = await filled(input, () => materialize(input.git, input.repo, confirmed.commit));
   if (!staged.ok)
     return staged.message === UNREAD_POLICY
       ? blocked("repo", staged.message)
@@ -149,7 +149,7 @@ export async function loadOriginMainRootFiles(
 ): Promise<RootFilesLoad> {
   const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return confirmed;
-  return loadRootFilesAt(input, confirmed.commit, names);
+  return filled(input, () => loadRootFilesAt(input, confirmed.commit, names));
 }
 
 export function loadRootFilesAt(
@@ -199,7 +199,17 @@ async function originMainFiles(
 ): Promise<{ ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string }> {
   const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return confirmed;
-  return materialize(input.git, input.repo, confirmed.commit);
+  return filled(input, () => materialize(input.git, input.repo, confirmed.commit));
+}
+
+export async function filled<T extends { ok: boolean }>(
+  input: Pick<LoadPolicyInput, "repo" | "git">,
+  read: () => T,
+): Promise<T> {
+  for (;;) {
+    const result = read();
+    if (result.ok || !(await input.git.fill?.(input.repo))) return result;
+  }
 }
 
 /** The `origin/main` commit when the fetch and `ls-remote` name the same one. */

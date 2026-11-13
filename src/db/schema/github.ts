@@ -279,3 +279,9 @@ export const pullRequestText = sqliteTable("pull_request_text", {
   evidence: text().notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+export const githubBlob = sqliteTable("github_blob", {
+  sha: text().primaryKey().notNull(),
+  content: text().notNull(),
+  cachedAt: integer("cached_at").notNull(),
+});

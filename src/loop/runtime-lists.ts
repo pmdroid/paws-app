@@ -5,8 +5,12 @@ type OriginMain = { ok: true; commit: string } | { ok: false; message: string; a
 
 export type RuntimeListReader = {
   originMain(repo: string): OriginMain | Promise<OriginMain>;
-  mirrorMain(repo: string): OriginMain;
-  rootFilesAt(repo: string, commit: string, names: readonly string[]): RootFilesLoad;
+  mirrorMain(repo: string): OriginMain | Promise<OriginMain>;
+  rootFilesAt(
+    repo: string,
+    commit: string,
+    names: readonly string[],
+  ): RootFilesLoad | Promise<RootFilesLoad>;
 };
 
 export const RUNTIME_READ_RETRY_MS = [1_000, 4_000] as const;
@@ -39,10 +43,11 @@ export function createRuntimeLists(
       const sameRun = cached?.runId === runId;
       let failure = "";
       for (let attempt = 0; ; attempt++) {
-        const main = source === "mirror" ? reader.mirrorMain(repo) : await reader.originMain(repo);
+        const main =
+          source === "mirror" ? await reader.mirrorMain(repo) : await reader.originMain(repo);
         if (main.ok && sameRun && cached.mainCommit === main.commit)
           return { runtimes: cached.list.runtimes, notices: [] };
-        const load = main.ok ? reader.rootFilesAt(repo, main.commit, RUNTIME_FILES) : main;
+        const load = main.ok ? await reader.rootFilesAt(repo, main.commit, RUNTIME_FILES) : main;
         if (load.ok) {
           const list = parseRuntimeFiles(load.files);
           return remember(main.ok ? main.commit : null, list);

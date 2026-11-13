@@ -274,3 +274,9 @@ export const pullRequestText = pgTable("pull_request_text", {
   evidence: text().notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
+
+export const githubBlob = pgTable("github_blob", {
+  sha: text().primaryKey(),
+  content: text().notNull(),
+  cachedAt: bigint("cached_at", { mode: "number" }).notNull(),
+});

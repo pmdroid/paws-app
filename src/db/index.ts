@@ -204,3 +204,4 @@ export * from "./runner-health-reads";
 export * from "./member-vm-delete";
 export * from "./fix-records";
 export * from "./setup-facts";
+export { githubBlobCache } from "./github-blobs";

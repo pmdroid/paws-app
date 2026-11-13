@@ -9,7 +9,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -51,6 +51,7 @@ import {
   runAgent,
   worktreePath,
 } from "./acp";
+import { useGitReader } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
@@ -180,6 +181,7 @@ import {
   takeOverGoneRunsSteps,
   enqueueRunnerSetupChecks,
   type Steps,
+  githubBlobCache,
 } from "./db";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -201,6 +203,7 @@ import {
   createGitHubApp,
   revokeInstallationToken,
   githubHttpsUrl,
+  createGitHubGitReader,
   useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
@@ -596,6 +599,27 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
+  useGitReader(
+    loadConfigFile(paths.configFile).githubMirrors === false
+      ? createGitHubGitReader({
+          locate: (path) => {
+            const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");
+            const repo = name?.endsWith(".git") ? name.slice(0, -4) : undefined;
+            if (!owner || !repo || rest.length) return null;
+            const binding = githubBinding(
+              authProvider(
+                runtime,
+                { owner, repo, remoteUrl: githubHttpsUrl(owner, repo) },
+                "read",
+                resolveApp,
+              ),
+            );
+            return binding ? { ...binding, owner, repo } : null;
+          },
+          blobs: githubBlobCache(store),
+        })
+      : null,
+  );
   const recoveryWake = { armed: false };
   const recoveredAt = Date.now();
   await store.transaction((q) =>
