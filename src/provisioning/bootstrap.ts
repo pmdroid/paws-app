@@ -394,6 +394,8 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
     async enroll(vm) {
       checkVm("enroll", vm);
+      const stage = await exec("enroll", vm, stageCommand(pinned));
+      if (stage.exitCode !== 0) throw failure("enroll", vm, "could not stage the config", stage);
       const result = await detached("enroll", "enroll", vm, enrollCommand(vm), ENROLL_TIMEOUT_MS);
       if (result.exitCode !== 0) throw failure("enroll", vm, "enrollment failed", result);
       // The log holds stdout and stderr together; the paired runner is the last JSON line.
@@ -876,7 +878,10 @@ function runScript(pinned: Pinned): string {
   ].join("\n");
 }
 
-/** Write the installer, unit script and config into the root-only stage directory. */
+/**
+ * Write the installer, unit script and config into the root-only stage directory, and put the
+ * config over the installed one when an earlier attempt installed it.
+ */
 function stageCommand(pinned: Pinned): string {
   const write = (format: string, content: string, mode: string, name: string) =>
     `printf '${format}' ${shellQuote(content)} | sudo install -o root -g root -m ${mode} /dev/stdin ${BOOTSTRAP_STAGE_DIR}/${name}`;
@@ -885,6 +890,7 @@ function stageCommand(pinned: Pinned): string {
     write("%s", pinned.installer, "0700", "install-runner.sh"),
     write("%s", runScript(pinned), "0700", "run.sh"),
     write("%s\\n", pinned.config, "0600", "config.json"),
+    `{ sudo test ! -e ${RUNNER_CONFIG_PATH} || sudo install -o root -g paws-runner -m 0640 ${BOOTSTRAP_STAGE_DIR}/config.json ${RUNNER_CONFIG_PATH}; }`,
   ].join(" && ");
 }
 
