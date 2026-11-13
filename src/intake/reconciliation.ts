@@ -94,8 +94,22 @@ function brief(issue: LinearSubIssue | EpicSnapshot): IssueBrief {
   };
 }
 
-function specHash(value: WorkBrief): string {
-  return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
+function ordered(value: IssueBrief): IssueBrief {
+  return {
+    source: value.source,
+    issueId: value.issueId,
+    identifier: value.identifier,
+    title: value.title,
+    description: value.description ?? null,
+    acceptanceCriteria: value.acceptanceCriteria ?? null,
+  };
+}
+
+function specHash(value: WorkBrief | null): string {
+  const canonical = value?.issue
+    ? { issue: ordered(value.issue), epic: value.epic ? ordered(value.epic) : null }
+    : value;
+  return new Bun.CryptoHasher("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 export function createItemReconciler(input: {
