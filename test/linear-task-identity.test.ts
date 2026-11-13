@@ -201,7 +201,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     expect((await db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.workItem))))?.n).toBe(
       1,
     );
-    await setState(db, first.activeItemId, "cancelled");
+    await setState(db, first.activeItemId!, "cancelled");
     await orchestrator.onLinearEvent({
       ...created("before-created"),
       dedupeKey: "activity:early",
