@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import { sql, type SQL } from "drizzle-orm";
 import type { AcpEvent } from "../src/acp";
 import {
   beginImplementRun,
@@ -14,7 +15,6 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   saveCheckpoint,
-  sqliteDb,
 } from "../src/db";
 import { isTransient } from "../src/core";
 import {
@@ -30,7 +30,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const BRANCH = "paws/item";
@@ -462,26 +462,27 @@ async function startScenario(input: {
     return git(args.map((arg) => (arg === GITHUB_URL ? origin : arg)));
   };
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
+  const exec = (query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await exec(sql`INSERT INTO workspace_repository VALUES(${workspace.id},'acme/fixture','team')`);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -496,23 +497,23 @@ async function startScenario(input: {
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
+  await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
+  await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
   if (input.hiddenCheckpoint || input.runnerVersion)
-    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-      runnerId,
-      input.hiddenCheckpoint?.runnerVersion ?? input.runnerVersion!,
-      now,
-    ]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+    await exec(
+      sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${input.hiddenCheckpoint?.runnerVersion ?? input.runnerVersion!},${now})`,
+    );
+  await exec(
+    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',1)`,
+  );
   const item = await insertQueuedItem(db, {
     id: "item",
     now,
     sessionKey: "session",
     branchName: BRANCH,
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -520,15 +521,15 @@ async function startScenario(input: {
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, {
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, {
     owner: "acme",
     repo: "fixture",
     remoteUrl: GITHUB_URL,
   });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
+  await exec(sql`UPDATE work_item SET owner_user_id=${userId} WHERE id=${item.id}`);
   // Paws recorded the last fetched commit as the item's head.
-  await saveCheckpoint(sqliteDb(db), item.id, {
+  await saveCheckpoint(db, item.id, {
     phase: "running",
     baseSha: base,
     wipCommit:
@@ -544,20 +545,20 @@ async function startScenario(input: {
 
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
     pollIntervalMs: 5,
-    placement: createRunnerPlacement({ store: sqliteDb(db) }),
+    placement: createRunnerPlacement({ store: db }),
     async fetchCandidate(candidate) {
       await git([
         "--git-dir",
@@ -585,7 +586,7 @@ async function startScenario(input: {
         ) as RunnerCommand;
         if (command.type !== "run" || assigned) continue;
         assigned = command;
-        pendingAtAssignment = (await getWorkItem(sqliteDb(db), item.id))?.checkpoint?.lostCommits;
+        pendingAtAssignment = (await getWorkItem(db, item.id))?.checkpoint?.lostCommits;
         executions++;
         const cancelled = input.cancelFirstRun === true && executions === 1;
         await work.acknowledge(runnerId, command.id);
@@ -630,7 +631,7 @@ async function startScenario(input: {
       attempt++
     ) {
       if (attempt) {
-        pendingBetween = (await getWorkItem(sqliteDb(db), item.id))?.checkpoint?.lostCommits;
+        pendingBetween = (await getWorkItem(db, item.id))?.checkpoint?.lostCommits;
         assigned = undefined;
       }
       error = undefined;
@@ -665,7 +666,7 @@ async function startScenario(input: {
           error = caught;
         });
     }
-    const stored = await getWorkItem(sqliteDb(db), item.id);
+    const stored = await getWorkItem(db, item.id);
     return {
       error,
       base,
@@ -702,7 +703,7 @@ async function startScenario(input: {
   } finally {
     sim.stopped = true;
     await runner;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }
