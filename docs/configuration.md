@@ -146,20 +146,22 @@ Grouping is maintenance work. An interactive classification or repository-select
 
 ### Agent presets and Linear labels
 
-Named profiles can be stored alongside the global agent defaults:
+A preset names an implementer and a reviewer, stored alongside the global agent defaults:
 
 ```toml
-[agents.presets.Opus]
+[agents.presets.Opus.implementer]
 agent = "claude"
 model = "opus"
 effort = "high"
 
-[agents.presets.Codex]
+[agents.presets.Opus.reviewer]
 agent = "codex"
 model = "codex"
 ```
 
-Presets use the same agent, model and optional effort validation as other profiles.
+Each role uses the same agent, model and optional effort validation as other profiles,
+and a preset's reviewer must differ from its implementer in agent or model; a preset
+that fails is refused with its name.
 Any profile can add `fast = true` to turn on the agent's fast mode (Claude Code and Codex).
 It is off when absent. A model without fast mode runs at normal speed and Paws journals
 `fast mode unavailable for <agent> <model>`; a runner older than 0.1.81 runs without it
@@ -168,12 +170,16 @@ Names contain 1–40 letters, digits, spaces, dots, underscores or hyphens.
 Matching ignores case and surrounding spaces; duplicate names under that comparison
 are refused. Quote TOML names containing spaces or dots.
 
-The Linear label groups are **Implementer** and **Reviewer**. Each group's label
-name identifies a preset. The profile resolver accepts these names independently:
-label preset, then global default. Unknown names and
-reviewer labels matching the implementer's agent and model return label problems
-and retain the inherited profile for that role. Reviewer fallback is still omitted
-when it uses the resolved reviewer's agent.
+A preset in the older single-profile form (the profile fields directly
+under `[agents.presets.<name>]`) loads as that implementer with the default reviewer,
+or with the reviewer fallback when the default reviewer would match the implementer.
+The next save writes both roles.
+
+The Linear label groups are **Implementer** and **Reviewer**. A label in either
+group naming a preset applies the whole preset, both roles. Unknown names, and two
+labels naming different presets (`conflicting_presets`), return label problems and
+keep the defaults. Reviewer fallback is still omitted when it uses the resolved
+reviewer's agent.
 
 Paws reads the labels from Linear each time it creates a new implement run, so
 a change takes effect on the next run and never moves a running turn. If Linear
