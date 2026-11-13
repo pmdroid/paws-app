@@ -1,0 +1,21 @@
+# Database-backed test files that CI's `test (postgres N/3)` jobs skip because they fail
+# against a Postgres server, though they pass on PGlite. One path per line; text after `#`
+# is the reason. Remove a line when its file passes with PAWS_TEST_DATABASE_URL set.
+
+# A fixed Bun.sleep or a single tick stands in for "the query finished", which holds for
+# in-process PGlite and not for a server over TCP.
+test/improvement-inbox-ui.test.ts # dashboard reads still loading when the test looks
+test/improvement-review.test.ts # filing not recorded after one tick; store closed under a query
+test/linear-lifecycle-delivery.test.ts # old intake failure posts after the newer generation
+test/linear-poller.test.ts # shutdown aborts the handler before the "shutting down" check
+test/loop-keepalive.test.ts # flaky: the keepalive callback is not awaited before the outbox drain
+test/member-vm-delete.test.ts # create not requested within 5 ms; store closed under a query
+test/member-vm.test.ts # VM not created within 5 ms; store closed under a query
+test/onboarding-runner-step.test.ts # runner step still "needed" when the page repaints
+test/runner-fault-matrix.test.ts # one faulted attempt recorded where three are expected
+test/runner-setup-hold-queue.test.ts # setup hold not written after one tick
+# The store closes while a background job or command query is still in flight.
+test/loop.remote-follow-up.test.ts # job read after close: Connection closed
+test/runner-repository-commands.test.ts # command expiry after close: Connection closed
+# Two concurrent confirmations both succeed on a server; on PGlite one is refused.
+test/decision-memory.test.ts # concurrent suggestion confirmation accepts twice

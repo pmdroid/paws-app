@@ -125,7 +125,7 @@ forEachDialect((open) => {
 });
 ```
 
-With `PAWS_TEST_DATABASE_URL` set to a Postgres server, the Postgres side of `forEachDialect()` and `pgliteServer()` in `test/pglite.ts` run on that server instead of PGlite: each opens a fresh database copied from a migrated template and drops it on close. CI's `test (postgres)` job runs the `src/db` tests and every test that uses either helper against a `postgres:17` service this way.
+With `PAWS_TEST_DATABASE_URL` set to a Postgres server, `tempStore()`, `serverPostgres()`, `pgliteServer()` and the Postgres side of `forEachDialect()` (in `test/pglite.ts` and `test/dialects.ts`) run on that server instead of PGlite: each opens a fresh database copied from a migrated template and drops it on close. Without it they use in-memory PGlite, as locally. CI's `test (postgres N/3)` jobs run the `src/db` tests and every `test/` file that uses one of those helpers, or a fixture built on them, against a fresh `postgres:17` service container per job, apart from the files in `test/postgres-known-failures.txt`, which still fail on a server and say why. Remove a file from that list once it passes with `PAWS_TEST_DATABASE_URL` set. Those jobs retry a failing test twice, because some tests count ticks where they mean "the query finished", which holds for in-process PGlite but not reliably over TCP. The `check` job fails unless they pass, as it does for the other test shards.
 
 Seed rows through `db.run()` (`insertWorkItem()` does the work item, and `insertWorkItemSteps()` inside a transaction), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
 

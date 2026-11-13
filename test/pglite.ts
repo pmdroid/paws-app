@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import type { Logger } from "drizzle-orm";
+import type { Logger, SQL as Query } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { SQL } from "bun";
@@ -100,6 +100,13 @@ export async function pgliteDb(
   if (options.migrated !== false)
     await migrate(db, { migrationsFolder: options.migrationsFolder ?? PG_MIGRATIONS_FOLDER });
   return db;
+}
+
+/** Rows of a raw query on either Postgres driver: PGlite returns `{ rows }`, Bun's SQL an array. */
+export async function rows<T>(db: Db, query: Query): Promise<T[]> {
+  if (db.dialect !== "postgres") throw new Error(`rows() reads Postgres, not ${db.dialect}`);
+  const result = (await db.orm.execute(query)) as unknown as T[] | { rows: T[] };
+  return Array.isArray(result) ? result : result.rows;
 }
 
 export async function tempStore(
