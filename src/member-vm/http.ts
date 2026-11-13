@@ -1,6 +1,6 @@
 import {
   memberVmByIdSteps,
-  memberVmForMemberSteps,
+  memberVmsForMemberSteps,
   setMemberVmPoolSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
@@ -21,10 +21,12 @@ import {
   mayDeleteMemberVmSteps,
   MEMBER_VM_DELETE_STEPS,
   MemberVmDeleteDenied,
+  MemberVmLimitReached,
   MemberVmMissing,
   retryMemberVm,
   startMemberVm,
   startMemberVmDelete,
+  unfinishedMemberVm,
   type MemberVm,
   type MemberVmBlockingTask,
   type MemberVmDeleteStep,
@@ -286,16 +288,18 @@ export function createMemberVmHttp(options: {
           return exeDevError(error, `exe.dev did not move ${row.vmName}.`);
         }
         await store.run((q) => setMemberVmPoolSteps(q, row.id, body.pool, now()));
-      } else if (path === "/api/runners/vm/retry")
-        await retryMemberVm(store, { ...member, now: at });
-      else if (path === "/api/runners/vm/delete") {
+      } else if (path === "/api/runners/vm/retry") {
+        const body = await retryBody(request);
+        if (body === null) return json({ error: "Send an optional VM id as JSON." }, 400);
+        await retryMemberVm(store, { ...member, ...body, now: at });
+      } else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
         if (body === null)
           return json({ error: "Send the VM id and an optional force flag as JSON." }, 400);
         await startMemberVmDelete(store, { ...member, ...body, now: at });
       }
-      const own = await store.run((q) =>
-        memberVmForMemberSteps(q, member.workspaceId, member.userId),
+      const own = unfinishedMemberVm(
+        await store.run((q) => memberVmsForMemberSteps(q, member.workspaceId, member.userId)),
       );
       const size = readSize(options.size);
       const vms: MemberVmView[] = [];
@@ -309,7 +313,8 @@ export function createMemberVmHttp(options: {
       } satisfies MemberVmResponse);
     } catch (error) {
       journalCaught(error, "http.createMemberVmHttp.startMemberVm", null);
-      if (error instanceof MemberVmDeleteDenied) return json({ error: error.message }, 403);
+      if (error instanceof MemberVmDeleteDenied || error instanceof MemberVmLimitReached)
+        return json({ error: error.message }, 403);
       if (error instanceof MemberVmMissing) return json({ error: error.message }, 404);
       const message = error instanceof Error ? error.message : "The VM request failed.";
       return json({ error: message }, /membership/i.test(message) ? 403 : 409);
@@ -344,6 +349,15 @@ async function createBody(request: Request): Promise<{ pool?: string } | null> {
   if (record === null) return null;
   if (record.pool === undefined) return {};
   return isExeDevPoolName(record.pool) ? { pool: record.pool } : null;
+}
+
+async function retryBody(request: Request): Promise<{ id?: string } | null> {
+  if (!request.headers.get("content-type")?.startsWith("application/json")) return {};
+  const record = await jsonRecord(request, ["id"]);
+  if (record === null) return null;
+  const { id } = record;
+  if (id === undefined) return {};
+  return typeof id === "string" && id.length > 0 && id.length <= 80 ? { id } : null;
 }
 
 async function poolBody(request: Request): Promise<{ id: string; pool: string } | null> {

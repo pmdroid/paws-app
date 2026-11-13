@@ -553,7 +553,6 @@ export const memberVm = pgTable(
   },
   (table) => [
     unique().on(table.vmName),
-    unique().on(table.workspaceId, table.userId),
     foreignKey({
       columns: [table.workspaceId, table.userId],
       foreignColumns: [workspaceMember.workspaceId, workspaceMember.userId],

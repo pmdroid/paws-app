@@ -4,9 +4,10 @@ import {
   emitJobReady,
   enqueueJobSteps,
   insertMemberVmSteps,
+  lockMemberVmsSteps,
   memberVmByIdSteps,
   memberVmForMember,
-  memberVmForMemberSteps,
+  memberVmsForMemberSteps,
   memberVmNameTakenSteps,
   openMemberVmJobSteps,
   releaseRevokedMemberVmRunnerSteps,
@@ -43,32 +44,26 @@ export async function findMemberVm(store: Db, member: MemberRef): Promise<Member
   return await memberVmForMember(store, member.workspaceId, member.userId);
 }
 
-/** `pool` applies to a new VM only; an existing one keeps where it is. */
+const MEMBER_VM_LIMIT = 5;
+
+export class MemberVmLimitReached extends Error {
+  constructor() {
+    super(`You already have ${MEMBER_VM_LIMIT} VMs. Delete one on its runner page first.`);
+    this.name = "MemberVmLimitReached";
+  }
+}
+
 export async function startMemberVm(
   store: Db,
   input: MemberRef & { now?: number; pool?: string | null },
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
-  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
-    const existing = yield* currentSteps(q, input, now);
-    if (existing?.deleteStep != null) return { vm: existing, enqueued: false };
-    if (existing) {
-      if (
-        existing.failure === null &&
-        existing.runnerId === null &&
-        (existing.step === "health" || existing.step === "ready")
-      ) {
-        yield* returnMemberVmToEnrollSteps(q, existing.id, now);
-        const enqueued = yield* ensureJobSteps(q, existing.id, now);
-        return { vm: (yield* memberVmByIdSteps(q, existing.id))!, enqueued };
-      }
-      const enqueued =
-        existing.failure === null && existing.step !== "ready"
-          ? yield* ensureJobSteps(q, existing.id, now)
-          : false;
-      return { vm: existing, enqueued };
-    }
+  const vm = await store.transaction(function* (q) {
     yield* requireOwnerSteps(q, input);
+    yield* lockMemberVmsSteps(q, input.workspaceId, input.userId);
+    const own = yield* memberVmsForMemberSteps(q, input.workspaceId, input.userId);
+    if (own.filter((row) => row.deleteStep === null).length >= MEMBER_VM_LIMIT)
+      throw new MemberVmLimitReached();
     const id = mintId(now);
     yield* insertMemberVmSteps(q, {
       id,
@@ -78,23 +73,39 @@ export async function startMemberVm(
       pool: input.pool ?? null,
       now,
     });
-    const enqueued = yield* ensureJobSteps(q, id, now);
-    return { vm: (yield* memberVmByIdSteps(q, id))!, enqueued };
+    yield* ensureJobSteps(q, id, now);
+    return (yield* memberVmByIdSteps(q, id))!;
   });
-  if (jobAdded) emitJobReady(store);
+  emitJobReady(store);
   return vm;
+}
+
+export function unfinishedMemberVm(rows: readonly MemberVm[]): MemberVm | null {
+  return rows.find((row) => row.step !== "ready") ?? null;
 }
 
 export async function retryMemberVm(
   store: Db,
-  input: MemberRef & { now?: number },
+  input: MemberRef & { id?: string; now?: number },
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
   const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
-    const existing = yield* currentSteps(q, input, now);
-    if (!existing) throw new Error("This member has no VM to retry.");
+    yield* releaseRevokedMemberVmRunnerSteps(q, input.workspaceId, input.userId, now);
+    const own = yield* memberVmsForMemberSteps(q, input.workspaceId, input.userId);
+    const existing =
+      input.id === undefined ? unfinishedMemberVm(own) : own.find((row) => row.id === input.id);
+    if (!existing) {
+      if (input.id !== undefined) throw new MemberVmMissing();
+      throw new Error("This member has no VM to retry.");
+    }
     if (existing.deleteStep !== null) throw new Error("This VM is being deleted.");
-    if (existing.failure === null) return { vm: existing, enqueued: false };
+    if (existing.failure === null) {
+      if (existing.runnerId === null && (existing.step === "health" || existing.step === "ready"))
+        yield* returnMemberVmToEnrollSteps(q, existing.id, now);
+      else if (existing.step === "ready") return { vm: existing, enqueued: false };
+      const enqueued = yield* ensureJobSteps(q, existing.id, now);
+      return { vm: (yield* memberVmByIdSteps(q, existing.id))!, enqueued };
+    }
     yield* requireOwnerSteps(q, input);
     yield* retryMemberVmStepSteps(q, existing.id, now);
     const enqueued = yield* ensureJobSteps(q, existing.id, now);
@@ -167,11 +178,6 @@ function* ensureDeleteJobSteps(q: Q, id: string, now: number): Steps<boolean> {
   if (yield* openMemberVmJobSteps(q, MEMBER_VM_DELETE_QUEUE, id)) return false;
   yield* enqueueJobSteps(q, { queue: MEMBER_VM_DELETE_QUEUE, payload: { memberVmId: id }, now });
   return true;
-}
-
-function* currentSteps(q: Q, member: MemberRef, now: number): Steps<MemberVm | null> {
-  yield* releaseRevokedMemberVmRunnerSteps(q, member.workspaceId, member.userId, now);
-  return yield* memberVmForMemberSteps(q, member.workspaceId, member.userId);
 }
 
 /** True when it added a job; the caller wakes the job loop after the transaction commits. */
