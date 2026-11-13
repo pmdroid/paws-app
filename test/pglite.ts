@@ -1,6 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import type { Logger } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { SQL } from "bun";
@@ -89,12 +90,13 @@ async function migratedClient(): Promise<PGlite> {
 }
 
 export async function pgliteDb(
-  options: { migrationsFolder?: string; migrated?: boolean } = {},
+  options: { migrationsFolder?: string; migrated?: boolean; logger?: Logger } = {},
 ): Promise<PgliteDb> {
+  const { logger } = options;
   if (options.migrated !== false && options.migrationsFolder === undefined)
-    return drizzle({ client: await migratedClient(), schema: pgSchema });
+    return drizzle({ client: await migratedClient(), schema: pgSchema, logger });
   const client = new PGlite({ extensions: { citext } });
-  const db = drizzle({ client, schema: pgSchema });
+  const db = drizzle({ client, schema: pgSchema, logger });
   if (options.migrated !== false)
     await migrate(db, { migrationsFolder: options.migrationsFolder ?? PG_MIGRATIONS_FOLDER });
   return db;

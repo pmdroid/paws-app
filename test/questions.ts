@@ -88,3 +88,14 @@ export function confirmDecision(
 ) {
   return sqliteDb(db).transaction((q) => confirmDecisionSteps(q, ...args));
 }
+
+export function suggestDecisionsPg(db: Db, questionId: string, text: string) {
+  return db.run((q) => suggestDecisionsSteps(q, questionId, text));
+}
+
+export function confirmDecisionPg(
+  db: Db,
+  ...args: Parameters<typeof confirmDecisionSteps> extends [unknown, ...infer Rest] ? Rest : never
+) {
+  return db.transaction((q) => confirmDecisionSteps(q, ...args));
+}

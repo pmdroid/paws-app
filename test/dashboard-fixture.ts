@@ -6,16 +6,16 @@ import {
   beginImplementRun,
   enterMergeQueue,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  postgresDb,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import type { LinearUsage } from "../src/linear";
 import { handleQuestionAnswer, type QuestionAnswer } from "../src/questions";
 import { startServer } from "../src/server";
+import { seed } from "./dialects";
+import { pgliteDb } from "./pglite";
 import { screenshotPng } from "./png";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
@@ -27,12 +27,15 @@ export async function startDashboardFixture(
   options: { linearUsage?: () => Promise<LinearUsage> } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "paws-dashboard-fixture-"));
-  const db = openDatabase(join(home, "paws.sqlite"));
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  let statements = 0;
+  const pg = await pgliteDb({ logger: { logQuery: () => void statements++ } });
+  const db = postgresDb(pg);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "Member",
@@ -40,7 +43,7 @@ export async function startDashboardFixture(
   });
   let teamIds = ["team"];
   const sync = async () =>
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -50,7 +53,7 @@ export async function startDashboardFixture(
     });
   await sync();
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
+  const store = createEvidenceStore({ store: db, root: evidenceDir });
   const answers: Parameters<QuestionAnswer>[0][] = [];
   const runs: Record<string, string> = {};
   const evidence: Record<string, string> = {};
@@ -58,10 +61,16 @@ export async function startDashboardFixture(
     ["PAS-1", "session-mine", "team"],
     ["PAS-2", "session-other", "other-team"],
   ] as const) {
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session, team],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: session,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: team,
+        installationObservedAt: 1,
+        createdAt: 0,
+      }),
     );
     await insertQueuedItem(db, {
       id: item,
@@ -69,11 +78,17 @@ export async function startDashboardFixture(
       title: `Fixture ${item}`,
       now: Date.now(),
     });
-    runs[item] = (await beginImplementRun(sqliteDb(db), item, Date.now())).run.id;
-    await applyWorkItemEvent(sqliteDb(db), item, "blocking_question");
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
-      [`q-${item}`, item, session],
+    runs[item] = (await beginImplementRun(db, item, Date.now())).run.id;
+    await applyWorkItemEvent(db, item, "blocking_question");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.question).values({
+        id: `q-${item}`,
+        itemId: item,
+        sessionId: session,
+        body: "Which way?",
+        status: "open",
+        createdAt: 1,
+      }),
     );
     const saved = await store.save({
       itemId: item,
@@ -96,10 +111,10 @@ export async function startDashboardFixture(
       title: `Fixture ${item}`,
       now: Date.now(),
     });
-    const head = (await beginImplementRun(sqliteDb(db), item, Date.now())).run.id
+    const head = (await beginImplementRun(db, item, Date.now())).run.id
       .padEnd(40, "0")
       .slice(0, 40);
-    await enterMergeQueue(sqliteDb(db), item, {
+    await enterMergeQueue(db, item, {
       phase: "merge_queue",
       baseSha: head,
       wipCommit: head,
@@ -110,7 +125,7 @@ export async function startDashboardFixture(
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -134,20 +149,21 @@ export async function startDashboardFixture(
     evidenceDir,
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
-        store: sqliteDb(db),
+        store: db,
         principal,
         sessionIds,
         submit: async (input) => (answers.push(input), "answered"),
       }),
     ...options,
   });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
   });
   return {
     db,
+    statements: () => statements,
     origin,
     runs,
     evidence,
@@ -166,7 +182,7 @@ export async function startDashboardFixture(
     },
     async close() {
       await server.stop(true);
-      db.close();
+      await pg.$client.close();
       rmSync(home, { recursive: true, force: true });
     },
   };
