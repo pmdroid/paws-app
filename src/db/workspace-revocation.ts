@@ -84,7 +84,7 @@ export async function changeWorkspaceRevocation(
 }
 
 export function* recordWorkspaceRevocationSteps(q: Q, input: RevocationChange): Steps<void> {
-  const { memberVm, runner, workspaceMember: m } = q.t;
+  const { memberVm, runner, runnerCertificate, workspaceMember: m, workspaceSession } = q.t;
   yield* q.exec(
     q.orm
       .update(m)
@@ -95,21 +95,45 @@ export function* recordWorkspaceRevocationSteps(q: Q, input: RevocationChange): 
       .where(and(eq(m.workspaceId, input.workspaceId), eq(m.userId, input.userId))),
   );
   if (!input.revoked) return;
+  const owned = and(
+    eq(runner.workspaceId, input.workspaceId),
+    eq(runner.ownerUserId, input.userId),
+  );
+  yield* q.exec(
+    q.orm
+      .delete(workspaceSession)
+      .where(
+        and(
+          eq(workspaceSession.workspaceId, input.workspaceId),
+          eq(workspaceSession.userId, input.userId),
+        ),
+      ),
+  );
+  yield* q.exec(
+    q.orm
+      .update(runner)
+      .set({ status: "revoked", revokedAt: input.now, fence: sql`${runner.fence}+1` })
+      .where(and(owned, isNull(runner.revokedAt))),
+  );
+  yield* q.exec(
+    q.orm
+      .update(runnerCertificate)
+      .set({ revokedAt: input.now })
+      .where(
+        and(
+          isNull(runnerCertificate.revokedAt),
+          inArray(
+            runnerCertificate.runnerId,
+            q.orm.select({ id: runner.id }).from(runner).where(owned),
+          ),
+        ),
+      ),
+  );
   yield* q.exec(
     q.orm
       .update(memberVm)
       .set({ runnerId: null, updatedAt: input.now })
-      .where(
-        inArray(
-          memberVm.runnerId,
-          q.orm
-            .select({ id: runner.id })
-            .from(runner)
-            .where(
-              and(eq(runner.workspaceId, input.workspaceId), eq(runner.ownerUserId, input.userId)),
-            ),
-        ),
-      ),
+      .where(inArray(memberVm.runnerId, q.orm.select({ id: runner.id }).from(runner).where(owned))),
   );
 }
 
