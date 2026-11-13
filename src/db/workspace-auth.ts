@@ -300,6 +300,17 @@ export async function listWorkspaceRepositories(store: Db, workspaceId: string) 
   return store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId));
 }
 
+export function* countWorkspaceRepositoriesSteps(q: Q, workspaceId: string): Steps<number> {
+  const { workspaceRepository: repository } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(repository)
+      .where(eq(repository.workspaceId, workspaceId)),
+  );
+  return Number(row?.count ?? 0);
+}
+
 export function* distinctWorkspaceRepositoriesSteps(q: Q) {
   const { workspaceRepository: repository } = q.t;
   const rows = yield* q.all(
