@@ -12,6 +12,7 @@ import {
   pawsPaths,
   readMergeSettings,
 } from "../src/config";
+import { DEFAULT_MAX_AWAKE_MS } from "../src/core";
 import { tempHome } from "./helpers";
 
 describe("config", () => {
@@ -59,7 +60,7 @@ describe("config", () => {
     ensureLayout(paths);
     expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     writeFileSync(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
-    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(60 * 60 * 1000);
+    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     expect(loadRuntime({ PAWS_HOME: paths.home, PAWS_MAX_AWAKE_MS: "7200000" }).maxAwakeMs).toBe(
       2 * 60 * 60 * 1000,
     );
@@ -126,7 +127,7 @@ describe("config", () => {
     expect(parsed.maxAwakeMs).toBe(5_000);
     expect(parsed).not.toHaveProperty("maxTurns");
     const runtime = loadRuntime({ PAWS_HOME: home, PAWS_MAX_TURNS: "3" });
-    expect(runtime.maxAwakeMs).toBe(5_000);
+    expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
     expect(runtime).not.toHaveProperty("maxTurns");
   });
 
@@ -168,7 +169,7 @@ describe("config", () => {
     expect(runtime.linearTokenFile).toBe(join(paths.secretsDir, "acme-linear.json"));
     expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
-    expect(runtime.maxAwakeMs).toBe(1_000);
+    expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
     expect(runtime.webhooks).toBe(false);
 
     const overridden = loadRuntime({
