@@ -468,6 +468,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         const text = await callHostTool(server, "open_pull_request", {
           title: step.title,
           body: step.body,
+          ...(step.remaining ? { remaining: step.remaining } : {}),
         });
         state.pullRequest = { ok: true, text };
       } catch (error) {

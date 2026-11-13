@@ -14,7 +14,10 @@ import type {
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
 import {
   askedQuestionOpenSteps,
+  delegatedLinearUserIdSteps,
   enqueueOutboxOnceSteps,
+  ensureLinearSessionSteps,
+  latestOpenIssueSessionSteps,
   getEvidenceSteps,
   getPlanProposalSteps,
   prepareLinearActivitySteps,
@@ -34,7 +37,7 @@ import {
   canReportProgressSteps,
 } from "./activity-policy";
 import { planFiledResponse } from "./plan-proposal";
-import { parseRemainingParts } from "../core";
+import { parseRemainingParts, type FiledSubIssue } from "../core";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
 export type EvidenceUploads = { files: LinearFileTransfer } & EvidenceStorage;
@@ -123,7 +126,8 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "linear.remaining_issues") {
     if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
-    await tracker.createSubIssues(remainingIssuesRequest(message, payload), options);
+    const filed = await tracker.createSubIssues(remainingIssuesRequest(message, payload), options);
+    if (store) await startSubIssues(filed, readString(payload, "itemId"), tracker, store, options);
     return;
   }
   if (message.op === "activity") {
@@ -167,6 +171,24 @@ export async function deliverLinearOutbox(
     return catchUp();
   }
   throw new Error(`unknown linear outbox op ${message.op}`);
+}
+
+async function startSubIssues(
+  filed: readonly FiledSubIssue[],
+  itemId: string | null,
+  tracker: TrackerAdapter,
+  store: Db,
+  options?: TrackerRequestOptions,
+): Promise<void> {
+  if (!tracker.createSessionOnIssue) throw new Error("Linear issue sessions are unavailable");
+  const creatorId = itemId ? await store.run((q) => delegatedLinearUserIdSteps(q, itemId)) : null;
+  for (const issue of filed) {
+    if (await store.run((q) => latestOpenIssueSessionSteps(q, issue.id))) continue;
+    const session = await tracker.createSessionOnIssue({ issueId: issue.id }, options);
+    await store.transaction((q) =>
+      ensureLinearSessionSteps(q, { sessionId: session.id, issueId: issue.id, creatorId }),
+    );
+  }
 }
 
 /**

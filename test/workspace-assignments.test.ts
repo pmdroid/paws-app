@@ -767,6 +767,20 @@ for (const [rule, reason, apply] of rules)
     }
   });
 
+test("a session Paws started for a follow-up acts for the stored delegator", async () => {
+  const f = await fixture();
+  try {
+    await linkMember(f);
+    f.session.creatorId = "app";
+    await ensureLinearSession(f.db, { sessionId: "session", creatorId: "member" });
+    expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
+    await deactivate(f.db, (q) => eq(q.t.workspaceMember.userId, "member"));
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
+  } finally {
+    await f.close();
+  }
+});
+
 test("a Linear guest's delegation is ignored, and the session's response says guests can't use Paws", async () => {
   const f = await fixture();
   try {
