@@ -42,6 +42,15 @@ export type SuggestedFindingsMode = (typeof SUGGESTED_FINDINGS)[number];
  * project, and items without a project share the repository-wide lane. `repository`: one lane.
  */
 export const MERGE_LANES = ["project", "repository"] as const;
+/**
+ * How `[merge] lanes` splits a repository's merge queue: by Linear project, by the item's owner, or
+ * both (default).
+ */
+const MERGE_LANE_SPLITS = ["project", "person"] as const;
+/** `[merge] no_project`: an item without a project merges in a lane of its own, or shares one. */
+export const MERGE_NO_PROJECT = ["own", "lane"] as const;
+export type MergeLaneSplit = (typeof MERGE_LANE_SPLITS)[number];
+export type MergeNoProject = (typeof MERGE_NO_PROJECT)[number];
 
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MergeLane = (typeof MERGE_LANES)[number];
@@ -66,7 +75,8 @@ export type MergeRepositories = Record<
   }
 >;
 export type MergeSettings = MergePolicy & {
-  lane: MergeLane;
+  lanes: MergeLaneSplit[];
+  noProject: MergeNoProject;
   /** `[merge.projects."<Linear project id>"] lane`, kept apart from the Merging settings policy. */
   projectLanes: Record<string, MergeLane>;
   autoApproveHighRisk: boolean;
@@ -76,7 +86,8 @@ export type MergeSettings = MergePolicy & {
 };
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
-  lane?: MergeLane;
+  lanes?: MergeLaneSplit[];
+  noProject?: MergeNoProject;
   projectLanes?: Record<string, MergeLane>;
   autoApproveHighRisk?: boolean;
   ciFixAttempts?: number;
@@ -87,7 +98,8 @@ export type StoredMerge = Partial<MergeChoice> & {
 };
 
 export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
-export const DEFAULT_MERGE_LANE: MergeLane = "project";
+export const DEFAULT_MERGE_LANES: readonly MergeLaneSplit[] = MERGE_LANE_SPLITS;
+export const DEFAULT_MERGE_NO_PROJECT: MergeNoProject = "own";
 export const MERGE_OVERRIDES_IGNORED =
   "config.toml merge choices under [merge.projects] and [[merge.rules]] are ignored; every item uses the [merge] default";
 
@@ -185,7 +197,8 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
   return {
     ...(config.mergeOrder === undefined ? {} : { order: config.mergeOrder }),
     ...(mainMoved === undefined ? {} : { mainMoved }),
-    ...(config.mergeLane === undefined ? {} : { lane: config.mergeLane }),
+    ...(config.mergeLanes === undefined ? {} : { lanes: config.mergeLanes }),
+    ...(config.mergeNoProject === undefined ? {} : { noProject: config.mergeNoProject }),
     ...(config.mergeProjectLanes === undefined ? {} : { projectLanes: config.mergeProjectLanes }),
     ...(config.autoApproveHighRisk === undefined
       ? {}
@@ -211,7 +224,8 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
       order: stored.order ?? DEFAULT_MERGE_CHOICE.order,
       mainMoved: stored.mainMoved ?? DEFAULT_MERGE_CHOICE.mainMoved,
     },
-    lane: stored.lane ?? DEFAULT_MERGE_LANE,
+    lanes: [...(stored.lanes ?? DEFAULT_MERGE_LANES)],
+    noProject: stored.noProject ?? DEFAULT_MERGE_NO_PROJECT,
     projectLanes: stored.projectLanes ?? {},
     repositories: stored.repositories ?? {},
     autoApproveHighRisk: stored.autoApproveHighRisk ?? false,
@@ -272,16 +286,31 @@ export function parseCommentWait(value: unknown): CommentWaitInput {
 }
 
 /**
- * The item's merge-queue lane in its repository: its Linear project id, or `""` for the
- * repository-wide lane. A `[merge.projects.*] lane` wins over `[merge] lane`; labels play no part.
+ * The item's merge-queue lane in its repository: `<project id>:<owner id>`, each part present only
+ * when `[merge] lanes` splits by it, `""` for the repository-wide lane. A `[merge.projects.*] lane`
+ * of `repository` turns the project split off for that project. An item without a project under
+ * `no_project = "own"` gets its own id as its lane. Labels play no part.
  */
 export function mergeLaneKey(
-  project: string | null,
-  settings: Pick<MergeSettings, "lane" | "projectLanes">,
+  item: { id: string; project: string | null; owner: string | null },
+  settings: Pick<MergeSettings, "lanes" | "noProject" | "projectLanes">,
 ): string {
-  if (project === null) return "";
-  const lane = settings.projectLanes[project] ?? settings.lane;
-  return lane === "project" ? project : "";
+  if (item.project === null && settings.noProject === "own") return item.id;
+  const byProject =
+    item.project !== null &&
+    (settings.projectLanes[item.project] ??
+      (settings.lanes.includes("project") ? "project" : "repository")) === "project";
+  const project = byProject ? item.project! : "";
+  return settings.lanes.includes("person") ? `${project}:${item.owner ?? ""}` : project;
+}
+
+export function parseMergeLanes(value: unknown): MergeLaneSplit[] {
+  const result = z
+    .array(z.enum(MERGE_LANE_SPLITS))
+    .refine((list) => new Set(list).size === list.length, "lists a split twice")
+    .safeParse(value);
+  if (!result.success) throw new Error(`lanes must list "project" and/or "person" once each`);
+  return MERGE_LANE_SPLITS.filter((split) => result.data.includes(split));
 }
 
 /** Bot logins whose comments on this repository's pull requests Paws ignores, lowercased. */
@@ -551,7 +580,12 @@ export function renderMergeSettings(settings: StoredMerge): string {
   const projectLanes = settings.projectLanes ?? {};
   const lines = [
     ...choiceLines(settings),
-    ...(settings.lane === undefined ? [] : [`lane = ${JSON.stringify(settings.lane)}`]),
+    ...(settings.lanes === undefined
+      ? []
+      : [`lanes = [${settings.lanes.map((split) => JSON.stringify(split)).join(", ")}]`]),
+    ...(settings.noProject === undefined
+      ? []
+      : [`no_project = ${JSON.stringify(settings.noProject)}`]),
     ...(settings.autoApproveHighRisk === undefined
       ? []
       : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
@@ -640,7 +674,8 @@ export function writeMergePolicy(
   return updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,
-      ...(current.lane === undefined ? {} : { lane: current.lane }),
+      ...(current.lanes === undefined ? {} : { lanes: current.lanes }),
+      ...(current.noProject === undefined ? {} : { noProject: current.noProject }),
       ...(current.projectLanes === undefined ? {} : { projectLanes: current.projectLanes }),
       ...(current.autoApproveHighRisk === undefined
         ? {}

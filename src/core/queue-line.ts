@@ -39,6 +39,6 @@ export function mergeQueueLine(entry: {
   laneName?: string | null;
 }): string {
   const place = PLACES[entry.position - 1] ?? ordinal(entry.position);
-  const lane = entry.lane ? ` for ${entry.laneName ?? "its Linear project"}` : "";
+  const lane = entry.lane && entry.laneName ? ` for ${entry.laneName}` : "";
   return `${place} in the ${entry.repository} queue${lane}`;
 }
