@@ -55,7 +55,8 @@ packages = ["apps/*", "packages/*"]
     expect(readMergeSettings(config)).toEqual({
       default: { order: "ci-green", mainMoved: "overlap" },
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
-      lane: "project",
+      lanes: ["project", "person"],
+      noProject: "own",
       projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 2,
@@ -124,30 +125,56 @@ packages = ["apps/*", "packages/*"]
     }
   });
 
-  test("lane defaults to the Linear project, and a project's lane wins over [merge]", () => {
+  test("lanes split by project and person, and an item without a project merges on its own", () => {
     const fallback = readMergeSettings(parseConfigToml(""));
-    expect(fallback.lane).toBe("project");
-    expect(mergeLaneKey(PAWS, fallback)).toBe(PAWS);
-    // An item without a project shares the repository-wide lane.
-    expect(mergeLaneKey(null, fallback)).toBe("");
+    expect(fallback.lanes).toEqual(["project", "person"]);
+    expect(fallback.noProject).toBe("own");
+    const item = (id: string, project: string | null, owner: string | null) => ({
+      id,
+      project,
+      owner,
+    });
+    expect(mergeLaneKey(item("A", PAWS, "ann"), fallback)).toBe(`${PAWS}:ann`);
+    expect(mergeLaneKey(item("B", PAWS, "bob"), fallback)).toBe(`${PAWS}:bob`);
+    expect(mergeLaneKey(item("C", null, "ann"), fallback)).toBe("C");
+    const shared = { ...fallback, lanes: ["project" as const], noProject: "lane" as const };
+    expect(mergeLaneKey(item("A", PAWS, "ann"), shared)).toBe(PAWS);
+    expect(mergeLaneKey(item("B", PAWS, "bob"), shared)).toBe(PAWS);
+    expect(mergeLaneKey(item("C", null, "ann"), shared)).toBe("");
+    expect(mergeLaneKey(item("C", null, "ann"), { ...fallback, noProject: "lane" })).toBe(":ann");
 
     const config = parseConfigToml(
-      `[merge]\nlane = "repository"\n\n[merge.projects."${PAWS}"]\nlane = "project"\n\n[merge.projects."${PAYMENTS}"]\norder = "ci-green"\n`,
+      `[merge]\nlanes = ["person"]\nno_project = "lane"\n\n[merge.projects."${PAWS}"]\nlane = "project"\n\n[merge.projects."${PAYMENTS}"]\norder = "ci-green"\n`,
     );
     const settings = readMergeSettings(config);
-    expect(settings.lane).toBe("repository");
+    expect(settings.lanes).toEqual(["person"]);
+    expect(settings.noProject).toBe("lane");
     expect(settings.projectLanes).toEqual({ [PAWS]: "project" });
-    expect(mergeLaneKey(PAWS, settings)).toBe(PAWS);
-    expect(mergeLaneKey(PAYMENTS, settings)).toBe("");
-    expect(mergeLaneKey(null, settings)).toBe("");
+    expect(mergeLaneKey(item("A", PAWS, "ann"), settings)).toBe(`${PAWS}:ann`);
+    expect(mergeLaneKey(item("B", PAYMENTS, "ann"), settings)).toBe(":ann");
 
-    // Saving the Merging settings keeps the project lane and drops the ignored project choice.
     const path = join(tempHome(), "config.toml");
     writeMergePolicy(path, settings, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
+    expect(readFileSync(path, "utf8")).toContain('lanes = ["person"]\nno_project = "lane"');
     expect(readFileSync(path, "utf8")).not.toContain("ci-green");
 
+    for (const [old, lanes] of [
+      ["project", ["project", "person"]],
+      ["repository", ["person"]],
+    ] as const) {
+      const legacy = parseConfigToml(`[merge]\nlane = "${old}"\n`);
+      expect(readMergeSettings(legacy).lanes).toEqual([...lanes]);
+      const written = join(tempHome(), "config.toml");
+      writeMergePolicy(written, readMergeSettings(legacy), storedMerge(legacy));
+      expect(readFileSync(written, "utf8")).not.toMatch(/^lane =/m);
+    }
+    expect(
+      readMergeSettings(parseConfigToml('[merge]\nlanes = []\nlane = "project"\n')).lanes,
+    ).toEqual([]);
     expect(() => parseConfigToml('[merge]\nlane = "label"\n')).toThrow("merge.lane");
+    expect(() => parseConfigToml('[merge]\nlanes = ["label"]\n')).toThrow("merge.lanes");
+    expect(() => parseConfigToml('[merge]\nno_project = "none"\n')).toThrow("merge.no_project");
     expect(() => parseConfigToml(`[merge.projects."${PAWS}"]\nlane = "issue"\n`)).toThrow();
   });
 
@@ -281,6 +308,8 @@ describe("Merging settings API", () => {
       highRiskPaths: [],
       highRiskRepositories: [],
       ignoredComments: [],
+      lanes: ["project", "person"],
+      noProject: "own",
     });
   });
 
@@ -366,6 +395,8 @@ describe("Merging settings API", () => {
       highRiskPaths: [],
       highRiskRepositories: [],
       ignoredComments: [],
+      lanes: ["project", "person"],
+      noProject: "own",
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
@@ -376,7 +407,8 @@ describe("Merging settings API", () => {
     expect(readMergeSettings(config)).toEqual({
       default: { order: "queue", mainMoved: "ci" },
       repositories: { "acme/platform": { packages: ["apps/*"] } },
-      lane: "project",
+      lanes: ["project", "person"],
+      noProject: "own",
       projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 5,
@@ -392,6 +424,36 @@ describe("Merging settings API", () => {
     // Saving the same settings again is not a change.
     await handleMergeSettingsRequest(request("PUT", body), options);
     expect(audits).toHaveLength(1);
+  });
+
+  test("PUT saves the lane splits and the no-project choice, and refuses unknown ones", async () => {
+    const { options, audits } = fixture();
+    const body = {
+      default: { order: "queue", mainMoved: "ci" },
+      lanes: ["person"],
+      noProject: "lane",
+    };
+    const saved = await handleMergeSettingsRequest(request("PUT", body), options);
+    expect(saved?.status).toBe(200);
+    expect(await saved!.json()).toMatchObject({ lanes: ["person"], noProject: "lane" });
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      'lanes = ["person"]\nno_project = "lane"',
+    );
+    expect(audits).toContainEqual([
+      "settings.merging",
+      "Merge lanes split by: project, person → person",
+    ]);
+    expect(audits).toContainEqual([
+      "settings.merging",
+      "Issues without a project merge: own → lane",
+    ]);
+    for (const bad of [{ lanes: ["team"] }, { noProject: "none" }]) {
+      const refused = await handleMergeSettingsRequest(
+        request("PUT", { ...body, ...bad }),
+        options,
+      );
+      expect(refused?.status).toBe(400);
+    }
   });
 
   test("PUT saves high-risk paths per repository and a body without them keeps them", async () => {

@@ -208,7 +208,7 @@ export function* listMergeQueuesSteps(q: Q, held?: MergeHeld) {
         readyAt: mergeQueueEntry.readyAt,
         projectName: sql<
           string | null
-        >`CASE WHEN ${workItem.linearProjectId} = ${mergeQueueEntry.lane} THEN ${workItem.linearProjectName} END`,
+        >`CASE WHEN ${workItem.linearProjectId} = ${mergeQueueEntry.lane} OR ${mergeQueueEntry.lane} LIKE ${workItem.linearProjectId} || ':%' THEN ${workItem.linearProjectName} END`,
         notifiedPosition: mergeQueueEntry.notifiedPosition,
         state: workItem.state,
       })

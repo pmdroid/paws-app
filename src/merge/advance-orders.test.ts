@@ -352,6 +352,35 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(mergedOrder(h, ids)).toEqual(["ENG-171", "ENG-172", "ENG-173"]);
   });
 
+  test("two owners' green pull requests in one project merge without waiting for each other", async () => {
+    const h = await start({ settings: { order: "queue", mainMoved: "ci" } });
+    const owners: Record<string, string> = { "ENG-181": "ann", "ENG-182": "bob" };
+    for (const [id, owner] of Object.entries(owners)) {
+      await h.addItem(id);
+      await saveWorkItemLinearProject(h.db, id, { id: "project-a", name: "Billing" });
+      h.state.lanes.set(id, `project-a:${owner}`);
+    }
+    h.state.ci = pendingCi;
+    for (const id of Object.keys(owners)) {
+      await h.pass(id);
+      h.clock.advance(1_000);
+    }
+    expect(
+      (await listMergeQueues(h.db)).map((entry) => [entry.itemId, entry.lane, entry.position]),
+    ).toEqual([
+      ["ENG-181", "project-a:ann", 1],
+      ["ENG-182", "project-a:bob", 1],
+    ]);
+    expect((await listMergeQueues(h.db)).map((entry) => entry.laneName)).toEqual([
+      "Billing",
+      "Billing",
+    ]);
+
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-182")).toEqual({ kind: "merged" });
+    expect(mergedOrder(h, ["ENG-181", "ENG-182"])).toEqual(["ENG-182"]);
+  });
+
   test("a task with no dependencies behind a blocked one merges without waiting", async () => {
     const h = await start({ settings: { order: "queue" } });
     const ids = ["ENG-141", "ENG-142"];

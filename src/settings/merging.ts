@@ -4,9 +4,11 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
   loadConfigFile,
+  MERGE_NO_PROJECT,
   parseCommentWait,
   parseHighRiskPathSettings,
   parseIgnoredCommentSettings,
+  parseMergeLanes,
   parseMergePolicy,
   readMergeSettings,
   storedMerge,
@@ -15,6 +17,8 @@ import {
   type CommentWaitInput,
   type IgnoredComments,
   type MergeChoice,
+  type MergeLaneSplit,
+  type MergeNoProject,
   type MergePolicy,
   type MergeSettings,
   type StoredMerge,
@@ -116,6 +120,8 @@ export async function handleMergeSettingsRequest(
     return json({
       default: policy.default,
       autoApproveHighRisk: policy.autoApproveHighRisk,
+      lanes: policy.lanes,
+      noProject: policy.noProject,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -145,7 +151,21 @@ export async function handleMergeSettingsRequest(
   let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
   let ignoredComments: Record<string, IgnoredComments> | undefined;
+  let lanes: MergeLaneSplit[] | undefined;
+  let noProject: MergeNoProject | undefined;
   try {
+    if (isRecord(body) && "lanes" in body) {
+      const { lanes: splits, ...rest } = body;
+      lanes = parseMergeLanes(splits);
+      body = rest;
+    }
+    if (isRecord(body) && "noProject" in body) {
+      const { noProject: choice, ...rest } = body;
+      if (!MERGE_NO_PROJECT.includes(choice as MergeNoProject))
+        throw new Error(`noProject must be ${MERGE_NO_PROJECT.join(" or ")}`);
+      noProject = choice as MergeNoProject;
+      body = rest;
+    }
     if (isRecord(body) && "ignoredComments" in body) {
       const { ignoredComments: lists, ...rest } = body;
       try {
@@ -229,6 +249,8 @@ export async function handleMergeSettingsRequest(
       {
         ...current,
         ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
+        ...(lanes === undefined ? {} : { lanes }),
+        ...(noProject === undefined ? {} : { noProject }),
       },
       highRiskPaths,
       commentWait,
@@ -245,6 +267,16 @@ export async function handleMergeSettingsRequest(
   }
   for (const change of mergeChanges(before, policy))
     await options.audit?.("settings.merging", change);
+  if (lanes !== undefined && lanes.join() !== before?.lanes.join())
+    await options.audit?.(
+      "settings.merging",
+      `Merge lanes split by: ${before?.lanes.join(", ") || "repository"} → ${lanes.join(", ") || "repository"}`,
+    );
+  if (noProject !== undefined && noProject !== before?.noProject)
+    await options.audit?.(
+      "settings.merging",
+      `Issues without a project merge: ${before?.noProject ?? "own"} → ${noProject}`,
+    );
   if (
     autoApproveHighRisk !== undefined &&
     autoApproveHighRisk !== (before?.autoApproveHighRisk ?? false)
@@ -289,6 +321,8 @@ export async function handleMergeSettingsRequest(
   return json({
     default: policy.default,
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
+    lanes: after?.lanes ?? lanes,
+    noProject: after?.noProject ?? noProject,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)

@@ -6521,7 +6521,13 @@ export class Orchestrator {
       },
       mergeLane: async (item) =>
         mergeLaneKey(
-          await this.store.run((q) => getWorkItemLinearProjectIdSteps(q, item.id)),
+          await this.store.run(function* (q) {
+            return {
+              id: item.id,
+              project: yield* getWorkItemLinearProjectIdSteps(q, item.id),
+              owner: yield* itemOwnerUserIdSteps(q, item.id),
+            };
+          }),
           this.readMergePolicy(),
         ),
       voice: {

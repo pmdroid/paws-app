@@ -279,7 +279,7 @@ export type OrderCapabilities = {
    */
   dependencyHold(q: Q, itemId: string): Steps<readonly string[] | null>;
   /**
-   * The merge-queue lane the task joins in its repository: its Linear project id, or `''` for the
+   * The merge-queue lane the task joins in its repository, from `mergeLaneKey`: `''` for the
    * repository-wide lane.
    */
   mergeLane(item: WorkItemRecord): Promise<string>;

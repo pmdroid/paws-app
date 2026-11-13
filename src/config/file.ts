@@ -21,12 +21,16 @@ import {
 import {
   MAIN_MOVED,
   MERGE_LANES,
+  MERGE_NO_PROJECT,
   MERGE_ORDERS,
+  parseMergeLanes,
   parseMergeTables,
   renderMergeSettings,
   storedMerge,
   type MainMoved,
   type MergeLane,
+  type MergeLaneSplit,
+  type MergeNoProject,
   type MergeOrder,
   type MergeRepositories,
 } from "./merge";
@@ -102,8 +106,10 @@ export type PawsConfigFile = {
   mergeOrder?: MergeOrder;
   /** `[merge] main_moved`. Missing means `ci`. */
   mainMoved?: MainMoved;
-  /** `[merge] lane`. Missing means `project`. */
-  mergeLane?: MergeLane;
+  /** `[merge] lanes`, or the old `[merge] lane` mapped onto it. Missing means both splits. */
+  mergeLanes?: MergeLaneSplit[];
+  /** `[merge] no_project`. Missing means `own`. */
+  mergeNoProject?: MergeNoProject;
   /** A choice under `[merge.projects."<Linear project id>"]` or a `[[merge.rules]]`, both ignored. */
   ignoredMergeOverrides?: true;
   /** `[merge.projects."<Linear project id>"] lane`. */
@@ -573,7 +579,14 @@ function assignConfig(
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
     else if (key === "main_moved")
       config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
-    else if (key === "lane") config.mergeLane = oneOf(MERGE_LANES, value, line, "merge.lane");
+    else if (key === "lanes") config.mergeLanes = mergeLanes(value, line);
+    else if (key === "lane")
+      config.mergeLanes ??=
+        oneOf(MERGE_LANES, value, line, "merge.lane") === "project"
+          ? ["project", "person"]
+          : ["person"];
+    else if (key === "no_project")
+      config.mergeNoProject = oneOf(MERGE_NO_PROJECT, value, line, "merge.no_project");
     else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
@@ -646,6 +659,16 @@ function oneOf<T extends string>(
   if (!(choices as readonly string[]).includes(text))
     throw new Error(`config.toml line ${line} ${name} must be ${choices.join(", ")}`);
   return text as T;
+}
+
+function mergeLanes(value: string | number | boolean | string[], line: number): MergeLaneSplit[] {
+  try {
+    return parseMergeLanes(value);
+  } catch (error) {
+    throw new Error(`config.toml line ${line} merge.${(error as Error).message}`, {
+      cause: error,
+    });
+  }
 }
 
 function implementerName(
