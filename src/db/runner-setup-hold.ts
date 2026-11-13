@@ -5,8 +5,8 @@ import { type Q, type Steps, type Db } from "./db";
 
 /**
  * A queued item held because its delegator has no runner Paws may use. The scheduler skips it,
- * nothing retries it, and no start timeout applies. Migration 139 deletes the row when the item
- * leaves the queue or a Stop is requested.
+ * nothing retries it, and no start timeout applies. The `runner_setup_hold_ends` trigger deletes
+ * the row when the item leaves the queue or a Stop is requested.
  */
 export type RunnerSetupHold = {
   itemId: string;
@@ -218,7 +218,7 @@ export function* enqueueRunnerSetupCheckSteps(
 
 /**
  * Queue one `runner_setup.check` job for `ownerUserId` unless one is already pending, the same
- * rule the triggers of migration 144 follow.
+ * rule the SQLite `runner_setup_check_*` triggers follow.
  */
 export async function enqueueRunnerSetupCheck(
   store: Db,

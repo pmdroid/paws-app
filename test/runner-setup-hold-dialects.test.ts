@@ -6,13 +6,14 @@ import {
   enqueueRunnerSetupChecks,
   getRunnerSetupHoldSteps,
   holdForRunnerSetupSteps,
+  insertRun,
   listRunnerSetupHoldsSteps,
   markRunnerSetupNotifiedSteps,
   releaseRunnerSetupHoldSteps,
   setRunnerAgentSignedInSteps,
   takeRunnerSetupResumeSteps,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, withoutForeignKeys } from "./dialects";
+import { forEachDialect, insertWorkItem, seed, withoutForeignKeys } from "./dialects";
 
 forEachDialect((open) => {
   test("a hold keeps its start, takes the latest reason and lists oldest first", async () => {
@@ -104,6 +105,47 @@ forEachDialect((open) => {
       );
       expect(await db.run((q) => releaseRunnerSetupHoldSteps(q, "item", 5))).toBe(true);
       expect(await db.run((q) => takeRunnerSetupResumeSteps(q, "item", "run"))).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a Stop ends the hold and drops its resume, and leaving the queue ends the hold", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "stopped");
+      await insertWorkItem(db, "started");
+      const run = await insertRun(db, { itemId: "stopped", now: 1, status: "active" });
+      const hold = (itemId: string, now: number) =>
+        db.run((q) =>
+          holdForRunnerSetupSteps(q, {
+            itemId,
+            ownerUserId: null,
+            reason: "no-runner",
+            runId: itemId === "stopped" ? run.id : null,
+            now,
+          }),
+        );
+      await hold("stopped", 2);
+      await db.run((q) => releaseRunnerSetupHoldSteps(q, "stopped", 3));
+      await hold("stopped", 4);
+      await hold("started", 4);
+      await seed(
+        db,
+        (q) =>
+          q.orm
+            .update(q.t.workItem)
+            .set({ cancelRequested: 1 })
+            .where(eq(q.t.workItem.id, "stopped")),
+        (q) =>
+          q.orm
+            .update(q.t.workItem)
+            .set({ state: "running" })
+            .where(eq(q.t.workItem.id, "started")),
+      );
+      expect(await db.run((q) => getRunnerSetupHoldSteps(q, "stopped"))).toBeNull();
+      expect(await db.run((q) => getRunnerSetupHoldSteps(q, "started"))).toBeNull();
+      expect(await db.run((q) => takeRunnerSetupResumeSteps(q, "stopped", run.id))).toBe(false);
     } finally {
       await close();
     }
