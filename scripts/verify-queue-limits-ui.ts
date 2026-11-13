@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { openDatabase, migrate, sqliteDb } from "../src/db";
 import {
   handleAgentSettingsRequest,
-  handleCheckoutSettingsRequest,
   handleHookSettingsRequest,
   handleTimeLimitSettingsRequest,
 } from "../src/settings";
@@ -50,7 +49,6 @@ const server = Bun.serve({
         audit: () => {},
       });
     return (
-      (await handleCheckoutSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
       (await handleAgentSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
       (await handleTimeLimitSettingsRequest(request, {
         configPath,

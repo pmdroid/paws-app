@@ -1,5 +1,4 @@
 import { parseBriefTemplates, renderBriefTemplates } from "./brief";
-import { parseCheckoutProjects, renderCheckoutProjects, type CheckoutProjects } from "./checkout";
 import {
   chmodSync,
   existsSync,
@@ -125,7 +124,6 @@ export type PawsConfigFile = {
   /** `[findings] grouping_time`, HH:MM UTC; default 06:00. */
   findingsGroupingTime?: string;
   projectSkills?: ProjectSkills[];
-  checkoutProjects?: CheckoutProjects;
   /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
   memberVm?: MemberVmSize;
   /** `[brief] template`. Missing means the built-in brief. */
@@ -218,8 +216,6 @@ export function parseConfigToml(text: string): PawsConfigFile {
   }
   const skills = parseProjectSkills(text);
   if (skills.length > 0) config.projectSkills = skills;
-  const projects = parseCheckoutProjects(text);
-  if (Object.keys(projects).length) config.checkoutProjects = projects;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
   const brief = parseBriefTemplates(text);
@@ -293,7 +289,6 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
       linearCommentAgents: config.linearCommentAgents ?? stored.linearCommentAgents,
       closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
     }) +
-    renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
     renderMergeSettings(storedMerge(stored)) +
     renderQueueSettings({
