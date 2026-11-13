@@ -13,16 +13,16 @@ import { createRunnerRepositories } from "../src/runner-repositories";
 import {
   beginImplementRun,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   saveRunCommitPolicy,
   getRun,
   getItemRunCommitPolicy,
   insertRun,
-  sqliteDb,
 } from "../src/db";
 import type { RunnerCommand } from "../src/runner-protocol";
+import { eq } from "drizzle-orm";
+import { json, seed } from "./dialects";
 import { tempHome, withHomeStore } from "./helpers";
+import { tempStore } from "./pglite";
 
 const credit = {
   id: 8,
@@ -263,34 +263,38 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
 });
 
 test("a run stored with the old lead and steerer policy keeps crediting only the steerer", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
     const item = await insertQueuedItem(db, { id: "item", now: 1 });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
-    db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-      JSON.stringify({
-        phase: "running",
-        commitPolicy: {
-          bot: policy.bot,
-          projectLead: { ...credit, id: 7, login: "lead" },
-          taskSteerer: credit,
-        },
-      }),
-      run.id,
-    ]);
-    expect(await getItemRunCommitPolicy(sqliteDb(db), item.id)).toEqual(policy);
-    await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
-    db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-      JSON.stringify({ phase: "running", commitPolicy: { bot: policy.bot, projectLead: null } }),
-      run.id,
-    ]);
-    expect((await getRun(sqliteDb(db), run.id))?.checkpoint?.commitPolicy).toEqual({
+    const { run } = await beginImplementRun(db, item.id, 1);
+    const storeCheckpoint = (checkpoint: unknown) =>
+      seed(db, (q) =>
+        q.orm
+          .update(q.t.run)
+          .set({ checkpoint: json(db, checkpoint) })
+          .where(eq(q.t.run.id, run.id)),
+      );
+    await storeCheckpoint({
+      phase: "running",
+      commitPolicy: {
+        bot: policy.bot,
+        projectLead: { ...credit, id: 7, login: "lead" },
+        taskSteerer: credit,
+      },
+    });
+    expect(await getItemRunCommitPolicy(db, item.id)).toEqual(policy);
+    await saveRunCommitPolicy(db, run.id, policy);
+    await saveRunCommitPolicy(db, run.id, policy);
+    await storeCheckpoint({
+      phase: "running",
+      commitPolicy: { bot: policy.bot, projectLead: null },
+    });
+    expect((await getRun(db, run.id))?.checkpoint?.commitPolicy).toEqual({
       bot: policy.bot,
       credit: null,
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
