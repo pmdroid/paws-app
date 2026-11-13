@@ -1,3 +1,5 @@
+import type { Database } from "bun:sqlite";
+import { and, asc, eq, like, sql } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +24,8 @@ import {
   syncWorkspaceMember,
   workspaceSessionIds,
   sqliteDb,
+  type Db,
+  type Q,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createFakeTracker, createLinearMembershipReads } from "../../src/linear";
@@ -36,31 +40,68 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
-export async function createExecutionControlsFixture(
-  root: string,
-  options: {
-    interruptItem?: (id: string) => Promise<void>;
-    onMemberRevoked?: () => Promise<void>;
-  } = {},
-) {
+type FixtureOptions = {
+  interruptItem?: (id: string) => Promise<void>;
+  onMemberRevoked?: () => Promise<void>;
+};
+
+export async function createExecutionControlsFixture(root: string, options: FixtureOptions = {}) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "controls.sqlite"));
   migrate(db);
+  return {
+    db,
+    ...(await executionControlsFixture(db, sqliteDb(db), root, options, async () => db.close())),
+  };
+}
+
+export async function createExecutionControlsFixturePg(root: string, options: FixtureOptions = {}) {
+  mkdirSync(root, { recursive: true });
+  const { db, close } = await tempStore();
+  return { db, ...(await executionControlsFixture(db, db, root, options, close)) };
+}
+
+function write(db: Db, query: (q: Q) => PromiseLike<unknown>) {
+  return db.run((q) => q.exec(query(q)));
+}
+
+function setMemberActive(db: Db, userId: string, active: number) {
+  return write(db, (q) =>
+    q.orm
+      .update(q.t.workspaceMember)
+      .set({ active })
+      .where(
+        and(
+          eq(q.t.workspaceMember.workspaceId, "workspace"),
+          eq(q.t.workspaceMember.userId, userId),
+        ),
+      ),
+  );
+}
+
+async function executionControlsFixture(
+  handle: Database | Db,
+  db: Db,
+  root: string,
+  options: FixtureOptions,
+  closeDb: () => Promise<void>,
+) {
   const now = Date.now();
   const workspaceId = "workspace";
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "admin",
     linearUserId: "admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: workspaceId,
     organizationId: "org",
     name: "Controls verification",
     userId: "admin",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [
@@ -68,13 +109,13 @@ export async function createExecutionControlsFixture(
     ["inactive", "member", ["team"]],
     ["outside", "member", ["outside"]],
   ] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id,
       linearUserId: id,
       name: id,
       email: `${id}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId,
       userId: id,
       role,
@@ -85,10 +126,8 @@ export async function createExecutionControlsFixture(
   }
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const userId of ["admin", "member", "inactive", "outside"])
-    sessions[userId] = await issueWorkspaceSession(sqliteDb(db), { workspaceId, userId, now });
-  db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
-    workspaceId,
-  ]);
+    sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
+  await setMemberActive(db, "inactive", 0);
   for (const [id, organizationId] of [
     ["controlled", "org"],
     ["foreign", "foreign"],
@@ -100,7 +139,7 @@ export async function createExecutionControlsFixture(
       title: `Control ${id}`,
       now,
     });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId: item.sessionKey!,
       organizationId: organizationId!,
       teamId: "team",
@@ -108,32 +147,41 @@ export async function createExecutionControlsFixture(
       appUserId: "app",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId);
+    await bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
   }
-  const item = (await getWorkItem(sqliteDb(db), "controlled"))!;
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
-    VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
-    [item.delegationId, now, item.sessionKey],
+  const item = (await getWorkItem(db, "controlled"))!;
+  await write(db, (q) =>
+    q.orm.insert(q.t.workItem).values({
+      id: "other",
+      delegationId: item.delegationId,
+      linearIssueId: "other",
+      linearIdentifier: "other",
+      title: "Unrelated item",
+      state: "queued",
+      branchName: "paws/other",
+      position: 1,
+      createdAt: now,
+      sessionKey: item.sessionKey,
+    }),
   );
-  await bindWorkItemRepository(sqliteDb(db), "unmapped", {
+  await bindWorkItemRepository(db, "unmapped", {
     owner: "fixture",
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
   });
-  await replaceWorkspaceRepositories(sqliteDb(db), {
+  await replaceWorkspaceRepositories(db, {
     workspaceId,
     actorId: "admin",
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
     now,
   });
-  const run = (await beginImplementRun(sqliteDb(db), item.id, now)).run;
+  const run = (await beginImplementRun(db, item.id, now)).run;
   const clock = new FakeClock(now);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
-    jobs: new JobLoop(db, clock),
-    outbox: new OutboxDispatcher(db, clock),
+    jobs: new JobLoop(handle, clock),
+    outbox: new OutboxDispatcher(handle, clock),
     pawsRoot: root,
     tracker: createFakeTracker(),
     scheduling: async () => ({}),
@@ -141,16 +189,13 @@ export async function createExecutionControlsFixture(
   let joining: Promise<void> | null = null;
   let revokeOnResume = false;
   const controls = createExecutionControls({
-    db,
+    db: handle,
     bus: orchestrator.bus,
     getPort: () => ({
       pauseItem: (id, canAct, onCommitted) => orchestrator.pauseItem(id, canAct, onCommitted),
-      resumeItem(id, canAct, onCommitted) {
+      async resumeItem(id, canAct, onCommitted) {
         const resumed = orchestrator.resumeItem(id, canAct, onCommitted);
-        if (revokeOnResume)
-          db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='member'", [
-            workspaceId,
-          ]);
+        if (revokeOnResume) await setMemberActive(db, "member", 0);
         return resumed;
       },
       async interruptItem(id) {
@@ -165,7 +210,7 @@ export async function createExecutionControlsFixture(
   const server = startServer({
     hostname: "127.0.0.1",
     port: 0,
-    db,
+    db: handle,
     webhooks: false,
     statusEnv: {},
     workspaceAccess: ready.promise,
@@ -175,7 +220,7 @@ export async function createExecutionControlsFixture(
   const access = createWorkspaceAccess({
     interruptItem: options.interruptItem,
     onMemberRevoked: options.onMemberRevoked,
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Controls verification" },
@@ -208,7 +253,7 @@ export async function createExecutionControlsFixture(
     });
   }
   return {
-    db,
+    store: db,
     orchestrator,
     origin,
     runId: run.id,
@@ -225,14 +270,15 @@ export async function createExecutionControlsFixture(
       await server.stop(true);
       await access.stop();
       await orchestrator.shutdown();
-      db.close();
+      await closeDb();
     },
   };
 }
 
 export async function probeExecutionControls(root: string) {
-  const fixture = await createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixturePg(root);
   const { db, call } = fixture;
+  assert(db.dialect === "postgres");
   const observations: { name: string; passed: boolean; observed: unknown }[] = [];
   const observe = (name: string, observed: unknown) =>
     observations.push({ name, passed: true, observed });
@@ -258,7 +304,7 @@ export async function probeExecutionControls(root: string) {
       { admin: 200, member: 200, denied: 5 },
     );
     const resetsAt = Date.now() + 3_600_000;
-    await startUsagePause(sqliteDb(db), {
+    await startUsagePause(db, {
       runId: fixture.runId,
       itemId: "controlled",
       agent: "claude",
@@ -273,9 +319,9 @@ export async function probeExecutionControls(root: string) {
     ]);
     assert.equal((await call("resume_now", "inactive")).status, 401);
     assert.equal((await call("resume_now")).status, 200);
-    assert((await usagePause(sqliteDb(db), fixture.runId))!.resumeAt <= Date.now());
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
-    db.run("DELETE FROM usage_pause");
+    assert((await usagePause(db, fixture.runId))!.resumeAt <= Date.now());
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
+    await write(db, (q) => q.orm.delete(q.t.usagePause));
     assert.equal((await call("resume_now")).status, 409);
     observe("Resume now ends a usage-limit wait without changing the item state", {
       state: "running",
@@ -286,24 +332,32 @@ export async function probeExecutionControls(root: string) {
       { "x-paws-workspace": "foreign" },
     ] as Record<string, string>[])
       assert.equal((await call("stop", "member", "controlled", extra)).status, 403);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
     observe("Cross-origin, CSRF and workspace-selection violations fail before canonical effects", {
       state: "running",
     });
-    db.run(
-      "CREATE TEMP TRIGGER reject_control_audit BEFORE INSERT ON workspace_access_audit WHEN NEW.action='execution.pause' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END",
+    await db.orm.execute(
+      sql.raw(
+        "CREATE FUNCTION reject_control_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture audit failure'; END $$",
+      ),
+    );
+    await db.orm.execute(
+      sql.raw(
+        "CREATE TRIGGER reject_control_audit BEFORE INSERT ON workspace_access_audit FOR EACH ROW WHEN (NEW.action='execution.pause') EXECUTE FUNCTION reject_control_audit()",
+      ),
     );
     assert.equal((await call("pause")).status, 503);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
-    db.run("DROP TRIGGER reject_control_audit");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
+    await db.orm.execute(sql.raw("DROP TRIGGER reject_control_audit ON workspace_access_audit"));
+    await db.orm.execute(sql.raw("DROP FUNCTION reject_control_audit()"));
     observe("Audit failure rolls back the actual canonical pause transaction before live effects", {
       state: "running",
     });
     assert.equal((await call("pause")).status, 200);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "paused");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "paused");
     assert.equal((await call("pause")).status, 409);
     assert.equal((await call("resume")).status, 200);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "queued");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "queued");
     observe(
       "Public Pause and Resume reach actual canonical orchestrator ports and reject stale duplicate actions",
       { state: "queued" },
@@ -321,63 +375,77 @@ export async function probeExecutionControls(root: string) {
     });
     for (
       let count = 0;
-      count < 100 && (await getWorkItem(sqliteDb(db), "controlled"))!.state !== "cancelled";
+      count < 100 && (await getWorkItem(db, "controlled"))!.state !== "cancelled";
       count++
     )
       await new Promise((resolve) => setTimeout(resolve, 2));
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "cancelled");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "cancelled");
     assert.equal(returned, false);
-    assert.equal((await getWorkItem(sqliteDb(db), "other"))!.state, "queued");
+    assert.equal((await getWorkItem(db, "other"))!.state, "queued");
     release();
     assert.equal((await stopping).status, 200);
     assert.equal((await call("stop")).status, 409);
-    const messages = db
-      .query<{ body: string | null }, []>(
-        "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE delivery_kind='stop'",
+    const messages = (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ payload: q.t.outbox.payload })
+            .from(q.t.outbox)
+            .where(eq(q.t.outbox.deliveryKind, "stop")),
+        ),
       )
-      .all();
+    ).map((row) => ({ body: (row.payload as { body?: string } | null)?.body ?? null }));
     assert(messages.some((row) => row.body?.startsWith("Stopped from Paws. ")));
     observe(
       "Selected-item Stop commits and awaits interruption, preserves unrelated work and branch, and attributes the Linear response to Paws",
       {
         state: "cancelled",
         other: "queued",
-        branch: (await getWorkItem(sqliteDb(db), "controlled"))!.branchName,
+        branch: (await getWorkItem(db, "controlled"))!.branchName,
         messages,
       },
     );
-    db.run("UPDATE work_item SET state='paused',cancel_requested=0 WHERE id='controlled'");
+    await write(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ state: "paused", cancelRequested: 0 })
+        .where(eq(q.t.workItem.id, "controlled")),
+    );
     fixture.revokeDuringResume();
     assert.equal((await call("resume")).status, 409);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "paused");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "paused");
     observe(
       "Membership revoked during the actual resume join fences its post-join canonical restart",
       { state: "paused" },
     );
-    db.run("UPDATE workspace_member SET active=1 WHERE user_id='member'");
-    db.run("UPDATE work_item SET state='running' WHERE id='controlled'");
+    await setMemberActive(db, "member", 1);
+    await write(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, "controlled")),
+    );
     const stopRequest = new Request(fixture.origin + "/api/execution-controls", {
       method: "POST",
       headers: fixture.headers(),
       body: JSON.stringify({ itemId: "controlled", action: "stop" }),
     });
-    const verified = (await requestWorkspaceSession(sqliteDb(db), stopRequest))!;
+    const verified = (await requestWorkspaceSession(db, stopRequest))!;
     const allowed = await workspaceSessionIds(
-      sqliteDb(db),
+      db,
       verified.principal.workspaceId,
       verified.principal.userId,
       "client",
     );
+    let revoked: Promise<void> | undefined;
     const revoking = createExecutionControls({
       db,
       bus: fixture.orchestrator.bus,
       getPort() {
-        db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'");
+        revoked = setMemberActive(db, "member", 0);
         return fixture.orchestrator;
       },
     });
     assert.equal((await revoking.handle(stopRequest, verified.principal, allowed))!.status, 409);
-    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
+    await revoked;
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
     observe(
       "Stop rechecks current membership inside its committing transaction after initial authorization",
       { state: "running", status: 409 },
@@ -400,11 +468,18 @@ export async function probeExecutionControls(root: string) {
       await anonymous.stop(true);
     }
     observe("Unbound demo engines cannot route execution controls", { status: 404 });
-    const audit = db
-      .query<{ action: string; userId: string }, []>(
-        "SELECT action,user_id AS userId FROM workspace_access_audit WHERE action LIKE 'execution.%'",
-      )
-      .all();
+    const audit = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            action: q.t.workspaceAccessAudit.action,
+            userId: q.t.workspaceAccessAudit.userId,
+          })
+          .from(q.t.workspaceAccessAudit)
+          .where(like(q.t.workspaceAccessAudit.action, "execution.%"))
+          .orderBy(asc(q.t.workspaceAccessAudit.id)),
+      ),
+    );
     assert.deepEqual(
       audit.map((row) => row.action),
       ["execution.resume_now", "execution.pause", "execution.resume", "execution.stop"],
@@ -424,7 +499,7 @@ export async function probeExecutionControls(root: string) {
 if (import.meta.main) {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-controls-"));
   if (process.argv.includes("--serve")) {
-    const fixture = await createExecutionControlsFixture(root);
+    const fixture = await createExecutionControlsFixturePg(root);
     console.log(
       JSON.stringify({
         root,
