@@ -98,6 +98,43 @@ function specHash(value: WorkBrief): string {
   return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+const BRIEF_KEYS = ["issue", "epic"];
+const ISSUE_BRIEF_KEYS = [
+  "source",
+  "issueId",
+  "identifier",
+  "title",
+  "description",
+  "acceptanceCriteria",
+];
+
+/** The value's own keys, those named in `order` first and in that order. */
+function inKeyOrder(value: unknown, order: readonly string[]): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  const keys = [
+    ...order.filter((key) => Object.hasOwn(record, key)),
+    ...Object.keys(record).filter((key) => !order.includes(key)),
+  ];
+  return Object.fromEntries(keys.map((key) => [key, record[key]]));
+}
+
+/**
+ * The hash of a stored brief, for an item whose specification hash is not stored yet.
+ * Postgres keeps `work_item.brief` as jsonb, which reorders object keys, so the brief is put back
+ * in the order `brief()` writes before hashing: unchanged content then hashes like `specHash`
+ * of the brief intake built. Stored hashes keep their format, so no item reports a change on upgrade.
+ */
+function storedBriefHash(text: string | null): string {
+  const value = inKeyOrder(JSON.parse(text ?? "null"), BRIEF_KEYS);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    for (const key of BRIEF_KEYS)
+      if (Object.hasOwn(record, key)) record[key] = inKeyOrder(record[key], ISSUE_BRIEF_KEYS);
+  }
+  return specHash(value as WorkBrief);
+}
+
 export function createItemReconciler(input: {
   store: Db;
   tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listBlockers">;
@@ -179,7 +216,7 @@ export function createItemReconciler(input: {
           yield* markItemSpecificationAbsentSteps(
             q,
             item.id,
-            item.hash ?? specHash(JSON.parse(item.brief ?? "null")),
+            item.hash ?? storedBriefHash(item.brief),
           );
       }
       const byIssue = new Map(
@@ -213,7 +250,7 @@ export function createItemReconciler(input: {
           });
           change.addedItemIds.push(id);
         } else {
-          const previous = existing.hash ?? specHash(JSON.parse(existing.brief ?? "null"));
+          const previous = existing.hash ?? storedBriefHash(existing.brief);
           if (previous !== hash) change.specChangedItemIds.push(id);
           yield* updateReconciledWorkItemSteps(q, id, {
             brief: JSON.stringify(workBrief),
