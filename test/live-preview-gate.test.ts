@@ -15,7 +15,12 @@ import {
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { LIVE_PREVIEW_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
+import { setJournalSink } from "../src/journal";
+import {
+  FAST_MODE_RUNNER_VERSION,
+  LIVE_PREVIEW_RUNNER_VERSION,
+  type RunnerCommand,
+} from "../src/runner-protocol";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { seed } from "./dialects";
@@ -28,7 +33,7 @@ const repository = {
   baseSha: "a".repeat(40),
 };
 
-async function assignedPreview(runnerVersion: string) {
+async function assigned(runnerVersion: string) {
   const root = mkdtempSync(join(tmpdir(), "paws-preview-gate-"));
   const now = () => 1_800_000_000_000;
   const { db, close } = await tempStore();
@@ -106,18 +111,37 @@ async function assignedPreview(runnerVersion: string) {
       itemId: item.id,
       generation: 1,
       repository,
-      profile: { agent: "codex", model: "scripted" },
+      profile: { agent: "codex", model: "scripted", fast: true },
       prompt: "Fixture",
       livePreview: { command: "bun run dev", port: 5173 },
     };
     await work.assign(command);
     const sent = (await work.currentAsync(run.id, 1)).command;
-    return sent.type === "run" ? sent.livePreview : undefined;
+    return sent.type === "run" ? sent : undefined;
   } finally {
     await close();
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+const assignedPreview = async (version: string) => (await assigned(version))?.livePreview;
+
+test("a runner below the fast mode release runs without fast and journals why", async () => {
+  const [major, minor, patch] = FAST_MODE_RUNNER_VERSION;
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    expect((await assigned(`${major}.${minor}.${patch - 1}`))?.profile.fast).toBeUndefined();
+  } finally {
+    restore();
+  }
+  expect(lines.filter((line) => line.startsWith("fast mode needs runner"))).toEqual([
+    expect.stringMatching(
+      new RegExp(`^fast mode needs runner ${major}\\.${minor}\\.${patch} for run `),
+    ),
+  ]);
+  expect((await assigned(`${major}.${minor}.${patch}`))?.profile.fast).toBe(true);
+});
 
 test("a runner below the live preview release never gets the field", async () => {
   const [major, minor, patch] = LIVE_PREVIEW_RUNNER_VERSION;

@@ -10,6 +10,7 @@ import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
 import { createUpdateLimiter } from "./ask-team";
+import { setJournalSink } from "../journal";
 import { createAcpPromptLifecycle } from "./lifecycle";
 import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
 import type { FakeResult, FakeScript } from "./testing/script";
@@ -1890,6 +1891,73 @@ for (const failure of ["unsupported", "unadvertised", "rejected", "unconfirmed"]
   });
 }
 
+for (const [kind, fast, fastOn, value] of [
+  ["boolean", true, false, true],
+  ["select", true, false, "on"],
+  ["select", undefined, true, "off"],
+] as const) {
+  test(`ACP sets a ${kind} fast option to ${String(value)} for fast ${String(fast)}`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, { fast: kind, fastOn, steps: [{ type: "end" }] });
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: null, ...(fast === undefined ? {} : { fast }) },
+      itemId: "ENG-1",
+      runId: "fast",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.fast).toBe(true);
+    const trace = await readResult(files.resultPath);
+    expect(trace.fastSelection).toEqual({
+      sessionId: result.sessionId,
+      configId: "fast",
+      ...(kind === "boolean" ? { type: "boolean" } : {}),
+      value,
+    });
+    expect(trace.methods.slice(-2)).toEqual(["session/set_config_option", "session/prompt"]);
+  });
+}
+
+test("ACP runs at normal speed and journals when the model has no fast option", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "model-a",
+    fast: "select",
+    fastModels: ["model-b"],
+    steps: [{ type: "end" }],
+  });
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "codex", model: "model-a", fast: true },
+      itemId: "ENG-1",
+      runId: "no-fast",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.fast).toBe(false);
+  } finally {
+    restore();
+  }
+  expect(lines.filter((line) => line.includes("fast mode"))).toEqual([
+    "fast mode unavailable for codex model-a",
+  ]);
+  expect((await readResult(files.resultPath)).fastSelection).toBeUndefined();
+});
+
 test("ACP initialization-only preflight does not run tools or prompt", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {
@@ -2092,12 +2160,43 @@ test("connection probe verifies the model in a disposable session", async () => 
     expect(result.models.map((model) => model.id)).toEqual(["gpt-model-a", "gpt-model-b"]);
     expect(result.effort).toBe("medium");
     expect(result.efforts.map((effort) => effort.id)).toEqual(["low", "medium", "high"]);
+    expect(result.fast).toBe(false);
     expect((await readResult(files.resultPath)).methods).toEqual([
       "initialize",
       "session/new",
       "session/set_config_option",
       "session/prompt",
     ]);
+  } finally {
+    if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
+    else process.env.PAWS_CODEX_ACP = prior;
+  }
+});
+
+test("connection probe reports fast for the models that offer it", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "gpt-model-a",
+    models: ["gpt-model-a", "gpt-model-b"],
+    fast: "select",
+    fastModels: ["gpt-model-b"],
+    steps: [{ type: "end" }],
+  });
+  const prior = process.env.PAWS_CODEX_ACP;
+  process.env.PAWS_CODEX_ACP = `${process.execPath} ${fakeAgent} ${files.resultPath} ${files.scriptPath}`;
+  try {
+    for (const [model, fast] of [
+      ["gpt-model-a", false],
+      ["gpt-model-b", true],
+    ] as const) {
+      const result = await probeAgentProfile({
+        profile: { agent: "codex", model },
+        pawsRoot: layout.pawsRoot,
+        worktree: layout.worktree,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.fast).toBe(fast);
+    }
   } finally {
     if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
     else process.env.PAWS_CODEX_ACP = prior;

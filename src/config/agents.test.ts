@@ -31,6 +31,28 @@ test("presets round trip with profiles and replace old preset sections", () => {
   ).toBe("opus");
 });
 
+test("fast = true parses, renders and round trips on a profile", () => {
+  const fast = parseAgentSettings({
+    ...settings,
+    presets: { Fast: { agent: "codex", model: "codex", fast: true } },
+  });
+  const text = renderAgentSettingsText("", fast);
+  expect(text).toContain('[agents.presets."Fast"]\nagent = "codex"\nmodel = "codex"\nfast = true');
+  expect(parseAgentSettingsToml(text, "claude")).toEqual(fast);
+  expect(
+    parseAgentSettingsToml(
+      '[agents.defaults.implementer]\nagent = "claude"\nfast = true\n[agents.defaults.reviewer]\nagent = "codex"',
+      "claude",
+    )?.defaults.implementer,
+  ).toEqual({ agent: "claude", model: null, fast: true });
+  expect(() =>
+    parseAgentSettings({
+      ...settings,
+      presets: { X: { agent: "codex", model: null, fast: "on" } },
+    }),
+  ).toThrow();
+});
+
 test("labels override each role independently, ignoring case and surrounding spaces", () => {
   const result = resolveAgentProfiles(config(), { implementer: " opus " });
   expect(result.implementer).toEqual(settings.presets.Opus);

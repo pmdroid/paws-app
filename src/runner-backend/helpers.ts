@@ -101,7 +101,8 @@ export function createRemoteSessionAgentRunner(options: {
           throw new Error(
             "Remote session helper requires a read-only prompt without tools or files",
           );
-        const profile = { ...input.profile, model: input.profile.model ?? null };
+        const { fast: _fast, ...helperProfile } = input.profile;
+        const profile = { ...helperProfile, model: helperProfile.model ?? null };
         const waitUntil = now() + (input.timeoutMs ?? 60_000);
         let command: HelperCommand | undefined;
         let placed: PlacementAccount | undefined;

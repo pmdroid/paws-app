@@ -69,10 +69,11 @@ import {
   type RunnerAssignment as Assignment,
   type RunnerHostSample,
 } from "../db";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import {
   executionAuthorityUntil,
+  FAST_MODE_RUNNER_VERSION,
   LIVE_PREVIEW_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -474,6 +475,19 @@ export function createRunnerWork(options: {
       )
     )
       delete command.livePreview;
+    if (
+      command.profile.fast !== undefined &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, command.runnerId),
+        FAST_MODE_RUNNER_VERSION,
+      )
+    ) {
+      if (command.profile.fast)
+        journal(
+          `fast mode needs runner ${FAST_MODE_RUNNER_VERSION.join(".")} for run ${command.runId}`,
+        );
+      delete command.profile.fast;
+    }
     const envelope = yield* queueSteps(q, command);
     yield* assignRunnerWorkSteps(q, {
       runId: command.runId,

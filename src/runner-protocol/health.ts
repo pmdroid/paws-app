@@ -21,6 +21,7 @@ export const RunnerHealthResultSchema = RunnerResultSchema.omit({
     .max(32)
     .optional(),
   effort: z.string().max(64).nullable().optional(),
+  fast: z.boolean().optional(),
   login: z
     .strictObject({
       agent: z.enum(["claude", "codex", "grok", "opencode"]),

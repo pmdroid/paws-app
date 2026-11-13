@@ -190,6 +190,7 @@ export interface RunAgentResult {
   models?: Array<{ id: string; name: string; description?: string }>;
   effort?: string | null;
   efforts?: Array<{ id: string; name: string }>;
+  fast?: boolean;
   role: AgentRole;
   sessionId?: string;
   stopReason: RunOutcome;

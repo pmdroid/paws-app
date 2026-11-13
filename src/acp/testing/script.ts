@@ -66,6 +66,9 @@ export interface FakeScript {
   modelEfforts?: Record<string, string[]>;
   effortError?: string;
   confirmEffort?: string;
+  fast?: "boolean" | "select";
+  fastOn?: boolean;
+  fastModels?: string[];
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
@@ -84,6 +87,7 @@ export interface FakeResult {
   prompts?: unknown[];
   modelSelection?: unknown;
   effortSelection?: unknown;
+  fastSelection?: unknown;
   argv?: string[];
   cwd?: string;
   /** The cwd the client sent with session/new or session/load. */

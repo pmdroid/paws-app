@@ -98,6 +98,7 @@ function record(method: string): void {
 const sessionId = script.sessionId ?? crypto.randomUUID();
 let currentModel = script.model === undefined ? "test-claude-model" : script.model;
 let currentEffort = script.effort ?? "medium";
+let fastOn = script.fastOn === true;
 const configOptions = () => {
   const models =
     currentModel === null
@@ -127,6 +128,23 @@ const configOptions = () => {
             currentValue: currentEffort,
             options: efforts.map((value) => ({ value, name: value })),
           },
+        ]
+      : []),
+    ...(script.fast && (!script.fastModels || script.fastModels.includes(currentModel ?? ""))
+      ? [
+          script.fast === "boolean"
+            ? { id: "fast", type: "boolean", name: "Fast mode", currentValue: fastOn }
+            : {
+                id: "fast",
+                type: "select",
+                name: "Fast mode",
+                category: "model_config",
+                currentValue: fastOn ? "on" : "off",
+                options: [
+                  { value: "on", name: "On" },
+                  { value: "off", name: "Off" },
+                ],
+              },
         ]
       : []),
   ];
@@ -234,6 +252,13 @@ async function handle(message: {
   }
 
   if (message.method === "session/set_config_option") {
+    if (message.params?.configId === "fast") {
+      state.fastSelection = message.params;
+      persist();
+      fastOn = message.params.value === true || message.params.value === "on";
+      send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
+      return;
+    }
     if (message.params?.configId === "reasoning_effort") {
       state.effortSelection = message.params;
       persist();

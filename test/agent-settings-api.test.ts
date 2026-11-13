@@ -67,6 +67,21 @@ describe("local agent settings API", () => {
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
 
+  test("a profile's fast mode round trips through the settings API", async () => {
+    const { options } = fixture();
+    const fast: AgentSettings = {
+      defaults: { ...settings.defaults, implementer: { agent: "claude", model: null, fast: true } },
+    };
+    const saved = await handleAgentSettingsRequest(request(undefined, "PUT", fast), options);
+    expect(saved?.status).toBe(200);
+    expect(readFileSync(options.configPath, "utf8")).toContain("fast = true");
+    const body = (await (await handleAgentSettingsRequest(
+      request(),
+      options,
+    ))!.json()) as AgentSettings;
+    expect(body.defaults.implementer).toEqual({ agent: "claude", model: null, fast: true });
+  });
+
   test("a save from a stale revision is refused and the newer file is kept", async () => {
     const { options } = fixture();
     writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");

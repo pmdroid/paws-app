@@ -159,6 +159,10 @@ model = "codex"
 ```
 
 Presets use the same agent, model and optional effort validation as other profiles.
+Any profile can add `fast = true` to turn on the agent's fast mode (Claude Code and Codex).
+It is off when absent. A model without fast mode runs at normal speed and Paws journals
+`fast mode unavailable for <agent> <model>`; a runner older than 0.1.81 runs without it
+and Paws journals `fast mode needs runner 0.1.81`.
 Names contain 1–40 letters, digits, spaces, dots, underscores or hyphens.
 Matching ignores case and surrounding spaces; duplicate names under that comparison
 are refused. Quote TOML names containing spaces or dots.
