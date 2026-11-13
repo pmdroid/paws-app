@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { count, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { CommandBus, FakeClock } from "../src/core";
@@ -12,31 +13,40 @@ import {
   hasLinearNotification,
   isLinearAppRevoked,
   listOutbox,
-  migrate,
-  openDatabase,
+  openPawsStore,
   OutboxDispatcher,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createLinearReconnect } from "../src/onboarding";
-import { createFakeTracker, createInboxStore, openLinear, parseAgentEvent } from "../src/linear";
+import {
+  createFakeTracker,
+  createInboxStore,
+  openLinear,
+  parseAgentEvent,
+  writeStoredToken,
+} from "../src/linear";
 import { deliverLinearOutbox, handleLinearAdministration } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempHome, storeLinearToken, migratedHome } from "./helpers";
+import { tempHome, migratedHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 
-const cleanup: (() => void)[] = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close();
+const cleanup: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 const secret = "fake-webhook-secret";
 
 async function fixture(token = true, children = false) {
   const home = tempHome();
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
-  cleanup.push(() => db.close());
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  const database = await openPawsStore({ url: null, pgliteDir });
+  const db = database.store;
+  let closed: Promise<void> | undefined;
+  const close = () => (closed ??= database.close());
+  cleanup.push(close);
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -51,15 +61,15 @@ async function fixture(token = true, children = false) {
         : [],
     },
   ]);
-  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
+  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",
     teamId: "team",
     observedAtMs: 1,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
   const bus = new CommandBus();
   const owned = new AbortController();
   const notifications: string[] = [];
@@ -70,7 +80,7 @@ async function fixture(token = true, children = false) {
     owned.abort(new Error("Cancelled"));
   });
   if (token)
-    await storeLinearToken(home, {
+    await writeStoredToken(db, join(home, "secrets"), {
       accessToken: "fake-old-access",
       refreshToken: "fake-old-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -81,12 +91,12 @@ async function fixture(token = true, children = false) {
   const active = Promise.withResolvers<void>();
   const opened = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-    isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
+    isAuthorized: async () => !(await isLinearAppRevoked(db, scope)),
     beforeEvent: async (event) =>
-      !(await handleLinearAdministration(sqliteDb(db), event, {
+      !(await handleLinearAdministration(db, event, {
         ...scope,
         revalidate: async () => {},
         notify: (command) => bus.emit(command),
@@ -140,6 +150,8 @@ async function fixture(token = true, children = false) {
   };
   return {
     db,
+    pgliteDir,
+    close,
     home,
     opened,
     task,
@@ -160,7 +172,7 @@ function revoked() {
 
 test("one session cleanup failure still interrupts every session and remains retryable", async () => {
   const f = await fixture(false);
-  await recordLinearInstallation(sqliteDb(f.db), {
+  await recordLinearInstallation(f.db, {
     ...scope,
     sessionId: "session-two",
     teamId: "team",
@@ -171,80 +183,77 @@ test("one session cleanup failure still interrupts every session and remains ret
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
   for (let i = 0; i < 100 && f.interrupted.length < 2; i++) await Bun.sleep(5);
   expect(f.interrupted).toEqual(["session", "session-two"]);
-  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session-two")).toBe("revoked");
-  expect((await getLinearSession(sqliteDb(f.db), "session-two"))?.generation).toBe(1);
+  expect(await createInboxStore(f.db).listUnhandled()).toHaveLength(1);
+  expect(await getLinearSessionAccess(f.db, "session-two")).toBe("revoked");
+  expect((await getLinearSession(f.db, "session-two"))?.generation).toBe(1);
   f.cleanupFailure.sessionId = null;
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
-  for (
-    let i = 0;
-    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
-    i++
-  )
+  for (let i = 0; i < 100 && (await createInboxStore(f.db).listUnhandled()).length > 0; i++)
     await Bun.sleep(5);
-  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(f.db).listUnhandled()).toEqual([]);
   expect(f.interrupted).toEqual(["session", "session-two", "session", "session-two"]);
-  expect((await getLinearSession(sqliteDb(f.db), "session-two"))?.generation).toBe(1);
+  expect((await getLinearSession(f.db, "session-two"))?.generation).toBe(1);
 });
 
 test("a rejected second-child cancellation rolls back signed revocation before notifying owned writers", async () => {
   const f = await fixture(true, true);
   const second = f.task.items.find((item) => item.linearIssueId === "second")!;
-  f.db.run(
-    "CREATE TRIGGER reject_second_cancel BEFORE UPDATE OF state ON work_item WHEN NEW.id = '" +
-      second.id +
-      "' AND NEW.state = 'cancelled' BEGIN SELECT RAISE(ABORT, 'Second child cannot cancel'); END",
+  await f.db.run((q) =>
+    q.exec(
+      q.orm.execute(
+        sql`CREATE FUNCTION reject_second_cancel() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'Second child cannot cancel'; END $$ LANGUAGE plpgsql`,
+      ),
+    ),
+  );
+  await f.db.run((q) =>
+    q.exec(
+      q.orm.execute(
+        sql.raw(
+          `CREATE TRIGGER reject_second_cancel BEFORE UPDATE OF state ON work_item FOR EACH ROW WHEN (NEW.id = '${second.id}' AND NEW.state = 'cancelled') EXECUTE FUNCTION reject_second_cancel()`,
+        ),
+      ),
+    ),
   );
   const original = await Promise.all(
-    f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
+    f.task.items.map(async (item) => (await getWorkItem(f.db, item.id))?.state),
   );
   const event = revoked();
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
+  expect(await createInboxStore(f.db).listUnhandled()).toHaveLength(1);
   expect(
-    await Promise.all(
-      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
-    ),
+    await Promise.all(f.task.items.map(async (item) => (await getWorkItem(f.db, item.id))?.state)),
   ).toEqual(original);
-  expect((await getLinearSession(sqliteDb(f.db), "session"))?.generation).toBe(0);
-  expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).toBeNull();
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
+  expect((await getLinearSession(f.db, "session"))?.generation).toBe(0);
+  expect((await getLinearSession(f.db, "session"))?.stoppedAt).toBeNull();
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("allowed");
   expect(
-    f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_access_event").get()?.n,
-  ).toBe(0);
+    await f.db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.linearAccessEvent))),
+  ).toEqual({ n: 0 });
   expect(
-    f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_app_revocation").get()?.n,
-  ).toBe(0);
-  expect(await listOutbox(sqliteDb(f.db), "session")).toEqual([]);
+    await f.db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.linearAppRevocation))),
+  ).toEqual({ n: 0 });
+  expect(await listOutbox(f.db, "session")).toEqual([]);
   expect(f.notifications).toEqual([]);
   expect(f.interrupted).toEqual([]);
   expect(f.owned.signal.aborted).toBe(false);
-  f.db.run("DROP TRIGGER reject_second_cancel");
+  await f.db.run((q) => q.exec(q.orm.execute(sql`DROP TRIGGER reject_second_cancel ON work_item`)));
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  for (
-    let i = 0;
-    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
-    i++
-  )
+  for (let i = 0; i < 100 && (await createInboxStore(f.db).listUnhandled()).length > 0; i++)
     await Bun.sleep(5);
-  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(f.db).listUnhandled()).toEqual([]);
   expect(
-    await Promise.all(
-      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
-    ),
+    await Promise.all(f.task.items.map(async (item) => (await getWorkItem(f.db, item.id))?.state)),
   ).toEqual(["cancelled", "cancelled"]);
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
   expect(f.owned.signal.aborted).toBe(true);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
-  expect(
-    (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
-  ).toBe(true);
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect((await listOutbox(f.db, "session")).every((row) => row.status === "dropped")).toBe(true);
 });
 
 test("signed revocation stops owned work and fences active, queued and delayed responses across verified reconnect", async () => {
   const f = await fixture();
-  const progress = await enqueueOutbox(sqliteDb(f.db), {
+  const progress = await enqueueOutbox(f.db, {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -254,16 +263,14 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   await f.dispatcher.tick();
   await f.active.promise;
   expect((await f.post(revoked())).status).toBe(200);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
-  expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("cancelled");
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect((await getWorkItem(f.db, f.task.items[0]!.id))?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
-  expect(
-    (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
-  ).toBe(true);
+  expect((await listOutbox(f.db, "session")).every((row) => row.status === "dropped")).toBe(true);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
-  expect((await sqliteDb(f.db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
-  const late = await enqueueOutbox(sqliteDb(f.db), {
+  expect((await f.db.run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
+  const late = await enqueueOutbox(f.db, {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -275,7 +282,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     now: () => Date.now() + 1000,
     fetch: async () =>
       Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),
-  })(sqliteDb(f.db), f.home);
+  })(f.db, f.home);
   expect(
     await reconnect.complete({
       clientId: "client",
@@ -288,10 +295,11 @@ test("signed revocation stops owned work and fences active, queued and delayed r
       },
     }),
   ).toBe(true);
-  expect((await sqliteDb(f.db).run((q) => getOutboxSteps(q, late)))?.status).toBe("dropped");
-  const reopened = openDatabase(join(f.home, "paws.db"));
+  expect((await f.db.run((q) => getOutboxSteps(q, late)))?.status).toBe("dropped");
+  await f.close();
+  const reopened = await openPawsStore({ url: null, pgliteDir: f.pgliteDir });
   cleanup.push(() => reopened.close());
-  const recovered = new OutboxDispatcher(reopened, new FakeClock(Date.now() + 10_000));
+  const recovered = new OutboxDispatcher(reopened.store, new FakeClock(Date.now() + 10_000));
   recovered.setHandler((message, context) =>
     deliverLinearOutbox(message, f.opened.tracker!, async () => {}, context),
   );
@@ -304,7 +312,7 @@ test("signed revocation is persisted and stops queued work even without a stored
   const f = await fixture(false);
   expect(f.opened.tracker).toBeNull();
   expect((await f.post(revoked())).status).toBe(200);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
   expect(f.owned.signal.aborted).toBe(true);
   expect(f.requests).toEqual([]);
 });
@@ -324,8 +332,8 @@ test("team removal keeps the authorized stopped response while human unassignmen
       })
     ).status,
   ).toBe(200);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("team_removed");
-  expect(await isLinearAppRevoked(sqliteDb(f.db), scope)).toBe(false);
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("team_removed");
+  expect(await isLinearAppRevoked(f.db, scope)).toBe(false);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(f.requests).toEqual([
@@ -352,7 +360,7 @@ test("undelegation cancels every queued task of the issue and stops its session 
   };
   const event = parseAgentEvent(JSON.stringify(payload), "undelegation", Date.now())!;
   const reconciled: string[] = [];
-  await handleLinearAdministration(sqliteDb(f.db), event, {
+  await handleLinearAdministration(f.db, event, {
     ...scope,
     notify: (command) => f.notifications.push(command.itemId),
     interrupt: async (sessionId) => {
@@ -363,13 +371,11 @@ test("undelegation cancels every queued task of the issue and stops its session 
     },
   });
   expect(
-    await Promise.all(
-      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
-    ),
+    await Promise.all(f.task.items.map(async (item) => (await getWorkItem(f.db, item.id))?.state)),
   ).toEqual(["cancelled", "cancelled"]);
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
-  expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).not.toBeNull();
+  expect((await getLinearSession(f.db, "session"))?.stoppedAt).not.toBeNull();
   expect(reconciled).toEqual(["issue"]);
 });
 
@@ -399,11 +405,11 @@ test("notification dedupe follows successful reconciliation and serializes overl
       throw new Error("Retry reconciliation");
     },
   };
-  await expect(handleLinearAdministration(sqliteDb(f.db), first, failed)).rejects.toThrow(
+  await expect(handleLinearAdministration(f.db, first, failed)).rejects.toThrow(
     "Retry reconciliation",
   );
   expect(
-    await hasLinearNotification(sqliteDb(f.db), {
+    await hasLinearNotification(f.db, {
       ...scope,
       notificationId: "notification",
       createdAtMs: Date.now(),
@@ -418,14 +424,14 @@ test("notification dedupe follows successful reconciliation and serializes overl
       await released.promise;
     },
   };
-  const a = handleLinearAdministration(sqliteDb(f.db), first, options);
-  const b = handleLinearAdministration(sqliteDb(f.db), second, options);
+  const a = handleLinearAdministration(f.db, first, options);
+  const b = handleLinearAdministration(f.db, second, options);
   released.resolve();
   await Promise.all([a, b]);
-  await handleLinearAdministration(sqliteDb(f.db), second, options);
+  await handleLinearAdministration(f.db, second, options);
   expect(calls).toBe(2);
-  expect(await isLinearAppRevoked(sqliteDb(f.db), scope)).toBe(false);
-  expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("queued");
+  expect(await isLinearAppRevoked(f.db, scope)).toBe(false);
+  expect((await getWorkItem(f.db, f.task.items[0]!.id))?.state).toBe("queued");
 });
 
 test("production disconnected ingress preserves a signed created session across database reopen", async () => {
