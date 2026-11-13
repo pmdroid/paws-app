@@ -73,6 +73,7 @@ export type MergeRepositories = Record<
     reviewApps?: string[];
     highRiskPaths?: string[];
     suggestedFindings?: SuggestedFindingsMode;
+    parallelFiles?: string[];
   }
 >;
 export type MergeSettings = MergePolicy & {
@@ -156,6 +157,11 @@ const highRiskGlobs = z
   .max(HIGH_RISK_GLOBS_MAX)
   .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
+const parallelFilesSchema = z
+  .array(z.string().regex(/^[^*?[\]\n\r]{1,1000}$/, "must be an exact path without globs"))
+  .max(1000)
+  .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
+
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
 const policySchema = z.strictObject({
   default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
@@ -187,6 +193,7 @@ const tomlSchema = z.object({
               .optional(),
             high_risk_paths: highRiskGlobs.optional(),
             suggested_findings: z.enum(SUGGESTED_FINDINGS).optional(),
+            parallel_files: parallelFilesSchema.optional(),
           }),
         )
         .optional(),
@@ -433,16 +440,37 @@ export function suggestedFindingsMode(
   );
 }
 
+/** Hot files in this repository that `overlapGate` does not hold work for. */
+export function parallelFiles(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .parallelFiles ?? []
+  );
+}
+
 /**
  * The Settings › Merging › High-risk paths body: `[{ repository, paths }]`. It replaces every
  * repository's list; a repository left out has none.
  */
 export function parseHighRiskPathSettings(value: unknown): Record<string, string[]> {
+  return parseRepositoryLists("highRiskPaths", value, highRiskGlobs);
+}
+
+export function parseParallelFileSettings(value: unknown): Record<string, string[]> {
+  return parseRepositoryLists("parallelFiles", value, parallelFilesSchema);
+}
+
+function parseRepositoryLists(
+  field: string,
+  value: unknown,
+  schema: typeof highRiskGlobs,
+): Record<string, string[]> {
   const result = z
     .array(
       z.strictObject({
         repository: z.string().regex(REPOSITORY, "must be owner/repo"),
-        paths: z.array(z.string().trim()).pipe(highRiskGlobs),
+        paths: z.array(z.string().trim()).pipe(schema),
       }),
     )
     .max(100)
@@ -454,7 +482,7 @@ export function parseHighRiskPathSettings(value: unknown): Record<string, string
   if (!result.success) {
     const issue = result.error.issues[0];
     throw new Error(
-      `highRiskPaths${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
+      `${field}${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
     );
   }
   return Object.fromEntries(
@@ -462,21 +490,23 @@ export function parseHighRiskPathSettings(value: unknown): Record<string, string
   );
 }
 
-/** `repositories` with each repository's high-risk globs replaced by `paths`. */
-export function withHighRiskPaths(
+/** `repositories` with each repository's `key` list replaced by `lists`. */
+function withRepositoryLists(
   repositories: MergeRepositories,
-  paths: Record<string, string[]>,
+  key: "highRiskPaths" | "parallelFiles",
+  lists: Record<string, string[]>,
 ): MergeRepositories {
   const next: MergeRepositories = {};
   for (const [name, value] of Object.entries(repositories)) {
-    const { highRiskPaths: _old, ...rest } = value;
+    const { [key]: _old, ...rest } = value;
     next[name] = rest;
   }
-  for (const [repository, globs] of Object.entries(paths)) {
-    if (globs.length === 0) continue;
+  for (const [repository, list] of Object.entries(lists)) {
+    if (list.length === 0) continue;
     const name =
-      Object.keys(next).find((key) => key.toLowerCase() === repository.toLowerCase()) ?? repository;
-    next[name] = { packages: [], ...next[name], highRiskPaths: globs };
+      Object.keys(next).find((entry) => entry.toLowerCase() === repository.toLowerCase()) ??
+      repository;
+    next[name] = { packages: [], ...next[name], [key]: list };
   }
   return next;
 }
@@ -531,6 +561,9 @@ export function parseMergeTables(
                 ...(value.suggested_findings === undefined
                   ? {}
                   : { suggestedFindings: value.suggested_findings }),
+                ...(value.parallel_files === undefined
+                  ? {}
+                  : { parallelFiles: value.parallel_files }),
               },
             ]),
           ),
@@ -637,6 +670,10 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.suggestedFindings === undefined
             ? ""
             : `suggested_findings = ${JSON.stringify(value.suggestedFindings)}\n`
+        }${
+          value.parallelFiles === undefined
+            ? ""
+            : `parallel_files = [${value.parallelFiles.map((path) => JSON.stringify(path)).join(", ")}]\n`
         }`,
     ),
   ].join("");
@@ -670,13 +707,18 @@ export function writeMergePolicy(
   riskPaths?: Record<string, string[]>,
   wait?: CommentWaitInput,
   ignored?: Record<string, IgnoredComments>,
+  parallel?: Record<string, string[]>,
 ): Promise<void> {
   const withPaths =
     riskPaths === undefined
       ? current.repositories
-      : withHighRiskPaths(current.repositories ?? {}, riskPaths);
-  const repositories =
+      : withRepositoryLists(current.repositories ?? {}, "highRiskPaths", riskPaths);
+  const withIgnored =
     ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
+  const repositories =
+    parallel === undefined
+      ? withIgnored
+      : withRepositoryLists(withIgnored ?? {}, "parallelFiles", parallel);
   return updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,

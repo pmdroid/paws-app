@@ -397,6 +397,49 @@ describe("Conflict-prone files", () => {
     expect(html.indexOf("src/f10.ts")).toBeGreaterThan(html.indexOf("Show all"));
   });
 
+  test("each file has a hold toggle, a not-held file is greyed, and a migration journal has a note", () => {
+    const html = renderMergeSettings({
+      data: {
+        ...data(),
+        parallelFiles: [{ repository: "acme/platform", paths: ["src/index.ts"] }],
+        hotFiles: [
+          { ...file("src/index.ts", 4), held: false, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
+          { ...file("src/db/drizzle/meta/_journal.json", 2), held: true },
+        ],
+      },
+      busy: null,
+      error: null,
+      saved: false,
+    });
+    expect(html).toContain(
+      '<input type="checkbox" name="hot-hold" data-repository="acme/platform" data-path="src/index.ts"> Hold work that changes this file</label><span class="sub">Not held</span>',
+    );
+    expect(html).toContain('<li class="hot-file opacity-60"><code>src/index.ts</code>');
+    expect(html).not.toContain("Holding");
+    expect(html).toContain(
+      'data-path="src/db/drizzle/meta/_journal.json" checked> Hold work that changes this file</label><p class="sub">Migrations made side by side need a manual rebase</p>',
+    );
+    expect(
+      mergeSettingsBody({
+        ...data(),
+        parallelFiles: [{ repository: "acme/platform", paths: ["src/index.ts"] }],
+      }).parallelFiles,
+    ).toEqual([{ repository: "acme/platform", paths: ["src/index.ts"] }]);
+  });
+
+  test("members see no enabled toggle, and an engine without parallel files shows it disabled", () => {
+    expect(render([file("src/index.ts", 1)])).toContain(" checked disabled> Hold work");
+    const denied = renderMergeSettings({
+      data: null,
+      busy: null,
+      error: null,
+      saved: false,
+      denied: true,
+    });
+    expect(denied).toContain("Only workspace admins can change merging settings.");
+    expect(denied).not.toContain('name="hot-hold"');
+  });
+
   test("says nothing is held back without conflicts", () => {
     expect(render([])).toContain("No merge conflicts in the last 7 days, so nothing is held back.");
   });

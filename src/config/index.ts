@@ -70,6 +70,8 @@ export {
   parseMergePolicy,
   parseMergeLanes,
   parseMergeSettings,
+  parallelFiles,
+  parseParallelFileSettings,
   mergeLaneKey,
   readMergeSettings,
   repositoryPackages,
