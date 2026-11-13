@@ -5,6 +5,7 @@ import {
   type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
 import type { AgentProfile, ImplementerName } from "../config";
+import { journal } from "../journal";
 
 export type SessionModelChoice = { id: string; name: string; description?: string };
 type ModelSelection = { model: string | null; models: SessionModelChoice[] };
@@ -45,6 +46,45 @@ function effortOption(options: SessionConfigOption[] | null | undefined) {
   );
 }
 
+function fastOption(options: SessionConfigOption[] | null | undefined) {
+  return options?.find(
+    (option) => option.id === "fast" && (option.type === "boolean" || option.type === "select"),
+  );
+}
+
+function fastOn(option: SessionConfigOption): boolean {
+  return option.type === "boolean" ? option.currentValue === true : option.currentValue === "on";
+}
+
+async function selectFast(
+  ctx: ClientContext,
+  sessionId: string,
+  configOptions: SessionConfigOption[] | null | undefined,
+  profile: AgentProfile,
+  model: string | null,
+): Promise<boolean> {
+  const option = fastOption(configOptions);
+  const wanted = profile.fast === true;
+  if (!option) {
+    if (wanted) journal(`fast mode unavailable for ${profile.agent} ${model ?? "default"}`);
+    return false;
+  }
+  if (fastOn(option) === wanted) return true;
+  const response = await ctx.request(methods.agent.session.setConfigOption, {
+    sessionId,
+    configId: option.id,
+    ...(option.type === "boolean"
+      ? { type: "boolean" as const, value: wanted }
+      : { value: wanted ? "on" : "off" }),
+  });
+  const confirmed = fastOption(response.configOptions);
+  if (!confirmed || fastOn(confirmed) !== wanted)
+    throw new Error(`Agent did not confirm fast mode ${wanted ? "on" : "off"}`);
+  if (sessionModel(response).model !== model)
+    throw new Error("Agent changed model while selecting fast mode");
+  return true;
+}
+
 export async function selectSessionProfile(
   ctx: ClientContext,
   session: NewSessionResponse,
@@ -53,6 +93,7 @@ export async function selectSessionProfile(
   ModelSelection & {
     effort: string | null;
     efforts: Array<{ id: string; name: string }>;
+    fast: boolean;
     /** Set when the profile's 1M entry was missing and its standard model ran instead. */
     standardWindow?: { requested: string; name: string };
   }
@@ -117,16 +158,25 @@ export async function selectSessionProfile(
       configId: option.id,
       value: profile.effort,
     });
+    configuration = { ...configuration, ...response };
     option = effortOption(response.configOptions);
     if (option?.type !== "select" || option.currentValue !== profile.effort)
       throw new Error(`Agent did not confirm effort ${profile.effort}`);
     if (sessionModel(response).model !== model.model)
       throw new Error("Agent changed model while selecting effort");
   }
+  const fast = await selectFast(
+    ctx,
+    session.sessionId,
+    configuration.configOptions,
+    profile,
+    model.model,
+  );
   return {
     ...model,
     effort: option?.type === "select" ? option.currentValue : null,
     efforts,
+    fast,
     ...(standardWindow ? { standardWindow } : {}),
   };
 }

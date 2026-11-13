@@ -195,6 +195,7 @@ test("the catalog reports the agent's default model and effort", async () => {
       { id: "max", name: "Max" },
     ],
     effort,
+    fast: true,
   });
   await seed(db, (q) =>
     q.orm
@@ -213,4 +214,5 @@ test("the catalog reports the agent's default model and effort", async () => {
   const [catalog] = await createRunnerModels({ store: db, work }).read(principal);
   expect(catalog?.defaultModel).toBe("opus");
   expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
+  expect(catalog?.models.find((model) => model.id === "opus")?.fast).toBe(true);
 });

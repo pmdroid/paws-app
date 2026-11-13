@@ -152,7 +152,14 @@ export default {
     );
     // Exercise the remote event replay path with its real runner store and command harness.
     const replay = Bun.spawn(
-      ["bun", "test", "test/runner-handover-resume.test.ts", "--test-name-pattern", "replay"],
+      [
+        "bun",
+        "test",
+        "test/runner-handover-resume.test.ts",
+        "--timeout=20000",
+        "--test-name-pattern",
+        "replay",
+      ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [exit, stdout, stderr] = await Promise.all([

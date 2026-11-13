@@ -14,6 +14,7 @@ import {
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
   usableRunnerSteps,
+  runnerHostVersionSteps,
   yieldFindingGroupHelpersSteps,
   workspaceSessionIdsSteps,
   workspaceMemberSteps,
@@ -27,10 +28,12 @@ import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
+  FAST_MODE_RUNNER_VERSION,
   RunnerCommandSchema,
   RunnerHelperResultSchema,
   RUNNER_RESULT_BODY_LIMIT,
   runnerHelperLifetime,
+  runnerReleaseAtLeast,
   runnerAccountEchoed,
   signRunnerCommand,
   withRejectedFields,
@@ -160,8 +163,17 @@ export function createRunnerHelpers(options: {
     if (availability.held) throw new RunnerHelperBusyError(input.runnerId);
     if (!availability.available) throw new RunnerHelperBusyError();
     const at = now();
+    const { fast, ...profile } = input.profile;
     const command = RunnerCommandSchema.parse({
       ...input,
+      profile:
+        fast !== undefined &&
+        runnerReleaseAtLeast(
+          yield* runnerHostVersionSteps(q, input.runnerId),
+          FAST_MODE_RUNNER_VERSION,
+        )
+          ? { ...profile, fast }
+          : profile,
       id: Bun.randomUUIDv7(),
       type: "helper",
       workspaceId: runner.workspaceId,

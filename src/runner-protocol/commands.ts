@@ -122,6 +122,7 @@ export const RunnerProfileSchema = z.strictObject({
   agent,
   model: z.string().trim().min(1).max(256).nullable(),
   effort: z.string().trim().min(1).max(64).optional(),
+  fast: z.boolean().optional(),
 });
 
 const oneLine = (max: number) =>
