@@ -72,11 +72,11 @@ export type RetroGenerationRow = {
 };
 
 function jsonIn(q: Q, value: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+  return value;
 }
 
 function jsonOut(q: Q, stored: unknown): unknown {
-  return q.dialect === "sqlite" ? (JSON.parse(stored as string) as unknown) : stored;
+  return stored;
 }
 
 type DispatchRow = typeof pgSchema.retroDispatch.$inferSelect;
@@ -367,10 +367,7 @@ export function* recordRetroDispatchResultSteps(q: Q, input: DispatchResult) {
   if (dispatch === null) return "released" as const;
   const text = JSON.stringify(input.result);
   if (dispatch.result !== null) {
-    const same =
-      q.dialect === "sqlite"
-        ? JSON.stringify(dispatch.result) === text
-        : isDeepStrictEqual(dispatch.result, JSON.parse(text));
+    const same = isDeepStrictEqual(dispatch.result, JSON.parse(text));
     return same ? ("duplicate" as const) : ("conflict" as const);
   }
   if (dispatch.releasedAt !== null) return "released" as const;

@@ -359,7 +359,7 @@ export function* recordLinearTurnSteps(q: Q, input: LinearTurnInput): Steps<Stor
         sessionId: input.sessionId,
         actorId: input.actorId,
         body: input.body,
-        payload: q.dialect === "postgres" ? JSON.parse(input.payload) : input.payload,
+        payload: JSON.parse(input.payload),
         createdAtMs: input.createdAtMs,
         receivedAt: input.now ?? Date.now(),
       })
@@ -462,14 +462,13 @@ export async function getLinearSessionGeneration(store: Db, sessionId: string): 
 // SQLite's write transaction serializes these operations. Postgres needs the same
 // session-wide exclusion before any turn, receipt or stopped-generation reads.
 function* lockLinearSessionSteps(q: Q, sessionId: string): Steps<void> {
-  if (q.dialect === "postgres")
-    yield* q.exec(
-      q.orm
-        .select({
-          lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
-        })
-        .from(sql`(SELECT 1) AS lock_scope`),
-    );
+  yield* q.exec(
+    q.orm
+      .select({
+        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
+      })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
 }
 
 export function* advanceLinearSessionGenerationSteps(
@@ -712,8 +711,7 @@ export async function acceptLinearStop(
 
 export function* releaseIdleSessionItemSteps(q: Q, itemId: string, now: number): Steps<void> {
   const { linearSession } = q.t;
-  const jobItemId =
-    q.dialect === "postgres" ? sql`payload->>'itemId'` : sql`json_extract(payload,'$.itemId')`;
+  const jobItemId = sql`payload->>'itemId'`;
   yield* q.exec(
     q.orm
       .update(linearSession)
@@ -984,7 +982,7 @@ export function* parentIssueSessionSteps(q: Q, issueId: string) {
               .where(
                 and(
                   ne(w.linearIssueId, issueId),
-                  sql`${sql.raw(parentIssueIdSql("w", q.dialect))} = ${issueId}`,
+                  sql`${sql.raw(parentIssueIdSql("w"))} = ${issueId}`,
                   notInArray(w.state, ["completed", "merged", "cancelled"]),
                 ),
               ),

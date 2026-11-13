@@ -193,9 +193,8 @@ export async function saveRunResult(
   await store.run((q) => saveRunResultSteps(q, id, resultBody, now));
 }
 
-/** `run.checkpoint` is JSON text on SQLite and `jsonb` on Postgres. */
 function storedCheckpoint(q: Q, checkpoint: Checkpoint): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(checkpoint) : checkpoint;
+  return checkpoint;
 }
 
 function mapRun(q: Q, row: typeof q.t.run.$inferSelect): StoredRun {
@@ -205,12 +204,7 @@ function mapRun(q: Q, row: typeof q.t.run.$inferSelect): StoredRun {
     kind: row.kind as RunKind,
     agent: row.agent,
     status: row.status as RunStatus,
-    checkpoint:
-      row.checkpoint === null
-        ? null
-        : readCheckpoint(
-            q.dialect === "sqlite" ? (row.checkpoint as string) : JSON.stringify(row.checkpoint),
-          ),
+    checkpoint: row.checkpoint === null ? null : readCheckpoint(JSON.stringify(row.checkpoint)),
     freshSession: row.freshSession === 1,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

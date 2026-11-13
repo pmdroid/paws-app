@@ -136,7 +136,7 @@ export const newRetroId = (now: number): string => ulid(now);
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
 function jsonOut<T>(q: Q, stored: unknown): T {
-  return (q.dialect === "sqlite" ? JSON.parse(stored as string) : stored) as T;
+  return stored as T;
 }
 
 type SettingsInput = RetroSettings & { workspaceId: string; createdBy: string; now: number };

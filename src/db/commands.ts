@@ -185,9 +185,7 @@ export function* applyCommandRowsSteps(
                     eq(jobTable.queue, JOB_KIND.merge),
                     like(jobTable.queue, `${JOB_KIND.merge}.%`),
                   ),
-                  tx0.dialect === "sqlite"
-                    ? sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`
-                    : sql`${jobTable.payload}->>'itemId' = ${item.id}`,
+                  sql`${jobTable.payload}->>'itemId' = ${item.id}`,
                 ),
               ),
           )) !== undefined));

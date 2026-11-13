@@ -1,7 +1,5 @@
-import { and, count, eq, lte, sql } from "drizzle-orm";
-import type { Db } from "./db";
-import type { Orm } from "./orm";
-import { linearRequestBudget, linearRequestReservation } from "./schema";
+import { and, eq, lte, sql } from "drizzle-orm";
+import type { Db, PgDb } from "./db";
 import * as pg from "./schema-pg";
 import { ulid } from "./ulid";
 
@@ -13,13 +11,6 @@ export type LinearBudgetRow = {
 };
 
 type Spend = { now: number; windowMs: number; limit: number | null; share: number; ttlMs: number };
-
-const columns = {
-  windowStartMs: linearRequestBudget.windowStart,
-  spent: linearRequestBudget.spent,
-  holdUntilMs: linearRequestBudget.holdUntil,
-  requestLimit: linearRequestBudget.requestLimit,
-};
 
 const pgColumns = {
   windowStartMs: pg.linearRequestBudget.windowStart,
@@ -38,62 +29,17 @@ function admits(row: LinearBudgetRow | undefined, inFlight: number, spend: Spend
 }
 
 export function linearBudgetStore(db: Db, workspace: string) {
-  const sqliteSpend = (handle: Orm, spend: Spend): string | null =>
-    handle.transaction(
-      (tx) => {
-        const r = linearRequestReservation;
-        tx.delete(r)
-          .where(and(eq(r.workspace, workspace), lte(r.expiresAt, spend.now)))
-          .run();
-        const row = tx
-          .select(columns)
-          .from(linearRequestBudget)
-          .where(eq(linearRequestBudget.workspace, workspace))
-          .get();
-        const inFlight = tx
-          .select({ n: count() })
-          .from(r)
-          .where(eq(r.workspace, workspace))
-          .get()!.n;
-        const admitted = admits(row, inFlight, spend);
-        if (admitted === null) return null;
-        if (admitted.ended)
-          tx.insert(linearRequestBudget)
-            .values({ workspace, windowStart: spend.now, spent: 0, requestLimit: spend.limit })
-            .onConflictDoUpdate({
-              target: linearRequestBudget.workspace,
-              set: { windowStart: spend.now, spent: 0 },
-            })
-            .run();
-        const id = ulid(spend.now);
-        tx.insert(r)
-          .values({ id, workspace, expiresAt: spend.now + spend.ttlMs })
-          .run();
-        return id;
-      },
-      { behavior: "immediate" },
-    );
-
+  const pgDb = db as PgDb;
   return {
     read(): Promise<LinearBudgetRow | null> {
-      if (db.dialect === "sqlite")
-        return db.sync(
-          (handle) =>
-            handle
-              .select(columns)
-              .from(linearRequestBudget)
-              .where(eq(linearRequestBudget.workspace, workspace))
-              .get() ?? null,
-        );
-      return db.orm
+      return pgDb.orm
         .select(pgColumns)
         .from(pg.linearRequestBudget)
         .where(eq(pg.linearRequestBudget.workspace, workspace))
         .then((rows) => rows[0] ?? null);
     },
     spend(spend: Spend): Promise<string | null> {
-      if (db.dialect === "sqlite") return db.sync((handle) => sqliteSpend(handle, spend));
-      return db.orm.transaction(async (tx) => {
+      return pgDb.orm.transaction(async (tx) => {
         const t = pg.linearRequestBudget;
         const r = pg.linearRequestReservation;
         await tx
@@ -123,24 +69,7 @@ export function linearBudgetStore(db: Db, workspace: string) {
       });
     },
     release(id: string, now: number, windowMs: number, counted: boolean): Promise<void> {
-      if (db.dialect === "sqlite")
-        return db.sync((handle) =>
-          handle.transaction(
-            (tx) => {
-              const t = linearRequestBudget;
-              tx.delete(linearRequestReservation).where(eq(linearRequestReservation.id, id)).run();
-              if (!counted)
-                tx.update(t)
-                  .set({ spent: sql`${t.spent} + 1` })
-                  .where(
-                    and(eq(t.workspace, workspace), sql`${t.windowStart} + ${windowMs} > ${now}`),
-                  )
-                  .run();
-            },
-            { behavior: "immediate" },
-          ),
-        );
-      return db.orm.transaction(async (tx) => {
+      return pgDb.orm.transaction(async (tx) => {
         const t = pg.linearRequestBudget;
         await tx.delete(pg.linearRequestReservation).where(eq(pg.linearRequestReservation.id, id));
         if (!counted)
@@ -163,36 +92,12 @@ export function linearBudgetStore(db: Db, workspace: string) {
         spent: current?.spent ?? 0,
         requestLimit: limit,
       };
-      if (db.dialect === "sqlite") {
-        const t = linearRequestBudget;
-        const newer =
-          current === null
-            ? null
-            : sql`(${t.windowStart} + ${windowMs} <= ${now} OR ${t.windowStart} < ${current.startMs})`;
-        return db.sync((handle) => {
-          handle
-            .insert(t)
-            .values(values)
-            .onConflictDoUpdate({
-              target: t.workspace,
-              set:
-                current === null
-                  ? { requestLimit: limit }
-                  : {
-                      requestLimit: limit,
-                      windowStart: sql`CASE WHEN ${newer} THEN ${current.startMs} ELSE MIN(${t.windowStart}, ${current.startMs}) END`,
-                      spent: sql`CASE WHEN ${newer} THEN ${current.spent} ELSE MAX(${t.spent}, ${current.spent}) END`,
-                    },
-            })
-            .run();
-        });
-      }
       const t = pg.linearRequestBudget;
       const newer =
         current === null
           ? null
           : sql`(${t.windowStart} + ${windowMs} <= ${now} OR ${t.windowStart} < ${current.startMs})`;
-      return db.orm
+      return pgDb.orm
         .insert(t)
         .values(values)
         .onConflictDoUpdate({
@@ -210,21 +115,8 @@ export function linearBudgetStore(db: Db, workspace: string) {
     },
     hold(now: number, untilMs: number): Promise<void> {
       const values = { workspace, windowStart: now, spent: 0, holdUntil: untilMs };
-      if (db.dialect === "sqlite") {
-        const t = linearRequestBudget;
-        return db.sync((handle) => {
-          handle
-            .insert(t)
-            .values(values)
-            .onConflictDoUpdate({
-              target: t.workspace,
-              set: { holdUntil: sql`MAX(COALESCE(${t.holdUntil}, 0), excluded.hold_until)` },
-            })
-            .run();
-        });
-      }
       const t = pg.linearRequestBudget;
-      return db.orm
+      return pgDb.orm
         .insert(t)
         .values(values)
         .onConflictDoUpdate({

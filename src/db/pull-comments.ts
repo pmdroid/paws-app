@@ -62,14 +62,12 @@ export const PULL_REVIEW_CHECK_MAX_WAIT_MS = 15 * 60_000;
 
 export type ReviewCheckWait = { head: string; names: string[] };
 
-/** The smallest of the values: scalar `MIN` on SQLite, `LEAST` on Postgres. */
 export function least(q: Q, ...values: SQL[]): SQL<number> {
-  return sql`${sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST")}(${sql.join(values, sql`, `)})`;
+  return sql`${sql.raw("LEAST")}(${sql.join(values, sql`, `)})`;
 }
 
-/** The largest of the values: scalar `MAX` on SQLite, `GREATEST` on Postgres. */
 export function greatest(q: Q, ...values: SQL[]): SQL<number> {
-  return sql`${sql.raw(q.dialect === "sqlite" ? "MAX" : "GREATEST")}(${sql.join(values, sql`, `)})`;
+  return sql`${sql.raw("GREATEST")}(${sql.join(values, sql`, `)})`;
 }
 
 /**

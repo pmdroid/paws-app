@@ -80,9 +80,7 @@ export async function restartQuestionStands(store: Db, item: WorkItemRecord): Pr
 
 function payloadText(q: Q, key: "itemId" | "reason") {
   const { payload } = q.t.job;
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${payload}, ${sql.raw(`'$.${key}'`)})`
-    : sql`(${payload}->>${sql.raw(`'${key}'`)})`;
+  return sql`(${payload}->>${sql.raw(`'${key}'`)})`;
 }
 
 function* restartQuestionQueuedSteps(q: Q, itemId: string): Steps<boolean> {

@@ -140,12 +140,9 @@ export type DeliveredLinearIssueState = {
   identifier: string | null;
 };
 
-/** The text at `path` of the payload: `json_extract` on SQLite, `#>>` on Postgres. */
 function payloadText(q: Q, path: string[]) {
   const { payload } = q.t.inboxEvent;
-  return q.dialect === "postgres"
-    ? sql<string | null>`(${payload} #>> ${sql.raw(`'{${path.join(",")}}'`)})`
-    : sql<string | null>`json_extract(${payload}, ${sql.raw(`'$.${path.join(".")}'`)})`;
+  return sql<string | null>`(${payload} #>> ${sql.raw(`'{${path.join(",")}}'`)})`;
 }
 
 export function* deliveredLinearIssueStateSteps(q: Q, organizationId: string, issueId: string) {

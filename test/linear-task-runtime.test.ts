@@ -563,7 +563,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     const originalKey = (await db.run((q) =>
       q.one(
         q.orm
-          .select({ taskKey: sql<string>`${sql.raw(parentTaskKeySql("work_item", "postgres"))}` })
+          .select({ taskKey: sql<string>`${sql.raw(parentTaskKeySql("work_item"))}` })
           .from(q.t.workItem)
           .where(eq(q.t.workItem.delegationId, previous.delegationId))
           .orderBy(asc(q.t.workItem.position), asc(q.t.workItem.id))

@@ -78,15 +78,12 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
-/** The text at `key` of a JSON value: `json_extract` on SQLite, `->>` on Postgres. */
-function jsonTextSql(dialect: Q["dialect"], json: string, key: string): string {
-  return dialect === "sqlite" ? `json_extract(${json}, '$.${key}')` : `(${json}->>'${key}')`;
+function jsonTextSql(json: string, key: string): string {
+  return `(${json}->>'${key}')`;
 }
 
 export function jsonItemId(q: Q, json: SQL): SQL<string | null> {
-  return q.dialect === "sqlite"
-    ? drizzleSql`json_extract(${json},'$.itemId')`
-    : drizzleSql`(${json}->>'itemId')`;
+  return drizzleSql`(${json}->>'itemId')`;
 }
 
 function jobItemId(q: Q): SQL<string | null> {
@@ -95,12 +92,11 @@ function jobItemId(q: Q): SQL<string | null> {
 
 /** The JSON text bound as a parameter, cast to jsonb on Postgres. */
 function jsonParam(q: Q, text: string): SQL {
-  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::text::jsonb`;
+  return drizzleSql`${text}::text::jsonb`;
 }
 
-/** A payload as the column stores it: JSON text on SQLite, jsonb on Postgres. */
 function payloadValue(q: Q, payload: unknown): string {
-  return (q.dialect === "sqlite" ? JSON.stringify(payload) : payload) as string;
+  return payload as string;
 }
 
 export function itemVersionOf(q: Q, payload: SQL): SQL<number | null> {
@@ -186,10 +182,10 @@ function executionSql(alias: string): string {
  */
 function claimWhere(q: Q, now: number, queues?: readonly string[], mergeParallel = 1): SQL {
   const raw = drizzleSql.raw;
-  const itemId = `COALESCE(${jsonTextSql(q.dialect, "candidate.payload", "itemId")}, '')`;
-  const heldItemId = `COALESCE(${jsonTextSql(q.dialect, "held.payload", "itemId")},'')`;
+  const itemId = `COALESCE(${jsonTextSql("candidate.payload", "itemId")}, '')`;
+  const heldItemId = `COALESCE(${jsonTextSql("held.payload", "itemId")},'')`;
   const needsReservation = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
-  AND (${jsonTextSql(q.dialect, "candidate.payload", "capacityWait")} IS NULL OR EXISTS
+  AND (${jsonTextSql("candidate.payload", "capacityWait")} IS NULL OR EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued'))) OR
   (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued')))`;
@@ -244,7 +240,6 @@ export async function actionableDue(
 }
 
 function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
-  if (q.dialect === "sqlite") return yield* insertJobRowSteps(q, input, skipDuplicateKey);
   return yield* q.transaction(function* (t) {
     const id = yield* insertJobRowSteps(t, input, skipDuplicateKey);
     if (id === undefined) return id;
@@ -678,10 +673,7 @@ export function* parkLeasedJobSteps(
   input: { runAt: number; payload: unknown; attempts: number; now: number },
 ) {
   const { runAt } = q.t.job;
-  const earlier =
-    q.dialect === "sqlite"
-      ? drizzleSql`MIN(${runAt}, ${input.runAt})`
-      : drizzleSql`LEAST(${runAt}, ${input.runAt})`;
+  const earlier = drizzleSql`LEAST(${runAt}, ${input.runAt})`;
   return (
     (yield* updateLeasedSteps(
       q,
@@ -824,7 +816,7 @@ function mapJob(q: Q, row: JobRow): Job {
     activationId: row.activationId,
     queue: row.queue,
     jobKey: row.jobKey,
-    payload: q.dialect === "sqlite" ? (JSON.parse(row.payload as string) as unknown) : row.payload,
+    payload: row.payload,
     priority: row.priority,
     runAt: row.runAt,
     status: row.status as JobStatus,

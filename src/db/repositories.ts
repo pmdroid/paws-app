@@ -134,9 +134,7 @@ export function* getWorkItemRepositoryAnswerSteps(
     : {
         questionId: row.questionId,
         answer: row.answer!,
-        candidates: (q.dialect === "sqlite"
-          ? JSON.parse(row.candidates as string)
-          : row.candidates) as readonly RepositoryBinding[],
+        candidates: row.candidates as readonly RepositoryBinding[],
       };
 }
 
@@ -154,7 +152,7 @@ export function* rememberWorkItemRepositoryChoiceSteps(
   yield* q.exec(
     q.orm
       .update(asked)
-      .set({ chosenRepository: q.dialect === "sqlite" ? JSON.stringify(repository) : repository })
+      .set({ chosenRepository: repository })
       .where(and(eq(asked.itemId, itemId), eq(asked.questionId, questionId))),
   );
   return true;
@@ -190,9 +188,7 @@ export function* getWorkItemRepositoryChoiceSteps(
       ),
   );
   if (row === undefined) return null;
-  return (
-    q.dialect === "sqlite" ? JSON.parse(row.chosen as string) : row.chosen
-  ) as RepositoryBinding;
+  return row.chosen as RepositoryBinding;
 }
 
 export async function getWorkItemRepositoryChoice(

@@ -83,8 +83,8 @@ export function* readReconciliationIdentitySteps(
     q.orm
       .select({
         delegationId: i.delegationId,
-        issueId: sql<string>`${sql.raw(delegationIssueIdSql("work_item", q.dialect))}`,
-        taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item", q.dialect))}`,
+        issueId: sql<string>`${sql.raw(delegationIssueIdSql("work_item"))}`,
+        taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item"))}`,
         sessionId: s.sessionId,
         organizationId: s.organizationId,
         teamId: s.teamId,
@@ -442,7 +442,7 @@ export function* listReconciliationTargetsSteps(
   issue?: ChangedIssue,
 ): Steps<ReconciliationTarget[]> {
   const { linearSession: s, workItem: i, workspace: w } = q.t;
-  const parentIssueId = sql.raw(parentIssueIdSql("work_item", q.dialect));
+  const parentIssueId = sql.raw(parentIssueIdSql("work_item"));
   return yield* q.all(
     q.orm
       .selectDistinct({ itemId: i.id, workspaceId: w.id })

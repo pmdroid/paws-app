@@ -79,7 +79,7 @@ export function* saveNpmPackageSteps(
   const stored = {
     etag,
     fetchedAt: now,
-    versions: q.dialect === "sqlite" ? JSON.stringify(versions) : versions,
+    versions: versions,
   };
   yield* q.exec(
     q.orm

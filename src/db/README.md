@@ -86,7 +86,6 @@ export function clearQueueWait(db: Db, itemId: string): Promise<void> {
 
 - `q.orm` is typed as the Postgres Drizzle database and `q.t` as `pgSchema`. On SQLite they are the SQLite Drizzle database and `schema`, which export the same table names, so the query builds on either.
 - `yield* q.all(query)` returns the rows, `yield* q.one(query)` the first row or `undefined`, and `yield* q.exec(query)` runs it and returns nothing.
-- `q.dialect` picks a different `sql` fragment where the SQL differs (JSON and date functions, `MIN`/`LEAST`). It is the only per-dialect code.
 - To count changed rows, add `.returning()` and take the length; don't read `changes` or `rowCount`.
 - On SQLite, `db.run()` runs each yielded query at once and returns an already-settled promise. On Postgres it awaits each one.
 - `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint: it commits with the outer transaction.
