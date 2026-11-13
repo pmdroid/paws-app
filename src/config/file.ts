@@ -35,7 +35,7 @@ import {
   type MergeOrder,
   type MergeRepositories,
 } from "./merge";
-import { readConfigText } from "./settings-store";
+import { readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
@@ -513,11 +513,7 @@ function assignConfig(
   line: number,
 ): void {
   if (section === "findings") {
-    if (
-      key !== "grouping_time" ||
-      typeof value !== "string" ||
-      !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)
-    )
+    if (key !== "grouping_time" || typeof value !== "string" || !GROUPING_TIME_PATTERN.test(value))
       throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
     config.findingsGroupingTime = value;
     return;
@@ -635,6 +631,16 @@ function assignConfig(
 function hasExplicitAgentProfiles(text: string): boolean {
   const agents = (Bun.TOML.parse(text) as { agents?: Record<string, unknown> }).agents;
   return agents?.defaults !== undefined;
+}
+
+const GROUPING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export function writeFindingsGroupingTime(path: string, groupingTime: string): Promise<void> {
+  if (!GROUPING_TIME_PATTERN.test(groupingTime))
+    throw new Error("findings.grouping_time must be HH:MM UTC");
+  return updateConfigText(path, (text) =>
+    setConfigKeys(text, "findings", { grouping_time: groupingTime }),
+  );
 }
 
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */

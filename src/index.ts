@@ -2086,7 +2086,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
-          groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
+          groupingTime: () => loadConfigFile(paths.configFile).findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),

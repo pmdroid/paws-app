@@ -125,7 +125,8 @@ function isSettingsSection(section: string): boolean {
     name === "queue" ||
     within("time_limits") ||
     within("checkout.projects") ||
-    within("brief")
+    within("brief") ||
+    name === "findings"
   );
 }
 
