@@ -28,19 +28,12 @@ import { auditWorkspaceAccessSteps } from "./workspace";
 
 export const ciWaitingSql = (q: Q, run: string): SQL =>
   sql.raw(
-    q.dialect === "sqlite"
-      ? `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
-    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`
-      : `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND (ci.payload->>'itemId')=${run}.item_id
+    `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND (ci.payload->>'itemId')=${run}.item_id
     AND (ci.payload->'awakeWait'->>'kind')='ci')`,
   );
 
 export const workHelperSql = (q: Q, helper: string): SQL =>
-  sql.raw(
-    q.dialect === "sqlite"
-      ? `${helper}.purpose IS NOT 'conversation'`
-      : `${helper}.purpose IS DISTINCT FROM 'conversation'`,
-  );
+  sql.raw(`${helper}.purpose IS DISTINCT FROM 'conversation'`);
 
 export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
@@ -87,7 +80,7 @@ export async function runnerHasCapacity(
 
 /** The slots Paws may fill on a runner and the slots leased work, helpers and retros fill now. */
 export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, excludeRunId = "") {
-  const least = sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST");
+  const least = sql.raw("LEAST");
   const row = yield* q.one(
     q.orm
       .select({
@@ -473,10 +466,7 @@ const reservingJobs = (q: Q) => inArray(q.t.job.queue, ["run.resume", "run.rever
 /** True when the payload holds a reservation; a JSON null counts as none on both dialects. */
 const holdsPinnedSlot = (q: Q) => isNotNull(jsonField(q, q.t.job.payload, "pinnedSlot"));
 
-const withoutPinnedSlot = (q: Q): SQL =>
-  q.dialect === "sqlite"
-    ? sql`json_remove(${q.t.job.payload},'$.pinnedSlot')`
-    : sql`${q.t.job.payload} - 'pinnedSlot'`;
+const withoutPinnedSlot = (q: Q): SQL => sql`${q.t.job.payload} - 'pinnedSlot'`;
 
 /**
  * Saves the slots the scheduler reserved this tick on the pending resume and reverify jobs that
@@ -503,18 +493,13 @@ export function* savePinnedSlotsSteps(q: Q, slots: ReadonlyMap<number, PinnedSlo
       q.orm
         .update(job)
         .set({
-          payload:
-            q.dialect === "sqlite"
-              ? sql`json_set(${job.payload},'$.pinnedSlot',json(${text}))`
-              : sql`jsonb_set(${job.payload},'{pinnedSlot}',${text}::text::jsonb)`,
+          payload: sql`jsonb_set(${job.payload},'{pinnedSlot}',${text}::text::jsonb)`,
         })
         .where(
           and(
             eq(job.id, id),
             eq(job.status, "pending"),
-            q.dialect === "sqlite"
-              ? sql`json_extract(${job.payload},'$.pinnedSlot') IS NOT json(${text})`
-              : sql`${job.payload}->'pinnedSlot' IS DISTINCT FROM ${text}::text::jsonb`,
+            sql`${job.payload}->'pinnedSlot' IS DISTINCT FROM ${text}::text::jsonb`,
           ),
         ),
     );

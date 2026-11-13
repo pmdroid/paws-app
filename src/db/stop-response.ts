@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, like, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -130,10 +130,8 @@ type EndedSession = {
 /** A payload field as JSON text, and its JSON type, on either dialect. */
 function payloadField(q: Q, key: "plan" | "identifier") {
   const { payload } = q.t.outbox;
-  const field = sql.raw(q.dialect === "sqlite" ? `'$.${key}'` : `'${key}'`);
-  return q.dialect === "sqlite"
-    ? { text: sql`json_extract(${payload}, ${field})`, type: sql`json_type(${payload}, ${field})` }
-    : { text: sql`(${payload}->>${field})`, type: sql`jsonb_typeof(${payload}->${field})` };
+  const field = sql.raw(`'${key}'`);
+  return { text: sql`(${payload}->>${field})`, type: sql`jsonb_typeof(${payload}->${field})` };
 }
 
 export function* enqueueEndedSessionFaceSteps(q: Q, input: EndedSession): Steps<void> {
@@ -148,7 +146,7 @@ export function* enqueueEndedSessionFaceSteps(q: Q, input: EndedSession): Steps<
         and(
           eq(outbox.target, "linear"),
           eq(outbox.orderingKey, input.sessionId),
-          (q.dialect === "sqlite" ? like : ilike)(outbox.op, "linear.session.%"),
+          ilike(outbox.op, "linear.session.%"),
           sql`${plan.type} = 'array'`,
           sql`COALESCE(${payloadField(q, "identifier").text}, ${identifier}) = ${identifier}`,
         ),

@@ -167,12 +167,7 @@ function* applyKeepPlaceSteps(
   now: number,
 ): Steps<boolean> {
   const { job } = q.t;
-  const matches = and(
-    eq(job.queue, JOB_KIND.merge),
-    q.dialect === "sqlite"
-      ? sql`json_extract(${job.payload}, '$.itemId') = ${item.id}`
-      : sql`${job.payload}->>'itemId' = ${item.id}`,
-  );
+  const matches = and(eq(job.queue, JOB_KIND.merge), sql`${job.payload}->>'itemId' = ${item.id}`);
   const open = yield* q.all(
     q.orm
       .select({ id: job.id })
@@ -186,14 +181,8 @@ function* applyKeepPlaceSteps(
           q.orm
             .update(job)
             .set({
-              payload:
-                q.dialect === "sqlite"
-                  ? sql`json_set(${job.payload}, '$.mergeCallInFlight', json('true'))`
-                  : sql`jsonb_set(${job.payload}, '{mergeCallInFlight}', 'true'::jsonb)`,
-              runAt:
-                q.dialect === "sqlite"
-                  ? sql`MIN(${job.runAt}, ${now})`
-                  : sql`LEAST(${job.runAt}, ${now})`,
+              payload: sql`jsonb_set(${job.payload}, '{mergeCallInFlight}', 'true'::jsonb)`,
+              runAt: sql`LEAST(${job.runAt}, ${now})`,
             })
             .where(eq(job.id, id)),
         );

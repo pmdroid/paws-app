@@ -839,7 +839,7 @@ export async function assignRunnerWork(store: Db, work: NewAssignment): Promise<
 /** Moves the lease forward and never back. */
 export function* extendRunnerWorkLeaseSteps(q: Q, runId: string, until: number): Steps<void> {
   const { runnerWork: w } = q.t;
-  const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const later = sql`GREATEST`;
   yield* q.exec(
     q.orm
       .update(w)

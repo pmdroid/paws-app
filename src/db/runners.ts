@@ -162,7 +162,6 @@ type RunnerSession = {
   move: RunnerSessionMove | null;
 };
 
-/** 1 when the condition holds, else 0: a boolean is 0 or 1 on SQLite and true or false on Postgres. */
 const flag = (condition: SQL | undefined) =>
   sql<number>`CASE WHEN ${condition} THEN 1 ELSE 0 END`.mapWith(Number);
 
@@ -180,10 +179,7 @@ function* listRunnerSessionsSteps(
     .select({ decision: progress.decision })
     .from(progress)
     .where(eq(progress.itemId, item.id))
-    .orderBy(
-      desc(progress.updatedAt),
-      q.dialect === "sqlite" ? sql`p.rowid DESC` : desc(progress.id),
-    )
+    .orderBy(desc(progress.updatedAt), desc(progress.id))
     .limit(1);
   const rows = yield* q.all(
     q.orm
@@ -388,7 +384,7 @@ export function* listRunnerOverviewSteps(
         workHelperSql(q, "runner_helper"),
       ),
     );
-  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const least = sql`LEAST`;
   const rows = yield* q.all(
     q.orm
       .select({
@@ -748,11 +744,7 @@ export function* isCurrentRunnerCertificateSteps(q: Q, fingerprint: string): Ste
     .select({ fingerprint: latest.fingerprint })
     .from(latest)
     .where(eq(latest.runnerId, certificate.runnerId))
-    .orderBy(
-      ...(q.dialect === "sqlite"
-        ? [sql`latest.rowid DESC`]
-        : [desc(latest.notBefore), desc(latest.fingerprint)]),
-    )
+    .orderBy(...[desc(latest.notBefore), desc(latest.fingerprint)])
     .limit(1);
   const row = yield* q.one(
     q.orm
@@ -790,7 +782,7 @@ export function* renewRunnerCertificateSteps(
   if (!owner) throw new Error("Runner identity is revoked or expired.");
   if (!(yield* isCurrentRunnerCertificateSteps(q, input.previousFingerprint)))
     throw new Error("Runner certificate has been superseded.");
-  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const least = sql`LEAST`;
   yield* q.exec(
     q.orm
       .update(runnerCertificate)
@@ -1165,10 +1157,7 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
 }
 
 /** The newest usage row first when `ended_at` or `started_at` ties. */
-const usageNewest = (q: Q) =>
-  q.dialect === "sqlite"
-    ? sql`runner_execution_usage.rowid DESC`
-    : desc(q.t.runnerExecutionUsage.commandId);
+const usageNewest = (q: Q) => desc(q.t.runnerExecutionUsage.commandId);
 
 /** What placement admitted a runner against: its identity, policy, capacity and owner's standing. */
 export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: string) {

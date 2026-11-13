@@ -146,7 +146,7 @@ export function* completeArtifactAttemptSteps(
   version: number,
 ) {
   const { linearArtifactAttempt } = q.t;
-  const greatest = q.dialect === "postgres" ? sql`GREATEST` : sql`max`;
+  const greatest = sql`GREATEST`;
   yield* q.exec(
     q.orm
       .update(linearArtifactAttempt)

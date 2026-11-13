@@ -124,7 +124,7 @@ const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccou
   quotaScope: row.quotaScope as AgentAccountBinding["quotaScope"],
 });
 
-const added = (q: Q, id: AnyColumn) => (q.dialect === "sqlite" ? sql`rowid` : asc(id));
+const added = (q: Q, id: AnyColumn) => asc(id);
 
 export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAgent): string {
   return `${LEGACY_ACCOUNT_PREFIX}${agent}_${workspaceId}`;

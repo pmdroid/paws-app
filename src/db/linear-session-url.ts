@@ -2,12 +2,6 @@ import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
 function sessionUrl(q: Q, payload: SQL): { url: SQL<string | null>; present: SQL } {
-  if (q.dialect === "sqlite") {
-    const url = sql<string | null>`CASE WHEN json_valid(${payload}) THEN
-      COALESCE(json_extract(${payload}, '$.agentSession.url'), json_extract(${payload}, '$.agentSession.issue.url'))
-      ELSE NULL END`;
-    return { url, present: sql`typeof(${url}) = 'text' AND length(${url}) > 0` };
-  }
   const json = sql`COALESCE(NULLIF(${payload}->'agentSession'->'url', 'null'::jsonb),
     NULLIF(${payload}->'agentSession'->'issue'->'url', 'null'::jsonb))`;
   const url = sql<string | null>`(${json} #>> '{}')`;
@@ -18,12 +12,8 @@ export function* hasTableSteps(q: Q, name: string) {
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })
-      .from(q.dialect === "sqlite" ? sql`sqlite_master` : sql`information_schema.tables`)
-      .where(
-        q.dialect === "sqlite"
-          ? sql`type = 'table' AND name = ${name}`
-          : sql`table_schema = current_schema() AND table_name = ${name}`,
-      ),
+      .from(sql`information_schema.tables`)
+      .where(sql`table_schema = current_schema() AND table_name = ${name}`),
   );
   return row !== undefined;
 }

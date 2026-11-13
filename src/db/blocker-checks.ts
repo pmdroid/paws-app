@@ -3,7 +3,7 @@ import { type Q, type Db } from "./db";
 
 export function* recordBlockerChecksSteps(q: Q, itemIds: readonly string[], at: number) {
   const { itemBlockerCheck } = q.t;
-  const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const later = sql`GREATEST`;
   for (const itemId of itemIds)
     yield* q.exec(
       q.orm

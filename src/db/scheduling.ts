@@ -289,7 +289,7 @@ export async function schedulerItems(store: Db, now: number): Promise<SchedulerI
 
 export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
   const r = alias(q.t.runner, "r");
-  const least = q.dialect === "sqlite" ? sql.raw("MIN") : sql.raw("LEAST");
+  const least = sql.raw("LEAST");
   return yield* q.all(
     q.orm
       .select({

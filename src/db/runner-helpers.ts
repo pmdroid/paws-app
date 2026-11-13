@@ -55,7 +55,6 @@ export async function insertRunnerHelper(store: Db, row: NewRunnerHelper): Promi
   await store.run((q) => insertRunnerHelperSteps(q, row));
 }
 
-/** Helpers the runner has not acknowledged, oldest first on SQLite and by id on Postgres. */
 export function* unacknowledgedRunnerHelpersSteps(
   q: Q,
   runnerId: string,
@@ -74,7 +73,7 @@ export function* unacknowledgedRunnerHelpersSteps(
           gt(helper.expiresAt, at),
         ),
       )
-      .orderBy(q.dialect === "sqlite" ? sql`rowid` : asc(helper.id)),
+      .orderBy(asc(helper.id)),
   );
   return rows.map((row) => row.id);
 }
@@ -101,7 +100,6 @@ export async function acknowledgeRunnerHelper(store: Db, id: string, at: number)
   await store.run((q) => acknowledgeRunnerHelperSteps(q, id, at));
 }
 
-/** Whether the stored result is this payload: JSON equality on Postgres, text on SQLite. */
 export function* runnerHelperResultMatchesSteps(q: Q, id: string, payload: string): Steps<boolean> {
   const { runnerHelper: helper } = q.t;
   const row = yield* q.one(
