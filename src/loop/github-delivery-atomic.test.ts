@@ -16,6 +16,7 @@ import {
   recordItemPullRequest,
   recordPullReview,
   type Db,
+  type Job,
   type PgDb,
 } from "../db";
 import { seed } from "../../test/dialects";
@@ -150,7 +151,7 @@ const failures = [
   ]),
 ];
 
-async function expectUntouched(db: Db, before: unknown) {
+async function expectUntouched(db: Db, before: Job[]) {
   expect(await listGitHubDeliveries(db)).toEqual([]);
   expect((await pendingChangeRequests(db, "first")).map((r) => r.reviewId)).toEqual([40]);
   expect(await pendingPullComments(db, "first")).toEqual([]);
