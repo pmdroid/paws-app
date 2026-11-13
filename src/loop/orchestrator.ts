@@ -196,6 +196,7 @@ import {
   trustedOriginMain,
   trustedRootFilesAt,
   trustedKnownMain,
+  trustedChangedPaths,
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
@@ -681,7 +682,7 @@ import {
   type MainPolicyError,
 } from "./policy-outage";
 import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
-import { changedPaths, classifyPathsRisk } from "./candidate-risk";
+import { classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivitySteps,
@@ -5893,6 +5894,8 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
+        changedFilesFromGitHub: () =>
+          loadConfigFile(join(this.options.pawsRoot, "config.toml")).githubMirrors === false,
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {
@@ -6373,7 +6376,9 @@ export class Orchestrator {
       candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
-    const changed = await changedPaths(run, base, head);
+    const listed = await trustedChangedPaths(worktree, base, head);
+    if (!listed.ok) throw new Error(listed.message);
+    const changed = listed.paths;
     // Every changed path, so the scheduler can hold work that changes the same hot files.
     await this.store.run((q) =>
       saveCandidatePathsSteps(q, { itemId: item.id, head, paths: changed, recordedAt: this.now() }),

@@ -29,6 +29,11 @@ export type GitReader = {
   readBlob(repo: string, object: string): { ok: true; bytes: Uint8Array } | GitFailure;
   fill?(repo: string): Promise<boolean>;
   mainCommit?(repo: string): string | undefined;
+  changedPaths?(
+    repo: string,
+    base: string,
+    head: string,
+  ): Promise<{ ok: true; paths: string[] } | GitFailure | null>;
   mergeView?(
     repo: string,
     main: string,
