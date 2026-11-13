@@ -320,6 +320,7 @@ describe("Merging settings API", () => {
       ignoredComments: [],
       lanes: ["project", "person"],
       noProject: "own",
+      parallel: 1,
       parallelFiles: [],
     });
   });
@@ -452,6 +453,7 @@ describe("Merging settings API", () => {
       ignoredComments: [],
       lanes: ["project", "person"],
       noProject: "own",
+      parallel: 1,
       parallelFiles: [],
     });
     const text = readFileSync(options.configPath, "utf8");
@@ -507,6 +509,25 @@ describe("Merging settings API", () => {
     for (const bad of [{ lanes: ["team"] }, { noProject: "none" }]) {
       const refused = await handleMergeSettingsRequest(
         request("PUT", { ...body, ...bad }),
+        options,
+      );
+      expect(refused?.status).toBe(400);
+    }
+  });
+
+  test("PUT saves merges at once in a lane, audits it, and refuses one outside 1 to 5", async () => {
+    const { options, audits } = fixture();
+    const body = { default: { order: "queue", mainMoved: "ci" }, parallel: 3 };
+    const saved = await handleMergeSettingsRequest(request("PUT", body), options);
+    expect(saved?.status).toBe(200);
+    expect(await saved!.json()).toMatchObject({ parallel: 3 });
+    expect(readFileSync(options.configPath, "utf8")).toContain("parallel = 3");
+    expect(audits).toContainEqual(["settings.merging", "Merges at once in a lane: 1 → 3"]);
+    const read = await handleMergeSettingsRequest(request(), options);
+    expect(await read!.json()).toMatchObject({ parallel: 3 });
+    for (const parallel of [0, 6, 2.5, "3"]) {
+      const refused = await handleMergeSettingsRequest(
+        request("PUT", { ...body, parallel }),
         options,
       );
       expect(refused?.status).toBe(400);
