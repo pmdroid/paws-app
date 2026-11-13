@@ -7911,7 +7911,8 @@ export class Orchestrator {
     for (const wait of waits) await this.store.transaction((q) => this.noteWaitSteps(q, wait));
   }
 
-  private *noteWaitSteps(q: Q, wait: ItemWait): Steps<void> {
+  private *noteWaitSteps(q: Q, given: ItemWait): Steps<void> {
+    const wait = sortedWait(given);
     const round =
       wait.kind === "runner" && wait.restart ? yield* fixRoundsSteps(q, wait.itemId) : 0;
     const face = JSON.stringify([wait, round]);
@@ -7928,12 +7929,13 @@ export class Orchestrator {
     const name = item.linearIdentifier;
     if (wait.kind === "blocked") {
       const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
-      yield* progress.wait(q, `Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+      yield* progress.wait(q, `Wait for ${blockers}`, `${name}: waiting for ${blockers}`, true);
     } else if (wait.kind === "overlap") {
       yield* progress.wait(
         q,
         `Wait for ${wait.blocker} to merge`,
         `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
+        true,
       );
     } else if (wait.kind === "runner" && wait.restart) {
       const limit = yield* this.fixAttemptLimitSteps(q, item, wait.restart);
@@ -11496,4 +11498,11 @@ function usageResetAt(error: unknown): number | null {
   if (!(error instanceof Error) || error.name !== "UsageLimitPause") return null;
   const resumeAt = (error as Error & { resumeAt?: unknown }).resumeAt;
   return typeof resumeAt === "number" && Number.isFinite(resumeAt) ? resumeAt : null;
+}
+
+function sortedWait(wait: ItemWait): ItemWait {
+  const natural = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+  if (wait.kind === "blocked") return { ...wait, blockers: wait.blockers.toSorted(natural) };
+  if (wait.kind === "overlap") return { ...wait, files: wait.files.toSorted(natural) };
+  return wait;
 }
