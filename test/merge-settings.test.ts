@@ -322,6 +322,8 @@ describe("Merging settings API", () => {
       noProject: "own",
       parallel: 1,
       parallelFiles: [],
+      sessionDone: "pull_request",
+      sessionQuietMinutes: 10,
     });
   });
 
