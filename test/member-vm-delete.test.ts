@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { and, count, eq, isNull } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +11,9 @@ import {
   insertRun,
   JobLoop,
   listJobs,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -42,9 +40,13 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closers.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -62,24 +64,22 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-delete-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  closers.push(close);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerUserId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "vm-owner",
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "vm-org",
     name: "vm-org",
     userId: ownerUserId,
-    tokenHash: workspaceTokenHash(
-      await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now()),
-    ),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "vm-org", clock.now())),
     now: clock.now(),
   });
   const principal = (userId: string, role: Role): WorkspacePrincipal => ({
@@ -90,13 +90,13 @@ async function fixture() {
     teamIds: [],
   });
   const person = async (name: string, role: Role, active = true): Promise<WorkspacePrincipal> => {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${name}`,
       name,
       email: `${name.toLowerCase().replaceAll(" ", ".")}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
       role,
@@ -112,7 +112,7 @@ async function fixture() {
   const inactive = await person("Watcher", "member", false);
   const disconnected: string[] = [];
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -168,14 +168,19 @@ async function fixture() {
     exeDev,
     async stopTask(itemId) {
       stopped.push(itemId);
-      db.run("UPDATE work_item SET cancel_requested=1,state='cancelled' WHERE id=?", [itemId]);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ cancelRequested: 1, state: "cancelled" })
+          .where(eq(q.t.workItem.id, itemId)),
+      );
     },
     disconnect: (fingerprint) => disconnected.push(fingerprint),
     now: () => clock.now(),
     pollMs: MEMBER_VM_DELETE_POLL_MS,
   });
   const http = createMemberVmHttp({
-    store: sqliteDb(db),
+    store: db,
     available: () => true,
     now: () => clock.now(),
   });
@@ -196,12 +201,17 @@ async function fixture() {
     call(who, "/api/runners/vm/delete", force === undefined ? { id } : { id, force });
 
   const ready = async (): Promise<MemberVm> => {
-    await startMemberVm(sqliteDb(db), { ...member, now: clock.now() });
+    await startMemberVm(db, { ...member, now: clock.now() });
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(sqliteDb(db), member))!;
+      const row = (await findMemberVm(db, member))!;
       if (row.failure !== null) throw new Error(row.failure);
       if (row.step === "health" && row.runnerId)
-        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [clock.now(), row.runnerId]);
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.runner)
+            .set({ lastSeenAt: clock.now() })
+            .where(eq(q.t.runner.id, row.runnerId!)),
+        );
       if (row.step === "ready") return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -213,24 +223,31 @@ async function fixture() {
   };
   const task = async (runnerId: string, identifier: string) => {
     const itemId = `item-${identifier}`;
-    db.run(
-      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-      VALUES(?,?,?,?,?,'running',?,0,?)`,
-      [
-        itemId,
-        `d-${identifier}`,
-        `i-${identifier}`,
-        identifier,
-        "Fix the login page",
-        `paws/${identifier}`,
-        clock.now(),
-      ],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id: itemId,
+        delegationId: `d-${identifier}`,
+        linearIssueId: `i-${identifier}`,
+        linearIdentifier: identifier,
+        title: "Fix the login page",
+        state: "running",
+        branchName: `paws/${identifier}`,
+        position: 0,
+        createdAt: clock.now(),
+      }),
     );
-    const run = await insertRun(sqliteDb(db), { itemId, now: clock.now(), status: "active" });
-    db.run(
-      `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
-      VALUES(?,?,?,1,0,?,?,0)`,
-      [run.id, runnerId, workspace.id, `cmd-${identifier}`, clock.now() + 600_000],
+    const run = await insertRun(db, { itemId, now: clock.now(), status: "active" });
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId: run.id,
+        runnerId,
+        workspaceId: workspace.id,
+        generation: 1,
+        runnerFence: 0,
+        commandId: `cmd-${identifier}`,
+        leaseUntil: clock.now() + 600_000,
+        lastSequence: 0,
+      }),
     );
     return itemId;
   };
@@ -262,14 +279,48 @@ const viewOf = (body: Record<string, unknown>) =>
   (body as Extract<MemberVmResponse, { available: true }>).vm as MemberVmView;
 const deleteStates = (vm: MemberVmView) =>
   vm.deleting!.steps.map((entry) => `${entry.step}:${entry.state}`);
-const audits = (db: Database, action: string) =>
-  db
-    .query<{ n: number }, [string]>(
-      "SELECT count(*) AS n FROM workspace_access_audit WHERE action=?",
-    )
-    .get(action)!.n;
-const openJobs = async (db: Database, queue: string) =>
-  (await listJobs(sqliteDb(db))).filter(
+const audits = async (db: Db, action: string) =>
+  (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ n: count() })
+        .from(q.t.workspaceAccessAudit)
+        .where(eq(q.t.workspaceAccessAudit.action, action)),
+    ),
+  ))!.n;
+const runnerNamed = (db: Db, name: string, live = false) =>
+  db.run((q) =>
+    q.one(
+      q.orm
+        .select({ id: q.t.runner.id })
+        .from(q.t.runner)
+        .where(and(eq(q.t.runner.name, name), live ? isNull(q.t.runner.revokedAt) : undefined)),
+    ),
+  );
+const enrollmentsOf = (db: Db, memberVmId: string) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.memberVmEnrollment)
+        .where(eq(q.t.memberVmEnrollment.memberVmId, memberVmId)),
+    ),
+  );
+const untrackEnrollments = (db: Db, memberVmId: string) =>
+  seed(
+    db,
+    (q) =>
+      q.orm.delete(q.t.memberVmEnrollment).where(eq(q.t.memberVmEnrollment.memberVmId, memberVmId)),
+    (q) =>
+      q.orm
+        .update(q.t.memberVm)
+        .set({ enrollmentsTracked: 0 })
+        .where(eq(q.t.memberVm.id, memberVmId)),
+  );
+const setDeleteStep = (db: Db, id: string, deleteStep: string) =>
+  seed(db, (q) => q.orm.update(q.t.memberVm).set({ deleteStep }).where(eq(q.t.memberVm.id, id)));
+const openJobs = async (db: Db, queue: string) =>
+  (await listJobs(db)).filter(
     (job) => job.queue === queue && (job.status === "pending" || job.status === "running"),
   );
 
@@ -291,20 +342,20 @@ describe("Delete VM", () => {
     ]);
 
     await f.loop.tick();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe("tailnet");
-    expect((await getRunner(sqliteDb(f.db), runnerId))!.status).toBe("draining");
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("tailnet");
+    expect((await getRunner(f.db, runnerId))!.status).toBe("draining");
     expect(f.exeDev.calls).toEqual([]);
 
     await f.loop.tick();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe("revoke");
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("revoke");
     expect(f.exeDev.calls).toEqual([
       { operation: "execVm", vm: vm.vmName, command: MEMBER_VM_TAILNET_LOGOUT, timeoutMs: 60_000 },
     ]);
-    expect((await getRunner(sqliteDb(f.db), runnerId))!.status).toBe("draining");
+    expect((await getRunner(f.db, runnerId))!.status).toBe("draining");
 
     await f.loop.tick();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe("destroy");
-    expect((await getRunner(sqliteDb(f.db), runnerId))!.status).toBe("revoked");
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("destroy");
+    expect((await getRunner(f.db, runnerId))!.status).toBe("revoked");
     expect(f.disconnected.length).toBeGreaterThan(0);
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
 
@@ -319,14 +370,14 @@ describe("Delete VM", () => {
     expect(midway.runnerId).toBe(runnerId);
 
     await f.loop.tick();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe("clear");
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("clear");
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: vm.vmName });
     expect(f.exeDev.vms.has(vm.vmName)).toBe(false);
 
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.map((entry) => entry.operation)).toEqual(["execVm", "deleteVm"]);
-    expect(audits(f.db, "member_vm.deleted")).toBe(1);
+    expect(await audits(f.db, "member_vm.deleted")).toBe(1);
     expect(await f.call(f.member, "/api/runners/vm")).toEqual({
       status: 200,
       body: { available: true, vm: null, vms: [] },
@@ -347,13 +398,13 @@ describe("Delete VM", () => {
       { itemId, identifier: "PAS-901", title: "Fix the login page" },
     ]);
     expect(deleteStates(blocked)[0]).toBe("drain:failed");
-    expect((await getRunner(sqliteDb(f.db), vm.runnerId!))!.status).toBe("draining");
+    expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("draining");
     expect(f.stopped).toEqual([]);
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
 
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteFailure).toContain("PAS-901");
+    expect((await getMemberVm(f.db, vm.id))!.deleteFailure).toContain("PAS-901");
     expect(f.stopped).toEqual([]);
 
     const forced = await f.remove(f.member, vm.id, true);
@@ -361,9 +412,9 @@ describe("Delete VM", () => {
     expect(viewOf(forced.body).deleting!.failure).toBeNull();
     await f.settle();
     expect(f.stopped).toEqual([itemId]);
-    expect(audits(f.db, "member_vm.delete.stop_task")).toBe(1);
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
-    expect((await getRunner(sqliteDb(f.db), vm.runnerId!))!.status).toBe("revoked");
+    expect(await audits(f.db, "member_vm.delete.stop_task")).toBe(1);
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
+    expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("revoked");
     expect(f.exeDev.vms.has(vm.vmName)).toBe(false);
   });
 
@@ -371,20 +422,29 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     const itemId = await f.task(vm.runnerId!, "PAS-903");
-    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [itemId]);
+    await seed(f.db, (q) =>
+      q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, itemId)),
+    );
 
     await f.remove(f.member, vm.id);
     await f.settle();
-    const blocked = (await getMemberVm(sqliteDb(f.db), vm.id))!;
+    const blocked = (await getMemberVm(f.db, vm.id))!;
     expect(blocked.deleteStep).toBe("drain");
     expect(blocked.deleteFailure).toContain("PAS-903");
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
 
-    f.db.run("UPDATE runner_work SET ended_at=? WHERE command_id='cmd-PAS-903'", [f.clock.now()]);
-    f.db.run("UPDATE run SET status='lost' WHERE item_id=?", [itemId]);
+    await seed(
+      f.db,
+      (q) =>
+        q.orm
+          .update(q.t.runnerWork)
+          .set({ endedAt: f.clock.now() })
+          .where(eq(q.t.runnerWork.commandId, "cmd-PAS-903")),
+      (q) => q.orm.update(q.t.run).set({ status: "lost" }).where(eq(q.t.run.itemId, itemId)),
+    );
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.stopped).toEqual([]);
   });
 
@@ -395,16 +455,16 @@ describe("Delete VM", () => {
     await f.remove(f.member, vm.id, true);
     await f.loop.tick();
     expect(f.stopped).toEqual([itemId]);
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe("tailnet");
-    f.db.run("UPDATE member_vm SET delete_step='drain' WHERE id=?", [vm.id]);
-    await enqueueJob(sqliteDb(f.db), {
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("tailnet");
+    await setDeleteStep(f.db, vm.id, "drain");
+    await enqueueJob(f.db, {
       queue: MEMBER_VM_DELETE_QUEUE,
       payload: { memberVmId: vm.id },
       now: f.clock.now(),
     });
     await f.settle();
     expect(f.stopped).toEqual([itemId]);
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
   });
 
   test("a VM exe.dev no longer has counts as destroyed", async () => {
@@ -413,7 +473,7 @@ describe("Delete VM", () => {
     f.exeDev.vms.delete(vm.vmName);
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: vm.vmName });
 
     const g = await fixture();
@@ -421,7 +481,7 @@ describe("Delete VM", () => {
     g.exeDev.fail("deleteVm", "missing", { vm: other.vmName });
     await g.remove(g.member, other.id);
     await g.settle();
-    expect(await getMemberVm(sqliteDb(g.db), other.id)).toBeNull();
+    expect(await getMemberVm(g.db, other.id)).toBeNull();
   });
 
   test("a failed tailnet logout does not block the delete", async () => {
@@ -430,7 +490,7 @@ describe("Delete VM", () => {
     f.exeDev.fail("execVm", "timeout", { command: MEMBER_VM_TAILNET_LOGOUT });
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
   });
 
   test("a failed destroy is shown and Retry resumes at that step", async () => {
@@ -453,9 +513,9 @@ describe("Delete VM", () => {
 
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.filter((entry) => entry.operation === "execVm")).toHaveLength(logouts);
-    expect(audits(f.db, "runner.revoked")).toBe(1);
+    expect(await audits(f.db, "runner.revoked")).toBe(1);
   });
 
   test("only the VM's owner or a workspace admin may delete it", async () => {
@@ -465,7 +525,7 @@ describe("Delete VM", () => {
       const refused = await f.remove(who, vm.id);
       expect(refused.status).toBe(403);
     }
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBeNull();
+    expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBeNull();
     expect(await openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(0);
     expect((await f.remove(f.member, "01NOSUCHVM0000000000000000")).status).toBe(404);
     expect((await f.call(f.member, "/api/runners/vm/delete", { id: 7 })).status).toBe(400);
@@ -478,7 +538,7 @@ describe("Delete VM", () => {
 
     expect((await f.remove(f.admin, vm.id)).status).toBe(200);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
   });
 
   test("re-running any step after it finished changes nothing more", async () => {
@@ -492,25 +552,25 @@ describe("Delete VM", () => {
     for (const [index, step] of steps.entries()) {
       await f.loop.tick();
       const next = index === steps.length - 1 ? "clear" : steps[index + 1]!;
-      expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteStep).toBe(next);
-      f.db.run("UPDATE member_vm SET delete_step=? WHERE id=?", [step, vm.id]);
-      await enqueueJob(sqliteDb(f.db), {
+      expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe(next);
+      await setDeleteStep(f.db, vm.id, step);
+      await enqueueJob(f.db, {
         queue: MEMBER_VM_DELETE_QUEUE,
         payload: { memberVmId: vm.id },
         now: f.clock.now(),
       });
       await f.loop.tick();
-      const row = (await getMemberVm(sqliteDb(f.db), vm.id))!;
+      const row = (await getMemberVm(f.db, vm.id))!;
       expect(row.deleteFailure).toBeNull();
       expect(row.deleteStep).toBe(next);
     }
-    expect(audits(f.db, "runner.draining")).toBe(1);
-    expect(audits(f.db, "runner.revoked")).toBe(1);
+    expect(await audits(f.db, "runner.draining")).toBe(1);
+    expect(await audits(f.db, "runner.revoked")).toBe(1);
     expect(f.exeDev.calls.filter((entry) => entry.operation === "deleteVm")).toHaveLength(2);
 
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
-    await enqueueJob(sqliteDb(f.db), {
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
+    await enqueueJob(f.db, {
       queue: MEMBER_VM_DELETE_QUEUE,
       payload: { memberVmId: vm.id },
       now: f.clock.now(),
@@ -518,7 +578,7 @@ describe("Delete VM", () => {
     const before = f.exeDev.calls.length;
     await f.settle();
     expect(f.exeDev.calls).toHaveLength(before);
-    expect(audits(f.db, "member_vm.deleted")).toBe(1);
+    expect(await audits(f.db, "member_vm.deleted")).toBe(1);
   });
 
   test("Create VM after a delete reuses the name and provisions a new runner", async () => {
@@ -526,26 +586,26 @@ describe("Delete VM", () => {
     const vm = await f.ready();
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
 
     const again = viewOf((await f.call(f.member, "/api/runners/vm", {})).body);
     expect(again.vmName).toBe(vm.vmName);
     expect(again.id).not.toBe(vm.id);
     const recreated = await f.ready();
     expect(recreated.runnerId).not.toBe(vm.runnerId);
-    expect((await getRunner(sqliteDb(f.db), recreated.runnerId!))!.status).toBe("paused");
+    expect((await getRunner(f.db, recreated.runnerId!))!.status).toBe("paused");
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
   });
 
   test("deleting before exe.dev was asked to create stops provisioning and touches nothing", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
     await f.remove(f.member, row.id);
     expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.calls).toEqual([]);
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
   });
@@ -564,11 +624,11 @@ describe("Delete VM", () => {
 
 test("an admin sees and deletes another member's VM that never got a runner", async () => {
   const f = await fixture();
-  const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+  const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
   f.exeDev.fail("createVm", "rate_limited");
   await f.settle();
-  expect((await getMemberVm(sqliteDb(f.db), row.id))!.failure).toContain("rate_limited");
-  expect((await getMemberVm(sqliteDb(f.db), row.id))!.runnerId).toBeNull();
+  expect((await getMemberVm(f.db, row.id))!.failure).toContain("rate_limited");
+  expect((await getMemberVm(f.db, row.id))!.runnerId).toBeNull();
 
   const seen = (await f.call(f.admin, "/api/runners/vm")).body as Extract<
     MemberVmResponse,
@@ -580,7 +640,7 @@ test("an admin sees and deletes another member's VM that never got a runner", as
   ]);
   expect((await f.remove(f.admin, row.id)).status).toBe(200);
   await f.settle();
-  expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+  expect(await getMemberVm(f.db, row.id)).toBeNull();
 });
 
 describe("Delete VM while a provisioning step is still running", () => {
@@ -597,41 +657,41 @@ describe("Delete VM while a provisioning step is still running", () => {
   test("waits for an outstanding create and leaves a VM exe.dev refused as taken", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
     await Bun.sleep(5);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.createRequestedAt).not.toBeNull();
+    expect((await getMemberVm(f.db, row.id))!.createRequestedAt).not.toBeNull();
 
     expect((await f.remove(f.member, row.id)).status).toBe(200);
     await pump(f, 3);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.deleteStep).toBe("drain");
+    expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
     expect(f.exeDev.calls.filter((call) => call.operation !== "createVm")).toEqual([]);
 
     held.open();
     await creating;
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.createRequestedAt).toBeNull();
+    expect((await getMemberVm(f.db, row.id))!.createRequestedAt).toBeNull();
     await pump(f);
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["createVm"]);
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
   });
 
   test("waits for an outstanding create that succeeds, then destroys the VM", async () => {
     const f = await fixture();
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
     await Bun.sleep(5);
     await f.remove(f.member, row.id);
     await pump(f, 3);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.deleteStep).toBe("drain");
+    expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
     held.open();
     await creating;
     await pump(f);
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: "ada-lovelace-paws" });
     expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
@@ -639,63 +699,61 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("revokes a runner whose enrollment finishes after the delete was confirmed", async () => {
     const f = await fixture();
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     for (
       let index = 0;
-      index < 100 && (await getMemberVm(sqliteDb(f.db), row.id))!.step !== "enroll";
+      index < 100 && (await getMemberVm(f.db, row.id))!.step !== "enroll";
       index++
     )
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.step).toBe("enroll");
+    expect((await getMemberVm(f.db, row.id))!.step).toBe("enroll");
     const held = gate();
     f.hold.enroll = held.promise;
     const enrolling = f.loop.tick();
     for (let index = 0; index < 100; index++) {
-      if (f.db.query("SELECT 1 FROM runner WHERE name='ada-lovelace-paws'").get()) break;
+      if (await runnerNamed(f.db, "ada-lovelace-paws")) break;
       await Bun.sleep(5);
     }
-    const runner = f.db
-      .query<{ id: string }, []>("SELECT id FROM runner WHERE name='ada-lovelace-paws'")
-      .get()!;
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.runnerId).toBeNull();
+    const runner = (await runnerNamed(f.db, "ada-lovelace-paws"))!;
+    expect((await getMemberVm(f.db, row.id))!.runnerId).toBeNull();
 
     await f.remove(f.member, row.id);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.deleteRunnerId).toBeNull();
+    expect((await getMemberVm(f.db, row.id))!.deleteRunnerId).toBeNull();
     await pump(f, 3);
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.deleteStep).toBe("drain");
+    expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
 
     held.open();
     await enrolling;
     await pump(f);
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
-    expect((await getRunner(sqliteDb(f.db), runner.id))!.status).toBe("revoked");
-    const live = f.db
-      .query<{ n: number }, [string]>(
-        "SELECT count(*) AS n FROM runner_certificate WHERE runner_id=? AND revoked_at IS NULL",
-      )
-      .get(runner.id)!.n;
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
+    expect((await getRunner(f.db, runner.id))!.status).toBe("revoked");
+    const live = (await f.db.run((q) =>
+      q.one(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.runnerCertificate)
+          .where(
+            and(
+              eq(q.t.runnerCertificate.runnerId, runner.id),
+              isNull(q.t.runnerCertificate.revokedAt),
+            ),
+          ),
+      ),
+    ))!.n;
     expect(live).toBe(0);
   });
 
   test("drains, blocks on and revokes a runner the VM enrolled that the row never recorded", async () => {
     const f = await fixture();
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     f.hold.enrollDies = true;
-    for (
-      let index = 0;
-      index < 100 && (await getMemberVm(sqliteDb(f.db), row.id))!.failure === null;
-      index++
-    )
+    for (let index = 0; index < 100 && (await getMemberVm(f.db, row.id))!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
-    const stuck = (await getMemberVm(sqliteDb(f.db), row.id))!;
+    const stuck = (await getMemberVm(f.db, row.id))!;
     expect(stuck.step).toBe("enroll");
     expect(stuck.runnerId).toBeNull();
-    const orphan = f.db
-      .query<{ id: string }, []>(
-        "SELECT id FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL",
-      )
-      .get()!;
-    expect((await getRunner(sqliteDb(f.db), orphan.id))!.status).toBe("paused");
+    const orphan = (await runnerNamed(f.db, "ada-lovelace-paws", true))!;
+    expect((await getRunner(f.db, orphan.id))!.status).toBe("paused");
     const itemId = await f.task(orphan.id, "PAS-902");
 
     const manual = await f.control.createEnrollment(f.principal(f.member.userId, "member"), {
@@ -712,120 +770,109 @@ describe("Delete VM while a provisioning step is still running", () => {
     const blocked = viewOf((await f.call(f.member, "/api/runners/vm")).body);
     expect(blocked.deleting!.step).toBe("drain");
     expect(blocked.deleting!.blocked.map((task) => task.identifier)).toEqual(["PAS-902"]);
-    expect((await getRunner(sqliteDb(f.db), orphan.id))!.status).toBe("draining");
+    expect((await getRunner(f.db, orphan.id))!.status).toBe("draining");
     expect(f.stopped).toEqual([]);
 
     await f.remove(f.member, row.id, true);
     await f.settle();
     expect(f.stopped).toEqual([itemId]);
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
-    expect((await getRunner(sqliteDb(f.db), orphan.id))!.status).toBe("revoked");
-    expect((await getRunner(sqliteDb(f.db), laptop.runnerId))!.status).toBe("paused");
-    expect(
-      f.db.query("SELECT 1 FROM member_vm_enrollment WHERE member_vm_id=?").get(row.id),
-    ).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
+    expect((await getRunner(f.db, orphan.id))!.status).toBe("revoked");
+    expect((await getRunner(f.db, laptop.runnerId))!.status).toBe("paused");
+    expect(await enrollmentsOf(f.db, row.id)).toEqual([]);
   });
 
   test("a token the VM still holds cannot enroll a runner once the delete has run", async () => {
     const f = await fixture();
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     f.hold.enrollStalls = true;
-    for (
-      let index = 0;
-      index < 100 && (await getMemberVm(sqliteDb(f.db), row.id))!.failure === null;
-      index++
-    )
+    for (let index = 0; index < 100 && (await getMemberVm(f.db, row.id))!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
     const token = f.hold.stalled!;
     expect(token).toBeTruthy();
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.step).toBe("enroll");
+    expect((await getMemberVm(f.db, row.id))!.step).toBe("enroll");
 
     await f.remove(f.member, row.id);
     for (
       let index = 0;
-      index < 20 && (await getMemberVm(sqliteDb(f.db), row.id))!.deleteStep !== "destroy";
+      index < 20 && (await getMemberVm(f.db, row.id))!.deleteStep !== "destroy";
       index++
     )
       await f.loop.tick();
-    expect((await getMemberVm(sqliteDb(f.db), row.id))!.deleteStep).toBe("destroy");
+    expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("destroy");
 
     const key = await createRunnerKey(temp("paws-late-host-"));
     await expect(
       f.control.enroll({ token, name: "ada-lovelace-paws", csr: key.csr }),
     ).rejects.toThrow();
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
-    expect(
-      f.db
-        .query("SELECT 1 FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL")
-        .get(),
-    ).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
+    expect(await runnerNamed(f.db, "ada-lovelace-paws", true)).toBeUndefined();
   });
 
   test("a VM made before tokens were recorded stops while an unrecorded runner of its name lives", async () => {
     const f = await fixture();
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     f.hold.enrollDies = true;
-    for (
-      let index = 0;
-      index < 100 && (await getMemberVm(sqliteDb(f.db), row.id))!.failure === null;
-      index++
-    )
+    for (let index = 0; index < 100 && (await getMemberVm(f.db, row.id))!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
-    const orphan = f.db
-      .query<{ id: string }, []>(
-        "SELECT id FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL",
-      )
-      .get()!;
-    f.db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]);
-    f.db.run("UPDATE member_vm SET enrollments_tracked=0 WHERE id=?", [row.id]);
+    const orphan = (await runnerNamed(f.db, "ada-lovelace-paws", true))!;
+    await untrackEnrollments(f.db, row.id);
 
     await f.remove(f.member, row.id);
     await f.settle();
-    const stopped = (await getMemberVm(sqliteDb(f.db), row.id))!;
+    const stopped = (await getMemberVm(f.db, row.id))!;
     expect(stopped.deleteStep).toBe("drain");
     expect(stopped.deleteFailure).toContain(orphan.id);
-    expect((await getRunner(sqliteDb(f.db), orphan.id))!.status).toBe("paused");
+    expect((await getRunner(f.db, orphan.id))!.status).toBe("paused");
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
 
     await f.control.setStatus(f.admin, orphan.id, "revoked");
     await f.remove(f.member, row.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
   });
 
   test("a VM made before tokens were recorded waits out a valid token for its name", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    f.db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [vm.id]);
-    f.db.run("UPDATE member_vm SET enrollments_tracked=0 WHERE id=?", [vm.id]);
+    await untrackEnrollments(f.db, vm.id);
     await f.control.createEnrollment(f.principal(f.member.userId, "member"), { name: vm.vmName });
 
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect((await getMemberVm(sqliteDb(f.db), vm.id))!.deleteFailure).toContain(
-      "Retry after it expires",
-    );
-    expect((await getRunner(sqliteDb(f.db), vm.runnerId!))!.status).toBe("draining");
+    expect((await getMemberVm(f.db, vm.id))!.deleteFailure).toContain("Retry after it expires");
+    expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("draining");
 
     f.clock.advance(11 * 60_000);
     await f.remove(f.member, vm.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), vm.id)).toBeNull();
-    expect((await getRunner(sqliteDb(f.db), vm.runnerId!))!.status).toBe("revoked");
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
+    expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("revoked");
   });
 
   test("a create cut off by a restart never removes a VM Paws cannot prove it made", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
-    f.db.run("UPDATE member_vm SET create_requested_at=? WHERE id=?", [f.clock.now(), row.id]);
-    f.db.run("UPDATE job SET status='cancelled' WHERE queue=?", [MEMBER_VM_QUEUE]);
+    const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await seed(
+      f.db,
+      (q) =>
+        q.orm
+          .update(q.t.memberVm)
+          .set({ createRequestedAt: f.clock.now() })
+          .where(eq(q.t.memberVm.id, row.id)),
+      (q) =>
+        q.orm
+          .update(q.t.job)
+          .set({ status: "cancelled" })
+          .where(eq(q.t.job.queue, MEMBER_VM_QUEUE)),
+    );
 
     await f.remove(f.member, row.id);
     await f.settle();
-    const failed = (await getMemberVm(sqliteDb(f.db), row.id))!;
+    const failed = (await getMemberVm(f.db, row.id))!;
     expect(failed.deleteStep).toBe("destroy");
     expect(failed.deleteFailure).toContain("Paws left it in place");
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
@@ -834,7 +881,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     f.exeDev.vms.delete("ada-lovelace-paws");
     await f.remove(f.member, row.id);
     await f.settle();
-    expect(await getMemberVm(sqliteDb(f.db), row.id)).toBeNull();
+    expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm", "getVm"]);
   });
 });
