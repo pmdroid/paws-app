@@ -1,12 +1,12 @@
 import { journalCaught } from "../journal";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { z } from "zod";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
 import { createRunnerModels } from "../runner-models";
-import { readSecretFile, removeSecret, saveSecret, writeSecretFile } from "../credentials";
+import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
 import {
   initializeRunnerAuthority,
@@ -55,23 +55,46 @@ export type RunnerRepositoryAccessOptions = {
 };
 
 const SIGNING_FILE = "runner-command-key.pem";
+const AUTHORITY_FILE = "runner-authority.json";
 
 export async function initializeRunnerCoordinator(root: string) {
+  const ensured = await ensureRunnerCoordinator(root);
+  if (!ensured.created) throw new Error("Runner authority already exists");
+  return ensured.signingKeys;
+}
+
+export async function ensureRunnerCoordinator(
+  root: string,
+  createCommandKey: () => string = newCommandKey,
+) {
   if (!isAbsolute(root)) throw new Error("Runner identity path must be absolute.");
-  mkdirSync(root, { mode: 0o700 });
+  const authorityPath = join(root, AUTHORITY_FILE);
+  const keyPath = rootKey(root);
+  const hasAuthority = secretFileExists(authorityPath);
+  const hasKey = secretFileExists(keyPath);
+  if (hasAuthority && hasKey)
+    return { created: false, signingKeys: signingIdentity(root).signingKeys };
+  if (hasAuthority || hasKey)
+    throw new Error(
+      `Runner identity is incomplete: ${hasAuthority ? SIGNING_FILE : AUTHORITY_FILE} is missing. Restore it from backup.`,
+    );
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const written: string[] = [];
   try {
     await initializeRunnerAuthority(root);
-    const { privateKey } = generateKeyPairSync("ed25519");
-    writeSecretFile(
-      rootKey(root),
-      privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-      true,
-    );
-    return signingIdentity(root).signingKeys;
+    written.push(authorityPath);
+    await saveSecret(keyPath, createCommandKey(), true);
+    written.push(keyPath);
+    return { created: true, signingKeys: signingIdentity(root).signingKeys };
   } catch (error) {
-    rmSync(root, { recursive: true, force: true });
+    for (const path of written.reverse()) await removeSecret(path);
     throw error;
   }
+}
+
+function newCommandKey() {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 }
 
 export async function openRunnerCoordinator(options: {

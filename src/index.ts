@@ -339,7 +339,7 @@ import {
   type WorkspacePrincipal,
 } from "./workspace";
 import {
-  initializeRunnerCoordinator,
+  ensureRunnerCoordinator,
   openRunnerCoordinator,
   type RunnerCoordinator,
   type RunnerRepositoryAccessOptions,
@@ -504,6 +504,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       throw error;
     },
   );
+  if (runnerConfig !== null) {
+    const ensured = await ensureRunnerCoordinator(runnerConfig.root).catch(
+      async (error: unknown) => {
+        await database.close().catch(() => undefined);
+        throw error;
+      },
+    );
+    if (ensured.created)
+      journal(`Runner authority initialized. Command key: ${ensured.signingKeys[0].keyId}`);
+  }
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
@@ -2915,8 +2925,12 @@ if (import.meta.main) {
       if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
       const paths = pawsPaths(loadEnv(process.env).home);
       ensureLayout(paths);
-      const keys = await initializeRunnerCoordinator(join(paths.secretsDir, "runner-identity"));
-      console.log(`Runner authority initialized. Command key: ${keys[0].keyId}`);
+      const ensured = await withSecretStore(process.env, () =>
+        ensureRunnerCoordinator(join(paths.secretsDir, "runner-identity")),
+      );
+      console.log(
+        `Runner authority ${ensured.created ? "initialized" : "already initialized"}. Command key: ${ensured.signingKeys[0].keyId}`,
+      );
       process.exit(0);
     } catch (caughtError2) {
       journalCaught(caughtError2, "Runner authority initialization failed.", null);

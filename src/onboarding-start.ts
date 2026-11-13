@@ -1,6 +1,5 @@
 import { journalCaught } from "./journal";
-import { existsSync } from "node:fs";
-import { initializeRunnerCoordinator } from "./runner-coordinator";
+import { ensureRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
 import type { PawsStore } from "./db";
@@ -41,7 +40,7 @@ export function startBrowserOnboarding(
     reconnect,
     async prepare() {
       const runner = loadRunnerControl(source, runtime.env);
-      if (runner && !existsSync(runner.root)) await initializeRunnerCoordinator(runner.root);
+      if (runner) await ensureRunnerCoordinator(runner.root);
     },
     installed() {
       setTimeout(() => {
