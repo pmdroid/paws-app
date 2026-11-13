@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type { EvidenceRecordObjects } from "../closeout-spec";
 import {
   closeoutTasksOfItemSteps,
   getCloseoutEvidenceObjectSteps,
@@ -218,6 +217,12 @@ export async function uploadLocalCloseoutEvidence(
   }
   return uploaded;
 }
+
+type EvidenceRecordObjects = {
+  list(): Promise<string[]>;
+  read(path: string): Promise<string | null>;
+  write(path: string, body: string): Promise<void>;
+};
 
 export function closeoutRecordObjects(
   db: Db,
