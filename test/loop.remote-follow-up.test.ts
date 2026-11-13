@@ -91,13 +91,20 @@ for (const delivered of [true, false, "completed"] as const)
         return delivered !== false;
       },
     });
+    let running: Promise<unknown> = Promise.resolve();
     try {
       await orchestrator.onLinearEvent(event("created", null));
-      const running = jobs.tick();
+      running = jobs.tick();
       const item = (await listWorkItems(db))[0]!;
+      // The agent launches after its run has taken the session's pending Linear turns, so a
+      // reply sent from here on is a follow-up to the running agent.
       for (let attempt = 0; attempt < 500; attempt++) {
         const current = (await listWorkItems(db))[0]!;
-        if (current.currentRunId && (await getRun(db, current.currentRunId))?.status === "active")
+        if (
+          scripts > 0 &&
+          current.currentRunId &&
+          (await getRun(db, current.currentRunId))?.status === "active"
+        )
           break;
         await Bun.sleep(10);
       }
@@ -118,21 +125,27 @@ for (const delivered of [true, false, "completed"] as const)
       expect(forwarded).toEqual(
         delivered === "completed" ? [] : [{ itemId: item.id, body: "Also cover the empty state" }],
       );
-      const resumes = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
+      const resumes = async () =>
+        (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
         expect((await getRun(db, runId))?.status).toBe("active");
         expect((await listWorkItems(db))[0]!.currentRunId).toBe(runId);
-        expect(resumes).toHaveLength(0);
+        expect(await resumes()).toHaveLength(0);
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });
+        await running;
       } else {
-        expect(resumes).toHaveLength(1);
+        // The interrupted run enqueues the resume as its job ends, so wait for that job.
+        await running;
+        expect(await resumes()).toHaveLength(1);
         expect(tracker.progress.slice(-2)).toMatchObject([
           { kind: "thought", body: "Received your update." },
           { kind: "thought", body: "Starting on your request with a fresh 3-hour time limit." },
         ]);
       }
-      await running;
     } finally {
+      // Stop the agent and let its job finish before the store closes under its queries.
+      await orchestrator.shutdown().catch(() => undefined);
+      await running.catch(() => undefined);
       await close();
       await rm(root, { recursive: true, force: true });
     }
