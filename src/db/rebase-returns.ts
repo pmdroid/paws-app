@@ -104,19 +104,25 @@ export async function listRebaseReturns(
   return store.run((q) => listRebaseReturnsSteps(q, itemId, sinceActivationId));
 }
 
-export function* rebaseReturnedForSteps(q: Q, itemId: string, candidate: string) {
+export function* rebaseReturnedForSteps(q: Q, itemId: string, candidate: string, base?: string) {
   const { rebaseReturn } = q.t;
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })
       .from(rebaseReturn)
-      .where(and(eq(rebaseReturn.itemId, itemId), eq(rebaseReturn.candidate, candidate)))
+      .where(
+        and(
+          eq(rebaseReturn.itemId, itemId),
+          eq(rebaseReturn.candidate, candidate),
+          base === undefined ? undefined : eq(rebaseReturn.base, base),
+        ),
+      )
       .limit(1),
   );
   return row !== undefined;
 }
 
-/** Whether the item already went back to the agent for a rebase of `candidate`. */
+/** Whether the item already went back to the agent for a rebase of `candidate`, onto `base` when given. */
 export async function rebaseReturnedFor(
   store: Db,
   itemId: string,
