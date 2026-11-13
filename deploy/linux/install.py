@@ -596,6 +596,23 @@ def refuse_active_executions():
         raise ValueError("Active agent executions must stop before installation")
 
 
+def pending_configure():
+    return STATE / "configure-pending.json"
+
+
+def run_package_configure(env):
+    subprocess.run(["/usr/bin/python3", "-I", "-B", str(pathlib.Path(__file__).with_name("deb-control.py")), "configure"], env=env, stdin=subprocess.DEVNULL, check=True)
+
+
+def apply_pending_configure(run=run_package_configure, sleep=time.sleep):
+    while pending_configure().exists():
+        if active_executions():
+            sleep(AGENT_POLL_SECONDS)
+            continue
+        pending = json.loads(release.read_regular(pending_configure(), 65536))
+        run({**release.COMMAND_ENV, DOCKER_ACCESS_ENV: pending.get("docker") or ""})
+
+
 def stop_for_install():
     refuse_active_executions()
     units = ["paws-runner.service", "paws-runner-broker.socket", "paws-runner-broker.service"]
@@ -1457,6 +1474,7 @@ def main():
     if sys.argv[1:] == ["agent-requests"]:
         prerequisites()
         print(json.dumps(process_agent_requests(BASE / "bin/bun")))
+        apply_pending_configure()
         return
     parser = argparse.ArgumentParser()
     for name in ("manifest", "signature", "artifact", "release-key"):

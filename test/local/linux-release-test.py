@@ -1221,6 +1221,7 @@ class DockerAccess(unittest.TestCase):
         patches = [
             *self.host.patches(installer),
             mock.patch.object(deb, "RESTART", state),
+            mock.patch.object(installer, "STATE", state.parent),
             mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
             mock.patch.object(deb, "enabled_services", lambda: []),
             mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
@@ -1418,6 +1419,7 @@ class DockerAccess(unittest.TestCase):
             return {"status": "granted", "changed": True, "message": "Set up"}
         patches = [
             mock.patch.object(deb, "RESTART", state),
+            mock.patch.object(installer, "STATE", state.parent),
             mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
             mock.patch.object(deb, "enabled_services", lambda: []),
             mock.patch.object(installer, "write_atomic", lambda path, content, mode: path.write_bytes(content)),
@@ -1436,7 +1438,8 @@ class DockerAccess(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             deb.configure()
-        self.assertEqual(order[:5], [("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("systemctl", "start", "--", "paws-runner.service")])
+        self.assertEqual(order[0][1], "list-units")
+        self.assertEqual(order[1:6], [("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("systemctl", "start", "--", "paws-runner.service")])
         with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "maybe"}), mock.patch.object(installer.release, "verify_release", lambda arguments, root: self.fail("configured with an invalid choice")):
             with self.assertRaisesRegex(ValueError, "grant or deny"):
                 deb.configure()
@@ -1763,6 +1766,34 @@ class RunnerUpgrade(unittest.TestCase):
                 self.assertNotIn("stop", self.systemctl.verbs())
                 self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
                 agent_bin.rmdir() if agent_bin.is_dir() and not agent_bin.is_symlink() else agent_bin.unlink()
+
+    def test_configure_with_an_active_execution_finishes_and_applies_once_the_last_execution_ends(self):
+        marker = self.state / "configure-pending.json"
+        self.systemctl.active = b"paws-agent@01K00000000000000000000000.service loaded active running\n"
+        with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}):
+            self.assertEqual(self.configure(lambda artifact: {"agents": {}}), {"installed": False, "pending": True})
+        self.assertEqual(json.loads(marker.read_text()), {"docker": "grant"})
+        self.assertEqual(self.systemctl.calls[1:], [("start", "--no-block", "--", "paws-runner-agents.service")])
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
+        environments = []
+        def run(env):
+            environments.append(env[self.installer.DOCKER_ACCESS_ENV])
+            with mock.patch.dict(os.environ, env):
+                self.configure(lambda artifact: {"agents": {}})
+        def sleep(seconds):
+            self.systemctl.active = b""
+        with mock.patch.object(self.installer, "STATE", self.state), mock.patch.object(self.installer.release, "command", self.systemctl):
+            self.installer.apply_pending_configure(run, sleep)
+        self.assertEqual(environments, ["grant"])
+        self.assertFalse(marker.exists())
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.3"))
+
+    def test_configure_without_an_active_execution_writes_no_marker(self):
+        self.configure(lambda artifact: {"agents": {}})
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.3"))
+        self.assertFalse((self.state / "configure-pending.json").exists())
+        with mock.patch.object(self.installer, "STATE", self.state):
+            self.installer.apply_pending_configure(lambda env: self.fail("nothing is pending"), lambda seconds: self.fail("nothing should wait"))
 
     def test_a_failing_agent_preparation_leaves_the_runner_running_on_its_release(self):
         def prepare_agents(artifact):
