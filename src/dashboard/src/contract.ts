@@ -702,6 +702,8 @@ export interface StatusMergeEntry {
   detail: string | null;
   settings: StatusMergeSettings;
   steps: StatusMergeStep[];
+  /** For `ahead`: the task that merges first and the files both change. */
+  after?: { itemId: string; files: string[] };
 }
 
 /** A pull request that merged, or a task that left the queue for the agent, in the last 24 hours. */
@@ -1195,6 +1197,8 @@ export interface MergeQueueIssue {
   id: string;
   title: string;
   owner: string | null;
+  /** The owner's workspace member id. */
+  ownerId?: string | null;
   project: { id: string; name: string } | null;
   pr: StatusPullRequest | null;
 }
@@ -1244,6 +1248,7 @@ function readMergeQueueIssue(input: unknown, path: string): MergeQueueIssue {
     id: text(body, "id", path),
     title: text(body, "title", path),
     owner: nullableText(body, "owner", path),
+    ownerId: body.ownerId === undefined ? null : nullableText(body, "ownerId", path),
     project: readItemProject(body.project, `${path}.project`),
     pr: readPr(body.pr, `${path}.pr`),
   };
@@ -2384,7 +2389,13 @@ function readMerge(input: unknown, index: number, repo: string): StatusMergeEntr
     steps: array(body, "steps", path).map((entry, step) =>
       readStep(entry, `${path}.steps[${step}]`),
     ),
+    ...(body.after === undefined ? {} : { after: readMergeAfter(body.after, `${path}.after`) }),
   };
+}
+
+function readMergeAfter(input: unknown, path: string): { itemId: string; files: string[] } {
+  const body = object(input, path);
+  return { itemId: text(body, "itemId", path), files: stringArray(body, "files", path) };
 }
 
 function readMergeSettings(input: unknown, path: string): StatusMergeSettings {

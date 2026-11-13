@@ -1104,9 +1104,8 @@ describe("live status provider", () => {
     ).toEqual([["ENG-22", "pmdroid/paws-app", "back_with_agent"]]);
     expect(parsed.response.issues.map((issue) => issue.id).sort()).toEqual(["ENG-21", "ENG-22"]);
     const html = renderMergeQueue(parsed.response);
-    expect(html.match(/<h2 [^>]*>[^<]*<\/h2>/g)).toEqual([
-      `<h2 id="merge-repo-pmdroid-paws-app">pmdroid/paws-app</h2>`,
-    ]);
+    expect(html.match(/data-merge-lane=/g)).toHaveLength(1);
+    expect(html).toContain(">pmdroid/paws-app</span>");
     expect(html).not.toContain("unknown");
     expect(html).not.toContain("Repository not known");
   });

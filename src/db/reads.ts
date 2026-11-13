@@ -75,6 +75,7 @@ export async function listWorkItemBlocks(
 export type WorkItemFact = {
   itemId: string;
   owner: string | null;
+  ownerId: string | null;
   projectId: string | null;
   projectName: string | null;
   createdAt: number;
@@ -87,6 +88,7 @@ export function* listWorkItemFactsSteps(q: Q) {
       .select({
         itemId: workItem.id,
         owner: workspaceUser.name,
+        ownerId: workItem.ownerUserId,
         projectId: workItem.linearProjectId,
         projectName: workItem.linearProjectName,
         createdAt: workItem.createdAt,

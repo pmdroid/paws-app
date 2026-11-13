@@ -83,8 +83,15 @@ forEachDialect((connect) => {
           .where(eq(q.t.workItem.id, "A")),
     );
     expect(await db.run(listWorkItemFactsSteps)).toEqual([
-      { itemId: "B", owner: null, projectId: null, projectName: null, createdAt: 2 },
-      { itemId: "A", owner: "Ada", projectId: "p", projectName: "Paws", createdAt: 1 },
+      { itemId: "B", owner: null, ownerId: null, projectId: null, projectName: null, createdAt: 2 },
+      {
+        itemId: "A",
+        owner: "Ada",
+        ownerId: "u",
+        projectId: "p",
+        projectName: "Paws",
+        createdAt: 1,
+      },
     ]);
   });
 

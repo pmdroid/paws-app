@@ -25,6 +25,7 @@ import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-close
 import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
+import type { LaneFilter } from "./merge-queue";
 import {
   issueListRedirect,
   retroRedirect,
@@ -113,6 +114,7 @@ let shownPath = router.state.location.pathname;
 let shownSearch = router.state.location.search;
 
 let issueFilter: "all" | "active" | "needs" | "done" = "all";
+let laneFilter: LaneFilter = "all";
 /** A Linear project id, `none` for issues without one, or empty for any project. */
 let issueProject = "";
 
@@ -390,6 +392,11 @@ async function fileFindingIssue(
   paint();
 }
 
+function signedInUserId(): string | null {
+  const reader = workspaceReader();
+  return reader.startsWith("[") ? ((JSON.parse(reader) as [string | null])[0] ?? null) : null;
+}
+
 function paint(): void {
   if (!workspaceReady) return;
   if (followIssueRedirect()) return;
@@ -400,6 +407,7 @@ function paint(): void {
     issue: page.issue,
     overview: page.overview,
     mergeQueue: page.mergeQueue,
+    mergeLanes: { filter: laneFilter, userId: signedInUserId() },
     questions: page.questions,
     question: page.question,
     missingQuestion: page.missingQuestion,
@@ -686,6 +694,13 @@ function onClick(event: MouseEvent): void {
     if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
       issueFilter = filter;
       applyIssueFilter();
+    }
+  }
+  if (action === "merge-lanes") {
+    const filter = target.closest("[data-merge-lanes]")?.getAttribute("data-merge-lanes");
+    if (filter === "all" || filter === "mine") {
+      laneFilter = filter;
+      paint();
     }
   }
   if (action === "evidence-copy") {
