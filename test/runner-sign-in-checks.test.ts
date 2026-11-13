@@ -36,14 +36,12 @@ async function fixture() {
   let at = 1_800_000_000_000;
   const workspace = workspaceId();
   await seed(db, (q) =>
-    q.orm
-      .insert(q.t.workspace)
-      .values({
-        id: workspace,
-        linearOrganizationId: "sign-in-org",
-        name: "Sign-in",
-        createdAt: at,
-      }),
+    q.orm.insert(q.t.workspace).values({
+      id: workspace,
+      linearOrganizationId: "sign-in-org",
+      name: "Sign-in",
+      createdAt: at,
+    }),
   );
   const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
