@@ -3,11 +3,13 @@ import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../src/core";
 import {
   enqueueRunnerSetupCheckSteps,
+  enqueueRunnerSetupChecks,
   getRunnerSetupHoldSteps,
   holdForRunnerSetupSteps,
   listRunnerSetupHoldsSteps,
   markRunnerSetupNotifiedSteps,
   releaseRunnerSetupHoldSteps,
+  setRunnerAgentSignedInSteps,
   takeRunnerSetupResumeSteps,
 } from "../src/db";
 import { forEachDialect, insertWorkItem, withoutForeignKeys } from "./dialects";
@@ -126,6 +128,65 @@ forEachDialect((open) => {
         { runAt: 1, maxAttempts: 3 },
         { runAt: 3, maxAttempts: 3 },
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("an agent signing in queues one check per owner its runner serves", async () => {
+    const { db, close } = await open();
+    try {
+      await withoutForeignKeys(db);
+      await db.run((q) =>
+        q.exec(
+          q.orm.insert(q.t.runner).values({
+            id: "box",
+            workspaceId: "ws",
+            ownerUserId: "u",
+            name: "box",
+            status: "active",
+            createdAt: 0,
+          }),
+        ),
+      );
+      for (const [itemId, ownerUserId] of [
+        ["mine", "u"],
+        ["also", "u"],
+        ["theirs", "v"],
+      ] as const) {
+        await insertWorkItem(db, itemId);
+        await db.run((q) =>
+          holdForRunnerSetupSteps(q, {
+            itemId,
+            ownerUserId,
+            reason: "agent-not-signed-in",
+            runnerId: "box",
+            agent: "claude",
+            now: 1,
+          }),
+        );
+      }
+      const pending = async () =>
+        (
+          await db.run((q) =>
+            q.all(
+              q.orm
+                .select({ payload: q.t.job.payload })
+                .from(q.t.job)
+                .where(eq(q.t.job.queue, JOB_KIND.runnerSetupCheck)),
+            ),
+          )
+        )
+          .map(({ payload }) => (typeof payload === "string" ? JSON.parse(payload) : payload))
+          .map((payload: { ownerUserId: string }) => payload.ownerUserId)
+          .sort();
+      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", false, 2));
+      expect(await pending()).toEqual([]);
+      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", true, 3));
+      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", true, 4));
+      expect(await pending()).toEqual(["u"]);
+      await enqueueRunnerSetupChecks(db, 5);
+      expect(await pending()).toEqual(["u", "v"]);
     } finally {
       await close();
     }

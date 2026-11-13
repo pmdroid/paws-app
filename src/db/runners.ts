@@ -21,6 +21,7 @@ import { jsonField, jsonFromText, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import {
   conversationsInUseSteps,
   wakeRunnerSlotWaitsSteps,
@@ -716,6 +717,7 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
       }),
     );
   yield* insertCertificateSteps(q, input.runnerId, input.certificate);
+  yield* enqueueRunnerSetupChecksSteps(q, input.now, { runnerId: input.runnerId });
   const used = yield* q.all(
     q.orm
       .update(runnerEnrollment)
@@ -1052,15 +1054,19 @@ export function* setRunnerAgentExtraUsageSteps(
   return changed.length > 0;
 }
 
-export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean) {
+export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean, now: number) {
   const { runnerPolicy: p } = q.t;
   const value = sharing ? 1 : 0;
+  const before = yield* q.one(
+    q.orm.select({ sharing: p.sharing }).from(p).where(eq(p.runnerId, runnerId)),
+  );
   yield* q.exec(
     q.orm
       .insert(p)
       .values({ runnerId, sharing: value })
       .onConflictDoUpdate({ target: p.runnerId, set: { sharing: value } }),
   );
+  if (sharing && before?.sharing !== 1) yield* enqueueRunnerSetupChecksSteps(q, now, { runnerId });
 }
 
 export async function recentRunners(
@@ -1544,7 +1550,12 @@ export async function availableRunnerIdentity(
 
 export function* noteRunnerSeenSteps(q: Q, runnerId: string, at: number): Steps<void> {
   const { runner: r } = q.t;
+  const before = yield* q.one(
+    q.orm.select({ lastSeenAt: r.lastSeenAt }).from(r).where(eq(r.id, runnerId)),
+  );
   yield* q.exec(q.orm.update(r).set({ lastSeenAt: at }).where(eq(r.id, runnerId)));
+  if (before && (before.lastSeenAt === null || at - before.lastSeenAt >= 60_000))
+    yield* enqueueRunnerSetupChecksSteps(q, at, { runnerId });
 }
 
 export async function noteRunnerSeen(store: Db, runnerId: string, at: number): Promise<void> {

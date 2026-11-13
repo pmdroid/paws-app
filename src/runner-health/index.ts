@@ -397,7 +397,13 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
           legacy
         ) {
-          yield* setLegacyAgentReadySteps(q, runnerId, assigned.agent, result.login.authenticated);
+          yield* setLegacyAgentReadySteps(
+            q,
+            runnerId,
+            assigned.agent,
+            result.login.authenticated,
+            at,
+          );
           if (result.login.authenticated) woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
         }
         if (legacy && result.agentLimits)

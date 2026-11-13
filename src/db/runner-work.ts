@@ -17,6 +17,7 @@ import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText, jsonValue } from "./json-text";
 import { runnerSignInWaitingSteps, workHelperSql } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 
 export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
   const { run, runnerWork } = q.t;
@@ -523,15 +524,19 @@ export function* setRunnerAgentSignedInSteps(
   runnerId: string,
   agent: string,
   signedIn: boolean,
+  now: number,
 ) {
   const { runnerAgentPolicy: p } = q.t;
   const state = { ready: signedIn ? 1 : 0, authExpired: signedIn ? 0 : 1 };
+  const before = yield* runnerAgentPolicyStateSteps(q, runnerId, agent);
   yield* q.exec(
     q.orm
       .insert(p)
       .values({ runnerId, agent, ...state })
       .onConflictDoUpdate({ target: [p.runnerId, p.agent], set: state }),
   );
+  if (signedIn && (before?.ready !== 1 || before.authExpired !== 0))
+    yield* enqueueRunnerSetupChecksSteps(q, now, { runnerId });
 }
 
 export async function setRunnerAgentSignedIn(
@@ -539,8 +544,9 @@ export async function setRunnerAgentSignedIn(
   runnerId: string,
   agent: string,
   signedIn: boolean,
+  now: number,
 ): Promise<void> {
-  await store.run((q) => setRunnerAgentSignedInSteps(q, runnerId, agent, signedIn));
+  await store.run((q) => setRunnerAgentSignedInSteps(q, runnerId, agent, signedIn, now));
 }
 
 export type RunnerAssignment = {

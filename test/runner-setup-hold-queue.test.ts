@@ -7,6 +7,7 @@ import {
   bindLinearSessionTask,
   ensureLinearSession,
   getRunnerSetupHold,
+  holdForRunnerSetup,
   getWorkItem,
   insertQueuedItem,
   listOutbox,
@@ -15,6 +16,8 @@ import {
   syncWorkspaceMember,
   enqueueJob,
   enqueueRunnerSetupCheck,
+  enqueueRunnerSetupChecks,
+  setRunnerAgentSignedInSteps,
   listJobs,
   type Db,
 } from "../src/db";
@@ -403,6 +406,49 @@ for (const trigger of TRIGGERS)
       await fixture.close();
     }
   });
+
+test("an agent signing in on their runner resumes the item held for it", async () => {
+  const fixture = await held(async (db, users, now) => {
+    await addRunner(db, "own", users.me!, now, 0);
+    await holdForRunnerSetup(db, {
+      itemId: "mine",
+      ownerUserId: users.me!,
+      reason: "agent-not-signed-in",
+      runnerId: "own",
+      agent: "claude",
+      now,
+    });
+  });
+  try {
+    const { db, users, clock } = fixture;
+    expect((await getRunnerSetupHold(db, "mine"))?.reason).toBe("agent-not-signed-in");
+    for (const agent of ["claude", "codex"])
+      await db.transaction((q) => setRunnerAgentSignedInSteps(q, "own", agent, true, clock.now()));
+    expect(await checkJobs(db)).toEqual([users.me!]);
+    expect(await fixture.runChecks()).toBe(1);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await itemJobs(db, "mine")).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("startup resumes an item held before its runner became ready", async () => {
+  const fixture = await held((db, users, now) => addRunner(db, "own", users.me!, now, 0));
+  try {
+    const { db, users, clock } = fixture;
+    await signIn(db, "own");
+    expect(await checkJobs(db)).toEqual([]);
+    await enqueueRunnerSetupChecks(db, clock.now());
+    await enqueueRunnerSetupChecks(db, clock.now());
+    expect(await checkJobs(db)).toEqual([users.me!]);
+    expect(await fixture.runChecks()).toBe(1);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await itemJobs(db, "mine")).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test("a runner that becomes usable for another member leaves this member's hold alone", async () => {
   const fixture = await held((db) => share(db, "theirs", 0));

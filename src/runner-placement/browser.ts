@@ -163,7 +163,7 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
         const host = yield* runnerSteps(q);
         if (host.ownerId !== principal.userId || host.revokedAt !== null)
           throw new Error("Only the active host owner can change its sharing settings.");
-        yield* setRunnerSharingSteps(q, runnerId, input.sharing);
+        yield* setRunnerSharingSteps(q, runnerId, input.sharing, now());
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
