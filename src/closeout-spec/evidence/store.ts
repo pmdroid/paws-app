@@ -23,7 +23,22 @@ import { checkEvidence } from "./validate";
 export type EvidenceStoreOptions = {
   /** Directory that contains `evidence/` and `logs/`. Tests pass a temporary directory. */
   root: string;
+  objects?: EvidenceRecordObjects | null;
 };
+
+export type EvidenceRecordObjects = {
+  list(): Promise<string[]>;
+  read(path: string): Promise<string | null>;
+  write(path: string, body: string): Promise<void>;
+};
+
+let recordObjects: (root: string) => EvidenceRecordObjects | null = () => null;
+
+export function useEvidenceRecordObjects(
+  resolve: (root: string) => EvidenceRecordObjects | null,
+): void {
+  recordObjects = resolve;
+}
 
 export type AttemptKey = {
   policyDigest: string;
@@ -46,20 +61,33 @@ export type PawsEvidenceStore = EvidenceStore & {
 
 export function createEvidenceStore(options: EvidenceStoreOptions): PawsEvidenceStore {
   const root = options.root;
+  const objects = options.objects !== undefined ? options.objects : recordObjects(root);
+
+  async function storedPaths(): Promise<Set<string> | null> {
+    if (!objects) return new Set();
+    try {
+      return new Set(await objects.list());
+    } catch (error) {
+      journalCaught(error, "store.storedPaths", null);
+      return null;
+    }
+  }
 
   async function load(): Promise<EvidenceSnapshot> {
     const folder = join(root, "evidence");
     const walked = await walkJson(folder);
-    if (walked.unreadable) {
+    const stored = await storedPaths();
+    if (walked.unreadable || stored === null) {
       return { records: [], invalid: { message: "could not read the evidence directory" } };
     }
     const records: EvidenceRecord[] = [];
     let invalid: EvidenceSnapshot["invalid"];
-    const files = [...walked.files].sort((left, right) =>
-      relativePosix(root, left).localeCompare(relativePosix(root, right)),
+    const local = new Map(walked.files.map((file) => [relativePosix(root, file), file]));
+    const paths = [...new Set([...stored, ...local.keys()])].sort((left, right) =>
+      left.localeCompare(right),
     );
-    for (const file of files) {
-      const read = await readRecord(root, file);
+    for (const path of paths) {
+      const read = await readStored(stored.has(path) ? objects : null, path, local.get(path));
       if (!read.ok) {
         invalid ??= { path: read.path, message: read.message };
         continue;
@@ -70,7 +98,9 @@ export function createEvidenceStore(options: EvidenceStoreOptions): PawsEvidence
   }
 
   async function nextAttempt(key: AttemptKey): Promise<number> {
-    const numbers = new Set<number>(await filenameAttempts(root, key));
+    const numbers = new Set<number>(
+      await filenameAttempts(root, key, [...((await storedPaths()) ?? [])]),
+    );
     const snapshot = await load();
     if (!snapshot.invalid) {
       for (const record of snapshot.records) {
@@ -105,8 +135,10 @@ export function createEvidenceStore(options: EvidenceStoreOptions): PawsEvidence
       const again = checkEvidence(stored);
       if (!again.ok) throw new Error(again.message);
 
-      const destination = absoluteInside(root, evidenceRelative(stored));
-      await writeAtomic(destination, `${JSON.stringify(stored, null, 2)}\n`);
+      const path = evidenceRelative(stored);
+      const body = `${JSON.stringify(stored, null, 2)}\n`;
+      if (objects) await objects.write(path, body);
+      else await writeAtomic(absoluteInside(root, path), body);
     },
 
     async writeLog(input: LogWrite): Promise<Artifact> {
@@ -144,17 +176,26 @@ function highest(numbers: Set<number>): number {
   return max;
 }
 
-async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]> {
+async function filenameAttempts(
+  root: string,
+  key: AttemptKey,
+  stored: readonly string[],
+): Promise<number[]> {
   let directory: string;
+  let prefix: string;
   try {
-    directory = absoluteInside(root, itemDirectory(key));
+    directory = itemDirectory(key);
+    prefix = `${directory}/`;
+    directory = absoluteInside(root, directory);
   } catch (caughtError1) {
     journalCaught(caughtError1, "store.filenameAttempts.absoluteInside", key.itemId);
     return [];
   }
-  let names: string[];
+  const names = stored
+    .filter((path) => path.startsWith(prefix))
+    .map((path) => path.slice(prefix.length));
   try {
-    names = await readdir(directory);
+    names.push(...(await readdir(directory)));
   } catch (error) {
     if (isEnoent(error)) {
       journalCaught(
@@ -163,9 +204,7 @@ async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]
         key.itemId,
         "optional file may be absent",
       );
-      return [];
-    }
-    throw error;
+    } else throw error;
   }
   const numbers: number[] = [];
   for (const name of names) {
@@ -178,18 +217,27 @@ async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]
   return numbers;
 }
 
-async function readRecord(
-  root: string,
-  file: string,
-): Promise<{ ok: true; record: EvidenceRecord } | { ok: false; path: string; message: string }> {
-  const path = relativePosix(root, file);
-  let text: string;
+type ReadRecord =
+  | { ok: true; record: EvidenceRecord }
+  | { ok: false; path: string; message: string };
+
+async function readStored(
+  objects: EvidenceRecordObjects | null,
+  path: string,
+  file: string | undefined,
+): Promise<ReadRecord> {
+  let text: string | null = null;
   try {
-    text = await readFile(file, "utf8");
+    if (objects) text = await objects.read(path);
+    if (text === null && file !== undefined) text = await readFile(file, "utf8");
   } catch (caughtError2) {
     journalCaught(caughtError2, "store.readRecord.readFile", null, "optional file may be absent");
-    return { ok: false, path, message: `evidence file ${path} is invalid` };
   }
+  return parseRecord(path, text);
+}
+
+function parseRecord(path: string, text: string | null): ReadRecord {
+  if (text === null) return { ok: false, path, message: `evidence file ${path} is invalid` };
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

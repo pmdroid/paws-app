@@ -9,8 +9,10 @@ export { readEvidenceBytes, uploadLocalEvidence } from "./objects";
 export type { EvidenceObjects, EvidenceStorage } from "./objects";
 export {
   closeoutEvidenceItemOf,
+  closeoutRecordObjects,
   hydrateCloseoutEvidence,
   hydrateItemCloseoutEvidence,
+  migrateCloseoutEvidence,
   publishCloseoutEvidence,
   uploadLocalCloseoutEvidence,
 } from "./closeout";
