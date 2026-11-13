@@ -120,6 +120,7 @@ const SIGN_IN = "It waits until you sign in to Paws with your Linear account.";
 const HELD: Refusal = { outcome: "refused", reason: SIGN_IN, quiet: true };
 const ENDED = "Paws stopped waiting for this sign-in. Delegate the issue again to retry.";
 const STOPPED = "This session was stopped or replaced by a newer delegation.";
+const UNKNOWN_CREATOR = "Paws could not tell who started this session.";
 const ELSEWHERE = "This session belongs to a different Paws installation.";
 export const ASSIGNMENT_CHANGED = "This issue changed while Paws waited for you to sign in.";
 const UNRECORDED = retry(
@@ -279,7 +280,9 @@ export function createWorkspaceAssignments(options: {
         ? session.creatorId
         : stored?.creatorId;
     if (!creatorId || creatorId === session.appUserId)
-      return refused("Paws could not tell who started this session.");
+      return session.creatorId === session.appUserId || creatorId === session.appUserId
+        ? { outcome: "refused", reason: UNKNOWN_CREATOR, quiet: true }
+        : refused(UNKNOWN_CREATOR);
     if (session.endedAt !== null || session.dismissedAt !== null)
       return refused("This session already ended in Linear.");
     if (issue.teamId !== installation.teamId)

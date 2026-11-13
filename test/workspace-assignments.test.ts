@@ -733,9 +733,9 @@ const rules: [string, string, (f: Awaited<ReturnType<typeof fixture>>) => unknow
     (f) => (f.session.endedAt = new Date(f.clock.now()).toISOString()),
   ],
   [
-    "session started by Paws",
+    "session with no creator",
     "Paws could not tell who started this session.",
-    (f) => (f.session.creatorId = "app"),
+    (f) => (f.session.creatorId = null),
   ],
   [
     "stopped session",
@@ -766,6 +766,45 @@ for (const [rule, reason, apply] of rules)
       await f.close();
     }
   });
+
+test("a session Paws started without a stored delegator is refused without a Linear post", async () => {
+  const f = await fixture();
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  try {
+    await linkMember(f);
+    f.session.creatorId = "app";
+    expect(await f.assignments.authorize(f.event)).toEqual({
+      outcome: "refused",
+      reason: "Paws could not tell who started this session.",
+      quiet: true,
+    });
+    await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
+    expect(await listWorkItems(f.db)).toHaveLength(0);
+    expect(f.tracker.progress.slice(1)).toEqual([]);
+    expect(lines.join("\n")).toContain(
+      "linear intake issue session session refused: Paws could not tell who started this session.",
+    );
+  } finally {
+    console.error = original;
+    await f.close();
+  }
+});
+
+test("a session with no creator posts that Paws did not start the work", async () => {
+  const f = await fixture();
+  try {
+    await linkMember(f);
+    f.session.creatorId = null;
+    await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
+    expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
+      ["error", "Paws did not start this work. Paws could not tell who started this session."],
+    ]);
+  } finally {
+    await f.close();
+  }
+});
 
 test("a session Paws started for a follow-up acts for the stored delegator", async () => {
   const f = await fixture();
