@@ -23,6 +23,7 @@ import {
   MERGE_LANES,
   MERGE_NO_PROJECT,
   MERGE_ORDERS,
+  MAX_MERGE_PARALLEL,
   parseMergeLanes,
   parseMergeTables,
   renderMergeSettings,
@@ -117,6 +118,7 @@ export type PawsConfigFile = {
   mergeRepositories?: MergeRepositories;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
+  mergeParallel?: number;
   autoApproveHighRisk?: boolean;
   /** `[merge] comment_quiet_seconds`. Missing means the default of 60. */
   commentQuietSeconds?: number;
@@ -573,6 +575,7 @@ function assignConfig(
   if (section === "merge") {
     if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, line);
     else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    else if (key === "parallel") config.mergeParallel = mergeParallel(value, line);
     else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
     else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, line);
     else if (key === "review_wait_max_seconds") config.reviewWaitMaxSeconds = asInt(value, line);
@@ -659,6 +662,15 @@ function oneOf<T extends string>(
   if (!(choices as readonly string[]).includes(text))
     throw new Error(`config.toml line ${line} ${name} must be ${choices.join(", ")}`);
   return text as T;
+}
+
+function mergeParallel(value: string | number | boolean | string[], line: number): number {
+  const parallel = asInt(value, line);
+  if (parallel < 1 || parallel > MAX_MERGE_PARALLEL)
+    throw new Error(
+      `config.toml line ${line} merge.parallel must be from 1 to ${MAX_MERGE_PARALLEL}`,
+    );
+  return parallel;
 }
 
 function mergeLanes(value: string | number | boolean | string[], line: number): MergeLaneSplit[] {

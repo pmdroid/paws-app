@@ -5,6 +5,7 @@ import type { PawsConfigFile } from "./file";
 
 export const DEFAULT_CI_FIX_ATTEMPTS = 3;
 export const MAX_CI_FIX_ATTEMPTS = 10;
+export const MAX_MERGE_PARALLEL = 5;
 
 /**
  * How long Paws collects pull request comments and changes-requested reviews before it hands them
@@ -81,6 +82,7 @@ export type MergeSettings = MergePolicy & {
   projectLanes: Record<string, MergeLane>;
   autoApproveHighRisk: boolean;
   ciFixAttempts: number;
+  parallel: number;
   repositories: MergeRepositories;
   commentWait: CommentWait;
 };
@@ -91,6 +93,7 @@ export type StoredMerge = Partial<MergeChoice> & {
   projectLanes?: Record<string, MergeLane>;
   autoApproveHighRisk?: boolean;
   ciFixAttempts?: number;
+  parallel?: number;
   commentQuietSeconds?: number;
   commentMaxWaitSeconds?: number;
   reviewWaitMaxSeconds?: number;
@@ -204,6 +207,7 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
       ? {}
       : { autoApproveHighRisk: config.autoApproveHighRisk }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
+    ...(config.mergeParallel === undefined ? {} : { parallel: config.mergeParallel }),
     ...(config.commentQuietSeconds === undefined
       ? {}
       : { commentQuietSeconds: config.commentQuietSeconds }),
@@ -230,6 +234,7 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     repositories: stored.repositories ?? {},
     autoApproveHighRisk: stored.autoApproveHighRisk ?? false,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
+    parallel: stored.parallel ?? 1,
     commentWait: commentWait(stored),
   };
 }
@@ -592,6 +597,7 @@ export function renderMergeSettings(settings: StoredMerge): string {
     ...(settings.ciFixAttempts === undefined
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
+    ...(settings.parallel === undefined ? [] : [`parallel = ${settings.parallel}`]),
     ...(settings.commentQuietSeconds === undefined
       ? []
       : [`comment_quiet_seconds = ${settings.commentQuietSeconds}`]),
@@ -681,6 +687,7 @@ export function writeMergePolicy(
         ? {}
         : { autoApproveHighRisk: current.autoApproveHighRisk }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
+      ...(current.parallel === undefined ? {} : { parallel: current.parallel }),
       ...(wait?.reviewWaitMaxSeconds !== undefined
         ? { reviewWaitMaxSeconds: wait.reviewWaitMaxSeconds }
         : current.reviewWaitMaxSeconds === undefined
