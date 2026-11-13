@@ -355,9 +355,9 @@ describe("merge job retries", () => {
   });
 
   test("a squash GitHub kept answering with 5xx waits for its backoff without spending the attempt", async () => {
-    const { db, clock } = queue();
+    const { db, clock } = await queue();
     await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = await enqueueJob(sqliteDb(db), {
+    const id = await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
@@ -365,7 +365,7 @@ describe("merge job retries", () => {
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, async (job) => {
       await retryMergeLater(
-        sqliteDb(db),
+        db,
         job,
         clock.now(),
         30_000,
@@ -373,7 +373,7 @@ describe("merge job retries", () => {
       );
     });
     await loop.tick();
-    expect(await getJob(sqliteDb(db), id)).toMatchObject({
+    expect(await getJob(db, id)).toMatchObject({
       status: "pending",
       attempts: 0,
       runAt: clock.now() + 30_000,
