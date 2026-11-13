@@ -1,5 +1,5 @@
 import { itemWorkPlacementSteps } from "./session";
-import { createRunnerPlacement, PlacementUnavailableError } from "./placement";
+import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
   getRunnerSteps,
   getWorkItemRepositorySteps,
@@ -139,6 +139,8 @@ export function* itemRunnerVerdictsSteps(
   if (!found) return null;
   const { repository, runners } = found;
   let order: string[];
+  const placement = yield* itemWorkPlacementSteps(q, input.itemId, input.agent);
+  const pinned = new Set<string>();
   try {
     // A new instance is safe here: session grace is kept per database, so this does not restart it.
     order = (yield* createRunnerPlacement({ store, now: () => input.now }).previewSteps!(q, {
@@ -146,15 +148,22 @@ export function* itemRunnerVerdictsSteps(
       profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
       role: "implementer",
       purpose: "work",
-      ...(yield* itemWorkPlacementSteps(q, input.itemId, input.agent)),
+      ...placement,
+      onRejected: (runnerId, reason) => {
+        if (reason === PINNED_ELSEWHERE) pinned.add(runnerId);
+      },
     })).map((r) => r.id);
   } catch (error) {
     if (error instanceof PlacementUnavailableError) return null;
     throw error;
   }
+  const pin = placement.pinnedRunnerId
+    ? ((yield* getRunnerSteps(q, placement.pinnedRunnerId))?.name ?? placement.pinnedRunnerId)
+    : null;
   for (const runner of runners)
     if (runner.rejection === null && !order.includes(runner.id))
-      runner.rejection = "not available for this placement";
+      runner.rejection =
+        pin && pinned.has(runner.id) ? `run pinned to ${pin}` : "not available for this placement";
   runners.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   return {
     repository,

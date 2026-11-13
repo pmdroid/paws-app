@@ -78,6 +78,7 @@ export class PlacementRaceError extends Error {
 }
 
 /** How long a continuing task waits for the busy runner that holds its agent session. */
+export const PINNED_ELSEWHERE = "run pinned to another online runner";
 export const SESSION_GRACE_MS = 2 * 60_000;
 /** How far back finished executions count toward a runner's recent load. */
 export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
@@ -394,7 +395,7 @@ export function createRunnerPlacement(options: {
         const reason = !runner.eligible
           ? runner.reason
           : pinnedOnline && runner.id !== pinnedRunnerId
-            ? "run pinned to another online runner"
+            ? PINNED_ELSEWHERE
             : null;
         if (reason) input.onRejected?.(runner.id, reason);
         else

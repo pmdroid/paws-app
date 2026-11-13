@@ -712,3 +712,40 @@ test("admission fails over from a busy session runner once session grace ends", 
     expect.objectContaining({ itemId: "resumes", runnerId: other }),
   );
 });
+
+test("an item pinned to a full runner names the pin, not an unavailable runner", async () => {
+  const db = (await tempStore()).db;
+  const { pair, queue, pass, workspace } = await workspaceWithRunners(db);
+  await pair("goldbox", 2, [REPOSITORY]);
+  const agentbox = await pair("agentbox", 1, [REPOSITORY]);
+  await queue("busy");
+  const occupant = await insertRun(db, { itemId: "busy", now: NOW, status: "active" });
+  await insertRunnerWork(db, {
+    runId: occupant.id,
+    runnerId: agentbox,
+    workspaceId: workspace.id,
+    commandId: "busy",
+    leaseUntil: NOW + 60 * 60_000,
+  });
+  await queue("pinned");
+  const earlier = await insertRun(db, { itemId: "pinned", now: NOW, status: "ended" });
+  await setCurrentRun(db, "pinned", earlier.id);
+  await insertRunnerWork(db, {
+    runId: earlier.id,
+    runnerId: agentbox,
+    workspaceId: workspace.id,
+    commandId: "earlier",
+    leaseUntil: NOW - 1,
+    endedAt: NOW - 1,
+    teardownConfirmedAt: NOW - 1,
+  });
+
+  expect(await pass()).toEqual(["busy"]);
+  expect((await listItemHolds(db)).find((hold) => hold.itemId === "pinned")).toEqual({
+    itemId: "pinned",
+    reason: "slot",
+    blockers: [
+      `No runner can take ${REPOSITORY}: goldbox: run pinned to agentbox; agentbox: no free capacity`,
+    ],
+  });
+});
