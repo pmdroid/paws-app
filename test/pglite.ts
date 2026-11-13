@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import type { Logger, SQL as Query } from "drizzle-orm";
+import { sql, type Logger, type SQL as Query } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { SQL } from "bun";
@@ -107,6 +107,22 @@ export async function rows<T>(db: Db, query: Query): Promise<T[]> {
   if (db.dialect !== "postgres") throw new Error(`rows() reads Postgres, not ${db.dialect}`);
   const result = (await db.orm.execute(query)) as unknown as T[] | { rows: T[] };
   return Array.isArray(result) ? result : result.rows;
+}
+
+/** Rows of a raw statement with `?` placeholders, for tests that seed or read rows by hand. */
+export function sqlRows<T = Record<string, unknown>>(
+  db: Db,
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const [first, ...rest] = text.split("?");
+  const chunks = [sql.raw(first!)];
+  rest.forEach((part, index) => chunks.push(sql`${params[index]}`, sql.raw(part)));
+  return rows<T>(db, sql.join(chunks));
+}
+
+export async function sqlRun(db: Db, text: string, params: unknown[] = []): Promise<void> {
+  await sqlRows(db, text, params);
 }
 
 export async function tempStore(
