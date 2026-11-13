@@ -4,6 +4,7 @@ export {
   credentialSecrets,
   FINDING_FORMAT,
   mergeResultPolicyError,
+  trustedMergeResultPolicyError,
   POLICY_SCHEMA_SUMMARY,
   parseFindings,
   policyKeys,
@@ -22,10 +23,11 @@ export {
   samePatch,
   reviewRequirements,
   trustedPolicyFiles,
-  trustedMirrorMain,
+  useGitReader,
   trustedOriginMain,
   trustedRootFiles,
   trustedRootFilesAt,
+  trustedKnownMain,
   visualReviewRequirements,
 } from "../closeout-spec";
 export type { RootFilesLoad } from "../closeout-spec";

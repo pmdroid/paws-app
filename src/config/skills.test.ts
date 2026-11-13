@@ -42,3 +42,9 @@ test.each([
 ])("invalid local skill configuration is rejected: %s", (text) => {
   expect(() => parseConfigToml(text)).toThrow();
 });
+
+test("[github] mirrors is read as a boolean and is missing by default", () => {
+  expect(parseConfigToml("[github]\nmirrors = false\n").githubMirrors).toBe(false);
+  expect(parseConfigToml('[github]\nrepo = "acme/app"\n').githubMirrors).toBeUndefined();
+  expect(() => parseConfigToml('[github]\nmirrors = "no"\n')).toThrow();
+});

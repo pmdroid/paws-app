@@ -129,7 +129,7 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
     worktree: string,
     heads: { base: string; head: string },
-  ): MergeResultPolicyError | undefined;
+  ): MergeResultPolicyError | undefined | Promise<MergeResultPolicyError | undefined>;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -322,7 +322,7 @@ export async function advanceMerge(
       return rebased;
     },
     squash: async (head, facts) => {
-      mergedPolicyError = caps.mergeResultPolicy?.(item, published.worktree, {
+      mergedPolicyError = await caps.mergeResultPolicy?.(item, published.worktree, {
         base: facts.base,
         head,
       });
@@ -613,7 +613,7 @@ async function githubQueuePolicy(
     };
   }
   if (mainPolicy) await caps.policyLoads?.(repository);
-  const broken = caps.mergeResultPolicy(item, published.worktree, {
+  const broken = await caps.mergeResultPolicy(item, published.worktree, {
     base: main,
     head: published.head,
   });

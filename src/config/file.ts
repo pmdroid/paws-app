@@ -97,6 +97,7 @@ export type PawsConfigFile = {
   repo: string | null;
   githubRepos: string[];
   agentReadOff?: string[];
+  githubMirrors?: boolean;
   publicUrl: string | null;
   checkout: string | null;
   maxAwakeMs: number | null;
@@ -546,6 +547,7 @@ function assignConfig(
     else if (key === "repo") config.repo = asString(value, line);
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
     else if (key === "agent_read_off") config.agentReadOff = asStringArray(value, line);
+    else if (key === "mirrors") config.githubMirrors = asBoolean(value, line);
     return;
   }
   if (section === "tracker") {

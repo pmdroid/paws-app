@@ -23,6 +23,7 @@ import {
   loadCommitPolicy,
   loadLocalPolicy,
   confirmedOriginMain,
+  filled,
   loadOriginMainRootFiles,
   loadRootFilesAt,
   loadPolicy,
@@ -255,7 +256,12 @@ const localGitReader: Pick<GitReader, "listBlobs" | "readBlob"> = {
   },
 };
 
-const gitReader = createGitReader();
+const mirrorReader = createGitReader();
+let gitReader: GitReader = mirrorReader;
+
+export function useGitReader(reader: GitReader | null): void {
+  gitReader = reader ?? mirrorReader;
+}
 
 export async function trustedPolicyFiles(
   repo: string,
@@ -290,6 +296,10 @@ export async function trustedOriginMain(
 export function trustedMirrorMain(
   repo: string,
 ): { ok: true; commit: string } | { ok: false; message: string; absent?: true } {
+  if (gitReader.mainCommit) {
+    const commit = gitReader.mainCommit(repo);
+    return commit ? { ok: true, commit } : { ok: false, message: `${repo} has no main read yet` };
+  }
   if (!statSync(repo, { throwIfNoEntry: false })?.isDirectory())
     return { ok: false, message: `${repo} is not cloned`, absent: true };
   const head = gitSync(
@@ -301,12 +311,20 @@ export function trustedMirrorMain(
   return { ok: true, commit: head.stdout.toString("utf8").trim().toLowerCase() };
 }
 
+export async function trustedKnownMain(
+  repo: string,
+): Promise<{ ok: true; commit: string } | { ok: false; message: string; absent?: true }> {
+  if (!gitReader.mainCommit || gitReader.mainCommit(repo)) return trustedMirrorMain(repo);
+  return confirmedOriginMain({ repo, git: gitReader });
+}
+
 export function trustedRootFilesAt(
   repo: string,
   commit: string,
   names: readonly string[],
-): RootFilesLoad {
-  return loadRootFilesAt({ repo, git: gitReader }, commit, names);
+): Promise<RootFilesLoad> {
+  const input = { repo, git: gitReader };
+  return filled(input, () => loadRootFilesAt(input, commit, names));
 }
 
 export function workspacePolicyFiles(root: string): PolicyFilesLoad {
@@ -1056,7 +1074,8 @@ async function candidatePolicyError(
     ? { ok: true as const, paths: changed }
     : await diffPaths(repo, base, head, scrubCommandEnv(env));
   if (diff.ok && !changesPolicyInput(policy, diff.paths)) return undefined;
-  const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
+  const reader = { repo, git: gitReader };
+  const candidate = await filled(reader, () => loadCommitPolicy(reader, head));
   return candidate.ok ? undefined : candidate.message;
 }
 
@@ -1087,6 +1106,38 @@ export function mergeResultPolicyError(
   return loaded.ok ? undefined : loaded.message;
 }
 
+export const POLICY_CHANGED_ON_BOTH_SIDES =
+  "policy files changed on both sides; update the branch onto main";
+
+export async function trustedMergeResultPolicyError(
+  repo: string,
+  main: string,
+  head: string,
+): Promise<string | undefined> {
+  if (!gitReader.mergeView) return mergeResultPolicyError(repo, main, head);
+  const view = await gitReader.mergeView(repo, main, head);
+  if (!view.ok)
+    throw new Error(
+      `could not read the merge result of ${head.slice(0, 7)} into ${main.slice(0, 7)}: ${view.stderr}`,
+    );
+  const input = { repo, git: gitReader };
+  if (view.both.length) {
+    const sides = [
+      await filled(input, () => loadCommitPolicy(input, main)),
+      await filled(input, () => loadCommitPolicy(input, head)),
+    ];
+    const policies = sides.map((side) =>
+      side.ok && side.policy ? side.policy : { files: [], items: [] },
+    );
+    const touched = view.both.filter((path) =>
+      policies.some((policy) => changesPolicyInput(policy, [path])),
+    );
+    if (touched.length) return `${POLICY_CHANGED_ON_BOTH_SIDES}: ${touched.join(", ")}`;
+  }
+  const loaded = await filled(input, () => loadCommitPolicy(input, view.commit));
+  return loaded.ok ? undefined : loaded.message;
+}
+
 async function policyLoadError(
   input: { repo: string; head: string; policyRoot?: string; env?: NodeJS.ProcessEnv },
   loaded: { source: string; message: string },
@@ -1099,7 +1150,8 @@ async function policyLoadError(
     return loaded.message;
   const head = await resolveCommit(input.repo, input.head, scrubCommandEnv(input.env));
   if (head === null) return loaded.message;
-  const candidate = loadCommitPolicy({ repo: input.repo, git: gitReader }, head);
+  const reader = { repo: input.repo, git: gitReader };
+  const candidate = await filled(reader, () => loadCommitPolicy(reader, head));
   if (!candidate.ok || candidate.policy === null) return loaded.message;
   return `main's ${PUBLIC_POLICY_PATH} is invalid (${loaded.message}); this branch fixes it, and Closeout can run once it merges`;
 }

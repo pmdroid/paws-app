@@ -27,6 +27,13 @@ export type GitReader = {
     prefix: string,
   ): { ok: true; blobs: GitBlob[] } | GitFailure;
   readBlob(repo: string, object: string): { ok: true; bytes: Uint8Array } | GitFailure;
+  fill?(repo: string): Promise<boolean>;
+  mainCommit?(repo: string): string | undefined;
+  mergeView?(
+    repo: string,
+    main: string,
+    head: string,
+  ): Promise<{ ok: true; commit: string; both: string[] } | GitFailure>;
 };
 
 export type FakeGitReader = GitReader & {
