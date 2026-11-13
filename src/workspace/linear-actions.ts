@@ -49,8 +49,13 @@ export function createWorkspaceLinearActions(options: {
     await store.run((q) => auditWorkspaceAccessSteps(q, audit));
     return false;
   }
+  const fromOwnApp = async (event: AcceptedLinearEvent) =>
+    !!event.actorId &&
+    event.sessionId !== null &&
+    (await installationOf(event.sessionId))?.appUserId === event.actorId;
   async function recheck(event: AcceptedLinearEvent): Promise<boolean> {
     if (event.action !== "prompted" && event.signal !== "stop") return true;
+    if (await fromOwnApp(event)) return false;
     const workspace = await workspaceOf();
     const member = workspace && event.actorId ? await memberOf(workspace.id, event.actorId) : null;
     const installation = event.sessionId ? await installationOf(event.sessionId) : null;
@@ -68,6 +73,7 @@ export function createWorkspaceLinearActions(options: {
   }
   async function authorize(event: AcceptedLinearEvent): Promise<boolean> {
     if (event.action !== "prompted" && event.signal !== "stop") return true;
+    if (await fromOwnApp(event)) return false;
     const workspace = await workspaceOf();
     const actorId = event.actorId;
     const member = workspace && actorId ? await memberOf(workspace.id, actorId) : null;

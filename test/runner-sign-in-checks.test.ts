@@ -767,3 +767,22 @@ test("older runners keep their three login checks and reject OpenCode before dis
     "opencode",
   ]);
 });
+
+test("a sign-in check asked for after an auth error waits for the runner's answer", async () => {
+  const f = await fixture();
+  const runnerId = await f.runner();
+  const signal = new AbortController().signal;
+  for (const authenticated of [true, false]) {
+    const pending = f.health.signedIn(runnerId, "claude", signal, 5);
+    let command: Awaited<ReturnType<typeof f.checks>>[number] | undefined;
+    while (!command) {
+      await Bun.sleep(5);
+      command = (await f.checks(runnerId)).at(authenticated ? 0 : 1);
+    }
+    f.advance(1_000);
+    await f.answer(command, authenticated);
+    expect(await pending).toBe(authenticated);
+    f.advance(10 * 60_000);
+  }
+  expect(await f.health.signedIn(runnerId, "unknown-agent", signal)).toBe(false);
+});

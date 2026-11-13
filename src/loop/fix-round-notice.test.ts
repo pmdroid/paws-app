@@ -9,6 +9,7 @@ import {
   insertQueuedItem,
   listJobs,
   pendingPullComments,
+  saveQueuePositions,
   settlePullComments,
   recordItemPullRequest,
   type Db,
@@ -16,13 +17,20 @@ import {
 import {
   commentOnPullRequest,
   createFakeReviewReplies,
+  editPullRequestComment,
+  listPullRequestComments,
   reactToComment,
   type GitHubClient,
 } from "../github";
 import { createFakeTracker } from "../linear";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
 import { deliverLinearOutbox } from "./dispatch";
-import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
+import {
+  deliverGitHubOutbox,
+  fixRoundFinishedSteps,
+  fixRoundNoticeSteps,
+  queuedNoticeSteps,
+} from "./fix-round-notice";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { restart } from "./operations";
 import { recordReplyTargets } from "./review-replies";
@@ -69,6 +77,8 @@ async function setup() {
           commentOnPullRequest: (prNumber, body) =>
             commentOnPullRequest({ ...access, prNumber, body }),
           reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
+          pullRequestComments: (prNumber) => listPullRequestComments({ ...access, prNumber }),
+          editComment: (commentId, body) => editPullRequestComment({ ...access, commentId, body }),
         }),
   );
   const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
@@ -220,7 +230,7 @@ test("an inline comment gets 👀 when it arrives, and the fix round adds no sec
   await drain();
 
   expect(github.reactions).toEqual([{ on: "review", commentId: 9001, content: "eyes" }]);
-  expect(github.comments).toEqual([]);
+  expect(github.comments).toHaveLength(1);
   expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 
   await startRestart("review", "Fix the review.", "review:eng-1:601");
@@ -281,4 +291,59 @@ test("three comments in one collection window post one thought, the next window 
     SEEN,
     SEEN.replace("@pascal", "@kyoto"),
   ]);
+});
+
+const firstLines = (github: { comments: { body: string }[] }) =>
+  github.comments.map((comment) => comment.body.split("\n")[0]);
+
+test("a review's comments post one noticed comment at once, edited when the agent starts and ends", async () => {
+  const { db, github, clock, startRestart, turnStarts, drain } = await setup();
+  await inlineComment(db, clock.now(), { id: 9001, author: "pascal", body: "Fix." });
+  await drain();
+  expect(firstLines(github)).toEqual([
+    "🐾 Paws noticed this: 1 review comment. Collecting comments until 00:01 UTC, then it starts.",
+  ]);
+  clock.advance(10_000);
+  await inlineComment(db, clock.now(), { id: 9002, author: "pascal", body: "And this." });
+  await drain();
+  expect(firstLines(github)).toEqual([
+    "🐾 Paws noticed this: 2 review comments. Collecting comments until 00:01 UTC, then it starts.",
+  ]);
+
+  await startRestart("review", "Fix the review.", "review:eng-1:601");
+  await recordReplyTargets(
+    db,
+    "eng-1",
+    "review:eng-1:601",
+    [target(1, "thread", 9001), target(2, "thread", 9002)],
+    clock.now(),
+  );
+  await turnStarts();
+  expect(firstLines(github)).toEqual(["🐾 Paws is working on this: 2 review comments."]);
+
+  const job = (await listJobs(db)).find((entry) => entry.queue === JOB_KIND.resume)!;
+  await db.transaction((q) => fixRoundFinishedSteps(q, job, clock.now()));
+  await drain();
+  expect(firstLines(github)).toEqual(["🐾 Paws worked on this: 2 review comments."]);
+  expect(github.comments[0]!.body).not.toContain("paws-round");
+  expect(github.reactions).toHaveLength(2);
+});
+
+test("failing CI on an item waiting for a slot says so at once, in the comment the turn edits", async () => {
+  const { db, github, clock, startRestart, turnStarts, drain } = await setup();
+  await startRestart("ci", "CI failed.", "ci:eng-1:h");
+  for (const id of ["eng-8", "eng-9"]) await insertQueuedItem(db, { id, now: 1, sessionKey: id });
+  await saveQueuePositions(db, ["eng-8", "eng-9", "eng-1"], { busy: 2, total: 2 }, clock.now());
+  await db.transaction((q) => queuedNoticeSteps(q, "eng-1", clock.now()));
+  await drain();
+  expect(firstLines(github)).toEqual([
+    "🐾 Paws noticed this: failing CI. Waiting for a runner (2 items ahead).",
+  ]);
+
+  await saveQueuePositions(db, ["eng-1"], { busy: 2, total: 2 }, clock.now());
+  await db.transaction((q) => queuedNoticeSteps(q, "eng-1", clock.now()));
+  await turnStarts();
+  await db.transaction((q) => queuedNoticeSteps(q, "eng-1", clock.now()));
+  await drain();
+  expect(firstLines(github)).toEqual(["🐾 Paws is working on this: failing CI."]);
 });

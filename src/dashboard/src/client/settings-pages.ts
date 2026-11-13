@@ -35,7 +35,7 @@ export const SETTINGS_PAGES = [
   {
     id: "workspace",
     name: "Workspace access",
-    description: "Manage repository access and what agents see of each repository.",
+    description: "Manage members and repository access.",
   },
   {
     id: "account",

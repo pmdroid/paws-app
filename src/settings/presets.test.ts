@@ -23,8 +23,14 @@ test("agents settings save and return presets and refuse duplicate names", async
       reviewer: { agent: "codex", model: "review" },
     },
     presets: {
-      Opus: { agent: "claude", model: "opus" },
-      Codex: { agent: "codex", model: "codex" },
+      Opus: {
+        implementer: { agent: "claude", model: "opus" },
+        reviewer: { agent: "codex", model: "review" },
+      },
+      Codex: {
+        implementer: { agent: "codex", model: "codex" },
+        reviewer: { agent: "claude", model: "opus" },
+      },
     },
   };
   const request = (body?: unknown) =>

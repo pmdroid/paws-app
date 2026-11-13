@@ -213,6 +213,8 @@ export async function observeHeldCi(
       },
       caps.feedbackWait(),
     );
+    if (recorded.observation === "recorded" && caps.feedbackNoticed)
+      yield* caps.feedbackNoticed(q, item.id, caps.now());
     return recorded.enqueued;
   });
   if (enqueued) emitJobReady(store);
@@ -267,6 +269,7 @@ export type OrderCapabilities = {
   fetchMain(item: WorkItemRecord): Promise<string | null>;
   ciFixAttempts(item: WorkItemRecord): Promise<number>;
   feedbackWait(): PullFeedbackWait;
+  feedbackNoticed?(q: Q, itemId: string, now: number): Steps<void>;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
   /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
   readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;

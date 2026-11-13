@@ -44,7 +44,6 @@ import {
   runAgent,
   worktreePath,
 } from "./acp";
-import { policyCheckPaths } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
@@ -166,6 +165,7 @@ import {
   recoverOnStartupSteps,
   registerInstanceSteps,
   runPendingJobNowSteps,
+  runRunnerAvailability,
   stopInstanceSteps,
   takeOverGoneRunsSteps,
   enqueueRunnerSetupChecks,
@@ -1395,14 +1395,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           : {}),
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
-        checkoutFacts: async (name: string) => {
-          const [owner, repo] = name.split("/");
-          if (!owner || !repo) return null;
-          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
-          if (!mirror) return null;
-          const policy = policyCheckPaths(mirror.mirror, mirror.commit);
-          return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
-        },
         highRiskFile: async (name: string) => {
           const [owner, repo] = name.split("/");
           if (!owner || !repo) return null;
@@ -1602,6 +1594,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 store.run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
               repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
                 store.run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
+              runnerSignIn: async (runId: string, agent: string, signal: AbortSignal) => {
+                const [placed, coordinator] = await Promise.all([
+                  runRunnerAvailability(store, runId),
+                  runnerReady,
+                ]);
+                if (!placed || !coordinator) return null;
+                return {
+                  runner: placed.name,
+                  signedIn: await coordinator.health.signedIn(placed.id, agent, signal),
+                };
+              },
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },

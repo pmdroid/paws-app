@@ -262,6 +262,26 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
         return true;
       });
     },
+    async signedIn(
+      runnerId: string,
+      agent: string,
+      signal: AbortSignal,
+      pollMs = 1_000,
+    ): Promise<boolean> {
+      if (!runnerAgents.includes(agent as Agent)) return false;
+      const since = now();
+      await api.afterSignIn(runnerId, agent as Agent);
+      for (let polls = 0; polls * pollMs <= 130_000; polls += 1) {
+        signal.throwIfAborted();
+        const entry = await store.run(function* (q) {
+          return (yield* historySteps(q, runnerId, now()))(agent as Agent);
+        });
+        if (entry?.result && entry.result.receivedAt >= since) return entry.result.authenticated;
+        if (!entry?.inFlight) return false;
+        await Bun.sleep(pollMs);
+      }
+      return false;
+    },
     agents(principal: WorkspacePrincipal, runnerId: string): Promise<AgentSignIn[]> {
       return store.run(function* (q) {
         const { runner } = yield* visibleSteps(q, principal, runnerId);

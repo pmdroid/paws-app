@@ -165,7 +165,6 @@ import {
 import {
   DEFAULT_COMMENT_WAIT,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
-  checkoutExclusionsFor,
   highRiskPaths,
   agentReadAllowed,
   loadConfigFile,
@@ -181,7 +180,6 @@ import {
   type AgentLabelProblem,
   type AgentProfile,
   type AgentProfiles,
-  type CheckoutExclusions,
   type MergeSettings,
 } from "../config";
 import {
@@ -425,6 +423,8 @@ import {
   readReviewThreads,
   readPullCi,
   commentOnPullRequest,
+  editPullRequestComment,
+  listPullRequestComments,
   reactToComment,
   replyToReviewComment,
   resolveReviewThread,
@@ -570,7 +570,13 @@ import {
   type LinearConversations,
 } from "./linear-comments";
 import { checkReviewReplies, postReviewReplies } from "./review-replies";
-import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
+import {
+  deliverGitHubOutbox,
+  feedbackNoticeSteps,
+  fixRoundFinishedSteps,
+  fixRoundNoticeSteps,
+  queuedNoticeSteps,
+} from "./fix-round-notice";
 import { suggestedFindingsSection } from "./pull-comments";
 import {
   acceptedSuggestions,
@@ -835,6 +841,11 @@ export type OrchestratorOptions = {
     now: number,
   ) => Promise<{ repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null>;
   repositoryAllowedOn?: (itemId: string, runnerId: string, now: number) => Promise<boolean>;
+  runnerSignIn?: (
+    runId: string,
+    agent: string,
+    signal: AbortSignal,
+  ) => Promise<{ runner: string; signedIn: boolean } | null>;
   /**
    * A runner the item's owner may use for this agent now, for the line that resumes a
    * runner-setup hold. Null when none is eligible. SQLite only.
@@ -889,6 +900,9 @@ const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
   reason: "Access to this session changed while Paws waited to start it.",
 };
+
+type RunCheckout = { agent: string[]; checks: string[] };
+
 /**
  * One process loop: intake, one item at a time, ACP, Closeout, pull request, serial merge.
  * Linear effects go through the outbox. State changes go through `transition()`.
@@ -934,6 +948,7 @@ export class Orchestrator {
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
+  private readonly authRetries = new Map<string, number[]>();
   private readonly runtimeLists = createRuntimeLists(
     {
       originMain: trustedOriginMain,
@@ -2033,6 +2048,7 @@ export class Orchestrator {
       await this.announceFixRound(job);
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
+      await this.finishFixRound(job);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -2287,6 +2303,23 @@ export class Orchestrator {
       );
   }
 
+  private async finishFixRound(job: Job): Promise<void> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+    if (!item || ["queued", "running", "recovering"].includes(item.state)) return;
+    await this.store
+      .transaction((q) => fixRoundFinishedSteps(q, job, this.now()))
+      .catch((error: unknown) =>
+        journalCaught(
+          error,
+          "orchestrator.finishFixRound",
+          itemId,
+          undefined,
+          this.options.journal,
+        ),
+      );
+  }
+
   private async deliverGitHubMessage(message: OutboxRow): Promise<void> {
     const itemId = readString(message.payload, "itemId");
     const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
@@ -2302,6 +2335,8 @@ export class Orchestrator {
     await deliverGitHubOutbox(message, {
       commentOnPullRequest: (prNumber, body) => commentOnPullRequest({ ...access, prNumber, body }),
       reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
+      pullRequestComments: (prNumber) => listPullRequestComments({ ...access, prNumber }),
+      editComment: (commentId, body) => editPullRequestComment({ ...access, commentId, body }),
     });
   }
 
@@ -3958,7 +3993,12 @@ export class Orchestrator {
       const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
-        await this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
+        const message = executed.run.errorMessage ?? "Claude login is missing.";
+        if (
+          await this.retryAuthError(finished, run.id, profiles.implementer.agent, controller.signal)
+        )
+          throw new AgentServiceError(message);
+        await this.fail(finished, "auth", message);
         return;
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
@@ -4131,6 +4171,29 @@ export class Orchestrator {
         live.finish();
       }
     }
+  }
+
+  private async retryAuthError(
+    item: WorkItemRecord,
+    runId: string,
+    agent: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const at = this.now();
+    const recent = (this.authRetries.get(item.id) ?? []).filter(
+      (retried) => retried > at - AUTH_RETRY_WINDOW_MS,
+    );
+    if (recent.length >= AUTH_RETRIES || !this.options.runnerSignIn) return false;
+    const check = await this.options.runnerSignIn(runId, agent, signal).catch((error: unknown) => {
+      journalCaught(error, "orchestrator.retryAuthError", item.id, undefined, this.options.journal);
+      return null;
+    });
+    if (!check?.signedIn) return false;
+    this.authRetries.set(item.id, [...recent, at]);
+    this.options.journal?.(
+      `item ${item.linearIdentifier} retrying auth error: runner ${check.runner} agent ${agent} signed in`,
+    );
+    return true;
   }
 
   private async verify(
@@ -6432,6 +6495,7 @@ export class Orchestrator {
       fetchMain: (item) => this.fetchUpstreamMain(item),
       ciFixAttempts: (item) => this.fixRoundLimit(item),
       feedbackWait: () => this.feedbackWait(),
+      feedbackNoticed: feedbackNoticeSteps,
       readPullCi: async (item, pull) => {
         const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -7910,7 +7974,8 @@ export class Orchestrator {
     for (const wait of waits) await this.store.transaction((q) => this.noteWaitSteps(q, wait));
   }
 
-  private *noteWaitSteps(q: Q, wait: ItemWait): Steps<void> {
+  private *noteWaitSteps(q: Q, given: ItemWait): Steps<void> {
+    const wait = sortedWait(given);
     const round =
       wait.kind === "runner" && wait.restart ? yield* fixRoundsSteps(q, wait.itemId) : 0;
     const face = JSON.stringify([wait, round]);
@@ -7927,12 +7992,13 @@ export class Orchestrator {
     const name = item.linearIdentifier;
     if (wait.kind === "blocked") {
       const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
-      yield* progress.wait(q, `Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+      yield* progress.wait(q, `Wait for ${blockers}`, `${name}: waiting for ${blockers}`, true);
     } else if (wait.kind === "overlap") {
       yield* progress.wait(
         q,
         `Wait for ${wait.blocker} to merge`,
         `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
+        true,
       );
     } else if (wait.kind === "runner" && wait.restart) {
       const limit = yield* this.fixAttemptLimitSteps(q, item, wait.restart);
@@ -7987,6 +8053,7 @@ export class Orchestrator {
         );
         continue;
       }
+      await this.store.transaction((q) => queuedNoticeSteps(q, item.id, now));
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
       const position = await getQueuePosition(this.store, item.id);
@@ -10764,26 +10831,16 @@ export class Orchestrator {
   }
 
   /**
-   * What the item's current run leaves out of its checkouts, pinned on the run the first time it
-   * is read: `agent` for the agent's worktree and snapshot, `checks` for Closeout and review,
-   * which Closeout folds into its policy digest. A `paws:full-checkout` label on the issue when
-   * the task started leaves nothing out.
+   * What the item's current run leaves out of its checkouts: `agent` for the agent's worktree and
+   * snapshot, `checks` for Closeout and review. A new run leaves nothing out; a run that pinned
+   * exclusions before keeps them.
    */
-  private runCheckout(item: WorkItemRecord): Promise<CheckoutExclusions> {
+  private runCheckout(item: WorkItemRecord): Promise<RunCheckout> {
     return this.store.transaction((q) => this.runCheckoutSteps(q, item));
   }
 
-  private *runCheckoutSteps(q: Q, item: WorkItemRecord): Steps<CheckoutExclusions> {
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    const labels = issueLabels((yield* getTaskMergeSettingsSteps(q, item.id))?.resolved.labels);
-    const resolve = (): CheckoutExclusions => {
-      if (!repository) return { agent: [], checks: [] };
-      return checkoutExclusionsFor(
-        loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects,
-        `${repository.owner}/${repository.repo}`,
-        labels,
-      );
-    };
+  private *runCheckoutSteps(q: Q, item: WorkItemRecord): Steps<RunCheckout> {
+    const resolve = (): RunCheckout => ({ agent: [], checks: [] });
     const runId = (yield* getWorkItemSteps(q, item.id))?.currentRunId ?? null;
     return runId === null ? resolve() : yield* pinRunCheckoutSteps(q, runId, resolve);
   }
@@ -11291,6 +11348,8 @@ const ACCEPTED_ON_REMOTE =
   "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
+const AUTH_RETRIES = 3;
+const AUTH_RETRY_WINDOW_MS = 15 * 60_000;
 const OUTBOX_WAIT_MS = 30_000;
 const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
@@ -11454,7 +11513,7 @@ function profileLabelQuestion(
     const reason =
       problem.reason === "unknown_preset"
         ? "no preset has this name"
-        : "it would review with the same agent and model that implement";
+        : "another label on this issue names a different preset";
     return `- ${role} label "${problem.label}": ${reason}.`;
   });
   return [
@@ -11463,10 +11522,6 @@ function profileLabelQuestion(
     `Available presets: ${presets.length > 0 ? presets.join(", ") : "none"}.`,
     "Use the default profile for this item, or fix the label in Linear and say so.",
   ].join("\n");
-}
-
-function issueLabels(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
 }
 
 function repositoryRefusedIn(error: unknown): RunnerRepositoryRefused | null {
@@ -11509,4 +11564,11 @@ function usageResetAt(error: unknown): number | null {
   if (!(error instanceof Error) || error.name !== "UsageLimitPause") return null;
   const resumeAt = (error as Error & { resumeAt?: unknown }).resumeAt;
   return typeof resumeAt === "number" && Number.isFinite(resumeAt) ? resumeAt : null;
+}
+
+function sortedWait(wait: ItemWait): ItemWait {
+  const natural = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+  if (wait.kind === "blocked") return { ...wait, blockers: wait.blockers.toSorted(natural) };
+  if (wait.kind === "overlap") return { ...wait, files: wait.files.toSorted(natural) };
+  return wait;
 }

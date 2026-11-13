@@ -468,6 +468,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         const text = await callHostTool(server, "open_pull_request", {
           title: step.title,
           body: step.body,
+          ...(step.remaining ? { remaining: step.remaining } : {}),
         });
         state.pullRequest = { ok: true, text };
       } catch (error) {
@@ -564,6 +565,14 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         }, 15);
       });
       send({ jsonrpc: "2.0", id: prompt, result: { stopReason: "cancelled" } });
+      return true;
+    }
+    if (step.type === "auth_error") {
+      send({
+        jsonrpc: "2.0",
+        id: prompt,
+        error: { code: -32000, message: "Authentication required" },
+      });
       return true;
     }
     if (step.type === "end") {

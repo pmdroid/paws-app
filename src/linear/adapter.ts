@@ -10,6 +10,7 @@ import type {
   StatusUpdate,
   SessionUpdate,
   SessionReceipt,
+  SessionOnIssue,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
 import type { ProjectOverview } from "./project-scope";
@@ -85,5 +86,9 @@ export interface TrackerAdapter {
   ): Promise<void>;
   askQuestion(question: Elicitation, options?: TrackerRequestOptions): Promise<void>;
   updateSession?(update: SessionUpdate, options?: TrackerRequestOptions): Promise<SessionReceipt>;
+  createSessionOnIssue?(
+    input: SessionOnIssue,
+    options?: TrackerRequestOptions,
+  ): Promise<SessionReceipt>;
   setStatus(update: StatusUpdate, options?: TrackerRequestOptions): Promise<void>;
 }

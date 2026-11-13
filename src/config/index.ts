@@ -124,14 +124,6 @@ export type { TailscaleAuthKeyStatus } from "./tailscale";
 export { projectSkillsRoot } from "./skills";
 export type { ProjectSkills } from "./skills";
 export {
-  checkoutExclusionsFor,
-  FULL_CHECKOUT_LABEL,
-  parseCheckoutProjects,
-  renderCheckoutProjects,
-  setCheckoutProjectsText,
-  writeCheckoutProjects,
-} from "./checkout";
-export {
   parseBriefTemplates,
   renderBriefTemplates,
   resolveBriefTemplate,
@@ -139,4 +131,3 @@ export {
   writeBriefTemplates,
 } from "./brief";
 export type { BriefTemplates } from "./brief";
-export type { CheckoutExclusions, CheckoutProject, CheckoutProjects } from "./checkout";

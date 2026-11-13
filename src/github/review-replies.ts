@@ -63,6 +63,45 @@ export async function commentOnPullRequest(
     throw new Error(`GitHub pull request comment failed: status ${response.status}`);
 }
 
+export async function listPullRequestComments(
+  input: Access & { prNumber: number },
+): Promise<{ id: number; body: string }[]> {
+  const token = await acquireOperationToken(input, "pr");
+  const comments: { id: number; body: string }[] = [];
+  for (let page = 1; ; page += 1) {
+    const response = await input.client.request({
+      method: "GET",
+      path: repoApiPath(
+        input.owner,
+        input.repo,
+        `/issues/${input.prNumber}/comments?per_page=100&page=${page}`,
+      ),
+      token,
+    });
+    const parsed = z
+      .array(z.object({ id: z.number(), body: z.string().nullable() }))
+      .safeParse(response.body);
+    if (response.status !== 200 || !parsed.success)
+      throw new Error(`GitHub pull request comments read failed: status ${response.status}`);
+    comments.push(...parsed.data.map((comment) => ({ id: comment.id, body: comment.body ?? "" })));
+    if (parsed.data.length < 100) return comments;
+  }
+}
+
+export async function editPullRequestComment(
+  input: Access & { commentId: number; body: string },
+): Promise<void> {
+  const token = await acquireOperationToken(input, "pr");
+  const response = await input.client.request({
+    method: "PATCH",
+    path: repoApiPath(input.owner, input.repo, `/issues/comments/${input.commentId}`),
+    token,
+    body: { body: input.body },
+  });
+  if (response.status !== 200)
+    throw new Error(`GitHub pull request comment edit failed: status ${response.status}`);
+}
+
 const resolveMutation = `mutation ResolveReviewThread($id: ID!) {
   resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } }
 }`;
@@ -115,6 +154,20 @@ export function createFakeReviewReplies(): FakeReviewReplies {
     resolved: [],
     reactions: [],
     respond(request) {
+      const listed = /\/issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(request.path);
+      if (request.method === "GET" && listed) {
+        const all = fake.comments
+          .map((comment, index) => ({ id: index + 1, ...comment }))
+          .filter((comment) => comment.prNumber === Number(listed[1]));
+        const page = Number(listed[2]);
+        return { status: 200, body: all.slice((page - 1) * 100, page * 100) };
+      }
+      const edited = /\/issues\/comments\/(\d+)$/.exec(request.path);
+      const target = edited ? fake.comments[Number(edited[1]) - 1] : undefined;
+      if (request.method === "PATCH" && target) {
+        target.body = (request.body as { body?: string }).body ?? "";
+        return { status: 200, body: {} };
+      }
       if (request.method !== "POST") return null;
       const body = (request.body ?? {}) as {
         body?: string;
@@ -143,7 +196,7 @@ export function createFakeReviewReplies(): FakeReviewReplies {
       const comment = /\/issues\/(\d+)\/comments$/.exec(request.path);
       if (comment) {
         fake.comments.push({ prNumber: Number(comment[1]), body: body.body ?? "" });
-        return { status: 201, body: {} };
+        return { status: 201, body: { id: fake.comments.length } };
       }
       if (request.path === "/graphql" && body.query?.includes("mutation ResolveReviewThread")) {
         const id = String(body.variables?.id);

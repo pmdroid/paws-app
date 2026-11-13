@@ -212,6 +212,21 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         },
       );
     }
+    const echo = await task("app"),
+      beforeEcho = await audits();
+    await loop.onLinearEvent(echo.event);
+    observe(
+      "a prompt echoed from Paws' own app user is ignored without an audit row",
+      (await getQuestion(db, echo.question.id))?.status === "open" &&
+        (await resumes()) === 0 &&
+        (await listPendingLinearTurns(db, echo.event.sessionId!)).length === 0 &&
+        (await audits()) === beforeEcho,
+      {
+        question: (await getQuestion(db, echo.question.id))?.status,
+        resumes: await resumes(),
+        audits: (await audits()) - beforeEcho,
+      },
+    );
     identities.get("owner")!.teamIds = [];
     const outsideOwner = await task("owner");
     await loop.onLinearEvent(outsideOwner.event);

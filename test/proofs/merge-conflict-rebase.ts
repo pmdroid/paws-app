@@ -33,7 +33,7 @@ export default {
     "src/scheduler/waits.ts",
   ],
   summary:
-    "Main changes the file the pull request changes after the pull request response; the Linear session gets one merge-conflict thought, the rebase turn's plan shows Fix merge conflicts, its handoff asks for one squashed commit and the pull request says Paws is working on the conflict.",
+    "Main changes the file the pull request changes after the pull request response; the Linear session gets one merge-conflict thought, the rebase turn's plan shows Fix merge conflicts, its handoff asks for one squashed commit and the pull request's one comment says Paws is working on the conflict, then that it worked on it.",
   ciPending: true,
   agent: (input) => {
     if (input.purpose !== "implement") return [];
@@ -90,13 +90,13 @@ export default {
     proof.expect("the rebase turn's plan shows Fix merge conflicts", fixing());
     const working = [...proof.github.comments.values()]
       .flat()
-      .filter((comment) => comment.body.startsWith("🐾 Paws is working on this"));
+      .filter((comment) => /^🐾 Paws (is working|worked) on this/.test(comment.body));
     proof.expect(
-      "the pull request gets one working-on-it comment per rebase turn, naming the conflict",
+      "the pull request gets one comment per rebase turn, naming the conflict, edited once the turn ends",
       working.length > 0 &&
         working.length === rebasePrompts.length &&
         working.every((comment) =>
-          comment.body.startsWith("🐾 Paws is working on this: a merge conflict with main."),
+          comment.body.startsWith("🐾 Paws worked on this: a merge conflict with main."),
         ),
       working.map((comment) => comment.body),
     );

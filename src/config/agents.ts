@@ -16,9 +16,10 @@ export type AgentProfiles = {
   reviewer: AgentProfile;
   reviewerFallback?: AgentProfile;
 };
+export type AgentPreset = { implementer: AgentProfile; reviewer: AgentProfile };
 export type AgentSettings = {
   defaults: AgentProfiles;
-  presets?: Record<string, AgentProfile>;
+  presets?: Record<string, AgentPreset>;
 };
 
 const profileSchema = z.strictObject({
@@ -59,7 +60,7 @@ const settingsSchema = z.strictObject({
           (name) =>
             name.trim().length >= 1 && name.trim().length <= 40 && /^[a-zA-Z0-9 ._-]+$/.test(name),
         ),
-      profileSchema,
+      z.strictObject({ implementer: profileSchema, reviewer: profileSchema }),
     )
     .optional(),
 });
@@ -75,6 +76,13 @@ function parseSettings(value: unknown, legacyDefaults: boolean): AgentSettings {
     const key = name.trim().toLowerCase();
     if (names.has(key)) throw new Error(`Duplicate preset: ${name}`);
     names.add(key);
+  }
+  for (const [name, preset] of Object.entries(settings.presets ?? {})) {
+    try {
+      validateIndependence(preset);
+    } catch (error) {
+      throw new Error(`Preset ${name}: ${(error as Error).message}`, { cause: error });
+    }
   }
   // Presets alone must not newly validate the synthesized legacy role pair.
   if (legacyDefaults) return settings;
@@ -134,7 +142,7 @@ export function readAgentSettings(config: PawsConfigFile): AgentSettings {
 export type AgentLabelProblem = {
   role: "implementer" | "reviewer";
   label: string;
-  reason: "unknown_preset" | "same_as_implementer";
+  reason: "unknown_preset" | "conflicting_presets";
 };
 
 export function resolveAgentProfiles(
@@ -143,43 +151,21 @@ export function resolveAgentProfiles(
 ): AgentProfiles & { labelProblems?: AgentLabelProblem[] } {
   const settings = readAgentSettings(config);
   const labelProblems: AgentLabelProblem[] = [];
-  const select = (role: "implementer" | "reviewer"): AgentProfile => {
-    const inherited = settings.defaults[role];
+  const key = (name: string) => name.trim().toLowerCase();
+  const found: { role: "implementer" | "reviewer"; label: string; name: string }[] = [];
+  for (const role of ["implementer", "reviewer"] as const) {
     const label = labels?.[role];
-    if (label === undefined) return inherited;
-    const preset = Object.entries(settings.presets ?? {}).find(
-      ([name]) => name.trim().toLowerCase() === label.trim().toLowerCase(),
-    )?.[1];
-    if (!preset) {
-      labelProblems.push({ role, label, reason: "unknown_preset" });
-      return inherited;
-    }
-    return preset;
-  };
-  let implementer = select("implementer");
-  let reviewer = select("reviewer");
-  if (
-    labels?.reviewer !== undefined &&
-    reviewer.agent === implementer.agent &&
-    reviewer.model === implementer.model &&
-    !labelProblems.some((problem) => problem.role === "reviewer")
-  ) {
-    labelProblems.push({ role: "reviewer", label: labels.reviewer, reason: "same_as_implementer" });
-    reviewer = settings.defaults.reviewer;
+    if (label === undefined) continue;
+    const name = Object.keys(settings.presets ?? {}).find((preset) => key(preset) === key(label));
+    if (name === undefined) labelProblems.push({ role, label, reason: "unknown_preset" });
+    else found.push({ role, label, name });
   }
-  if (
-    labels?.implementer !== undefined &&
-    reviewer.agent === implementer.agent &&
-    reviewer.model === implementer.model &&
-    !labelProblems.some((problem) => problem.role === "implementer")
-  ) {
-    labelProblems.push({
-      role: "implementer",
-      label: labels.implementer,
-      reason: "same_as_implementer",
-    });
-    implementer = settings.defaults.implementer;
-  }
+  let { implementer, reviewer } = settings.defaults;
+  if (new Set(found.map((entry) => key(entry.name))).size > 1)
+    for (const { role, label } of found)
+      labelProblems.push({ role, label, reason: "conflicting_presets" });
+  else if (found[0] && labelProblems.length === 0)
+    ({ implementer, reviewer } = settings.presets![found[0].name]!);
   const fallback = settings.defaults.reviewerFallback;
   return {
     implementer,
@@ -205,32 +191,55 @@ export function parseAgentSettingsToml(
         reviewer?: Partial<AgentProfile>;
         reviewer_fallback?: Partial<AgentProfile>;
       };
-      presets?: Record<string, Partial<AgentProfile>>;
+      presets?: Record<string, Partial<AgentProfile> & Partial<Record<keyof AgentPreset, object>>>;
     };
   };
   const agents = parsed.agents;
+  const defaults = {
+    implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
+    reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
+    ...(agents?.defaults?.reviewer_fallback
+      ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
+      : {}),
+  };
   return parseSettings(
     {
-      defaults: {
-        implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
-        reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
-        ...(agents?.defaults?.reviewer_fallback
-          ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
-          : {}),
-      },
+      defaults,
       ...(agents?.presets === undefined
         ? {}
         : {
             presets: Object.fromEntries(
-              Object.entries(agents.presets).map(([name, profile]) => [
+              Object.entries(agents.presets).map(([name, preset]) => [
                 name,
-                { model: null, ...profile },
+                "implementer" in preset || "reviewer" in preset
+                  ? {
+                      implementer: { model: null, ...preset.implementer },
+                      reviewer: { model: null, ...preset.reviewer },
+                    }
+                  : legacyPreset({ model: null, ...preset }, defaults),
               ]),
             ),
           }),
     },
     agents?.defaults === undefined,
   );
+}
+
+function legacyPreset(profile: unknown, defaults: Record<string, unknown>): unknown {
+  const normal = (value: unknown) => {
+    const parsed = profileSchema.safeParse(value);
+    return parsed.success ? parsed.data : value;
+  };
+  const implementer = normal(profile);
+  const pair = { implementer, reviewer: normal(defaults.reviewer) };
+  try {
+    validateIndependence(pair as AgentPreset);
+    return pair;
+  } catch {
+    return defaults.reviewerFallback
+      ? { implementer, reviewer: normal(defaults.reviewerFallback) }
+      : pair;
+  }
 }
 
 const RETIRED_AGENT_PROJECTS = "agents.projects is no longer supported; using the global profiles";
@@ -270,8 +279,8 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
     sections.push(
       renderProfile("agents.defaults.reviewer_fallback", settings.defaults.reviewerFallback),
     );
-  for (const [name, profile] of Object.entries(settings.presets ?? {}))
-    sections.push(renderProfile(`agents.presets.${JSON.stringify(name)}`, profile));
+  const presets = renderAgentPresetsText(settings);
+  if (presets) sections.push(presets);
   const next = `${base}\n\n${sections.join("\n\n")}\n`;
   Bun.TOML.parse(next);
   return next;
@@ -315,7 +324,11 @@ export function writeAgentSettings(
 /** Render already-validated presets without materializing legacy role defaults. */
 export function renderAgentPresetsText(settings: AgentSettings): string {
   return Object.entries(settings.presets ?? {})
-    .map(([name, profile]) => renderProfile(`agents.presets.${JSON.stringify(name)}`, profile))
+    .flatMap(([name, preset]) =>
+      (["implementer", "reviewer"] as const).map((role) =>
+        renderProfile(`agents.presets.${JSON.stringify(name)}.${role}`, preset[role]),
+      ),
+    )
     .join("\n\n");
 }
 

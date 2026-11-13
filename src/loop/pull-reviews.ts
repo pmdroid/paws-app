@@ -28,6 +28,7 @@ import {
 import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { feedbackSeenSteps } from "./feedback-seen";
+import { feedbackNoticeSteps } from "./fix-round-notice";
 import { askSteps, restartSteps } from "./operations";
 import { commentDigest } from "./pull-comments";
 import {
@@ -110,7 +111,10 @@ export function* recordReviewDeliverySteps(
     },
     wait,
   );
-  if (receipt.recorded) yield* feedbackSeenSteps(q, item.id, now);
+  if (receipt.recorded) {
+    yield* feedbackSeenSteps(q, item.id, now);
+    yield* feedbackNoticeSteps(q, item.id, now);
+  }
   return receipt;
 }
 

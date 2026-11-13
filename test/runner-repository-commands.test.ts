@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import {
@@ -43,8 +43,20 @@ function setBranch(db: Db, branchName: string) {
   );
 }
 
+const stores: (() => Promise<void>)[] = [];
+
+// Each test's store closes after it, with no poll or expiry still querying it.
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
+});
+
 async function fixture(store?: Db) {
-  const db = store ?? (await tempStore()).db;
+  let db = store;
+  if (!db) {
+    const opened = await tempStore();
+    stores.push(opened.close);
+    db = opened.db;
+  }
   let now = Date.now();
   const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
@@ -167,11 +179,26 @@ async function fixture(store?: Db) {
       }),
       runnerId,
     );
+  // A rebase enqueues its command without being awaited; on a server the next query can run
+  // before that insert commits, so wait for the runner's nth command to exist.
+  const enqueued = async (count: number) => {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const rows = await db.run(function* (q) {
+        return yield* q.all(
+          q.orm.select({ id: q.t.runnerRepositoryCommand.id }).from(q.t.runnerRepositoryCommand),
+        );
+      });
+      if (rows.length >= count) return;
+      await Bun.sleep(10);
+    }
+    throw new Error(`repository command ${count} was never enqueued`);
+  };
   return {
     db,
     github,
     ack,
     enqueue,
+    enqueued,
     post,
     poll,
     grant,
@@ -347,6 +374,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
       signal,
     );
   const rebased = rebase();
+  await f.enqueued(1);
   const [command] = await f.poll("runner-a");
   await recordRepositoryCommandResult(
     f.db,
@@ -360,6 +388,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   expect(await rebased).toEqual({ outcome: "rebased", head: "c".repeat(40) });
 
   const slow = rebase();
+  await f.enqueued(2);
   f.advance(10 * 60_000);
   expect(await f.poll("runner-a")).toEqual([]);
   expect(await slow).toEqual({ outcome: "failed", reason: "timed out after 10 minutes" });
@@ -372,6 +401,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
 
   const granted = new AbortController();
   const late = rebase("runner-a", granted.signal);
+  await f.enqueued(4);
   const [delivered] = await f.poll("runner-a");
   const issued = await f.grant(delivered!.id);
   expect(issued.status).toBe(200);
@@ -390,20 +420,28 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
 test("a rebase whose result arrives on another instance resolves within a second", async () => {
   const server = await pgliteServer();
   const other = await openPawsStore({ url: server.url, pgliteDir: "" });
+  const stop = new AbortController();
+  let rebased: Promise<unknown> = Promise.resolve();
   try {
     const f = await fixture(server.store);
     const otherHttp = createRepositoryCommandsHttp({ store: other.store, now: f.now });
-    const rebased = rebaseOnRunner(f.db, {
-      runnerId: "runner-a",
-      workspaceId: f.workspace,
-      itemId: f.item.id,
-      repository,
-      branch: f.item.branchName,
-      head: "a".repeat(40),
-      main: "b".repeat(40),
-      bot,
-      now: f.now(),
-    });
+    const rebasing = rebaseOnRunner(
+      f.db,
+      {
+        runnerId: "runner-a",
+        workspaceId: f.workspace,
+        itemId: f.item.id,
+        repository,
+        branch: f.item.branchName,
+        head: "a".repeat(40),
+        main: "b".repeat(40),
+        bot,
+        now: f.now(),
+      },
+      stop.signal,
+    );
+    rebased = rebasing;
+    await f.enqueued(1);
     const [command] = await f.poll("runner-a");
     const posted = await otherHttp(
       new Request(`https://paws.invalid/v1/repository-commands/${command!.id}/result`, {
@@ -415,9 +453,12 @@ test("a rebase whose result arrives on another instance resolves within a second
     );
     expect(await posted!.json()).toEqual({ duplicate: false });
     const started = performance.now();
-    expect(await rebased).toEqual({ outcome: "rebased", head: "c".repeat(40) });
+    expect(await rebasing).toEqual({ outcome: "rebased", head: "c".repeat(40) });
     expect(performance.now() - started).toBeLessThan(1_000);
   } finally {
+    // A rebase left waiting by a failed assertion stops before its store closes.
+    stop.abort(new Error("test ended"));
+    await rebased.catch(() => undefined);
     await other.close();
     await server.close();
   }

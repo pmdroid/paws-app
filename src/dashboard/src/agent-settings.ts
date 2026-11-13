@@ -2,7 +2,9 @@ export type AgentProfile = {
   agent: "claude" | "codex" | "grok" | "opencode";
   model: string | null;
   effort?: string;
+  fast?: boolean;
 };
+export type AgentPreset = { implementer: AgentProfile; reviewer: AgentProfile };
 export type AgentRole = "implementer" | "reviewer";
 export type AccountLists = {
   implementer?: string[];
@@ -14,7 +16,7 @@ export type AgentSettings = {
     reviewerFallback?: AgentProfile;
     accounts?: AccountLists;
   };
-  presets?: Record<string, AgentProfile>;
+  presets?: Record<string, AgentPreset>;
   revision?: string;
   /** CI fix attempts. Missing means 3. Settings → Merging owns the other merge choices. */
   merge?: { ciFixAttempts?: number };
@@ -28,6 +30,7 @@ export type AgentModelCatalog = {
     /** "Opus 5.5 · 1M context" for a 1M context entry. */
     name: string;
     longContext?: boolean;
+    fast?: boolean;
     efforts: { id: string; name: string }[] | null;
   }[];
   efforts: { id: string; name: string }[];

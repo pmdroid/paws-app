@@ -2,7 +2,7 @@
 
 Paws reads two kinds of configuration:
 
-- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[merge…]`, `[queue]`, `[time_limits…]`, `[checkout.projects…]` and `[brief…]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
+- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[merge…]`, `[queue]`, `[time_limits…]` and `[brief…]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
@@ -29,7 +29,6 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 | `[github]`                         | `auth`, `repo`, `repos`, `agent_read_off`                                                                                                                  | `auth` accepts only `"app"`; see [GitHub App](github-app.md). `agent_read_off` lists repositories whose agent turns get no read-only GitHub token; see [the agent's token](runner-enrollment.md#the-agents-read-only-github-token).                                                       |
 | `[tracker]`                        | `kind`                                                                                                                                                     | Only `"linear"`.                                                                                                                                                                                                                                                                          |
 | `[checkout]`                       | `path`                                                                                                                                                     | The repository checkout Paws works from.                                                                                                                                                                                                                                                  |
-| `[checkout.projects."owner/repo"]` | `exclude`                                                                                                                                                  | Folders left out of worktrees; see the [README](../README.md).                                                                                                                                                                                                                            |
 | `[caps]`                           | `max_awake_ms`                                                                                                                                             | Implementation time limit when `[time_limits]` has no `implementation_minutes`. An older `max_turns` key is ignored.                                                                                                                                                                      |
 | `[time_limits]`                    | `implementation_minutes`, `fixes_minutes`, `closeout_minutes`                                                                                              | See [below](#time_limits).                                                                                                                                                                                                                                                                |
 | `[agents]`, `[agents.grok]`        | `implementer`, `path`, `allow_api_key`                                                                                                                     | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. Whether an agent keeps running on extra usage is a runner setting, under Settings › Runners.                                                                                           |
@@ -146,20 +145,22 @@ Grouping is maintenance work. An interactive classification or repository-select
 
 ### Agent presets and Linear labels
 
-Named profiles can be stored alongside the global agent defaults:
+A preset names an implementer and a reviewer, stored alongside the global agent defaults:
 
 ```toml
-[agents.presets.Opus]
+[agents.presets.Opus.implementer]
 agent = "claude"
 model = "opus"
 effort = "high"
 
-[agents.presets.Codex]
+[agents.presets.Opus.reviewer]
 agent = "codex"
 model = "codex"
 ```
 
-Presets use the same agent, model and optional effort validation as other profiles.
+Each role uses the same agent, model and optional effort validation as other profiles,
+and a preset's reviewer must differ from its implementer in agent or model; a preset
+that fails is refused with its name.
 Any profile can add `fast = true` to turn on the agent's fast mode (Claude Code and Codex).
 It is off when absent. A model without fast mode runs at normal speed and Paws journals
 `fast mode unavailable for <agent> <model>`; a runner older than 0.1.81 runs without it
@@ -168,12 +169,16 @@ Names contain 1–40 letters, digits, spaces, dots, underscores or hyphens.
 Matching ignores case and surrounding spaces; duplicate names under that comparison
 are refused. Quote TOML names containing spaces or dots.
 
-The Linear label groups are **Implementer** and **Reviewer**. Each group's label
-name identifies a preset. The profile resolver accepts these names independently:
-label preset, then global default. Unknown names and
-reviewer labels matching the implementer's agent and model return label problems
-and retain the inherited profile for that role. Reviewer fallback is still omitted
-when it uses the resolved reviewer's agent.
+A preset in the older single-profile form (the profile fields directly
+under `[agents.presets.<name>]`) loads as that implementer with the default reviewer,
+or with the reviewer fallback when the default reviewer would match the implementer.
+The next save writes both roles.
+
+The Linear label groups are **Implementer** and **Reviewer**. A label in either
+group naming a preset applies the whole preset, both roles. Unknown names, and two
+labels naming different presets (`conflicting_presets`), return label problems and
+keep the defaults. Reviewer fallback is still omitted when it uses the resolved
+reviewer's agent.
 
 Paws reads the labels from Linear each time it creates a new implement run, so
 a change takes effect on the next run and never moves a running turn. If Linear

@@ -830,7 +830,6 @@
     "src/dashboard/src/client/intake.test.tsx": 244,
     "src/dashboard/src/client/issue-page.test.tsx": 244,
     "test/linear-session-cancellation.test.ts": 237,
-    "src/dashboard/src/client/checkout-settings.test.tsx": 234,
     "test/github-git.test.ts": 232,
     "test/linear-issue-lifecycle.test.ts": 232,
     "test/linear-sessions.test.ts": 230,
