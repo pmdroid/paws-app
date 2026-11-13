@@ -1,4 +1,3 @@
-import { tickWithRestarts } from "./helpers";
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,7 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, spyOn, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { and, eq, sql } from "drizzle-orm";
+import { pgTable, serial, text as textColumn } from "drizzle-orm/pg-core";
 import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
@@ -37,10 +37,10 @@ import {
   listArtifacts,
   listEvidence,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  openPawsStore,
   syncSteps,
+  type Db,
+  type Q,
 } from "../src/db";
 import {
   createFakeGitHub,
@@ -83,10 +83,12 @@ import {
   githubClient,
   isMergeReadiness,
   repoLayout,
-  stateOf,
+  stateOfPg as stateOf,
+  tickWithRestartsPg as tickWithRestarts,
   writeOk,
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -101,8 +103,7 @@ test.each([false, true, "cap"] as const)(
   "Closeout repairs publish live progress to Linear and the dashboard, stopped: %s",
   async (stop) => {
     const layout = await repoLayout("paws-e2e-");
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "repair",
@@ -127,7 +128,7 @@ test.each([false, true, "cap"] as const)(
       return interval(handler, delay);
     }) as typeof setInterval);
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -220,9 +221,8 @@ test.each([false, true, "cap"] as const)(
       // Plan and summary are throttled to one request per 30 seconds, so check the newest
       // version queued for Linear rather than waiting for it to be sent.
       const metadata = async (op: string) =>
-        (await listOutbox(sqliteDb(db))).findLast(
-          (row) => row.op === op && row.status !== "dropped",
-        )?.payload as SessionUpdate | undefined;
+        (await listOutbox(db)).findLast((row) => row.op === op && row.status !== "dropped")
+          ?.payload as SessionUpdate | undefined;
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
@@ -254,7 +254,7 @@ test.each([false, true, "cap"] as const)(
       expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
       const response = await handleStatusRequest(
         new Request("http://localhost/api/issues/ENG-302"),
-        { store: sqliteDb(db) },
+        { store: db },
       );
       const parsed = parseIssueDetailResponse(await response!.json());
       expect(parsed.ok).toBe(true);
@@ -267,32 +267,30 @@ test.each([false, true, "cap"] as const)(
       if (stop === true) {
         await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
         await running;
-        const item = (await listWorkItems(sqliteDb(db)))[0]!;
-        expect((await getWorkItem(sqliteDb(db), item.id))?.state, await debug(layout, db)).toBe(
-          "paused",
-        );
+        const item = (await listWorkItems(db))[0]!;
+        expect((await getWorkItem(db, item.id))?.state, await debug(layout, db)).toBe("paused");
         await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
-        expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
+        expect((await getWorkItem(db, item.id))?.state).toBe("queued");
         expect(
-          (await listJobs(sqliteDb(db))).findLast((job) => job.queue === JOB_KIND.resume)?.payload,
+          (await listJobs(db)).findLast((job) => job.queue === JOB_KIND.resume)?.payload,
         ).toMatchObject({ reason: "follow_up", handoff: "Continue the repair" });
         running = tickWithRestarts(jobs, orchestrator, db);
       }
       if (stop === "cap") {
-        const item = (await listWorkItems(sqliteDb(db)))[0]!;
-        await configureWorkItem(sqliteDb(db), item.id, { limits: { fixes: 1_000 } });
-        expect(await accrueAwake(sqliteDb(db), item.id, 1_000, Date.now(), 0)).toMatchObject({
+        const item = (await listWorkItems(db))[0]!;
+        await configureWorkItem(db, item.id, { limits: { fixes: 1_000 } });
+        expect(await accrueAwake(db, item.id, 1_000, Date.now(), 0)).toMatchObject({
           asked: true,
           stopAgent: true,
         });
         await orchestrator.stopAgent(item.id);
         await running;
         await jobs.tick(["item.ask"]);
-        expect((await getWorkItem(sqliteDb(db), item.id))?.state, await debug(layout, db)).toBe(
+        expect((await getWorkItem(db, item.id))?.state, await debug(layout, db)).toBe(
           "awaiting_input",
         );
         await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
-        expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+        expect(await getWorkItem(db, item.id)).toMatchObject({
           state: "queued",
           cancelRequested: false,
           fixMs: 0,
@@ -303,13 +301,13 @@ test.each([false, true, "cap"] as const)(
       if (release) writeFileSync(release, "go");
       await running;
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(stateOf(db, "ENG-302")).toBe("merge_queue");
+      expect(await stateOf(db, "ENG-302")).toBe("merge_queue");
     } finally {
       writeFileSync(release, "go");
       await running;
       await orchestrator.shutdown();
       intervalSpy.mockRestore();
-      db.close();
+      await close();
       await layout.cleanup();
     }
   },
@@ -318,8 +316,7 @@ test.each([false, true, "cap"] as const)(
 
 test("a task retried after failing moves its Linear issue to started again", async () => {
   const layout = await repoLayout("paws-e2e-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "retry",
@@ -335,7 +332,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
   const entered = (launch: number) => path.join(layout.root, `entered-${launch}`);
   const release = path.join(layout.root, "release");
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -381,9 +378,9 @@ test("a task retried after failing moves its Linear issue to started again", asy
     await waitFor(entered(1));
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(started()).toHaveLength(1);
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
-    await failWorkItem(sqliteDb(db), item, "run_error", "The run failed.", Date.now());
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
+    const item = (await listWorkItems(db))[0]!;
+    await failWorkItem(db, item, "run_error", "The run failed.", Date.now());
+    expect((await getWorkItem(db, item.id))?.state).toBe("failed");
     await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
     await running;
     running = tickWithRestarts(jobs, orchestrator, db);
@@ -394,15 +391,14 @@ test("a task retried after failing moves its Linear issue to started again", asy
     writeFileSync(release, "go");
     await running;
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 30_000);
 
 test("a retried run starts with the main that moved while it was failed", async () => {
   const layout = await repoLayout("paws-e2e-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "moved",
@@ -420,7 +416,7 @@ test("a retried run starts with the main that moved while it was failed", async 
   const release = path.join(layout.root, "moved-release");
   const upstreamAtLaunch: string[] = [];
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -481,9 +477,9 @@ test("a retried run starts with the main that moved while it was failed", async 
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "moved"));
     running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(1));
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
-    await failWorkItem(sqliteDb(db), item, "run_error", "The run failed.", Date.now());
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
+    const item = (await listWorkItems(db))[0]!;
+    await failWorkItem(db, item, "run_error", "The run failed.", Date.now());
+    expect((await getWorkItem(db, item.id))?.state).toBe("failed");
     await commitOnMain(layout.bare, "merged by hand\n", "hand.txt");
     const movedMain = (
       await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
@@ -497,7 +493,7 @@ test("a retried run starts with the main that moved while it was failed", async 
     writeFileSync(release, "go");
     await running;
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 30_000);
@@ -516,8 +512,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
   );
   await exec("git", ["-C", seed, "commit", "-qam", "require visual proof"]);
   await exec("git", ["-C", seed, "push", "-q", "origin", "HEAD:main"]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "page",
@@ -531,7 +526,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
   const outbox = new OutboxDispatcher(db, systemClock);
   const prompts = new Map<string, string>();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -543,7 +538,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     evidence: {
       publicUrl: "https://paws.example",
       store: createEvidenceStore({
-        store: sqliteDb(db),
+        store: db,
         root: path.join(layout.pawsRoot, "evidence"),
       }),
     },
@@ -590,7 +585,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "page"));
     await tickWithRestarts(jobs, orchestrator, db);
-    expect(stateOf(db, "ENG-303"), await debug(layout, db)).toBe("merge_queue");
+    expect(await stateOf(db, "ENG-303"), await debug(layout, db)).toBe("merge_queue");
     const fixes = tracker.progress.filter((update) => update.body.startsWith("Fixing Closeout"));
     // Evidence checks have no attempt limit, so only the 35 fix rounds bound this repair.
     expect(fixes.map((update) => update.body)).toEqual([
@@ -598,10 +593,8 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     ]);
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
-    const item = (await listWorkItems(sqliteDb(db))).find(
-      (entry) => entry.linearIdentifier === "ENG-303",
-    )!;
-    expect(await listEvidence(sqliteDb(db), item.id)).toHaveLength(16);
+    const item = (await listWorkItems(db)).find((entry) => entry.linearIdentifier === "ENG-303")!;
+    expect(await listEvidence(db, item.id)).toHaveLength(16);
     // One thought for the check, with the count and the Paws link; the images stay in Paws.
     const link = "https://paws.example/dashboard/issues/ENG-303#evidence-gallery";
     const evidence = tracker.progress.filter((update) => update.body.includes("Closeout evidence"));
@@ -615,7 +608,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     expect(tracker.attachments).toEqual([]);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 20000);
@@ -638,8 +631,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
   tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const results = new Map<string, string>();
@@ -710,7 +702,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
           headers: { "content-type": "image/png" },
         });
       }
-      expect(stateOf(db, "ENG-2")).toBe("running");
+      expect(await stateOf(db, "ENG-2")).toBe("running");
       expect(github.opened).toHaveLength(0);
       expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
       uploadedDuringCode = true;
@@ -718,7 +710,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     },
   });
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -760,7 +752,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
         for (const tick of keepAliveTicks) tick();
         await outbox.idle();
         expect(tracker.progress).toHaveLength(publicUpdates);
-        whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        whileAsking = `${(await stateOf(db, "ENG-2")) ?? "missing"}/${(await stateOf(db, "ENG-3")) ?? "missing"}`;
         expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
         await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
@@ -770,11 +762,11 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
-    for (const item of await listWorkItems(sqliteDb(db)))
-      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    for (const item of await listWorkItems(db))
+      await bindWorkItemRepository(db, item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && !delegationMerged(db)) {
+    while (Date.now() < deadline && !(await delegationMerged(db))) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
@@ -823,18 +815,11 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     expect(kinds.has("thought")).toBe(true);
     expect(kinds.has("action")).toBe(true);
     expect(kinds.has("response")).toBe(true);
-    expect(delegationMerged(db), await debug(layout, db)).toBe(true);
-    expect(stateOf(db, "ENG-2"), await debug(layout, db)).toBe("merged");
-    expect(stateOf(db, "ENG-3"), await debug(layout, db)).toBe("merged");
+    expect(await delegationMerged(db), await debug(layout, db)).toBe(true);
+    expect(await stateOf(db, "ENG-2"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-3"), await debug(layout, db)).toBe("merged");
     expect(github.opened.map((pull) => pull.head)).toEqual(
-      ["ENG-2", "ENG-3"].map(
-        (identifier) =>
-          db
-            .query<{ branch: string }, [string]>(
-              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
-            )
-            .get(identifier)!.branch,
-      ),
+      await Promise.all(["ENG-2", "ENG-3"].map((identifier) => branchOf(db, identifier))),
     );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
@@ -851,19 +836,17 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     };
     expect(JSON.stringify(inputTrace.prompts)).toContain(".paws-linear-inputs");
     expect(JSON.stringify(inputTrace.prompts)).not.toContain("signature=expires");
-    const artifactItem = db
-      .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
-      .get("iss-2")!;
-    expect(await listArtifacts(sqliteDb(db), artifactItem.id)).toHaveLength(1);
-    expect((await listArtifacts(sqliteDb(db), artifactItem.id))[0]?.state).toBe("uploaded");
+    const artifactItem = (await listWorkItems(db)).find((item) => item.linearIssueId === "iss-2")!;
+    expect(await listArtifacts(db, artifactItem.id)).toHaveLength(1);
+    expect((await listArtifacts(db, artifactItem.id))[0]?.state).toBe("uploaded");
     const artifactIndex = tracker.progress.findIndex((update) =>
       update.body.includes("https://uploads.linear.app/workspace/result"),
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
     expect(selectedRepositories).toHaveLength(4);
-    for (const item of await listWorkItems(sqliteDb(db))) {
-      expect(await getWorkItemRepository(sqliteDb(db), item.id)).toEqual(repository);
+    for (const item of await listWorkItems(db)) {
+      expect(await getWorkItemRepository(db, item.id)).toEqual(repository);
     }
     const completedUpdates = tracker.progress.length;
     for (const tick of keepAliveTicks) tick();
@@ -874,7 +857,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     intervalSpy.mockRestore();
     stop = true;
     await answerer;
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 90_000);
@@ -922,8 +905,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
       return "ghp_gh_auth";
     },
   };
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   let scripts = 0;
@@ -944,7 +926,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -975,7 +957,9 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
       );
       if (question && !delivered) {
         delivered = true;
-        whileAsking = children.map((child) => stateOf(db, child.identifier) ?? "missing").join("/");
+        whileAsking = (await Promise.all(children.map((child) => stateOf(db, child.identifier))))
+          .map((state) => state ?? "missing")
+          .join("/");
         await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
       await Bun.sleep(20);
@@ -986,7 +970,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     await orchestrator.onLinearEvent(linearEvent("created", null, null, parentId));
     const deadline = Date.now() + 90_000;
     let idle = 0;
-    while (Date.now() < deadline && !delegationMerged(db)) {
+    while (Date.now() < deadline && !(await delegationMerged(db))) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
@@ -1006,20 +990,13 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     );
     expect(JSON.stringify(question?.options)).toContain("yes");
     expect(JSON.stringify(question?.options)).toContain("no");
-    expect(delegationMerged(db), await debug(layout, db)).toBe(true);
+    expect(await delegationMerged(db), await debug(layout, db)).toBe(true);
     expect(
-      children.map((child) => stateOf(db, child.identifier)),
+      await Promise.all(children.map((child) => stateOf(db, child.identifier))),
       await debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
     expect(github.opened.map((pull) => pull.head)).toEqual(
-      ["ENG-2", "ENG-3", "ENG-4"].map(
-        (identifier) =>
-          db
-            .query<{ branch: string }, [string]>(
-              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
-            )
-            .get(identifier)!.branch,
-      ),
+      await Promise.all(["ENG-2", "ENG-3", "ENG-4"].map((identifier) => branchOf(db, identifier))),
     );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
@@ -1034,7 +1011,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
   } finally {
     stop = true;
     await answerer;
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -1056,8 +1033,7 @@ test.each(["claude", "codex", "grok"])(
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const launch: AgentLaunch = () => {
@@ -1070,7 +1046,7 @@ test.each(["claude", "codex", "grok"])(
       };
     };
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -1094,17 +1070,17 @@ test.each(["claude", "codex", "grok"])(
     expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
     await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
     await running;
-    expect(stateOf(db, "ENG-9")).toBe("paused");
-    expect((await listRuns(sqliteDb(db))).some((run) => run.status === "active")).toBe(false);
+    expect(await stateOf(db, "ENG-9")).toBe("paused");
+    expect((await listRuns(db)).some((run) => run.status === "active")).toBe(false);
     // A stop from Linear leaves the issue's status to people.
     expect(tracker.statuses.filter((update) => update.stateType === "canceled")).toEqual([]);
     expect(tracker.progress.at(-1)).toMatchObject({
       kind: "response",
       body: "Paused. Reply here or re-delegate to continue.",
     });
-    expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-    const agents = (await listRuns(sqliteDb(db))).map((run) => run.agent);
-    db.close();
+    expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    const agents = (await listRuns(db)).map((run) => run.agent);
+    await close();
     await layout.cleanup();
     expect(agents).toEqual([implementer]);
   },
@@ -1115,8 +1091,7 @@ test.each([false, true])(
   "mixed code publication blocks an ignored artifact failure and permits a corrected retry: %s",
   async (retry) => {
     const layout = await repoLayout("paws-e2e-");
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "artifact-gap",
@@ -1198,7 +1173,7 @@ test.each([false, true])(
       },
     });
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -1220,24 +1195,24 @@ test.each([false, true])(
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "artifact-gap"));
       for (
         let tick = 0;
-        tick < 10 && !["failed", "merged"].includes(stateOf(db, "ENG-98") ?? "");
+        tick < 10 && !["failed", "merged"].includes((await stateOf(db, "ENG-98")) ?? "");
         tick++
       )
         await tickWithRestarts(jobs, orchestrator, db);
       const trace = JSON.parse(await readFile(resultPath, "utf8"));
       expect(
         trace.artifact,
-        JSON.stringify({ trace, state: stateOf(db, "ENG-98"), progress: tracker.progress }),
+        JSON.stringify({ trace, state: await stateOf(db, "ENG-98"), progress: tracker.progress }),
       ).toBeDefined();
       expect(trace.artifact.ok).toBe(retry);
-      expect(stateOf(db, "ENG-98"), await debug(layout, db)).toBe(retry ? "merged" : "failed");
+      expect(await stateOf(db, "ENG-98"), await debug(layout, db)).toBe(
+        retry ? "merged" : "failed",
+      );
       expect(github.opened).toHaveLength(retry ? 1 : 0);
       expect(github.merged).toHaveLength(retry ? 1 : 0);
       expect(uploads).toBe(retry ? 1 : 0);
       if (!retry) {
-        expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.merge)).toBe(
-          false,
-        );
+        expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
         expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
         expect(
           tracker.progress.some(
@@ -1246,7 +1221,7 @@ test.each([false, true])(
         ).toBe(true);
       }
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   },
@@ -1254,8 +1229,7 @@ test.each([false, true])(
 );
 
 test("an unconfigured repository halts with an error and never completes the session", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "failure",
@@ -1268,7 +1242,7 @@ test("an unconfigured repository halts with an error and never completes the ses
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     tracker,
     jobs,
@@ -1279,7 +1253,7 @@ test("an unconfigured repository halts with an error and never completes the ses
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "failure"));
     await tickWithRestarts(jobs, orchestrator, db);
     while ((await outbox.tick()).length > 0) await outbox.idle();
-    expect(stateOf(db, "ENG-99")).toBe("failed");
+    expect(await stateOf(db, "ENG-99")).toBe("failed");
     expect(
       tracker.progress.some(
         (update) =>
@@ -1290,7 +1264,7 @@ test("an unconfigured repository halts with an error and never completes the ses
     expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
     expect(tracker.progress.at(-1)?.kind).toBe("error");
   } finally {
-    db.close();
+    await close();
   }
 });
 
@@ -1305,8 +1279,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const launch: AgentLaunch = (input) => {
@@ -1325,7 +1298,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1338,19 +1311,19 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-7"));
     const deadline = Date.now() + 40_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-7") !== "awaiting_input") {
+    while (Date.now() < deadline && (await stateOf(db, "ENG-7")) !== "awaiting_input") {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) await Bun.sleep(20);
     }
-    expect(stateOf(db, "ENG-7"), await debug(layout, db)).toBe("awaiting_input");
+    expect(await stateOf(db, "ENG-7"), await debug(layout, db)).toBe("awaiting_input");
     expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
     expect(tracker.questions).toHaveLength(1);
-    expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const questionBody = tracker.questions[0]?.body;
     expect(questionBody).toContain("Closeout: blocked");
     expect(questionBody).toContain("reviewer preparation failed");
   } finally {
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 60_000);
@@ -1366,8 +1339,7 @@ test("a failed implementer preparation names the implementer in its question", a
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const launch: AgentLaunch = (input) => {
@@ -1387,7 +1359,7 @@ test("a failed implementer preparation names the implementer in its question", a
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1400,19 +1372,19 @@ test("a failed implementer preparation names the implementer in its question", a
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
     const deadline = Date.now() + 40_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-8") !== "awaiting_input") {
+    while (Date.now() < deadline && (await stateOf(db, "ENG-8")) !== "awaiting_input") {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) await Bun.sleep(20);
     }
-    expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
+    expect(await stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
     expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
     expect(tracker.questions).toHaveLength(1);
-    expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const questionBody = tracker.questions[0]?.body;
     expect(questionBody).toContain("implementer preparation failed");
     expect(questionBody).not.toContain("reviewer failed");
   } finally {
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 60_000);
@@ -1459,21 +1431,23 @@ for (const recovery of [
     ]);
     const github = createFakeGitHub();
     const client = githubClient(layout.bare, github);
-    const dbPath = path.join(layout.pawsRoot, "paws.db");
-    let db = openDatabase(dbPath);
-    migrate(db);
+    const reopen = await reopenable(layout);
+    let { store: db, close } = await reopen();
     // Bypass is decided on the item page, which needs a link a person can open.
     const publicUrl = recovery === "guidance" ? null : "https://paws.example";
-    db.run(
-      "INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)",
-      ["ws", "org", "Kyku", Date.now()],
+    await write(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: Date.now() }),
     );
-    db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-      "user-pascal",
-      "pascal",
-      "Pascal",
-      "pascal@example.com",
-    ]);
+    await write(db, (q) =>
+      q.orm.insert(q.t.workspaceUser).values({
+        id: "user-pascal",
+        linearUserId: "pascal",
+        name: "Pascal",
+        email: "pascal@example.com",
+      }),
+    );
     const launches: string[] = [];
     const prompts: string[] = [];
     const launch: AgentLaunch = (input) => {
@@ -1502,7 +1476,7 @@ for (const recovery of [
       const jobs = new JobLoop(db, systemClock);
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -1524,13 +1498,13 @@ for (const recovery of [
     try {
       let runtime = attach();
       await runtime.orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
-      db.run("UPDATE work_item SET delegated_by = 'pascal'");
+      await write(db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "pascal" }));
       await tickWithRestarts(runtime.jobs, runtime.orchestrator, db);
-      expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
+      expect(await stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
       expect(launches).toEqual(["implement", "fix"]);
       expect(github.merged).toHaveLength(0);
-      const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
-      const context = (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]!;
+      const question = (await findOpenQuestion(db, "ses_1"))!;
+      const context = (await listCloseoutRecoveries(db, question.itemId))[0]!;
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
       expect(question.body).toContain(
@@ -1539,10 +1513,10 @@ for (const recovery of [
           : "Decide in Paws: https://paws.example/dashboard/issues/ENG-8#closeout",
       );
       expect(question.body).not.toContain("/paws bypass");
-      db.close();
-      db = openDatabase(dbPath);
+      await close();
+      ({ store: db, close } = await reopen());
       runtime = attach();
-      expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(question.id);
+      expect((await findOpenQuestion(db, "ses_1"))?.id).toBe(question.id);
       if (recovery === "stale bypass") {
         const worktree = worktreePath(layout.pawsRoot, await taskPath(db, "ENG-8"));
         await gitIdentity(worktree);
@@ -1569,7 +1543,7 @@ for (const recovery of [
         };
         await runtime.orchestrator.onLinearEvent(event);
         await runtime.orchestrator.onLinearEvent(event);
-        expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("pascal");
+        expect((await getQuestion(db, question.id))?.answeredBy).toBe("pascal");
       } else if (recovery === "refused bypass") {
         expect(await decide("someone-else", [{ checkId: "test", reason }])).toBe("forbidden");
       } else if (recovery === "missing bypass reason") {
@@ -1582,17 +1556,17 @@ for (const recovery of [
       if (recovery === "reply bypass") {
         // The reply goes to the agent as guidance and Paws answers with the link.
         expect(
-          (await listJobs(sqliteDb(db))).filter(
+          (await listJobs(db)).filter(
             (job) => job.status === "pending" && job.queue === JOB_KIND.reverify,
           ),
         ).toHaveLength(0);
         expect(
-          (await listJobs(sqliteDb(db))).filter(
+          (await listJobs(db)).filter(
             (job) => job.status === "pending" && job.queue === JOB_KIND.resume,
           ),
         ).toHaveLength(1);
         expect(
-          (await listOutbox(sqliteDb(db))).some((row) =>
+          (await listOutbox(db)).some((row) =>
             JSON.stringify(row.payload).includes(
               "Bypass a check with a reason on the item page in Paws: https://paws.example/dashboard/issues/ENG-8#closeout",
             ),
@@ -1606,10 +1580,10 @@ for (const recovery of [
         recovery === "missing bypass reason" ||
         recovery === "unfailed bypass check"
       ) {
-        expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
-        expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
+        expect(await stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
+        expect((await getQuestion(db, question.id))?.status).toBe("open");
         expect(
-          (await listJobs(sqliteDb(db))).filter(
+          (await listJobs(db)).filter(
             (job) =>
               job.status === "pending" &&
               (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.reverify),
@@ -1621,7 +1595,7 @@ for (const recovery of [
         return;
       }
       expect(
-        (await listJobs(sqliteDb(db))).filter(
+        (await listJobs(db)).filter(
           (job) =>
             job.status === "pending" &&
             job.queue === (recovery === "guidance" ? JOB_KIND.resume : JOB_KIND.reverify),
@@ -1631,18 +1605,18 @@ for (const recovery of [
         if ((await tickWithRestarts(runtime.jobs, runtime.orchestrator, db)) === null) break;
       }
       if (recovery === "stale bypass") {
-        expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
+        expect(await stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
         expect(github.merged).toHaveLength(0);
-        expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).not.toBe(question.id);
+        expect((await findOpenQuestion(db, "ses_1"))?.id).not.toBe(question.id);
       } else {
-        expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("merged");
+        expect(await stateOf(db, "ENG-8"), await debug(layout, db)).toBe("merged");
         expect(github.merged).toHaveLength(1);
         expect(launches).toEqual(
           recovery === "guidance" ? ["implement", "fix", "implement"] : ["implement", "fix"],
         );
-        expect(
-          (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]?.retryBaseline,
-        ).toEqual(context.retryBaseline);
+        expect((await listCloseoutRecoveries(db, question.itemId))[0]?.retryBaseline).toEqual(
+          context.retryBaseline,
+        );
         if (recovery === "guidance") expect(prompts.at(-1)).toContain(answer);
         if (recovery === "bypass") {
           expect(github.opened[0]?.body).toContain("Bypassed checks:");
@@ -1652,7 +1626,7 @@ for (const recovery of [
         }
       }
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 60_000);
@@ -1681,8 +1655,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
   tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const results = new Map<string, string>();
@@ -1723,7 +1696,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     return { env };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1749,7 +1722,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
       const question = tracker.questions.at(-1);
       if (question && !delivered) {
         delivered = true;
-        whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        whileAsking = `${(await stateOf(db, "ENG-2")) ?? "missing"}/${(await stateOf(db, "ENG-3")) ?? "missing"}`;
         expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
         await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
@@ -1761,7 +1734,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && !delegationMerged(db)) {
+    while (Date.now() < deadline && !(await delegationMerged(db))) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
@@ -1810,15 +1783,15 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
       expect(line).not.toContain("always-approve");
       expect(line).not.toContain("yolo");
     }
-    expect(delegationMerged(db), await debug(layout, db)).toBe(true);
-    expect(stateOf(db, "ENG-2"), await debug(layout, db)).toBe("merged");
-    expect(stateOf(db, "ENG-3"), await debug(layout, db)).toBe("merged");
+    expect(await delegationMerged(db), await debug(layout, db)).toBe(true);
+    expect(await stateOf(db, "ENG-2"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-3"), await debug(layout, db)).toBe("merged");
     expect(github.opened[1]?.body).toContain("Fix attempts: 0");
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
     await answerer;
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 90_000);
@@ -1877,14 +1850,13 @@ for (const review of invalidReviews) {
       },
     ]);
     const github = createFakeGitHub();
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     let reviews = 0;
     let launches = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -1940,9 +1912,9 @@ for (const review of invalidReviews) {
       expect(reviews, await debug(layout, db)).toBeGreaterThan(0);
       expect(github.opened, await debug(layout, db)).toHaveLength(0);
       expect(github.merged, await debug(layout, db)).toHaveLength(0);
-      expect(stateOf(db, "ENG-2"), await debug(layout, db)).not.toBe("merged");
+      expect(await stateOf(db, "ENG-2"), await debug(layout, db)).not.toBe("merged");
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 30_000);
@@ -2131,15 +2103,14 @@ for (const sameModel of [true, false]) {
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
     const launches: Array<{ purpose: string; profile: unknown }> = [];
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -2175,13 +2146,13 @@ for (const sameModel of [true, false]) {
       for (let tick = 0; tick < 20; tick += 1)
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
       if (sameModel) {
-        expect(stateOf(db, "ENG-20"), await debug(layout, db)).toBe("awaiting_input");
+        expect(await stateOf(db, "ENG-20"), await debug(layout, db)).toBe("awaiting_input");
         expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
         expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
         expect(tracker.questions[0]?.body).toContain("different reviewer model");
         expect(github.opened).toHaveLength(0);
       } else {
-        expect(stateOf(db, "ENG-20"), await debug(layout, db)).toBe("merged");
+        expect(await stateOf(db, "ENG-20"), await debug(layout, db)).toBe("merged");
         expect(launches.find((launch) => launch.purpose === "implement")?.profile).toEqual({
           agent: "codex",
           model: "model-a",
@@ -2197,7 +2168,7 @@ for (const sameModel of [true, false]) {
         ).toBe(true);
       }
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 30_000);
@@ -2215,8 +2186,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
@@ -2224,7 +2194,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     const implementerProfiles: unknown[] = [];
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -2260,30 +2230,26 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "legacy-item"));
       await tickWithRestarts(jobs, orchestrator, db);
-      const item = db
-        .query<{ id: string; current_run_id: string }, []>(
-          "SELECT id, current_run_id FROM work_item",
-        )
-        .get()!;
-      const initialRun = item.current_run_id;
+      const item = (await listWorkItems(db))[0]!;
+      const initialRun = item.currentRunId!;
       await rm(path.join(layout.pawsRoot, "runs", initialRun, "agent-profile.json"));
-      db.run("DELETE FROM job WHERE queue = ?", [JOB_KIND.merge]);
-      db.run("UPDATE work_item SET state = ? WHERE id = ?", [savedState, item.id]);
+      await write(db, (q) => q.orm.delete(q.t.job).where(eq(q.t.job.queue, JOB_KIND.merge)));
+      await setState(db, item.id, savedState);
       const beforeHandoff = launched.length;
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: savedState === "verifying" ? JOB_KIND.reverify : JOB_KIND.merge,
         payload: { itemId: item.id },
         now: systemClock.now(),
       });
       await tickWithRestarts(jobs, orchestrator, db);
-      expect(stateOf(db, "ENG-30"), await debug(layout, db)).toBe("awaiting_input");
+      expect(await stateOf(db, "ENG-30"), await debug(layout, db)).toBe("awaiting_input");
       expect(launched).toHaveLength(beforeHandoff);
       expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
       expect(tracker.questions).toHaveLength(1);
       expect(tracker.questions[0]?.body).toContain("no recorded ACP session model");
       expect(github.opened).toHaveLength(0);
       expect(github.merged).toHaveLength(0);
-      const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
+      const question = (await findOpenQuestion(db, "ses_1"))!;
       expect(question.body).toContain("no recorded ACP session model");
       expect(question.body).not.toContain("Checks you can bypass");
       expect(question.options).toEqual(["Restart implementation"]);
@@ -2298,13 +2264,13 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       });
       for (let tick = 0; tick < 10; tick += 1)
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
-      expect(stateOf(db, "ENG-30"), await debug(layout, db)).toBe("merged");
-      expect((await getWorkItem(sqliteDb(db), item.id))?.currentRunId).toBe(initialRun);
+      expect(await stateOf(db, "ENG-30"), await debug(layout, db)).toBe("merged");
+      expect((await getWorkItem(db, item.id))?.currentRunId).toBe(initialRun);
       expect(launched.filter((purpose) => purpose === "implement")).toHaveLength(2);
       expect(github.merged).toHaveLength(1);
       expect(implementerProfiles.at(-1)).toEqual({ agent: "codex", model: "test-new-implementer" });
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 30_000);
@@ -2321,15 +2287,14 @@ test("a verifying candidate with no commit and no session model restarts impleme
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
   const launched: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -2362,12 +2327,10 @@ test("a verifying candidate with no commit and no session model restarts impleme
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "empty-item"));
     await tickWithRestarts(jobs, orchestrator, db);
-    const item = db
-      .query<{ id: string; current_run_id: string }, []>("SELECT id, current_run_id FROM work_item")
-      .get()!;
+    const item = (await listWorkItems(db))[0]!;
     // The implementation run died before it committed: the candidate is main, with no session model.
     const emptyCandidate = async () => {
-      await rm(path.join(layout.pawsRoot, "runs", item.current_run_id, "agent-profile.json"), {
+      await rm(path.join(layout.pawsRoot, "runs", item.currentRunId!, "agent-profile.json"), {
         force: true,
       });
       const worktree = worktreePath(layout.pawsRoot, await taskPath(db, "ENG-32"));
@@ -2375,14 +2338,14 @@ test("a verifying candidate with no commit and no session model restarts impleme
         .stdout.toString()
         .trim();
       Bun.spawnSync(["git", "-C", worktree, "reset", "--hard", base]);
-      db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
-      db.run("UPDATE work_item SET state = 'verifying' WHERE id = ?", [item.id]);
-      await saveCheckpoint(sqliteDb(db), item.id, {
+      await cancelPendingJobs(db);
+      await setState(db, item.id, "verifying");
+      await saveCheckpoint(db, item.id, {
         phase: "verifying",
         baseSha: base,
         wipCommit: base,
       });
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
         now: systemClock.now(),
@@ -2391,8 +2354,8 @@ test("a verifying candidate with no commit and no session model restarts impleme
     };
     await emptyCandidate();
     expect(tracker.questions).toHaveLength(0);
-    expect(stateOf(db, "ENG-32"), await debug(layout, db)).toBe("queued");
-    const resume = (await listJobs(sqliteDb(db))).find((job) =>
+    expect(await stateOf(db, "ENG-32"), await debug(layout, db)).toBe("queued");
+    const resume = (await listJobs(db)).find((job) =>
       job.jobKey?.startsWith("restart:no-implementation:"),
     );
     const payload = resume?.payload as { reason?: string; handoff?: string; fixRounds?: number };
@@ -2401,13 +2364,13 @@ test("a verifying candidate with no commit and no session model restarts impleme
     expect(payload.fixRounds).toBeUndefined();
 
     await emptyCandidate();
-    expect(stateOf(db, "ENG-32"), await debug(layout, db)).toBe("awaiting_input");
-    const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
+    expect(await stateOf(db, "ENG-32"), await debug(layout, db)).toBe("awaiting_input");
+    const question = (await findOpenQuestion(db, "ses_1"))!;
     expect(question.body).toContain("no recorded ACP session model");
     expect(question.options).toEqual(["Restart implementation"]);
     expect(question.body).not.toContain("Retry Closeout");
   } finally {
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 30_000);
@@ -2424,8 +2387,8 @@ for (const movedHead of [false, true]) {
         subIssues: [],
       },
     ]);
-    let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const reopen = await reopenable(layout);
+    let { store: db, close } = await reopen();
     const github = createFakeGitHub();
     let sequence = 0;
     let reviews = 0;
@@ -2434,7 +2397,7 @@ for (const movedHead of [false, true]) {
     const attach = () => {
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),
@@ -2478,49 +2441,40 @@ for (const movedHead of [false, true]) {
       const first = attach();
       await first.orchestrator.onLinearEvent(linearEvent("created", null, null, "recover-merge"));
       await tickWithRestarts(first.jobs, first.orchestrator, db);
-      const item = (await listWorkItems(sqliteDb(db)))[0]!;
-      const original = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.merge)!;
+      const item = (await listWorkItems(db))[0]!;
+      const original = (await listJobs(db)).find((job) => job.queue === JOB_KIND.merge)!;
       expect(item.state).toBe("merge_queue");
       expect(reviews).toBe(1);
       expect(github.merged).toHaveLength(0);
-      db.close();
-      db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-      await recoverOnStartup(sqliteDb(db));
-      db.run("CREATE TEMP TABLE title_write (summary TEXT)");
-      for (const event of ["INSERT", "UPDATE OF payload"])
-        db.run(`CREATE TEMP TRIGGER "title_${event}" AFTER ${event} ON outbox
-          WHEN NEW.op = 'linear.session.summary'
-          BEGIN INSERT INTO title_write VALUES (json_extract(NEW.payload, '$.summary')); END`);
+      await close();
+      ({ store: db, close } = await reopen());
+      await recoverOnStartup(db);
+      const titleWrites = await queuedSummaries(db);
       const restarted = attach();
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
+      expect((await getWorkItem(db, item.id))?.state).toBe("merge_queue");
       for (let tick = 0; tick < 5; tick++) {
         // A moved pull request head releases the lane to read it again. Skip the poll delay.
-        db.run(`UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'`, [
-          JOB_KIND.merge,
-        ]);
+        await wakeJobs(db, JOB_KIND.merge);
         await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
       }
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state, await debug(layout, db)).toBe(
-        "merged",
-      );
+      expect((await getWorkItem(db, item.id))?.state, await debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
       expect(rejectedHeads).toBe(movedHead ? 2 : 0);
       // Polling the published pull request again never writes "publishing" back to the title.
-      expect(
-        db
-          .query<{ summary: string }, []>("SELECT summary FROM title_write")
-          .all()
-          .map((row) => row.summary),
-      ).toEqual(["ENG-31: publishing", "ENG-31: waiting to merge", "ENG-31: merged"]);
+      expect(await titleWrites()).toEqual([
+        "ENG-31: publishing",
+        "ENG-31: waiting to merge",
+        "ENG-31: merged",
+      ]);
       // The waiting merge keeps its job. A moved head never sends the accepted head back to
       // Closeout or merges another head.
       expect(
-        (await listJobs(sqliteDb(db)))
+        (await listJobs(db))
           .filter((job) => job.queue === JOB_KIND.merge)
           .map((job) => [job.id, job.status]),
       ).toEqual([[original.id, "done"]]);
       expect(
-        (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify),
+        (await listJobs(db)).filter((job) => job.queue === JOB_KIND.reverify),
         await debug(layout, db),
       ).toHaveLength(0);
       expect(github.merged[0]!.expectedHeadSha).toBe(item.checkpoint!.wipCommit!);
@@ -2530,7 +2484,7 @@ for (const movedHead of [false, true]) {
       await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
       expect(github.merged).toHaveLength(1);
     } finally {
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 30_000);
@@ -2621,15 +2575,14 @@ test("the active task merges while a later task in its session also waits to mer
       ],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -2644,7 +2597,8 @@ test("the active task merges while a later task in its session also waits to mer
       client: {
         async request(req) {
           const response = await client.request(req);
-          if (req.path !== "/graphql" || stateOf(db, "ENG-82") === "merge_queue") return response;
+          if (req.path !== "/graphql" || (await stateOf(db, "ENG-82")) === "merge_queue")
+            return response;
           const body = fakeMergeReadiness(
             (req.body as { variables: { head: string } }).variables.head,
           );
@@ -2686,17 +2640,17 @@ test("the active task merges while a later task in its session also waits to mer
     await commitOnMain(layout.bare, "ok\n");
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent-pair"));
     const deadline = Date.now() + 80_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-81") !== "merge_queue") {
+    while (Date.now() < deadline && (await stateOf(db, "ENG-81")) !== "merge_queue") {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    db.run("UPDATE work_item SET state = 'merge_queue' WHERE linear_identifier = 'ENG-82'");
-    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-81")!)) {
+    await setState(db, (await itemOf(db, "ENG-82"))!.id, "merge_queue");
+    while (Date.now() < deadline && !(await settled(db, "ENG-81"))) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    expect(stateOf(db, "ENG-81"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-81"), await debug(layout, db)).toBe("merged");
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -2714,8 +2668,8 @@ test.each(["pending", "merged"] as const)(
         subIssues: [],
       },
     ]);
-    let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const reopen = await reopenable(layout);
+    let { store: db, close } = await reopen();
     let jobs = new JobLoop(db, systemClock);
     let outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
@@ -2726,7 +2680,7 @@ test.each(["pending", "merged"] as const)(
     const prompts: string[] = [];
     const attach = () =>
       attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -2819,7 +2773,7 @@ test.each(["pending", "merged"] as const)(
       while (Date.now() < deadline && github.opened.length === 0) {
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
-      expect(stateOf(db, "ENG-90"), await debug(layout, db)).toBe("merge_queue");
+      expect(await stateOf(db, "ENG-90"), await debug(layout, db)).toBe("merge_queue");
       expect(github.merged).toHaveLength(0);
       expect(responses()).toHaveLength(1);
       expect(responses()[0]).toMatchObject({
@@ -2827,29 +2781,28 @@ test.each(["pending", "merged"] as const)(
         body: expect.stringContaining("https://github.com/"),
       });
       const firstResponse = responses()[0]!;
-      db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
+      await wakeJobs(db, JOB_KIND.merge);
       await tickWithRestarts(jobs, orchestrator, db);
       expect(responses()).toHaveLength(1);
       expect(tracker.progress.at(-1)).toEqual(firstResponse);
       await orchestrator.shutdown();
       await outbox.idle();
-      db.close();
-      db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-      migrate(db);
+      await close();
+      ({ store: db, close } = await reopen());
       jobs = new JobLoop(db, systemClock);
       outbox = new OutboxDispatcher(db, systemClock);
       orchestrator = attach();
-      db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
+      await wakeJobs(db, JOB_KIND.merge);
       await tickWithRestarts(jobs, orchestrator, db);
       expect(responses()).toHaveLength(1);
       expect(tracker.progress.at(-1)).toEqual(firstResponse);
       ciReady = true;
       if (followupAt === "merged") {
-        db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
-        while (Date.now() < deadline && stateOf(db, "ENG-90") !== "merged") {
+        await wakeJobs(db, JOB_KIND.merge);
+        while (Date.now() < deadline && (await stateOf(db, "ENG-90")) !== "merged") {
           if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
         }
-        expect(stateOf(db, "ENG-90"), await debug(layout, db)).toBe("merged");
+        expect(await stateOf(db, "ENG-90"), await debug(layout, db)).toBe("merged");
         expect(tracker.progress.at(-1)).toMatchObject({
           kind: "response",
           body: expect.stringContaining("Merged #"),
@@ -2864,18 +2817,11 @@ test.each(["pending", "merged"] as const)(
         expect.objectContaining({ kind: "thought", body: "Received your update." }),
       );
       expect(tracker.progress.at(-1)?.kind).toBe("thought");
-      const active = (await listWorkItems(sqliteDb(db))).findLast(
-        (item) => item.state !== "merged",
-      )!;
-      while (
-        Date.now() < deadline &&
-        (await getWorkItem(sqliteDb(db), active.id))?.state !== "merged"
-      ) {
+      const active = (await listWorkItems(db)).findLast((item) => item.state !== "merged")!;
+      while (Date.now() < deadline && (await getWorkItem(db, active.id))?.state !== "merged") {
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
-      expect((await getWorkItem(sqliteDb(db), active.id))?.state, await debug(layout, db)).toBe(
-        "merged",
-      );
+      expect((await getWorkItem(db, active.id))?.state, await debug(layout, db)).toBe("merged");
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toContain("Add the requested follow-up change");
       expect(responses()).toHaveLength(followupAt === "merged" ? 4 : 3);
@@ -2895,7 +2841,7 @@ test.each(["pending", "merged"] as const)(
       );
     } finally {
       await orchestrator.shutdown().catch(() => undefined);
-      db.close();
+      await close();
       await layout.cleanup();
     }
   },
@@ -2913,15 +2859,14 @@ test("post_update posts one Linear thought and refuses a second update within a 
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
   const resultPath = path.join(layout.root, "update-tool-result.json");
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -2972,17 +2917,17 @@ test("post_update posts one Linear thought and refuses a second update within a 
       { ok: true, text: "Posted." },
       { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
     ]);
-    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-93") ?? "")) {
+    while (Date.now() < deadline && !(await settled(db, "ENG-93"))) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    expect(stateOf(db, "ENG-93"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-93"), await debug(layout, db)).toBe("merged");
     expect(
       tracker.progress.filter((update) => update.body.startsWith("Found the cause")),
     ).toMatchObject([{ kind: "thought", body: "Found the cause: ok.txt was never written." }]);
     expect(tracker.progress.some((update) => update.body === "Tests pass.")).toBe(false);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -2998,15 +2943,14 @@ test("reply posts each answer as a Linear response and refuses a sixth in one tu
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
   const resultPath = path.join(layout.root, "reply-tool-result.json");
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3056,16 +3000,16 @@ test("reply posts each answer as a Linear response and refuses a sixth in one tu
       ...[1, 2, 3, 4, 5].map(() => ({ ok: true, text: "Posted in the Linear conversation." })),
       { ok: true, text: "Not posted: at most 5 replies per turn" },
     ]);
-    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-94") ?? "")) {
+    while (Date.now() < deadline && !(await settled(db, "ENG-94"))) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    expect(stateOf(db, "ENG-94"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-94"), await debug(layout, db)).toBe("merged");
     expect(tracker.progress.filter((update) => update.body.startsWith("Answer "))).toMatchObject(
       [1, 2, 3, 4, 5].map((n) => ({ kind: "response", body: `Answer ${n}.` })),
     );
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -3083,9 +3027,8 @@ test.each([false, true])(
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
-    const queuedSummary = queuedSummaries(db);
+    const { db, close } = await tempStore();
+    const queuedSummary = await queuedSummaries(db);
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
@@ -3095,7 +3038,7 @@ test.each([false, true])(
     let sequence = 0;
     let implementRuns = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -3160,8 +3103,8 @@ test.each([false, true])(
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "ci-fail"));
       const deadline = Date.now() + 90_000;
-      while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-91") ?? "")) {
-        if (await findOpenQuestion(sqliteDb(db), "ses_1")) {
+      while (Date.now() < deadline && !(await settled(db, "ENG-91"))) {
+        if (await findOpenQuestion(db, "ses_1")) {
           expect(tracker.questions.at(-1)?.body).toContain("Which CI fix should I use?");
           expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
           await orchestrator.onLinearEvent(
@@ -3170,24 +3113,24 @@ test.each([false, true])(
         }
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
-      expect(stateOf(db, "ENG-91"), await debug(layout, db)).toBe("merged");
+      expect(await stateOf(db, "ENG-91"), await debug(layout, db)).toBe("merged");
       expect(implementRuns).toBe(ask ? 3 : 2);
       expect(prompts[1]).toContain("- test (https://ci.example/1)");
       expect(tracker.progress.map((update) => update.body)).not.toContain(
         "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
       );
-      expect(queuedSummary()).not.toContain(
+      expect(await queuedSummary()).not.toContain(
         "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
       );
-      expect(queuedSummary()).toContain("ENG-91: fixing CI");
-      expect(queuedSummary()).not.toContain("ENG-91: fixing CI (1 of 3)");
+      expect(await queuedSummary()).toContain("ENG-91: fixing CI");
+      expect(await queuedSummary()).not.toContain("ENG-91: fixing CI (1 of 3)");
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
         ask ? 3 : 2,
       );
       if (ask) expect(prompts[2]).toContain("Use the compatible fix");
     } finally {
       await orchestrator.shutdown().catch(() => undefined);
-      db.close();
+      await close();
       await layout.cleanup();
     }
   },
@@ -3220,8 +3163,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
   await exec("git", ["-C", seed, "rm", ".agents/closeout.yaml"]);
   await exec("git", ["-C", seed, "commit", "-m", "remove policy"]);
   await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "no-policy",
@@ -3236,7 +3178,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
   const github = createFakeGitHub();
   let launches = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3273,21 +3215,19 @@ test("a repository without a Closeout policy merges without Closeout checks or a
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "no-policy"));
     await tickWithRestarts(jobs, orchestrator, db);
     const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-975") !== "merged") {
+    while (Date.now() < deadline && (await stateOf(db, "ENG-975")) !== "merged") {
       await tickWithRestarts(jobs, orchestrator, db);
-      db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [JOB_KIND.merge]);
+      await wakeJobs(db, JOB_KIND.merge);
       await Bun.sleep(25);
     }
-    expect(stateOf(db, "ENG-975"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-975"), await debug(layout, db)).toBe("merged");
     expect(github.merged).toHaveLength(1);
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(tracker.questions).toHaveLength(0);
-    expect(
-      await listCloseoutRecoveries(sqliteDb(db), (await listWorkItems(sqliteDb(db)))[0]!.id),
-    ).toHaveLength(0);
+    expect(await listCloseoutRecoveries(db, (await listWorkItems(db))[0]!.id)).toHaveLength(0);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -3406,9 +3346,8 @@ async function runGitHubQueue(
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const queuedSummary = queuedSummaries(db);
+  const { db, close } = await tempStore();
+  const queuedSummary = await queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -3434,7 +3373,7 @@ async function runGitHubQueue(
   let sequence = 0;
   let implementRuns = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3506,7 +3445,7 @@ async function runGitHubQueue(
     let rounds = 0;
     let lastEnqueued = 0;
     while (Date.now() < deadline) {
-      const state = stateOf(db, "ENG-95") ?? "";
+      const state = (await stateOf(db, "ENG-95")) ?? "";
       if (["merged", "failed", "awaiting_input"].includes(state)) break;
       if (queue.enqueued.length !== lastEnqueued) {
         lastEnqueued = queue.enqueued.length;
@@ -3516,7 +3455,7 @@ async function runGitHubQueue(
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
         const response = await handleStatusRequest(new Request("http://localhost/api/issues"), {
-          store: sqliteDb(db),
+          store: db,
         });
         const parsed = parseIssueListResponse(await response!.json());
         if (!parsed.ok) throw new Error("Invalid issue list");
@@ -3527,21 +3466,19 @@ async function runGitHubQueue(
         // read it again now instead of after its poll interval.
         onQueued(queue, pull, rounds, queue.enqueued.length);
         rounds += 1;
-        db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [
-          JOB_KIND.merge,
-        ]);
+        await wakeJobs(db, JOB_KIND.merge);
         continue;
       }
       await Bun.sleep(25);
     }
     while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
-      state: stateOf(db, "ENG-95"),
+      state: await stateOf(db, "ENG-95"),
       implementRuns,
       enqueued: queue.enqueued.length,
       selfMerges: github.merged.length,
       lines: tracker.progress.map((update) => update.body),
-      summaries: queuedSummary(),
+      summaries: await queuedSummary(),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       dashboard,
@@ -3549,7 +3486,7 @@ async function runGitHubQueue(
     };
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }
@@ -3662,9 +3599,8 @@ async function runCiFix(options: {
       },
     },
   );
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const queuedSummary = queuedSummaries(db);
+  const { db, close } = await tempStore();
+  const queuedSummary = await queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -3679,7 +3615,7 @@ async function runCiFix(options: {
   let reviews = 0;
   let movedMain = false;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3778,9 +3714,9 @@ async function runCiFix(options: {
     );
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
-      const state = stateOf(db, "ENG-94") ?? "";
+      const state = (await stateOf(db, "ENG-94")) ?? "";
       if (["merged", "failed"].includes(state)) break;
-      if (state === "awaiting_input" && (await findOpenQuestion(sqliteDb(db), "ses_1"))) {
+      if (state === "awaiting_input" && (await findOpenQuestion(db, "ses_1"))) {
         while ((await outbox.tick()).length > 0) await outbox.idle();
         if (options.answer === undefined || answered) break;
         answered = true;
@@ -3792,11 +3728,11 @@ async function runCiFix(options: {
     }
     while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
-      state: stateOf(db, "ENG-94"),
+      state: await stateOf(db, "ENG-94"),
       linearCalls,
       implementRuns,
       reviewerLaunches,
-      lines: queuedSummary().filter((body) => body.startsWith("CI: ")),
+      lines: (await queuedSummary()).filter((body) => body.startsWith("CI: ")),
       bodies: tracker.progress.map((update) => update.body),
       activities: tracker.progress.map(({ kind, body }) => ({ kind, body })),
       questions: tracker.questions.map((question) => question.body),
@@ -3816,7 +3752,7 @@ async function runCiFix(options: {
     };
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }
@@ -3840,8 +3776,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -3849,7 +3784,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   const seen = { reads: 0 };
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3901,19 +3836,17 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "rebase-base"));
     const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-92") !== "merge_queue") {
+    while (Date.now() < deadline && (await stateOf(db, "ENG-92")) !== "merge_queue") {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    const before = (await listWorkItems(sqliteDb(db))).find(
-      (entry) => entry.linearIdentifier === "ENG-92",
-    )!;
+    const before = (await listWorkItems(db)).find((entry) => entry.linearIdentifier === "ENG-92")!;
     await commitOnMain(layout.bare, "side\n", "side.txt");
     const main = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
     while (Date.now() < deadline && seen.reads === 0) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    await saveCheckpoint(sqliteDb(db), before.id, before.checkpoint!);
-    const reverify = await enqueueJobOnce(sqliteDb(db), {
+    await saveCheckpoint(db, before.id, before.checkpoint!);
+    const reverify = await enqueueJobOnce(db, {
       queue: JOB_KIND.reverify,
       jobKey: "stale-reverify",
       payload: { itemId: before.id },
@@ -3922,16 +3855,16 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     while (
       Date.now() < deadline &&
       !["done", "dead"].includes(
-        (await listJobs(sqliteDb(db))).find((job) => job.id === reverify)?.status ?? "",
+        (await listJobs(db)).find((job) => job.id === reverify)?.status ?? "",
       )
     ) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    const item = (await listWorkItems(sqliteDb(db))).find((entry) => entry.id === before.id)!;
+    const item = (await listWorkItems(db)).find((entry) => entry.id === before.id)!;
     expect(item.checkpoint?.baseSha, await debug(layout, db)).toBe(main);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -3951,8 +3884,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const client = githubClient(layout.bare, createFakeGitHub());
@@ -3964,7 +3896,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     ms?: number,
   ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -4005,17 +3937,17 @@ test("an unreadable CI read retries the merge job and fails the task with the re
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "unreadable-ci"));
     const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-93") ?? "")) {
-      db.run("UPDATE job SET max_attempts = 2 WHERE queue = ? AND status = 'pending'", [
-        JOB_KIND.merge,
-      ]);
+    while (Date.now() < deadline && !(await settled(db, "ENG-93"))) {
+      await write(db, (q) =>
+        q.orm.update(q.t.job).set({ maxAttempts: 2 }).where(pendingJobs(q, JOB_KIND.merge)),
+      );
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
         await outbox.tick();
         await Bun.sleep(25);
       }
     }
     while ((await outbox.tick()).length > 0) await outbox.idle();
-    expect(stateOf(db, "ENG-93"), await debug(layout, db)).toBe("failed");
+    expect(await stateOf(db, "ENG-93"), await debug(layout, db)).toBe("failed");
     expect(reads, await debug(layout, db)).toBe(6);
     expect(
       tracker.progress
@@ -4025,14 +3957,12 @@ test("an unreadable CI read retries the merge job and fails the task with the re
       `Closed: Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${await branchOf(db, "ENG-93")}\`.`,
     ]);
     expect(
-      (await listJobs(sqliteDb(db)))
-        .filter((job) => job.queue === JOB_KIND.merge)
-        .map((job) => job.status),
+      (await listJobs(db)).filter((job) => job.queue === JOB_KIND.merge).map((job) => job.status),
     ).toEqual(["cancelled"]);
   } finally {
     quickReadRetries.mockRestore();
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -4053,8 +3983,7 @@ test.each([
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
     const outbox = new OutboxDispatcher(db, systemClock);
     const client = githubClient(layout.bare, createFakeGitHub());
@@ -4069,7 +3998,7 @@ test.each([
       return realGit(args, options);
     });
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -4103,28 +4032,26 @@ test.each([
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "reverify-timeout"));
       const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline && stateOf(db, "ENG-94") !== "merge_queue") {
+      while (Date.now() < deadline && (await stateOf(db, "ENG-94")) !== "merge_queue") {
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
-      const item = (await listWorkItems(sqliteDb(db))).find(
-        (entry) => entry.linearIdentifier === "ENG-94",
-      )!;
-      db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
+      const item = (await listWorkItems(db)).find((entry) => entry.linearIdentifier === "ENG-94")!;
+      await cancelPendingJobs(db);
       remaining = timeouts;
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
         maxAttempts: 2,
         now: Date.now(),
       });
-      while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-94") ?? "")) {
+      while (Date.now() < deadline && !(await settled(db, "ENG-94"))) {
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
           await outbox.tick();
           await Bun.sleep(25);
         }
       }
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(stateOf(db, "ENG-94"), await debug(layout, db)).toBe(
+      expect(await stateOf(db, "ENG-94"), await debug(layout, db)).toBe(
         outcome === "merges" ? "merged" : "failed",
       );
       expect(
@@ -4137,14 +4064,14 @@ test.each([
             ],
       );
       expect(
-        (await listJobs(sqliteDb(db)))
+        (await listJobs(db))
           .filter((job) => job.queue === JOB_KIND.reverify)
           .map((job) => job.status),
       ).toEqual([outcome === "merges" ? "done" : "cancelled"]);
     } finally {
       flakyGit.mockRestore();
       await orchestrator.shutdown().catch(() => undefined);
-      db.close();
+      await close();
       await layout.cleanup();
     }
   },
@@ -4186,9 +4113,8 @@ async function runRebaseConflict(
     if (merging.labels)
       tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
   }
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const queuedSummary = queuedSummaries(db);
+  const { db, close } = await tempStore();
+  const queuedSummary = await queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -4197,7 +4123,7 @@ async function runRebaseConflict(
   let implementTurns = 0;
   let reviews = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -4243,7 +4169,7 @@ async function runRebaseConflict(
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, `rebase-${mode}`));
     await tickWithRestarts(jobs, orchestrator, db);
-    expect(stateOf(db, identifier), await debug(layout, db)).toBe("merge_queue");
+    expect(await stateOf(db, identifier), await debug(layout, db)).toBe("merge_queue");
     const reviewsBeforeUpdate = reviews;
     if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
     else await commitOnMain(layout.bare, "from-main\n");
@@ -4255,12 +4181,12 @@ async function runRebaseConflict(
       | undefined;
     if (mode === "linear") {
       // The pull request is open, and Linear's review page sends "Fix merge conflicts".
-      await enqueueOutboxOnce(sqliteDb(db), {
+      await enqueueOutboxOnce(db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",
         delivery: "ordered",
-        idempotencyKey: `pull-request-ready:${(await listWorkItems(sqliteDb(db))).find((item) => item.linearIdentifier === identifier)!.id}:${await getLinearSessionGeneration(sqliteDb(db), "ses_1")}`,
+        idempotencyKey: `pull-request-ready:${(await listWorkItems(db)).find((item) => item.linearIdentifier === identifier)!.id}:${await getLinearSessionGeneration(db, "ses_1")}`,
         payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
       });
       while ((await outbox.tick()).length > 0) await outbox.idle();
@@ -4268,7 +4194,7 @@ async function runRebaseConflict(
         linearEvent("prompted", "Fix merge conflicts", null, `rebase-${mode}`),
       );
       linearRequest = {
-        jobs: (await listJobs(sqliteDb(db)))
+        jobs: (await listJobs(db))
           .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
           .map((job) => {
             const payload = job.payload as { reason?: string; handoff?: string };
@@ -4288,10 +4214,10 @@ async function runRebaseConflict(
     const settle = async () => {
       let idle = 0;
       for (let turn = 0; turn < 40;) {
-        const state = stateOf(db, identifier);
+        const state = await stateOf(db, identifier);
         if (state === "merged" || state === "failed") break;
         const job = await tickWithRestarts(jobs, orchestrator, db);
-        const next = stateOf(db, identifier);
+        const next = await stateOf(db, identifier);
         if (state !== "merge_queue" && next === "merge_queue")
           requeuedBases.push(await checkpointBaseOf(db, identifier));
         if (job !== null) turn += 1;
@@ -4310,7 +4236,7 @@ async function runRebaseConflict(
       );
     }
     return {
-      state: stateOf(db, identifier),
+      state: await stateOf(db, identifier),
       reviews,
       reviewsBeforeUpdate,
       mergedOnMovedMain:
@@ -4318,17 +4244,17 @@ async function runRebaseConflict(
         (await isAncestor(layout.bare, movedMain, github.merged[0]!.expectedHeadSha)),
       movedMain,
       thoughts: tracker.progress.map((update) => update.body),
-      summaries: queuedSummary(),
+      summaries: await queuedSummary(),
       prompts,
       requeuedBases,
       merged: github.merged.length,
-      rounds: (await listCloseoutRounds(sqliteDb(db))).map((round) => round.head),
+      rounds: (await listCloseoutRounds(db)).map((round) => round.head),
       ...(linearRequest ? { linearRequest } : {}),
       detail: await debug(layout, db),
     };
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }
@@ -4597,50 +4523,79 @@ items:
     timeoutSeconds: 60
 `;
 
-async function checkpointBaseOf(db: Database, identifier: string): Promise<string | null> {
-  const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  return row ? ((await getWorkItem(sqliteDb(db), row.id))?.checkpoint?.baseSha ?? null) : null;
+const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
+
+const pendingJobs = (q: Q, queue: string) =>
+  and(eq(q.t.job.queue, queue), eq(q.t.job.status, "pending"));
+
+const wakeJobs = (db: Db, queue: string) =>
+  write(db, (q) => q.orm.update(q.t.job).set({ runAt: 0 }).where(pendingJobs(q, queue)));
+
+const setState = (db: Db, id: string, state: string) =>
+  write(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id)));
+
+const cancelPendingJobs = (db: Db) =>
+  write(db, (q) =>
+    q.orm.update(q.t.job).set({ status: "cancelled" }).where(eq(q.t.job.status, "pending")),
+  );
+
+async function reopenable(layout: { pawsRoot: string }) {
+  const pgliteDir = path.join(layout.pawsRoot, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  return () => openPawsStore({ url: null, pgliteDir });
 }
 
-function delegationMerged(db: Database): boolean {
-  const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+const summaryTable = pgTable("queued_summary", {
+  id: serial().primaryKey(),
+  summary: textColumn(),
+});
+
+async function queuedSummaries(db: Db): Promise<() => Promise<string[]>> {
+  for (const statement of [
+    sql`CREATE TABLE queued_summary (id serial PRIMARY KEY, summary text)`,
+    sql`CREATE FUNCTION queue_summary() RETURNS trigger AS $$ BEGIN
+      IF NEW.op = 'linear.session.summary' THEN
+        INSERT INTO queued_summary (summary) VALUES (NEW.payload->>'summary');
+      END IF; RETURN NEW; END $$ LANGUAGE plpgsql`,
+    sql`CREATE TRIGGER queue_summary AFTER INSERT OR UPDATE OF payload ON outbox
+      FOR EACH ROW EXECUTE FUNCTION queue_summary()`,
+  ])
+    await write(db, (q) => q.orm.execute(statement));
+  return async () =>
+    (await db.run((q) => q.all(q.orm.select().from(summaryTable).orderBy(summaryTable.id)))).map(
+      (row) => row.summary ?? "",
+    );
+}
+
+async function itemOf(db: Db, identifier: string) {
+  return (await listWorkItems(db)).find((entry) => entry.linearIdentifier === identifier);
+}
+
+async function checkpointBaseOf(db: Db, identifier: string): Promise<string | null> {
+  return (await itemOf(db, identifier))?.checkpoint?.baseSha ?? null;
+}
+
+async function settled(db: Db, identifier: string): Promise<boolean> {
+  return ["merged", "failed"].includes((await stateOf(db, identifier)) ?? "");
+}
+
+async function delegationMerged(db: Db): Promise<boolean> {
+  const items = await listWorkItems(db);
   return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
-function queuedSummaries(db: Database): () => string[] {
-  db.run("CREATE TEMP TABLE queued_summary (summary TEXT)");
-  for (const event of ["INSERT", "UPDATE OF payload"])
-    db.run(
-      `CREATE TEMP TRIGGER "queued_summary_${event}" AFTER ${event} ON outbox
-       WHEN NEW.op = 'linear.session.summary'
-       BEGIN INSERT INTO queued_summary VALUES (json_extract(NEW.payload, '$.summary')); END`,
-    );
-  return () =>
-    db
-      .query<{ summary: string }, []>("SELECT summary FROM queued_summary ORDER BY rowid")
-      .all()
-      .map((row) => row.summary);
+async function branchOf(db: Db, identifier: string): Promise<string> {
+  return (await itemOf(db, identifier))?.branchName ?? "";
 }
 
-async function branchOf(db: Database, identifier: string): Promise<string> {
-  return (
-    (await listWorkItems(sqliteDb(db))).find((entry) => entry.linearIdentifier === identifier)
-      ?.branchName ?? ""
-  );
-}
-
-async function debug(layout: { pawsRoot: string }, db: Database): Promise<string> {
+async function debug(layout: { pawsRoot: string }, db: Db): Promise<string> {
   try {
-    const jobs = (await listJobs(sqliteDb(db))).map(
+    const jobs = (await listJobs(db)).map(
       (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
     );
-    const items = db
-      .query<{ linear_identifier: string; state: string }, []>(
-        "SELECT linear_identifier, state FROM work_item ORDER BY position",
-      )
-      .all();
+    const items = (await listWorkItems(db))
+      .sort((a, b) => a.position - b.position)
+      .map((item) => ({ linear_identifier: item.linearIdentifier, state: item.state }));
     return JSON.stringify({ paws: layout.pawsRoot, items, jobs });
   } catch {
     return "db closed";
@@ -4651,12 +4606,10 @@ function sourceIdentifier(taskId: string): string {
   return taskId.replace(/-[0-9A-Z]{26}$/, "");
 }
 
-async function taskPath(db: Database, identifier: string): Promise<string> {
-  const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  if (!row) throw new Error("Fixture task missing");
-  return itemPathId((await getWorkItem(sqliteDb(db), row.id))!);
+async function taskPath(db: Db, identifier: string): Promise<string> {
+  const item = await itemOf(db, identifier);
+  if (!item) throw new Error("Fixture task missing");
+  return itemPathId(item);
 }
 
 for (const race of ["token", "merge", "followup"] as const) {
@@ -4671,8 +4624,7 @@ for (const race of ["token", "merge", "followup"] as const) {
         subIssues: [],
       },
     ]);
-    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
@@ -4681,7 +4633,7 @@ for (const race of ["token", "merge", "followup"] as const) {
     const release = Promise.withResolvers<void>();
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -4732,8 +4684,8 @@ for (const race of ["token", "merge", "followup"] as const) {
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "publication"));
       await tickWithRestarts(jobs, orchestrator, db);
-      const item = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
+      const item = (await listWorkItems(db))[0]!;
+      expect((await getWorkItem(db, item.id))?.state).toBe("merge_queue");
       const publication = tickWithRestarts(jobs, orchestrator, db);
       await reached.promise;
       const stopped = orchestrator.onLinearEvent(
@@ -4742,17 +4694,12 @@ for (const race of ["token", "merge", "followup"] as const) {
           : linearEvent("prompted", null, "stop"),
       );
       if (race === "token")
-        for (
-          let i = 0;
-          i < 1_000 && (await getWorkItem(sqliteDb(db), item.id))?.state !== "paused";
-          i++
-        )
+        for (let i = 0; i < 1_000 && (await getWorkItem(db, item.id))?.state !== "paused"; i++)
           await Bun.sleep(1);
-      if (race === "token")
-        expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("paused");
+      if (race === "token") expect((await getWorkItem(db, item.id))?.state).toBe("paused");
       else if (race === "merge") {
         await stopped;
-        expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+        expect(await getWorkItem(db, item.id)).toMatchObject({
           state: "merge_queue",
           cancelRequested: false,
         });
@@ -4760,21 +4707,19 @@ for (const race of ["token", "merge", "followup"] as const) {
       release.resolve();
       await publication;
       await stopped;
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe(
-        race === "token" ? "paused" : "merged",
-      );
+      expect((await getWorkItem(db, item.id))?.state).toBe(race === "token" ? "paused" : "merged");
       if (race === "merge") {
-        db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.command]);
+        await wakeJobs(db, JOB_KIND.command);
         await tickWithRestarts(jobs, orchestrator, db);
         expect(
-          (await listOutbox(sqliteDb(db))).filter(
+          (await listOutbox(db)).filter(
             (row) =>
               row.status !== "dropped" &&
               String((row.payload as { body?: string }).body).includes("was already merged"),
           ),
         ).toHaveLength(1);
         expect(
-          (await listOutbox(sqliteDb(db))).filter(
+          (await listOutbox(db)).filter(
             (row) =>
               row.status !== "dropped" &&
               String((row.payload as { body?: string }).body).startsWith("Merged #"),
@@ -4782,9 +4727,7 @@ for (const race of ["token", "merge", "followup"] as const) {
         ).toHaveLength(1);
       }
       if (race === "followup") {
-        const items = db
-          .query<{ id: string; state: string }, []>("SELECT id, state FROM work_item")
-          .all();
+        const items = await listWorkItems(db);
         expect(items).toHaveLength(2);
         expect(items.find((entry) => entry.id !== item.id)?.state).toBe("queued");
       }
@@ -4792,13 +4735,13 @@ for (const race of ["token", "merge", "followup"] as const) {
       if (race === "token") {
         expect(github.opened).toEqual([]);
         expect(github.merged).toEqual([]);
-        expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toBeNull();
+        expect(await getConfirmedRemoteMerge(db, item.id)).toBeNull();
       } else {
         expect(github.merged).toHaveLength(1);
         const sha = (
           await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
         ).stdout.trim();
-        expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toMatchObject({
+        expect(await getConfirmedRemoteMerge(db, item.id)).toMatchObject({
           repositoryOwner: "pmdroid",
           repositoryName: "paws-demo",
           pullNumber: 1,
@@ -4808,7 +4751,7 @@ for (const race of ["token", "merge", "followup"] as const) {
     } finally {
       release.resolve();
       await orchestrator.shutdown();
-      db.close();
+      await close();
       await layout.cleanup();
     }
   }, 30_000);
@@ -4816,8 +4759,8 @@ for (const race of ["token", "merge", "followup"] as const) {
 
 test("a Linear correction interrupts code, returns a screenshot, and completes after verified merge through Linear", async () => {
   const layout = await repoLayout("paws-e2e-");
-  let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const reopen = await reopenable(layout);
+  let { store: db, close } = await reopen();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -4873,7 +4816,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     },
     fetch: async (_url, request) => {
       expect(request?.method).toBe("PUT");
-      expect(stateOf(db, "ENG-1")).toBe("running");
+      expect(await stateOf(db, "ENG-1")).toBe("running");
       expect(github.opened).toHaveLength(0);
       expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
       expect(Buffer.from(await new Response(request?.body).arrayBuffer())).toEqual(
@@ -4962,7 +4905,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     return { command: process.execPath, args: [fakeAgent, result, script], env: process.env };
   };
   const createOrchestrator = () => {
-    gate = new LinearTaskAccess(sqliteDb(db), {
+    gate = new LinearTaskAccess(db, {
       access: access.adapter,
       lifecycle,
       oauthClientId: scope.oauthClientId,
@@ -4974,7 +4917,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     return attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -4999,7 +4942,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
   const event = async (key: string, body: string | null): Promise<AcceptedLinearEvent> => {
     const createdAt = Math.max(
       Date.now(),
-      ((await findOpenQuestion(sqliteDb(db), "ses_1"))?.createdAt ?? 0) + 1,
+      ((await findOpenQuestion(db, "ses_1"))?.createdAt ?? 0) + 1,
     );
     return parseAgentEvent(
       JSON.stringify({
@@ -5038,15 +4981,15 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
   tracker.askQuestion = async (question, options) => {
     await askQuestion(question, options);
     if (tracker.questions.length === 1) {
-      earlyQuestionId = (await findOpenQuestion(sqliteDb(db), "ses_1"))!.id;
+      earlyQuestionId = (await findOpenQuestion(db, "ses_1"))!.id;
       earlyAnswer = sendEvent("color-answer", "blue");
       for (
         let attempt = 0;
-        attempt < 100 && (await getQuestion(sqliteDb(db), earlyQuestionId))?.status !== "answered";
+        attempt < 100 && (await getQuestion(db, earlyQuestionId))?.status !== "answered";
         attempt++
       )
         await Bun.sleep(1);
-      earlyAnswerState = (await getQuestion(sqliteDb(db), earlyQuestionId))?.status;
+      earlyAnswerState = (await getQuestion(db, earlyQuestionId))?.status;
     }
   };
   const waitFor = async (condition: () => boolean) => {
@@ -5072,7 +5015,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await waitFor(() => tracker.questions.length === 2);
     await earlyAnswer;
     expect(earlyAnswerState).toBe("answered");
-    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(db, earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
@@ -5084,39 +5027,35 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await orchestrator.shutdown();
     await initial;
     await outbox.idle();
-    db.close();
-    db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-    migrate(db);
+    await close();
+    ({ store: db, close } = await reopen());
     jobs = new JobLoop(db, systemClock);
     outbox = new OutboxDispatcher(db, systemClock);
     orchestrator = createOrchestrator();
-    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.options).toEqual([
+    expect((await findOpenQuestion(db, "ses_1"))?.options).toEqual([
       { label: "Original labels", value: "original" },
       { label: "Compact labels", value: "compact" },
     ]);
-    const recoveredQuestionId = (await findOpenQuestion(sqliteDb(db), "ses_1"))!.id;
-    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
+    const recoveredQuestionId = (await findOpenQuestion(db, "ses_1"))!.id;
+    expect(await getQuestion(db, earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
     await sendEvent("color-answer", "blue");
-    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(recoveredQuestionId);
+    expect((await findOpenQuestion(db, "ses_1"))?.id).toBe(recoveredQuestionId);
     await sendEvent("label-answer", "Use larger labels and keep the blue color.");
-    expect(await getQuestion(sqliteDb(db), recoveredQuestionId)).toMatchObject({
+    expect(await getQuestion(db, recoveredQuestionId)).toMatchObject({
       answer: "Use larger labels and keep the blue color.",
       answeredBy: "pascal",
       status: "answered",
     });
     initial = tickWithRestarts(jobs, orchestrator, db);
-    const task = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    const workspace = worktreePath(
-      layout.pawsRoot,
-      itemPathId((await getWorkItem(sqliteDb(db), task.id))!),
-    );
+    const task = (await listWorkItems(db))[0]!;
+    const workspace = worktreePath(layout.pawsRoot, itemPathId((await getWorkItem(db, task.id))!));
     await waitFor(() => existsSync(path.join(workspace, "before-correction.txt")));
     await sendEvent("correction", "Use the corrected chart layout and include a screenshot.");
     await initial;
-    for (let tick = 0; tick < 10 && stateOf(db, "ENG-1") !== "merged"; tick++)
+    for (let tick = 0; tick < 10 && (await stateOf(db, "ENG-1")) !== "merged"; tick++)
       await tickWithRestarts(jobs, orchestrator, db);
     expect(implementations).toBe(4);
     expect(revoked).toEqual([]);
@@ -5145,7 +5084,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     ]);
     expect(github.opened).toHaveLength(1);
     expect(github.merged).toHaveLength(1);
-    expect(stateOf(db, "ENG-1"), await debug(layout, db)).toBe("merged");
+    expect(await stateOf(db, "ENG-1"), await debug(layout, db)).toBe("merged");
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
     expect(tracker.progress.some((update) => update.kind === "response")).toBe(true);
     const artifactIndex = tracker.progress.findIndex((update) =>
@@ -5153,19 +5092,19 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(await listArtifacts(sqliteDb(db), task.id)).toHaveLength(1);
-    expect((await listArtifacts(sqliteDb(db), task.id))[0]).toMatchObject({
+    expect(await listArtifacts(db, task.id)).toHaveLength(1);
+    expect((await listArtifacts(db, task.id))[0]).toMatchObject({
       state: "uploaded",
       mimeType: "image/png",
       displayName: "chart.png",
       sizeBytes: Buffer.from(png, "base64").byteLength,
       assetUrl: "https://uploads.linear.app/chart.png",
     });
-    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(db, earlyQuestionId!)).toMatchObject({
       status: "answered",
       answer: "blue",
     });
-    expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
+    expect(await findOpenQuestion(db, "ses_1")).toBeNull();
     const recovered = JSON.parse(await readFile(implementationTraces[2]!, "utf8"));
     expect(JSON.stringify(recovered.prompts)).toContain(
       "Use larger labels and keep the blue color.",
@@ -5182,7 +5121,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await orchestrator.shutdown();
     await initial;
     await outbox.idle();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 30000);
