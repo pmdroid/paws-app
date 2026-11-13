@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
+import { and, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   JOB_KIND,
   isTerminalWorkItemState,
@@ -25,20 +25,22 @@ import {
   markCloseoutAccepted,
   markRun,
   mergeCallInFlight,
-  migrate,
-  openDatabase,
+  openPawsStore,
+  pgSchema,
   prepareShutdownSteps,
   recoverOnStartupSteps,
   requeueOrphanedWorkSteps,
   restartHold,
   saveCheckpoint,
   type Job,
+  type Db,
+  type PgDb,
   type WorkItemRecord,
-  sqliteDb,
 } from "../src/db";
 import { askSteps } from "../src/loop";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
-import { migratedDatabase, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 
 export const T0 = 1_000_000_000;
 export const MINUTE = 60_000;
@@ -84,75 +86,99 @@ const RUNNING: Checkpoint = { phase: "running", baseSha: "base", wipCommit: "wip
 const CANDIDATE: Checkpoint = { phase: "verifying", baseSha: "base", wipCommit: "head" };
 const MERGING: Checkpoint = { phase: "merge_queue", baseSha: "base", wipCommit: "head" };
 
-export function leaseRunnerWork(
-  db: Database,
+const { job, question, runnerWork, workItem } = pgSchema;
+
+const orm = (db: Db) => (db as PgDb).orm;
+
+const itemOf = sql`${job.payload}->>'itemId'`;
+
+export async function leaseRunnerWork(
+  db: Db,
   runId: string,
   now: number,
   leaseMs = MINUTE,
   generation = 1,
-): void {
-  db.run("PRAGMA foreign_keys=OFF");
-  db.run(
-    `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-     VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET generation=excluded.generation,
-       command_id=excluded.command_id,lease_until=excluded.lease_until,ended_at=NULL`,
-    [runId, "runner", "workspace", generation, 0, `command-${runId}-${generation}`, now + leaseMs],
-  );
-  db.run("PRAGMA foreign_keys=ON");
+): Promise<void> {
+  const lease = {
+    generation,
+    commandId: `command-${runId}-${generation}`,
+    leaseUntil: now + leaseMs,
+  };
+  await db.transaction(function* (q) {
+    yield* q.exec(q.orm.execute(sql`SET LOCAL session_replication_role = replica`));
+    yield* q.exec(
+      q.orm
+        .insert(q.t.runnerWork)
+        .values({ runId, runnerId: "runner", workspaceId: "workspace", runnerFence: 0, ...lease })
+        .onConflictDoUpdate({ target: q.t.runnerWork.runId, set: { ...lease, endedAt: null } }),
+    );
+  });
 }
 
 export const JOB_LEASE_MS = 5 * MINUTE;
 export const ORPHAN_GRACE_MS = 5 * MINUTE;
 
-export function reapFencedJobs(db: Database, now: number): number {
-  return db.run(
-    `UPDATE job SET status='done', finished_at=?1, locked_by=NULL, locked_until=NULL
-     WHERE status='running' AND locked_until<=?1 AND item_version IS NOT NULL
-       AND item_version<>(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))`,
-    [now],
-  ).changes;
+export async function reapFencedJobs(db: Db, now: number): Promise<number> {
+  const reaped = await orm(db)
+    .update(job)
+    .set({ status: "done", finishedAt: now, lockedBy: null, lockedUntil: null })
+    .where(
+      and(
+        eq(job.status, "running"),
+        lte(job.lockedUntil, now),
+        ne(
+          job.itemVersion,
+          sql`(SELECT ${workItem.version} FROM ${workItem} WHERE ${workItem.id} = ${itemOf})`,
+        ),
+      ),
+    )
+    .returning({ id: job.id });
+  return reaped.length;
 }
 
 export async function claimedJob(
-  db: Database,
+  db: Db,
   queue: string,
   payload: object,
   now: number,
 ): Promise<number> {
-  const id = await enqueueJob(sqliteDb(db), { queue, payload, now });
-  db.run("UPDATE job SET status='running', attempts=1, locked_by=?, locked_until=? WHERE id=?", [
-    `worker:${id}`,
-    now + JOB_LEASE_MS,
-    id,
-  ]);
+  const id = await enqueueJob(db, { queue, payload, now });
+  await orm(db)
+    .update(job)
+    .set({
+      status: "running",
+      attempts: 1,
+      lockedBy: `worker:${id}`,
+      lockedUntil: now + JOB_LEASE_MS,
+    })
+    .where(eq(job.id, id));
   return id;
 }
 
-function finishItemJobs(db: Database, itemId: string, now: number): void {
-  db.run(
-    `UPDATE job SET status='done', finished_at=?, locked_by=NULL, locked_until=NULL
-     WHERE status IN ('pending','running') AND json_extract(payload,'$.itemId')=?`,
-    [now, itemId],
-  );
+async function finishItemJobs(db: Db, itemId: string, now: number): Promise<void> {
+  await orm(db)
+    .update(job)
+    .set({ status: "done", finishedAt: now, lockedBy: null, lockedUntil: null })
+    .where(and(inArray(job.status, ["pending", "running"]), eq(itemOf, itemId)));
 }
 
 function identity(itemId: string, head: string, base = "base") {
   return { taskId: itemId, base, head, policyDigest: "policy", policyPath: null };
 }
 
-async function accept(db: Database, id: string, now: number, head = "head"): Promise<void> {
-  await finishCloseoutProgress(sqliteDb(db), id, identity(id, head), "accepted", now);
-  await markCloseoutAccepted(sqliteDb(db), id, head);
+async function accept(db: Db, id: string, now: number, head = "head"): Promise<void> {
+  await finishCloseoutProgress(db, id, identity(id, head), "accepted", now);
+  await markCloseoutAccepted(db, id, head);
 }
 
 export async function seedFixture(
-  db: Database,
+  db: Db,
   fixture: Fixture,
   now: number,
   id = fixture,
 ): Promise<void> {
   await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
-  await sqliteDb(db).transaction((q) =>
+  await db.transaction((q) =>
     bindWorkItemRepositorySteps(q, id, {
       owner: "owner",
       repo: "repo",
@@ -160,21 +186,21 @@ export async function seedFixture(
     }),
   );
   if (fixture === "queued") return;
-  const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);
+  const { run } = await beginImplementRun(db, id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
     await claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
   const toVerifying = async () => {
-    await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
-    await saveCheckpoint(sqliteDb(db), id, CANDIDATE);
+    await applyWorkItemEvent(db, id, "turn_ended", { now });
+    await saveCheckpoint(db, id, CANDIDATE);
   };
   const toMergeQueue = async (runEnded = true) => {
     await toVerifying();
     await accept(db, id, now);
-    await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted", { now });
-    await saveCheckpoint(sqliteDb(db), id, MERGING);
-    await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
-    if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
-    await enqueueJob(sqliteDb(db), {
+    await applyWorkItemEvent(db, id, "closeout_accepted", { now });
+    await saveCheckpoint(db, id, MERGING);
+    await joinMergeQueue(db, { itemId: id, repository: "owner/repo", now });
+    if (runEnded) await markRun(db, run.id, "ended", now);
+    await enqueueJob(db, {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}:head:accepted`,
       payload: { itemId: id, head: "head", summary: "Closeout accepted." },
@@ -185,36 +211,33 @@ export async function seedFixture(
     case "running":
       return;
     case "running_leased":
-      leaseRunnerWork(db, run.id, now);
+      await leaseRunnerWork(db, run.id, now);
       return;
     case "running_resumed":
-      db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=? WHERE id=?", [now, id]);
+      await orm(db)
+        .update(workItem)
+        .set({ recoveryAttempts: 1, resumedAt: now })
+        .where(eq(workItem.id, id));
       return;
     case "verifying_candidate":
       await toVerifying();
       return;
     case "verifying_bare":
-      await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
+      await applyWorkItemEvent(db, id, "turn_ended", { now });
       return;
     case "verifying_leased":
       await toVerifying();
-      leaseRunnerWork(db, run.id, now);
+      await leaseRunnerWork(db, run.id, now);
       return;
     case "verifying_rejected":
       await toVerifying();
       await accept(db, id, now);
-      await finishCloseoutProgress(
-        sqliteDb(db),
-        id,
-        identity(id, "head", "newer"),
-        "rejected",
-        now + 1,
-      );
+      await finishCloseoutProgress(db, id, identity(id, "head", "newer"), "rejected", now + 1);
       return;
     case "recovering":
-      await applyWorkItemEvent(sqliteDb(db), id, "lease_expired", { now });
-      await markRun(sqliteDb(db), run.id, "lost", now);
-      await enqueueJob(sqliteDb(db), {
+      await applyWorkItemEvent(db, id, "lease_expired", { now });
+      await markRun(db, run.id, "lost", now);
+      await enqueueJob(db, {
         queue: JOB_KIND.resume,
         jobKey: `orphan:${id}:${now}`,
         payload: { itemId: id, runId: run.id, freshSession: true, reason: "orphaned" },
@@ -222,7 +245,7 @@ export async function seedFixture(
       });
       return;
     case "parked_wait":
-      await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
+      await deferWorkItem(db, (await getWorkItem(db, id))!, {
         retry: 0,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -232,7 +255,7 @@ export async function seedFixture(
       });
       return;
     case "transient_retry":
-      await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
+      await deferWorkItem(db, (await getWorkItem(db, id))!, {
         retry: 2,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -245,16 +268,16 @@ export async function seedFixture(
       return;
     case "merge_inflight":
       await toMergeQueue();
-      await beginMergeCall(sqliteDb(db), id, "head", now);
+      await beginMergeCall(db, id, "head", now);
       return;
     case "merge_active_run":
       await toMergeQueue(false);
       return;
     case "paused":
-      await applyWorkItemEvent(sqliteDb(db), id, "pause", { now });
+      await applyWorkItemEvent(db, id, "pause", { now });
       return;
     case "awaiting_input":
-      await sqliteDb(db).transaction((q) =>
+      await db.transaction((q) =>
         askSteps(
           q,
           { itemId: id, runId: run.id, sessionId: `session-${id}` },
@@ -268,8 +291,8 @@ export async function seedFixture(
       return;
     case "awaiting_merge_help":
       await toMergeQueue();
-      finishItemJobs(db, id, now);
-      await sqliteDb(db).transaction((q) =>
+      await finishItemJobs(db, id, now);
+      await db.transaction((q) =>
         askSteps(
           q,
           { itemId: id, runId: null, sessionId: `session-${id}` },
@@ -282,26 +305,26 @@ export async function seedFixture(
       );
       return;
     case "manual":
-      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
-      await applyWorkItemEvent(sqliteDb(db), id, "take_over", { now });
+      await applyWorkItemEvent(db, id, "run_failed", { now });
+      await applyWorkItemEvent(db, id, "take_over", { now });
       return;
     case "failed":
-      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
-      await markRun(sqliteDb(db), run.id, "ended", now);
+      await applyWorkItemEvent(db, id, "run_failed", { now });
+      await markRun(db, run.id, "ended", now);
       return;
     case "completed":
-      await applyWorkItemEvent(sqliteDb(db), id, "answer_completed", { now });
-      await markRun(sqliteDb(db), run.id, "ended", now);
+      await applyWorkItemEvent(db, id, "answer_completed", { now });
+      await markRun(db, run.id, "ended", now);
       return;
     case "merged":
       await toMergeQueue();
-      await applyWorkItemEvent(sqliteDb(db), id, "merge_accepted", { now });
-      finishItemJobs(db, id, now);
+      await applyWorkItemEvent(db, id, "merge_accepted", { now });
+      await finishItemJobs(db, id, now);
       return;
     case "cancelled":
-      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now });
-      db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [id]);
-      await markRun(sqliteDb(db), run.id, "lost", now);
+      await applyWorkItemEvent(db, id, "cancel", { now });
+      await orm(db).update(workItem).set({ cancelRequested: 1 }).where(eq(workItem.id, id));
+      await markRun(db, run.id, "lost", now);
       return;
     default: {
       const exhaustive: never = fixture;
@@ -311,66 +334,79 @@ export async function seedFixture(
 }
 
 export class World {
-  readonly path = join(tempHome(), "paws.db");
-  db: Database;
+  readonly path = join(tempHome(), "pglite");
+  db!: Db;
   now: number;
   readonly trace: string[] = [];
+  private store: { store: Db; close(): Promise<void> } | undefined;
 
-  constructor(now = T0) {
+  private constructor(now: number) {
     this.now = now;
-    this.db = migratedDatabase(this.path);
   }
 
-  async seed(fixtures: readonly Fixture[]): Promise<this> {
-    for (const fixture of fixtures) await seedFixture(this.db, fixture, this.now);
-    return this;
+  static async open(now = T0): Promise<World> {
+    const world = new World(now);
+    await copyMigratedPglite(world.path);
+    await world.reopen();
+    return world;
   }
 
-  crash(): void {
+  static async seeded(fixtures: readonly Fixture[], now = T0): Promise<World> {
+    const world = await World.open(now);
+    for (const fixture of fixtures) await seedFixture(world.db, fixture, world.now);
+    return world;
+  }
+
+  private async reopen(): Promise<void> {
+    await this.store?.close();
+    this.store = await openPawsStore({ url: null, pgliteDir: this.path });
+    this.db = this.store.store;
+  }
+
+  async crash(): Promise<void> {
     this.trace.push("crash");
-    this.db.close();
-    this.db = openDatabase(this.path);
-    migrate(this.db);
+    await this.reopen();
   }
 
   async stop(): Promise<void> {
     this.trace.push("stop");
-    await sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined));
-    this.db.close();
-    this.db = openDatabase(this.path);
-    migrate(this.db);
+    await this.db.transaction((q) => prepareShutdownSteps(q, this.now, undefined));
+    await this.reopen();
   }
 
   async start(): Promise<void> {
     this.trace.push(`start@${this.now - T0}`);
     const wake = { armed: false };
-    await sqliteDb(this.db).transaction((q) =>
+    await this.db.transaction((q) =>
       recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
     );
   }
 
   async sweep(): Promise<void> {
     this.trace.push(`sweep@${this.now - T0}`);
-    reapFencedJobs(this.db, this.now);
-    await sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now));
-    await sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now));
+    await reapFencedJobs(this.db, this.now);
+    await this.db.transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now));
+    await this.db.run((q) => requeueOrphanedWorkSteps(q, this.now));
   }
 
   async settle(): Promise<void> {
     let quiet = 0;
     for (let round = 0; round < 24 && quiet < 3; round++) {
-      const before = JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"]));
+      const before = JSON.stringify(await dump(this.db, ["work_item", "job", "runner_work"]));
       await this.sweep();
       this.advance(ORPHAN_GRACE_MS + 1);
       quiet =
-        JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"])) === before
+        JSON.stringify(await dump(this.db, ["work_item", "job", "runner_work"])) === before
           ? quiet + 1
           : 0;
     }
   }
 
-  renewJobLeases(): void {
-    this.db.run("UPDATE job SET locked_until=? WHERE status='running'", [this.now + JOB_LEASE_MS]);
+  async renewJobLeases(): Promise<void> {
+    await orm(this.db)
+      .update(job)
+      .set({ lockedUntil: this.now + JOB_LEASE_MS })
+      .where(eq(job.status, "running"));
   }
 
   advance(ms: number): void {
@@ -378,8 +414,9 @@ export class World {
     this.now += ms;
   }
 
-  close(): void {
-    this.db.close();
+  async close(): Promise<void> {
+    await this.store?.close();
+    this.store = undefined;
   }
 }
 
@@ -397,64 +434,94 @@ export type ItemFacts = {
   mergeCall: boolean;
 };
 
-async function liveJobsOf(db: Database, item: WorkItemRecord): Promise<Job[]> {
-  return (await listJobs(sqliteDb(db))).filter(
+async function liveJobsOf(db: Db, item: WorkItemRecord): Promise<Job[]> {
+  return (await listJobs(db)).filter(
     (job) =>
       (job.payload as { itemId?: unknown } | null)?.itemId === item.id &&
       (job.status === "running" || job.status === "pending"),
   );
 }
 
-export async function progressJobs(
-  db: Database,
-  item: WorkItemRecord,
-  now: number,
-): Promise<Job[]> {
+export async function progressJobs(db: Db, item: WorkItemRecord, now: number): Promise<Job[]> {
   const current = new Set(
-    db
-      .query<{ id: number }, [string, number, number]>(
-        `SELECT id FROM job WHERE json_extract(payload,'$.itemId')=?1
-         AND ((status='running' AND (locked_until>?3 OR item_version IS NULL OR item_version=?2))
-         OR (status='pending' AND (item_version IS NULL OR item_version=?2
-           OR queue IN ('${JOB_KIND.command}','${JOB_KIND.reverify}'))))`,
-      )
-      .all(item.id, item.version, now)
-      .map((row) => row.id),
+    (
+      await orm(db)
+        .select({ id: job.id })
+        .from(job)
+        .where(
+          and(
+            eq(itemOf, item.id),
+            or(
+              and(
+                eq(job.status, "running"),
+                or(
+                  gt(job.lockedUntil, now),
+                  isNull(job.itemVersion),
+                  eq(job.itemVersion, item.version),
+                ),
+              ),
+              and(
+                eq(job.status, "pending"),
+                or(
+                  isNull(job.itemVersion),
+                  eq(job.itemVersion, item.version),
+                  inArray(job.queue, [JOB_KIND.command, JOB_KIND.reverify]),
+                ),
+              ),
+            ),
+          ),
+        )
+    ).map((row) => row.id),
   );
   return (await liveJobsOf(db, item)).filter((job) => current.has(job.id));
 }
 
-function actionableQuestions(db: Database, itemId: string): number {
-  return db
-    .query<{ n: number }, [string]>(
-      `SELECT count(*) AS n FROM question WHERE item_id=? AND cancelled_at IS NULL
-       AND status IN ('open','queued')`,
+async function actionableQuestions(db: Db, itemId: string): Promise<number> {
+  const [row] = await orm(db)
+    .select({ n: sql<number>`count(*)::int` })
+    .from(question)
+    .where(
+      and(
+        eq(question.itemId, itemId),
+        isNull(question.cancelledAt),
+        inArray(question.status, ["open", "queued"]),
+      ),
+    );
+  return row!.n;
+}
+
+async function pendingAsk(db: Db, itemId: string): Promise<boolean> {
+  const rows = await orm(db)
+    .select({ id: job.id })
+    .from(job)
+    .where(
+      and(
+        eq(job.queue, "item.ask"),
+        inArray(job.status, ["pending", "running"]),
+        eq(itemOf, itemId),
+      ),
     )
-    .get(itemId)!.n;
+    .limit(1);
+  return rows.length > 0;
 }
 
-function pendingAsk(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM job WHERE queue='item.ask' AND status IN ('pending','running')
-         AND json_extract(payload,'$.itemId')=?`,
-      )
-      .get(itemId) !== null
-  );
+async function liveRunnerWork(db: Db, item: WorkItemRecord, now: number): Promise<boolean> {
+  if (item.currentRunId === null) return false;
+  const rows = await orm(db)
+    .select({ runId: runnerWork.runId })
+    .from(runnerWork)
+    .where(
+      and(
+        eq(runnerWork.runId, item.currentRunId),
+        isNull(runnerWork.endedAt),
+        gt(runnerWork.leaseUntil, now - RUNNER_LEASE_GRACE_MS),
+      ),
+    );
+  return rows.length > 0;
 }
 
-function liveRunnerWork(db: Database, item: WorkItemRecord, now: number): boolean {
-  return (
-    item.currentRunId !== null &&
-    db
-      .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
-      .get(item.currentRunId, now - RUNNER_LEASE_GRACE_MS) !== null
-  );
-}
-
-export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
-  const item = (await getWorkItem(sqliteDb(db), id))!;
+export async function factsOf(db: Db, id: string): Promise<ItemFacts> {
+  const item = (await getWorkItem(db, id))!;
   return {
     state: item.state,
     version: item.version,
@@ -462,14 +529,12 @@ export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
     acceptedHead: item.acceptedHead,
     checkpoint: item.checkpoint,
     runStatus:
-      item.currentRunId === null
-        ? null
-        : ((await getRun(sqliteDb(db), item.currentRunId))?.status ?? null),
+      item.currentRunId === null ? null : ((await getRun(db, item.currentRunId))?.status ?? null),
     cancelRequested: item.cancelRequested,
     liveJobs: (await liveJobsOf(db, item)).map((job) => `${job.queue}:${job.status}`).sort(),
-    questions: actionableQuestions(db, id),
-    restartHold: (await restartHold(sqliteDb(db), item)) !== null,
-    mergeCall: await mergeCallInFlight(sqliteDb(db), id),
+    questions: await actionableQuestions(db, id),
+    restartHold: (await restartHold(db, item)) !== null,
+    mergeCall: await mergeCallInFlight(db, id),
   };
 }
 
@@ -482,7 +547,7 @@ export const STARTUP_RESUME_DUPLICATE =
 export type Checks = { liveness?: boolean };
 
 export async function unexpectedViolations(
-  db: Database,
+  db: Db,
   now: number,
   checks: Checks = {},
 ): Promise<string[]> {
@@ -502,49 +567,70 @@ const DUMPED_TABLES = [
   "paws_alive",
 ];
 
-export function dump(
-  db: Database,
+export async function dump(
+  db: Db,
   only: readonly string[] = DUMPED_TABLES,
-): Record<string, unknown[]> {
+): Promise<Record<string, unknown[]>> {
   const tables = new Set(
-    db
-      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table'")
-      .all()
-      .map((row) => row.name),
+    (
+      await orm(db)
+        .select({ name: sql<string>`table_name` })
+        .from(sql`information_schema.tables`)
+        .where(sql`table_schema = current_schema()`)
+    ).map((row) => row.name),
   );
-  return Object.fromEntries(
-    only
-      .filter((table) => tables.has(table))
-      .map((table) => [table, db.query(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
+  const dumped: Record<string, unknown[]> = {};
+  for (const table of only.filter((name) => tables.has(name)))
+    dumped[table] = (
+      await orm(db)
+        .select({ row: sql<unknown>`to_jsonb(t)` })
+        .from(sql`${sql.identifier(table)} t`)
+        .orderBy(sql`t::text`)
+    ).map((entry) => entry.row);
+  return dumped;
+}
+
+export function injectedWriteFailure(error: unknown): boolean {
+  return String((error as Error | undefined)?.cause ?? error).includes("injected write failure");
+}
+
+export async function failWrites(db: Db, point: string): Promise<void> {
+  await orm(db).execute(
+    sql`CREATE OR REPLACE FUNCTION injected_write_failure() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected write failure'; END $$ LANGUAGE plpgsql`,
+  );
+  await orm(db).execute(
+    sql.raw(
+      `CREATE TRIGGER injected_write_failure ${point} FOR EACH ROW EXECUTE FUNCTION injected_write_failure()`,
+    ),
   );
 }
 
-export function failWrites(db: Database, point: string): void {
-  db.run(
-    `CREATE TEMP TRIGGER injected_write_failure ${point} BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`,
+export async function allowWrites(db: Db): Promise<void> {
+  await orm(db).execute(
+    sql`DO $$ DECLARE target regclass; BEGIN
+      FOR target IN SELECT tgrelid::regclass FROM pg_trigger WHERE tgname = 'injected_write_failure' LOOP
+        EXECUTE format('DROP TRIGGER injected_write_failure ON %s', target);
+      END LOOP;
+    END $$`,
   );
-}
-
-export function allowWrites(db: Database): void {
-  db.run("DROP TRIGGER IF EXISTS injected_write_failure");
 }
 
 export async function violations(
-  db: Database,
+  db: Db,
   now: number,
   { liveness = true }: Checks = {},
 ): Promise<string[]> {
   const found: string[] = [];
-  for (const item of await listWorkItems(sqliteDb(db))) {
+  for (const item of await listWorkItems(db)) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
     const live = await liveJobsOf(db, item);
     const execution = live.filter((job) => EXECUTION_QUEUES.includes(job.queue));
     const progress = (await progressJobs(db, item, now)).filter((job) =>
       EXECUTION_QUEUES.includes(job.queue),
     );
-    const questions = actionableQuestions(db, item.id);
-    const hold = (await restartHold(sqliteDb(db), item)) !== null;
-    const merging = await mergeCallInFlight(sqliteDb(db), item.id);
+    const questions = await actionableQuestions(db, item.id);
+    const hold = (await restartHold(db, item)) !== null;
+    const merging = await mergeCallInFlight(db, item.id);
 
     for (const queues of [AGENT_QUEUES, [JOB_KIND.reverify], [JOB_KIND.merge]]) {
       const open = progress.filter((job) => job.status === "pending" && queues.includes(job.queue));
@@ -567,25 +653,25 @@ export async function violations(
     }
     if (item.state === "awaiting_input") {
       if (execution.length > 0) say(`question hold has live ${execution.map((j) => j.queue)}`);
-      if (liveness && questions === 0 && !pendingAsk(db, item.id))
+      if (liveness && questions === 0 && !(await pendingAsk(db, item.id)))
         say("awaiting input without a question");
       continue;
     }
     if (hold) {
       if (execution.length > 0) say(`restart hold has live ${execution.map((j) => j.queue)}`);
-      if (liveness && questions === 0 && !pendingAsk(db, item.id))
+      if (liveness && questions === 0 && !(await pendingAsk(db, item.id)))
         say("restart hold without a question");
       continue;
     }
     if (item.state === "queued") continue;
     if (item.cancelRequested) continue;
-    if (liveness && progress.length === 0 && !liveRunnerWork(db, item, now))
+    if (liveness && progress.length === 0 && !(await liveRunnerWork(db, item, now)))
       say(`no owner: no current job and no live runner work (${live.map((j) => j.queue)})`);
     if (item.state === "merge_queue") {
       if (item.acceptedHead === null) say("in the merge queue without an accepted head");
       else {
         const verdict =
-          (await closeoutPolicyDigests(sqliteDb(db), item.id, item.acceptedHead))?.decision ?? null;
+          (await closeoutPolicyDigests(db, item.id, item.acceptedHead))?.decision ?? null;
         if (verdict !== null && verdict !== "accepted")
           say(`in the merge queue at a head whose latest verdict is ${verdict}`);
       }
