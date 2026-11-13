@@ -19,6 +19,7 @@ import {
   rmSync,
   rmdirSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -167,13 +168,14 @@ export function runnerAgentCredentials(
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
       markRunnerAccountSignedIn(home, account, agent, owners);
       const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
+      const busy = activeExecutions(home).length > 0;
       for (const file of written) {
         if (!allowed.has(file.path)) throw new RunnerAccountHomeError("Agent sign-in is unsafe");
         const target = join(home, file.path);
         let folder = home;
         for (const part of relative(home, dirname(target)).split(sep).filter(Boolean))
           credentialFolder((folder = join(folder, part)), owners);
-        if (file.path === CLAUDE_STATE && present(target)) continue;
+        if ((busy || file.path === CLAUDE_STATE) && present(target)) continue;
         writeSharedFile(target, Buffer.from(file.data, "base64"), owners, 0o660);
       }
     },
@@ -192,8 +194,10 @@ export function returnRunnerAgentCredentials(
   publish: (files: RunnerAgentCredentialFiles) => void,
 ): void {
   const read: RunnerAgentCredentialFiles = [];
+  const raw = new Map<string, Buffer>();
   for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent]) {
     let data = readCredentialFile(join(home, path));
+    if (data && path !== CLAUDE_STATE) raw.set(path, data);
     if (data && path === CLAUDE_STATE) {
       const { oauthAccount } = JSON.parse(data.toString("utf8")) as { oauthAccount?: unknown };
       data = oauthAccount === undefined ? null : Buffer.from(JSON.stringify({ oauthAccount }));
@@ -202,8 +206,14 @@ export function returnRunnerAgentCredentials(
   }
   publish(read);
   if (activeExecutions(home, executionId).length > 0) return;
-  for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent])
-    if (path !== CLAUDE_STATE) rmSync(join(home, path), { force: true });
+  for (const path of raw.keys()) rmSync(join(home, path), { force: true });
+  if (activeExecutions(home, executionId).length === 0) return;
+  for (const [path, data] of raw)
+    if (!present(join(home, path))) {
+      const temporary = `${join(home, path)}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, data, { mode: 0o600, flag: "wx" });
+      renameSync(temporary, join(home, path));
+    }
 }
 
 function present(path: string): boolean {

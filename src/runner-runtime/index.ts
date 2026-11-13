@@ -275,6 +275,7 @@ export async function openRunnerRuntime(options: {
       results: options.results,
       agentUser: options.agentUser,
       skills: options.skills,
+      restoreCredentials: (id) => options.daemon.restoreCredentials?.(id),
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
@@ -722,6 +723,7 @@ export async function openRunnerRuntime(options: {
     return worker;
   }
   async function recoverInterrupted(execution: Execution) {
+    returnCredentials(execution);
     let worker: z.infer<typeof workerResult> | undefined;
     try {
       worker = readWorkerResult(execution);
@@ -748,7 +750,6 @@ export async function openRunnerRuntime(options: {
         run.timedOut ||
         run.cancelled)
     ) {
-      returnCredentials(execution);
       journal.saveResult(
         execution.id,
         RunnerResultSchema.parse({

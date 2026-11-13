@@ -44,6 +44,7 @@ async function withRunner(
   run: (runner: {
     daemon: ReturnType<typeof openRunnerDaemon>;
     home: string;
+    root: string;
     uploads: unknown[];
     plane: {
       failUploads: boolean;
@@ -138,7 +139,7 @@ async function withRunner(
   });
   try {
     await daemon.enroll("credential-proof", "t".repeat(43));
-    await run({ daemon, home, uploads, plane });
+    await run({ daemon, home, root, uploads, plane });
   } finally {
     daemon.close();
     await listener.stop();
@@ -304,7 +305,7 @@ test("a command whose sign-in can't be written is refused and accepted when it c
 }, 30_000);
 
 test("an upload whose answer was lost is sent again unchanged, and the next command gets the newest refresh", async () => {
-  await withRunner(async ({ daemon, home, uploads, plane }) => {
+  await withRunner(async ({ daemon, home, root, uploads, plane }) => {
     plane.commands = () => [command("check-4", "login_check")];
     await daemon.pollCommands();
     const credentials = join(
@@ -328,6 +329,14 @@ test("an upload whose answer was lost is sent again unchanged, and the next comm
       [5, token("r3")],
     ]);
     expect(existsSync(credentials)).toBe(false);
+    const held = ["commands.db", "commands.db-wal"]
+      .map((name) => join(root, "daemon", name))
+      .filter((path) => existsSync(path))
+      .map((path) => readFileSync(path).toString("latin1"))
+      .join("");
+    for (const secret of ["r1", "r2", "r3"])
+      for (const text of ["refreshToken", token(secret).slice(8, -4)])
+        expect(held).not.toContain(text);
   });
 }, 30_000);
 
@@ -355,5 +364,25 @@ test("a queued command gets the sign-in back after another command's turn remove
     expect(existsSync(credentials)).toBe(false);
     daemon.restoreCredentials("check-8");
     expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
+  });
+}, 30_000);
+
+test("a sign-in another worker removed during its cleanup is written back while that worker still holds the account", async () => {
+  await withRunner(async ({ daemon, home, plane }) => {
+    plane.commands = () => [command("check-10", "login_check")];
+    await daemon.pollCommands();
+    const accountHome = join(home, ".paws-accounts", account.bindingId);
+    const credentials = join(accountHome, ".claude/.credentials.json");
+    mkdirSync(join(accountHome, ".paws-active"), { recursive: true });
+    writeFileSync(
+      join(accountHome, ".paws-active", "01J0000000000000000000EXE2"),
+      JSON.stringify({ scope: "0123456789abcdef" }),
+    );
+    rmSync(credentials);
+    daemon.restoreCredentials("check-10");
+    expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
+    writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r9"}}');
+    daemon.restoreCredentials("check-10");
+    expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r9"}}');
   });
 }, 30_000);

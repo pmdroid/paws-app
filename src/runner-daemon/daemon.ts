@@ -25,6 +25,7 @@ import {
   agentCredentialReturnContext,
   agentCredentialDigest,
   openForRunner,
+  sealForRunner,
   runnerCommandAccount,
   type RunnerAgentCredential,
   type RunnerAgentCredentialFiles,
@@ -418,6 +419,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   const credentialFiles = (text: string) =>
     RunnerAgentCredentialFilesSchema.parse(JSON.parse(text));
+  const heldContext = (bindingId: string) => `paws-agent-credential-held:${bindingId}`;
+  const sealHeld = (bindingId: string, files: RunnerAgentCredentialFiles) =>
+    sealForRunner(paired().certificate, JSON.stringify(files), heldContext(bindingId));
+  const openHeld = (bindingId: string, sealed: string) =>
+    credentialFiles(openForRunner(localKey(options.root), sealed, heldContext(bindingId)));
   function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
     const named = runnerCommandAccount(command);
     const files = options.agentCredentials;
@@ -428,15 +434,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (held && held.accountId !== accountId) throw new Error("Agent account binding changed.");
     let written: RunnerAgentCredentialFiles = [];
     try {
-      if (held?.files) written = credentialFiles(held.files);
+      if (held?.files) written = openHeld(bindingId, held.files);
       else if (credential.sealed) {
         const context = agentCredentialContext(command.id, accountId, credential.version);
         written = credentialFiles(
           openForRunner(localKey(options.root), credential.sealed, context),
         );
       }
-      if (written.length && !files.busy(named.account))
-        files.write(named.account, named.agent, written);
+      if (written.length) files.write(named.account, named.agent, written);
     } catch (error) {
       journalCaught(error, "daemon.receiveCredential", null);
       if (!held) files.remove(named.account, named.agent);
@@ -455,7 +460,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         version: credential.version,
         digest: agentCredentialDigest(written),
         commands: JSON.stringify([command.id]),
-        ...(written.length ? { files: JSON.stringify(written) } : {}),
+        ...(written.length ? { files: sealHeld(bindingId, written) } : {}),
       }),
     );
   }
@@ -472,8 +477,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (!row?.files || !credentials) return;
     const account = { accountId: row.accountId, bindingId: row.bindingId };
     try {
-      if (!credentials.busy(account))
-        credentials.write(account, row.agent as RunnerCodingAgent, credentialFiles(row.files));
+      credentials.write(
+        account,
+        row.agent as RunnerCodingAgent,
+        openHeld(row.bindingId, row.files),
+      );
     } catch (error) {
       journalCaught(error, "daemon.restoreCredentials", null);
     }
@@ -503,13 +511,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return;
     }
     const newest = row.latest ?? row.upload;
-    const known = newest ? agentCredentialDigest(credentialFiles(newest)) : row.digest;
+    const known = newest ? agentCredentialDigest(openHeld(row.bindingId, newest)) : row.digest;
     const changed = files.length > 0 && agentCredentialDigest(files) !== known;
     q.update(agentCredential)
       .set({
         commands,
-        ...(files.length ? { files: JSON.stringify(files) } : {}),
-        ...(changed ? { latest: JSON.stringify(files) } : {}),
+        ...(files.length ? { files: sealHeld(row.bindingId, files) } : {}),
+        ...(changed ? { latest: sealHeld(row.bindingId, files) } : {}),
       })
       .where(where)
       .run();
@@ -553,7 +561,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
               continue;
             }
             if (row.upload !== null) {
-              const sent = credentialFiles(row.upload);
+              const sent = openHeld(bindingId, row.upload);
               const { result } = RunnerAgentCredentialReceiptSchema.parse(
                 await authenticated("/v1/agent-credentials", "POST", {
                   accountId: row.accountId,

@@ -137,6 +137,7 @@ export async function openRunnerHealthRuntime(options: {
       spool: options.spool,
       results: options.results,
       agentUser: options.agentUser,
+      restoreCredentials: (id) => options.daemon.restoreCredentials?.(id),
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
