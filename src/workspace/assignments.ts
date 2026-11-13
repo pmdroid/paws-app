@@ -248,8 +248,8 @@ export function createWorkspaceAssignments(options: {
       return refused("Paws could not match this session to an issue.");
     const sessionId = event.sessionId;
     const installationOf = () => store.run((q) => getLinearSessionInstallationSteps(q, sessionId));
-    const generation =
-      (await store.run((q) => getLinearSessionSteps(q, sessionId)))?.generation ?? 0;
+    const stored = await store.run((q) => getLinearSessionSteps(q, sessionId));
+    const generation = stored?.generation ?? 0;
     if (!(await options.accept(event, signal)))
       return (await installationOf())
         ? refused("Paws cannot access this session or its team in Linear.")
@@ -274,7 +274,11 @@ export function createWorkspaceAssignments(options: {
     )
       return refused("Linear returned a different issue for this session.");
     if (session.appUserId !== installation.appUserId) return refused(ELSEWHERE);
-    if (!session.creatorId || session.creatorId === session.appUserId)
+    const creatorId =
+      session.creatorId && session.creatorId !== session.appUserId
+        ? session.creatorId
+        : stored?.creatorId;
+    if (!creatorId || creatorId === session.appUserId)
       return refused("Paws could not tell who started this session.");
     if (session.endedAt !== null || session.dismissedAt !== null)
       return refused("This session already ended in Linear.");
@@ -284,7 +288,6 @@ export function createWorkspaceAssignments(options: {
       return refused("This issue is completed or canceled.");
     if (issue.delegateId !== null && issue.delegateId !== installation.appUserId)
       return refused("This issue is delegated to another agent.");
-    const creatorId = session.creatorId;
     await store.transaction((q) => ensureLinearSessionSteps(q, { sessionId, creatorId }));
     const latest = (await store.run((q) => getLinearSessionSteps(q, sessionId)))!;
     if (

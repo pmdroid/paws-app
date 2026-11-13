@@ -45,11 +45,13 @@ export function linearSessionCreatorId(event: AcceptedLinearEvent): string | nul
     session["creator"] && typeof session["creator"] === "object"
       ? (session["creator"] as Record<string, unknown>)
       : {};
-  return typeof session["creatorId"] === "string"
-    ? session["creatorId"]
-    : typeof creator["id"] === "string"
-      ? creator["id"]
-      : null;
+  const id =
+    typeof session["creatorId"] === "string"
+      ? session["creatorId"]
+      : typeof creator["id"] === "string"
+        ? creator["id"]
+        : null;
+  return id !== null && id === payload["appUserId"] ? null : id;
 }
 
 export async function sessionTaskKey(store: Db, session: StoredLinearSession): Promise<string> {

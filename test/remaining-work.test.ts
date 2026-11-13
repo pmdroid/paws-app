@@ -5,9 +5,12 @@ import {
   beginImplementRun,
   completeMergedItem,
   enqueueJob,
+  ensureLinearSession,
   enterMergeQueue,
+  getLinearSession,
   getPullRequestDraft,
   insertQueuedItem,
+  latestOpenIssueSession,
   listOutbox,
   recordConfirmedRemoteMerge,
   savePullRequestDraft,
@@ -15,6 +18,7 @@ import {
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
+import { intakeDelegatedIssue } from "../src/intake";
 import { tempStore } from "./pglite";
 
 const closes: (() => Promise<void>)[] = [];
@@ -80,12 +84,21 @@ test("two parts left for later become two delegated sub-issues after the merge, 
   expect((await listOutbox(db)).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 
+  await ensureLinearSession(db, { sessionId: item.sessionKey!, creatorId: "delegator" });
   await merge(db, item.id);
   await deliverAll(db, tracker);
   await deliverAll(db, tracker);
 
   const filed = tracker.subIssues.get(item.linearIssueId) ?? [];
   expect(filed.map((issue) => issue.identifier)).toEqual(["ACME-1-1", "ACME-1-2"]);
+  expect(tracker.issueSessions).toEqual(filed.map((issue) => ({ issueId: issue.id })));
+  const session = (await latestOpenIssueSession(db, filed[0]!.id))!;
+  expect((await getLinearSession(db, session.sessionId))?.creatorId).toBe("delegator");
+  const started = await intakeDelegatedIssue(db, tracker, {
+    linearIssueId: filed[0]!.id,
+    sessionId: session.sessionId,
+  });
+  expect(started.ok && started.items.map((work) => work.linearIdentifier)).toEqual(["ACME-1-1"]);
   const request = tracker.subIssueRequests[0]!;
   expect(request).toMatchObject({
     parentIssueId: item.linearIssueId,
