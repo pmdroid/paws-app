@@ -57,8 +57,8 @@ forEachDialect((connect) => {
       }),
     );
     for (const [runnerId, runnerVersion] of [
-      ["old", "0.1.80"],
-      ["new", "0.1.81"],
+      ["old", "0.1.81"],
+      ["new", "0.1.82"],
     ] as const) {
       await seedRunner(db, runnerId);
       await seed(db, (q) =>
