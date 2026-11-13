@@ -90,7 +90,7 @@ try {
       ["setup-member", f.cookie, "An admin is still setting up Paws."],
       ["sign-in", "", "After setup, other people only need to sign in with Linear."],
     ] as const
-  ).flatMap((screen) => [1440, 390].map((width) => [...screen, width] as const))) {
+  ).flatMap((screen) => [1440, 390].map((size) => [...screen, size] as const))) {
     current = `${name}@${width}`;
     const page = await open(width, cookie);
     await page.route("**/api/workspaces/github-connect", (route) =>
