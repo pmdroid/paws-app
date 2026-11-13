@@ -91,6 +91,7 @@ export type PawsConfigFile = {
   linearSecret: string | null;
   linearClientFile: string | null;
   linearCommentAgents?: string[];
+  savedLinearCommentAgents?: string[];
   webhooks: boolean | null;
   githubAuth: GitHubConfigAuth | null;
   trackerKind: TrackerKind | null;
@@ -200,7 +201,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
@@ -529,6 +530,12 @@ function assignConfig(
       asString(value, line),
       `config.toml line ${line}: database.url`,
     );
+    return;
+  }
+  if (section === "linear_comments") {
+    if (key !== "agents")
+      throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    config.savedLinearCommentAgents = asStringArray(value, line);
     return;
   }
   if (section === "linear") {

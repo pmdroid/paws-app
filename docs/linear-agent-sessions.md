@@ -95,19 +95,19 @@ Each comment is one `linear_comment` row keyed by its id, so a webhook redeliver
 
 `routeLinearComment` in `src/loop/linear-comments.ts` settles each comment once:
 
-| Comment                                                                                | Outcome                                                         |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Empty, `/paws stop`                                                                    | ignored; the stop path handles `/paws stop`                     |
-| By Paws's app user, or a bot or integration not in `[linear] comment_agents`           | ignored, whatever the text claims                               |
-| A reply in an agent session's thread, or the session's own source comment              | ignored; the session reply path delivers it                     |
-| Older than the issue's work item                                                       | ignored, so catch-up does not replay history                    |
-| On an issue with no open item: ended work stays ended                                  | ignored                                                         |
-| On a parent issue whose sub-issues run in their own sessions                           | refused, with a thought on the parent session; never fanned out |
-| From another workspace or team, a session without allowed access, or a stopped session | refused or ignored                                              |
-| By a person who fails the workspace member check, or an agent acting for one           | refused                                                         |
-| Otherwise                                                                              | queued on the item, with one "Received a comment" thought       |
+| Comment                                                                                                                | Outcome                                                         |
+| ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Empty, `/paws stop`                                                                                                    | ignored; the stop path handles `/paws stop`                     |
+| By Paws's app user, or a bot or integration not in the [Linear comment agents](configuration.md#linear-comment-agents) | ignored, whatever the text claims                               |
+| A reply in an agent session's thread, or the session's own source comment                                              | ignored; the session reply path delivers it                     |
+| Older than the issue's work item                                                                                       | ignored, so catch-up does not replay history                    |
+| On an issue with no open item: ended work stays ended                                                                  | ignored                                                         |
+| On a parent issue whose sub-issues run in their own sessions                                                           | refused, with a thought on the parent session; never fanned out |
+| From another workspace or team, a session without allowed access, or a stopped session                                 | refused or ignored                                              |
+| By a person who fails the workspace member check, or an agent acting for one                                           | refused                                                         |
+| Otherwise                                                                                                              | queued on the item, with one "Received a comment" thought       |
 
-An agent in `comment_agents` is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too.
+A Linear comment agent is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too.
 
 One `linear.comments` job per item gathers queued comments with the pull request feedback wait (`[merge] comment_quiet_seconds` after the latest, `comment_max_wait_seconds` at most), then:
 

@@ -31,6 +31,13 @@ export {
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";
+export {
+  parseLinearCommentSettings,
+  readLinearCommentSettings,
+  resolveLinearCommentAgents,
+  writeLinearCommentAgents,
+} from "./linear-comments";
+export type { LinearCommentSettings } from "./linear-comments";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
