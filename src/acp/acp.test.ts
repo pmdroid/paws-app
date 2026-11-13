@@ -34,6 +34,12 @@ test("minimal env drops tokens and cloud keys and keeps HOME", () => {
     ANTHROPIC_API_KEY: "sk",
     OPENAI_API_KEY: "sk",
     XAI_API_KEY: "xai-secret",
+    PAWS_S3_BUCKET: "bucket",
+    PAWS_S3_ENDPOINT: "https://s3.example.invalid",
+    PAWS_S3_REGION: "region",
+    PAWS_S3_ACCESS_KEY_ID: "key",
+    PAWS_S3_SECRET_ACCESS_KEY: "secret",
+    PAWS_S3_SESSION_TOKEN: "token",
   });
   expect(env.HOME).toBe("/home/dev");
   expect(env.PATH).toBe("/usr/bin");
@@ -44,6 +50,7 @@ test("minimal env drops tokens and cloud keys and keeps HOME", () => {
   expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   expect(env.OPENAI_API_KEY).toBeUndefined();
   expect(env.XAI_API_KEY).toBeUndefined();
+  for (const name of Object.keys(env)) expect(name.startsWith("PAWS_S3_")).toBe(false);
   const allowed = minimalAgentEnv(
     { HOME: "/home/dev", XAI_API_KEY: "xai-secret", GH_TOKEN: "gh" },
     { allowXaiApiKey: true },
