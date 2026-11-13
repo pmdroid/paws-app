@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   describeOverriddenSections,
+  journalRetiredProjectSettings,
   loadConfigFile,
   overriddenConfigSections,
   loadRuntime,
@@ -10,6 +11,8 @@ import {
   readConfigText,
   readMergeSettings,
   resolveAgentProfiles,
+  resolveBriefTemplate,
+  resolveTimeLimits,
   useSettingsStore,
 } from "../src/config";
 import {
@@ -70,7 +73,6 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
       headers: { "content-type": "application/json", "x-paws-csrf": "csrf" },
       body: JSON.stringify({
         default: { implementationMinutes, fixesMinutes: 0, closeoutMinutes: 0 },
-        projects: [],
       }),
     }),
     { configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
@@ -285,4 +287,24 @@ test("a failed refresh keeps the last settings", async () => {
   gated.fail(new Error("database unavailable"));
   await expect(settings.refresh()).rejects.toThrow("database unavailable");
   expect(readMergeSettings(loadConfigFile(configPath)).default.order).toBe("ci-green");
+});
+
+test("stored project tables load, the items get the global values and each journals once", async () => {
+  const a = await instance(await shared(), "ACME");
+  await updateSetting(
+    a.db,
+    CONFIG_SETTINGS_KEY,
+    () =>
+      '[time_limits]\nfixes_minutes = 30\n\n[time_limits.projects."proj-1"]\nfixes_minutes = 5\n\n[brief]\ntemplate = "Global"\n\n[brief.projects."a/b"]\ntemplate = "Repository"\n',
+  );
+  await a.refresh();
+  const config = loadConfigFile(a.configPath);
+  expect(resolveTimeLimits(config, 1).fixes).toBe(30 * 60_000);
+  expect(resolveBriefTemplate(config)).toBe("Global");
+  const lines: string[] = [];
+  journalRetiredProjectSettings(a.configPath, (line) => lines.push(line));
+  expect(lines).toEqual([
+    "time_limits.projects is no longer supported; using the global time limits",
+    "brief.projects is no longer supported; using the global brief template",
+  ]);
 });

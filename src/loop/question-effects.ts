@@ -96,7 +96,7 @@ export function questionEffects(
   input: {
     now: number;
     maxAwakeMs?: number | undefined;
-    timeLimits?: ((projectId: string | null) => StageLimits) | undefined;
+    timeLimits?: (() => StageLimits) | undefined;
     asking?: (runId: string) => boolean;
     redirect?: boolean;
     marks?: readonly VisualReviewMark[];
@@ -209,7 +209,7 @@ export function questionEffects(
         sessionId: question.sessionId,
         key: question.id,
         maxAwakeMs: input.maxAwakeMs,
-        limits: item ? input.timeLimits?.(item.linearProjectId ?? null) : undefined,
+        limits: item ? input.timeLimits?.() : undefined,
         stage:
           question.reason === SLOW_CI_REASON
             ? undefined

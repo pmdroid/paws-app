@@ -52,7 +52,7 @@ export async function handleTimeLimitSettingsRequest(
   await writeTimeLimits(options.configPath, settings);
   await options.audit(
     "settings.time_limits",
-    `Set time limits: implementation ${settings.implementationMinutes} min, fixes ${settings.fixesMinutes} min, Closeout ${settings.closeoutMinutes} min, ${Object.keys(settings.projects).length} project overrides`,
+    `Set time limits: implementation ${settings.implementationMinutes} min, fixes ${settings.fixesMinutes} min, Closeout ${settings.closeoutMinutes} min`,
   );
   return listing();
 }

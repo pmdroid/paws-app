@@ -17,11 +17,11 @@ import { tempStore } from "../../test/pglite";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-async function harness(toml: string, projectId: string | null = null) {
+async function harness(toml: string) {
   const clock = new FakeClock(20_000);
   const db = (await tempStore()).db;
   const config = parseConfigToml(toml);
-  const limits = resolveTimeLimits(config, projectId, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS);
+  const limits = resolveTimeLimits(config, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS);
   const item = await insertQueuedItem(db, {
     id: "eng-1",
     sessionKey: "ses",
@@ -108,7 +108,7 @@ test("without [time_limits], max_awake_ms limits implementation and nothing else
   expect(await question()).toStartWith("Implementation reached its 1 h limit");
 });
 
-test("a per-project override wins over [time_limits]", async () => {
+test("an old per-project table loads and the item gets [time_limits]", async () => {
   const toml = [
     "[caps]",
     "max_awake_ms = 3600000",
@@ -118,18 +118,11 @@ test("a per-project override wins over [time_limits]", async () => {
     '[time_limits.projects."proj-1"]',
     "fixes_minutes = 30",
   ].join("\n");
-  const config = parseConfigToml(toml);
-  expect(resolveTimeLimits(config, "proj-1", HOUR)).toEqual({
-    implementation: 2 * HOUR,
-    fixes: 30 * MINUTE,
-    closeout: 0,
-  });
-  expect(resolveTimeLimits(config, "proj-2", HOUR)).toEqual({
+  expect(resolveTimeLimits(parseConfigToml(toml), HOUR)).toEqual({
     implementation: 2 * HOUR,
     fixes: 0,
     closeout: 0,
   });
-  const { work, question } = await harness(toml, "proj-1");
-  expect((await work(30 * MINUTE, "conflict")).asked).toBe(true);
-  expect(await question()).toStartWith("The fixes stage reached its 30 min limit");
+  const { work } = await harness(toml);
+  expect((await work(90 * MINUTE, "conflict")).asked).toBeUndefined();
 });

@@ -1,7 +1,6 @@
 import type { IssueBrief } from "../core";
 import { journalCaught } from "../journal";
 import {
-  loadConfigFile,
   parseBriefTemplates,
   readConfigText,
   writeBriefTemplates,
@@ -22,8 +21,6 @@ import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
 
 export const BRIEF_SETTINGS_PATH = "/api/settings/brief";
 export const BRIEF_PREVIEW_PATH = "/api/settings/brief/preview";
-
-const REPO = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/[a-z0-9_.-]+$/;
 
 export type BriefIssuePreview = {
   issue: IssueBrief;
@@ -71,9 +68,6 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   if (!isRecord(body)) return json({ error: "Expected a JSON object" }, 400);
-  const repo = body.repo === undefined || body.repo === null ? null : body.repo;
-  if (repo !== null && (typeof repo !== "string" || !REPO.test(repo)))
-    return json({ error: "Repository must look like owner/repo." }, 400);
   if (body.template !== null && typeof body.template !== "string")
     return json({ error: "The brief template must be text, or null to reset it." }, 400);
   const template = body.template as string | null;
@@ -81,7 +75,6 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
     const problem = briefTemplateProblem(template);
     if (problem) return json({ error: problem }, 400);
   }
-  const scope = repo === null ? null : repo.toLowerCase();
   let previous: BriefTemplates;
   try {
     previous = stored(options.configPath);
@@ -89,14 +82,9 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
     journalCaught(error, "brief.handleBriefSettingsRequest.stored", null);
     return json({ error: "Brief settings could not be read" }, 503);
   }
-  const before = scope === null ? previous.template : (previous.projects[scope] ?? null);
-  if (before === template) return json(listing(options));
-  const next = structuredClone(previous);
-  if (scope === null) next.template = template;
-  else if (template === null) delete next.projects[scope];
-  else next.projects[scope] = template;
+  if (previous.template === template) return json(listing(options));
   try {
-    await writeBriefTemplates(options.configPath, next);
+    await writeBriefTemplates(options.configPath, { template });
   } catch (error) {
     journalCaught(error, "brief.handleBriefSettingsRequest.write", null);
     const problem = error instanceof Error ? error.message : "";
@@ -104,10 +92,9 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
       return json({ error: problem }, 400);
     return json({ error: "Brief settings could not be saved" }, 503);
   }
-  const where = scope === null ? "workspace" : scope;
   await options.audit?.(
     "settings.brief",
-    template === null ? `Reset the ${where} brief template` : `Saved the ${where} brief template`,
+    template === null ? "Reset the workspace brief template" : "Saved the workspace brief template",
   );
   return json(listing(options));
 }
@@ -127,8 +114,6 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
     return json({ error: "The brief template must be text." }, 400);
   const problem = briefTemplateProblem(body.template);
   if (problem) return json({ error: problem }, 400);
-  if (typeof body.repository !== "string" || !REPO.test(body.repository))
-    return json({ error: "Pick a repository." }, 400);
   if (typeof body.identifier !== "string" || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(body.identifier))
     return json({ error: "Enter a Linear issue identifier such as PAS-864." }, 400);
   if (!options.readIssue) return json({ error: "Linear is not connected." }, 503);
@@ -150,7 +135,6 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
     return json({ error: message }, 400);
   }
   return json({
-    repository: body.repository.toLowerCase(),
     identifier: body.identifier,
     text,
     total: text.length,
@@ -164,23 +148,10 @@ function stored(path: string): BriefTemplates {
 }
 
 function listing(options: BriefSettingsOptions) {
-  const config = loadConfigFile(options.configPath);
-  const saved = stored(options.configPath);
-  const projects = new Map<string, { repo: string; template: string | null }>();
-  for (const repo of [config.repo, ...config.githubRepos, ...(options.repos ?? [])]) {
-    if (repo === null) continue;
-    const key = repo.toLowerCase();
-    if (!REPO.test(key)) continue;
-    projects.set(key, { repo: key, template: saved.projects[key] ?? null });
-  }
-  for (const [repo, template] of Object.entries(saved.projects)) {
-    if (!projects.has(repo)) projects.set(repo, { repo, template });
-  }
   return {
-    template: saved.template,
+    template: stored(options.configPath).template,
     defaultTemplate: defaultBriefTemplate(),
     placeholders: BRIEF_PLACEHOLDERS,
-    projects: [...projects.values()],
   };
 }
 
