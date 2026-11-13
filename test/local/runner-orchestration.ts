@@ -411,14 +411,9 @@ export async function probeRunnerOrchestration(
     let changed = false;
     let laterDispatches = 0;
     const crashed = scenario.startsWith("crashed-");
-    let verificationExclusions: readonly string[] = [];
-    let exclusionsForReverify = false;
     // These scenarios check that a rebase before the merge runs Closeout again on the runner.
     const mergeSettings = '[merge]\nmain_moved = "closeout"\n';
-    writeFileSync(
-      join(home, "config.toml"),
-      `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["large"]\n`,
-    );
+    writeFileSync(join(home, "config.toml"), mergeSettings);
     const orchestrator = attachOrchestrator({
       store: db,
       admission: workspaceAdmission(db),
@@ -522,22 +517,7 @@ export async function probeRunnerOrchestration(
             async (options: RunAgentOptions) => {
               const reviewing = options.role === "reviewer" && !options.prepareOnly;
               if (reviewing) {
-                if (reverifying !== exclusionsForReverify) {
-                  verificationExclusions = [];
-                  exclusionsForReverify = reverifying;
-                }
-                if (verificationExclusions.length === 0) {
-                  verificationExclusions = [...(options.checkoutExclusions ?? [])];
-                  assert(verificationExclusions.length > 0);
-                  writeFileSync(
-                    join(home, "config.toml"),
-                    `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["changed-after-capture"]\n`,
-                  );
-                }
-                assert.deepEqual(
-                  [...(options.checkoutExclusions ?? [])],
-                  [...verificationExclusions],
-                );
+                assert.deepEqual([...(options.checkoutExclusions ?? [])], []);
                 // The live gate's review is the agent's review command on this runner.
                 assert.match(options.reviewCommand?.base ?? "", /^[a-f0-9]{40}$/);
                 assert.equal(options.readOnly, true);
@@ -891,7 +871,6 @@ export async function probeRunnerOrchestration(
             .where(isNull(q.t.runnerWork.endedAt)),
         );
       if (!initialLease && (await listWorkItems(db))[0]?.state === "queued") {
-        verificationExclusions = [];
         await orchestrator.reconcileExecution();
         await jobs.tick([JOB_KIND.resume]);
       }

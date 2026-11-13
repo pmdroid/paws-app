@@ -4,6 +4,7 @@ import { readConfigText } from "./settings-store";
 const RETIRED_PROJECT_TABLES = [
   ["time_limits", "time_limits.projects is no longer supported; using the global time limits"],
   ["brief", "brief.projects is no longer supported; using the global brief template"],
+  ["checkout", "checkout.projects is no longer supported"],
 ] as const;
 
 function tablesWithProjects(text: string): Set<string> {

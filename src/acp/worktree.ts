@@ -1,9 +1,8 @@
 import { journalCaught } from "../journal";
-import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { assertDescendsFromAny } from "../core";
 import { git } from "./git";
 import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
@@ -160,7 +159,7 @@ export async function createWorktree(options: {
   pawsRoot: string;
   /** Where a new worktree starts. Missing means main; a given ref that does not exist throws. */
   startRef?: string;
-  /** The run's agent exclusions. Missing means what `config.toml` sets for the repository now. */
+  /** The run's agent exclusions. Missing means nothing is left out. */
   checkoutExclusions?: readonly string[];
 }): Promise<Worktree> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
@@ -176,13 +175,7 @@ async function addWorktree(
   }
   const path = worktreePath(options.pawsRoot, options.itemId);
   const branch = branchName(options.itemId);
-  const patterns = exclusionPatterns(
-    options.checkoutExclusions ??
-      checkoutExclusionsFor(
-        loadConfigFile(join(options.pawsRoot, "config.toml")).checkoutProjects,
-        `${options.owner}/${options.repo}`,
-      ).agent,
-  );
+  const patterns = exclusionPatterns(options.checkoutExclusions ?? []);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 
   if (await isRegisteredWorktree(gitDir, path)) {

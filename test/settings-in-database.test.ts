@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   describeOverriddenSections,
@@ -307,4 +307,18 @@ test("stored project tables load, the items get the global values and each journ
     "time_limits.projects is no longer supported; using the global time limits",
     "brief.projects is no longer supported; using the global brief template",
   ]);
+});
+
+test("a checkout.projects table in both config.toml and the saved settings loads and journals once", async () => {
+  const a = await instance(await shared(), "ACME");
+  const table = '[checkout.projects."a/b"]\nexclude = ["large"]\n';
+  appendFileSync(a.configPath, `\n${table}`);
+  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => `[brief]\ntemplate = "Global"\n\n${table}`);
+  await a.refresh();
+  expect(() => loadConfigFile(a.configPath)).not.toThrow();
+  expect(await saveTimeLimits(a.configPath, 90).then((response) => response?.status)).toBe(200);
+  expect(resolveTimeLimits(loadConfigFile(a.configPath), 1).implementation).toBe(90 * 60_000);
+  const lines: string[] = [];
+  journalRetiredProjectSettings(a.configPath, (line) => lines.push(line));
+  expect(lines).toEqual(["checkout.projects is no longer supported"]);
 });

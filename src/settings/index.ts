@@ -15,17 +15,6 @@ export type {
 } from "./merging";
 export { HOOK_SETTINGS_PATH, handleHookSettingsRequest } from "./hooks";
 export type { HookSettingsOptions } from "./hooks";
-export {
-  CHECKOUT_SETTINGS_PATH,
-  checksUsing,
-  handleCheckoutSettingsRequest,
-  parseCheckoutSettings,
-} from "./checkout";
-export type {
-  CheckoutHideFrom,
-  CheckoutSettingsOptions,
-  RepositoryCheckoutFacts,
-} from "./checkout";
 export { FINDING_SETTINGS_PATH, handleFindingSettingsRequest } from "./findings";
 export type { FindingSettingsOptions } from "./findings";
 export { TIME_LIMIT_SETTINGS_PATH, handleTimeLimitSettingsRequest } from "./time-limits";

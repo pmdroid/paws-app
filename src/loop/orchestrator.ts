@@ -165,7 +165,6 @@ import {
 import {
   DEFAULT_COMMENT_WAIT,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
-  checkoutExclusionsFor,
   highRiskPaths,
   agentReadAllowed,
   loadConfigFile,
@@ -181,7 +180,6 @@ import {
   type AgentLabelProblem,
   type AgentProfile,
   type AgentProfiles,
-  type CheckoutExclusions,
   type MergeSettings,
 } from "../config";
 import {
@@ -889,6 +887,9 @@ const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
   reason: "Access to this session changed while Paws waited to start it.",
 };
+
+type RunCheckout = { agent: string[]; checks: string[] };
+
 /**
  * One process loop: intake, one item at a time, ACP, Closeout, pull request, serial merge.
  * Linear effects go through the outbox. State changes go through `transition()`.
@@ -10764,26 +10765,16 @@ export class Orchestrator {
   }
 
   /**
-   * What the item's current run leaves out of its checkouts, pinned on the run the first time it
-   * is read: `agent` for the agent's worktree and snapshot, `checks` for Closeout and review,
-   * which Closeout folds into its policy digest. A `paws:full-checkout` label on the issue when
-   * the task started leaves nothing out.
+   * What the item's current run leaves out of its checkouts: `agent` for the agent's worktree and
+   * snapshot, `checks` for Closeout and review. A new run leaves nothing out; a run that pinned
+   * exclusions before keeps them.
    */
-  private runCheckout(item: WorkItemRecord): Promise<CheckoutExclusions> {
+  private runCheckout(item: WorkItemRecord): Promise<RunCheckout> {
     return this.store.transaction((q) => this.runCheckoutSteps(q, item));
   }
 
-  private *runCheckoutSteps(q: Q, item: WorkItemRecord): Steps<CheckoutExclusions> {
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    const labels = issueLabels((yield* getTaskMergeSettingsSteps(q, item.id))?.resolved.labels);
-    const resolve = (): CheckoutExclusions => {
-      if (!repository) return { agent: [], checks: [] };
-      return checkoutExclusionsFor(
-        loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects,
-        `${repository.owner}/${repository.repo}`,
-        labels,
-      );
-    };
+  private *runCheckoutSteps(q: Q, item: WorkItemRecord): Steps<RunCheckout> {
+    const resolve = (): RunCheckout => ({ agent: [], checks: [] });
     const runId = (yield* getWorkItemSteps(q, item.id))?.currentRunId ?? null;
     return runId === null ? resolve() : yield* pinRunCheckoutSteps(q, runId, resolve);
   }
@@ -11463,10 +11454,6 @@ function profileLabelQuestion(
     `Available presets: ${presets.length > 0 ? presets.join(", ") : "none"}.`,
     "Use the default profile for this item, or fix the label in Linear and say so.",
   ].join("\n");
-}
-
-function issueLabels(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
 }
 
 function repositoryRefusedIn(error: unknown): RunnerRepositoryRefused | null {
