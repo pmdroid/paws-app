@@ -13,7 +13,6 @@ const AGENTS: AgentSettings = {
     implementer: { agent: "claude", model: null },
     reviewer: { agent: "codex", model: "gpt-5.4" },
   },
-  projects: [{ repo: "pmdroid/paws-app" }],
   revision: "rev-1",
   queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
 };

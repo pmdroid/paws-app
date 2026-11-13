@@ -151,7 +151,6 @@ async function runPreflight(fault: {
         reviewer: { agent: "claude", model: null },
         reviewerFallback: { agent: "codex", model: "fallback-review" },
       },
-      projects: [],
     });
   const mirror =
     fault.mirror === undefined ? null : await serveMirror(layout, fault.mirror, fault.times);

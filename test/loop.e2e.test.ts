@@ -2114,12 +2114,12 @@ type DemoSeed = {
 };
 
 for (const sameModel of [true, false]) {
-  test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use project overrides and retain their candidate snapshot"}`, async () => {
+  test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use the global profiles and retain their candidate snapshot"}`, async () => {
     const layout = await repoLayout("paws-e2e-");
     const configPath = path.join(layout.pawsRoot, "config.toml");
     writeFileSync(
       configPath,
-      `[agents.defaults.implementer]\nagent = "claude"\nmodel = "unused-default"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "unused-default"\n[agents.projects."pmdroid/paws-demo".implementer]\nagent = "codex"\nmodel = "model-a"\n[agents.projects."pmdroid/paws-demo".reviewer]\nagent = "codex"\nmodel = "${sameModel ? "model-a" : "model-b"}"\n`,
+      `[agents.defaults.implementer]\nagent = "codex"\nmodel = "model-a"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "model-b"\n`,
     );
     if (sameModel) writeFileSync(configPath, `[agents]\nimplementer = "codex"\n`);
     const tracker = createFakeTracker([

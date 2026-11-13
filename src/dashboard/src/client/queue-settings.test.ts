@@ -13,7 +13,6 @@ const STORED: AgentSettings = {
     implementer: { agent: "claude", model: null },
     reviewer: { agent: "codex", model: "gpt-5.4" },
   },
-  projects: [{ repo: "pmdroid/barkvisor" }],
   merge: { ciFixAttempts: 3 },
   queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
   revision: "r1",

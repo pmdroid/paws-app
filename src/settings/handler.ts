@@ -49,16 +49,8 @@ export async function handleAgentSettingsRequest(
   if (request.method === "GET" && url.pathname === SETTINGS_PATH) {
     try {
       const config = loadConfigFile(options.configPath);
-      const settings = readAgentSettings(config);
-      const projects = new Map(settings.projects.map((project) => [project.repo, project]));
-      for (const repo of [config.repo, ...config.githubRepos, ...(options.repos ?? [])]) {
-        if (repo === null) continue;
-        const key = repo.toLowerCase();
-        if (!projects.has(key)) projects.set(key, { repo: key });
-      }
       return json({
-        ...settings,
-        projects: [...projects.values()],
+        ...readAgentSettings(config),
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
         revision: settingsRevision(options.configPath),
