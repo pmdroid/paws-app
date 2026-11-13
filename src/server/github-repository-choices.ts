@@ -1,10 +1,11 @@
-import type { ActiveGitHubApp } from "../auth";
+import type { ActiveGitHubApp, GitHubSetupAuthority } from "../auth";
 import { createFetchGitHubClient, INSTALLATION_PERMISSIONS } from "../github";
 
 export async function githubRepositoryChoices(
   app: ActiveGitHubApp,
   token: string,
   selected: string | null,
+  authority: GitHubSetupAuthority,
   signal: AbortSignal,
   http: typeof fetch,
 ) {
@@ -73,7 +74,7 @@ export async function githubRepositoryChoices(
           .filter(
             (entry) =>
               record(entry.permissions) &&
-              entry.permissions.admin === true &&
+              entry.permissions[authority === "owner" ? "admin" : "pull"] === true &&
               entry.archived !== true &&
               entry.disabled !== true,
           )

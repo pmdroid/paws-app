@@ -34,6 +34,7 @@ import {
   hash,
   newGitHubOAuthSecret,
   verifyHostedGitHubApp,
+  GitHubSetupRefusedError,
   type ActiveGitHubApp,
 } from "../auth";
 import { dashboardUrl } from "../dashboard-links";
@@ -445,8 +446,12 @@ export function createHostedGitHubConnect(options: {
     if (!pending) return denied();
     try {
       const intent = activation.read<Intent>(pending.secret_id);
+      const existing = await store.run((q) =>
+        listWorkspaceRepositoriesSteps(q, pending.workspace_id),
+      );
       const human = await verifyHostedGitHubApp({
         ...intent,
+        authority: existing.length ? "reader" : "owner",
         code,
         redirectUri: origin + CALLBACK,
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
@@ -506,7 +511,12 @@ export function createHostedGitHubConnect(options: {
       await store.run((q) => failGithubOAuthSteps(q, pending.state_hash, false));
       await audit("github.connect.failed");
       return Response.json(
-        { error: "GitHub connection could not be verified. Start again." },
+        {
+          error:
+            caughtError7 instanceof GitHubSetupRefusedError
+              ? caughtError7.message
+              : "GitHub connection could not be verified. Start again.",
+        },
         { status: 409 },
       );
     }

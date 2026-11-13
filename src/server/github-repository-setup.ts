@@ -7,6 +7,7 @@ import {
   hash,
   newGitHubOAuthSecret,
   verifyHostedGitHubRepositories,
+  GitHubSetupRefusedError,
   type ActiveGitHubApp,
 } from "../auth";
 import {
@@ -268,11 +269,13 @@ export function createGitHubRepositorySetup(options: {
           : url.searchParams.get("installationId");
       if (selection !== null && (typeof selection !== "string" || !/^[1-9][0-9]*$/.test(selection)))
         return reply({ error: "Choose a GitHub account." }, 400);
+      const authority = (await listed()).length ? "reader" : "owner";
       const [choices, teams] = await Promise.all([
         githubRepositoryChoices(
           secret.app,
           secret.user.token,
           selection as string | null,
+          authority,
           signal,
           http,
         ),
@@ -326,6 +329,7 @@ export function createGitHubRepositorySetup(options: {
       const repositories = [...new Set(mappings.map((entry) => entry.repository))].sort();
       await verifyHostedGitHubRepositories({
         app: secret.app,
+        authority,
         user: secret.user,
         installationId: choices.installationId,
         repositories,
@@ -389,7 +393,12 @@ export function createGitHubRepositorySetup(options: {
     } catch (caughtError1) {
       journalCaught(caughtError1, "github-repository-setup.createGitHubRepositorySetup.all", null);
       return reply(
-        { error: "GitHub setup could not be completed. Refresh or sign in with GitHub again." },
+        {
+          error:
+            caughtError1 instanceof GitHubSetupRefusedError
+              ? caughtError1.message
+              : "GitHub setup could not be completed. Refresh or sign in with GitHub again.",
+        },
         409,
       );
     }
