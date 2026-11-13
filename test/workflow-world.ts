@@ -86,11 +86,11 @@ const RUNNING: Checkpoint = { phase: "running", baseSha: "base", wipCommit: "wip
 const CANDIDATE: Checkpoint = { phase: "verifying", baseSha: "base", wipCommit: "head" };
 const MERGING: Checkpoint = { phase: "merge_queue", baseSha: "base", wipCommit: "head" };
 
-const { job, question, runnerWork, workItem } = pgSchema;
+const { job: jobRow, question, runnerWork, workItem } = pgSchema;
 
 const orm = (db: Db) => (db as PgDb).orm;
 
-const itemOf = sql`${job.payload}->>'itemId'`;
+const itemOf = sql`${jobRow.payload}->>'itemId'`;
 
 export async function leaseRunnerWork(
   db: Db,
@@ -120,19 +120,19 @@ export const ORPHAN_GRACE_MS = 5 * MINUTE;
 
 export async function reapFencedJobs(db: Db, now: number): Promise<number> {
   const reaped = await orm(db)
-    .update(job)
+    .update(jobRow)
     .set({ status: "done", finishedAt: now, lockedBy: null, lockedUntil: null })
     .where(
       and(
-        eq(job.status, "running"),
-        lte(job.lockedUntil, now),
+        eq(jobRow.status, "running"),
+        lte(jobRow.lockedUntil, now),
         ne(
-          job.itemVersion,
+          jobRow.itemVersion,
           sql`(SELECT ${workItem.version} FROM ${workItem} WHERE ${workItem.id} = ${itemOf})`,
         ),
       ),
     )
-    .returning({ id: job.id });
+    .returning({ id: jobRow.id });
   return reaped.length;
 }
 
@@ -144,22 +144,22 @@ export async function claimedJob(
 ): Promise<number> {
   const id = await enqueueJob(db, { queue, payload, now });
   await orm(db)
-    .update(job)
+    .update(jobRow)
     .set({
       status: "running",
       attempts: 1,
       lockedBy: `worker:${id}`,
       lockedUntil: now + JOB_LEASE_MS,
     })
-    .where(eq(job.id, id));
+    .where(eq(jobRow.id, id));
   return id;
 }
 
 async function finishItemJobs(db: Db, itemId: string, now: number): Promise<void> {
   await orm(db)
-    .update(job)
+    .update(jobRow)
     .set({ status: "done", finishedAt: now, lockedBy: null, lockedUntil: null })
-    .where(and(inArray(job.status, ["pending", "running"]), eq(itemOf, itemId)));
+    .where(and(inArray(jobRow.status, ["pending", "running"]), eq(itemOf, itemId)));
 }
 
 function identity(itemId: string, head: string, base = "base") {
@@ -404,9 +404,9 @@ export class World {
 
   async renewJobLeases(): Promise<void> {
     await orm(this.db)
-      .update(job)
+      .update(jobRow)
       .set({ lockedUntil: this.now + JOB_LEASE_MS })
-      .where(eq(job.status, "running"));
+      .where(eq(jobRow.status, "running"));
   }
 
   advance(ms: number): void {
@@ -446,26 +446,26 @@ export async function progressJobs(db: Db, item: WorkItemRecord, now: number): P
   const current = new Set(
     (
       await orm(db)
-        .select({ id: job.id })
-        .from(job)
+        .select({ id: jobRow.id })
+        .from(jobRow)
         .where(
           and(
             eq(itemOf, item.id),
             or(
               and(
-                eq(job.status, "running"),
+                eq(jobRow.status, "running"),
                 or(
-                  gt(job.lockedUntil, now),
-                  isNull(job.itemVersion),
-                  eq(job.itemVersion, item.version),
+                  gt(jobRow.lockedUntil, now),
+                  isNull(jobRow.itemVersion),
+                  eq(jobRow.itemVersion, item.version),
                 ),
               ),
               and(
-                eq(job.status, "pending"),
+                eq(jobRow.status, "pending"),
                 or(
-                  isNull(job.itemVersion),
-                  eq(job.itemVersion, item.version),
-                  inArray(job.queue, [JOB_KIND.command, JOB_KIND.reverify]),
+                  isNull(jobRow.itemVersion),
+                  eq(jobRow.itemVersion, item.version),
+                  inArray(jobRow.queue, [JOB_KIND.command, JOB_KIND.reverify]),
                 ),
               ),
             ),
@@ -492,12 +492,12 @@ async function actionableQuestions(db: Db, itemId: string): Promise<number> {
 
 async function pendingAsk(db: Db, itemId: string): Promise<boolean> {
   const rows = await orm(db)
-    .select({ id: job.id })
-    .from(job)
+    .select({ id: jobRow.id })
+    .from(jobRow)
     .where(
       and(
-        eq(job.queue, "item.ask"),
-        inArray(job.status, ["pending", "running"]),
+        eq(jobRow.queue, "item.ask"),
+        inArray(jobRow.status, ["pending", "running"]),
         eq(itemOf, itemId),
       ),
     )
