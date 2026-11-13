@@ -1,3 +1,4 @@
+import { spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import { createPublicKey } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
@@ -461,6 +462,14 @@ export async function probeRunnerCoordinator(
       derived,
       separate,
     });
+    const sweep = spyOn(coordinator.control, "expireConnections").mockRejectedValueOnce(
+      new Error("terminating connection due to administrator command"),
+    );
+    while (sweep.mock.calls.length < 2) await Bun.sleep(50);
+    const sweeps = sweep.mock.calls.length;
+    sweep.mockRestore();
+    await exchange(coordinator.port, "/v1/commands", tls.cert, undefined, peer);
+    observe("a failed expiry sweep leaves the runner listener serving", true, { sweeps });
     keepAlive = new Agent({ keepAlive: true, maxSockets: 1, ca: tls.cert, ...peer });
     let retained: Socket | undefined;
     keepAlive.on("free", (socket: Socket) => {

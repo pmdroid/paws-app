@@ -1,4 +1,4 @@
-import { journalCaught, journalRejection } from "../journal";
+import { journalCaught } from "../journal";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { z } from "zod";
@@ -254,12 +254,6 @@ export async function openRunnerCoordinator(options: {
   const timer = setInterval(() => {
     control.expireConnections().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.expireConnections", null);
-      options.onError(error);
-      void listener
-        ?.stop()
-        .catch(
-          journalRejection("runner-coordinator.openRunnerCoordinator.stop", options.onError, null),
-        );
     });
   }, 1000);
   timer.unref();

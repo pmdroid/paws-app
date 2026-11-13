@@ -29,6 +29,7 @@ import {
   type PgDb,
   type WorkItemEventRecord,
 } from "../db";
+import { setJournalSink } from "../journal";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
@@ -604,4 +605,104 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   expect((await getRun(db, run.id))?.status).toBe("ended");
   await host.tick();
   expect(stopped).toEqual(["eng-9"]);
+});
+
+describe("host supervisor restarts", () => {
+  const terminated = Object.assign(
+    new Error("terminating connection due to administrator command"),
+    { code: "ERR_POSTGRES_SERVER_ERROR" },
+  );
+
+  test("a pass that fails on a terminated connection runs again after the backoff", async () => {
+    const db = await store();
+    let failed = false;
+    const flaky = new Proxy(db, {
+      get(target, property) {
+        if (property === "transaction" && !failed) {
+          failed = true;
+          return () => Promise.reject(terminated);
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const controller = new AbortController();
+    const delays: number[] = [];
+    const transaction = spyOn(db, "transaction");
+    try {
+      startHost({
+        store: flaky,
+        clock: new FakeClock(1_000_000),
+        signal: controller.signal,
+        sleeper: async (ms) => {
+          delays.push(ms);
+          if (delays.length === 2) controller.abort();
+        },
+      });
+      while (!controller.signal.aborted) await Bun.sleep(5);
+      expect(delays).toEqual([1000, 250]);
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(lines.filter((line) => line.includes("host.supervisor.tick"))).toHaveLength(1);
+      expect(lines.join("\n")).toContain("terminating connection due to administrator command");
+    } finally {
+      transaction.mockRestore();
+      restore();
+    }
+  });
+
+  test("startHost restarts a rejected supervisor run with a doubling backoff", async () => {
+    const db = await store();
+    const run = spyOn(HostSupervisor.prototype, "run")
+      .mockRejectedValueOnce(terminated)
+      .mockRejectedValueOnce(terminated);
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const controller = new AbortController();
+    const delays: number[] = [];
+    try {
+      startHost({
+        store: db,
+        clock: new FakeClock(1_000_000),
+        signal: controller.signal,
+        sleeper: async (ms) => {
+          delays.push(ms);
+          if (delays.length === 3) controller.abort();
+        },
+      });
+      while (!controller.signal.aborted) await Bun.sleep(5);
+      await Bun.sleep(20);
+      expect(delays).toEqual([1000, 2000, 250]);
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(lines.filter((line) => line.includes("host.startHost"))).toHaveLength(2);
+    } finally {
+      run.mockRestore();
+      restore();
+    }
+  });
+
+  test("aborting the signal stops the restarts", async () => {
+    const db = await store();
+    const run = spyOn(HostSupervisor.prototype, "run").mockRejectedValue(terminated);
+    const controller = new AbortController();
+    const delays: number[] = [];
+    try {
+      startHost({
+        store: db,
+        clock: new FakeClock(1_000_000),
+        signal: controller.signal,
+        sleeper: async (ms) => {
+          delays.push(ms);
+          if (delays.length === 6) controller.abort();
+        },
+      });
+      while (!controller.signal.aborted) await Bun.sleep(5);
+      await Bun.sleep(50);
+      expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
+      expect(run).toHaveBeenCalledTimes(6);
+    } finally {
+      run.mockRestore();
+    }
+  });
 });

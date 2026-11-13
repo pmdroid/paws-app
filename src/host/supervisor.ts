@@ -11,10 +11,15 @@ import {
   countsAwakeTime,
   IN_FLIGHT_ITEM_STATES,
   JOB_KIND,
+  journalCaught,
   sleep,
   type Clock,
 } from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
+
+export function restartDelayMs(failures: number): number {
+  return Math.min(1000 * 2 ** (failures - 1), 30_000);
+}
 
 export class HostSupervisor {
   private stopped = false;
@@ -47,10 +52,17 @@ export class HostSupervisor {
     signal: AbortSignal,
     sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
   ): Promise<void> {
+    let failures = 0;
     while (!signal.aborted && !this.stopped) {
-      await this.tick();
+      try {
+        await this.tick();
+        failures = 0;
+      } catch (error) {
+        failures += 1;
+        journalCaught(error, "host.supervisor.tick", null);
+      }
       if (signal.aborted || this.stopped) break;
-      await sleeper(this.pollMs, signal);
+      await sleeper(failures ? restartDelayMs(failures) : this.pollMs, signal);
     }
   }
 
