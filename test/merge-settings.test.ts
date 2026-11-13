@@ -414,6 +414,11 @@ describe("Merging settings API", () => {
     };
     expect(read.parallelFiles).toEqual([{ repository: "acme/platform", paths: ["src/index.ts"] }]);
     expect(read.hotFiles).toEqual([{ ...file, held: false }]);
+    const expired = (await (await handleMergeSettingsRequest(request(), {
+      ...options,
+      hotFiles: async () => [],
+    }))!.json()) as { hotFiles: unknown };
+    expect(expired.hotFiles).toEqual([{ ...file, conflicts: 0, items: [], held: false }]);
     expect((await put([]))?.status).toBe(200);
     expect(readFileSync(options.configPath, "utf8")).not.toContain("parallel_files");
     expect(audits.map(([, text]) => text)).toEqual([

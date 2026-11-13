@@ -537,6 +537,11 @@ async function hotFileView(
     journalCaught(caughtError, "merging.hotFileView.read", null);
     return {};
   }
+  const listed = new Set(files.map((file) => `${file.repository.toLowerCase()}\0${file.path}`));
+  for (const entry of parallel)
+    for (const path of entry.paths)
+      if (!listed.has(`${entry.repository.toLowerCase()}\0${path}`))
+        files.push({ repository: entry.repository, path, conflicts: 0, items: [] });
   const holds = await (readHolds?.() ?? Promise.resolve([])).catch((caughtError) => {
     journalCaught(caughtError, "merging.hotFileView.readHolds", null);
     return [];
