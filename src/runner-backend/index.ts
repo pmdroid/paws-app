@@ -2944,3 +2944,4 @@ async function hiddenCheckpoint(
   }
 }
 export { syncSteps } from "./sync-steps";
+export { leaseCentralAccount } from "./central-account";

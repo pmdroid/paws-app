@@ -9,6 +9,7 @@ import {
   gt,
   isNotNull,
   isNull,
+  max,
   ne,
   or,
   sql,
@@ -109,7 +110,7 @@ const accountColumns = (q: Q) => {
   };
 };
 const account = (
-  row: Omit<Q["t"]["agentAccount"]["$inferSelect"], "concurrency">,
+  row: Omit<Q["t"]["agentAccount"]["$inferSelect"], "concurrency" | "position" | "extraUsage">,
 ): AgentAccount => ({
   ...row,
   agent: row.agent as RunnerCodingAgent,
@@ -339,6 +340,18 @@ export function* createAgentAccountSteps(
   if (yield* labelTakenSteps(q, input.workspaceId, input.agent, label, null))
     throw new AgentAccountError("duplicate", "Another account for this agent has that label");
   const id = ulid(input.now);
+  const last = yield* q.one(
+    q.orm
+      .select({ position: max(agentAccount.position) })
+      .from(agentAccount)
+      .where(
+        and(
+          eq(agentAccount.workspaceId, input.workspaceId),
+          eq(agentAccount.agent, input.agent),
+          eq(agentAccount.legacy, 0),
+        ),
+      ),
+  );
   yield* q.exec(
     q.orm.insert(agentAccount).values({
       id,
@@ -347,6 +360,7 @@ export function* createAgentAccountSteps(
       label,
       legacy: 0,
       enabled: 1,
+      position: Number(last?.position ?? 0) + 1,
       createdAt: input.now,
       updatedAt: input.now,
     }),

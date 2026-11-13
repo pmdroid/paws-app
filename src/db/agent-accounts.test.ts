@@ -10,6 +10,7 @@ import {
   listAgentAccounts,
   listAgentBindings,
   legacyMigrate,
+  migrate,
   openDatabase,
   recordCommandAccount,
   recordRunnerAccountCapability,
@@ -43,7 +44,7 @@ function seed(db: Database, workspace: string, runners: string[]) {
 
 function fresh() {
   const db = openDatabase(":memory:");
-  legacyMigrate(db);
+  migrate(db);
   seed(db, "W1", ["R1", "R2"]);
   seed(db, "W2", ["R3"]);
   return db;
