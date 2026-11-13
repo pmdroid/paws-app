@@ -918,6 +918,8 @@ export class Orchestrator {
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
+  private readonly linearEvents = new Set<Promise<unknown>>();
+  private readonly heldFlushes = new Set<ReturnType<typeof setTimeout>>();
   private readonly intakeReads = new Map<
     string,
     { snapshot: EpicSnapshot; edges: DependencyEdge[] }
@@ -1032,8 +1034,19 @@ export class Orchestrator {
     return reads;
   }
 
-  async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
-    if (this.shuttingDown) throw new Error("Paws is shutting down");
+  onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+    if (this.shuttingDown) return Promise.reject(new Error("Paws is shutting down"));
+    return this.track(this.receiveLinearEvent(event));
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.linearEvents.add(work);
+    const settled = () => this.linearEvents.delete(work);
+    void work.then(settled, settled);
+    return work;
+  }
+
+  private async receiveLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     const comment = linearCommentOf(event);
     if (comment !== null) return this.receiveLinearComment(comment);
     const decision = await this.options.authorizeLinearEvent?.(event);
@@ -1307,7 +1320,13 @@ export class Orchestrator {
       this.stopTaskPlanning(),
       ...owned.map((live) => live.done),
     ]);
-    await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
+    for (const held of this.heldFlushes) clearTimeout(held);
+    this.heldFlushes.clear();
+    await Promise.allSettled([
+      ...this.linearEvents,
+      ...this.sessionEvents.values(),
+      ...this.stopEvents.values(),
+    ]);
     await this.flushPosts();
     for (const item of await this.allItems(true))
       if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
@@ -1536,20 +1555,24 @@ export class Orchestrator {
       };
       request?.signal?.addEventListener("abort", forget, { once: true });
       const held = setTimeout(() => {
+        this.heldFlushes.delete(held);
         if (!this.shuttingDown)
-          void this.flush(request?.signal, update.sessionId)
-            .catch(async (caughtError2) => {
-              journalCaught(
-                caughtError2,
-                "orchestrator.enqueueSessionProgress.flush",
-                await this.sessionItemIds(update.sessionId),
-                undefined,
-                this.options.journal,
-              );
-              return undefined;
-            })
-            .finally(forget);
+          void this.track(
+            this.flush(request?.signal, update.sessionId)
+              .catch(async (caughtError2) => {
+                journalCaught(
+                  caughtError2,
+                  "orchestrator.enqueueSessionProgress.flush",
+                  await this.sessionItemIds(update.sessionId),
+                  undefined,
+                  this.options.journal,
+                );
+                return undefined;
+              })
+              .finally(forget),
+          );
       }, FIRST_ACTIVITY_HOLD_MS);
+      this.heldFlushes.add(held);
       held.unref?.();
       return;
     }
