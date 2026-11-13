@@ -6,5 +6,11 @@
  */
 
 export { evidenceRoot } from "./layout";
-export { createEvidenceStore } from "./store";
-export type { AttemptKey, EvidenceStoreOptions, LogWrite, PawsEvidenceStore } from "./store";
+export { createEvidenceStore, useEvidenceRecordObjects } from "./store";
+export type {
+  AttemptKey,
+  EvidenceRecordObjects,
+  EvidenceStoreOptions,
+  LogWrite,
+  PawsEvidenceStore,
+} from "./store";

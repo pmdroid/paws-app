@@ -51,6 +51,8 @@ During the turn, Closeout fails fast. Setup runs first, then the command checks 
 
 Paws Closeout after the turn does not fail fast: it runs every check to the end, without `PAWS_TEST_BAIL`, and records evidence for each one.
 
+With S3 configured (`paws runner-storage configure`), Closeout's evidence records (command results, review records and their attempts) go to the object store, encrypted like published evidence, under keys that mirror their path below `closeout/evidence/`. Paws finds them through the database, so any instance on the same database reads them. A record that is only in `~/.paws/closeout/evidence` is still read from there. `paws evidence migrate` copies those local records to the object store, skips the ones already there, reports both counts and deletes nothing. Without S3, records stay in `~/.paws/closeout/evidence`. Command logs stay on disk either way.
+
 Each check has its own retry limit, `retry.attempts_per_check`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
 
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.

@@ -206,3 +206,5 @@ export {
   type CloseoutSessionCheck,
   type CloseoutFocus,
 } from "./session";
+export { useEvidenceRecordObjects } from "./evidence/index";
+export type { EvidenceRecordObjects } from "./evidence/index";
