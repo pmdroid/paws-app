@@ -512,6 +512,15 @@ function addedTo(q: Q, columns: readonly ItemColumn[], amount: number) {
   ) as Partial<PgWorkItem>;
 }
 
+function addedToFloored(q: Q, columns: readonly ItemColumn[], amount: number) {
+  return Object.fromEntries(
+    columns.map((column) => {
+      const sum = sql`${q.t.workItem[column]} + ${amount}`;
+      return [column, q.dialect === "sqlite" ? sql`MAX(${sum}, 0)` : sql`GREATEST(${sum}, 0)`];
+    }),
+  ) as Partial<PgWorkItem>;
+}
+
 export function* accrueAwakeSteps(
   q: Q,
   id: string,
@@ -538,7 +547,6 @@ export function* accrueAwakeSteps(
   const category: AwakeCategory | null =
     (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
   const awake = category === "agent" || category === "closeout";
-  const awakeMs = current.awakeMs + (awake ? delta : 0);
   const stage: TimeStage | null =
     category === "agent"
       ? yield* agentTurnStageSteps(q, id)
@@ -552,7 +560,11 @@ export function* accrueAwakeSteps(
         : category === "agent"
           ? [BREAKDOWN_COLUMN.agent, STAGE_COLUMN[stage!]]
           : [BREAKDOWN_COLUMN[category]];
-    yield* setItemSteps(q, id, { awakeMs, lastMonoMs: mono, ...addedTo(q, columns, delta) });
+    yield* setItemSteps(q, id, {
+      lastMonoMs: mono,
+      ...addedTo(q, columns, delta),
+      ...(awake ? addedToFloored(q, ["awakeMs"], delta) : {}),
+    });
   }
   if (!awake) {
     return {
@@ -595,13 +607,9 @@ function* refundLostTurnSteps(
   const { jobReady } = yield* accrueAwakeSteps(q, id, mono, now);
   const stage = STAGE_COLUMN[yield* agentTurnStageSteps(q, id)];
   const item = yield* requireWorkItemSteps(q, id);
-  const refundedMs = Math.max(0, Math.min(lostMs, item[stage], item.agentMs, item.awakeMs));
+  const refundedMs = Math.max(0, Math.min(lostMs, item[stage], item.agentMs));
   if (refundedMs > 0)
-    yield* setItemSteps(q, id, {
-      awakeMs: item.awakeMs - refundedMs,
-      agentMs: item.agentMs - refundedMs,
-      [stage]: item[stage] - refundedMs,
-    });
+    yield* setItemSteps(q, id, addedToFloored(q, ["awakeMs", "agentMs", stage], -refundedMs));
   return { refundedMs, jobReady };
 }
 
