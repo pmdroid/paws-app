@@ -30,10 +30,6 @@ A shipped migration, its snapshot and its journal entry are never edited, rename
 
 `0000_baseline` is the exact `sqlite_master` SQL of the schema the legacy migrations built, so `STRICT`, `CHECK`s, indexes and triggers are what they were. Its snapshot is the Drizzle schema.
 
-### The legacy migrations
-
-The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/migrations/`, run by `legacyMigrate()`) no longer build Paws's database; only older tests use them, and they take no new files. `setAsideLegacyDatabase()` refuses to start on a database they built unless `PAWS_RESET_LEGACY_DATABASE=1` is set; then it sets the database aside and Paws starts on a fresh one ([database reset](../../docs/database-reset.md)).
-
 ## Postgres
 
 `openPostgres(url)` (`postgres.ts`) opens a Drizzle database on Bun's Postgres client, with the pool size from the URL's `max` parameter (default 10), and `paws db check` uses it, or `connectPglite(dir)` without a URL, to apply the Postgres migrations and report. `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
@@ -101,9 +97,8 @@ Startup (`startPaws()` in `src/index.ts`) sets aside an old `paws.db`, opens the
 1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.
 2. Every caller awaits the function, or yields its Steps form inside a transaction. A synchronous caller becomes async, or takes a Steps callback; there is no way to unwrap a database promise synchronously.
 3. Run the module's tests on both dialects.
-4. Remove the module's lines from its own allowlist file, `scripts/raw-sql-allowlist/<path with / as __>.txt` (`src__db__jobs.ts.txt` for `src/db/jobs.ts`), and delete the file once it is empty. `bun run raw-sql` names the file of each stale entry.
 
-A feature module is re-exported whole from `index.ts` with `export * from "./<module>";`, so a new `…Steps` export needs no `index.ts` change. Only infrastructure (`db.ts`, `orm.ts`, `open.ts`, the migrations, `postgres.ts`, `db-check.ts`, `ddl.ts`, `schema`, `schema-pg`) keeps an explicit list. Two modules can't export the same name: `export *` makes that a type error, so rename one. A conversion then edits only its module, its tests and its allowlist file, and conversions of different modules merge without conflicts.
+A feature module is re-exported whole from `index.ts` with `export * from "./<module>";`, so a new `…Steps` export needs no `index.ts` change. Only infrastructure (`db.ts`, `orm.ts`, `open.ts`, the migrations, `postgres.ts`, `db-check.ts`, `ddl.ts`, `schema`, `schema-pg`) keeps an explicit list. Two modules can't export the same name: `export *` makes that a type error, so rename one. A conversion then edits only its module and its tests, and conversions of different modules merge without conflicts.
 
 ### Tests on both dialects
 

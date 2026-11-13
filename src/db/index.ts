@@ -25,14 +25,12 @@ export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
-export { legacyMigrate } from "./legacy-migrate";
 export {
   appliedMigrations,
   MIGRATIONS_FOLDER,
   PG_MIGRATIONS_FOLDER,
   migrate,
   migrationTags,
-  setAsideLegacyDatabase,
   setAsideSqliteDatabase,
 } from "./migrate";
 export * from "./repositories";
@@ -48,14 +46,6 @@ export * from "./question-handoffs";
 export * from "./policy-outage";
 export * from "./policy-block";
 export * from "./policy-runner-warning";
-export { frozenMigrations } from "./migrations";
-export {
-  MIGRATION_DIRECTORY,
-  combineMigrations,
-  loadMigrationFiles,
-  migrations,
-} from "./migration-files";
-export type { Migration } from "./migration";
 export { openDatabase } from "./open";
 export {
   connectPglite,

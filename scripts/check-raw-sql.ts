@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ALLOWED_FILES = new Set([
@@ -82,14 +82,6 @@ export function maskCode(source: string): string {
 }
 
 export type RawCall = { path: string; line: number; content: string };
-export type Entry = { path: string; content: string; reason: string; file?: string };
-
-export const ALLOWLIST_DIR = "scripts/raw-sql-allowlist";
-
-export function allowlistFile(path: string): string {
-  return `${ALLOWLIST_DIR}/${path.replaceAll("/", "__")}.txt`;
-}
-
 export function rawCalls(path: string, source: string): RawCall[] {
   if (TEST_FILE.test(path) || ALLOWED_FILES.has(path)) return [];
   const code = maskCode(source);
@@ -113,38 +105,6 @@ export function rawCalls(path: string, source: string): RawCall[] {
   return calls;
 }
 
-export function parseAllowlist(text: string, file?: string): Entry[] {
-  return text
-    .split("\n")
-    .filter((line) => line.trim() !== "" && !line.startsWith("#"))
-    .map((line) => {
-      const first = line.indexOf(" | ");
-      const last = line.lastIndexOf(" | ");
-      if (first === -1 || first === last)
-        throw new Error(`Allowlist line is not "path | line | reason": ${line}`);
-      return {
-        path: line.slice(0, first),
-        content: line.slice(first + 3, last),
-        reason: line.slice(last + 3),
-        ...(file === undefined ? {} : { file }),
-      };
-    });
-}
-
-export function checkRawSql(calls: readonly RawCall[], allowlist: readonly Entry[]) {
-  const unused = [...allowlist];
-  const used: Entry[] = [];
-  const refused: RawCall[] = [];
-  for (const call of calls) {
-    const index = unused.findIndex(
-      (entry) => entry.path === call.path && entry.content === call.content,
-    );
-    if (index === -1) refused.push(call);
-    else used.push(...unused.splice(index, 1));
-  }
-  return { refused, used, stale: unused };
-}
-
 function sourceCalls(root: string): RawCall[] {
   const files = new Bun.Glob("src/**/*.{ts,tsx}").scanSync({ cwd: root });
   return [...files]
@@ -152,54 +112,19 @@ function sourceCalls(root: string): RawCall[] {
     .flatMap((file) => rawCalls(file, readFileSync(join(root, file), "utf8")));
 }
 
-function readAllowlist(root: string): Entry[] {
-  let names: string[];
-  try {
-    names = readdirSync(join(root, ALLOWLIST_DIR));
-  } catch {
-    return [];
-  }
-  return names
-    .filter((name) => name.endsWith(".txt"))
-    .sort()
-    .flatMap((name) => {
-      const file = `${ALLOWLIST_DIR}/${name}`;
-      return parseAllowlist(readFileSync(join(root, file), "utf8"), file);
-    });
-}
-
-function main(root: string, baseline: boolean): number {
-  const { refused, used, stale } = checkRawSql(sourceCalls(root), readAllowlist(root));
-  if (baseline) {
-    for (const call of refused)
-      console.log(
-        `${allowlistFile(call.path)}: ${call.path} | ${call.content} | not yet converted to Drizzle`,
-      );
-    return 0;
-  }
-  const counts = new Map<string, number>();
-  for (const entry of used) {
-    const key = `${entry.path} (${entry.reason})`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  for (const [key, count] of counts) console.log(`allowlisted: ${count} × ${key}`);
-  for (const entry of stale)
-    console.log(
-      `stale allowlist entry in ${entry.file ?? ALLOWLIST_DIR}, remove it: ${entry.path} | ${entry.content}`,
-    );
+function main(root: string): number {
+  const refused = sourceCalls(root);
   for (const call of refused)
     console.error(
-      `${call.path}:${call.line}: raw bun:sqlite call; go through Drizzle in src/db: ${call.content}`,
+      `${call.path}:${call.line}: raw bun:sqlite call; write it with Drizzle in the module that owns the table: ${call.content}`,
     );
   if (refused.length === 0) return 0;
-  console.error(
-    `\n${refused.length} raw SQL call(s) refused. Move them to src/db through orm(db), or list each in ${ALLOWLIST_DIR}/<path with / as __>.txt (${allowlistFile(refused[0]!.path)}) with a reason.`,
-  );
+  console.error(`\n${refused.length} raw SQL call(s) refused.`);
   return 1;
 }
 
 if (import.meta.main) {
   const rootIndex = process.argv.indexOf("--root");
   const root = rootIndex === -1 ? join(import.meta.dir, "..") : process.argv[rootIndex + 1]!;
-  process.exit(main(root, process.argv.includes("--baseline")));
+  process.exit(main(root));
 }
