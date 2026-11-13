@@ -163,11 +163,13 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     [2, "ENG-2", "ahead"],
   ]);
   expect(queue.entries[1]?.detail).toBe("Starts when #1 merges");
+  expect(queue.entries[1]?.after).toEqual({ itemId: "ENG-1", files: [] });
   expect(queue.issues).toEqual([
     {
       id: "ENG-2",
       title: "Title ENG-2",
       owner: null,
+      ownerId: null,
       project: null,
       pr: { number: 2, url: "https://github.com/acme/platform/pull/2" },
     },
@@ -175,6 +177,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
       id: "ENG-1",
       title: "Title ENG-1",
       owner: null,
+      ownerId: null,
       project: null,
       pr: { number: 1, url: "https://github.com/acme/platform/pull/1" },
     },

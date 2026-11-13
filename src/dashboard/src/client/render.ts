@@ -53,7 +53,7 @@ import {
   type MediaInfo,
 } from "./evidence";
 import { PAGES } from "./navigation";
-import { renderMergeQueue } from "./merge-queue";
+import { renderMergeQueue, type LaneFilter } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderSetupChecklist } from "./setup-checklist";
 import { renderPushOutages } from "./push-outage";
@@ -80,6 +80,7 @@ export interface RenderModel {
   phase: "loading" | "ready" | "error";
   overview?: OverviewResponse | null;
   mergeQueue?: MergeQueueResponse | null;
+  mergeLanes?: { filter: LaneFilter; userId: string | null };
   issues?: IssueListResponse | null;
   issue?: IssueDetailResponse | null;
   questions?: QuestionListResponse | null;
@@ -198,7 +199,7 @@ function renderBanner(model: RenderModel): string {
 function viewMergeQueue(model: RenderModel): string {
   const queue = model.mergeQueue;
   if (!queue || model.phase === "loading") return renderPending(model);
-  return `${pageHeading("mergeQueue")}${renderPushOutages(queue)}${renderPolicyRunnerWarnings(queue)}${renderMergeQueue(queue)}`;
+  return `${pageHeading("mergeQueue")}${renderPushOutages(queue)}${renderPolicyRunnerWarnings(queue)}${renderMergeQueue(queue, model.mergeLanes)}`;
 }
 
 function renderPending(model: RenderModel): string {

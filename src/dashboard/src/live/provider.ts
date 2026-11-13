@@ -48,6 +48,7 @@ import {
   getCandidateRiskSteps,
   getCloseoutRecoverySteps,
   getConfirmedRemoteMergeSteps,
+  latestCandidatePathsSteps,
   getConversationSteps,
   getEvidenceSteps,
   getLinkAskSteps,
@@ -438,6 +439,7 @@ async function readMergeQueue(store: Db, options: LiveStatusOptions): Promise<Me
     id: publicId(record),
     title: textOr(record.title, publicId(record)),
     owner: ownerName(facts.get(record.id)),
+    ownerId: facts.get(record.id)?.ownerId ?? null,
     project: itemProject(facts.get(record.id)),
     pr: pullRequest(record, rows, options.project?.repo),
   }));
@@ -2383,6 +2385,7 @@ async function mergeQueueFor(
       null
     );
   };
+  const paths = await store.run(latestCandidatePathsSteps);
   const waiting: StatusMergeEntry[] = [];
   for (const record of records) {
     if (record.state !== "merge_queue" && !(record.state === "verifying" && places.has(record.id)))
@@ -2425,6 +2428,16 @@ async function mergeQueueFor(
       detail,
       settings: await mergeSettings(store, record.id),
       steps: mergeSteps(job),
+      ...(reason === "ahead" && ahead
+        ? {
+            after: {
+              itemId: publicId(ahead),
+              files: (paths.get(record.id) ?? []).filter((path) =>
+                paths.get(ahead.id)?.includes(path),
+              ),
+            },
+          }
+        : {}),
     });
   }
   waiting.sort(

@@ -8,7 +8,7 @@ import {
   type StatusMergeEntry,
   type StatusMergeSettings,
 } from "../contract";
-import { render } from "./render";
+import { render, type RenderModel } from "./render";
 import { matchRoute, routePath } from "./route";
 import { NAVIGATION } from "./navigation";
 
@@ -125,11 +125,18 @@ function resource(snapshot: FullStatus): MergeQueueResponse {
   return parsed.response;
 }
 
-function page(snapshot: FullStatus): string {
+function page(
+  snapshot: FullStatus,
+  mergeLanes?: RenderModel["mergeLanes"],
+  owners: Record<string, string> = {},
+): string {
+  const queue = resource(snapshot);
+  for (const issue of queue.issues) issue.ownerId = owners[issue.id] ?? null;
   return render({
     route: { view: "mergeQueue" },
     phase: "ready",
-    mergeQueue: resource(snapshot),
+    mergeQueue: queue,
+    ...(mergeLanes ? { mergeLanes } : {}),
     error: null,
     engineUrl: null,
   }).content;
@@ -178,8 +185,8 @@ describe("merge queue page", () => {
     expect(statusIntegrity(snapshot)).toEqual([]);
     const html = page(snapshot);
     expect(html).toContain('<h1 class="sr-only">Merge queue</h1>');
-    const platform = html.indexOf(">acme/platform</h2>");
-    const web = html.indexOf(">acme/web</h2>");
+    const platform = html.indexOf(">acme/platform</span>");
+    const web = html.indexOf(">acme/web</span>");
     expect(platform).toBeGreaterThan(-1);
     expect(web).toBeGreaterThan(platform);
     const queued = html.slice(platform, web);
@@ -189,13 +196,13 @@ describe("merge queue page", () => {
     expect(queued.indexOf("ENG-102")).toBeLessThan(queued.indexOf("ENG-107"));
     expect(rowText(html, "ENG-101")).toBe("");
     expect(cardText(html, "ENG-101")).toBe(
-      "ENG-101 Audit log model #412 mergeable(ENG-101) = false · waiting on ci Merge queue on Re-check: CI only Branch updated onto main 9f1c2ab. CI 4 of 6 checks done.",
+      "ENG-101 Audit log model #412 Waiting for CI · 4 of 6 checks mergeable(ENG-101) = false · waiting on ci Merge queue on Re-check: CI only Branch updated onto main 9f1c2ab. CI 4 of 6 checks done.",
     );
     expect(rowText(html, "ENG-102")).toBe(
-      "2 ENG-102 CSV / JSON formatters Audit log export Aisha Khan #415 35m Queued Starts when #412 merges",
+      "2 ENG-102 CSV / JSON formatters #415 35m Queued Starts when #412 merges",
     );
     expect(rowText(html, "ENG-107")).toContain(
-      "3 ENG-107 Fix export timezone Audit log export Aisha Khan #418 10m Queued Starts when #415 merges · Bug rule: Closeout checks it again after its branch update",
+      "3 ENG-107 Fix export timezone #418 10m Queued Starts when #415 merges · Bug rule: Closeout checks it again after its branch update",
     );
     const green = html.slice(web);
     expect(green).toContain("Merge each when green");
@@ -210,8 +217,8 @@ describe("merge queue page", () => {
     snapshot.mergeQueue[0]!.steps = steps("done", "run", "wait");
     const html = page(snapshot);
     const platform = html.slice(
-      html.indexOf(">acme/platform</h2>"),
-      html.indexOf(">acme/web</h2>"),
+      html.indexOf(">acme/platform</span>"),
+      html.indexOf(">acme/web</span>"),
     );
     expect(platform.match(/data-merge-head=/g)).toHaveLength(1);
     expect(platform.match(/data-merge-step=/g)).toHaveLength(3);
@@ -232,9 +239,9 @@ describe("merge queue page", () => {
     const snapshot = twoRepositories();
     snapshot.mergeQueue = snapshot.mergeQueue.filter((waiting) => waiting.itemId !== "ENG-121");
     const html = page(snapshot);
-    const web = html.slice(html.indexOf(">acme/web</h2>"));
+    const web = html.slice(html.indexOf(">acme/web</span>"));
     expect(cardText(html, "ENG-120")).toStartWith(
-      "ENG-120 Landing copy #31 mergeable(ENG-120) = false",
+      "ENG-120 Landing copy #31 Waiting for CI mergeable(ENG-120) = false",
     );
     expect(web).not.toContain("<table");
     expect(web).not.toContain("No pull requests waiting.");
@@ -243,7 +250,7 @@ describe("merge queue page", () => {
   test("an issue waiting on review approval holds no place and says why", () => {
     const html = page(twoRepositories());
     expect(rowText(html, "ENG-121")).toBe(
-      "ENG-121 Footer links Audit log export Aisha Khan #32 2h 5m Waiting for review Waiting for an approving review on #32. It merges once approved and green",
+      "ENG-121 Footer links #32 2h 5m Waiting for review Waiting for an approving review on #32. It merges once approved and green",
     );
     const queued = twoRepositories();
     queued.mergeQueue[0] = entry("ENG-101", "acme/platform", null, "review", 3);
@@ -253,9 +260,11 @@ describe("merge queue page", () => {
   test("an issue back with the agent, and the pull requests merged today", () => {
     const html = page(twoRepositories());
     const done = html.slice(html.indexOf("<h3>Done and stopped</h3>"));
-    expect(html.indexOf("<h3>Done and stopped</h3>")).toBeLessThan(html.indexOf(">acme/web</h2>"));
+    expect(html.indexOf("<h3>Done and stopped</h3>")).toBeLessThan(
+      html.indexOf(">acme/web</span>"),
+    );
     expect(done.indexOf("ENG-130")).toBeLessThan(done.indexOf("ENG-99"));
-    expect(done).toContain('<span class="st warn">Back with the agent</span>');
+    expect(done).toContain('<span class="st warn">Merge conflict · sent back to the agent</span>');
     expect(done).toContain("The branch update conflicted 30m ago.");
     expect(done).toContain('<span class="st merged">Merged</span>');
     expect(done).toContain("Merged 2h ago.");
@@ -269,8 +278,8 @@ describe("merge queue page", () => {
     );
     const html = page(snapshot);
     const platform = html.slice(
-      html.indexOf(">acme/platform</h2>"),
-      html.indexOf(">acme/web</h2>"),
+      html.indexOf(">acme/platform</span>"),
+      html.indexOf(">acme/web</span>"),
     );
     expect(platform).toContain("No pull requests waiting.");
     expect(platform).not.toContain("<table");
@@ -282,9 +291,9 @@ describe("merge queue page", () => {
     snapshot.items.push(item("ENG-131", "Lost repository", "acme/platform", 421));
     expect(resource(snapshot).entries.at(-1)?.repository).toBeNull();
     const html = page(snapshot);
-    const lost = html.slice(html.indexOf(">Repository not known</h2>"));
-    expect(html.indexOf(">Repository not known</h2>")).toBeGreaterThan(
-      html.indexOf(">acme/web</h2>"),
+    const lost = html.slice(html.indexOf(">Repository not known</span>"));
+    expect(html.indexOf(">Repository not known</span>")).toBeGreaterThan(
+      html.indexOf(">acme/web</span>"),
     );
     expect(lost).toContain("Paws has no repository for these tasks.");
     expect(lost).not.toContain("Merge queue on");
@@ -304,9 +313,75 @@ describe("merge queue page", () => {
 
   test("detail columns hide on phones", () => {
     const html = page(twoRepositories());
-    for (const heading of ["Project", "Delegated by", "Waiting", "Detail"])
+    for (const heading of ["Waiting", "Detail"])
       expect(html).toContain(`<th class="run-cell hide-phone">${heading}</th>`);
     for (const heading of ["#", "Issue", "PR", "Step"])
       expect(html).toContain(`<th class="run-cell">${heading}</th>`);
+  });
+
+  test("groups entries into lanes titled by person and project, in lane order", () => {
+    const snapshot = twoRepositories();
+    snapshot.items.push(
+      { ...item("ENG-140", "Ben's fix", "acme/platform", 430), owner: "Ben Ode", project: null },
+      { ...item("ENG-141", "Ben's docs", "acme/platform", 431), owner: "Ben Ode", project: null },
+    );
+    snapshot.mergeQueue.push(
+      entry("ENG-141", "acme/platform", 2, "ahead", 2),
+      entry("ENG-140", "acme/platform", 1, "ci", 4),
+    );
+    const html = page(snapshot);
+    const titles = [...html.matchAll(/<h2 id="[^"]*" class="min-w-0 break-words">([^<]*)<\/h2>/g)];
+    expect(titles.map((match) => match[1])).toEqual([
+      "Aisha Khan · Audit log export",
+      "Ben Ode · No project",
+      "Aisha Khan · Audit log export",
+    ]);
+    const ben = html.slice(html.indexOf("Ben Ode · No project"), html.indexOf(">acme/web</span>"));
+    expect(ben).toContain(">acme/platform</span>");
+    expect(ben.indexOf("ENG-140")).toBeLessThan(ben.indexOf("ENG-141"));
+    expect(ben).not.toContain("ENG-101");
+  });
+
+  test("each state renders its label", () => {
+    const snapshot = twoRepositories();
+    snapshot.mergeQueue[0]!.steps = steps("done", "done");
+    snapshot.mergeQueue[1] = {
+      ...entry("ENG-102", "acme/platform", 2, "ci", 35),
+      steps: steps("done", "done"),
+    };
+    snapshot.mergeQueue[2]!.after = { itemId: "ENG-102", files: ["src/export/csv.ts"] };
+    const html = page(snapshot);
+    expect(cardText(html, "ENG-101")).toContain("#412 Merging · batch of 2");
+    expect(rowText(html, "ENG-102")).toContain("Merging · batch of 2");
+    expect(rowText(html, "ENG-107")).toContain("After ENG-102: both change csv.ts");
+    expect(rowText(html, "ENG-120")).toContain("Waiting for CI");
+    expect(html).toContain('<h2 id="merge-lane-');
+    expect(html.match(/\[&_\.st\]:whitespace-normal/g)).toHaveLength(3);
+    snapshot.mergeQueue[0]!.steps = steps("done", "run");
+    expect(cardText(page(snapshot), "ENG-101")).toContain("Waiting for CI · 4 of 6 checks");
+    expect(html).toContain("Merge conflict · sent back to the agent");
+    snapshot.mergeHistory![1]!.reason = "ci_failed";
+    expect(page(snapshot)).toContain("CI failed · sent back to the agent");
+  });
+
+  test("My lanes shows only the lanes of the signed-in member", () => {
+    const snapshot = twoRepositories();
+    snapshot.items.push({ ...item("ENG-140", "Ben's fix", "acme/web", 430), owner: "Ben Ode" });
+    snapshot.mergeQueue.push(entry("ENG-140", "acme/web", null, "ci", 4, GREEN));
+    const owners = Object.fromEntries(
+      snapshot.items.map((each) => [each.id, each.owner === "Ben Ode" ? "ben" : "aisha"]),
+    );
+    const all = page(snapshot, { filter: "all", userId: "ben" }, owners);
+    expect(all).toContain('data-merge-lanes="all" aria-pressed="true">All lanes</button>');
+    expect(all).toContain("ENG-101");
+    const mine = page(snapshot, { filter: "mine", userId: "ben" }, owners);
+    expect(mine).toContain('data-merge-lanes="mine" aria-pressed="true">My lanes</button>');
+    expect(mine.match(/data-merge-lane=/g)).toHaveLength(1);
+    expect(mine).toContain("Ben Ode · Audit log export");
+    expect(mine).not.toContain("ENG-101");
+    expect(page(snapshot, { filter: "mine", userId: "cy" }, owners)).toContain(
+      "None of your lanes has work waiting to merge.",
+    );
+    expect(page(snapshot)).not.toContain("My lanes");
   });
 });

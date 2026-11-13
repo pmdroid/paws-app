@@ -43,6 +43,7 @@ test("lists each item's owner, Linear project, and creation time", async () => {
     {
       itemId: solo.id,
       owner: null,
+      ownerId: null,
       projectId: null,
       projectName: null,
       createdAt: 30,
@@ -50,6 +51,7 @@ test("lists each item's owner, Linear project, and creation time", async () => {
     {
       itemId: newer.id,
       owner: "Ada Owner",
+      ownerId: userId,
       projectId: "linear-project",
       projectName: "Exports",
       createdAt: 20,
@@ -57,6 +59,7 @@ test("lists each item's owner, Linear project, and creation time", async () => {
     {
       itemId: older.id,
       owner: "Ada Owner",
+      ownerId: userId,
       projectId: null,
       projectName: null,
       createdAt: 10,
