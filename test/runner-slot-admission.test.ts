@@ -748,4 +748,19 @@ test("an item pinned to a full runner names the pin, not an unavailable runner",
       `No runner can take ${REPOSITORY}: goldbox: run pinned to agentbox; agentbox: no free capacity`,
     ],
   });
+
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .update(q.t.runnerWork)
+        .set({ endedAt: NOW, leaseUntil: NOW - 1, teardownConfirmedAt: NOW })
+        .where(eq(q.t.runnerWork.runId, occupant.id)),
+    (q) => q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.id, occupant.id)),
+    (q) => q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "busy")),
+  );
+  expect(await pass()).toEqual(["pinned"]);
+  expect(
+    (await schedulerRunnerSlots(db, NOW)).find((row) => row.itemId === "pinned")?.runnerId,
+  ).toBe(agentbox);
 });
