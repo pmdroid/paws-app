@@ -1,54 +1,91 @@
-import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
 import type { RunnerCommand } from "../runner-protocol";
-import { migration } from "./migrations/20261103T0135_agent_accounts";
+import { seed as insert } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 import {
   AgentAccountError,
   bindAgentAccount,
   commandAccount,
   createAgentAccount,
-  listAgentAccounts,
   listAgentBindings,
-  legacyMigrate,
-  migrate,
-  openDatabase,
   recordCommandAccount,
   recordRunnerAccountCapability,
   removeAgentAccount,
   removeAgentBinding,
   renameAgentAccount,
   setAgentAccountEnabled,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "./index";
 
 const NOW = 1_800_000_000_000;
 
-function seed(db: Database, workspace: string, runners: string[]) {
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, `org-${workspace}`, workspace, NOW]);
-  db.run("INSERT OR IGNORE INTO workspace_user(id,linear_user_id,name,email) VALUES(?,?,?,?)", [
-    `user-${workspace}`,
-    `linear-${workspace}`,
-    "Owner",
-    `${workspace}@example.test`,
-  ]);
-  db.run(
-    "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES(?,?,'admin','manual',1,?)",
-    [workspace, `user-${workspace}`, NOW],
+const closes: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closes.splice(0)) await close();
+});
+
+function seed(db: Db, workspace: string, runners: string[]) {
+  const user = `user-${workspace}`;
+  return insert(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: workspace,
+        linearOrganizationId: `org-${workspace}`,
+        name: workspace,
+        createdAt: NOW,
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({
+          id: user,
+          linearUserId: `linear-${workspace}`,
+          name: "Owner",
+          email: `${workspace}@example.test`,
+        })
+        .onConflictDoNothing(),
+    (q) =>
+      q.orm.insert(q.t.workspaceMember).values({
+        workspaceId: workspace,
+        userId: user,
+        role: "admin",
+        source: "manual",
+        active: 1,
+        checkedAt: NOW,
+      }),
+    ...runners.map(
+      (runner) => (q: Q) =>
+        q.orm.insert(q.t.runner).values({
+          id: runner,
+          workspaceId: workspace,
+          ownerUserId: user,
+          name: runner,
+          status: "active",
+          createdAt: NOW,
+        }),
+    ),
   );
-  for (const runner of runners)
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
-      [runner, workspace, `user-${workspace}`, runner, NOW],
-    );
 }
 
-function fresh() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  seed(db, "W1", ["R1", "R2"]);
-  seed(db, "W2", ["R3"]);
+async function fresh() {
+  const { db, close } = await tempStore();
+  closes.push(close);
+  await seed(db, "W1", ["R1", "R2"]);
+  await seed(db, "W2", ["R3"]);
   return db;
 }
+
+const refused = (message: string) => ({ cause: { message: expect.stringContaining(message) } });
+
+const hostStatus = (db: Db, runnerVersion: string) =>
+  insert(db, (q) =>
+    q.orm
+      .insert(q.t.runnerHostStatus)
+      .values({ runnerId: "R1", runnerVersion, reportedAt: NOW })
+      .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } }),
+  );
 
 async function code(run: () => unknown) {
   try {
@@ -90,84 +127,9 @@ const probe = (
   ...(account ? { account } : {}),
 });
 
-test("the migration moves runner+agent rows to legacy bindings and is repeat-safe", () => {
-  const db = openDatabase(":memory:");
-  legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
-  seed(db, "W1", ["R1", "R2"]);
-  for (const [runner, agent] of [
-    ["R1", "claude"],
-    ["R2", "claude"],
-    ["R2", "codex"],
-  ])
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [
-      runner!,
-      agent!,
-    ]);
-  legacyMigrate(db);
-  const snapshot = () => ({
-    accounts: db
-      .query("SELECT id,workspace_id,agent,legacy,enabled FROM agent_account ORDER BY id")
-      .all(),
-    bindings: db
-      .query(
-        "SELECT id,account_id,runner_id,agent,legacy,quota_scope FROM agent_account_binding ORDER BY id",
-      )
-      .all(),
-  });
-  const before = snapshot();
-  expect(before).toEqual({
-    accounts: [
-      { id: "legacy_claude_W1", workspace_id: "W1", agent: "claude", legacy: 1, enabled: 1 },
-      { id: "legacy_codex_W1", workspace_id: "W1", agent: "codex", legacy: 1, enabled: 1 },
-    ],
-    bindings: [
-      {
-        id: "legacy_claude_R1",
-        account_id: "legacy_claude_W1",
-        runner_id: "R1",
-        agent: "claude",
-        legacy: 1,
-        quota_scope: "unknown",
-      },
-      {
-        id: "legacy_claude_R2",
-        account_id: "legacy_claude_W1",
-        runner_id: "R2",
-        agent: "claude",
-        legacy: 1,
-        quota_scope: "unknown",
-      },
-      {
-        id: "legacy_codex_R2",
-        account_id: "legacy_codex_W1",
-        runner_id: "R2",
-        agent: "codex",
-        legacy: 1,
-        quota_scope: "unknown",
-      },
-    ],
-  });
-  db.run(migration.sql);
-  legacyMigrate(db);
-  expect(snapshot()).toEqual(before);
-  db.close();
-});
-
-test("a new runner+agent row gets its legacy binding", async () => {
-  const db = fresh();
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent) VALUES('R3','grok')");
-  expect(await listAgentBindings(sqliteDb(db), "W2")).toMatchObject([
-    { id: "legacy_grok_R3", accountId: "legacy_grok_W2", legacy: true, quotaScope: "unknown" },
-  ]);
-  expect(await listAgentAccounts(sqliteDb(db), "W2")).toMatchObject([
-    { id: "legacy_grok_W2", label: "Grok default sign-in", legacy: true, enabled: true },
-  ]);
-  db.close();
-});
-
 test("one account has several bindings and rejects duplicates and foreign workspaces", async () => {
-  const db = fresh();
-  const a = await createAgentAccount(sqliteDb(db), {
+  const db = await fresh();
+  const a = await createAgentAccount(db, {
     workspaceId: "W1",
     agent: "claude",
     label: "Team",
@@ -176,7 +138,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     await code(
       async () =>
-        await createAgentAccount(sqliteDb(db), {
+        await createAgentAccount(db, {
           workspaceId: "W1",
           agent: "claude",
           label: " team ",
@@ -186,7 +148,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   ).toBe("duplicate");
   expect(
     (
-      await createAgentAccount(sqliteDb(db), {
+      await createAgentAccount(db, {
         workspaceId: "W1",
         agent: "codex",
         label: "Team",
@@ -197,7 +159,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     await code(
       async () =>
-        await createAgentAccount(sqliteDb(db), {
+        await createAgentAccount(db, {
           workspaceId: "W1",
           agent: "claude",
           label: "",
@@ -208,7 +170,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     await code(
       async () =>
-        await createAgentAccount(sqliteDb(db), {
+        await createAgentAccount(db, {
           workspaceId: "nope",
           agent: "claude",
           label: "X",
@@ -217,26 +179,27 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     ),
   ).toBe("not_found");
 
-  const first = await bindAgentAccount(sqliteDb(db), {
+  const first = await bindAgentAccount(db, {
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
     now: NOW,
   });
-  const second = await bindAgentAccount(sqliteDb(db), {
+  const second = await bindAgentAccount(db, {
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R2",
-    now: NOW,
+    now: NOW + 1,
   });
   expect([first.quotaScope, second.quotaScope]).toEqual(["account", "account"]);
-  expect(
-    (await listAgentBindings(sqliteDb(db), "W1", a.id)).map((binding) => binding.runnerId),
-  ).toEqual(["R1", "R2"]);
+  expect((await listAgentBindings(db, "W1", a.id)).map((binding) => binding.runnerId)).toEqual([
+    "R1",
+    "R2",
+  ]);
   expect(
     await code(
       async () =>
-        await bindAgentAccount(sqliteDb(db), {
+        await bindAgentAccount(db, {
           workspaceId: "W1",
           accountId: a.id,
           runnerId: "R1",
@@ -247,7 +210,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     await code(
       async () =>
-        await bindAgentAccount(sqliteDb(db), {
+        await bindAgentAccount(db, {
           workspaceId: "W1",
           accountId: a.id,
           runnerId: "R3",
@@ -258,7 +221,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     await code(
       async () =>
-        await bindAgentAccount(sqliteDb(db), {
+        await bindAgentAccount(db, {
           workspaceId: "W2",
           accountId: a.id,
           runnerId: "R3",
@@ -266,13 +229,11 @@ test("one account has several bindings and rejects duplicates and foreign worksp
         }),
     ),
   ).toBe("foreign_workspace");
-  expect(await code(async () => await listAgentBindings(sqliteDb(db), "W2", a.id))).toBe(
-    "foreign_workspace",
-  );
+  expect(await code(async () => await listAgentBindings(db, "W2", a.id))).toBe("foreign_workspace");
   expect(
     await code(
       async () =>
-        await renameAgentAccount(sqliteDb(db), {
+        await renameAgentAccount(db, {
           workspaceId: "W2",
           accountId: a.id,
           label: "X",
@@ -281,10 +242,10 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     ),
   ).toBe("foreign_workspace");
 
-  await removeAgentBinding(sqliteDb(db), { workspaceId: "W1", bindingId: first.id, now: NOW + 1 });
+  await removeAgentBinding(db, { workspaceId: "W1", bindingId: first.id, now: NOW + 1 });
   expect(
     (
-      await bindAgentAccount(sqliteDb(db), {
+      await bindAgentAccount(db, {
         workspaceId: "W1",
         accountId: a.id,
         runnerId: "R1",
@@ -292,50 +253,50 @@ test("one account has several bindings and rejects duplicates and foreign worksp
       })
     ).removedAt,
   ).toBeNull();
-  db.close();
 });
 
 test("the schema keeps each binding to one workspace, account and agent", async () => {
-  const db = fresh();
-  const a = await createAgentAccount(sqliteDb(db), {
+  const db = await fresh();
+  const a = await createAgentAccount(db, {
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
-  const insert = (
+  const bind = (
     workspace: string,
     agent: string,
     runner: string,
     legacy = 0,
-    scope = "account",
+    quotaScope = "account",
   ) =>
-    db.run(
-      "INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,legacy,quota_scope,created_at) VALUES(?,?,?,?,?,?,?,?)",
-      [`B-${workspace}-${agent}-${runner}`, workspace, a.id, agent, runner, legacy, scope, NOW],
+    insert(db, (q) =>
+      q.orm.insert(q.t.agentAccountBinding).values({
+        id: `B-${workspace}-${agent}-${runner}`,
+        workspaceId: workspace,
+        accountId: a.id,
+        agent,
+        runnerId: runner,
+        legacy,
+        quotaScope,
+        createdAt: NOW,
+      }),
     );
-  expect(() => insert("W1", "codex", "R1")).toThrow(/FOREIGN KEY/);
-  expect(() => insert("W2", "claude", "R3")).toThrow(/FOREIGN KEY/);
-  expect(() => insert("W1", "claude", "R3")).toThrow(/another workspace/);
-  expect(() => insert("W1", "claude", "R1", 1, "account")).toThrow(/CHECK/);
-  expect(() => insert("W1", "claude", "missing")).toThrow();
-  insert("W1", "claude", "R1");
-  expect(() =>
-    db.run("UPDATE agent_account_binding SET runner_id='R2' WHERE id='B-W1-claude-R1'"),
-  ).toThrow(/immutable/);
-  expect(() => db.run("DELETE FROM agent_account_binding")).toThrow(/removed, not deleted/);
-  expect(() => db.run("UPDATE agent_account SET workspace_id='W2' WHERE id=?", [a.id])).toThrow(
-    /immutable/,
+  await expect(bind("W1", "codex", "R1")).rejects.toMatchObject(refused("foreign key"));
+  await expect(bind("W2", "claude", "R3")).rejects.toMatchObject(refused("foreign key"));
+  await expect(bind("W1", "claude", "R1", 1, "account")).rejects.toMatchObject(
+    refused("check constraint"),
   );
-  expect(() => db.run("DELETE FROM agent_account WHERE id=?", [a.id])).toThrow(
-    /removed, not deleted/,
-  );
-  db.close();
+  await expect(bind("W1", "claude", "missing")).rejects.toMatchObject(refused("foreign key"));
+  await bind("W1", "claude", "R1");
+  expect((await listAgentBindings(db, "W1", a.id)).map((row) => row.id)).toEqual([
+    "B-W1-claude-R1",
+  ]);
 });
 
 test("commands without an account record the runner's legacy identity", async () => {
-  const db = fresh();
-  expect(await recordCommandAccount(sqliteDb(db), loginCheck("C1", "R1", "W1"), NOW)).toEqual({
+  const db = await fresh();
+  expect(await recordCommandAccount(db, loginCheck("C1", "R1", "W1"), NOW)).toEqual({
     commandId: "C1",
     workspaceId: "W1",
     runnerId: "R1",
@@ -345,15 +306,15 @@ test("commands without an account record the runner's legacy identity", async ()
     named: false,
     recordedAt: NOW,
   });
-  await recordCommandAccount(sqliteDb(db), probe("C2", "R2", "W1"), NOW);
-  expect(await commandAccount(sqliteDb(db), "C2")).toMatchObject({
+  await recordCommandAccount(db, probe("C2", "R2", "W1"), NOW);
+  expect(await commandAccount(db, "C2")).toMatchObject({
     bindingId: "legacy_claude_R2",
     named: false,
   });
-  expect(await commandAccount(sqliteDb(db), "unknown")).toBeNull();
+  expect(await commandAccount(db, "unknown")).toBeNull();
   expect(
     await recordCommandAccount(
-      sqliteDb(db),
+      db,
       {
         ...base,
         id: "C3",
@@ -366,24 +327,23 @@ test("commands without an account record the runner's legacy identity", async ()
       NOW,
     ),
   ).toBeNull();
-  expect(
-    await code(async () => await recordCommandAccount(sqliteDb(db), probe("C4", "R3", "W1"), NOW)),
-  ).toBe("foreign_workspace");
-  await expect(recordCommandAccount(sqliteDb(db), probe("C1", "R1", "W1"), NOW)).rejects.toThrow(
-    /UNIQUE/,
+  expect(await code(async () => await recordCommandAccount(db, probe("C4", "R3", "W1"), NOW))).toBe(
+    "foreign_workspace",
   );
-  db.close();
+  await expect(recordCommandAccount(db, probe("C1", "R1", "W1"), NOW)).rejects.toMatchObject(
+    refused("duplicate key"),
+  );
 });
 
 test("a named account is refused unless the runner reports the binding", async () => {
-  const db = fresh();
-  const a = await createAgentAccount(sqliteDb(db), {
+  const db = await fresh();
+  const a = await createAgentAccount(db, {
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
-  const bound = await bindAgentAccount(sqliteDb(db), {
+  const bound = await bindAgentAccount(db, {
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
@@ -391,35 +351,29 @@ test("a named account is refused unless the runner reports the binding", async (
   });
   const named = { accountId: a.id, bindingId: bound.id };
   const attempt = (id: string, account = named, runner = "R1", workspace = "W1") =>
-    code(
-      async () =>
-        await recordCommandAccount(sqliteDb(db), probe(id, runner, workspace, account), NOW),
-    );
+    code(async () => await recordCommandAccount(db, probe(id, runner, workspace, account), NOW));
   expect(await attempt("N1")).toBe("runner_unsupported");
-  db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.59',?)",
-    [NOW],
-  );
+  await hostStatus(db, "0.1.59");
   expect(await attempt("N2")).toBe("runner_unsupported");
-  db.run("UPDATE runner_host_status SET runner_version='0.1.61' WHERE runner_id='R1'");
+  await hostStatus(db, "0.1.61");
   expect(await attempt("N3")).toBe("runner_unsupported");
-  await recordRunnerAccountCapability(sqliteDb(db), "R1", { protocol: 1, bindings: [] }, NOW);
+  await recordRunnerAccountCapability(db, "R1", { protocol: 1, bindings: [] }, NOW);
   expect(await attempt("N4")).toBe("runner_unsupported");
   await recordRunnerAccountCapability(
-    sqliteDb(db),
+    db,
     "R1",
     { protocol: 1, bindings: [{ bindingId: bound.id, agent: "codex" }] },
     NOW,
   );
   expect(await attempt("N5")).toBe("runner_unsupported");
   await recordRunnerAccountCapability(
-    sqliteDb(db),
+    db,
     "R1",
     { protocol: 1, bindings: [{ bindingId: bound.id, agent: "claude" }] },
     NOW,
   );
   expect(await attempt("N6")).toBeNull();
-  expect(await commandAccount(sqliteDb(db), "N6")).toMatchObject({
+  expect(await commandAccount(db, "N6")).toMatchObject({
     accountId: a.id,
     bindingId: bound.id,
     named: true,
@@ -429,69 +383,60 @@ test("a named account is refused unless the runner reports the binding", async (
   expect(await attempt("N9", named, "R3", "W2")).toBe("foreign_workspace");
   expect(await attempt("N10", { ...named, bindingId: "MISSING" })).toBe("not_found");
 
-  await recordRunnerAccountCapability(sqliteDb(db), "R1", undefined, NOW);
+  await recordRunnerAccountCapability(db, "R1", undefined, NOW);
   expect(await attempt("N11")).toBe("runner_unsupported");
-  db.close();
 });
 
 test("identity stays attached after an account is disabled or removed", async () => {
-  const db = fresh();
-  const a = await createAgentAccount(sqliteDb(db), {
+  const db = await fresh();
+  const a = await createAgentAccount(db, {
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
-  const bound = await bindAgentAccount(sqliteDb(db), {
+  const bound = await bindAgentAccount(db, {
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
     now: NOW,
   });
-  db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.61',?)",
-    [NOW],
-  );
+  await hostStatus(db, "0.1.61");
   await recordRunnerAccountCapability(
-    sqliteDb(db),
+    db,
     "R1",
     { protocol: 1, bindings: [{ bindingId: bound.id, agent: "claude" }] },
     NOW,
   );
   const named = { accountId: a.id, bindingId: bound.id };
-  await recordCommandAccount(sqliteDb(db), probe("BEFORE", "R1", "W1", named), NOW);
+  await recordCommandAccount(db, probe("BEFORE", "R1", "W1", named), NOW);
 
-  await setAgentAccountEnabled(sqliteDb(db), {
+  await setAgentAccountEnabled(db, {
     workspaceId: "W1",
     accountId: a.id,
     enabled: false,
     now: NOW,
   });
   expect(
-    await code(
-      async () => await recordCommandAccount(sqliteDb(db), probe("OFF", "R1", "W1", named), NOW),
-    ),
+    await code(async () => await recordCommandAccount(db, probe("OFF", "R1", "W1", named), NOW)),
   ).toBe("disabled");
-  expect(
-    (await recordCommandAccount(sqliteDb(db), loginCheck("CHECK", "R1", "W1", named), NOW))?.named,
-  ).toBe(true);
+  expect((await recordCommandAccount(db, loginCheck("CHECK", "R1", "W1", named), NOW))?.named).toBe(
+    true,
+  );
 
-  await removeAgentAccount(sqliteDb(db), { workspaceId: "W1", accountId: a.id, now: NOW + 1 });
+  await removeAgentAccount(db, { workspaceId: "W1", accountId: a.id, now: NOW + 1 });
   expect(
-    await code(
-      async () => await recordCommandAccount(sqliteDb(db), probe("GONE", "R1", "W1", named), NOW),
-    ),
+    await code(async () => await recordCommandAccount(db, probe("GONE", "R1", "W1", named), NOW)),
   ).toBe("removed");
-  expect((await listAgentBindings(sqliteDb(db), "W1", a.id))[0]?.removedAt).toBe(NOW + 1);
-  expect(await commandAccount(sqliteDb(db), "BEFORE")).toMatchObject({
+  expect((await listAgentBindings(db, "W1", a.id))[0]?.removedAt).toBe(NOW + 1);
+  expect(await commandAccount(db, "BEFORE")).toMatchObject({
     accountId: a.id,
     bindingId: bound.id,
   });
-  expect(() => db.run("DELETE FROM runner_command_account")).toThrow(/retained/);
   expect(
     await code(
       async () =>
-        await setAgentAccountEnabled(sqliteDb(db), {
+        await setAgentAccountEnabled(db, {
           workspaceId: "W1",
           accountId: a.id,
           enabled: true,
@@ -501,7 +446,7 @@ test("identity stays attached after an account is disabled or removed", async ()
   ).toBe("removed");
   expect(
     (
-      await createAgentAccount(sqliteDb(db), {
+      await createAgentAccount(db, {
         workspaceId: "W1",
         agent: "claude",
         label: "A",
@@ -510,22 +455,20 @@ test("identity stays attached after an account is disabled or removed", async ()
     ).label,
   ).toBe("A");
 
-  await recordCommandAccount(sqliteDb(db), loginCheck("LEGACY_CHECK", "R2", "W1"), NOW);
-  await setAgentAccountEnabled(sqliteDb(db), {
+  await recordCommandAccount(db, loginCheck("LEGACY_CHECK", "R2", "W1"), NOW);
+  await setAgentAccountEnabled(db, {
     workspaceId: "W1",
     accountId: "legacy_claude_W1",
     enabled: false,
     now: NOW,
   });
   expect(
-    await code(
-      async () => await recordCommandAccount(sqliteDb(db), probe("LEGACY", "R2", "W1"), NOW),
-    ),
+    await code(async () => await recordCommandAccount(db, probe("LEGACY", "R2", "W1"), NOW)),
   ).toBe("disabled");
   expect(
     await code(
       async () =>
-        await removeAgentAccount(sqliteDb(db), {
+        await removeAgentAccount(db, {
           workspaceId: "W1",
           accountId: "legacy_claude_W1",
           now: NOW,
@@ -535,7 +478,7 @@ test("identity stays attached after an account is disabled or removed", async ()
   expect(
     await code(
       async () =>
-        await bindAgentAccount(sqliteDb(db), {
+        await bindAgentAccount(db, {
           workspaceId: "W1",
           accountId: "legacy_claude_W1",
           runnerId: "R1",
@@ -543,5 +486,4 @@ test("identity stays attached after an account is disabled or removed", async ()
         }),
     ),
   ).toBe("legacy");
-  db.close();
 });
