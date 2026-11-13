@@ -68,7 +68,10 @@ import {
   type Steps,
   type RunnerAssignment as Assignment,
   type RunnerHostSample,
+  currentRunnerCertificatePemSteps,
+  getAgentAccountSteps,
 } from "../db";
+import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import { journal, journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import {
@@ -98,6 +101,11 @@ import {
   type RunnerSkill,
   type SignedRunnerCommand,
   withoutJournalTime,
+  AGENT_CREDENTIAL_RUNNER_VERSION,
+  agentCredentialContext,
+  runnerCommandAccount,
+  sealForRunner,
+  type RunnerAgentCredentialFiles,
 } from "../runner-protocol";
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestionSteps } from "../questions";
@@ -145,6 +153,7 @@ export function createRunnerWork(options: {
   keyId: string;
   privateKey: KeyObject;
   eventKey: Buffer;
+  secretsDir?: string;
   now?: () => number;
 }) {
   const { store } = options;
@@ -588,7 +597,7 @@ export function createRunnerWork(options: {
   function openEventSteps(q: Q, row: StoredRunnerEvent): Steps<RunnerEvent> {
     return openRunnerEventSteps(q, eventKey, row);
   }
-  return {
+  const api = {
     supportsAgentSteps,
     identity(runnerId: string) {
       return store.run((q) => runnerSteps(q, runnerId));
@@ -670,7 +679,69 @@ export function createRunnerWork(options: {
         result.push(
           signRunnerCommand({ keyId: options.keyId, privateKey: options.privateKey, command }),
         );
-      return result;
+      return api.attachCredentials(runnerId, result);
+    },
+    attachCredentials(runnerId: string, envelopes: SignedRunnerCommand[]) {
+      const { secretsDir } = options;
+      if (!secretsDir || envelopes.length === 0) return Promise.resolve(envelopes);
+      return store.run(function* (q) {
+        const version = yield* runnerHostVersionSteps(q, runnerId);
+        if (!runnerReleaseAtLeast(version, AGENT_CREDENTIAL_RUNNER_VERSION)) return envelopes;
+        const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
+        if (!pem) return envelopes;
+        const sent: SignedRunnerCommand[] = [];
+        for (const envelope of envelopes) {
+          const command = JSON.parse(
+            Buffer.from(envelope.payload, "base64url").toString("utf8"),
+          ) as RunnerCommand;
+          const named = runnerCommandAccount(command);
+          const stored = named
+            ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
+            : null;
+          if (!named || (command.type !== "login" && stored?.agent !== named.agent)) {
+            sent.push(envelope);
+            continue;
+          }
+          const at = stored?.version ?? 0;
+          const context = agentCredentialContext(command.id, named.account.accountId, at);
+          sent.push({
+            ...envelope,
+            credential: {
+              version: at,
+              ...(command.type === "login" || !stored
+                ? {}
+                : { sealed: sealForRunner(pem, stored.blob, context) }),
+            },
+          });
+        }
+        return sent;
+      });
+    },
+    storeCredential(
+      runnerId: string,
+      input: { accountId: string; version: number; files: RunnerAgentCredentialFiles },
+    ) {
+      const { secretsDir } = options;
+      if (!secretsDir) throw new Error("Stored agent sign-ins are unavailable.");
+      return store.transaction(function* (q) {
+        const runner = yield* runnerSteps(q, runnerId);
+        yield* getAgentAccountSteps(q, runner.workspaceId, input.accountId);
+        const blob = JSON.stringify(input.files);
+        const result = yield* writeAgentCredentialSteps(q, secretsDir, {
+          accountId: input.accountId,
+          runnerId,
+          version: input.version,
+          blob,
+          now: now(),
+        });
+        if (result !== "stale_version") return result;
+        const stored = yield* readAgentCredentialSteps(q, secretsDir, input.accountId);
+        return stored?.version === input.version &&
+          stored.runnerId === runnerId &&
+          stored.blob === blob
+          ? "written"
+          : result;
+      });
     },
     async acknowledge(runnerId: string, commandId: string) {
       await store.run((q) => runnerSteps(q, runnerId));
@@ -923,6 +994,7 @@ export function createRunnerWork(options: {
       });
     },
   };
+  return api;
 }
 export type RunnerWork = ReturnType<typeof createRunnerWork>;
 

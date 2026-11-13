@@ -63,6 +63,7 @@ export function discardLoginHome(staged: string): void {
  */
 export function publishCredentials(agent: Agent, staged: string, home: string): void {
   let published = 0;
+  const fresh = (lstatSync(home).mode & 0o070) === 0o070 ? 0o640 : 0o600;
   for (const file of CREDENTIALS[agent]) {
     const source = read(join(staged, file.path));
     if (source === null) continue;
@@ -74,7 +75,7 @@ export function publishCredentials(agent: Agent, staged: string, home: string): 
       const live = read(target);
       if (live !== null) data = mergeKeys(live, source, file.merge);
     }
-    replaceFile(target, data, existing ? (existing.mode & 0o660) | 0o400 : 0o600);
+    replaceFile(target, data, existing ? (existing.mode & 0o660) | 0o400 : fresh);
     published += 1;
   }
   if (published === 0) throw new Error("Provider did not write credentials");

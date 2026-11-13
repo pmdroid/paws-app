@@ -47,6 +47,7 @@ export {
   publishRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  runnerAgentCredentials,
   shareRunnerAgentState,
   shareRunnerWorkRoot,
 } from "./accounts";

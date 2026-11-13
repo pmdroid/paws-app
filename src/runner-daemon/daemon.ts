@@ -3,12 +3,13 @@ import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
-import { openDatabase, sqliteDb } from "../db";
+import { openDatabase, sqliteDb, type Q } from "../db";
 import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import {
+  agentCredential,
   commandReceipt,
   pendingCommand,
   pendingRetroCommand,
@@ -18,6 +19,15 @@ import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
+  RunnerAgentCredentialFilesSchema,
+  RunnerAgentCredentialReceiptSchema,
+  agentCredentialContext,
+  agentCredentialDigest,
+  openForRunner,
+  runnerCommandAccount,
+  type RunnerAgentCredential,
+  type RunnerAgentCredentialStore,
+  type RunnerCodingAgent,
   type RunnerAccountCapability,
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
@@ -36,6 +46,7 @@ import {
   type RunnerCommand,
   type RunnerArtifactChunk,
   type RunnerCommandRejection,
+  type RunnerCommandVerification,
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerAgentUser,
@@ -131,6 +142,8 @@ export const EnrollmentTokenSchema = z
   .max(256)
   .regex(/^[A-Za-z0-9_-]+$/);
 
+class CredentialUnavailable extends Error {}
+
 const RETIRED_RECEIPT_RETENTION_MS = 24 * 60 * 60_000;
 const RETIRED_PRUNE_INTERVAL_MS = 10 * 60_000;
 const IDENTITY_REJECTED_RETRY_MS = 60_000;
@@ -149,6 +162,7 @@ export type RunnerDaemonOptions = {
   /** Host metrics sent with every heartbeat. */
   sampleHost?: () => RunnerHostStatus;
   accountBindings?: () => RunnerAccountCapability["bindings"];
+  agentCredentials?: RunnerAgentCredentialStore;
   log?: (line: string) => void;
 };
 
@@ -400,6 +414,116 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return [];
     }
   }
+  function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
+    const named = runnerCommandAccount(command);
+    const files = options.agentCredentials;
+    if (!named || !files) return;
+    const { accountId, bindingId } = named.account;
+    const held = q
+      .select()
+      .from(agentCredential)
+      .where(eq(agentCredential.bindingId, bindingId))
+      .get();
+    if (held) {
+      if (held.accountId !== accountId) throw new Error("Agent account binding changed.");
+      const commands = JSON.stringify([...(JSON.parse(held.commands) as string[]), command.id]);
+      yield* tx.exec(
+        q.update(agentCredential).set({ commands }).where(eq(agentCredential.bindingId, bindingId)),
+      );
+      return;
+    }
+    let digest: string;
+    try {
+      if (credential.sealed) {
+        const context = agentCredentialContext(command.id, accountId, credential.version);
+        const blob = openForRunner(localKey(options.root), credential.sealed, context);
+        files.write(
+          named.account,
+          named.agent,
+          RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)),
+        );
+      }
+      digest = agentCredentialDigest(files.read(named.account, named.agent));
+    } catch (error) {
+      journalCaught(error, "daemon.receiveCredential", null);
+      if (credential.sealed) files.remove(named.account, named.agent);
+      throw new CredentialUnavailable();
+    }
+    yield* tx.exec(
+      q.insert(agentCredential).values({
+        bindingId,
+        accountId,
+        agent: named.agent,
+        version: credential.version,
+        digest,
+        wrote: credential.sealed ? 1 : 0,
+        commands: JSON.stringify([command.id]),
+      }),
+    );
+  }
+  let syncing = false;
+  async function syncCredentials(live: readonly { runId: string; generation: number }[]) {
+    const files = options.agentCredentials;
+    if (!files || syncing) return;
+    syncing = true;
+    const running = new Set(live.map(({ runId, generation }) => `${runId}:${generation}`));
+    const waiting = (id: string) => {
+      const row = q.select().from(pendingCommand).where(eq(pendingCommand.id, id)).get();
+      if (!row) return false;
+      if (row.acknowledged !== 2) return true;
+      const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+      return "generation" in command && running.has(`${command.runId}:${command.generation}`);
+    };
+    try {
+      for (const row of q.select().from(agentCredential).all()) {
+        const account = { accountId: row.accountId, bindingId: row.bindingId };
+        const agent = row.agent as RunnerCodingAgent;
+        try {
+          if ((JSON.parse(row.commands) as string[]).some(waiting) || files.busy(account)) continue;
+          const where = eq(agentCredential.bindingId, row.bindingId);
+          let { version, wrote, digest: stored } = row;
+          let upload = row.upload;
+          const current = files.read(account, agent);
+          const digest = agentCredentialDigest(current);
+          if (upload === null && current.length > 0 && digest !== stored) {
+            upload = JSON.stringify(current);
+            q.update(agentCredential).set({ upload }).where(where).run();
+          }
+          while (upload !== null) {
+            const sent = RunnerAgentCredentialFilesSchema.parse(JSON.parse(upload));
+            const { result } = RunnerAgentCredentialReceiptSchema.parse(
+              await authenticated("/v1/agent-credentials", "POST", {
+                accountId: row.accountId,
+                version: version + 1,
+                files: sent,
+              }),
+            );
+            if (result !== "written") {
+              journal(`runner.agent_credential.kept binding=${row.bindingId} result=${result}`);
+              break;
+            }
+            version += 1;
+            wrote = 1;
+            stored = agentCredentialDigest(sent);
+            upload = current.length > 0 && digest !== stored ? JSON.stringify(current) : null;
+            q.update(agentCredential)
+              .set({ version, wrote, digest: stored, upload })
+              .where(where)
+              .run();
+          }
+          if (upload !== null) continue;
+          const latest = q.select().from(agentCredential).where(where).get();
+          if (latest?.commands !== row.commands) continue;
+          if (wrote) files.remove(account, agent);
+          q.delete(agentCredential).where(eq(agentCredential.bindingId, row.bindingId)).run();
+        } catch (error) {
+          journalCaught(error, "daemon.syncCredentials", null);
+        }
+      }
+    } finally {
+      syncing = false;
+    }
+  }
   async function pollCommands(path: string) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
@@ -429,29 +553,36 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const rejected: RunnerCommandRejection[] = [];
     const deniedRepositories = new Set<string>();
     for (const envelope of response.commands) {
-      const result = await store.transaction(function* (tx) {
-        const verified = verifyRunnerCommand(envelope, {
-          trustedKeys,
-          runnerId: identity.runnerId,
-          workspaceId: identity.workspaceId,
-          now: now(),
-          allowedRepositories: options.allowedRepositories,
-          accountBindings,
-          claimCommand,
+      const result = await store
+        .transaction(function* (tx) {
+          const verified = verifyRunnerCommand(envelope, {
+            trustedKeys,
+            runnerId: identity.runnerId,
+            workspaceId: identity.workspaceId,
+            now: now(),
+            allowedRepositories: options.allowedRepositories,
+            accountBindings,
+            claimCommand,
+          });
+          if (
+            verified.ok &&
+            (verified.command.type === "helper") !== (path === "/v1/helper-commands")
+          )
+            throw new Error("Runner command arrived through the wrong queue.");
+          if (verified.ok && envelope.credential)
+            yield* receiveCredential(tx, verified.command, envelope.credential);
+          if (verified.ok)
+            yield* tx.exec(
+              q
+                .insert(pendingCommand)
+                .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
+            );
+          return verified;
+        })
+        .catch((error: unknown): RunnerCommandVerification => {
+          if (!(error instanceof CredentialUnavailable)) throw error;
+          return { ok: false, reason: "account_unavailable" };
         });
-        if (
-          verified.ok &&
-          (verified.command.type === "helper") !== (path === "/v1/helper-commands")
-        )
-          throw new Error("Runner command arrived through the wrong queue.");
-        if (verified.ok)
-          yield* tx.exec(
-            q
-              .insert(pendingCommand)
-              .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
-          );
-        return verified;
-      });
       if (!result.ok) rejected.push(result.reason);
       if (!result.ok && result.repository) deniedRepositories.add(result.repository);
     }
@@ -703,6 +834,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
+      if (live) await syncCredentials(live);
       return response;
     },
     /** The bundle bytes as Paws sent them. The caller checks size and checksum before using them. */

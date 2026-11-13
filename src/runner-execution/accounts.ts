@@ -21,13 +21,16 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
+  RUNNER_AGENT_CREDENTIAL_FILES,
   RUNNER_CODING_AGENTS,
   RunnerAccountSchema,
   runnerAccountAgentUnsupported,
   type RunnerAccount,
+  type RunnerAgentCredentialFiles,
+  type RunnerAgentCredentialStore,
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
@@ -145,6 +148,95 @@ export function markRunnerAccountSignedIn(
     return;
   }
   writeSharedFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`, owners);
+}
+
+const CLAUDE_STATE = ".claude/.claude.json";
+const CREDENTIAL_LIMIT = 196_608;
+
+export function runnerAgentCredentials(
+  agentHome: string,
+  owners: RunnerAccountOwners = processOwners(),
+): RunnerAgentCredentialStore {
+  const files = (account: RunnerAccount, agent: RunnerCodingAgent) =>
+    RUNNER_AGENT_CREDENTIAL_FILES[agent].map((path) => ({
+      path,
+      target: join(runnerAccountHome(agentHome, account), path),
+    }));
+  return {
+    write(account, agent, written) {
+      const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
+      markRunnerAccountSignedIn(home, account, agent, owners);
+      const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
+      for (const file of written) {
+        if (!allowed.has(file.path)) throw new RunnerAccountHomeError("Agent sign-in is unsafe");
+        const target = join(home, file.path);
+        let folder = home;
+        for (const part of relative(home, dirname(target)).split(sep).filter(Boolean))
+          credentialFolder((folder = join(folder, part)), owners);
+        let data = Buffer.from(file.data, "base64");
+        if (file.path === CLAUDE_STATE) {
+          const live = readCredentialFile(target);
+          const state = live ? (JSON.parse(live.toString("utf8")) as object) : {};
+          data = Buffer.from(JSON.stringify({ ...state, ...JSON.parse(data.toString("utf8")) }));
+        }
+        writeSharedFile(target, data, owners, 0o660);
+      }
+    },
+    read(account, agent) {
+      const read: RunnerAgentCredentialFiles = [];
+      for (const { path, target } of files(account, agent)) {
+        let data = readCredentialFile(target);
+        if (data && path === CLAUDE_STATE) {
+          const { oauthAccount } = JSON.parse(data.toString("utf8")) as { oauthAccount?: unknown };
+          data = oauthAccount === undefined ? null : Buffer.from(JSON.stringify({ oauthAccount }));
+        }
+        if (data) read.push({ path, data: data.toString("base64") });
+      }
+      return read;
+    },
+    busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
+    remove(account, agent) {
+      for (const { target } of files(account, agent)) rmSync(target, { force: true });
+    },
+  };
+}
+
+function credentialFolder(path: string, owners: RunnerAccountOwners): void {
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    privateDirectory(path, true, owners);
+    return;
+  }
+  const self = process.getuid?.() ?? info.uid;
+  if (info.uid === self || info.uid === owners.runnerUid) privateDirectory(path, false, owners);
+  else if (
+    info.isSymbolicLink() ||
+    !info.isDirectory() ||
+    info.gid !== owners.agentGid ||
+    (info.mode & 0o077) !== 0o070
+  )
+    throw new RunnerAccountHomeError("Agent sign-in folder is not shared with the runner");
+}
+
+function readCredentialFile(path: string): Buffer | null {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || info.size > CREDENTIAL_LIMIT)
+      throw new RunnerAccountHomeError("Agent sign-in file is unsafe");
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function runnerAccountBindings(
@@ -606,18 +698,23 @@ function shareRunnerPaths(
   }
 }
 
-function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {
+function shareWithAgents(descriptor: number, owners: RunnerAccountOwners, mode = 0o640): void {
   fchownSync(descriptor, -1, owners.agentGid);
-  fchmodSync(descriptor, 0o640);
+  fchmodSync(descriptor, mode);
 }
 
-function writeSharedFile(path: string, text: string, owners: RunnerAccountOwners): void {
+function writeSharedFile(
+  path: string,
+  text: string | Buffer,
+  owners: RunnerAccountOwners,
+  mode = 0o640,
+): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    const descriptor = openSync(temporary, "wx", 0o640);
+    const descriptor = openSync(temporary, "wx", mode);
     try {
-      shareWithAgents(descriptor, owners);
-      writeSync(descriptor, text);
+      shareWithAgents(descriptor, owners, mode);
+      writeSync(descriptor, typeof text === "string" ? Buffer.from(text) : text);
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);
