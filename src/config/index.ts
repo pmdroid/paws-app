@@ -127,8 +127,13 @@ export {
 } from "./tailscale";
 export type { TailscaleAuthKeyStatus } from "./tailscale";
 
-export { projectSkillsRoot } from "./skills";
-export type { ProjectSkills } from "./skills";
+export {
+  parseProjectSkillRoots,
+  projectSkillsRoot,
+  readProjectSkillRoots,
+  writeProjectSkills,
+} from "./skills";
+export type { ProjectSkillRoots, ProjectSkills } from "./skills";
 export {
   parseBriefTemplates,
   renderBriefTemplates,

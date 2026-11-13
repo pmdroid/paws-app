@@ -1461,6 +1461,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
+        configPath: paths.configFile,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
