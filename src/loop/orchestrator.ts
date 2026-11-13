@@ -423,6 +423,8 @@ import {
   readReviewThreads,
   readPullCi,
   commentOnPullRequest,
+  editPullRequestComment,
+  listPullRequestComments,
   reactToComment,
   replyToReviewComment,
   resolveReviewThread,
@@ -568,7 +570,13 @@ import {
   type LinearConversations,
 } from "./linear-comments";
 import { checkReviewReplies, postReviewReplies } from "./review-replies";
-import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
+import {
+  deliverGitHubOutbox,
+  feedbackNoticeSteps,
+  fixRoundFinishedSteps,
+  fixRoundNoticeSteps,
+  queuedNoticeSteps,
+} from "./fix-round-notice";
 import { suggestedFindingsSection } from "./pull-comments";
 import {
   acceptedSuggestions,
@@ -2034,6 +2042,7 @@ export class Orchestrator {
       await this.announceFixRound(job);
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
+      await this.finishFixRound(job);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -2288,6 +2297,23 @@ export class Orchestrator {
       );
   }
 
+  private async finishFixRound(job: Job): Promise<void> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+    if (!item || ["queued", "running", "recovering"].includes(item.state)) return;
+    await this.store
+      .transaction((q) => fixRoundFinishedSteps(q, job, this.now()))
+      .catch((error: unknown) =>
+        journalCaught(
+          error,
+          "orchestrator.finishFixRound",
+          itemId,
+          undefined,
+          this.options.journal,
+        ),
+      );
+  }
+
   private async deliverGitHubMessage(message: OutboxRow): Promise<void> {
     const itemId = readString(message.payload, "itemId");
     const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
@@ -2303,6 +2329,8 @@ export class Orchestrator {
     await deliverGitHubOutbox(message, {
       commentOnPullRequest: (prNumber, body) => commentOnPullRequest({ ...access, prNumber, body }),
       reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
+      pullRequestComments: (prNumber) => listPullRequestComments({ ...access, prNumber }),
+      editComment: (commentId, body) => editPullRequestComment({ ...access, commentId, body }),
     });
   }
 
@@ -6433,6 +6461,7 @@ export class Orchestrator {
       fetchMain: (item) => this.fetchUpstreamMain(item),
       ciFixAttempts: (item) => this.fixRoundLimit(item),
       feedbackWait: () => this.feedbackWait(),
+      feedbackNoticed: feedbackNoticeSteps,
       readPullCi: async (item, pull) => {
         const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -7990,6 +8019,7 @@ export class Orchestrator {
         );
         continue;
       }
+      await this.store.transaction((q) => queuedNoticeSteps(q, item.id, now));
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
       const position = await getQueuePosition(this.store, item.id);

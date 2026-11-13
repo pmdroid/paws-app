@@ -110,7 +110,7 @@ function fixtureGitHub(input: {
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
   ci: { pending: boolean; failed: boolean; dirty: boolean };
   calls: GitHubCall[];
-  comments: Map<number, { body: string; html_url: string }[]>;
+  comments: Map<number, { id: number; body: string; html_url: string }[]>;
   closed: Set<number>;
   merged: Map<number, string>;
   opened: FakeGitHub["opened"];
@@ -120,7 +120,7 @@ function fixtureGitHub(input: {
   const closed = new Set<number>();
   const merged = new Map<number, string>();
   const ci = { pending: input.ciPending ?? false, failed: false, dirty: false };
-  const comments = new Map<number, { body: string; html_url: string }[]>();
+  const comments = new Map<number, { id: number; body: string; html_url: string }[]>();
   let serverErrors = input.mergeServerErrors ?? 0;
   const pullJson = (number: number) => ({
     number,
@@ -172,11 +172,18 @@ function fixtureGitHub(input: {
       return { status: 200, body: open };
     }
     if (method === "GET" && path.includes("/comments"))
-      return { status: 200, body: comments.get(number) ?? [] };
+      return { status: 200, body: path.includes("page=2") ? [] : (comments.get(number) ?? []) };
+    const edited = /\/issues\/comments\/(\d+)$/.exec(path)?.[1];
+    const target = [...comments.values()].flat().find((comment) => comment.id === Number(edited));
+    if (method === "PATCH" && target) {
+      target.body = (request.body as { body: string }).body;
+      return { status: 200, body: target };
+    }
     if (method === "POST" && path.endsWith("/comments")) {
       const list = comments.get(number) ?? [];
       const body = (request.body as { body: string }).body;
       list.push({
+        id: [...comments.values()].flat().length + 1,
         body,
         html_url: `https://github.com/${repository}/pull/${number}#c${list.length}`,
       });

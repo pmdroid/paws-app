@@ -208,6 +208,23 @@ export function* gatherPullFeedbackSteps(
   return inserted;
 }
 
+export function* pullFeedbackDueSteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ runAt: job.runAt })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.pullComments),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "pullCommentsFor"), itemId),
+        ),
+      ),
+  );
+  return row === undefined ? null : Number(row.runAt);
+}
+
 /** This item's comments that have not reached the agent or the team yet, oldest first. */
 export function* pendingPullCommentsSteps(q: Q, itemId: string) {
   const { pullComment } = q.t;

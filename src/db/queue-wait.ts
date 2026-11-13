@@ -109,8 +109,10 @@ export function listQueuePositions(db: Db): Promise<QueuePosition[]> {
 }
 
 export function getQueuePosition(db: Db, itemId: string): Promise<QueuePosition | null> {
-  return db.run(function* (q) {
-    const entries = yield* listSteps(q);
-    return entries.find((entry) => entry.itemId === itemId) ?? null;
-  });
+  return db.run((q) => queuePositionSteps(q, itemId));
+}
+
+export function* queuePositionSteps(q: Q, itemId: string): Steps<QueuePosition | null> {
+  const entries = yield* listSteps(q);
+  return entries.find((entry) => entry.itemId === itemId) ?? null;
 }

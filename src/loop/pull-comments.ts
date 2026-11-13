@@ -23,7 +23,7 @@ import {
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetForSteps } from "../merge";
 import { feedbackSeenSteps } from "./feedback-seen";
-import { seenReactionSteps } from "./fix-round-notice";
+import { feedbackNoticeSteps, seenReactionSteps } from "./fix-round-notice";
 import { askSteps } from "./operations";
 import {
   authors,
@@ -240,6 +240,7 @@ function* recordAndReactSteps(
   if (!receipt.recorded) return receipt;
   yield* seenReactionSteps(q, comment, comment.receivedAt);
   yield* feedbackSeenSteps(q, comment.itemId, comment.receivedAt);
+  yield* feedbackNoticeSteps(q, comment.itemId, comment.receivedAt);
   return receipt;
 }
 
