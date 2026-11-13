@@ -171,11 +171,12 @@ export async function waitForRepositoryCommand(
   const local = waitersOf(store).get(id);
   const done = new AbortController();
   const stop = signal ? AbortSignal.any([signal, done.signal]) : done.signal;
+  const polled = poll(store, id, stop);
   try {
-    const polled = poll(store, id, stop);
     return await Promise.race(local ? [local.promise, polled] : [polled]);
   } finally {
     done.abort();
+    await polled.catch(() => undefined);
   }
 }
 
