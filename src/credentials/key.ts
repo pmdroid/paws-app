@@ -21,7 +21,9 @@ export function loadSecretKey(path: string, title: string): Buffer {
 export async function storeSecretKeys(paths: readonly string[]): Promise<void> {
   for (const path of paths) {
     if (readSecretFile(path) === null)
-      await saveSecret(path, randomBytes(32).toString("base64"), true);
+      await saveSecret(path, randomBytes(32).toString("base64"), true).catch((error: unknown) => {
+        if (readSecretFile(path) === null) throw error;
+      });
     loadSecretKey(path, basename(path));
   }
 }

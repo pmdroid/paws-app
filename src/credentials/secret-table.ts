@@ -8,7 +8,7 @@ import {
   type SecretRow,
 } from "../db";
 import { journal } from "../journal";
-import { openSecretAt, SECRET_PREFIX, storedSecrets, useSecretTable } from "./files";
+import { openSecretAt, SECRET_PREFIX, sealSecret, storedSecrets, useSecretTable } from "./files";
 
 export async function useDatabaseSecrets(
   store: Db,
@@ -23,14 +23,18 @@ export async function useDatabaseSecrets(
       journal(`Copied ${copied} secret ${copied === 1 ? "file" : "files"} into the database.`);
   }
   const rows = await store.run(secretRowsSteps);
+  const cached = new Map(rows.map((row) => [row.name, row.ciphertext]));
   useSecretTable({
     dir,
-    rows: new Map(rows.map((row) => [row.name, row.ciphertext])),
+    rows: cached,
     async write(name, ciphertext, exclusive) {
       const written = await store.run((q) =>
         writeSecretRowSteps(q, { name, ciphertext, now: Date.now(), exclusive }),
       );
-      if (!written) throw new Error("Paws credential file already exists.");
+      if (written) return;
+      const winner = (await store.run(secretRowsSteps)).find((row) => row.name === name);
+      if (winner) cached.set(name, winner.ciphertext);
+      throw new Error("Paws credential file already exists.");
     },
   });
   return { close: async () => useSecretTable(null) };
@@ -41,8 +45,11 @@ export function secretFiles(dir: string): SecretRow[] {
   return readdirSync(dir, { recursive: true, withFileTypes: true }).flatMap((entry) => {
     const path = join(entry.parentPath, entry.name);
     if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
-    const ciphertext = readFileSync(path, "utf8");
-    return ciphertext.startsWith(SECRET_PREFIX) ? [{ name: relative(dir, path), ciphertext }] : [];
+    const text = readFileSync(path, "utf8");
+    const ciphertext = text.startsWith(SECRET_PREFIX)
+      ? text
+      : sealSecret(entry.parentPath, entry.name, text);
+    return [{ name: relative(dir, path), ciphertext }];
   });
 }
 

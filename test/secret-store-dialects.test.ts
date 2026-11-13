@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadGitHubAppCredentials } from "../src/config";
@@ -12,7 +12,7 @@ import {
   useDatabaseSecrets,
   writeSecretFile,
 } from "../src/credentials";
-import { secretRowsSteps, type Db } from "../src/db";
+import { secretRowsSteps, writeSecretRowSteps, type Db } from "../src/db";
 import { realProbe } from "../src/doctor";
 import { configureRunnerTranscriptStorage } from "../src/runner-transcript-config";
 import { setJournalSink } from "../src/journal";
@@ -192,5 +192,33 @@ forEachDialect((connect) => {
     await expect(saveSecret(join(dir, "tailscale-authkey"), "again", true)).rejects.toThrow(
       "already exists",
     );
+  });
+
+  test("a plaintext secret file is imported encrypted, and a key another instance stored wins", async () => {
+    const { db, dir } = await setup(connect);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "exe-dev-token"), "plain-token", { mode: 0o600 });
+    await install(db, dir);
+    expect(readSecretFile(join(dir, "exe-dev-token"))).toBe("plain-token");
+    const row = (await db.run(secretRowsSteps)).find((entry) => entry.name === "exe-dev-token");
+    expect(row?.ciphertext.startsWith("paws-envelope-v1\n")).toBe(true);
+    expect(row?.ciphertext).not.toContain("plain-token");
+
+    const key = join(dir, "runner-file.key");
+    await storeSecretKeys([key]);
+    const stored = readSecretFile(key);
+    const winner = (await db.run(secretRowsSteps)).find(
+      (entry) => entry.name === "runner-file.key",
+    )!;
+    const write = (ciphertext: string | null) =>
+      db.run((q) =>
+        writeSecretRowSteps(q, { name: "runner-file.key", ciphertext, now: 1, exclusive: false }),
+      );
+    await write(null);
+    await install(db, dir);
+    expect(readSecretFile(key)).toBeNull();
+    await write(winner.ciphertext);
+    await storeSecretKeys([key]);
+    expect(readSecretFile(key)).toBe(stored);
   });
 });
