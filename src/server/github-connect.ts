@@ -20,7 +20,12 @@ import {
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
-import { everyLimited, type GitHubStatus, type GitHubStatusCache } from "./github-status-cache";
+import {
+  createGitHubStatusCache,
+  everyLimited,
+  type GitHubStatus,
+  type GitHubStatusCache,
+} from "./github-status-cache";
 import { randomUUID } from "node:crypto";
 import {
   createWorkspaceGitHubActivation,
@@ -53,6 +58,7 @@ export function createHostedGitHubConnect(options: {
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
+  const cache = options.cache ?? createGitHubStatusCache(0);
   const origin = new URL(options.origin).origin;
   if (new URL(origin).protocol !== "https:")
     throw new Error("Hosted GitHub connect requires HTTPS.");
@@ -117,7 +123,7 @@ export function createHostedGitHubConnect(options: {
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
-    if (request.method !== "GET") options.cache?.clear(access!.principal.workspaceId);
+    if (request.method !== "GET") cache.clear(access!.principal.workspaceId);
     if (url.pathname === START && request.method === "GET") {
       let app: ActiveGitHubApp;
       try {
@@ -152,7 +158,7 @@ export function createHostedGitHubConnect(options: {
           },
           { headers: { "cache-control": "no-store" } },
         );
-      const cached = options.cache?.get(workspaceId, key, now());
+      const cached = cache.get(workspaceId, key, now());
       if (cached) return reply(cached);
       try {
         const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30000)]);
@@ -194,21 +200,21 @@ export function createHostedGitHubConnect(options: {
             { error: "Workspace access changed. Refresh to check GitHub again." },
             { status: 409 },
           );
-        const github = {
-          status: !repositories.length
-            ? "needs_repositories"
-            : !discovered.installed
-              ? "needs_installation"
-              : !discovered.permissions
-                ? "needs_access"
-                : connected
-                  ? "connected"
-                  : "needs_connection",
-          installationUrl: discovered.installationUrl,
-          repositoryCount: repositories.length,
-        };
-        options.cache?.set(workspaceId, key, now(), github);
-        return await reply(github);
+        return await reply(
+          cache.set(workspaceId, key, now(), {
+            status: !repositories.length
+              ? "needs_repositories"
+              : !discovered.installed
+                ? "needs_installation"
+                : !discovered.permissions
+                  ? "needs_access"
+                  : connected
+                    ? "connected"
+                    : "needs_connection",
+            installationUrl: discovered.installationUrl,
+            repositoryCount: repositories.length,
+          }),
+        );
       } catch (caughtError2) {
         journalCaught(caughtError2, "github-connect.createHostedGitHubConnect.any", null);
         if (!(await signedIn())) return denied();

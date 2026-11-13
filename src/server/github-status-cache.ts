@@ -11,6 +11,7 @@ export function createGitHubStatusCache(ttl = 60000) {
     },
     set(workspaceId: string, key: string, now: number, value: GitHubStatus) {
       entries.set(workspaceId, { key, at: now, value });
+      return value;
     },
     clear(workspaceId: string) {
       entries.delete(workspaceId);
@@ -18,30 +19,36 @@ export function createGitHubStatusCache(ttl = 60000) {
   };
 }
 
-export async function everyLimited<T>(
+export function everyLimited<T>(
   items: readonly T[],
   limit: number,
   test: (item: T) => Promise<boolean>,
 ) {
-  let passed = true;
-  await mapLimited(items, limit, async (item) => {
-    if (passed && !(await test(item))) passed = false;
+  let stopped = false;
+  return new Promise<boolean>((resolve, reject) => {
+    const stop = (settle: () => void) => {
+      stopped = true;
+      settle();
+    };
+    const check = async (item: T) => (await test(item)) || stop(() => resolve(false));
+    mapLimited(items, limit, check, () => stopped).then(
+      () => resolve(true),
+      (caught: unknown) => stop(() => reject(caught)),
+    );
   });
-  return passed;
 }
 
 export async function mapLimited<T, R>(
   items: readonly T[],
   limit: number,
   map: (item: T) => Promise<R>,
+  stopped = () => false,
 ) {
-  const results: R[] = Array.from({ length: items.length });
+  const results: R[] = [];
   let next = 0;
   const worker = async () => {
-    while (next < items.length) {
-      const index = next++;
+    for (let index = next++; index < items.length && !stopped(); index = next++)
       results[index] = await map(items[index]!);
-    }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
