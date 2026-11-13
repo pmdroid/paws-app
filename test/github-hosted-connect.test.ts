@@ -138,6 +138,13 @@ async function fixture() {
   let maxTokensInFlight = 0;
   let catalogPages: boolean | "duplicate" = false;
   let catalogPermissions: unknown = INSTALLATION_PERMISSIONS;
+  const github = {
+    orgRole: "admin",
+    repoStatus: 200,
+    repoPermissions: { admin: true, pull: true } as Record<string, boolean>,
+    owner: { type: "Organization", id: 1 } as { type: string; id: number },
+    suspended: false,
+  };
   const provider = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -170,16 +177,22 @@ async function fixture() {
           repositories: Array.from({ length: count }, (_, index) => ({
             id: offset + index + 1,
             full_name: `acme/widget${offset + index}`,
-            permissions: { admin: true },
+            permissions: { admin: true, pull: true },
           })),
         });
       }
       if (url.pathname === "/user/installations/22/repositories")
         return Response.json({
-          total_count: 2,
+          total_count: 3,
           repositories: [
-            { id: 1, full_name: "acme/widgets", private: true, permissions: { admin: true } },
+            {
+              id: 1,
+              full_name: "acme/widgets",
+              private: true,
+              permissions: { admin: true, pull: true },
+            },
             { id: 2, full_name: "other/private", permissions: { admin: false } },
+            { id: 3, full_name: "acme/gadgets", permissions: { admin: false, pull: true } },
           ],
         });
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
@@ -188,17 +201,22 @@ async function fixture() {
       if (/^\/repos\/acme\/[^/]+\/installation$/.test(url.pathname)) {
         await beforeInstallation?.();
         return Response.json(
-          { id: 22, app_id: 99, suspended_at: null, permissions: INSTALLATION_PERMISSIONS },
+          {
+            id: 22,
+            app_id: 99,
+            suspended_at: github.suspended ? "2026-11-13T00:00:00Z" : null,
+            permissions: INSTALLATION_PERMISSIONS,
+          },
           { status: installationStatus },
         );
       }
-      if (url.pathname === "/repos/acme/widgets")
-        return Response.json({
-          permissions: { admin: true },
-          owner: { type: "Organization", id: 1 },
-        });
+      if (/^\/repos\/acme\/(widgets|gadgets)$/.test(url.pathname))
+        return Response.json(
+          { permissions: github.repoPermissions, owner: github.owner },
+          { status: github.repoStatus },
+        );
       if (url.pathname === "/user/memberships/orgs/acme")
-        return Response.json({ state: "active", role: "admin" });
+        return Response.json({ state: "active", role: github.orgRole });
       if (url.pathname === "/app/installations/22/access_tokens") {
         const name = (JSON.parse(body) as { repositories: string[] }).repositories[0];
         maxTokensInFlight = Math.max(maxTokensInFlight, ++tokensInFlight);
@@ -262,6 +280,7 @@ async function fixture() {
     home,
     env,
     calls,
+    github,
     sessions,
     begin,
     handler,
@@ -860,3 +879,131 @@ test("repository choices read every user-accessible page and reject duplicate pa
     await f.close();
   }
 });
+
+const ORG_ADMIN_NEEDED =
+  "Connecting GitHub for the first time needs an admin of the acme GitHub organization. Ask one to connect GitHub; after that any Paws admin can add repositories.";
+const NOT_INSTALLED =
+  "The GitHub App is not installed on acme/widgets, or the installation is suspended.";
+
+test("first setup refuses an org member with repository admin and accepts an org admin", async () => {
+  const f = await fixture();
+  try {
+    await clearRepositories(f.db);
+    await signInForRepositorySetup(f);
+    f.github.orgRole = "member";
+    const refused = await saveSetup(f);
+    expect(refused?.status).toBe(409);
+    expect(await refused!.json()).toEqual({ error: ORG_ADMIN_NEEDED });
+    expect(await repositoryCount(f.db)).toBe(0);
+    expect(await connectionCount(f.db)).toBe(0);
+    f.github.orgRole = "admin";
+    expect((await saveSetup(f))?.status).toBe(200);
+    expect(await repositoryCount(f.db)).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("connect accepts an org member who can read and names a repository they can't", async () => {
+  const f = await fixture();
+  try {
+    f.github.orgRole = "member";
+    f.github.repoStatus = 404;
+    const flow = await f.begin("admin");
+    const response = await f.handler()(f.request("admin", flow.callback.href));
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error: "Your GitHub account can't read acme/widgets.",
+    });
+    expect((await connection(f.db))?.generation).toBe(0);
+    f.github.repoStatus = 200;
+    const retry = await f.begin("admin");
+    expect((await f.handler()(f.request("admin", retry.callback.href)))?.status).toBe(303);
+  } finally {
+    await f.close();
+  }
+});
+
+test("first setup on a personal account needs its owner", async () => {
+  const f = await fixture();
+  try {
+    await clearRepositories(f.db);
+    await signInForRepositorySetup(f);
+    f.github.owner = { type: "User", id: 8 };
+    const refused = await saveSetup(f);
+    expect(await refused!.json()).toEqual({
+      error: "Connecting GitHub for the first time needs the owner of the acme GitHub account.",
+    });
+    expect(await repositoryCount(f.db)).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("after first setup an org member who can read a repository adds it", async () => {
+  const f = await fixture();
+  try {
+    await signInForRepositorySetup(f);
+    f.github.orgRole = "member";
+    f.github.repoPermissions = { admin: false, pull: true };
+    const catalog = await f.setup()(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+    );
+    expect(
+      ((await catalog!.json()) as { repositories: { repository: string }[] }).repositories.map(
+        (entry) => entry.repository,
+      ),
+    ).toEqual(["acme/widgets", "acme/gadgets"]);
+    const saved = await saveSetup(f, [
+      { repository: "acme/widgets", teamId: "team" },
+      { repository: "acme/gadgets", teamId: "team" },
+    ]);
+    expect(saved?.status).toBe(200);
+    expect(await repositoryCount(f.db)).toBe(2);
+    expect(f.calls.some((call) => call.path.startsWith("/user/memberships"))).toBe(false);
+    expect(
+      await rows(f.db, (q) =>
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.action, "github.connect.activated")),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("after first setup a repository the user can't read is refused", async () => {
+  const f = await fixture();
+  try {
+    await signInForRepositorySetup(f);
+    f.github.repoStatus = 404;
+    const refused = await saveSetup(f);
+    expect(refused?.status).toBe(409);
+    expect(await refused!.json()).toEqual({
+      error: "Your GitHub account can't read acme/widgets.",
+    });
+    expect(await connectionCount(f.db)).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const mode of ["first setup", "after first setup"])
+  for (const cause of ["suspended", "other installation"])
+    test(`${mode} refuses a repository on a ${cause} installation`, async () => {
+      const f = await fixture();
+      try {
+        if (mode === "first setup") await clearRepositories(f.db);
+        await signInForRepositorySetup(f);
+        if (cause === "suspended") f.github.suspended = true;
+        else f.setInstallationStatus(404);
+        const refused = await saveSetup(f);
+        expect(refused?.status).toBe(409);
+        expect(await refused!.json()).toEqual({ error: NOT_INSTALLED });
+        expect(await connectionCount(f.db)).toBe(0);
+      } finally {
+        await f.close();
+      }
+    });
