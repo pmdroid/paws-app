@@ -11445,7 +11445,7 @@ function profileLabelQuestion(
     const reason =
       problem.reason === "unknown_preset"
         ? "no preset has this name"
-        : "it would review with the same agent and model that implement";
+        : "another label on this issue names a different preset";
     return `- ${role} label "${problem.label}": ${reason}.`;
   });
   return [

@@ -379,8 +379,14 @@ test("Acme labels change only the next run and a failed Linear read retains its 
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
     presets: {
-      Opus: { agent: "claude", model: "opus" },
-      Codex: { agent: "codex", model: "acme-codex" },
+      Opus: {
+        implementer: { agent: "claude", model: "opus" },
+        reviewer: { agent: "codex", model: "review" },
+      },
+      Codex: {
+        implementer: { agent: "codex", model: "acme-codex" },
+        reviewer: { agent: "claude", model: "review" },
+      },
     },
   });
   const failed = await f.seed("running");
@@ -419,8 +425,14 @@ test("Acme labels change only the next run and a failed Linear read retains its 
 });
 
 const presets = {
-  Opus: { agent: "claude", model: "opus" },
-  Codex: { agent: "codex", model: "acme-codex" },
+  Opus: {
+    implementer: { agent: "claude", model: "opus" },
+    reviewer: { agent: "codex", model: "review" },
+  },
+  Codex: {
+    implementer: { agent: "codex", model: "acme-codex" },
+    reviewer: { agent: "claude", model: "review" },
+  },
 } as const;
 
 type Gate = {
@@ -461,7 +473,7 @@ test("an Implementer label starts the run with its preset and names the source o
   const f = await labelled();
   await f.label({ implementer: "Opus" });
   const run = await f.gate.ensureRun(await f.item());
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus.implementer);
   expect(f.snapshot(run.id).profiles.labelProblems).toBeUndefined();
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
@@ -473,9 +485,9 @@ test("an Implementer label starts the run with its preset and names the source o
     pawsRoot: f.root,
     worktreePath: f.root,
     prompt: "Implement acme",
-    profile: presets.Opus,
+    profile: presets.Opus.implementer,
   });
-  expect(f.calls.map((call) => call.profile)).toEqual([presets.Opus]);
+  expect(f.calls.map((call) => call.profile)).toEqual([presets.Opus.implementer]);
 });
 
 test("a label that changes the agent is announced by the next run", async () => {
@@ -493,7 +505,7 @@ test("a label that changes the agent is announced by the next run", async () => 
     pawsRoot: f.root,
     worktreePath: f.root,
     prompt: "Implement acme",
-    profile: presets.Codex,
+    profile: presets.Codex.implementer,
   });
   expect(await f.bodies()).toContain(
     "Switched to codex acme-codex from the Implementer label Codex.",
@@ -537,17 +549,17 @@ test("I fixed the label reads the corrected label before the run goes on", async
   await f.label({ implementer: "Opus" });
   await setItem(f.db, (await f.item()).id, { state: "running" });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus.implementer);
   expect(await f.bodies()).toContain("Implementer: Opus (label)");
 });
 
-test("a reviewer label equal to the implementer asks the same question", async () => {
+test("two different preset labels ask the same question", async () => {
   const f = await labelled();
-  await f.label({ implementer: "Opus", reviewer: "Opus" });
+  await f.label({ implementer: "Opus", reviewer: "Codex" });
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(false);
   const open = (await findOpenQuestion(f.db, "acme-session"))!;
-  expect(open.body).toContain('Reviewer label "Opus"');
+  expect(open.body).toContain('Reviewer label "Codex": another label on this issue names');
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
 });
 
