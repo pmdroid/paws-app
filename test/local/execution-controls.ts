@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { and, eq } from "drizzle-orm";
 import { FakeClock } from "../../src/core";
 import {
   JobLoop,
@@ -22,6 +23,7 @@ import {
   syncWorkspaceMember,
   workspaceSessionIds,
   sqliteDb,
+  type Db,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createFakeTracker, createLinearMembershipReads } from "../../src/linear";
@@ -36,31 +38,69 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
+
+type ExecutionControlsFixtureOptions = {
+  interruptItem?: (id: string) => Promise<void>;
+  onMemberRevoked?: () => Promise<void>;
+};
 
 export async function createExecutionControlsFixture(
   root: string,
-  options: {
-    interruptItem?: (id: string) => Promise<void>;
-    onMemberRevoked?: () => Promise<void>;
-  } = {},
+  options: ExecutionControlsFixtureOptions = {},
 ) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "controls.sqlite"));
   migrate(db);
+  return {
+    db,
+    ...(await executionControlsFixture(sqliteDb(db), root, options, async () => db.close())),
+  };
+}
+
+export async function createExecutionControlsFixturePg(
+  root: string,
+  options: ExecutionControlsFixtureOptions = {},
+) {
+  mkdirSync(root, { recursive: true });
+  const { db, close } = await tempStore();
+  return { db, ...(await executionControlsFixture(db, root, options, close)) };
+}
+
+async function executionControlsFixture(
+  db: Db,
+  root: string,
+  options: ExecutionControlsFixtureOptions,
+  closeDb: () => Promise<void>,
+) {
+  const deactivate = (userId: string) =>
+    db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(
+            and(
+              eq(q.t.workspaceMember.workspaceId, workspaceId),
+              eq(q.t.workspaceMember.userId, userId),
+            ),
+          ),
+      ),
+    );
   const now = Date.now();
   const workspaceId = "workspace";
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "admin",
     linearUserId: "admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: workspaceId,
     organizationId: "org",
     name: "Controls verification",
     userId: "admin",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [
@@ -68,13 +108,13 @@ export async function createExecutionControlsFixture(
     ["inactive", "member", ["team"]],
     ["outside", "member", ["outside"]],
   ] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id,
       linearUserId: id,
       name: id,
       email: `${id}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId,
       userId: id,
       role,
@@ -85,10 +125,8 @@ export async function createExecutionControlsFixture(
   }
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const userId of ["admin", "member", "inactive", "outside"])
-    sessions[userId] = await issueWorkspaceSession(sqliteDb(db), { workspaceId, userId, now });
-  db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
-    workspaceId,
-  ]);
+    sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
+  await deactivate("inactive");
   for (const [id, organizationId] of [
     ["controlled", "org"],
     ["foreign", "foreign"],
@@ -100,7 +138,7 @@ export async function createExecutionControlsFixture(
       title: `Control ${id}`,
       now,
     });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId: item.sessionKey!,
       organizationId: organizationId!,
       teamId: "team",
@@ -108,29 +146,40 @@ export async function createExecutionControlsFixture(
       appUserId: "app",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId);
+    await bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
   }
-  const item = (await getWorkItem(sqliteDb(db), "controlled"))!;
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
-    VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
-    [item.delegationId, now, item.sessionKey],
+  const item = (await getWorkItem(db, "controlled"))!;
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workItem).values({
+        id: "other",
+        delegationId: item.delegationId,
+        linearIssueId: "other",
+        linearIdentifier: "other",
+        title: "Unrelated item",
+        state: "queued",
+        branchName: "paws/other",
+        position: 1,
+        createdAt: now,
+        sessionKey: item.sessionKey,
+      }),
+    ),
   );
-  await bindWorkItemRepository(sqliteDb(db), "unmapped", {
+  await bindWorkItemRepository(db, "unmapped", {
     owner: "fixture",
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
   });
-  await replaceWorkspaceRepositories(sqliteDb(db), {
+  await replaceWorkspaceRepositories(db, {
     workspaceId,
     actorId: "admin",
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
     now,
   });
-  const run = (await beginImplementRun(sqliteDb(db), item.id, now)).run;
+  const run = (await beginImplementRun(db, item.id, now)).run;
   const clock = new FakeClock(now);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -147,11 +196,9 @@ export async function createExecutionControlsFixture(
       pauseItem: (id, canAct, onCommitted) => orchestrator.pauseItem(id, canAct, onCommitted),
       resumeItem(id, canAct, onCommitted) {
         const resumed = orchestrator.resumeItem(id, canAct, onCommitted);
-        if (revokeOnResume)
-          db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='member'", [
-            workspaceId,
-          ]);
-        return resumed;
+        if (!revokeOnResume) return resumed;
+        const revoked = deactivate("member");
+        return Promise.all([resumed, revoked]).then(([value]) => value);
       },
       async interruptItem(id) {
         if (joining) await joining;
@@ -175,7 +222,7 @@ export async function createExecutionControlsFixture(
   const access = createWorkspaceAccess({
     interruptItem: options.interruptItem,
     onMemberRevoked: options.onMemberRevoked,
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Controls verification" },
@@ -208,7 +255,6 @@ export async function createExecutionControlsFixture(
     });
   }
   return {
-    db,
     orchestrator,
     origin,
     runId: run.id,
@@ -225,7 +271,7 @@ export async function createExecutionControlsFixture(
       await server.stop(true);
       await access.stop();
       await orchestrator.shutdown();
-      db.close();
+      await closeDb();
     },
   };
 }
