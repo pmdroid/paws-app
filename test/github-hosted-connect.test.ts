@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { count, eq, sql } from "drizzle-orm";
+import { count as countRows, eq, sql } from "drizzle-orm";
 import { createGitHubRepositorySetup, createHostedGitHubConnect } from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
@@ -35,11 +35,12 @@ const key = generateKeyPairSync("rsa", {
 const rows = <R>(db: Db, query: (q: Q) => PromiseLike<R[]>) => db.run((q) => q.all(query(q)));
 const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
 const oauthCount = async (db: Db) =>
-  (await rows(db, (q) => q.orm.select({ n: count() }).from(q.t.workspaceGithubOauth)))[0]!.n;
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceGithubOauth)))[0]!.n;
 const connectionCount = async (db: Db) =>
-  (await rows(db, (q) => q.orm.select({ n: count() }).from(q.t.workspaceGithubConnection)))[0]!.n;
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceGithubConnection)))[0]!
+    .n;
 const repositoryCount = async (db: Db) =>
-  (await rows(db, (q) => q.orm.select({ n: count() }).from(q.t.workspaceRepository)))[0]!.n;
+  (await rows(db, (q) => q.orm.select({ n: countRows() }).from(q.t.workspaceRepository)))[0]!.n;
 const connection = async (db: Db) =>
   (await rows(db, (q) => q.orm.select().from(q.t.workspaceGithubConnection)))[0];
 const demote = (db: Db, userId: string) =>
