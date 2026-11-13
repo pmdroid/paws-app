@@ -577,8 +577,12 @@ export function* pinnedSlotsReservedSteps(q: Q, runnerId: string, itemId: string
       .orderBy(asc(job.id)),
   );
   const own = rows.find((row) => row.itemId === itemId && row.runnerId === runnerId)?.slotOrder;
-  const admitted = (yield* schedulerRunnerSlotsSteps(q, now)).filter(
-    (row) => row.itemId !== itemId && row.runnerId === runnerId,
+  const onRunner = (yield* schedulerRunnerSlotsSteps(q, now)).filter(
+    (row) => row.runnerId === runnerId,
+  );
+  const ownAdmission = onRunner.find((row) => row.itemId === itemId)?.jobId;
+  const admitted = onRunner.filter(
+    (row) => row.itemId !== itemId && (ownAdmission === undefined || row.jobId < ownAdmission),
   );
   return new Set([
     ...admitted.map((row) => row.itemId),
