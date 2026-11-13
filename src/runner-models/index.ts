@@ -28,7 +28,12 @@ export type AgentModelCatalog = {
   agent: Agent;
   /** Labelled for people: a 1M entry is named "<model> · 1M context" and flagged. */
   models: Array<
-    Choice & { longContext: boolean; efforts: Choice[] | null; defaultEffort: string | null }
+    Choice & {
+      longContext: boolean;
+      efforts: Choice[] | null;
+      defaultEffort: string | null;
+      fast?: boolean;
+    }
   >;
   efforts: Choice[];
   defaultModel: string | null;
@@ -185,6 +190,7 @@ export function createRunnerModels(options: { store: Db; work: RunnerWork; now?:
             longContext,
             efforts: current(id) ? (current(id)!.efforts ?? []) : null,
             defaultEffort: current(id)?.effort ?? null,
+            ...(current(id)?.fast === undefined ? {} : { fast: current(id)!.fast }),
           })),
       });
     }

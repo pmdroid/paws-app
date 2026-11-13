@@ -5,7 +5,12 @@ import { setImplementerText, type ImplementerName, type PawsConfigFile } from ".
 import { setMergeSettingsText, type StoredMerge } from "./merge";
 import { setQueueSettingsText, type QueueSettings } from "./queue";
 
-export type AgentProfile = { agent: ImplementerName; model: string | null; effort?: string };
+export type AgentProfile = {
+  agent: ImplementerName;
+  model: string | null;
+  effort?: string;
+  fast?: boolean;
+};
 export type AgentProfiles = {
   implementer: AgentProfile;
   reviewer: AgentProfile;
@@ -36,6 +41,7 @@ const profileSchema = z.strictObject({
     .max(100)
     .regex(/^[a-zA-Z0-9_-]+$/)
     .optional(),
+  fast: z.boolean().optional(),
 });
 const retiredAccounts = z.unknown().optional();
 const settingsSchema = z.strictObject({
@@ -317,5 +323,6 @@ function renderProfile(section: string, profile: AgentProfile): string {
   const lines = [`[${section}]`, `agent = ${JSON.stringify(profile.agent)}`];
   if (profile.model !== null) lines.push(`model = ${JSON.stringify(profile.model)}`);
   if (profile.effort !== undefined) lines.push(`effort = ${JSON.stringify(profile.effort)}`);
+  if (profile.fast !== undefined) lines.push(`fast = ${profile.fast}`);
   return lines.join("\n");
 }

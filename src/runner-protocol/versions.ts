@@ -125,3 +125,5 @@ export const CONTROL_PLANE_LEVEL_RUNNER_VERSION: RunnerVersion = [0, 1, 76];
  */
 export const CONVERSATION_TOOLS_RUNNER_VERSION: RunnerVersion = [0, 1, 77];
 export const RUN_TEMP_DIRECTORY_RUNNER_VERSION: RunnerVersion = [0, 1, 81];
+/** First runner release whose profile schema accepts `fast` and turns the agent's fast mode on. */
+export const FAST_MODE_RUNNER_VERSION: RunnerVersion = [0, 1, 81];

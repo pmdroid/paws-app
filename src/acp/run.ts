@@ -579,6 +579,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
             models: model.models,
             effort: model.effort,
             efforts: model.efforts,
+            fast: model.fast,
             auth,
           });
         const outcome = await runPrompt({
@@ -624,6 +625,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           models: model.models,
           effort: model.effort,
           efforts: model.efforts,
+          fast: model.fast,
           auth,
         });
       }),
