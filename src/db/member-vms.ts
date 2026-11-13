@@ -1,5 +1,6 @@
 import {
   and,
+  desc,
   eq,
   getTableColumns,
   inArray,
@@ -74,15 +75,30 @@ export async function memberVmById(store: Db, id: string): Promise<MemberVm | nu
   return store.run((q) => memberVmByIdSteps(q, id));
 }
 
-export function* memberVmForMemberSteps(q: Q, workspaceId: string, userId: string) {
+export function* lockMemberVmsSteps(q: Q, workspaceId: string, userId: string) {
+  if (q.dialect !== "postgres") return;
+  const key = `member-vm:${workspaceId}:${userId}`;
+  yield* q.exec(
+    q.orm
+      .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${key}, 0))` })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
+}
+
+export function* memberVmsForMemberSteps(q: Q, workspaceId: string, userId: string) {
   const { memberVm: m } = q.t;
-  const row = yield* q.one(
+  const rows = yield* q.all(
     q.orm
       .select(columns(q))
       .from(m)
-      .where(and(eq(m.workspaceId, workspaceId), eq(m.userId, userId))),
+      .where(and(eq(m.workspaceId, workspaceId), eq(m.userId, userId)))
+      .orderBy(desc(m.createdAt), desc(m.id)),
   );
-  return (row ?? null) as MemberVm | null;
+  return rows as MemberVm[];
+}
+
+export function* memberVmForMemberSteps(q: Q, workspaceId: string, userId: string) {
+  return (yield* memberVmsForMemberSteps(q, workspaceId, userId))[0] ?? null;
 }
 
 export async function memberVmForMember(

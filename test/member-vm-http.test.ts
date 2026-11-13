@@ -137,9 +137,9 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     if (response === null) throw new Error(`${path} was not handled`);
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   };
-  const drive = async (until: (row: MemberVm) => boolean) => {
+  const drive = async (until: (row: MemberVm) => boolean, who = member) => {
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(db, member))!;
+      const row = (await findMemberVm(db, who))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -151,6 +151,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     workspace,
     member,
     inactive,
+    person,
     bootstrap,
     exeDev,
     call,
@@ -161,6 +162,8 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
 
 const vmOf = (body: Record<string, unknown>) =>
   (body as Extract<MemberVmResponse, { available: true }>).vm as MemberVmView;
+const vmsOf = (body: Record<string, unknown>) =>
+  (body as Extract<MemberVmResponse, { available: true }>).vms;
 const states = (vm: MemberVmView) => vm.steps.map((entry) => `${entry.step}:${entry.state}`);
 
 describe("member VM routes", () => {
@@ -334,8 +337,6 @@ describe("member VM routes", () => {
     ]);
     expect(failed.steps[0]!.elapsedMs).toBe(7_000);
     expect(failed.failure).toContain("the installer could not be copied");
-    // A second start does not restart a failed VM; only retry does.
-    expect(states(vmOf((await f.call(f.member, "POST")).body))[1]).toBe("install:failed");
 
     f.clock.advance(3_000);
     const retried = vmOf((await f.call(f.member, "POST", "/api/runners/vm/retry")).body);
@@ -357,7 +358,10 @@ describe("member VM routes", () => {
         .where(eq(q.t.runner.id, health.runnerId!)),
     );
     await f.drive((row) => row.step === "ready");
-    const ready = vmOf((await f.call(f.member, "GET")).body);
+    const answer = (await f.call(f.member, "GET")).body;
+    expect(answer.vm).toBeNull();
+    const [ready] = vmsOf(answer);
+    if (ready === undefined) throw new Error("no ready VM");
     expect(ready.step).toBe("ready");
     expect(states(ready)).toEqual(["create:done", "install:done", "enroll:done", "health:done"]);
     for (const entry of ready.steps) expect(entry.elapsedMs).not.toBeNull();
@@ -367,6 +371,76 @@ describe("member VM routes", () => {
       id: ready.runnerId,
       ownerUserId: f.member.userId,
       ownerName: "Ada Lovelace",
+    });
+  });
+
+  test("a second Create VM after the first is Ready provisions pascal-paws-2", async () => {
+    const f = await fixture();
+    const pascal = await f.person("Pascal");
+    const ready = async () => {
+      const health = await f.drive((row) => row.step === "health" || row.failure !== null, pascal);
+      expect(health.failure).toBeNull();
+      await seed(f.db, (q) =>
+        q.orm
+          .update(q.t.runner)
+          .set({ lastSeenAt: f.clock.now() })
+          .where(eq(q.t.runner.id, health.runnerId!)),
+      );
+      return f.drive((row) => row.step === "ready", pascal);
+    };
+    expect(vmOf((await f.call(pascal, "POST")).body).vmName).toBe("pascal-paws");
+    const first = await ready();
+    expect((await f.call(pascal, "GET")).body.vm).toBeNull();
+
+    const second = vmOf((await f.call(pascal, "POST")).body);
+    expect(second.vmName).toBe("pascal-paws-2");
+    expect(vmOf((await f.call(pascal, "GET")).body).id).toBe(second.id);
+    const other = await ready();
+    expect(other.runnerId).not.toBe(first.runnerId);
+
+    const listed = (await f.call(pascal, "GET")).body;
+    expect(listed.vm).toBeNull();
+    expect(vmsOf(listed).map(({ vmName, runnerId }) => ({ vmName, runnerId }))).toEqual([
+      { vmName: "pascal-paws", runnerId: first.runnerId },
+      { vmName: "pascal-paws-2", runnerId: other.runnerId },
+    ]);
+    expect(f.exeDev.vms.has("pascal-paws-2")).toBe(true);
+  });
+
+  test("retry takes a VM id, defaults to the newest unfinished VM, and the sixth VM is refused", async () => {
+    const f = await fixture();
+    const older = vmOf((await f.call(f.member, "POST")).body);
+    f.clock.advance(1);
+    const newer = vmOf((await f.call(f.member, "POST")).body);
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.memberVm)
+        .set({ failure: "exe.dev broke" })
+        .where(eq(q.t.memberVm.step, "create")),
+    );
+    const failures = (body: Record<string, unknown>) =>
+      Object.fromEntries(vmsOf(body).map((vm) => [vm.id, vm.failure]));
+
+    const byDefault = (await f.call(f.member, "POST", "/api/runners/vm/retry")).body;
+    expect(vmOf(byDefault).id).toBe(newer.id);
+    expect(failures(byDefault)).toEqual({ [older.id]: "exe.dev broke", [newer.id]: null });
+
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.memberVm)
+        .set({ failure: "exe.dev broke" })
+        .where(eq(q.t.memberVm.step, "create")),
+    );
+    const byId = await f.call(f.member, "POST", "/api/runners/vm/retry", { id: older.id });
+    expect(failures(byId.body)).toEqual({ [older.id]: null, [newer.id]: "exe.dev broke" });
+    const missing = await f.call(f.member, "POST", "/api/runners/vm/retry", { id: "nope" });
+    expect(missing.status).toBe(404);
+    expect((await f.call(f.member, "POST", "/api/runners/vm/retry", { id: 7 })).status).toBe(400);
+
+    for (let index = 0; index < 3; index++) await f.call(f.member, "POST");
+    expect(await f.call(f.member, "POST")).toEqual({
+      status: 403,
+      body: { error: "You already have 5 VMs. Delete one on its runner page first." },
     });
   });
 

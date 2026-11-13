@@ -16,6 +16,8 @@ Create VM appears on the Runners page once the token is there. `bun run paws doc
 
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
+Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." `POST /api/runners/vm/retry` retries the VM whose `id` it is sent, or without one the member's newest VM that is not Ready. `GET /api/runners/vm` answers that newest unfinished VM as `vm` (null when all are Ready) and every VM the member may delete, with its `runnerId`, as `vms`.
+
 ## Paws reachable only on Tailscale
 
 The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runner's mTLS connection. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` is a Tailscale hostname such as `https://agentbox.tailnet-name.ts.net:8787`, an exe.dev VM cannot reach it from the internet. Paws stays private, and the VM joins your tailnet instead.

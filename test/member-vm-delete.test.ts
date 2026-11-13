@@ -275,8 +275,10 @@ async function fixture() {
   };
 }
 
-const viewOf = (body: Record<string, unknown>) =>
-  (body as Extract<MemberVmResponse, { available: true }>).vm as MemberVmView;
+const viewOf = (body: Record<string, unknown>) => {
+  const answer = body as Extract<MemberVmResponse, { available: true }>;
+  return (answer.vm ?? answer.vms[0]) as MemberVmView;
+};
 const deleteStates = (vm: MemberVmView) =>
   vm.deleting!.steps.map((entry) => `${entry.step}:${entry.state}`);
 const audits = async (db: Db, action: string) =>
@@ -610,15 +612,19 @@ describe("Delete VM", () => {
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
   });
 
-  test("Retry and Create VM leave a VM that is being deleted alone", async () => {
+  test("Retry leaves a VM that is being deleted alone and Create VM makes another", async () => {
     const f = await fixture();
     const vm = await f.ready();
     await f.remove(f.member, vm.id);
+    expect((await f.call(f.member, "/api/runners/vm/retry", { id: vm.id })).status).toBe(409);
     expect((await f.call(f.member, "/api/runners/vm/retry", {})).status).toBe(409);
-    const same = viewOf((await f.call(f.member, "/api/runners/vm", {})).body);
-    expect(same.id).toBe(vm.id);
-    expect(same.deleting!.step).toBe("drain");
-    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+    const answer = (await f.call(f.member, "/api/runners/vm", {})).body as Extract<
+      MemberVmResponse,
+      { available: true }
+    >;
+    expect(answer.vm!.vmName).toBe("ada-lovelace-paws-2");
+    expect(answer.vms.find((entry) => entry.id === vm.id)!.deleting!.step).toBe("drain");
+    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
   });
 });
 

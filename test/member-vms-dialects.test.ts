@@ -9,6 +9,7 @@ import {
   insertMemberVmSteps,
   memberVmByIdSteps,
   memberVmForMemberSteps,
+  memberVmsForMemberSteps,
   memberVmNameTakenSteps,
   openMemberVmJobSteps,
   recordMemberVmEnrollmentSteps,
@@ -365,13 +366,35 @@ forEachDialect((connect) => {
 
     const started = await startMemberVm(db, { ...member, now: 10 });
     expect(started).toMatchObject({ vmName: "ada-paws", step: "create" });
-    expect((await startMemberVm(db, { ...member, now: 11 })).id).toBe(started.id);
+    const second = await startMemberVm(db, { ...member, now: 11 });
+    expect(second).toMatchObject({ vmName: "ada-paws-2", step: "create" });
     expect(await db.run((q) => openMemberVmJobSteps(q, MEMBER_VM_QUEUE, started.id))).toBe(true);
+    expect(await db.run((q) => openMemberVmJobSteps(q, MEMBER_VM_QUEUE, second.id))).toBe(true);
 
     const deleting = await startMemberVmDelete(db, { ...member, id: started.id, now: 12 });
     expect(deleting.deleteStep).toBe("drain");
     expect(await db.run((q) => openMemberVmJobSteps(q, MEMBER_VM_DELETE_QUEUE, started.id))).toBe(
       true,
     );
+
+    const racing = await Promise.allSettled(
+      [13, 14, 15, 16, 17].map((now) => startMemberVm(db, { ...member, now })),
+    );
+    expect(racing.filter((result) => result.status === "fulfilled")).toHaveLength(4);
+    const refused = racing.find((result) => result.status === "rejected");
+    expect(String(refused?.reason)).toContain(
+      "You already have 5 VMs. Delete one on its runner page first.",
+    );
+    const own = await db.run((q) => memberVmsForMemberSteps(q, "acme", "owner"));
+    expect(own).toHaveLength(6);
+    expect(own.filter((row) => row.deleteStep === null)).toHaveLength(5);
+  });
+
+  test("a member can hold two VM rows", async () => {
+    const db = await connected(connect);
+    await insertVm(db, "one");
+    await insertVm(db, "two", "owner", 20);
+    const own = await db.run((q) => memberVmsForMemberSteps(q, "acme", "owner"));
+    expect(own.map((row) => row.id)).toEqual(["two", "one"]);
   });
 });

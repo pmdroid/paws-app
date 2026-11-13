@@ -574,7 +574,6 @@ export const memberVm = sqliteTable(
       name: "member_vm_workspace_id_user_id_workspace_member_workspace_id_user_id_fk",
     })),
     unique().on(table.vmName),
-    unique().on(table.workspaceId, table.userId),
     check("member_vm_check_1", sql`step IN ('create','install','enroll','health','ready')`),
     check(
       "member_vm_check_2",

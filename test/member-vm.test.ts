@@ -167,18 +167,19 @@ function heartbeat(db: Db, runnerId: string, at: number) {
 }
 
 describe("member VM", () => {
-  test("startMemberVm inserts the row at create once and enqueues one job", async () => {
+  test("each startMemberVm inserts a new row at create and enqueues its job", async () => {
     const f = await fixture();
     const first = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(first.step).toBe("create");
     expect(first.vmName).toBe("ada-lovelace-paws");
     const again = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
-    expect(again.id).toBe(first.id);
-    expect(await openJobs(f.db)).toHaveLength(1);
+    expect(again.id).not.toBe(first.id);
+    expect(again.vmName).toBe("ada-lovelace-paws-2");
+    expect(await openJobs(f.db)).toHaveLength(2);
     const inactive = await f.person("Watcher", "watch@example.invalid", false);
     await expect(startMemberVm(f.db, inactive)).rejects.toThrow(/Active workspace membership/);
     const namesake = await f.person("Ada Lovelace", "ada2@example.invalid");
-    expect((await startMemberVm(f.db, namesake)).vmName).toBe("ada-lovelace-paws-2");
+    expect((await startMemberVm(f.db, namesake)).vmName).toBe("ada-lovelace-paws-3");
   });
 
   test("the whole chain creates, installs, enrolls and turns ready on the first heartbeat", async () => {
@@ -213,7 +214,7 @@ describe("member VM", () => {
     expect(ready.step).toBe("ready");
     expect(ready.failure).toBeNull();
     expect(await openJobs(f.db)).toHaveLength(0);
-    expect((await startMemberVm(f.db, f.member)).id).toBe(ready.id);
+    expect((await retryMemberVm(f.db, { ...f.member, id: ready.id })).step).toBe("ready");
     expect(await openJobs(f.db)).toHaveLength(0);
   });
 
@@ -379,8 +380,6 @@ describe("member VM", () => {
     expect(failed.failure).not.toContain(EXE_DEV_TOKEN);
     expect(f.exeDev.vms.has(failed.vmName)).toBe(true);
     expect(await openJobs(f.db)).toHaveLength(0);
-    expect((await startMemberVm(f.db, f.member)).failure).not.toBeNull();
-    expect(await openJobs(f.db)).toHaveLength(0);
 
     f.bootstrap.startInstall = original;
     const retried = await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
@@ -449,7 +448,7 @@ describe("member VM", () => {
     expect((await drive(f, loop, settled)).step).toBe("ready");
   });
 
-  test("removing the runner clears runner_id and the next Create VM enrolls the same VM", async () => {
+  test("removing the runner clears runner_id and Retry enrolls the same VM", async () => {
     const f = await fixture();
     await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
@@ -461,7 +460,7 @@ describe("member VM", () => {
     await f.control.setStatus(f.admin, ready.runnerId!, "revoked");
     expect((await findMemberVm(f.db, f.member))!.runnerId).toBeNull();
 
-    const stale = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const stale = await retryMemberVm(f.db, { ...f.member, id: ready.id, now: f.clock.now() });
     expect(stale.step).toBe("enroll");
     const before = f.bootstrap.calls.length;
     const again = await drive(f, loop, (row) => row.step === "health" || !!row.failure);
@@ -490,7 +489,7 @@ describe("member VM", () => {
     await drive(f, loop, settled);
     await f.control.setStatus(f.admin, health.runnerId!, "revoked");
     f.bootstrap.resetIdentity = async () => {};
-    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, id: health.id, now: f.clock.now() });
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("enroll");
     expect(failed.failure).toMatch(/kept the identity of a removed runner/);
