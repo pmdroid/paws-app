@@ -10,7 +10,6 @@ import {
   memberVmMoveMarkup,
   memberVmPoolMarkup,
   memberVmSizeMarkup,
-  memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
   runnerActionsMarkup,
@@ -1234,7 +1233,7 @@ describe("member VM", () => {
   });
 
   test("shows the four steps with their state and elapsed time", () => {
-    const html = memberVmMarkup(vm(), { busy: false, runner: null });
+    const html = memberVmMarkup(vm(), { busy: false, runner: null, own: true });
     expect(html).toContain("ada-paws");
     expect(html.match(/data-vm-step=/g)).toHaveLength(4);
     expect(html).toContain('data-vm-step="create" data-vm-state="done"');
@@ -1252,32 +1251,33 @@ describe("member VM", () => {
         entry.step === "install" ? { ...entry, state: "failed" } : entry,
       ),
     });
-    const html = memberVmMarkup(failed, { busy: false, runner: null });
+    const html = memberVmMarkup(failed, { busy: false, runner: null, own: true });
     expect(html).toContain("ada-paws: &lt;install&gt; failed");
     expect(html).toContain("data-vm-retry");
-    expect(memberVmMarkup(failed, { busy: true, runner: null })).toMatch(
+    expect(memberVmMarkup(failed, { busy: true, runner: null, own: true })).toMatch(
       /data-vm-retry[^>]*disabled/,
     );
   });
 
-  test("ready links to the runner for agent sign-in, and a removed runner offers enrollment again", () => {
+  test("a Ready VM has no card, and a removed runner offers enrollment again by id", () => {
     const ready = vm({
       step: "ready",
       runnerId: runner.id,
       steps: vm().steps.map((entry) => ({ ...entry, state: "done", elapsedMs: 1000 })),
     });
-    const html = memberVmMarkup(ready, { busy: false, runner });
-    expect(html).toContain(routeHref({ view: "runners", id: runner.id }));
-    expect(html).toContain("sign in to coding agents");
+    expect(memberVmMarkup(ready, { busy: false, runner, own: true })).toBe("");
     expect(
-      memberVmMarkup(ready, { busy: false, runner: { ...runner, status: "paused" } }),
-    ).toContain("Ready (paused)");
+      memberVmMarkup(ready, { busy: false, runner: { ...runner, status: "paused" }, own: true }),
+    ).toBe("");
     const removed = memberVmMarkup(ready, {
       busy: false,
       runner: { ...runner, status: "revoked" },
+      own: true,
     });
-    expect(removed).toContain("data-vm-create");
+    expect(removed).toContain('data-vm-retry="vm"');
+    expect(removed).toContain("Enroll again");
     expect(removed).toContain("Removed");
+    expect(memberVmMarkup(ready, { busy: false, runner: null, own: false })).toBe("");
   });
 
   const deleting = (patch: Partial<NonNullable<MemberVm["deleting"]>> = {}): MemberVm =>
@@ -1301,10 +1301,10 @@ describe("member VM", () => {
     });
 
   test("Delete VM sits on the VM and opens a confirmation that names it", () => {
-    const html = memberVmMarkup(vm(), { busy: false, runner: null });
+    const html = memberVmMarkup(vm(), { busy: false, runner: null, own: true });
     expect(html).toContain('data-vm-delete="vm"');
     expect(html).toContain("Delete VM");
-    expect(memberVmMarkup(vm(), { busy: true, runner: null })).toMatch(
+    expect(memberVmMarkup(vm(), { busy: true, runner: null, own: true })).toMatch(
       /data-vm-delete="vm"[^>]*disabled/,
     );
     const dialog = memberVmDeleteDialogMarkup(vm(), { busy: false });
@@ -1317,7 +1317,7 @@ describe("member VM", () => {
   });
 
   test("a delete in progress shows its five steps instead of the setup", () => {
-    const html = memberVmMarkup(deleting(), { busy: false, runner });
+    const html = memberVmMarkup(deleting(), { busy: false, runner, own: true });
     expect(html.match(/data-vm-delete-step=/g)).toHaveLength(5);
     expect(html).toContain('data-vm-delete-step="revoke" data-vm-state="done"');
     expect(html).toContain('data-vm-delete-step="destroy" data-vm-state="running"');
@@ -1334,7 +1334,7 @@ describe("member VM", () => {
         entry.step === "destroy" ? { ...entry, state: "failed" } : entry,
       ),
     });
-    const html = memberVmMarkup(failed, { busy: false, runner });
+    const html = memberVmMarkup(failed, { busy: false, runner, own: true });
     expect(html).toContain("rate_limited");
     expect(html).toContain("Delete failed");
     expect(html).toContain('data-vm-delete-retry="vm"');
@@ -1352,7 +1352,7 @@ describe("member VM", () => {
         elapsedMs: index === 0 ? 10 : null,
       })),
     });
-    const html = memberVmMarkup(blocked, { busy: false, runner });
+    const html = memberVmMarkup(blocked, { busy: false, runner, own: true });
     expect(html).toContain("PAS-901");
     expect(html).toContain("Fix &lt;login&gt;");
     expect(html).toContain("Blocked");
@@ -1361,31 +1361,19 @@ describe("member VM", () => {
     expect(html).toContain("the way Stop does");
     const forced = memberVmMarkup(
       { ...blocked, deleting: { ...blocked.deleting!, force: true } },
-      { busy: false, runner },
+      { busy: false, runner, own: true },
     );
     expect(forced).not.toContain("data-vm-delete-force");
   });
 
-  test("admins see other members' VMs, with or without a runner, with Delete VM", () => {
-    const failed = vm({
-      id: "grace-vm",
-      vmName: "grace-paws",
-      ownerName: "Grace Hopper",
-      step: "create",
-      failure: "rate limited",
-    });
-    const html = memberVmsMarkup([failed, { ...deleting(), id: "alan-vm", ownerName: "Alan" }], {
-      busy: false,
-    });
-    expect(html).toContain("Members' VMs");
-    expect(html).toContain('data-member-vm-other="grace-vm"');
-    expect(html).toContain("grace-paws");
-    expect(html).toContain("Created by Grace Hopper");
-    expect(html).toContain("Setup failed");
-    expect(html).toContain('data-vm-delete="grace-vm"');
-    expect(html).toContain("Deleting Alan&#39;s VM");
-    expect(html).not.toContain('data-member-vm-other="alan-vm"');
-    expect(memberVmsMarkup([], { busy: false })).toBe("");
+  test("another member's VM is named for its owner and has no Retry", () => {
+    const failed = vm({ id: "grace-vm", ownerName: "Grace Hopper", step: "create", failure: "x" });
+    const html = memberVmMarkup(failed, { busy: false, runner: null, own: false });
+    expect(html).toContain("Grace Hopper&#39;s VM");
+    expect(html).not.toContain("data-vm-retry");
+    expect(
+      memberVmMarkup({ ...deleting(), ownerName: "Alan" }, { busy: false, runner, own: false }),
+    ).toContain("Deleting Alan&#39;s VM");
   });
 
   test("a runner's page offers Delete VM for the VM behind it", () => {

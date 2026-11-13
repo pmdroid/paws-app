@@ -345,44 +345,16 @@ export function runnerVmMarkup(
   return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.${pool}</p>${move}</section>`;
 }
 
-export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean }): string {
-  if (vms.length === 0) return "";
-  const rows = vms
-    .filter((vm) => !vm.deleting)
-    .map((vm) => {
-      const [tone, label] =
-        vm.failure !== null
-          ? ["bad", "Setup failed"]
-          : vm.step === "ready"
-            ? ["ok", "Ready"]
-            : ["running", "Setting up"];
-      const owner = vm.ownerName ? `Created by ${vm.ownerName}` : "Created with Create VM";
-      return `<li class="runner-skill" data-member-vm-other="${esc(vm.id)}"><span class="runner-skill-name"><b class="mono">${esc(vm.vmName)}</b><span class="muted">${esc(owner)}</span></span><span class="tag ${tone}">${esc(label)}</span><div class="runner-agent-actions">${deleteButton(vm, view.busy)}</div></li>`;
-    })
-    .join("");
-  const list = rows
-    ? `<section class="runner-section" aria-labelledby="member-vms-heading"><h2 id="member-vms-heading">Members' VMs</h2><p class="muted">VMs other members created with Create VM. As a workspace admin you can delete them.</p><ul class="runner-skill-list" role="list" aria-label="Members' VMs">${rows}</ul></section>`
-    : "";
-  const deleting = vms
-    .filter((vm) => vm.deleting)
-    .map((vm) =>
-      memberVmDeleteMarkup(vm, {
-        busy: view.busy,
-        title: vm.ownerName ? `Deleting ${vm.ownerName}'s VM` : "Deleting VM",
-      }),
-    )
-    .join("");
-  return `${list}${deleting}`;
-}
-
-/** The member's VM: each step with its state and time, the stored error and Retry. */
 export function memberVmMarkup(
   vm: MemberVm,
-  view: { busy: boolean; runner: Pick<Runner, "id" | "name" | "status"> | null },
+  view: { busy: boolean; runner: Pick<Runner, "status"> | null; own: boolean },
 ): string {
-  if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting your VM" });
-  const removed = vm.step === "ready" && (view.runner === null || view.runner.status === "revoked");
-  const ready = vm.step === "ready" && !removed;
+  const owner = view.own ? "your VM" : vm.ownerName ? `${vm.ownerName}'s VM` : "VM";
+  if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: `Deleting ${owner}` });
+  const removed =
+    view.own && vm.step === "ready" && (view.runner === null || view.runner.status === "revoked");
+  if (vm.step === "ready" && !removed) return "";
+  const id = esc(vm.id);
   const rows = vm.steps
     .map((entry) => {
       const [tone, label] = VM_STATES[entry.state];
@@ -397,30 +369,23 @@ export function memberVmMarkup(
       return `<li class="runner-skill" data-vm-step="${esc(entry.step)}" data-vm-state="${esc(entry.state)}"><span class="runner-skill-name"><b>${esc(VM_STEPS[entry.step])}</b>${time}</span><span class="tag ${tone}">${esc(label)}</span>${error}</li>`;
     })
     .join("");
-  const disabled = view.busy ? " disabled" : "";
+  const label = vm.failure !== null ? "Retry" : removed ? "Enroll again" : "";
   const retry =
-    vm.failure !== null
-      ? `<button class="btn primary" data-vm-retry data-focus="vm-retry"${disabled}>Retry</button>`
-      : removed
-        ? `<button class="btn primary" data-vm-create data-focus="vm-create"${disabled}>Enroll again</button>`
-        : "";
+    label && view.own
+      ? `<button class="btn primary" data-vm-retry="${id}" data-focus="vm-retry:${id}"${view.busy ? " disabled" : ""}>${label}</button>`
+      : "";
   const status = removed
     ? "<p>The runner on this VM was removed. Enroll the VM again to add it as a new runner.</p>"
-    : ready
-      ? view.runner
-        ? `<p>The runner is ready${view.runner.status === "paused" ? " (paused)" : ""} and owned by you. <a href="${esc(routeHref({ view: "runners", id: view.runner.id }))}" data-focus="vm-open">Open ${esc(view.runner.name)}</a> to sign in to coding agents${view.runner.status === "paused" ? ", then turn it on" : ""}.</p>`
-        : "<p>The runner is ready and owned by you.</p>"
-      : vm.failure === null
-        ? '<p class="muted">Paws creates the VM, installs the runner and enrolls it for you. This takes a few minutes.</p>'
-        : '<p class="muted">Retry resumes from the failed step.</p>';
+    : vm.failure === null
+      ? '<p class="muted">Paws creates the VM, installs the runner and enrolls it for you. This takes a few minutes.</p>'
+      : '<p class="muted">Retry resumes from the failed step.</p>';
   const pill = removed
     ? '<span class="tag warn">Removed</span>'
-    : ready
-      ? `<span class="tag ${view.runner?.status === "paused" ? "paused" : "ok"}">Ready${view.runner?.status === "paused" ? " (paused)" : ""}</span>`
-      : vm.failure === null
-        ? '<span class="tag running">Setting up</span>'
-        : '<span class="tag bad">Failed</span>';
-  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul><div class="settings-actions">${retry}${deleteButton(vm, view.busy)}</div></section>`;
+    : vm.failure === null
+      ? '<span class="tag running">Setting up</span>'
+      : '<span class="tag bad">Failed</span>';
+  const title = owner.charAt(0).toUpperCase() + owner.slice(1);
+  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading-${id}"><div class="between"><h2 id="member-vm-heading-${id}" tabindex="-1" data-focus="vm-heading:${id}">${esc(title)} <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul><div class="settings-actions">${retry}${deleteButton(vm, view.busy)}</div></section>`;
 }
 
 function shellQuote(value: string): string {
@@ -1462,6 +1427,7 @@ export function createRunners() {
   let poolChoice = "";
   let adoptDenied: string | null = null;
   let confirmingDelete: string | null = null;
+  let creatingVm = false;
   let busy = false;
   let feedback = "";
   let error = "";
@@ -1497,6 +1463,10 @@ export function createRunners() {
     poolChoice = "";
     adoptDenied = null;
     confirmingDelete = null;
+    creatingVm = false;
+  }
+  function ownsVm(vm: MemberVm): boolean {
+    return vm.userId === undefined || vm.userId === session?.userId;
   }
   function deletableVms(): MemberVm[] {
     const state = memberVm;
@@ -1690,18 +1660,14 @@ export function createRunners() {
     const dialog = adding
       ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a runner</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Runner name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><label class="runner-consent"><input type="checkbox" name="docker-access" data-focus="docker-access"${dockerAccess ? " checked" : ""}${disabled}><span>Docker for agent jobs</span></label><p class="muted">Agent jobs get a rootless Docker daemon of their own when Docker Engine is installed on the runner.</p><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
       : "";
-    const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
-    const createVmSize =
-      addsHosts() && memberVm.available && memberVm.vm === null
-        ? memberVmSizeMarkup(memberVm.size)
-        : "";
-    const createVmPool =
-      createVmSize && memberVm.available
-        ? memberVmPoolMarkup(memberVm.size?.pool, pools, { choice: poolChoice, busy })
-        : "";
-    const createVm =
-      addsHosts() && memberVm.available && memberVm.vm === null
-        ? `<button class="btn" data-vm-create data-focus="vm-create"${createVmSize ? ' aria-describedby="vm-create-size"' : ""}${disabled}>Create VM</button>`
+    const createsVm = addsHosts() && memberVm.available;
+    const createVm = createsVm
+      ? `<button class="btn" data-vm-create aria-haspopup="dialog" data-focus="vm-create"${disabled}>Create VM</button>`
+      : "";
+    const createVmSize = memberVm.available ? memberVmSizeMarkup(memberVm.size) : "";
+    const createDialog =
+      createsVm && creatingVm && memberVm.available
+        ? `<dialog id="vm-create-dialog" aria-labelledby="vm-create-heading"><div class="dialog-body"><h2 id="vm-create-heading">Create VM</h2><p>Paws creates an exe.dev VM, installs the runner and enrolls it for you.</p>${createVmSize}${memberVmPoolMarkup(memberVm.size?.pool, pools, { choice: poolChoice, busy })}<div class="settings-actions"><button class="btn" data-vm-create-cancel data-focus="vm-create-cancel">Cancel</button><button class="btn primary" data-vm-create-confirm data-focus="vm-create-confirm"${createVmSize ? ' aria-describedby="vm-create-size"' : ""}${disabled}>Create VM</button></div></div></dialog>`
         : "";
     const add =
       '<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button>';
@@ -1715,22 +1681,18 @@ export function createRunners() {
     const empty = addsHosts()
       ? `<section class="flex min-w-0 flex-col items-start gap-3 rounded-base border border-dashed border-border p-6" aria-labelledby="runners-empty-heading"><h2 id="runners-empty-heading">No runners are enrolled</h2><p class="muted">A runner is a Linux machine that runs the coding agents. Paws starts no work until one is enrolled and an agent is signed in on it.</p><ol class="m-0 list-decimal pl-5 text-sm [&>li]:py-0.5"><li>Select <b>Add a runner</b> and copy the command.</li><li>Run it on the Linux machine. The runner appears here within a minute.</li><li>Open it and sign in to a coding agent, such as Claude or Codex.</li></ol><div class="settings-actions">${add}${createVm}</div></section>`
       : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
-    const vmSection = `${
-      vm
-        ? memberVmMarkup(vm, {
-            busy,
-            runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
-          })
-        : ""
-    }${
-      manages()
-        ? memberVmsMarkup(
-            deletableVms().filter((entry) => entry.id !== vm?.id),
-            { busy },
+    const vmSection = addsHosts()
+      ? deletableVms()
+          .map((vm) =>
+            memberVmMarkup(vm, {
+              busy,
+              runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
+              own: ownsVm(vm),
+            }),
           )
-        : ""
-    }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${createVmSize}${createVmPool}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${deleteDialog()}`;
+          .join("")
+      : "";
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1854,21 +1816,44 @@ export function createRunners() {
         }, false);
       });
     root!.querySelector("[data-vm-create]")?.addEventListener("click", () => {
-      void change(async () => {
-        memberVm = await api<MemberVmState>(
-          "/api/runners/vm",
-          poolChoice ? { pool: poolChoice } : {},
-        );
-        // The VM section reports progress itself, so focus moves there instead of a notice.
-        refocus("vm-heading");
-      }, false);
+      creatingVm = true;
+      refocus("vm-create-cancel");
+      paint();
     });
-    root!.querySelector("[data-vm-retry]")?.addEventListener("click", () => {
-      void change(async () => {
-        memberVm = await api<MemberVmState>("/api/runners/vm/retry", {});
-        refocus("vm-heading");
-      }, false);
-    });
+    const creating = root!.querySelector<HTMLDialogElement>("#vm-create-dialog");
+    if (creating) {
+      creating.showModal();
+      creating.addEventListener("close", () => {
+        if (!creating.isConnected || !creatingVm) return;
+        creatingVm = false;
+        refocus("vm-create");
+        paint();
+      });
+      creating.addEventListener("click", (event) => {
+        if (event.target === creating) creating.close();
+      });
+      creating
+        .querySelector("[data-vm-create-cancel]")
+        ?.addEventListener("click", () => creating.close());
+      creating.querySelector("[data-vm-create-confirm]")?.addEventListener("click", () => {
+        creatingVm = false;
+        void change(async () => {
+          memberVm = await api<MemberVmState>(
+            "/api/runners/vm",
+            poolChoice ? { pool: poolChoice } : {},
+          );
+          refocus(memberVm.available && memberVm.vm ? `vm-heading:${memberVm.vm.id}` : "vm-create");
+        }, false);
+      });
+    }
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-vm-retry]"))
+      button.addEventListener("click", () => {
+        const id = button.dataset.vmRetry!;
+        void change(async () => {
+          memberVm = await api<MemberVmState>("/api/runners/vm/retry", { id });
+          refocus(`vm-heading:${id}`);
+        }, false);
+      });
     for (const button of root!.querySelectorAll<HTMLElement>("[data-vm-delete]"))
       button.addEventListener("click", () => {
         confirmingDelete = button.dataset.vmDelete!;
