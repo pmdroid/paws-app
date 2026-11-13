@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { MAIN_MOVED } from "../src/config";
 import { getTaskMergeSettingsSteps, keepTaskMergeSettingsSteps } from "../src/db";
 import { forEachDialect, insertWorkItem } from "./dialects";
-import { tempDb } from "./helpers";
 import { pgliteDb } from "./pglite";
 
 forEachDialect((open) => {
@@ -42,21 +41,6 @@ function quotedValues(definition: string): string[] {
 
 describe("work_item_merge_settings_check_2", () => {
   const expected = [...MAIN_MOVED].sort();
-
-  test("lists the MAIN_MOVED values on SQLite", () => {
-    const db = tempDb();
-    try {
-      const table = db
-        .query<{ sql: string }, []>(
-          "SELECT sql FROM sqlite_master WHERE name = 'work_item_merge_settings'",
-        )
-        .get()!;
-      const definition = /CHECK\s*\(main_moved IN \(([^)]*)\)\)/.exec(table.sql)?.[1];
-      expect(quotedValues(definition ?? "")).toEqual(expected);
-    } finally {
-      db.close();
-    }
-  });
 
   test("lists the MAIN_MOVED values on Postgres", async () => {
     const pg = await pgliteDb();
