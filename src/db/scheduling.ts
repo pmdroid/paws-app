@@ -359,7 +359,7 @@ export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
   const runnerId = jsonField(q, job.payload, "admissionRunnerId");
   return yield* q.all(
     q.orm
-      .select({ itemId: item.id, runnerId })
+      .select({ itemId: item.id, runnerId, jobId: job.id })
       .from(admission)
       .innerJoin(job, eq(job.id, admission.jobId))
       .innerJoin(item, eq(item.id, admission.itemId))
