@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { DEFAULT_MERGE_LANES, mergeLaneKey } from "../config";
 import { JOB_KIND } from "../core";
 import {
   resetOtherLaneCiFailures,
@@ -355,16 +354,11 @@ describe("advanceMerge in the repository merge queue", () => {
 
   test("two owners' green pull requests in one project merge without waiting for each other", async () => {
     const h = await start({ settings: { order: "queue", mainMoved: "ci" } });
-    const settings = {
-      lanes: [...DEFAULT_MERGE_LANES],
-      noProject: "own" as const,
-      projectLanes: {},
-    };
     const owners: Record<string, string> = { "ENG-181": "ann", "ENG-182": "bob" };
     for (const [id, owner] of Object.entries(owners)) {
       await h.addItem(id);
       await saveWorkItemLinearProject(h.db, id, { id: "project-a", name: "Billing" });
-      h.state.lanes.set(id, mergeLaneKey({ id, project: "project-a", owner }, settings));
+      h.state.lanes.set(id, `project-a:${owner}`);
     }
     h.state.ci = pendingCi;
     for (const id of Object.keys(owners)) {
