@@ -36,6 +36,7 @@ async function reachScript(): Promise<string> {
     stdout: `Version=${PINNED_TAILSCALE.amd64.version}\n{"BackendState":"Running"}`,
   }));
   exe.scriptExec(VM, /\/health'/, () => ({}));
+  exe.scriptExec(VM, /systemd-resolved|probe\.localhost/, () => ({}));
   await createExeDevBootstrap({
     exeDev: detaching(exe),
     clock: fakeClock(),

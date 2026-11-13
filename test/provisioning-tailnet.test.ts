@@ -38,6 +38,7 @@ type Vm = {
   joins: string[];
   upExit: number;
   reachExit: number;
+  resolveExit: number;
 };
 
 /**
@@ -56,6 +57,7 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
     joins: [],
     upExit: 0,
     reachExit: 0,
+    resolveExit: 0,
     ...state,
   };
   const exe = createFakeExeDev();
@@ -100,6 +102,12 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
           exitCode: vm.reachExit,
           stderr: "cannot resolve agentbox.taile07e4.ts.net\n",
         },
+  );
+  exe.scriptExec(VM, /apt-get install -y systemd-resolved/, () => ({}));
+  exe.scriptExec(VM, /getent hosts probe\.localhost/, () =>
+    vm.resolveExit === 0
+      ? {}
+      : { exitCode: vm.resolveExit, stderr: "probe.localhost resolved to nothing, not loopback\n" },
   );
   return { exe, vm };
 }
@@ -149,11 +157,11 @@ async function bootstrapError(promise: Promise<unknown>): Promise<BootstrapError
   return error as BootstrapError;
 }
 
-test("a fresh VM installs the pinned Tailscale, joins, then checks it reaches Paws", async () => {
+test("a fresh VM installs the pinned Tailscale, sets up systemd-resolved, joins, then checks it reaches Paws", async () => {
   const { exe, vm } = simulate();
   expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("joined");
   const sent = commands(exe);
-  expect(sent).toHaveLength(6);
+  expect(sent).toHaveLength(8);
   expect(sent[0]).toContain("tailscale version");
   expect(sent[1]).toContain(
     `https://pkgs.tailscale.com/stable/tailscale_${PINNED_TAILSCALE.amd64.version}_amd64.tgz`,
@@ -163,14 +171,34 @@ test("a fresh VM installs the pinned Tailscale, joins, then checks it reaches Pa
   expect(sent[1]).not.toMatch(/\| *(sudo )?sh\b/);
   // The checksum is checked before the archive is unpacked.
   expect(sent[1]!.indexOf("sha256sum")).toBeLessThan(sent[1]!.indexOf("tar -xzf"));
-  expect(sent[2]).toContain("systemctl enable --now tailscaled.service");
-  expect(sent[3]).toMatch(/tailnet-key\.pem -pubout$/);
-  expect(sent[4]).toMatch(JOIN);
-  expect(sent[4]).toContain(`--auth-key=file:${BOOTSTRAP_AUTHKEY_FILE} --hostname='ada-paws'`);
-  expect(sent[4]).toContain(`-m 0600 /dev/stdin ${BOOTSTRAP_AUTHKEY_FILE}`);
-  expect(sent[5]).toContain("host='agentbox.taile07e4.ts.net'");
-  expect(sent[5]).toContain("url='https://agentbox.taile07e4.ts.net:8787/health'");
+  expect(sent[2]).toContain("DNS=%s");
+  expect(sent[2]).toContain("169.254.169.254");
+  expect(sent[2]).toContain("/etc/systemd/resolved.conf.d/paws-upstream.conf");
+  expect(sent[2]!.indexOf("paws-upstream.conf")).toBeLessThan(
+    sent[2]!.indexOf("apt-get install -y systemd-resolved"),
+  );
+  expect(sent[2]).toContain("ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf");
+  expect(sent[2]).toContain("systemctl restart tailscaled.service");
+  expect(sent[3]).toContain("systemctl enable --now tailscaled.service");
+  expect(sent[4]).toMatch(/tailnet-key\.pem -pubout$/);
+  expect(sent[5]).toMatch(JOIN);
+  expect(sent[5]).toContain(`--auth-key=file:${BOOTSTRAP_AUTHKEY_FILE} --hostname='ada-paws'`);
+  expect(sent[5]).toContain(`-m 0600 /dev/stdin ${BOOTSTRAP_AUTHKEY_FILE}`);
+  expect(sent[6]).toContain("host='agentbox.taile07e4.ts.net'");
+  expect(sent[6]).toContain("url='https://agentbox.taile07e4.ts.net:8787/health'");
+  expect(sent[7]).toContain("getent hosts probe.localhost");
+  expect(sent[7]).toContain("github.com");
+  expect(sent[7]).toContain("agentbox.taile07e4.ts.net");
   expect(vm.backend).toBe("Running");
+});
+
+test("a VM that cannot resolve probe.localhost fails the tailnet step with the check's output", async () => {
+  const { exe } = simulate({ resolveExit: 3 });
+  const error = await bootstrapError(createExeDevBootstrap(options(exe)).joinTailnet(VM));
+  expect(error.step).toBe("tailnet");
+  expect(error.message).toBe(
+    "ada-paws: tailnet: the VM cannot resolve *.localhost names (exit 3): probe.localhost resolved to nothing, not loopback",
+  );
 });
 
 test("the auth key crosses no command line, only its ciphertext for the VM's key", async () => {
@@ -216,9 +244,11 @@ test("a re-run on a joined VM only checks that it still reaches Paws", async () 
   const before = commands(exe).length;
   expect(await bootstrap.joinTailnet(VM)).toBe("member");
   const again = commands(exe).slice(before);
-  expect(again).toHaveLength(2);
+  expect(again).toHaveLength(4);
   expect(again[0]).toContain("tailscale version");
-  expect(again[1]).toContain("/health'");
+  expect(again[1]).toContain("systemd-resolved");
+  expect(again[2]).toContain("/health'");
+  expect(again[3]).toContain("probe.localhost");
   expect(vm.joins).toHaveLength(1);
 });
 
@@ -227,13 +257,14 @@ test("a pinned Tailscale with a stopped daemon starts tailscaled, then joins, wi
   expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("joined");
   const sent = commands(exe);
   expect(sent.filter((command) => command.includes("pkgs.tailscale.com"))).toEqual([]);
-  expect(sent).toHaveLength(5);
+  expect(sent).toHaveLength(7);
   expect(sent[0]).toContain("tailscale version");
-  expect(sent[1]).toContain("systemctl enable --now tailscaled.service");
-  expect(sent[1]).toContain("status --json");
-  expect(sent[2]).toMatch(/tailnet-key\.pem -pubout$/);
-  expect(sent[3]).toMatch(JOIN);
-  expect(sent[4]).toContain("/health'");
+  expect(sent[1]).toContain("systemd-resolved");
+  expect(sent[2]).toContain("systemctl enable --now tailscaled.service");
+  expect(sent[2]).toContain("status --json");
+  expect(sent[3]).toMatch(/tailnet-key\.pem -pubout$/);
+  expect(sent[4]).toMatch(JOIN);
+  expect(sent[5]).toContain("/health'");
   expect(vm.starts).toBe(1);
   expect(vm.daemon).toBe(true);
   expect(vm.joins).toEqual([AUTHKEY]);
@@ -245,7 +276,7 @@ test("a daemon that comes back logged in after a reboot is a member and gets no 
   expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("member");
   expect(vm.starts).toBe(1);
   expect(vm.joins).toEqual([]);
-  expect(commands(exe).at(-1)).toContain("/health'");
+  expect(commands(exe).at(-2)).toContain("/health'");
 });
 
 test("a tailscaled that never answers fails clearly and the auth key is never staged", async () => {
@@ -260,7 +291,7 @@ test("a tailscaled that never answers fails clearly and the auth key is never st
   expect(detail).toEndWith(STOPPED.trim());
   expect(error.message).not.toContain(AUTHKEY);
   const sent = commands(exe);
-  expect(sent).toHaveLength(2);
+  expect(sent).toHaveLength(3);
   expect(sent.filter((command) => command.includes(BOOTSTRAP_TAILNET_KEY))).toEqual([]);
   expect(vm.joins).toEqual([]);
   expect(vm.authFile).toBe(false);
@@ -292,7 +323,7 @@ test("a private Paws CA is trusted by the reach check rather than skipped", asyn
   const { exe } = simulate();
   const ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
   await createExeDevBootstrap({ ...options(exe), serverCa: ca }).joinTailnet(VM);
-  const reach = commands(exe).at(-1)!;
+  const reach = commands(exe).find((command) => command.includes("/health'"))!;
   expect(reach).toContain('--cacert "$ca"');
   expect(reach).not.toContain("--insecure");
 });
