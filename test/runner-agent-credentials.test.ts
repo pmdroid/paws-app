@@ -269,8 +269,10 @@ test("a sign-in on the runner uploads the new files as the first stored version"
     writeFileSync(join(accountHome, ".claude/.credentials.json"), '{"claudeAiOauth":{}}', {
       mode: 0o600,
     });
-    agentTurn(daemon, home, "login-1");
     await daemon.acknowledgeCommand("login-1");
+    await sync(daemon);
+    expect(daemon.carriesCredential("login-1")).toBe(true);
+    agentTurn(daemon, home, "login-1");
     await sync(daemon);
     expect(uploads).toEqual([
       {
@@ -341,5 +343,17 @@ test("an unchanged sign-in the agent removed is written again for the next comma
     expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
     await sync(daemon);
     expect(uploads).toEqual([]);
+  });
+}, 30_000);
+
+test("a queued command gets the sign-in back after another command's turn removed it", async () => {
+  await withRunner(async ({ daemon, home, plane }) => {
+    plane.commands = () => [command("check-8", "login_check"), command("check-9", "login_check")];
+    await daemon.pollCommands();
+    const credentials = join(home, ".paws-accounts/binding-1/.claude/.credentials.json");
+    agentTurn(daemon, home, "check-9");
+    expect(existsSync(credentials)).toBe(false);
+    daemon.restoreCredentials("check-8");
+    expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r1"}}');
   });
 }, 30_000);

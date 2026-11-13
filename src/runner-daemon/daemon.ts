@@ -466,9 +466,25 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       .all()
       .find((row) => (JSON.parse(row.commands) as string[]).includes(commandId));
   }
+  function restoreCredentials(commandId: string) {
+    const row = heldCredential(commandId);
+    const credentials = options.agentCredentials;
+    if (!row?.files || !credentials) return;
+    const account = { accountId: row.accountId, bindingId: row.bindingId };
+    try {
+      if (!credentials.busy(account))
+        credentials.write(account, row.agent as RunnerCodingAgent, credentialFiles(row.files));
+    } catch (error) {
+      journalCaught(error, "daemon.restoreCredentials", null);
+    }
+  }
   function returnCredentials(commandId: string, executionId: string, returned: Buffer | null) {
     const row = heldCredential(commandId);
     if (!row) return;
+    const commands = JSON.stringify(
+      (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
+    );
+    const where = eq(agentCredential.bindingId, row.bindingId);
     let files: RunnerAgentCredentialFiles;
     try {
       if (returned === null) throw new Error("credentials.json is missing");
@@ -483,15 +499,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       journal(
         `runner.agent_credential.not_returned binding=${row.bindingId} command=${commandId} reason=${error instanceof Error ? error.message : "unreadable"}`,
       );
+      q.update(agentCredential).set({ commands }).where(where).run();
       return;
     }
     const newest = row.latest ?? row.upload;
     const known = newest ? agentCredentialDigest(credentialFiles(newest)) : row.digest;
-    if (files.length === 0) return;
-    const changed = agentCredentialDigest(files) !== known;
+    const changed = files.length > 0 && agentCredentialDigest(files) !== known;
     q.update(agentCredential)
-      .set({ files: JSON.stringify(files), ...(changed ? { latest: JSON.stringify(files) } : {}) })
-      .where(eq(agentCredential.bindingId, row.bindingId))
+      .set({
+        commands,
+        ...(files.length ? { files: JSON.stringify(files) } : {}),
+        ...(changed ? { latest: JSON.stringify(files) } : {}),
+      })
+      .where(where)
       .run();
   }
   let syncing: Promise<void> | undefined;
@@ -510,7 +530,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (!row) return false;
       if (row.acknowledged !== 2) return true;
       const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-      return "generation" in command && running.has(`${command.runId}:${command.generation}`);
+      return (
+        command.expiresAt > now() ||
+        ("generation" in command && running.has(`${command.runId}:${command.generation}`))
+      );
     };
     try {
       for (const { bindingId } of q
@@ -740,6 +763,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     carriesCredential: (commandId: string) =>
       options.agentCredentials !== undefined && heldCredential(commandId) !== undefined,
     returnCredentials,
+    restoreCredentials,
     status,
     identityRetryIn,
     identityReplaced() {

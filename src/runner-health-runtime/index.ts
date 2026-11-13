@@ -99,6 +99,7 @@ export async function openRunnerHealthRuntime(options: {
         | "exchangeLogin"
         | "carriesCredential"
         | "credentialRecipient"
+        | "restoreCredentials"
         | "returnCredentials"
       >
     >;
@@ -519,6 +520,7 @@ export async function openRunnerHealthRuntime(options: {
           if (reply.cancelled) throw new Error("Login was cancelled");
           check(entry);
         }
+        options.daemon.restoreCredentials?.(command.id);
         publishRunnerJob(options.spool, {
           executionId: id,
           command,

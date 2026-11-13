@@ -231,6 +231,7 @@ export async function openRunnerRuntime(options: {
         | "githubReadCredential"
         | "carriesCredential"
         | "credentialRecipient"
+        | "restoreCredentials"
         | "returnCredentials"
       >
     >;
@@ -1401,6 +1402,7 @@ export async function openRunnerRuntime(options: {
       sessionBundle = await downloadSession(entry);
       check(entry);
       if (command.expiresAt <= now()) throw new Error("Runner command expired before dispatch");
+      options.daemon.restoreCredentials?.(entry.execution.command.id);
       publishRunnerJob(
         options.spool,
         {
