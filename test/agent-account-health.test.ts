@@ -32,8 +32,7 @@ import { copyMigratedPglite, tempStore } from "./pglite";
 const NOW = 1_800_000_000_000;
 const bindingReadiness = (db: Db, input: Parameters<typeof bindingReadinessSteps>[1]) =>
   db.run((q) => bindingReadinessSteps(q, input));
-const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) =>
-  db.run((q) => q.exec(query(q)));
+const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
 const closers: (() => Promise<void>)[] = [];
 const roots: string[] = [];
 afterEach(async () => {
@@ -294,14 +293,12 @@ test("a stale or late success cannot erase a newer failure, and a repeat changes
   });
 
   await exhaust(db, bindings.a1, "cmd-3", NOW);
-  const before = (await bindingAccountHealth(db, bindings.a1)).find(
-    (row) => row.kind === "quota",
-  );
+  const before = (await bindingAccountHealth(db, bindings.a1)).find((row) => row.kind === "quota");
   expect(await exhaust(db, bindings.a1, "cmd-3", NOW)).toEqual({ quota: "duplicate" });
   expect(await exhaust(db, bindings.a2, "cmd-3", NOW)).toEqual({ quota: "duplicate" });
-  expect(
-    (await bindingAccountHealth(db, bindings.a1)).find((row) => row.kind === "quota"),
-  ).toEqual(before);
+  expect((await bindingAccountHealth(db, bindings.a1)).find((row) => row.kind === "quota")).toEqual(
+    before,
+  );
   expect(before).toMatchObject({ failures: 1, sourceId: "cmd-3", bindingId: bindings.a1 });
 });
 
@@ -549,9 +546,7 @@ test("a usage-limit result shares its cooldown across the account and returns th
     finishedAt: NOW + 40,
   });
   const recheckAt =
-    NOW +
-    40 +
-    accountRecheckDelay((await bindingAccountHealth(db, bindings.a1))[0]!.scopeId, 1);
+    NOW + 40 + accountRecheckDelay((await bindingAccountHealth(db, bindings.a1))[0]!.scopeId, 1);
   expect(outcome).toEqual({ retryable: true, usageLimit: { resetsAt: null, recheckAt } });
   expect(await bindingReadiness(db, { bindingId: bindings.a2, now: NOW + 41 })).toEqual({
     ready: false,
