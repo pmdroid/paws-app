@@ -1,9 +1,8 @@
 import { trackHostOperation } from "../host-operation";
 import { journalCaught, journalItemId } from "../journal";
-import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
-import { storeOf, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { jobInstanceElsewhereSteps } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -116,7 +115,7 @@ export class JobLoop {
   readonly store: Db;
 
   constructor(
-    readonly db: Database | Db,
+    readonly db: Db,
     readonly clock: Clock,
     readonly options: {
       store?: Db;
@@ -129,7 +128,7 @@ export class JobLoop {
       mergeParallel?: () => number;
     } = {},
   ) {
-    this.store = options.store ?? storeOf(db);
+    this.store = options.store ?? db;
   }
 
   get pollMs(): number {

@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { z } from "zod";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
-import type { Database } from "bun:sqlite";
 import { createRunnerModels } from "../runner-models";
 import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
@@ -40,7 +39,7 @@ import {
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
 import { createSealedRunnerFiles, type RunFileObjects } from "../run-files";
-import { runnerCommandRuns, storeOf, type Db } from "../db";
+import { runnerCommandRuns, type Db } from "../db";
 import {
   createAgentSessions,
   createAgentSessionsHttp,
@@ -98,7 +97,7 @@ function newCommandKey() {
 }
 
 export async function openRunnerCoordinator(options: {
-  db: Database | Db;
+  db: Db;
   root: string;
   tls: { key: string; cert: string };
   hostname?: string;
@@ -128,14 +127,14 @@ export async function openRunnerCoordinator(options: {
   const signing = signingIdentity(options.root);
   let listener: RunnerListener | undefined;
   const control = createRunnerControl({
-    store: storeOf(options.db),
+    store: options.db,
     authority,
     certificateRoot: options.root,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
     now: options.now,
   });
   const work = createRunnerWork({
-    store: storeOf(options.db),
+    store: options.db,
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     eventKey: options.eventKey,
@@ -144,7 +143,7 @@ export async function openRunnerCoordinator(options: {
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
   const runnerFiles = options.runnerFiles
     ? createSealedRunnerFiles({
-        store: storeOf(options.db),
+        store: options.db,
         now: options.now,
         ...options.runnerFiles,
       })
@@ -155,15 +154,15 @@ export async function openRunnerCoordinator(options: {
     remote: runnerFiles,
   });
   const helpers = createRunnerHelpers({
-    store: storeOf(options.db),
+    store: options.db,
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     now: options.now,
   });
-  const results = createRunnerResults({ store: storeOf(options.db), work, now: options.now });
-  const health = createRunnerHealth({ store: storeOf(options.db), work, now: options.now });
+  const results = createRunnerResults({ store: options.db, work, now: options.now });
+  const health = createRunnerHealth({ store: options.db, work, now: options.now });
   const login = createRunnerLogin({
-    store: storeOf(options.db),
+    store: options.db,
     work,
     now: options.now,
     onSignedIn: ({ runnerId, agent }) => {
@@ -186,7 +185,7 @@ export async function openRunnerCoordinator(options: {
       };
     },
   });
-  const models = createRunnerModels({ store: storeOf(options.db), work, now: options.now });
+  const models = createRunnerModels({ store: options.db, work, now: options.now });
   const artifacts = createRunnerArtifactStore({
     root: join(options.root, "artifacts"),
     work,
@@ -194,7 +193,7 @@ export async function openRunnerCoordinator(options: {
   });
   if (runnerFiles) {
     try {
-      const commands = await runnerCommandRuns(storeOf(options.db));
+      const commands = await runnerCommandRuns(options.db);
       await inputs.migrateLocal(commands);
       await artifacts.migrateLocal(commands);
     } catch (error) {
@@ -217,18 +216,18 @@ export async function openRunnerCoordinator(options: {
   void agentRead?.recover();
   const agentReadAccess = agentRead ? createAgentReadAccess({ work, agentRead }) : undefined;
   const repositoryCommands = createRepositoryCommandsHttp({
-    store: storeOf(options.db),
+    store: options.db,
     now: options.now,
   });
   const repositoryCommandAccess = options.repositoryAccess
     ? createRepositoryCommandAccess({
         ...options.repositoryAccess,
-        store: storeOf(options.db),
+        store: options.db,
         now: options.now,
       })
     : undefined;
   const transcripts = options.transcripts
-    ? createRunnerTranscripts({ store: storeOf(options.db), work, ...options.transcripts })
+    ? createRunnerTranscripts({ store: options.db, work, ...options.transcripts })
     : undefined;
   const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
   const agentSessions = options.agentSessions

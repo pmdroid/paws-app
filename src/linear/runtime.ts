@@ -4,7 +4,6 @@ import {
   createLinearImprovementIssueLookup,
   type ImprovementLinear,
 } from "./improvement-issues";
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
 import { sessionHasItemInStates, type Db } from "../db";
@@ -71,7 +70,7 @@ export function linearTokenPath(secretsDir: string): string {
  * Build the inbox and tracker. Call `start` to poll Linear.
  */
 export async function openLinear(options: {
-  db: Database | Db;
+  db: Db;
   store: Db;
   secretsDir: string;
   env: EnvSource;

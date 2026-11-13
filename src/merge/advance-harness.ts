@@ -1,5 +1,4 @@
 import { askSteps as rawAsk } from "../questions";
-import type { Database } from "bun:sqlite";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,8 +16,6 @@ import {
   insertQueuedItem,
   markCloseoutAcceptedSteps,
   markRunSteps,
-  migrate,
-  openDatabase,
   recordCiRerunSteps,
   recordItemPullRequestSteps,
   saveCheckpointSteps,
@@ -26,7 +23,6 @@ import {
   type PullFeedbackWait,
   type Db,
   type TaskMergeSettings,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import {
@@ -113,12 +109,6 @@ type HarnessOptions = {
    */
   mirror?: boolean;
 };
-
-export async function mergeHarness(options: HarnessOptions = {}) {
-  const db: Database = openDatabase(":memory:");
-  migrate(db);
-  return { ...(await harness(sqliteDb(db), options, async () => db.close())), db };
-}
 
 export async function mergeHarnessPg(
   open: { db: Db; close(): Promise<void> },
@@ -711,7 +701,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
   };
 }
 
-export type MergeHarness = Awaited<ReturnType<typeof mergeHarness>>;
+export type MergeHarness = Awaited<ReturnType<typeof mergeHarnessPg>>;
 export type MergeHarnessPg = Awaited<ReturnType<typeof mergeHarnessPg>>;
 
 const ask: typeof rawAsk = function* (q, asker, ...args) {

@@ -6,7 +6,6 @@ import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
 import { handleSlackWebhook } from "../slack";
-import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
@@ -71,7 +70,6 @@ import {
   hotFilesSteps,
   listItemHoldsSteps,
   listWorkspaceRepositoryNamesSteps,
-  storeOf,
   workspaceSessionIdsSteps,
   type Db,
   type Q,
@@ -165,7 +163,7 @@ export type ServerOptions = {
    */
   webhooks?: boolean;
   /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
-  db?: Database | Db;
+  db?: Db;
   /** The async `Db` over `db` for converted routes. Defaults to `sqliteDb(db)`. */
   store?: Db;
   /** Clock for local health checks. */
@@ -204,7 +202,7 @@ export type ServerOptions = {
 
 /** The `Db` the routes reach: the one startup passes, or `sqliteDb(db)`. */
 export function serverStore(options: Pick<ServerOptions, "db" | "store">): Db | undefined {
-  return options.store ?? (options.db ? storeOf(options.db) : undefined);
+  return options.store ?? options.db;
 }
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -355,7 +353,7 @@ type Secrets = {
   startLinearSession?: StartLinearSession;
   agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
-  db?: Database | Db;
+  db?: Db;
   store?: Db;
   statusEnv?: Record<string, string | undefined>;
   githubStatus?: GitHubStatusCache;
@@ -490,7 +488,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           resolve: (repository) => activation.resolve(repository),
         });
         return (await handleWorkspaceGitHubIntegration(request, {
-          store: storeOf(secrets.db),
+          store: secrets.db,
           principal: access.principal,
           session: access.session,
           origin: workspace.origin,
@@ -550,7 +548,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleVisualReviewChanges(request, {
-      store: secrets.store ?? storeOf(secrets.db),
+      store: secrets.store ?? secrets.db,
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       principal,
@@ -586,7 +584,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleEvidenceRequest(request, {
-      store: secrets.store ?? storeOf(secrets.db),
+      store: secrets.store ?? secrets.db,
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       sessionIds,
@@ -730,7 +728,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
   if (closeoutItem !== null && secrets.db)
     await hydrateItemCloseoutEvidence(
-      secrets.store ?? storeOf(secrets.db),
+      secrets.store ?? secrets.db,
       secrets.closeoutEvidence!,
       closeoutItem,
       sessionIds,

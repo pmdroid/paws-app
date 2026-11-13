@@ -56,7 +56,7 @@ export {
   migrations,
 } from "./migration-files";
 export type { Migration } from "./migration";
-export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
+export { openDatabase } from "./open";
 export {
   connectPglite,
   connectPostgres,
@@ -75,7 +75,6 @@ export { orm, type Orm } from "./orm";
 export {
   postgresDb,
   sqliteDb,
-  storeOf,
   type Db,
   type PgDb,
   type PgOrm,

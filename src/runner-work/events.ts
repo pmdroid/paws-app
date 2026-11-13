@@ -1,16 +1,11 @@
-import type { Database } from "bun:sqlite";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
 import {
-  incrementalVacuum,
   jobStatusByKeySteps,
   plaintextRunnerEventsSteps,
   sealRunnerEventSteps,
-  storeOf,
   type Db,
-  truncateWal,
-  withSecureDelete,
   type Q,
   type Steps,
 } from "../db";
@@ -103,17 +98,10 @@ export function* openRunnerEventSteps(
 
 const BATCH = 500;
 
-export async function encryptRunnerEvents(options: {
-  db: Database | Db;
-  key: Buffer;
-  signal?: AbortSignal;
-}) {
-  const { db, key, signal } = options;
-  const store = storeOf(db);
+export async function encryptRunnerEvents(options: { db: Db; key: Buffer; signal?: AbortSignal }) {
+  const { db: store, key, signal } = options;
   let after: [string, number, number] = ["", 0, 0];
   let sealed = 0;
-  // Zero the plaintext that sealing frees, without rebuilding the file. Bytes left in the slack of
-  // pages that split stay until the offline rebuild in the README.
   const seal = async () => {
     for (;;) {
       signal?.throwIfAborted();
@@ -131,14 +119,6 @@ export async function encryptRunnerEvents(options: {
       await yieldToLoop();
     }
   };
-  if ("dialect" in db) {
-    await seal();
-    return { sealed };
-  }
-  await withSecureDelete(db, async () => {
-    await seal();
-    incrementalVacuum(db);
-    truncateWal(db);
-  });
+  await seal();
   return { sealed };
 }

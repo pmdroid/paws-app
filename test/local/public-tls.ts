@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { get } from "node:https";
 import { join } from "node:path";
 import { loadPublicTls } from "../../src/deployment";
-import { migrate, openDatabase } from "../../src/db";
+import { tempStore } from "../pglite";
 import { startServer, type HealthReport } from "../../src/server";
 
 export function createPublicTlsFixture(root: string): {
@@ -51,8 +51,7 @@ export async function probePublicTls(
   const files = createPublicTlsFixture(join(root, "public-tls"));
   const tls = loadPublicTls({ ...files, PAWS_PUBLIC_DASHBOARD: "1" });
   if (!tls) throw new Error("Public TLS was not loaded");
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close: closeDb } = await tempStore();
   const server = startServer({
     db,
     hostname: "127.0.0.1",
@@ -94,7 +93,7 @@ export async function probePublicTls(
     );
   } finally {
     await server.stop(true);
-    db.close();
+    await closeDb();
   }
   await probePublicTlsErrorPages(root, observe);
 }
