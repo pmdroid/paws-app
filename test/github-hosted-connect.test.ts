@@ -4,7 +4,12 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { count as countRows, eq, sql } from "drizzle-orm";
-import { createGitHubRepositorySetup, createHostedGitHubConnect } from "../src/server";
+import {
+  createGitHubRepositorySetup,
+  createGitHubStatusCache,
+  createHostedGitHubConnect,
+  type GitHubStatusCache,
+} from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   consumeWorkspaceBootstrap,
@@ -128,6 +133,7 @@ async function fixture() {
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
   let installationStatus = 200;
+  let tokenDelay = 0;
   let catalogPages: boolean | "duplicate" = false;
   let catalogPermissions: unknown = INSTALLATION_PERMISSIONS;
   const provider = Bun.serve({
@@ -177,7 +183,7 @@ async function fixture() {
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
       if (url.pathname === "/app")
         return Response.json({ id: 99, client_id: "Iv1.fake", slug: "fixture-paws" });
-      if (url.pathname === "/repos/acme/widgets/installation") {
+      if (/^\/repos\/acme\/[^/]+\/installation$/.test(url.pathname)) {
         await beforeInstallation?.();
         return Response.json(
           { id: 22, app_id: 99, suspended_at: null, permissions: INSTALLATION_PERMISSIONS },
@@ -191,17 +197,20 @@ async function fixture() {
         });
       if (url.pathname === "/user/memberships/orgs/acme")
         return Response.json({ state: "active", role: "admin" });
-      if (url.pathname === "/app/installations/22/access_tokens")
+      if (url.pathname === "/app/installations/22/access_tokens") {
+        const name = (JSON.parse(body) as { repositories: string[] }).repositories[0];
+        await Bun.sleep(tokenDelay);
         return Response.json(
           {
             token: "scripted-installation-token",
             expires_at: new Date(Date.now() + 3600000).toISOString(),
             repository_selection: "selected",
-            repositories: [{ name: "widgets", full_name: "acme/widgets" }],
+            repositories: [{ name, full_name: `acme/${name}` }],
             permissions: INSTALLATION_PERMISSIONS,
           },
           { status: 201 },
         );
+      }
       return new Response(null, { status: 404 });
     },
   });
@@ -210,7 +219,7 @@ async function fixture() {
       `http://127.0.0.1:${provider.port}${new URL(String(url)).pathname}${new URL(String(url)).search}`,
       init,
     )) as typeof fetch;
-  const handler = () =>
+  const handler = (cache?: GitHubStatusCache) =>
     createHostedGitHubConnect({
       store: db,
       home,
@@ -218,6 +227,7 @@ async function fixture() {
       origin: "https://paws.example",
       now: () => now,
       fetch: scriptedFetch,
+      cache,
     });
   function request(role: string, url: string, init: RequestInit = {}) {
     return new Request(url, {
@@ -251,8 +261,9 @@ async function fixture() {
     sessions,
     begin,
     handler,
-    setup: () =>
+    setup: (cache?: GitHubStatusCache) =>
       createGitHubRepositorySetup({
+        cache,
         store: db,
         home,
         env,
@@ -273,6 +284,9 @@ async function fixture() {
     },
     setCatalogPermissions(value: unknown) {
       catalogPermissions = value;
+    },
+    setTokenDelay(value: number) {
+      tokenDelay = value;
     },
     setInstallationStatus(value: number) {
       installationStatus = value;
@@ -474,6 +488,53 @@ test("GitHub setup discovers the approved installation and exposes status withou
     f.setInstallationStatus(404);
     const removed = await f.handler()(automaticRequest(f, "GET"));
     expect(await removed?.json()).toMatchObject({ status: "needs_installation" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("GitHub status checks repositories concurrently and serves a minute-long cache only to signed-in callers", async () => {
+  const f = await fixture();
+  try {
+    await f.handler()(f.request("owner", (await f.begin()).callback.href));
+    const names = Array.from({ length: 10 }, (_, index) => `acme/repo${index}`);
+    await replaceWorkspaceRepositories(f.db, {
+      workspaceId: "ws",
+      actorId: "owner",
+      repositories: names.map((repository) => ({ repository, teamId: "team" })),
+      now: Date.now(),
+    });
+    await write(f.db, (q) =>
+      q.orm.update(q.t.workspaceGithubConnection).set({ repositories: JSON.stringify(names) }),
+    );
+    f.setTokenDelay(100);
+    const cache = createGitHubStatusCache();
+    const status = async () => (await f.handler(cache)(automaticRequest(f, "GET")))!.json();
+    let calls = f.calls.length;
+    const started = performance.now();
+    expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
+    expect(performance.now() - started).toBeLessThan(400);
+    expect(f.calls.slice(calls).filter((call) => call.path.endsWith("_tokens"))).toHaveLength(10);
+    calls = f.calls.length;
+    f.advance(59_000);
+    expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
+    const anonymous = new Request("https://paws.example/api/workspaces/github-connect");
+    expect((await f.handler(cache)(anonymous))?.status).toBe(403);
+    expect(f.calls.length).toBe(calls);
+    const headers = {
+      origin: "https://paws.example",
+      "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+    };
+    await f.setup(cache)(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup", {
+        method: "PUT",
+        headers,
+        body: "{}",
+      }),
+    );
+    calls = f.calls.length;
+    expect(await status()).toMatchObject({ status: "connected" });
+    expect(f.calls.length).toBeGreaterThan(calls);
   } finally {
     await f.close();
   }
