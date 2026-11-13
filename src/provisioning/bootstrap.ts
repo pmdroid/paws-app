@@ -800,15 +800,16 @@ function reachCommand(controlPlaneUrl: string, serverCa: string | null): string 
   return [
     `host=${shellQuote(url.hostname)}`,
     `url=${shellQuote(health)}`,
+    `body=$(mktemp)`,
     ...(serverCa === null
-      ? []
+      ? [`trap 'rm -f "$body"' EXIT`]
       : [
           `ca=$(mktemp)`,
-          `trap 'rm -f "$ca"' EXIT`,
+          `trap 'rm -f "$body" "$ca"' EXIT`,
           `printf '%s\\n' ${shellQuote(serverCa)} > "$ca"`,
         ]),
     "i=0",
-    `until getent hosts "$host" >/dev/null 2>&1 && curl --proto '=https' --tlsv1.2 ${trust}-fsS --max-time 5 -o /dev/null "$url" 2>/dev/null; do i=$((i+1)); if [ "$i" -ge 30 ]; then if getent hosts "$host" >/dev/null 2>&1; then echo "$url did not answer" >&2; exit 3; fi; echo "cannot resolve $host" >&2; exit 2; fi; sleep 2; done`,
+    `until getent hosts "$host" >/dev/null 2>&1 && curl --proto '=https' --tlsv1.2 ${trust}-sS --max-time 5 -o "$body" "$url" 2>/dev/null && grep -q '"service":"paws"' "$body"; do i=$((i+1)); if [ "$i" -ge 30 ]; then if getent hosts "$host" >/dev/null 2>&1; then echo "$url did not answer" >&2; exit 3; fi; echo "cannot resolve $host" >&2; exit 2; fi; sleep 2; done`,
   ].join("; ");
 }
 
