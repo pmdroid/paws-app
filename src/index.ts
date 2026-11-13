@@ -1547,12 +1547,24 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           : null,
     });
   }
+  let mergeParallel = { at: -Infinity, value: 1 };
   const loops = await startLoops({
     db: store,
     store,
     instanceId: instance.id,
     role: runtime.role,
     signal: abort.signal,
+    mergeParallel() {
+      if (Date.now() - mergeParallel.at < 30_000) return mergeParallel.value;
+      let value = mergeParallel.value;
+      try {
+        value = readMergeSettings(loadConfigFile(paths.configFile)).parallel;
+      } catch (error) {
+        journalCaught(error, "index.mergeParallel", null);
+      }
+      mergeParallel = { at: Date.now(), value };
+      return value;
+    },
     async prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
       created.jobs.register(RUN_TAKEOVER_JOB, async () => {

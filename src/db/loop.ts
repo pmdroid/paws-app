@@ -126,6 +126,7 @@ export class JobLoop {
       pollMs?: number;
       backoffBaseMs?: number;
       concurrency?: number;
+      mergeParallel?: () => number;
     } = {},
   ) {
     this.store = options.store ?? storeOf(db);
@@ -273,6 +274,7 @@ export class JobLoop {
         leaseMs: this.options.leaseMs ?? DEFAULT_LEASE_MS,
         now,
         queues,
+        mergeParallel: this.options.mergeParallel?.() ?? 1,
       };
       // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
       job = await trackHostOperation(

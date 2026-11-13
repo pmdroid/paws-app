@@ -73,6 +73,7 @@ export type ClaimOptions = {
   now?: number;
   /** When set, only these queues are eligible. An empty list claims nothing. */
   queues?: readonly string[];
+  mergeParallel?: number;
 };
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
@@ -180,10 +181,10 @@ function executionSql(alias: string): string {
  *
  * Queued starts and restarts need the scheduler's reservation. A start parked for a runner
  * slot already began, so it is claimed again without a new reservation (PAS-898). Jobs for
- * the same item and merge jobs in the same merge lane cannot hold overlapping leases. Other
- * items run independently.
+ * the same item cannot hold overlapping leases, and no more merge jobs of one merge lane than
+ * `mergeParallel` can. Other items run independently.
  */
-function claimWhere(q: Q, now: number, queues?: readonly string[]): SQL {
+function claimWhere(q: Q, now: number, queues?: readonly string[], mergeParallel = 1): SQL {
   const raw = drizzleSql.raw;
   const itemId = `COALESCE(${jsonTextSql(q.dialect, "candidate.payload", "itemId")}, '')`;
   const heldItemId = `COALESCE(${jsonTextSql(q.dialect, "held.payload", "itemId")},'')`;
@@ -213,9 +214,9 @@ function claimWhere(q: Q, now: number, queues?: readonly string[]): SQL {
   return drizzleSql`candidate.run_at <= ${now}${queueFilter}
     AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ${now})))
     AND NOT (${raw(needsReservation)} AND NOT (${raw(reservation)}))
-    AND NOT (${raw(mergeLaneSql("candidate"))} AND EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND NOT (${raw(mergeLaneSql("candidate"))} AND (SELECT count(*) FROM job held WHERE held.id != candidate.id AND held.status = 'running'
       AND (held.locked_until IS NULL OR held.locked_until > ${now}) AND ${raw(mergeLaneSql("held"))}
-      AND ${raw(sameLane)}))
+      AND ${raw(sameLane)}) >= ${Math.max(1, Math.floor(mergeParallel))})
     AND NOT (${raw(executionSql("candidate"))} AND EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
       AND (held.locked_until IS NULL OR held.locked_until > ${now}) AND (${raw(executionSql("held"))} OR ${raw(mergeLaneSql("held"))})
       AND ${raw(heldItemId)} = ${raw(itemId)}))`;
@@ -460,7 +461,7 @@ function claimJobQuery(q: Q, options: ClaimOptions) {
     .where(
       eq(
         job.id,
-        drizzleSql`(SELECT candidate.id FROM job AS candidate WHERE ${claimWhere(q, now, options.queues)}
+        drizzleSql`(SELECT candidate.id FROM job AS candidate WHERE ${claimWhere(q, now, options.queues, options.mergeParallel)}
           ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1)`,
       ),
     )

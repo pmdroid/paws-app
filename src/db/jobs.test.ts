@@ -438,6 +438,22 @@ describe("job queue", () => {
     ]);
   });
 
+  test("[merge] parallel lets that many merge jobs of one lane hold leases at once", async () => {
+    const { db, clock } = await queue();
+    const ids = ["eng-1", "eng-2", "eng-3"];
+    for (const id of ids) {
+      await insertQueuedItem(db, { id, now: clock.now() });
+      await bindRepo(db, id, "acme", "one");
+      await holdMergeQueuePlace(db, clock, id, "project-a");
+      await enqueueMerge(db, clock, id);
+    }
+    const options = { workerId: "worker", leaseMs: 5_000, now: clock.now(), mergeParallel: 2 };
+    const claimed = [];
+    for (let i = 0; i < 3; i++)
+      claimed.push((await claimNextJob(db, { ...options, queues: [JOB_KIND.merge] }))?.payload);
+    expect(claimed).toEqual([{ itemId: "eng-1" }, { itemId: "eng-2" }, undefined]);
+  });
+
   test("a merge job with no queue place yet waits only for the repository-wide lane", async () => {
     const { db, clock } = await queue();
     for (const id of ["eng-1", "eng-2", "eng-3"]) {
