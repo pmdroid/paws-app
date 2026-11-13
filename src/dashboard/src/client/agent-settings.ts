@@ -1,18 +1,32 @@
 import { journalCaught } from "../journal";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
-import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
+import type {
+  AgentModelCatalog,
+  AgentPreset,
+  AgentProfile,
+  AgentRole,
+  AgentSettings,
+} from "../agent-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
+const sameProfiles = ({ implementer, reviewer }: AgentPreset) =>
+  implementer.agent === reviewer.agent && implementer.model === reviewer.model;
+
 export function settingsProblems(settings: AgentSettings): string[] {
-  const { implementer, reviewer } = settings.defaults;
-  return implementer.agent === reviewer.agent && implementer.model === reviewer.model
+  return sameProfiles(settings.defaults)
     ? ["Global defaults: choose a different reviewer agent or model for independent review."]
     : [];
+}
+
+function presetProblem(row: PresetRow): string | null {
+  return sameProfiles(row.preset)
+    ? "Choose a different reviewer agent or model for independent review."
+    : null;
 }
 
 function clearAccounts(settings: AgentSettings, role: string): void {
@@ -49,7 +63,7 @@ export async function settingsRequest<T>(
   return data as T;
 }
 
-type PresetRow = { name: string; profile: AgentProfile };
+type PresetRow = { name: string; preset: AgentPreset };
 
 type SettingsView = {
   presetRows?: PresetRow[];
@@ -71,6 +85,10 @@ export function renderAgentSettings(view: SettingsView): string {
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
   const problems = settingsProblems(view.data);
+  const rows =
+    view.presetRows ??
+    Object.entries(view.data.presets ?? {}).map(([name, preset]) => ({ name, preset }));
+  const blocked = problems.length > 0 || rows.some((row) => presetProblem(row));
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.saved
@@ -79,16 +97,13 @@ export function renderAgentSettings(view: SettingsView): string {
   return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
       <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by every repository. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], view.catalogs)).join("")}</div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Label presets</h2><p class="sub">Add a label to a Linear issue in the Implementer or Reviewer group with a preset's name to run that issue with it. A change applies from the issue's next run.</p></div><div class="col">
-      ${(
-        view.presetRows ??
-        Object.entries(view.data.presets ?? {}).map(([name, profile]) => ({ name, profile }))
-      )
+      <section class="settings-section"><div class="settings-label"><h2>Label presets</h2><p class="sub">Add a label with a preset's name to a Linear issue to run that issue with the preset's implementer and reviewer. A change applies from the issue's next run.</p></div><div class="col">
+      ${rows
         .map((row, index) => {
           const key = `preset-${index}`;
-          const error = presetError(view.error, row.name);
+          const error = presetError(view.error, row.name) ?? presetProblem(row);
           return `<section class="settings-project" data-preset-row="${index}"><div class="settings-field"><label for="${key}-name">Name</label><input id="${key}-name" name="${key}-name" value="${esc(row.name)}" autocapitalize="none" spellcheck="false" ${error ? `aria-invalid="true" aria-describedby="${key}-error"` : ""}></div>
-        ${profileFields(key, "implementer", row.profile, view.catalogs, "Profile")}
+        ${ROLES.map((role) => profileFields(key, role, row.preset[role], view.catalogs)).join("")}
         ${error ? `<p id="${key}-error" class="settings-message err" role="alert">${esc(error)}</p>` : ""}
         <button class="btn" type="button" data-settings="remove-preset" data-index="${index}">Remove preset</button></section>`;
         })
@@ -97,7 +112,7 @@ export function renderAgentSettings(view: SettingsView): string {
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
       <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
-      <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
+      <div class="settings-actions"><button class="btn primary" type="submit" ${blocked ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
@@ -106,10 +121,9 @@ function profileFields(
   role: AgentRole,
   profile: AgentProfile,
   catalogs: AgentModelCatalog[] = [],
-  heading?: string,
 ): string {
   const key = `${scope}-${role}`;
-  const label = heading ?? (role === "implementer" ? "Implementer" : "Reviewer");
+  const label = role === "implementer" ? "Implementer" : "Reviewer";
   const catalog = catalogs.find((value) => value.agent === profile.agent);
   const selected = catalog?.models.find((model) => model.id === profile.model);
   const longContext =
@@ -140,12 +154,12 @@ function profileFields(
       )
       .join("")}</select></div>
     <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${longContext ? `<small class="sub" id="${key}-model-hint">1M context uses more of your Claude usage.</small>` : ""}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
-    <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
+    <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div>${selected?.fast ? `<label class="settings-inherit"><input type="checkbox" id="${key}-fast" name="${key}-fast" ${profile.fast ? "checked" : ""}>Fast mode</label>` : profile.fast ? `<small class="sub">Fast mode isn't available for this model</small>` : ""}</div></div>`;
 }
 
 function presetError(error: string | null, name: string): string | null {
   if (!error) return null;
-  if (error === `Duplicate preset: ${name}`) return error;
+  if (error === `Duplicate preset: ${name}` || error.startsWith(`Preset ${name}: `)) return error;
   try {
     const issues = JSON.parse(error) as { path?: unknown[] }[];
     if (
@@ -206,11 +220,14 @@ export function createAgentSettings(
     if (!form) return;
     const read = (key: string, previous: AgentProfile): AgentProfile => {
       const effort = form.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`)?.value.trim();
+      const toggle = form.querySelector<HTMLInputElement>(`[name="${key}-fast"]`);
+      const fast = toggle ? toggle.checked : previous.fast;
       return {
         agent: (form.querySelector<HTMLSelectElement>(`[name="${key}-agent"]`)?.value ??
           previous.agent) as AgentProfile["agent"],
         model: form.querySelector<HTMLSelectElement>(`[name="${key}-model"]`)?.value.trim() || null,
         ...(effort ? { effort } : {}),
+        ...(fast ? { fast: true } : {}),
       };
     };
     for (const role of ROLES)
@@ -218,7 +235,8 @@ export function createAgentSettings(
     view.presetRows?.forEach((row, index) => {
       row.name =
         form.querySelector<HTMLInputElement>(`[name="preset-${index}-name"]`)?.value ?? row.name;
-      row.profile = read(`preset-${index}-implementer`, row.profile);
+      for (const role of ROLES)
+        row.preset[role] = read(`preset-${index}-${role}`, row.preset[role]);
     });
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
@@ -301,9 +319,9 @@ export function createAgentSettings(
       if (started !== generation) return;
       view.denied = false;
       view.data = data;
-      view.presetRows = Object.entries(data.presets ?? {}).map(([name, profile]) => ({
+      view.presetRows = Object.entries(data.presets ?? {}).map(([name, preset]) => ({
         name,
-        profile,
+        preset,
       }));
       view.saved = false;
       view.applyToWaiting = false;
@@ -324,7 +342,11 @@ export function createAgentSettings(
     draft();
     if (action === "add-preset" && view.data) {
       view.presetRows ??= [];
-      view.presetRows.push({ name: "", profile: { ...view.data.defaults.implementer } });
+      const { implementer, reviewer } = view.data.defaults;
+      view.presetRows.push({
+        name: "",
+        preset: { implementer: { ...implementer }, reviewer: { ...reviewer } },
+      });
       paint();
       root?.querySelector<HTMLInputElement>(`#preset-${view.presetRows.length - 1}-name`)?.focus();
     }
@@ -344,6 +366,10 @@ export function createAgentSettings(
       return;
     }
     const rows = view.presetRows ?? [];
+    if (rows.some((row) => presetProblem(row))) {
+      paint();
+      return;
+    }
     const names = new Set<string>();
     for (const row of rows) {
       if (names.has(row.name)) {
@@ -353,7 +379,7 @@ export function createAgentSettings(
       }
       names.add(row.name);
     }
-    view.data!.presets = Object.fromEntries(rows.map(({ name, profile }) => [name, profile]));
+    view.data!.presets = Object.fromEntries(rows.map(({ name, preset }) => [name, preset]));
     const started = generation;
     void request("Saving agent settings…", async () => {
       const data = await settingsRequest<
@@ -367,9 +393,9 @@ export function createAgentSettings(
       if (started !== generation) return;
       const { waitingRuns, warnings, ...settings } = data;
       view.data = settings;
-      view.presetRows = Object.entries(settings.presets ?? {}).map(([name, profile]) => ({
+      view.presetRows = Object.entries(settings.presets ?? {}).map(([name, preset]) => ({
         name,
-        profile,
+        preset,
       }));
       view.waitingRuns = waitingRuns;
       view.warnings = warnings;
@@ -391,9 +417,12 @@ export function createAgentSettings(
     root?.querySelector("#settings-feedback")?.replaceChildren();
     if (name.endsWith("-agent") || name.endsWith("-model")) {
       const key = name.replace(/-(agent|model)$/, "");
-      const [scope, role] = key.split("-") as [string, AgentRole];
+      const [scope, first, second] = key.split("-") as [string, AgentRole, AgentRole];
+      const role = scope === "preset" ? second : first;
       const profile =
-        scope === "preset" ? view.presetRows?.[Number(role)]?.profile : view.data?.defaults[role];
+        scope === "preset"
+          ? view.presetRows?.[Number(first)]?.preset[role]
+          : view.data?.defaults[role];
       if (profile) {
         delete profile.effort;
         if (name.endsWith("-agent")) profile.model = null;
@@ -411,7 +440,7 @@ export function createAgentSettings(
         holder.hidden = problems.length === 0;
       }
       const save = root?.querySelector<HTMLButtonElement>('button[type="submit"]');
-      if (save) save.disabled = problems.length > 0;
+      if (save) save.disabled = problems.length > 0 || (view.presetRows ?? []).some(presetProblem);
       return;
     }
     paint();
