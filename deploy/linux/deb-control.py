@@ -65,9 +65,7 @@ def admit():
 def configure():
     docker = installer.docker_access_choice()
     if installer.active_executions():
-        installer.write_atomic(installer.pending_configure(), json.dumps({"docker": docker}).encode(), 0o600)
-        installer.release.command(["/usr/bin/systemctl", "start", "--no-block", "--", "paws-runner-agents.service"])
-        print(json.dumps({"installed": False, "pending": True}))
+        print(json.dumps(installer.defer_configure(docker)))
         return
     journal = installer.Journal()
     arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("signature", "manifest.sig"), ("artifact", "artifact.tar"), ("release_key", "release.pub"))})
@@ -79,7 +77,10 @@ def configure():
         # The release goes in place and the agents install beside the current ones while the runner keeps
         # running; a failure stops here, naming the agent, with the runner, its release and agents unchanged.
         # install() stops the runner only to switch `current`.
-        installed, agents = installer.install(manifest, artifact, fingerprint, reinstall=True, prepare=lambda: installer.prepare_agents(artifact), journal=journal)
+        installed, agents = installer.install(manifest, artifact, fingerprint, reinstall=True, prepare=lambda: installer.prepare_agents(artifact), journal=journal, defer=lambda: installer.defer_configure(docker))
+        if installed.get("pending"):
+            print(json.dumps(installed))
+            return
         installed["agents"] = installer.finish_agents(agents)
         # Before the runner starts again, so it comes back without a docker group membership Paws removed.
         installed["docker"] = installer.configure_docker_access(docker)
