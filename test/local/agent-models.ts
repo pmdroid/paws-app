@@ -93,6 +93,8 @@ export async function probeAgentModels(
   const health = () => createRunnerHealth({ store: db, work: work(), now: () => now });
   let catalog = createRunnerModels({ store: db, work: work(), now: () => now });
   const principal = { workspaceId: workspace, userId };
+  const read = async (who: { workspaceId: string; userId: string }) =>
+    (await catalog.read(who)).filter((entry) => entry.agent === "codex" && entry.updatedAt > 0);
   const count = async () =>
     (await db.run((q) => q.one(q.orm.select({ total: total() }).from(q.t.runnerCommand))))!.total;
   const latest = async () => {
@@ -178,7 +180,12 @@ export async function probeAgentModels(
       new Request("http://localhost/api/runners/models"),
       principal,
     );
-    assert.deepEqual(await empty!.json(), { catalogs: [] });
+    assert.deepEqual(
+      ((await empty!.json()) as { catalogs: Array<{ agent: string }> }).catalogs.map(
+        (entry) => entry.agent,
+      ),
+      ["claude", "codex", "grok"],
+    );
     assert.equal(await count(), 0);
     observe("cached HTTP reads do not dispatch ACP", true, { commands: await count() });
     await catalog.refresh();
@@ -190,41 +197,41 @@ export async function probeAgentModels(
     });
     await complete();
     await catalog.refresh();
-    assert.equal((await catalog.read(principal))[0]!.models.length, 2);
+    assert.equal((await read(principal))[0]!.models.length, 2);
     assert.deepEqual(
-      (await catalog.read(principal))[0]!.efforts.map((choice) => choice.id),
+      (await read(principal))[0]!.efforts.map((choice) => choice.id),
       ["low", "high"],
     );
     observe(
       "ACP models and default effort are cached without prompting",
       true,
-      await catalog.read(principal),
+      await read(principal),
     );
     const specific = await latest();
     assert.equal(specific.type === "probe" && specific.profile.model, "model-b");
     await complete();
     await catalog.refresh();
     assert.deepEqual(
-      (await catalog.read(principal))[0]!.models
+      (await read(principal))[0]!.models
         .find((model) => model.id === "model-b")!
         .efforts!.map((choice) => choice.id),
       ["medium", "xhigh"],
     );
     assert.equal(await count(), 2);
-    observe("effort options belong to the selected model", true, await catalog.read(principal));
-    const before = await catalog.read(principal);
+    observe("effort options belong to the selected model", true, await read(principal));
+    const before = await read(principal);
     await open.close();
     open = await openPawsStore({ url: null, pgliteDir });
     db = open.store;
     catalog = createRunnerModels({ store: db, work: work(), now: () => now });
-    assert.deepEqual(await catalog.read(principal), before);
+    assert.deepEqual(await read(principal), before);
     observe("catalog survives process storage reopen", true, { models: before[0]!.models.length });
-    assert.deepEqual(await catalog.read({ workspaceId: workspace, userId: otherUser }), []);
-    assert.deepEqual(await catalog.read({ workspaceId: otherWorkspace, userId }), []);
+    assert.deepEqual(await read({ workspaceId: workspace, userId: otherUser }), []);
+    assert.deepEqual(await read({ workspaceId: otherWorkspace, userId }), []);
     observe("catalog reads are scoped to workspace and signed-in member", true, {});
     await seen(0);
     await policy({ cooldownUntil: now + 60_000 });
-    assert.deepEqual(await catalog.read(principal), before);
+    assert.deepEqual(await read(principal), before);
     await catalog.refresh();
     assert.equal(await count(), 2);
     observe("offline and cooling hosts retain cached choices", true, {});
@@ -266,13 +273,13 @@ export async function probeAgentModels(
     assert.equal(await count(), 3);
     await complete(true);
     await catalog.refresh();
-    assert.deepEqual(await catalog.read(principal), before);
+    assert.deepEqual(await read(principal), before);
     const afterFailure = await count();
     await catalog.refresh();
     assert.equal(await count(), afterFailure);
     observe("failed refresh preserves last good cache and backs off", true, {});
     await policy({ authExpired: 1 });
-    assert.deepEqual(await catalog.read(principal), []);
+    assert.deepEqual(await read(principal), []);
     const beforeDisconnected = await count();
     await catalog.refresh();
     assert.equal(await count(), beforeDisconnected);

@@ -216,3 +216,88 @@ test("the catalog reports the agent's default model and effort", async () => {
   expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
   expect(catalog?.models.find((model) => model.id === "opus")?.fast).toBe(true);
 });
+
+function models(db: Awaited<ReturnType<typeof fixture>>["db"], fetch?: typeof globalThis.fetch) {
+  const work = createRunnerWork({
+    store: db,
+    keyId: "labels",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
+  });
+  return createRunnerModels({ store: db, work, ...(fetch ? { fetch } : {}) });
+}
+
+test("without runner catalogs the bundled choices stand in for claude, codex and grok", async () => {
+  const { db, principal } = await fixture();
+  await seed(db, (q) => q.orm.delete(q.t.agentModelCatalog));
+  const response = await models(db).browser(
+    new Request("http://localhost/api/runners/models"),
+    principal,
+  );
+  const { catalogs } = (await response!.json()) as {
+    catalogs: Array<{
+      agent: string;
+      defaultModel: string;
+      models: Array<{ id: string; efforts: Array<{ id: string }>; defaultEffort: null }>;
+    }>;
+  };
+  expect(catalogs.map(({ agent, defaultModel }) => [agent, defaultModel])).toEqual([
+    ["claude", "fable"],
+    ["codex", "gpt-6.1-sol"],
+    ["grok", "grok-4.7"],
+  ]);
+  expect(catalogs[0]!.models.map((model) => model.id)).toEqual([
+    "opus",
+    "fable",
+    "sonnet",
+    "haiku",
+  ]);
+  expect(catalogs[2]!.models[0]!.efforts.map((effort) => effort.id)).toEqual([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ]);
+  expect(catalogs[1]!.models[0]!.defaultEffort).toBeNull();
+});
+
+test("a runner's catalog replaces only its own agent's bundled choices", async () => {
+  const { db, principal } = await fixture();
+  const catalogs = await models(db).read(principal);
+  expect(catalogs.map((catalog) => catalog.agent)).toEqual(["claude", "codex", "grok"]);
+  expect(catalogs[0]!.models.map((model) => model.id)).toEqual(["opus", "opus[1m]"]);
+  expect(catalogs[1]!.models[0]!.id).toBe("gpt-6.1-sol");
+});
+
+test("models.dev ids join the bundled lists and a failed refresh keeps the last good list", async () => {
+  const { db, principal } = await fixture();
+  await seed(db, (q) => q.orm.delete(q.t.agentModelCatalog));
+  let answer: () => Response = () =>
+    Response.json({
+      anthropic: { models: { a: { id: "claude-opus-5-5" }, b: { id: "opus" } } },
+      openai: { models: { c: { id: "gpt-6.1-sol" }, d: { id: "gpt-7" }, e: { id: "o9" } } },
+      xai: { models: { f: { id: "grok-5" } } },
+    });
+  const catalog = models(db, (async () => answer()) as unknown as typeof fetch);
+  const ids = async () =>
+    (await catalog.read(principal)).map((entry) => entry.models.map((model) => model.id));
+  await catalog.refreshDefaults();
+  const refreshed = await ids();
+  expect(refreshed[0]).toEqual(["opus", "fable", "sonnet", "haiku", "claude-opus-5-5"]);
+  expect(refreshed[1]!.slice(-2)).toEqual(["gpt-5.6-luna", "gpt-7"]);
+  expect(refreshed[2]).toEqual([
+    "grok-4.7",
+    "grok-4.7-build-fast",
+    "grok-4.6",
+    "grok-4.5",
+    "grok-5",
+  ]);
+  answer = () => new Response("not json");
+  await catalog.refreshDefaults();
+  expect(await ids()).toEqual(refreshed);
+  answer = () => {
+    throw new Error("offline");
+  };
+  await catalog.refreshDefaults();
+  expect(await ids()).toEqual(refreshed);
+});
