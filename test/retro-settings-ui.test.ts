@@ -88,8 +88,13 @@ beforeEach(() => {
 });
 
 const stores: (() => Promise<void>)[] = [];
+const holds: (() => void)[] = [];
+const pending = new Set<Promise<Response>>();
 
 afterEach(async () => {
+  for (const release of holds.splice(0)) release();
+  await Promise.allSettled(pending);
+  await settle();
   for (const name of DOM_GLOBALS) (globalThis as Record<string, unknown>)[name] = saved.get(name);
   window.close();
   for (const close of stores.splice(0)) await close();
@@ -153,11 +158,10 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     now: () => 5,
   });
   const requests: { method: string; path: string; body: unknown }[] = [];
-  const holds: (() => void)[] = [];
   let hold: RegExp | null = null;
   let who = "admin";
   const override = new Map<string, () => Response>();
-  const serve = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  const answer = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method: init?.method ?? "GET", path: target.pathname, body });
@@ -173,9 +177,15 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
       method: init?.method ?? "GET",
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
     });
-    const answer =
+    const found =
       (await settings(request, people[who]!)) ?? (await preview(request, people[who]!, []));
-    return answer ?? Response.json({ error: "Not found." }, { status: 404 });
+    return found ?? Response.json({ error: "Not found." }, { status: 404 });
+  };
+  const serve = (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const call = answer(url, init);
+    pending.add(call);
+    void call.finally(() => pending.delete(call)).catch(() => {});
+    return call;
   };
   const controller = createRetroSettings({
     fetch: serve,
@@ -387,6 +397,22 @@ test("save is atomic with the expected revision; drafts survive tab changes and 
   await t.click('[data-retro="cancel"]');
   expect(t.$<InputEl>("#retro-worked-well").value).toBe("3");
   expect(t.$<SelectEl>("#retro-cadence").value).toBe("paused");
+});
+
+test("a save still in flight when the test ends finishes before the page is torn down", async () => {
+  const t = await harness();
+  await t.open();
+  await t.type("#retro-retries", "2");
+  t.setHold(/^\/api\/retros\/settings$/);
+  t.$<FormEl>("[data-retro-form]").dispatchEvent(
+    new window.Event("submit", { bubbles: true, cancelable: true }),
+  );
+  await settle();
+  expect(t.holds).toHaveLength(1);
+  stores.push(async () => {
+    t.holds.forEach((release) => release());
+    await settle();
+  });
 });
 
 test("a revision conflict or a failed save keeps the draft", async () => {
