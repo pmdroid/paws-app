@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import {
   appendCloseoutOutput,
   applyWorkItemEvent,
@@ -19,10 +19,6 @@ import {
   LINEAR_WEBHOOK_FIX,
   joinMergeQueue,
   keepTaskMergeSettings,
-  legacyMigrate,
-  MIGRATIONS_FOLDER,
-  migrationTags,
-  openDatabase,
   putWorkspaceUser,
   recordCiRound,
   recordConfirmedRemoteMerge,
@@ -36,8 +32,11 @@ import {
   type CloseoutStepWrite,
   saveCandidateRisk,
   saveRiskFix,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../../../db";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 import {
   parseIssueDetailResponse,
   parseIssueListResponse,
@@ -52,30 +51,18 @@ import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from 
 import { waitReason } from "../client/format";
 import { renderMergeQueue } from "../client/merge-queue";
 
-const open: Database[] = [];
+const open: Array<() => Promise<void>> = [];
 const homes: string[] = [];
 
-afterEach(() => {
-  for (const db of open) db.close();
-  open.length = 0;
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-/** The legacy schema, then every drizzle-kit migration after `0000_baseline`. */
-function migrated(db: Database): void {
-  legacyMigrate(db);
-  for (const tag of migrationTags().slice(1))
-    for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
-      "--> statement-breakpoint",
-    ))
-      db.run(statement);
-}
-
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrated(db);
-  open.push(db);
-  return db;
+async function database(): Promise<Db> {
+  const store = await tempStore();
+  open.push(store.close);
+  return store.db;
 }
 
 /** The list's records for `statusIntegrity`: it carries no questions or merge queue. */
@@ -83,27 +70,59 @@ function listRecords(list: IssueListResponse) {
   return { ...list, items: list.issues, questions: [], mergeQueue: [] };
 }
 
-function seedQuestion(db: Database, itemId: string, sessionId: string): void {
-  db.run(
-    "INSERT INTO question (id, item_id, session_id, body, options, status, created_at) VALUES ('question', ?, ?, 'Which screenshot?', ?, 'open', 1)",
-    [itemId, sessionId, JSON.stringify(["Existing", "Fresh"])],
+type QuestionRow = Q["t"]["question"]["$inferInsert"];
+
+function seedQuestion(db: Db, itemId: string, sessionId: string, row: Partial<QuestionRow> = {}) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.question).values({
+      id: "question",
+      itemId,
+      sessionId,
+      body: "Which screenshot?",
+      options: ["Existing", "Fresh"],
+      status: "open",
+      createdAt: 1,
+      ...row,
+    }),
   );
 }
 
+type WorkItemSet = Partial<Q["t"]["workItem"]["$inferInsert"]>;
+
+const updateItem = (db: Db, id: string, set: WorkItemSet) =>
+  seed(db, (q) => q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id)));
+
+const updateJob = (db: Db, id: number, set: Partial<Q["t"]["job"]["$inferInsert"]>) =>
+  seed(db, (q) => q.orm.update(q.t.job).set(set).where(eq(q.t.job.id, id)));
+
+type InboxRow = Q["t"]["inboxEvent"]["$inferInsert"];
+
+const inboxEvent = (db: Db, row: Partial<InboxRow> & Pick<InboxRow, "dedupeKey" | "payload">) =>
+  seed(db, (q) =>
+    q.orm.insert(q.t.inboxEvent).values({
+      source: "webhook",
+      action: "created",
+      updatedAtMs: 1,
+      receivedAt: 1,
+      ...row,
+    }),
+  );
+
+const visualReviews = (db: Db, rows: Q["t"]["visualReview"]["$inferInsert"][]) =>
+  seed(db, (q) => q.orm.insert(q.t.visualReview).values(rows));
+
 describe("live status provider", () => {
   test("HTTP status exposes migrated failures and budget questions without obsolete item states", async () => {
-    const db = openDatabase(":memory:");
-    open.push(db);
-    legacyMigrate(db, { until: "147_job_item_version_and_question_reason" });
+    const db = await database();
+    // A spent budget once left an item in `exhausted`; the migration made those rows `failed`.
     await insertQueuedItem(db, { id: "legacy-budget" });
-    db.run("UPDATE work_item SET state='exhausted' WHERE id='legacy-budget'");
-    migrated(db);
+    await updateItem(db, "legacy-budget", { state: "failed" });
     await insertQueuedItem(db, { id: "budget-question" });
-    await beginImplementRun(sqliteDb(db), "budget-question", 1);
-    await applyWorkItemEvent(sqliteDb(db), "budget-question", "blocking_question");
-    seedQuestion(db, "budget-question", "session");
+    await beginImplementRun(db, "budget-question", 1);
+    await applyWorkItemEvent(db, "budget-question", "blocking_question");
+    await seedQuestion(db, "budget-question", "session");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     expect(response?.status).toBe(200);
@@ -117,7 +136,7 @@ describe("live status provider", () => {
       "awaiting_input",
     );
     const asked = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const questions = parseQuestionListResponse(await asked!.json());
@@ -130,21 +149,22 @@ describe("live status provider", () => {
   });
 
   test("HTTP questions hand off to their own persisted Linear session", async () => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "new-session" });
-    seedQuestion(db, item.id, "question-session");
+    await seedQuestion(db, item.id, "question-session");
     const source = "https://linear.app/paws/issue/ENG-1/demo#agent-session-question";
     for (const [session, url] of [
       ["question-session", source],
       ["new-session", "https://linear.app/paws/issue/ENG-2/another"],
     ] as const) {
-      db.run(
-        "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES (?, 'webhook', 'created', ?, 1, ?, 1)",
-        [session, session, JSON.stringify({ agentSession: { url } })],
-      );
+      await inboxEvent(db, {
+        dedupeKey: session,
+        sessionId: session,
+        payload: { agentSession: { url } },
+      });
     }
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseQuestionListResponse(await response!.json());
@@ -164,13 +184,12 @@ describe("live status provider", () => {
     ["visual-review", false],
     ["github-auth", false],
   ] as const)("an open %s question is answerable in Paws: %p", async (kind, answerable) => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    seedQuestion(db, item.id, "session");
-    db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
-    expect(
-      (await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.answerable,
-    ).toBe(answerable);
+    await seedQuestion(db, item.id, "session", { kind });
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.answerable).toBe(
+      answerable,
+    );
   });
 
   test.each([
@@ -180,36 +199,34 @@ describe("live status provider", () => {
     "https://uploads.linear.app/question?signature=secret",
     "https://linear.app:444/question",
   ])("question handoff falls back safely from an unsafe source %s", async (url) => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    seedQuestion(db, item.id, "session");
-    db.run(
-      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
-      [JSON.stringify({ agentSession: { url } })],
-    );
-    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.links).toEqual([
+    await seedQuestion(db, item.id, "session");
+    await inboxEvent(db, {
+      dedupeKey: "event",
+      sessionId: "session",
+      payload: { agentSession: { url } },
+    });
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
     ]);
   });
 
   test("a Linear question without session metadata uses its readable issue key", async () => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });
-    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
-      "9cfb482a-81e3-4154-b5b9-2c805e70a02d",
-      item.id,
-    ]);
-    seedQuestion(db, item.id, "session");
-    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.links).toEqual([
+    await updateItem(db, item.id, { linearIssueId: "9cfb482a-81e3-4154-b5b9-2c805e70a02d" });
+    await seedQuestion(db, item.id, "session");
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
     ]);
   });
 
   test("visual review rounds carry the reviewer's name, feedback and the screenshots' commit", async () => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
-    await putWorkspaceUser(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, 1_000);
+    await putWorkspaceUser(db, {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",
@@ -219,7 +236,7 @@ describe("live status provider", () => {
       ["shot-1", "a".repeat(40)],
       ["shot-2", "b".repeat(40)],
     ] as const)
-      await saveEvidence(sqliteDb(db), {
+      await saveEvidence(db, {
         id,
         itemId: item.id,
         runId: run.id,
@@ -232,14 +249,29 @@ describe("live status provider", () => {
         headCommit: commit,
         createdAt: 1_000,
       });
-    db.run(
-      `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind, outcome, answered_by, answered_at, feedback)
-       VALUES ('q-1', ?, 'visual-proof', '["shot-1"]', 2000, 'review', 'changes_requested', 'lin-ada', 3000, 'Make the button blue.'),
-              ('q-2', ?, 'visual-proof', '[]', 3000, 'continue', 'continued', 'lin-ada', 3500, NULL),
-              ('q-3', ?, 'visual-proof', '["shot-2"]', 4000, 'review', NULL, NULL, NULL, NULL)`,
-      [item.id, item.id, item.id],
-    );
-    const list = await createLiveStatusProvider(sqliteDb(db)).issues();
+    const shared = { itemId: item.id, checkId: "visual-proof", answeredBy: "lin-ada" };
+    await visualReviews(db, [
+      {
+        ...shared,
+        questionId: "q-1",
+        evidenceIds: ["shot-1"],
+        createdAt: 2000,
+        outcome: "changes_requested",
+        answeredAt: 3000,
+        feedback: "Make the button blue.",
+      },
+      {
+        ...shared,
+        questionId: "q-2",
+        evidenceIds: [],
+        createdAt: 3000,
+        kind: "continue",
+        outcome: "continued",
+        answeredAt: 3500,
+      },
+      { ...shared, questionId: "q-3", evidenceIds: ["shot-2"], createdAt: 4000, answeredBy: null },
+    ]);
+    const list = await createLiveStatusProvider(db).issues();
     expect(list.issues[0]?.visualReviews).toEqual([
       {
         questionId: "q-1",
@@ -270,17 +302,17 @@ describe("live status provider", () => {
   });
 
   test("a carried-over review names the approval and approver each screen came from", async () => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
-    await putWorkspaceUser(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, 1_000);
+    await putWorkspaceUser(db, {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",
       email: "ada@example.invalid",
     });
     for (const id of ["shot-1", "shot-2"])
-      await saveEvidence(sqliteDb(db), {
+      await saveEvidence(db, {
         id,
         itemId: item.id,
         runId: run.id,
@@ -303,13 +335,27 @@ describe("live status provider", () => {
         match: "identical" as const,
       },
     ];
-    db.run(
-      `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, outcome, answered_by, answered_at, carried)
-       VALUES ('q-1', ?, 'visual-proof', '["shot-1"]', 2000, 'stale', 'lin-ada', 3000, NULL),
-              ('carry_1', ?, 'visual-proof', '["shot-2"]', 5000, 'accepted', 'lin-ada', 5000, ?)`,
-      [item.id, item.id, JSON.stringify(carried)],
-    );
-    const list = await createLiveStatusProvider(sqliteDb(db)).issues();
+    const shared = { itemId: item.id, checkId: "visual-proof", answeredBy: "lin-ada" };
+    await visualReviews(db, [
+      {
+        ...shared,
+        questionId: "q-1",
+        evidenceIds: ["shot-1"],
+        createdAt: 2000,
+        outcome: "stale",
+        answeredAt: 3000,
+      },
+      {
+        ...shared,
+        questionId: "carry_1",
+        evidenceIds: ["shot-2"],
+        createdAt: 5000,
+        outcome: "accepted",
+        answeredAt: 5000,
+        carried,
+      },
+    ]);
+    const list = await createLiveStatusProvider(db).issues();
     const reviews = list.issues[0]?.visualReviews;
     expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
       ["q-1", 1, "stale"],
@@ -322,15 +368,17 @@ describe("live status provider", () => {
   });
 
   test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {
-    const db = database();
+    const db = await database();
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
     const profiles = ["grok", "claude", "codex"] as const;
     const ids: string[] = [];
     for (const [index, reviewer] of profiles.entries()) {
       const item = await insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
-      const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
-      db.run("UPDATE run SET agent = ? WHERE id = ?", ["codex", run.id]);
+      const { run } = await beginImplementRun(db, item.id, 2);
+      await seed(db, (q) =>
+        q.orm.update(q.t.run).set({ agent: "codex" }).where(eq(q.t.run.id, run.id)),
+      );
       const dir = join(home, "runs", run.id);
       mkdirSync(dir, { recursive: true });
       writeFileSync(
@@ -347,7 +395,7 @@ describe("live status provider", () => {
     writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
       port: 0,
-      store: sqliteDb(db),
+      store: db,
       closeoutHome: home,
       env: { PAWS_HOME: join(home, "wrong") },
     });
@@ -365,7 +413,7 @@ describe("live status provider", () => {
       expect(parsed.response.runs.every((run) => run.agent === "Codex")).toBe(true);
       const responseFromEnv = await handleStatusRequest(
         new Request("http://127.0.0.1/api/issues"),
-        { store: sqliteDb(db), env: { PAWS_HOME: home } },
+        { store: db, env: { PAWS_HOME: home } },
       );
       const fromEnv = parseIssueListResponse(await responseFromEnv!.json());
       expect(fromEnv.ok).toBe(true);
@@ -377,11 +425,11 @@ describe("live status provider", () => {
   });
 
   test("missing or invalid saved reviewers do not invent a Codex reviewer or break status", async () => {
-    const db = database();
+    const db = await database();
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
     const item = await insertQueuedItem(db, { id: "ENG-1", title: "Review", now: 1 });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
+    const { run } = await beginImplementRun(db, item.id, 2);
     const dir = join(home, "runs", run.id);
     mkdirSync(dir, { recursive: true });
     for (const snapshot of [
@@ -393,7 +441,7 @@ describe("live status provider", () => {
     ]) {
       if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
       const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-        store: sqliteDb(db),
+        store: db,
         closeoutHome: home,
         env: {},
       });
@@ -406,9 +454,9 @@ describe("live status provider", () => {
   });
 
   test("an empty database is a live issue list with no items", async () => {
-    const db = database();
+    const db = await database();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     expect(response?.status).toBe(200);
@@ -420,15 +468,15 @@ describe("live status provider", () => {
     expect(parsed.response.issues).toEqual([]);
     expect(parsed.response.runs).toEqual([]);
     expect(parsed.response.verdicts).toEqual([]);
-    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions).toEqual([]);
-    expect((await createLiveStatusProvider(sqliteDb(db)).mergeQueue()).entries).toEqual([]);
+    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([]);
+    expect((await createLiveStatusProvider(db).mergeQueue()).entries).toEqual([]);
     expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
     expect(JSON.stringify(body)).not.toContain("acme");
   });
 
   test("reads items, runs, an open question, Closeout, and the merge queue", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "a".repeat(40);
     const head = "b".repeat(40);
@@ -446,10 +494,10 @@ describe("live status provider", () => {
       branchName: "paws/ENG-3",
       now,
     });
-    const waitingRun = await beginImplementRun(sqliteDb(db), waiting.id, now);
-    await applyWorkItemEvent(sqliteDb(db), waiting.id, "blocking_question");
-    await beginImplementRun(sqliteDb(db), merging.id, now);
-    await enterMergeQueue(sqliteDb(db), merging.id, {
+    const waitingRun = await beginImplementRun(db, waiting.id, now);
+    await applyWorkItemEvent(db, waiting.id, "blocking_question");
+    await beginImplementRun(db, merging.id, now);
+    await enterMergeQueue(db, merging.id, {
       phase: "merge_queue",
       baseSha: base,
       wipCommit: head,
@@ -467,7 +515,7 @@ describe("live status provider", () => {
       "- adversarial-review (review): passed — no failing findings",
       "- docs-lint (command): skipped — no changed path matches",
     ].join("\n");
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -475,7 +523,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", kind: "thought", body: "Need a product decision." },
       now,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -487,7 +535,7 @@ describe("live status provider", () => {
       },
       now,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -495,7 +543,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", kind: "response", body: summary },
       now,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -507,14 +555,14 @@ describe("live status provider", () => {
       },
       now,
     });
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: "github.merge",
       jobKey: `merge:${merging.id}:${head}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head },
       now,
     });
 
-    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
     const list = await provider.issues();
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(list)));
     expect(parsed.ok).toBe(true);
@@ -578,12 +626,12 @@ describe("live status provider", () => {
   });
 
   test("a waiting task without a question row shows its question:<id> elicitation", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const item = await insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    await enqueueOutbox(sqliteDb(db), {
+    await beginImplementRun(db, item.id, now);
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    await enqueueOutbox(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -591,7 +639,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", body: "Closeout needs your help." },
       now,
     });
-    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions).toEqual([
+    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([
       expect.objectContaining({
         id: "q-help",
         itemId: "ENG-2",
@@ -601,17 +649,20 @@ describe("live status provider", () => {
   });
 
   test("a bypass link ask carries its failed checks and the policy it binds to", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
     const item = await insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", now });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-bypass', ?, 'ses_1', 'link', 'Closeout needs your decision', 'open', ?)",
-      [item.id, now],
-    );
-    await insertLinkAsk(sqliteDb(db), {
+    await beginImplementRun(db, item.id, now);
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    await seedQuestion(db, item.id, "ses_1", {
+      id: "q-bypass",
+      kind: "link",
+      body: "Closeout needs your decision",
+      options: null,
+      createdAt: now,
+    });
+    await insertLinkAsk(db, {
       questionId: "q-bypass",
       itemId: item.id,
       kind: "bypass",
@@ -622,7 +673,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    await saveCloseoutRecovery(sqliteDb(db), {
+    await saveCloseoutRecovery(db, {
       questionId: "q-bypass",
       taskId: "ENG-3",
       itemId: item.id,
@@ -633,11 +684,11 @@ describe("live status provider", () => {
       retryBaseline: [],
       summary: "Closeout: exhausted",
     });
-    await saveCloseoutBypassChecks(sqliteDb(db), "q-bypass", [
+    await saveCloseoutBypassChecks(db, "q-bypass", [
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
     expect(
-      (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-3"))?.questions[0]?.linkAsk?.bypass,
+      (await createLiveStatusProvider(db).issue("ENG-3"))?.questions[0]?.linkAsk?.bypass,
     ).toEqual({
       policyDigest: "sha256:0eadf4c",
       passed: [],
@@ -648,17 +699,20 @@ describe("live status provider", () => {
   });
 
   test("a risk link ask carries the head's high-risk paths for the Risk card", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
     const item = await insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
-      [item.id, now],
-    );
-    await insertLinkAsk(sqliteDb(db), {
+    await beginImplementRun(db, item.id, now);
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    await seedQuestion(db, item.id, "ses_1", {
+      id: "q-risk",
+      kind: "link",
+      body: "High-risk changes",
+      options: null,
+      createdAt: now,
+    });
+    await insertLinkAsk(db, {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",
@@ -669,7 +723,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    await saveCandidateRisk(sqliteDb(db), {
+    await saveCandidateRisk(db, {
       itemId: item.id,
       head,
       base: "base",
@@ -677,7 +731,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       classifiedAt: now,
     });
-    const detail = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-6"))!;
+    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
     expect(detail.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       summary: "",
@@ -693,17 +747,20 @@ describe("live status provider", () => {
   });
 
   test("a risk ask after an approval lists only the fix's high-risk paths", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "9c1d2e3ff0a1b2c3";
     const item = await insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
-      [item.id, now],
-    );
-    await insertLinkAsk(sqliteDb(db), {
+    await beginImplementRun(db, item.id, now);
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    await seedQuestion(db, item.id, "ses_1", {
+      id: "q-risk",
+      kind: "link",
+      body: "High-risk changes",
+      options: null,
+      createdAt: now,
+    });
+    await insertLinkAsk(db, {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",
@@ -714,7 +771,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    await saveCandidateRisk(sqliteDb(db), {
+    await saveCandidateRisk(db, {
       itemId: item.id,
       head,
       base: "base",
@@ -722,7 +779,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts", "src/auth/token.ts"],
       classifiedAt: now,
     });
-    await saveRiskFix(sqliteDb(db), {
+    await saveRiskFix(db, {
       itemId: item.id,
       head,
       approvedHead: "4b317d5cc2",
@@ -731,7 +788,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       recordedAt: now,
     });
-    const detail = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-6"))!;
+    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok && parsed.response.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
@@ -743,11 +800,11 @@ describe("live status provider", () => {
   });
 
   test("an item whose latest head kept the approval carries it, with the approved head", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const item = await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
     const risk = async (head: string, at: number) =>
-      await saveCandidateRisk(sqliteDb(db), {
+      await saveCandidateRisk(db, {
         itemId: item.id,
         head,
         base: "base",
@@ -756,7 +813,7 @@ describe("live status provider", () => {
         classifiedAt: at,
       });
     await risk("9c1d2e3ff0", now);
-    await saveRiskFix(sqliteDb(db), {
+    await saveRiskFix(db, {
       itemId: item.id,
       head: "9c1d2e3ff0",
       approvedHead: "4b317d5cc2",
@@ -773,35 +830,33 @@ describe("live status provider", () => {
         "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
     };
     const parsed = parseIssueListResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(sqliteDb(db)).issues())),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issues())),
     );
     expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     await risk("aaaa111122", now + 1);
-    expect(
-      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues[0]?.riskCarryOver,
-    ).toBeUndefined();
+    expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
     const merging = async (id: string, repository: string, ready: number | null, at: number) => {
       const item = await insertQueuedItem(db, { id, title: id, sessionKey: "ses_q", now: at });
-      await beginImplementRun(sqliteDb(db), item.id, at);
-      await enterMergeQueue(sqliteDb(db), item.id, {
+      await beginImplementRun(db, item.id, at);
+      await enterMergeQueue(db, item.id, {
         phase: "merge_queue",
         baseSha: head,
         wipCommit: head,
       });
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: "github.merge",
         jobKey: `merge:${item.id}`,
         payload: { itemId: item.id, head },
         now: at,
       });
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_q",
@@ -813,23 +868,26 @@ describe("live status provider", () => {
         },
         now: at,
       });
-      if (ready !== null)
-        await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository, now: ready });
+      if (ready !== null) await joinMergeQueue(db, { itemId: item.id, repository, now: ready });
       return item;
     };
     const first = await merging("ENG-11", "acme/platform", 10, 1);
     await merging("ENG-12", "acme/platform", 20, 2);
     const review = await merging("ENG-13", "acme/web", null, 3);
-    db.run("UPDATE job SET payload=? WHERE json_extract(payload,'$.itemId')=?", [
-      JSON.stringify({
-        itemId: review.id,
-        head,
-        mergeWait: { reason: "review", message: "Waiting for an approving review.", at: 4 },
-      }),
-      review.id,
-    ]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.job)
+        .set({
+          payload: {
+            itemId: review.id,
+            head,
+            mergeWait: { reason: "review", message: "Waiting for an approving review.", at: 4 },
+          },
+        })
+        .where(sql`${q.t.job.payload}->>'itemId' = ${review.id}`),
+    );
     await keepTaskMergeSettings(
-      sqliteDb(db),
+      db,
       review.id,
       {
         order: "ci-green",
@@ -839,8 +897,8 @@ describe("live status provider", () => {
       4,
     );
     const merged = await merging("ENG-14", "acme/platform", null, 5);
-    await applyWorkItemEvent(sqliteDb(db), merged.id, "merge_accepted");
-    await recordConfirmedRemoteMerge(sqliteDb(db), {
+    await applyWorkItemEvent(db, merged.id, "merge_accepted");
+    await recordConfirmedRemoteMerge(db, {
       itemId: merged.id,
       repositoryOwner: "acme",
       repositoryName: "platform",
@@ -850,16 +908,16 @@ describe("live status provider", () => {
       confirmedAt: now - 60_000,
     });
     const back = await merging("ENG-15", "acme/platform", null, 6);
-    await applyWorkItemEvent(sqliteDb(db), back.id, "restart", { kind: "restart", reason: "ci" });
-    await applyWorkItemEvent(sqliteDb(db), back.id, "dispatched");
-    await enqueueJob(sqliteDb(db), {
+    await applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
+    await applyWorkItemEvent(db, back.id, "dispatched");
+    await enqueueJob(db, {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
       payload: { itemId: back.id, reason: "ci-failed" },
       now: now - 120_000,
     });
 
-    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
     const resource = parseMergeQueueResponse(await provider.mergeQueue());
     if (!resource.ok) throw new Error(resource.error);
     const queue = resource.response;
@@ -896,7 +954,7 @@ describe("live status provider", () => {
   });
 
   test("a re-checking task keeps its place in the merge queue, and the ready one behind it moves", async () => {
-    const db = database();
+    const db = await database();
     const head = "c".repeat(40);
     for (const [index, id] of ["ENG-21", "ENG-22", "ENG-23"].entries()) {
       const item = await insertQueuedItem(db, {
@@ -905,21 +963,21 @@ describe("live status provider", () => {
         sessionKey: "ses_r",
         now: index + 1,
       });
-      await beginImplementRun(sqliteDb(db), item.id, index + 1);
-      await enterMergeQueue(sqliteDb(db), item.id, {
+      await beginImplementRun(db, item.id, index + 1);
+      await enterMergeQueue(db, item.id, {
         phase: "merge_queue",
         baseSha: head,
         wipCommit: head,
       });
-      await joinMergeQueue(sqliteDb(db), {
+      await joinMergeQueue(db, {
         itemId: item.id,
         repository: "acme/platform",
         now: 10 * (index + 1),
       });
     }
-    await applyWorkItemEvent(sqliteDb(db), "ENG-21", "reverify_requested");
+    await applyWorkItemEvent(db, "ENG-21", "reverify_requested");
 
-    const provider = createLiveStatusProvider(sqliteDb(db));
+    const provider = createLiveStatusProvider(db);
     const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(
@@ -943,7 +1001,7 @@ describe("live status provider", () => {
   });
 
   test("an item whose last job failed on a full disk names the disk on the issue and the merge queue", async () => {
-    const db = database();
+    const db = await database();
     const head = "d".repeat(40);
     const item = await insertQueuedItem(db, {
       id: "ENG-31",
@@ -951,25 +1009,22 @@ describe("live status provider", () => {
       sessionKey: "ses_d",
       now: 1,
     });
-    await beginImplementRun(sqliteDb(db), item.id, 1);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, 1);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: head,
       wipCommit: head,
     });
-    await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "acme/platform", now: 10 });
-    const job = await enqueueJob(sqliteDb(db), {
+    await joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: 10 });
+    const job = await enqueueJob(db, {
       queue: "github.merge",
       payload: { itemId: item.id },
       now: 20,
     });
     const reason = "Paws's host is out of disk space (/tmp, 12 MB left)";
-    db.run("UPDATE job SET last_error=? WHERE id=?", [
-      `push failed: ${reason}: fatal: Out of diskspace`,
-      job,
-    ]);
+    await updateJob(db, job, { lastError: `push failed: ${reason}: fatal: Out of diskspace` });
 
-    const provider = createLiveStatusProvider(sqliteDb(db));
+    const provider = createLiveStatusProvider(db);
     const detail = parseIssueDetailResponse(await provider.issue("ENG-31"));
     if (!detail.ok) throw new Error(detail.error);
     expect(detail.response.issue.hostDiskFull).toBe(reason);
@@ -977,50 +1032,50 @@ describe("live status provider", () => {
     if (!queue.ok) throw new Error(queue.error);
     expect(queue.response.entries[0]?.detail).toBe(reason);
 
-    db.run("UPDATE job SET last_error='push failed: permission denied' WHERE id=?", [job]);
+    await updateJob(db, job, { lastError: "push failed: permission denied" });
     expect((await provider.issue("ENG-31"))?.issue.hostDiskFull).toBeUndefined();
   });
 
   test("an item backing off after a full disk keeps the notice until its retry runs", async () => {
-    const db = database();
+    const db = await database();
     const item = await insertQueuedItem(db, {
       id: "ENG-32",
       title: "Disk",
       sessionKey: "ses_e",
       now: 1,
     });
-    const failed = await enqueueJob(sqliteDb(db), {
+    const failed = await enqueueJob(db, {
       queue: "run.resume",
       payload: { itemId: item.id },
       now: 10,
     });
-    db.run("UPDATE job SET status='done' WHERE id=?", [failed]);
+    await updateJob(db, failed, { status: "done" });
     const reason = "Paws's host is out of disk space (/tmp, 0 KB left)";
-    const retry = await enqueueJob(sqliteDb(db), {
+    const retry = await enqueueJob(db, {
       queue: "run.resume",
       payload: { itemId: item.id, reason: "transient_failure", lastError: `${reason}: ENOSPC` },
       runAt: 1_000,
       now: 20,
     });
-    const provider = createLiveStatusProvider(sqliteDb(db));
+    const provider = createLiveStatusProvider(db);
     expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBe(reason);
-    db.run("UPDATE job SET status='done' WHERE id=?", [retry]);
+    await updateJob(db, retry, { status: "done" });
     expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBeUndefined();
   });
 
   test("the merge queue names each task's bound repository without a configured repo", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
     const bound = async (id: string, at: number) => {
       const item = await insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
-      await bindWorkItemRepository(sqliteDb(db), item.id, {
+      await bindWorkItemRepository(db, item.id, {
         owner: "pmdroid",
         repo: "paws-app",
         remoteUrl: "https://github.com/pmdroid/paws-app.git",
       });
-      await beginImplementRun(sqliteDb(db), item.id, at);
-      await enterMergeQueue(sqliteDb(db), item.id, {
+      await beginImplementRun(db, item.id, at);
+      await enterMergeQueue(db, item.id, {
         phase: "merge_queue",
         baseSha: head,
         wipCommit: head,
@@ -1029,16 +1084,16 @@ describe("live status provider", () => {
     };
     await bound("ENG-21", 1);
     const back = await bound("ENG-22", 2);
-    await applyWorkItemEvent(sqliteDb(db), back.id, "restart", { kind: "restart", reason: "ci" });
-    await applyWorkItemEvent(sqliteDb(db), back.id, "dispatched");
-    await enqueueJob(sqliteDb(db), {
+    await applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
+    await applyWorkItemEvent(db, back.id, "dispatched");
+    await enqueueJob(db, {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
       payload: { itemId: back.id, reason: "ci-failed" },
       now: now - 120_000,
     });
 
-    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
     const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.entries.map((entry) => [entry.itemId, entry.repository])).toEqual([
@@ -1057,7 +1112,7 @@ describe("live status provider", () => {
   });
 
   test("Closeout checks leave out policy items that did not apply to the change", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
     const item = await insertQueuedItem(db, {
@@ -1066,8 +1121,8 @@ describe("live status provider", () => {
       sessionKey: "ses_5",
       now,
     });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, now);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: "d".repeat(40),
       wipCommit: head,
@@ -1098,10 +1153,10 @@ describe("live status provider", () => {
       findings: null,
       ordinal,
     });
-    await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("test", "passed", 0), now);
-    await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("typecheck", "skipped", 1), now);
-    await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
-    const list = await createLiveStatusProvider(sqliteDb(db), {
+    await upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
+    await upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
+    await finishCloseoutProgress(db, item.id, identity, "accepted", now);
+    const list = await createLiveStatusProvider(db, {
       now: () => new Date(now),
     }).issues();
     expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
@@ -1110,17 +1165,17 @@ describe("live status provider", () => {
   });
 
   test("the list carries open items and finished items of the last 24 hours, at most 50", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const finish = async (id: string, at: number) => {
       await insertQueuedItem(db, { id, title: id, now: at - 1_000 });
-      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
+      await applyWorkItemEvent(db, id, "cancel", { now: at });
     };
     // Open for a week: open items stay whatever their age.
     await insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
     await finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
     await finish("ENG-RECENT", now - 60_000);
-    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
     const ids = (await provider.issues()).issues.map((item) => item.id);
     expect(ids).toContain("ENG-OPEN");
     expect(ids).toContain("ENG-RECENT");
@@ -1147,7 +1202,7 @@ describe("live status provider", () => {
   });
 
   test("the item detail reads each review round's findings from the stored review evidence", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const pawsHome = mkdtempSync(join(tmpdir(), "paws-reviews-"));
@@ -1158,8 +1213,8 @@ describe("live status provider", () => {
       sessionKey: "ses_11",
       now,
     });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, now);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: base,
       wipCommit: "c".repeat(40),
@@ -1214,7 +1269,7 @@ describe("live status provider", () => {
       );
       const identity = { taskId: item.id, base, head: round.head, policyDigest: "sha256:policy" };
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item.id,
         { ...identity, policyPath: null },
         {
@@ -1240,21 +1295,15 @@ describe("live status provider", () => {
         },
         at,
       );
-      await finishCloseoutProgress(
-        sqliteDb(db),
-        item.id,
-        { ...identity, policyPath: null },
-        "rejected",
-        at,
-      );
+      await finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
     }
     // An issue was filed from the pre-existing finding, on this item or another one.
-    await bindWorkItemRepository(sqliteDb(db), item.id, {
+    await bindWorkItemRepository(db, item.id, {
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     });
-    await saveReviewFindingIssue(sqliteDb(db), {
+    await saveReviewFindingIssue(db, {
       key: reviewFindingKey({
         repository: "acme/widgets",
         location: "src/legacy.ts:3",
@@ -1270,7 +1319,7 @@ describe("live status provider", () => {
       filedBy: null,
       filedAt: now,
     });
-    const provider = createLiveStatusProvider(sqliteDb(db), {
+    const provider = createLiveStatusProvider(db, {
       now: () => new Date(now + 5000),
       pawsHome,
     });
@@ -1302,7 +1351,7 @@ describe("live status provider", () => {
   });
 
   test("the item detail carries one issue's Closeout attempts without check logs", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const item = await insertQueuedItem(db, {
@@ -1314,12 +1363,12 @@ describe("live status provider", () => {
     const blocked = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "ses_8", now: now + 1 });
     await insertQueuedItem(db, { id: "ENG-10", sessionKey: "ses_other", now });
     await saveTaskBlocks(
-      sqliteDb(db),
+      db,
       [blocked.linearIssueId],
       [{ blockerLinearIssueId: item.linearIssueId, blockedLinearIssueId: blocked.linearIssueId }],
     );
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, now);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: base,
       wipCommit: "c".repeat(40),
@@ -1334,7 +1383,7 @@ describe("live status provider", () => {
         policyPath: null,
       };
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         {
@@ -1358,25 +1407,16 @@ describe("live status provider", () => {
         },
         at,
       );
-      await appendCloseoutOutput(
-        sqliteDb(db),
-        item.id,
-        identity,
-        "test",
-        "stderr",
-        "secret log",
-        false,
-        at,
-      );
+      await appendCloseoutOutput(db, item.id, identity, "test", "stderr", "secret log", false, at);
       await finishCloseoutProgress(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         index === 0 ? "rejected" : "accepted",
         at,
       );
     }
-    const provider = createLiveStatusProvider(sqliteDb(db), {
+    const provider = createLiveStatusProvider(db, {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_8"],
     });
@@ -1401,11 +1441,11 @@ describe("live status provider", () => {
     ]);
     expect(JSON.stringify(detail)).not.toContain("secret log");
     expect(await provider.issue("ENG-10")).toBeNull();
-    expect((await createLiveStatusProvider(sqliteDb(db)).issue("ENG-10"))?.issue.id).toBe("ENG-10");
+    expect((await createLiveStatusProvider(db).issue("ENG-10"))?.issue.id).toBe("ENG-10");
 
     const get = (id: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
-        store: sqliteDb(db),
+        store: db,
         sessionIds: ["ses_8"],
       });
     const response = (await get("ENG-8"))!;
@@ -1417,7 +1457,7 @@ describe("live status provider", () => {
   });
 
   test("the item detail's risk block has the tier, each path's list and the security review", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const head = "c".repeat(40);
@@ -1428,7 +1468,7 @@ describe("live status provider", () => {
       now,
     });
     const docs = await insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
-    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now + 5000) });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
     expect((await provider.issue("ENG-11"))?.risk).toBeNull();
     const identity = (taskId: string) => ({
       taskId,
@@ -1456,9 +1496,9 @@ describe("live status provider", () => {
       findings: null,
       ordinal: 0,
     });
-    await upsertCloseoutStep(sqliteDb(db), item.id, identity(item.id), review("passed", null), now);
-    await finishCloseoutProgress(sqliteDb(db), item.id, identity(item.id), "accepted", now);
-    await saveCandidateRisk(sqliteDb(db), {
+    await upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
+    await finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
+    await saveCandidateRisk(db, {
       itemId: item.id,
       head,
       base,
@@ -1471,14 +1511,14 @@ describe("live status provider", () => {
       classifiedAt: now,
     });
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       docs.id,
       identity(docs.id),
       review("skipped", "no changed path matches"),
       now,
     );
-    await finishCloseoutProgress(sqliteDb(db), docs.id, identity(docs.id), "accepted", now);
-    await saveCandidateRisk(sqliteDb(db), {
+    await finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
+    await saveCandidateRisk(db, {
       itemId: docs.id,
       head,
       base,
@@ -1511,13 +1551,13 @@ describe("live status provider", () => {
   });
 
   test("a check log is read only for a check of that issue's Closeout attempt", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
-    const seed = async (id: string, session: string, check: string, output: string) => {
+    const seedCheck = async (id: string, session: string, check: string, output: string) => {
       const item = await insertQueuedItem(db, { id, sessionKey: session, now });
-      await beginImplementRun(sqliteDb(db), item.id, now);
-      await enterMergeQueue(sqliteDb(db), item.id, {
+      await beginImplementRun(db, item.id, now);
+      await enterMergeQueue(db, item.id, {
         phase: "merge_queue",
         baseSha: base,
         wipCommit: "c".repeat(40),
@@ -1530,7 +1570,7 @@ describe("live status provider", () => {
         policyPath: null,
       };
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         {
@@ -1554,32 +1594,14 @@ describe("live status provider", () => {
         },
         now,
       );
-      await appendCloseoutOutput(
-        sqliteDb(db),
-        item.id,
-        identity,
-        check,
-        "stderr",
-        output,
-        false,
-        now,
-      );
-      await appendCloseoutOutput(
-        sqliteDb(db),
-        item.id,
-        identity,
-        check,
-        "stdout",
-        `${id} out`,
-        false,
-        now,
-      );
-      await finishCloseoutProgress(sqliteDb(db), item.id, identity, "rejected", now);
+      await appendCloseoutOutput(db, item.id, identity, check, "stderr", output, false, now);
+      await appendCloseoutOutput(db, item.id, identity, check, "stdout", `${id} out`, false, now);
+      await finishCloseoutProgress(db, item.id, identity, "rejected", now);
     };
-    await seed("ENG-11", "ses_11", "unit", "unit failed");
-    await seed("ENG-12", "ses_11", "lint", "lint failed");
-    await seed("ENG-13", "ses_other", "unit", "hidden failure");
-    const provider = createLiveStatusProvider(sqliteDb(db), {
+    await seedCheck("ENG-11", "ses_11", "unit", "unit failed");
+    await seedCheck("ENG-12", "ses_11", "lint", "lint failed");
+    await seedCheck("ENG-13", "ses_other", "unit", "hidden failure");
+    const provider = createLiveStatusProvider(db, {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_11"],
     });
@@ -1602,7 +1624,7 @@ describe("live status provider", () => {
 
     const get = (path: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${path}/log`), {
-        store: sqliteDb(db),
+        store: db,
         sessionIds: ["ses_11"],
       });
     const mine = (await get("ENG-11/attempts/1/checks/unit"))!;
@@ -1622,7 +1644,7 @@ describe("live status provider", () => {
   });
 
   test("a review keeps its measured duration and tokens when a later evaluation reads it again", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const item = await insertQueuedItem(db, {
       id: "ENG-7",
@@ -1630,8 +1652,8 @@ describe("live status provider", () => {
       sessionKey: "ses_7",
       now,
     });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, now);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: "d".repeat(40),
       wipCommit: "c".repeat(40),
@@ -1645,7 +1667,7 @@ describe("live status provider", () => {
     };
     const review = async (state: CloseoutStepWrite["state"], at: number, extra = {}) =>
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         {
@@ -1673,9 +1695,9 @@ describe("live status provider", () => {
     await review("running", now);
     await review("passed", now + 200_000, { durationMs: 180_000, tokens: 52_000 });
     await review("passed", now + 900_000);
-    await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now + 900_000);
+    await finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
     const check = (
-      await createLiveStatusProvider(sqliteDb(db), {
+      await createLiveStatusProvider(db, {
         now: () => new Date(now + 900_000),
       }).issue("ENG-7")
     )?.verdicts[0]?.checks[0];
@@ -1683,7 +1705,7 @@ describe("live status provider", () => {
     expect(check?.tokens).toBe(52_000);
     await review("running", now + 950_000);
     const rerun = (
-      await createLiveStatusProvider(sqliteDb(db), {
+      await createLiveStatusProvider(db, {
         now: () => new Date(now + 960_000),
       }).issue("ENG-7")
     )?.verdicts[0]?.checks[0];
@@ -1692,7 +1714,7 @@ describe("live status provider", () => {
   });
 
   test("a re-check of a rebased head starts a new round of Closeout attempts", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const item = await insertQueuedItem(db, {
@@ -1701,8 +1723,8 @@ describe("live status provider", () => {
       sessionKey: "ses_6",
       now,
     });
-    await beginImplementRun(sqliteDb(db), item.id, now);
-    await enterMergeQueue(sqliteDb(db), item.id, {
+    await beginImplementRun(db, item.id, now);
+    await enterMergeQueue(db, item.id, {
       phase: "merge_queue",
       baseSha: base,
       wipCommit: "b".repeat(40),
@@ -1716,7 +1738,7 @@ describe("live status provider", () => {
         policyPath: ".agents/closeout.yaml",
       };
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         {
@@ -1741,7 +1763,7 @@ describe("live status provider", () => {
         at,
       );
       await finishCloseoutProgress(
-        sqliteDb(db),
+        db,
         item.id,
         identity,
         state === "passed" ? "accepted" : "rejected",
@@ -1750,14 +1772,14 @@ describe("live status provider", () => {
     };
     await attempt("a".repeat(40), now, "failed");
     await attempt("b".repeat(40), now + 1, "passed");
-    await startCloseoutRound(sqliteDb(db), {
+    await startCloseoutRound(db, {
       itemId: item.id,
       head: "c".repeat(40),
       retryBaseline: ["a", "b"],
       startedAt: now + 2,
     });
     await attempt("c".repeat(40), now + 3, "passed");
-    const detail = await createLiveStatusProvider(sqliteDb(db), {
+    const detail = await createLiveStatusProvider(db, {
       now: () => new Date(now + 4),
     }).issue("ENG-6");
     const attempts = detail?.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
@@ -1771,10 +1793,10 @@ describe("live status provider", () => {
   });
 
   test("CI rounds carry every check on the head and the failing checks' log tails", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const item = await insertQueuedItem(db, { id: "ENG-7", title: "CI", sessionKey: "ses_7", now });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
+    const { run } = await beginImplementRun(db, item.id, now);
     const check = (
       name: string,
       state: "passed" | "failed" | "running" | "skipped",
@@ -1788,7 +1810,7 @@ describe("live status provider", () => {
       logTail,
       logSource: logTail === null ? null : ("actions" as const),
     });
-    await recordCiRound(sqliteDb(db), {
+    await recordCiRound(db, {
       itemId: item.id,
       head: "a".repeat(40),
       runId: run.id,
@@ -1802,7 +1824,7 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 1,
     });
-    await recordCiRound(sqliteDb(db), {
+    await recordCiRound(db, {
       itemId: item.id,
       head: "b".repeat(40),
       runId: run.id,
@@ -1816,7 +1838,7 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 2,
     });
-    const detail = await createLiveStatusProvider(sqliteDb(db), {
+    const detail = await createLiveStatusProvider(db, {
       now: () => new Date(now + 3),
     }).issue("ENG-7");
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
@@ -1843,9 +1865,7 @@ describe("live status provider", () => {
       logTail: "1 fail\ntoken [redacted]",
     });
     expect(rounds[1]?.checks.map((entry) => entry.state)).toEqual(["passed", "failed", "skipped"]);
-    expect(
-      await createLiveStatusProvider(sqliteDb(db), { sessionIds: ["other"] }).issue("ENG-7"),
-    ).toBeNull();
+    expect(await createLiveStatusProvider(db, { sessionIds: ["other"] }).issue("ENG-7")).toBeNull();
   });
 
   test.each([
@@ -1858,13 +1878,13 @@ describe("live status provider", () => {
   ] as const)(
     "blocker %s in %s mode with merge SHA %s is named: %s",
     async (state, mode, mergeSha, named) => {
-      const db = database();
+      const db = await database();
       const blocker = await insertQueuedItem(db, { id: "PAS-709", now: 10 });
       const blocked = await insertQueuedItem(db, { id: "PAS-710", now: 20 });
-      db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
-      await saveTaskMode(sqliteDb(db), blocker.id, mode);
+      await updateItem(db, blocker.id, { state });
+      await saveTaskMode(db, blocker.id, mode);
       if (mergeSha)
-        await recordConfirmedRemoteMerge(sqliteDb(db), {
+        await recordConfirmedRemoteMerge(db, {
           itemId: blocker.id,
           repositoryOwner: "pmdroid",
           repositoryName: "paws-app",
@@ -1874,7 +1894,7 @@ describe("live status provider", () => {
           confirmedAt: 30,
         });
       await saveTaskBlocks(
-        sqliteDb(db),
+        db,
         [blocked.linearIssueId],
         [
           {
@@ -1883,7 +1903,7 @@ describe("live status provider", () => {
           },
         ],
       );
-      const list = await createLiveStatusProvider(sqliteDb(db)).issues();
+      const list = await createLiveStatusProvider(db).issues();
       const item = list.issues.find((entry) => entry.id === "PAS-710")!;
       expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
       expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
@@ -1891,20 +1911,18 @@ describe("live status provider", () => {
   );
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", async () => {
-    const db = database();
+    const db = await database();
     const older = await insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
     const newer = await insertQueuedItem(db, { id: "newer", title: "New", now: 20 });
     const blocked = await insertQueuedItem(db, { id: "blocked", title: "Blocked", now: 30 });
-    db.run("UPDATE work_item SET state = 'completed', linear_identifier = 'ENG-OLD' WHERE id = ?", [
-      older.id,
-    ]);
-    db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = 'ENG-NEW' WHERE id = ?", [
-      older.linearIssueId,
-      newer.id,
-    ]);
-    db.run("UPDATE work_item SET linear_identifier = 'ENG-BLOCK' WHERE id = ?", [blocked.id]);
+    await updateItem(db, older.id, { state: "completed", linearIdentifier: "ENG-OLD" });
+    await updateItem(db, newer.id, {
+      linearIssueId: older.linearIssueId,
+      linearIdentifier: "ENG-NEW",
+    });
+    await updateItem(db, blocked.id, { linearIdentifier: "ENG-BLOCK" });
     await saveTaskBlocks(
-      sqliteDb(db),
+      db,
       [blocked.linearIssueId],
       [
         {
@@ -1917,17 +1935,17 @@ describe("live status provider", () => {
         },
       ],
     );
-    const list = await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(30) }).issues();
+    const list = await createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
     expect(list.issues.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
     expect(list.issues.some((item) => item.id === "ENG-OLD")).toBe(true);
     expect(statusIntegrity(listRecords(list))).toEqual([]);
   });
 
   test("the serving database is the single source despite retired overrides", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
     const live = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const liveBody = (await live?.json()) as { source: string; issues: Array<{ id: string }> };
@@ -1936,46 +1954,59 @@ describe("live status provider", () => {
 
     const query = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues?engine=demo"),
-      { store: sqliteDb(db), env: {} },
+      { store: db, env: {} },
     );
     const queryBody = (await query?.json()) as { source: string; issues: Array<{ id: string }> };
     expect(queryBody.source).toBe("live");
     expect(queryBody.issues.map((item) => item.id)).toEqual(["ENG-9"]);
 
     const flagged = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: { PAWS_STATUS_DEMO: "1" },
     });
     const flaggedBody = (await flagged?.json()) as { source: string };
     expect(flaggedBody.source).toBe("live");
   });
   test("intake queue and Linear budget come from the inbox and the ledger, scoped to the session", async () => {
-    const db = database();
-    const event = (key: string, session: string, received: number, payload: object, extra = "") =>
-      db.run(
-        `INSERT INTO inbox_event (dedupe_key, source, action, session_id, issue_id, signal, updated_at_ms, payload, received_at${extra ? ", attempts, next_attempt_at, last_error" : ""}) VALUES (?, 'webhook', 'created', ?, ?, NULL, 1, ?, ?${extra})`,
-        [key, session, `issue-${key}`, JSON.stringify(payload), received],
-      );
-    event(
-      "a",
-      "s1",
-      1_000,
-      { agentSession: { issue: { identifier: "ENG-1", title: "First" } } },
-      ", 2, 90000, 'Linear GraphQL: RATELIMITED'",
-    );
-    event("b", "s2", 2_000, { kind: "session" });
-    db.run(
-      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at, handled) VALUES ('done', 'webhook', 'created', 's1', 1, '{}', 500, 1)",
-    );
-    db.run(
-      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, signal, updated_at_ms, payload, received_at) VALUES ('stop', 'webhook', 'prompted', 's1', 'stop', 1, '{}', 600)",
-    );
+    const db = await database();
+    await inboxEvent(db, {
+      dedupeKey: "a",
+      sessionId: "s1",
+      issueId: "issue-a",
+      payload: { agentSession: { issue: { identifier: "ENG-1", title: "First" } } },
+      receivedAt: 1_000,
+      attempts: 2,
+      nextAttemptAt: 90_000,
+      lastError: "Linear GraphQL: RATELIMITED",
+    });
+    await inboxEvent(db, {
+      dedupeKey: "b",
+      sessionId: "s2",
+      issueId: "issue-b",
+      payload: { kind: "session" },
+      receivedAt: 2_000,
+    });
+    await inboxEvent(db, {
+      dedupeKey: "done",
+      sessionId: "s1",
+      payload: {},
+      receivedAt: 500,
+      handled: 1,
+    });
+    await inboxEvent(db, {
+      dedupeKey: "stop",
+      action: "prompted",
+      sessionId: "s1",
+      signal: "stop",
+      payload: {},
+      receivedAt: 600,
+    });
     const usage = async () => ({
       budget: { requestsRemaining: 0, requestsLimit: 1500, requestsResetMs: 3_600_000 },
       holdUntilMs: 300_000,
     });
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
       linearUsage: usage,
     });
@@ -2006,19 +2037,23 @@ describe("live status provider", () => {
       resetAt: new Date(3_600_000).toISOString(),
       holdUntil: new Date(300_000).toISOString(),
     });
-    const scoped = await createLiveStatusProvider(sqliteDb(db), { sessionIds: ["s2"] }).overview();
+    const scoped = await createLiveStatusProvider(db, { sessionIds: ["s2"] }).overview();
     expect(scoped.intake.map((entry) => entry.issue)).toEqual(["issue-b"]);
     expect(scoped.linearBudget).toBeNull();
   });
 
   test("the Intake section carries the warning when Linear may have disabled the webhook", async () => {
-    const db = database();
+    const db = await database();
     const overview = async (atMs: number) =>
-      await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(atMs) }).overview();
+      await createLiveStatusProvider(db, { now: () => new Date(atMs) }).overview();
     expect((await overview(10_000)).linearWebhook).toBeNull();
-    db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.syncCursor).values({ name: "linear:webhook", cursorMs: 1000 }),
+    );
     expect((await overview(10_000)).linearWebhook).toBeNull();
-    db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 5000)");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.syncCursor).values({ name: "linear:webhook-missed", cursorMs: 5000 }),
+    );
     expect((await overview(10_000)).linearWebhook).toEqual({
       warning:
         "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
