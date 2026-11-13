@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { and, eq, like, sql } from "drizzle-orm";
 import { candidateRef, mirrorPath, type AskTeamContext } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
@@ -16,11 +17,8 @@ import {
   getWorkItem,
   insertQueuedItem,
   saveCheckpoint,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -30,6 +28,8 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 type Setup = Awaited<ReturnType<typeof setup>>;
@@ -48,17 +48,16 @@ const gitEnv = (home: string) => ({
 async function setup() {
   const root = mkdtempSync(join(tmpdir(), "paws-handover-"));
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = () => Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now());
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now());
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",
@@ -66,14 +65,16 @@ async function setup() {
     tokenHash: workspaceTokenHash(bootstrap),
     now: now(),
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "fixture-team",
-  ]);
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workspaceRepository).values({
+      workspaceId: workspace.id,
+      repository: "fixture/repository",
+      teamId: "fixture-team",
+    }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -94,24 +95,54 @@ async function setup() {
       token: (await control.createEnrollment(principal, pending)).token,
     })
   ).runnerId;
-  db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.runner)
+      .set({ status: "active", ownerUserId: userId })
+      .where(eq(q.t.runner.id, runnerId)),
+  );
   const release = (version: string) =>
-    db.run(
-      `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)
-       ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
-      [runnerId, version, now()],
+    seed(db, (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId, runnerVersion: version, reportedAt: now() })
+        .onConflictDoUpdate({
+          target: q.t.runnerHostStatus.runnerId,
+          set: { runnerVersion: version },
+        }),
     );
-  release("0.1.44");
+  const commands = (runId: string, kind: string) =>
+    db.run((q) =>
+      q.all(
+        q.orm
+          .select({ id: q.t.runnerCommand.id })
+          .from(q.t.runnerCommand)
+          .where(and(eq(q.t.runnerCommand.runId, runId), eq(q.t.runnerCommand.kind, kind))),
+      ),
+    );
+  const runnerWork = async (runId: string) =>
+    (await db.run((q) =>
+      q.one(
+        q.orm
+          .select({
+            generation: q.t.runnerWork.generation,
+            lastSequence: q.t.runnerWork.lastSequence,
+          })
+          .from(q.t.runnerWork)
+          .where(eq(q.t.runnerWork.runId, runId)),
+      ),
+    ))!;
+  await release("0.1.44");
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now,
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work, now });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now });
+  const results = createRunnerResults({ store: db, work, now });
+  const health = createRunnerHealth({ store: db, work, now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -138,7 +169,7 @@ async function setup() {
   /** The item's head on the Paws side: its candidate ref in the mirror. */
   const head = (id: string) => `${candidateRef(`display-${id}`)}`;
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
@@ -189,14 +220,16 @@ async function setup() {
   async function item() {
     git(["-C", runner, "reset", "-q", "--hard", base]);
     git(["-C", runner, "clean", "-qfd"]);
-    db.run("UPDATE run SET status='ended' WHERE status='active'");
+    await seed(db, (q) =>
+      q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.status, "active")),
+    );
     await work.heartbeat(runnerId);
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
     const record = await insertQueuedItem(db, { id, now: now(), sessionKey });
-    const { run } = await beginImplementRun(sqliteDb(db), id, now());
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, id, now());
+    await recordLinearInstallation(db, {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -204,11 +237,13 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now(),
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+    await bindLinearSessionTask(db, sessionKey, record.delegationId, {
       actorId: "owner",
     });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+    );
+    await bindWorkItemRepository(db, id, {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
@@ -265,11 +300,7 @@ async function setup() {
   }
   async function events(command: RunCommand, list: RunnerEvent[]) {
     const token = await grant(command);
-    const after = db
-      .query<{ sequence: number }, [string]>(
-        "SELECT last_sequence AS sequence FROM runner_work WHERE run_id=?",
-      )
-      .get(command.runId)!.sequence;
+    const after = (await runnerWork(command.runId)).lastSequence;
     for (const [index, event] of list.entries())
       await work.event({
         runnerId,
@@ -362,9 +393,11 @@ async function setup() {
     handOver,
     next,
     release,
+    commands,
+    runnerWork,
     work,
-    cleanup() {
-      db.close();
+    async cleanup() {
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -374,7 +407,7 @@ let context: Setup;
 beforeAll(async () => {
   context = await setup();
 });
-afterAll(() => context.cleanup());
+afterAll(async () => await context.cleanup());
 
 test("a fake runner handover leaves its WIP commit on the Paws side as the checkpoint, with its session", async () => {
   const { git, paws, runner } = context;
@@ -405,15 +438,13 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   expect(git(["--git-dir", paws, "rev-parse", `${ref}^{tree}`])).toBe(
     git(["-C", runner, "rev-parse", "HEAD^{tree}"]),
   );
-  expect((await getWorkItem(sqliteDb(context.db), record.id))?.checkpoint).toMatchObject({
+  expect((await getWorkItem(context.db, record.id))?.checkpoint).toMatchObject({
     phase: "running",
     baseSha: context.base,
     wipCommit: wip,
   });
   // The session another runner restores is the one sealed with the WIP commit and the turn.
-  const generation = context.db
-    .query<{ generation: number }, [string]>("SELECT generation FROM runner_work WHERE run_id=?")
-    .get(record.runId)!.generation;
+  const { generation } = await context.runnerWork(record.runId);
   expect(await context.sessions.snapshot(record.runId, generation)).toMatchObject({
     status: "sealed",
     sessionId: "claude-session",
@@ -547,27 +578,23 @@ test("an item with no running session has nothing to hand over", async () => {
 
 test("a runner release that cannot hand over is never sent the command", async () => {
   const record = await context.item();
-  context.release("0.1.43");
+  await context.release("0.1.43");
   try {
     const { result } = await context.turn(record, async (command) => {
       expect(await context.backend.handOverItem(record.id)).toEqual({ status: "old_runner" });
-      expect(
-        context.db
-          .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='handover'")
-          .get(command.runId),
-      ).toBeNull();
+      expect(await context.commands(command.runId, "handover")).toEqual([]);
       await context.submit(command, { candidateSha: context.base });
     });
     expect(result.stopReason).toBe("end_turn");
   } finally {
-    context.release("0.1.44");
+    await context.release("0.1.44");
   }
 });
 
 test("a run stopped for the time cap saves its runner's work first, and the restarted turn starts from it", async () => {
   const { db, git, paws, runner } = context;
   const record = await context.item();
-  context.release("0.1.46");
+  await context.release("0.1.46");
   try {
     const stop = new AbortController();
     let interval = "";
@@ -582,7 +609,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
         interval = git(["-C", runner, "rev-parse", "HEAD"]);
         // An interval checkpoint becomes the item's checkpoint while the turn runs.
         await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
-        while ((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit !== interval)
+        while ((await getWorkItem(db, record.id))?.checkpoint?.wipCommit !== interval)
           await delay(1);
         writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
         git(["-C", runner, "add", "-A"]);
@@ -601,14 +628,20 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           "Save work in progress so far",
         ]);
         // The time cap asks in Linear, and Paws stops the agent.
-        db.run("UPDATE work_item SET awake_ms=max_awake_ms, implement_ms=max_awake_ms WHERE id=?", [
-          record.id,
-        ]);
-        expect(await accrueAwake(sqliteDb(db), record.id, 0, Date.now())).toMatchObject({
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.workItem)
+            .set({
+              awakeMs: sql`${q.t.workItem.maxAwakeMs}`,
+              implementMs: sql`${q.t.workItem.maxAwakeMs}`,
+            })
+            .where(eq(q.t.workItem.id, record.id)),
+        );
+        expect(await accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
           asked: true,
           stopAgent: true,
         });
-        await applyWorkItemEvent(sqliteDb(db), record.id, "blocking_question");
+        await applyWorkItemEvent(db, record.id, "blocking_question");
         stop.abort();
         expect(await context.next()).toMatchObject({
           type: "checkpoint",
@@ -624,14 +657,21 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       true,
     );
     expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-    expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(snapshot);
-    const thoughts = db
-      .query<{ payload: string }, [string]>(
-        "SELECT payload FROM outbox WHERE target='linear' AND idempotency_key LIKE ?",
-      )
-      .all(`checkpoint-saved:${record.runId}:%`)
-      .map((row) => JSON.parse(row.payload) as { kind: string; body: string });
-    expect(thoughts).toEqual([
+    expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(snapshot);
+    const thoughts = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ payload: q.t.outbox.payload })
+          .from(q.t.outbox)
+          .where(
+            and(
+              eq(q.t.outbox.target, "linear"),
+              like(q.t.outbox.idempotencyKey, `checkpoint-saved:${record.runId}:%`),
+            ),
+          ),
+      ),
+    );
+    expect(thoughts.map((row) => row.payload)).toEqual([
       expect.objectContaining({
         kind: "thought",
         body: `Saved the work so far at ${snapshot.slice(0, 7)} before stopping.`,
@@ -639,8 +679,15 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
     ]);
 
     // The auto-retry restarts the item; its turn starts from the saved work.
-    db.run("UPDATE work_item SET state='running',cancel_requested=0 WHERE id=?", [record.id]);
-    db.run("UPDATE run SET status='active' WHERE id=?", [record.runId]);
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ state: "running", cancelRequested: 0 })
+          .where(eq(q.t.workItem.id, record.id)),
+      (q) => q.orm.update(q.t.run).set({ status: "active" }).where(eq(q.t.run.id, record.runId)),
+    );
     const restarted = await context.turn(record, async (command) => {
       expect(command.repository.baseSha).toBe(snapshot);
       await context.submit(command, { candidateSha: snapshot });
@@ -657,7 +704,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort(),
     ).toEqual(["contract.ts", "findings.tsx", "notes.txt", "result.txt"]);
   } finally {
-    context.release("0.1.44");
+    await context.release("0.1.44");
   }
 });
 
@@ -675,11 +722,7 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
     true,
   );
   expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-  expect(
-    context.db
-      .query("SELECT 1 FROM runner_command WHERE kind='checkpoint' AND run_id=?")
-      .get(record.runId),
-  ).toBeNull();
+  expect(await context.commands(record.runId, "checkpoint")).toEqual([]);
 });
 
 test("a restarted turn whose saved work cannot be fetched fails instead of starting from an older head", async () => {
@@ -687,7 +730,7 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
   const record = await context.item();
   // A checkpoint the runner published that Paws no longer can fetch.
   const lost = "f".repeat(40);
-  await saveCheckpoint(sqliteDb(db), record.id, {
+  await saveCheckpoint(db, record.id, {
     phase: "running",
     baseSha: context.base,
     wipCommit: lost,
@@ -703,16 +746,13 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
     networkGit: async () => "",
   });
   await expect(running).rejects.toThrow(`could not restore the saved work at ${lost.slice(0, 7)}`);
-  expect(
-    db.query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='run'").get(record.runId),
-  ).toBeNull();
-  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(lost);
+  expect(await context.commands(record.runId, "run")).toEqual([]);
+  expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(lost);
 });
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {
-  const { db } = context;
   const record = await context.item();
-  context.release("0.1.46");
+  await context.release("0.1.46");
   try {
     const stop = new AbortController();
     const { result } = await context.turn(
@@ -730,12 +770,8 @@ test("a stop while a handover is under way is cancelled at once, leaving the che
       true,
     );
     expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-    expect(
-      db
-        .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='checkpoint'")
-        .get(record.runId),
-    ).toBeNull();
+    expect(await context.commands(record.runId, "checkpoint")).toEqual([]);
   } finally {
-    context.release("0.1.44");
+    await context.release("0.1.44");
   }
 });
