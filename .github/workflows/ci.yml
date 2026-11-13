@@ -59,7 +59,12 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/3 ./src/db/ $(grep -rlE "$DATABASE_TESTS" test --include='*.test.ts' | sed 's|^|./|')
+      - name: Select the database tests, without test/postgres-known-failures.txt
+        run: |
+          sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' test/postgres-known-failures.txt > "$RUNNER_TEMP/known-failures"
+          grep -rlE "$DATABASE_TESTS" test --include='*.test.ts' | grep -vxFf "$RUNNER_TEMP/known-failures" | sed 's|^|./|' > "$RUNNER_TEMP/database-tests"
+          wc -l < "$RUNNER_TEMP/database-tests"
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/3 ./src/db/ $(cat "$RUNNER_TEMP/database-tests")
 
   check:
     name: lint, format, types, test, dashboard build

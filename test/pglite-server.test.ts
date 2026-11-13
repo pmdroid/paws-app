@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import type { Db } from "../src/db";
-import { pgliteServer, tempStore } from "./pglite";
+import { pgliteServer, rows, tempStore } from "./pglite";
 
 const SERVER = process.env.PAWS_TEST_DATABASE_URL;
 
@@ -17,13 +17,11 @@ async function version(url: string): Promise<string> {
 }
 
 async function storeDatabase(db: Db): Promise<{ name: string; version: string }> {
-  if (db.dialect !== "postgres") throw new Error(`tempStore opened ${db.dialect}`);
-  const result = (await db.orm.execute(
+  const [row] = await rows<{ name: string; version: string }>(
+    db,
     sql`SELECT current_database() AS name, version() AS version`,
-  )) as unknown as
-    | { name: string; version: string }[]
-    | { rows: { name: string; version: string }[] };
-  return (Array.isArray(result) ? result : result.rows)[0]!;
+  );
+  return row!;
 }
 
 test("without PAWS_TEST_DATABASE_URL tempStore is in-memory PGlite", async () => {
