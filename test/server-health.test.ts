@@ -1,20 +1,21 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../src/core";
 import {
-  sqliteDb,
   enqueueJob,
   JOB_PROGRESS_STALE_MS,
-  migrate,
-  openDatabase,
   setJournalSink,
+  type Db,
   type JobLoopLiveness,
+  type Q,
 } from "../src/db";
 import type { LinearUsage } from "../src/linear";
 import { RUNNER_ONLINE_MS } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { startServer, type HealthReport } from "../src/server";
 import { startDashboardFixture } from "./dashboard-fixture";
+import { seed, withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 10 * 60 * 60_000;
 const HOUR = 60 * 60_000;
@@ -39,32 +40,76 @@ const USAGE: LinearUsage = {
 };
 const PRIVATE = ["PRIVATE-42", "private-caller", "privateEndpoint"];
 
-/** Minimal fake persistence with the same health columns as the migrated database. */
-function fakeDatabase() {
-  const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE job(status TEXT, locked_until INTEGER);
-    CREATE TABLE outbox(status TEXT);
-    CREATE TABLE runner(status TEXT, revoked_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE sync_cursor(name TEXT, cursor_ms INTEGER);
-    CREATE TABLE github_delivery(received_at INTEGER);
-  `);
-  db.run("INSERT INTO job VALUES('running', ?), ('done', 0), ('cancelled', 0)", [NOW + 1]);
-  db.run("INSERT INTO outbox VALUES('pending'), ('sent'), ('dropped')");
-  db.run("INSERT INTO runner VALUES('active', NULL, ?), ('paused', NULL, 0), ('revoked', 1, 0)", [
-    NOW,
-  ]);
-  db.run("INSERT INTO sync_cursor VALUES('linear:webhook', ?)", [NOW]);
-  db.run("INSERT INTO github_delivery VALUES(?)", [NOW]);
+const stores: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const store of stores.splice(0)) await store.close();
+});
+
+/** A migrated, empty store, closed after the test. */
+async function emptyStore(): Promise<Db> {
+  const store = await tempStore();
+  stores.push(store);
+  return store.db;
+}
+
+let keys = 0;
+const job = (status: string, lockedUntil: number | null) => (q: Q) =>
+  q.orm.insert(q.t.job).values({ queue: "health", status, lockedUntil, runAt: 0, createdAt: 0 });
+const outbox = (status: string) => (q: Q) =>
+  q.orm.insert(q.t.outbox).values({
+    target: "linear",
+    op: "health",
+    idempotencyKey: `health-${++keys}`,
+    payload: {},
+    status,
+    createdAt: 0,
+  });
+const runner = (status: string, lastSeenAt: number | null, revokedAt: number | null = null) =>
+  function insert(q: Q) {
+    const id = `runner-${++keys}`;
+    return q.orm.insert(q.t.runner).values({
+      id,
+      workspaceId: "workspace",
+      ownerUserId: "owner",
+      name: id,
+      status,
+      lastSeenAt,
+      revokedAt,
+      createdAt: 0,
+    });
+  };
+
+/** A migrated store with healthy rows in every table the health checks read. */
+async function healthyStore(): Promise<Db> {
+  const db = await emptyStore();
+  // Runners are seeded without their workspace and member parents.
+  await withoutForeignKeys(db);
+  await seed(
+    db,
+    job("running", NOW + 1),
+    job("done", 0),
+    job("cancelled", 0),
+    outbox("pending"),
+    outbox("sent"),
+    outbox("dropped"),
+    runner("active", NOW),
+    runner("paused", 0),
+    runner("revoked", 0, 1),
+    (q) => q.orm.insert(q.t.syncCursor).values({ name: "linear:webhook", cursorMs: NOW }),
+    (q) =>
+      q.orm
+        .insert(q.t.githubDelivery)
+        .values({ deliveryId: "delivery", event: "push", payload: "{}", receivedAt: NOW }),
+  );
   return db;
 }
 
 async function probe(
-  db: Database,
+  db: Db,
   options: { webhooks?: boolean; now?: number; disk?: Record<string, number> } = {},
 ) {
   const server = startServer({
-    db,
+    store: db,
     port: 0,
     hostname: "127.0.0.1",
     webhooks: options.webhooks ?? true,
@@ -101,11 +146,11 @@ describe("server health", () => {
   ])(
     "anonymous health answers %i without Linear usage while workspace access starts",
     async (status, failed) => {
-      const db = fakeDatabase();
-      if (failed) db.run("INSERT INTO job VALUES('dead', ?)", [NOW]);
+      const db = await healthyStore();
+      if (failed) await seed(db, job("dead", NOW));
       let calls = 0;
       const server = startServer({
-        db,
+        store: db,
         port: 0,
         hostname: "127.0.0.1",
         webhooks: false,
@@ -137,7 +182,6 @@ describe("server health", () => {
         expect((await fetch(`${base}/api/issues`)).status).toBe(503);
       } finally {
         await server.stop(true);
-        db.close();
       }
     },
   );
@@ -169,126 +213,138 @@ describe("server health", () => {
   });
 
   test("reports every check, without caching a healthy result", async () => {
-    const db = fakeDatabase();
-    try {
-      const { status, body, headers } = await probe(db);
-      expect(status).toBe(200);
-      expect(headers.get("cache-control")).toBe("no-store");
-      expect(body).toMatchObject({ ok: true, service: "paws", failedChecks: [] });
-      expect(Object.keys(body.checks)).toEqual([
-        "database",
-        "jobLeases",
-        "jobProgress",
-        "deadJobs",
-        "deadOutbox",
-        "runnerHeartbeats",
-        "linearWebhook",
-        "githubWebhook",
-        "diskSpace",
-      ]);
-      expect(body.checks.jobProgress).toEqual({ status: "skipped", reason: "not_observed" });
-      expect(body.checks.diskSpace).toEqual({ status: "skipped", reason: "not_configured" });
-      for (const [name, check] of Object.entries(body.checks)) {
-        if (name === "jobProgress" || name === "diskSpace") continue;
-        expect(check).toMatchObject({ status: "ok" });
-      }
-    } finally {
-      db.close();
+    const db = await healthyStore();
+    const { status, body, headers } = await probe(db);
+    expect(status).toBe(200);
+    expect(headers.get("cache-control")).toBe("no-store");
+    expect(body).toMatchObject({ ok: true, service: "paws", failedChecks: [] });
+    expect(Object.keys(body.checks)).toEqual([
+      "database",
+      "jobLeases",
+      "jobProgress",
+      "deadJobs",
+      "deadOutbox",
+      "runnerHeartbeats",
+      "linearWebhook",
+      "githubWebhook",
+      "diskSpace",
+    ]);
+    expect(body.checks.jobProgress).toEqual({ status: "skipped", reason: "not_observed" });
+    expect(body.checks.diskSpace).toEqual({ status: "skipped", reason: "not_configured" });
+    for (const [name, check] of Object.entries(body.checks)) {
+      if (name === "jobProgress" || name === "diskSpace") continue;
+      expect(check).toMatchObject({ status: "ok" });
     }
   });
 
-  test.each([
-    ["jobLeases", "UPDATE job SET locked_until=? WHERE status='running'", NOW],
-    ["jobLeases", "UPDATE job SET locked_until=NULL WHERE status='running'", null],
-    ["deadJobs", "INSERT INTO job VALUES('dead', ?)", NOW],
-    ["deadOutbox", "INSERT INTO outbox VALUES(?)", "dead"],
+  test.each<[string, string, (q: Q) => PromiseLike<unknown>]>([
+    [
+      "jobLeases",
+      "lease expired",
+      (q) => q.orm.update(q.t.job).set({ lockedUntil: NOW }).where(eq(q.t.job.status, "running")),
+    ],
+    [
+      "jobLeases",
+      "no lease",
+      (q) => q.orm.update(q.t.job).set({ lockedUntil: null }).where(eq(q.t.job.status, "running")),
+    ],
+    ["deadJobs", "dead job", job("dead", NOW)],
+    ["deadOutbox", "dead outbox row", outbox("dead")],
     [
       "runnerHeartbeats",
-      "UPDATE runner SET last_seen_at=? WHERE status='active'",
-      NOW - RUNNER_MAX_AGE,
+      "stale heartbeat",
+      (q) =>
+        q.orm
+          .update(q.t.runner)
+          .set({ lastSeenAt: NOW - RUNNER_MAX_AGE })
+          .where(eq(q.t.runner.status, "active")),
     ],
-    ["runnerHeartbeats", "UPDATE runner SET last_seen_at=NULL WHERE status=?", "active"],
-    ["linearWebhook", "UPDATE sync_cursor SET cursor_ms=?", NOW - HOUR - 1],
-    ["githubWebhook", "UPDATE github_delivery SET received_at=?", NOW - HOUR - 1],
-    ["linearWebhook", "DELETE FROM sync_cursor WHERE name=?", "linear:webhook"],
-    ["githubWebhook", "DELETE FROM github_delivery WHERE received_at=?", NOW],
-  ])("returns 503 for %s (%s)", async (name, sql, value) => {
-    const db = fakeDatabase();
-    try {
-      if (value === null) db.run(sql);
-      else db.run(sql, [value]);
-      const { status, body } = await probe(db);
-      expect(status).toBe(503);
-      expect(body.ok).toBe(false);
-      expect(body.failedChecks).toEqual([name]);
-      expect(body.checks[name]!.status).toBe("failed");
-    } finally {
-      db.close();
-    }
+    [
+      "runnerHeartbeats",
+      "no heartbeat",
+      (q) =>
+        q.orm.update(q.t.runner).set({ lastSeenAt: null }).where(eq(q.t.runner.status, "active")),
+    ],
+    [
+      "linearWebhook",
+      "old delivery",
+      (q) => q.orm.update(q.t.syncCursor).set({ cursorMs: NOW - HOUR - 1 }),
+    ],
+    [
+      "githubWebhook",
+      "old delivery",
+      (q) => q.orm.update(q.t.githubDelivery).set({ receivedAt: NOW - HOUR - 1 }),
+    ],
+    [
+      "linearWebhook",
+      "never received",
+      (q) => q.orm.delete(q.t.syncCursor).where(eq(q.t.syncCursor.name, "linear:webhook")),
+    ],
+    ["githubWebhook", "never received", (q) => q.orm.delete(q.t.githubDelivery)],
+  ])("returns 503 for %s (%s)", async (name, _label, change) => {
+    const db = await healthyStore();
+    await seed(db, change);
+    const { status, body } = await probe(db);
+    expect(status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect(body.failedChecks).toEqual([name]);
+    expect(body.checks[name]!.status).toBe("failed");
   });
 
   test.each(["/tmp", "/home/paws/.paws"])(
     "diskSpace fails below 5 GB free on a 100 GB disk at %s and passes above it",
     async (low) => {
-      const db = fakeDatabase();
-      try {
-        const free = { "/tmp": 6 * GB, "/home/paws/.paws": 6 * GB };
-        const healthy = await probe(db, { disk: free });
-        expect(healthy.status).toBe(200);
-        expect(healthy.body.checks.diskSpace).toEqual({
-          status: "ok",
-          paths: {
-            tmpdir: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
-            pawsHome: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
-          },
-        });
-        const full = await probe(db, { disk: { ...free, [low]: 5 * GB - 1 } });
-        expect(full.status).toBe(503);
-        expect(full.body.failedChecks).toEqual(["diskSpace"]);
-        expect(JSON.stringify(full.body)).not.toContain(low);
-      } finally {
-        db.close();
-      }
+      const db = await healthyStore();
+      const free = { "/tmp": 6 * GB, "/home/paws/.paws": 6 * GB };
+      const healthy = await probe(db, { disk: free });
+      expect(healthy.status).toBe(200);
+      expect(healthy.body.checks.diskSpace).toEqual({
+        status: "ok",
+        paths: {
+          tmpdir: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
+          pawsHome: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
+        },
+      });
+      const full = await probe(db, { disk: { ...free, [low]: 5 * GB - 1 } });
+      expect(full.status).toBe(503);
+      expect(full.body.failedChecks).toEqual(["diskSpace"]);
+      expect(JSON.stringify(full.body)).not.toContain(low);
     },
   );
 
   test("diskSpace keeps a 1 GB floor on a small disk", async () => {
-    const db = fakeDatabase();
-    try {
-      const small = (free: number) => ({
-        paths: { tmpdir: "/tmp" },
-        statfs: () => ({ bavail: free, blocks: 4 * GB, bsize: 1 }),
+    const db = await healthyStore();
+    const small = (free: number) => ({
+      paths: { tmpdir: "/tmp" },
+      statfs: () => ({ bavail: free, blocks: 4 * GB, bsize: 1 }),
+    });
+    const probeSmall = async (free: number) => {
+      const server = startServer({
+        store: db,
+        port: 0,
+        hostname: "127.0.0.1",
+        webhooks: false,
+        healthNow: () => NOW,
+        healthDisk: small(free),
       });
-      const probeSmall = async (free: number) => {
-        const server = startServer({
-          db,
-          port: 0,
-          hostname: "127.0.0.1",
-          webhooks: false,
-          healthNow: () => NOW,
-          healthDisk: small(free),
-        });
-        try {
-          const response = await fetch(`http://127.0.0.1:${server.port}/health`);
-          return ((await response.json()) as HealthReport).checks.diskSpace;
-        } finally {
-          await server.stop(true);
-        }
-      };
-      expect(await probeSmall(GB - 1)).toMatchObject({ status: "failed" });
-      expect(await probeSmall(GB)).toEqual({
-        status: "ok",
-        paths: { tmpdir: { freeBytes: GB, minFreeBytes: GB } },
-      });
-    } finally {
-      db.close();
-    }
+      try {
+        const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+        return ((await response.json()) as HealthReport).checks.diskSpace;
+      } finally {
+        await server.stop(true);
+      }
+    };
+    expect(await probeSmall(GB - 1)).toMatchObject({ status: "failed" });
+    expect(await probeSmall(GB)).toEqual({
+      status: "ok",
+      paths: { tmpdir: { freeBytes: GB, minFreeBytes: GB } },
+    });
   });
 
   test("database read failure returns 503 without exposing the error", async () => {
-    const db = fakeDatabase();
-    db.close();
-    const { status, body } = await probe(db);
+    const store = await tempStore();
+    await store.close();
+    const { status, body } = await probe(store.db);
     expect(status).toBe(503);
     expect(body.failedChecks).toEqual(["database"]);
     expect(body.checks.database).toEqual({ status: "failed", reason: "unavailable" });
@@ -296,49 +352,54 @@ describe("server health", () => {
   });
 
   test("checks use the webhook and heartbeat freshness boundaries", async () => {
-    const db = fakeDatabase();
-    try {
-      db.run("UPDATE runner SET last_seen_at=? WHERE status='active'", [NOW - RUNNER_MAX_AGE + 1]);
-      db.run("UPDATE sync_cursor SET cursor_ms=?", [NOW - HOUR]);
-      db.run("UPDATE github_delivery SET received_at=?", [NOW - HOUR]);
-      const { status, body } = await probe(db);
-      expect(status).toBe(200);
-      expect(body.checks.runnerHeartbeats).toMatchObject({
-        ageMs: RUNNER_MAX_AGE - 1,
-        maxAgeMs: RUNNER_MAX_AGE,
-      });
-      expect(body.checks.linearWebhook).toMatchObject({ ageMs: HOUR, maxAgeMs: HOUR });
-      expect(body.checks.githubWebhook).toMatchObject({ ageMs: HOUR, maxAgeMs: HOUR });
-    } finally {
-      db.close();
-    }
+    const db = await healthyStore();
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.runner)
+          .set({ lastSeenAt: NOW - RUNNER_MAX_AGE + 1 })
+          .where(eq(q.t.runner.status, "active")),
+      (q) => q.orm.update(q.t.syncCursor).set({ cursorMs: NOW - HOUR }),
+      (q) => q.orm.update(q.t.githubDelivery).set({ receivedAt: NOW - HOUR }),
+    );
+    const { status, body } = await probe(db);
+    expect(status).toBe(200);
+    expect(body.checks.runnerHeartbeats).toMatchObject({
+      ageMs: RUNNER_MAX_AGE - 1,
+      maxAgeMs: RUNNER_MAX_AGE,
+    });
+    expect(body.checks.linearWebhook).toMatchObject({ ageMs: HOUR, maxAgeMs: HOUR });
+    expect(body.checks.githubWebhook).toMatchObject({ ageMs: HOUR, maxAgeMs: HOUR });
   });
 
   test("disabled webhooks and no active runners do not prevent readiness", async () => {
-    const db = fakeDatabase();
-    try {
-      db.run("DELETE FROM runner WHERE status='active'");
-      db.run("DELETE FROM sync_cursor");
-      db.run("DELETE FROM github_delivery");
-      const { status, body } = await probe(db, { webhooks: false });
-      expect(status).toBe(200);
-      expect(body.checks.runnerHeartbeats).toEqual({
-        status: "skipped",
-        reason: "no_active_runners",
-      });
-      expect(body.checks.linearWebhook).toEqual({ status: "skipped", reason: "not_configured" });
-      expect(body.checks.githubWebhook).toEqual({ status: "skipped", reason: "not_configured" });
-    } finally {
-      db.close();
-    }
+    const db = await healthyStore();
+    await seed(
+      db,
+      (q) => q.orm.delete(q.t.runner).where(eq(q.t.runner.status, "active")),
+      (q) => q.orm.delete(q.t.syncCursor),
+      (q) => q.orm.delete(q.t.githubDelivery),
+    );
+    const { status, body } = await probe(db, { webhooks: false });
+    expect(status).toBe(200);
+    expect(body.checks.runnerHeartbeats).toEqual({
+      status: "skipped",
+      reason: "no_active_runners",
+    });
+    expect(body.checks.linearWebhook).toEqual({ status: "skipped", reason: "not_configured" });
+    expect(body.checks.githubWebhook).toEqual({ status: "skipped", reason: "not_configured" });
   });
 
   test("only providers with configured secrets require fresh deliveries", async () => {
-    const db = fakeDatabase();
-    db.run("DELETE FROM sync_cursor");
-    db.run("DELETE FROM github_delivery");
-    const server = startServer({
+    const db = await healthyStore();
+    await seed(
       db,
+      (q) => q.orm.delete(q.t.syncCursor),
+      (q) => q.orm.delete(q.t.githubDelivery),
+    );
+    const server = startServer({
+      store: db,
       port: 0,
       hostname: "127.0.0.1",
       webhooks: true,
@@ -353,39 +414,28 @@ describe("server health", () => {
       expect(body.checks.linearWebhook).toEqual({ status: "skipped", reason: "not_configured" });
     } finally {
       await server.stop(true);
-      db.close();
     }
   });
 
   test("a fresh runner does not hide another runner's stale heartbeat", async () => {
-    const db = fakeDatabase();
-    try {
-      db.run("INSERT INTO runner VALUES('active', NULL, ?)", [NOW - RUNNER_MAX_AGE]);
-      const { status, body } = await probe(db);
-      expect(status).toBe(503);
-      expect(body.failedChecks).toEqual(["runnerHeartbeats"]);
-      expect(body.checks.runnerHeartbeats).toMatchObject({ count: 1, ageMs: RUNNER_MAX_AGE });
-    } finally {
-      db.close();
-    }
+    const db = await healthyStore();
+    await seed(db, runner("active", NOW - RUNNER_MAX_AGE));
+    const { status, body } = await probe(db);
+    expect(status).toBe(503);
+    expect(body.failedChecks).toEqual(["runnerHeartbeats"]);
+    expect(body.checks.runnerHeartbeats).toMatchObject({ count: 1, ageMs: RUNNER_MAX_AGE });
   });
 
   test("an empty migrated database is ready when webhooks are off", async () => {
-    const db = openDatabase(":memory:");
-    try {
-      migrate(db);
-      expect((await probe(db, { webhooks: false })).status).toBe(200);
-    } finally {
-      db.close();
-    }
+    expect((await probe(await emptyStore(), { webhooks: false })).status).toBe(200);
   });
 
   test("live probes report all failures and journal changes and recovery", async () => {
-    const db = fakeDatabase();
+    const db = await healthyStore();
     const lines: string[] = [];
     const restore = setJournalSink((line) => lines.push(line));
     const server = startServer({
-      db,
+      store: db,
       port: 0,
       hostname: "127.0.0.1",
       webhooks: false,
@@ -394,8 +444,7 @@ describe("server health", () => {
     const url = `http://127.0.0.1:${server.port}/health`;
     try {
       expect((await fetch(url)).status).toBe(200);
-      db.run("INSERT INTO job VALUES('dead', NULL)");
-      db.run("INSERT INTO outbox VALUES('dead')");
+      await seed(db, job("dead", null), outbox("dead"));
       const response = await fetch(url);
       expect(response.status).toBe(503);
       expect(((await response.json()) as HealthReport).failedChecks).toEqual([
@@ -403,22 +452,25 @@ describe("server health", () => {
         "deadOutbox",
       ]);
       expect((await fetch(url)).status).toBe(503);
-      db.run("DELETE FROM job WHERE status='dead'");
-      db.run("DELETE FROM outbox WHERE status='dead'");
+      await seed(
+        db,
+        (q) => q.orm.delete(q.t.job).where(eq(q.t.job.status, "dead")),
+        (q) => q.orm.delete(q.t.outbox).where(eq(q.t.outbox.status, "dead")),
+      );
       expect((await fetch(url)).status).toBe(200);
       expect(lines).toEqual(["health: failing checks: deadJobs,deadOutbox", "health: healthy"]);
     } finally {
       await server.stop(true);
       restore();
-      db.close();
     }
   });
 
   test("due work with a quiet loop fails health while a busy or recent loop stays up", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = await emptyStore();
     const dueAt = NOW - JOB_PROGRESS_STALE_MS;
-    await enqueueJob(sqliteDb(db), { queue: "work", runAt: dueAt, now: dueAt });
+    await enqueueJob(db, { queue: "work", runAt: dueAt, now: dueAt });
+    const runAt = (at: number) =>
+      seed(db, (q) => q.orm.update(q.t.job).set({ runAt: at }).where(eq(q.t.job.queue, "work")));
     const live = {
       polling: true,
       lastTickAt: NOW,
@@ -427,84 +479,75 @@ describe("server health", () => {
       workerCount: 1,
     };
     const probeLoop = (jobLoop: JobLoopLiveness) => probeWith(db, () => jobLoop);
-    try {
-      const idle = await probeLoop({ ...live, lastTickAt: dueAt, lastClaimAt: null });
-      expect(idle.status).toBe(503);
-      expect(idle.body.failedChecks).toEqual(["jobProgress"]);
-      expect(idle.body.checks.jobProgress).toMatchObject({
-        status: "failed",
-        reason: "loop_idle",
-        count: 1,
-        ageMs: JOB_PROGRESS_STALE_MS,
-        maxAgeMs: JOB_PROGRESS_STALE_MS,
-      });
+    const idle = await probeLoop({ ...live, lastTickAt: dueAt, lastClaimAt: null });
+    expect(idle.status).toBe(503);
+    expect(idle.body.failedChecks).toEqual(["jobProgress"]);
+    expect(idle.body.checks.jobProgress).toMatchObject({
+      status: "failed",
+      reason: "loop_idle",
+      count: 1,
+      ageMs: JOB_PROGRESS_STALE_MS,
+      maxAgeMs: JOB_PROGRESS_STALE_MS,
+    });
 
-      const unclaimed = await probeLoop({ ...live, lastClaimAt: dueAt });
-      expect(unclaimed.status).toBe(503);
-      expect(unclaimed.body.checks.jobProgress).toMatchObject({
-        status: "failed",
-        reason: "due_unclaimed",
-      });
+    const unclaimed = await probeLoop({ ...live, lastClaimAt: dueAt });
+    expect(unclaimed.status).toBe(503);
+    expect(unclaimed.body.checks.jobProgress).toMatchObject({
+      status: "failed",
+      reason: "due_unclaimed",
+    });
 
-      const recent = await probeLoop(live);
-      expect(recent.status).toBe(200);
-      expect(recent.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
+    const recent = await probeLoop(live);
+    expect(recent.status).toBe(200);
+    expect(recent.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
 
-      db.run("UPDATE job SET run_at = ? WHERE queue = 'work'", [NOW - JOB_PROGRESS_STALE_MS + 1]);
-      const notYet = await probeLoop({ ...live, lastTickAt: null, lastClaimAt: null });
-      expect(notYet.status).toBe(200);
-      expect(notYet.body.checks.jobProgress).toMatchObject({
-        status: "ok",
-        ageMs: JOB_PROGRESS_STALE_MS - 1,
-      });
+    await runAt(NOW - JOB_PROGRESS_STALE_MS + 1);
+    const notYet = await probeLoop({ ...live, lastTickAt: null, lastClaimAt: null });
+    expect(notYet.status).toBe(200);
+    expect(notYet.body.checks.jobProgress).toMatchObject({
+      status: "ok",
+      ageMs: JOB_PROGRESS_STALE_MS - 1,
+    });
 
-      db.run("UPDATE job SET run_at = ? WHERE queue = 'work'", [dueAt]);
-      const saturated = await probeLoop({
-        ...live,
-        lastTickAt: null,
-        lastClaimAt: null,
-        inFlight: 1,
-      });
-      expect(saturated.status).toBe(200);
-      expect(saturated.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
+    await runAt(dueAt);
+    const saturated = await probeLoop({
+      ...live,
+      lastTickAt: null,
+      lastClaimAt: null,
+      inFlight: 1,
+    });
+    expect(saturated.status).toBe(200);
+    expect(saturated.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
 
-      const starting = await probeWith(db, () => null);
-      expect(starting.status).toBe(200);
-      expect(starting.body.checks.jobProgress).toEqual({ status: "skipped", reason: "starting" });
-    } finally {
-      db.close();
-    }
+    const starting = await probeWith(db, () => null);
+    expect(starting.status).toBe(200);
+    expect(starting.body.checks.jobProgress).toEqual({ status: "skipped", reason: "starting" });
   });
 
   test("a start without a reservation is not treated as stalled work", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = await emptyStore();
     const dueAt = NOW - JOB_PROGRESS_STALE_MS;
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: JOB_KIND.start,
       payload: { itemId: "unreserved" },
       runAt: dueAt,
       now: dueAt,
     });
-    try {
-      const { status, body } = await probeWith(db, () => ({
-        polling: true,
-        lastTickAt: null,
-        lastClaimAt: null,
-        inFlight: 0,
-        workerCount: 1,
-      }));
-      expect(status).toBe(200);
-      expect(body.checks.jobProgress).toEqual({ status: "ok", count: 0 });
-    } finally {
-      db.close();
-    }
+    const { status, body } = await probeWith(db, () => ({
+      polling: true,
+      lastTickAt: null,
+      lastClaimAt: null,
+      inFlight: 0,
+      workerCount: 1,
+    }));
+    expect(status).toBe(200);
+    expect(body.checks.jobProgress).toEqual({ status: "ok", count: 0 });
   });
 });
 
-async function probeWith(db: Database, jobLoop: () => JobLoopLiveness | null) {
+async function probeWith(db: Db, jobLoop: () => JobLoopLiveness | null) {
   const server = startServer({
-    db,
+    store: db,
     port: 0,
     hostname: "127.0.0.1",
     webhooks: false,
