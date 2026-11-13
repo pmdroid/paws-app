@@ -24,6 +24,14 @@ import {
 const FILE = "runner-transcript-storage.json";
 const MAX_BYTES = 65_536;
 const FAILURE = "Runner transcript storage configuration is missing or invalid.";
+const ENV = {
+  bucket: "PAWS_S3_BUCKET",
+  endpoint: "PAWS_S3_ENDPOINT",
+  region: "PAWS_S3_REGION",
+  accessKeyId: "PAWS_S3_ACCESS_KEY_ID",
+  secretAccessKey: "PAWS_S3_SECRET_ACCESS_KEY",
+  sessionToken: "PAWS_S3_SESSION_TOKEN",
+};
 const secret = (max: number) =>
   z
     .string()
@@ -61,8 +69,18 @@ const s3Schema = z
   .strict();
 const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
 
-/** The configured transcript S3 bucket, or null when transcripts are stored locally. */
+/** The transcript S3 bucket from `PAWS_S3_*` or the stored configuration, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
+  if (Object.values(ENV).some((name) => process.env[name] !== undefined)) {
+    try {
+      const config = Object.fromEntries(
+        Object.entries(ENV).map(([key, name]) => [key, process.env[name]]),
+      );
+      return s3From(null, JSON.stringify(config))!;
+    } catch {
+      throw new Error(FAILURE);
+    }
+  }
   if (storedSecrets() === null) return withSecrets(home, false, (directory) => s3From(directory));
   try {
     return s3From(null, readSecretFile(join(home, "secrets", FILE), false));
