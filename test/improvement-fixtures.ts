@@ -6,10 +6,10 @@ import {
   beginRetroCollection,
   createRetro,
   freezeRetroInput,
+  insertFindingGroup,
+  insertFindingGroupRun,
   insertQueuedItem,
   listReviewFindings,
-  migrate,
-  openDatabase,
   publishRetro,
   putWorkspaceUser,
   recordRetroEvidence,
@@ -18,9 +18,10 @@ import {
   startRetroAttempt,
   syncWorkspaceMember,
   writeRetroArtifact,
-  sqliteDb,
   type Db,
+  type Q,
 } from "../src/db";
+import { eq } from "drizzle-orm";
 import {
   createFakeIssueLookup,
   createImprovementsHttp,
@@ -40,13 +41,6 @@ export const ALL = ["session-a", "session-b"];
 export const ONLY_A = ["session-a"];
 
 type Extra = Partial<Parameters<typeof createImprovementsHttp>[0]>;
-
-export async function world(extra: Extra = {}) {
-  const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
-  return { ...(await worldOn(sqliteDb(db), root, extra)), db };
-}
 
 export async function worldPg(extra: Extra = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
@@ -321,8 +315,8 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
   return { a: byItem["p1"]!, b: byItem["p2"]! };
 }
 
-export async function seedDaily(db: ReturnType<typeof openDatabase>) {
-  await recordReviewFindings(sqliteDb(db), {
+export async function seedDaily(db: Db) {
+  await recordReviewFindings(db, {
     itemId: "item-a",
     repository: A,
     head: "a".repeat(40),
@@ -337,31 +331,105 @@ export async function seedDaily(db: ReturnType<typeof openDatabase>) {
       why: "pre-existing" as const,
     })),
   });
-  const findings = (await listReviewFindings(sqliteDb(db))).sort((x, y) => x.id - y.id);
+  const findings = (await listReviewFindings(db)).sort((x, y) => x.id - y.id);
   const run = randomUUID();
-  db.run(
-    "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES(?,?,?,?,?,'completed')",
-    [run, "ws", run, 1, "x"],
-  );
+  await insertFindingGroupRun(db, {
+    id: run,
+    workspaceId: "ws",
+    day: run,
+    startedAt: 1,
+    fingerprint: "x",
+    status: "completed",
+  });
   const groupId = randomUUID();
-  db.run(
-    `INSERT INTO finding_group(id,workspace_id,repository,team_id,title,summary,scope,member_ids,created_at,run_id,status)
-     VALUES(?,?,?,?,?,?,?,?,?,?,'open')`,
-    [
-      groupId,
-      "ws",
-      A,
-      "team-a",
-      "Shared fix",
-      "Summary",
-      "src",
-      JSON.stringify(findings.map((f) => f.id)),
-      1,
-      run,
-    ],
-  );
-  await ingestDailyFindings(sqliteDb(db), "ws", { now: END });
+  await insertFindingGroup(db, {
+    id: groupId,
+    workspaceId: "ws",
+    repository: A,
+    teamId: "team-a",
+    title: "Shared fix",
+    summary: "Summary",
+    scope: "src",
+    suggestedIssue: null,
+    memberIds: findings.map((f) => f.id),
+    createdAt: 1,
+    runId: run,
+  });
+  await ingestDailyFindings(db, "ws", { now: END });
   return { groupId, findings };
+}
+
+type Values<T extends keyof Q["t"]> = Q["t"][T] extends { $inferInsert: infer R } ? R : never;
+
+export function updateWorkItem(db: Db, id: string, set: Partial<Values<"workItem">>) {
+  return db.run((q) => q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id))));
+}
+
+export function updateImprovement(db: Db, id: string, set: Partial<Values<"improvement">>) {
+  return db.run((q) =>
+    q.exec(q.orm.update(q.t.improvement).set(set).where(eq(q.t.improvement.id, id))),
+  );
+}
+
+export function insertPullRequest(db: Db, itemId: string, pullNumber: number, openedAt: number) {
+  const pullUrl = pullNumber === 42 ? "https://gh/pull/42" : null;
+  return db.run((q) =>
+    q.exec(q.orm.insert(q.t.itemPullRequest).values({ itemId, pullNumber, pullUrl, openedAt })),
+  );
+}
+
+export function insertMergeFact(db: Db, itemId: string, mergeSha: string, confirmedAt: number) {
+  return db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.remoteMergeFact).values({
+        itemId,
+        repositoryOwner: "acme",
+        repositoryName: "a",
+        pullNumber: 42,
+        pullUrl: "https://gh/pull/42",
+        mergeSha,
+        confirmedAt,
+      }),
+    ),
+  );
+}
+
+export function insertPassedCloseoutStep(
+  db: Db,
+  step: {
+    progressId: string;
+    itemId: string;
+    head: string;
+    at: number;
+    stepId: string;
+    command: string;
+  },
+) {
+  return db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.closeoutProgress).values({
+        id: step.progressId,
+        itemId: step.itemId,
+        taskId: "t",
+        base: "b",
+        head: step.head,
+        policyDigest: "d",
+        startedAt: step.at,
+        updatedAt: step.at,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.closeoutStep).values({
+        progressId: step.progressId,
+        stepId: step.stepId,
+        kind: "command",
+        state: "passed",
+        command: step.command,
+        attempt: 1,
+        ordinal: 0,
+      }),
+    );
+  });
 }
 
 export const accept = (
