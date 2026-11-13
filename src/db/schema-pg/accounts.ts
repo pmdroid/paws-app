@@ -30,6 +30,8 @@ export const agentAccount = pgTable(
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
     removedAt: bigint("removed_at", { mode: "number" }),
     concurrency: bigint({ mode: "number" }),
+    position: bigint({ mode: "number" }).default(1).notNull(),
+    extraUsage: integer("extra_usage").default(0).notNull(),
   },
   (table) => [
     unique().on(table.id, table.workspaceId, table.agent),
@@ -174,3 +176,36 @@ export const agentAccountHealth = pgTable(
     check("agent_account_health_check_11", sql`kind='model' OR model=''`),
   ],
 );
+
+export const agentAccountCredential = pgTable("agent_account_credential", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  agent: text().notNull(),
+  ciphertext: text().notNull(),
+  version: bigint({ mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  runnerId: text("runner_id").references(() => runner.id),
+});
+
+export const agentAccountLease = pgTable("agent_account_lease", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  runnerId: text("runner_id")
+    .notNull()
+    .references(() => runner.id),
+  runId: text("run_id").notNull(),
+  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+});
+
+export const agentAccountUsage = pgTable("agent_account_usage", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  runnerId: text("runner_id")
+    .notNull()
+    .references(() => runner.id),
+  limitsJson: text("limits_json").notNull(),
+  observedAt: bigint("observed_at", { mode: "number" }).notNull(),
+});

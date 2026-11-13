@@ -28,6 +28,8 @@ export const agentAccount = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
     removedAt: integer("removed_at"),
     concurrency: integer(),
+    position: integer().default(1).notNull(),
+    extraUsage: integer("extra_usage").default(0).notNull(),
   },
   (table) => [
     unique().on(table.id, table.workspaceId, table.agent),
@@ -176,3 +178,36 @@ export const agentAccountHealth = sqliteTable(
     check("agent_account_health_check_11", sql`kind='model' OR model=''`),
   ],
 );
+
+export const agentAccountCredential = sqliteTable("agent_account_credential", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  agent: text().notNull(),
+  ciphertext: text().notNull(),
+  version: integer().notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  runnerId: text("runner_id").references(() => runner.id),
+});
+
+export const agentAccountLease = sqliteTable("agent_account_lease", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  runnerId: text("runner_id")
+    .notNull()
+    .references(() => runner.id),
+  runId: text("run_id").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
+export const agentAccountUsage = sqliteTable("agent_account_usage", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => agentAccount.id),
+  runnerId: text("runner_id")
+    .notNull()
+    .references(() => runner.id),
+  limitsJson: text("limits_json").notNull(),
+  observedAt: integer("observed_at").notNull(),
+});

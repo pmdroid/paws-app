@@ -9,3 +9,8 @@ export {
   writeCredentialSteps,
   type CredentialKind,
 } from "./store";
+export {
+  readAgentCredentialSteps,
+  writeAgentCredentialSteps,
+  type AgentCredential,
+} from "./agent-accounts";

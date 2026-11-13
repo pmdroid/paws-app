@@ -166,6 +166,7 @@ export * from "./review-finding-issues";
 export * from "./risk-auto-context";
 export * from "./repository-commands";
 export * from "./agent-accounts";
+export * from "./agent-account-credentials";
 export * from "./agent-account-health";
 export * from "./run-fallback";
 export * from "./retros";
