@@ -437,6 +437,7 @@ import {
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
+  SquashServerError,
   type GitExec,
   type GitHubBinding,
   type PullRequestMember,
@@ -2100,7 +2101,11 @@ export class Orchestrator {
           (await this.holdForPushOutage(job, error))
         )
           return;
-        if (this.shuttingDown || job.attempts >= job.maxAttempts || !(await context.isCurrent()))
+        if (
+          this.shuttingDown ||
+          (job.attempts >= job.maxAttempts && !(error instanceof SquashServerError)) ||
+          !(await context.isCurrent())
+        )
           throw error;
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
@@ -3154,6 +3159,7 @@ export class Orchestrator {
         item &&
         // A push outage holds the item; it never fails it (PAS-867).
         !pushOutageCause(error) &&
+        !(error instanceof SquashServerError) &&
         !this.shuttingDown &&
         (await context.isCurrent()) &&
         !this.jobContexts.has(item.id) &&
