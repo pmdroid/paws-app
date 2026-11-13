@@ -1094,7 +1094,7 @@ WantedBy=multi-user.target
 
 def fake_install(order=None):
     """install() without the release: runs `prepare`, then starts the stop-to-start phase it would stop the runner in."""
-    def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None):
+    def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None, defer=None):
         prepared = prepare()
         journal.start("stop-to-start")
         if order is not None:
