@@ -92,8 +92,6 @@ export type ExeDevBootstrapOptions = {
   controlPlaneUrl: string;
   /** The PEM CA the runner trusts for this Paws, or null when public TLS suffices. */
   serverCa: string | null;
-  /** Repositories the runner may check out. Defaults to none; a run gets a scoped credential. */
-  allowedRepositories?: readonly string[];
   /** Join the VM to the Paws tailnet before enrollment. Absent skips the `tailnet` step. */
   tailnet?: ExeDevBootstrapTailnet;
   /** How long to wait between polls of a detached step. Defaults to two seconds. */
@@ -169,7 +167,6 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
 /** A Tailscale auth key; RSA-OAEP with a 3072-bit key carries at most 318 bytes. */
 const AUTHKEY = /^tskey-[A-Za-z0-9_-]{8,240}$/;
-const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const MAX_INSTALLER_BYTES = 48 * 1024;
 const MAX_CA_BYTES = 32768;
 const MIN_TOKEN_KEY_BITS = 3072;
@@ -510,13 +507,9 @@ function validate(options: ExeDevBootstrapOptions): Pinned {
       refuse("The Tailscale platform must be amd64 or arm64.");
     tailscale = { version: release.version, sha256: release.sha256, platform: arch };
   }
-  const repositories = [...(options.allowedRepositories ?? [])];
-  if (repositories.length > 256 || repositories.some((name) => !REPOSITORY.test(name)))
-    refuse("Allowed repositories must be owner/name, at most 256.");
   const config = JSON.stringify({
     controlPlaneUrl,
     runnerApiUrl,
-    allowedRepositories: repositories,
     ...(serverCa !== null ? { serverCa } : {}),
   });
   return {

@@ -36,7 +36,6 @@ function source(overrides: Partial<MemberVmProvisioningSource> = {}) {
     readToken: () => null,
     installer: () => INSTALLER,
     publicUrl: "https://paws.example.invalid",
-    repositories: async () => ["acme/app"],
     runnerControl: async () => control,
     latestRelease: async () => null,
     exeDev,
@@ -69,10 +68,6 @@ test("each missing prerequisite is named before any exe.dev call", async () => {
       /latest runner release/,
     ],
     [{ installer: () => null }, /install-runner\.sh/],
-    [
-      { repositories: async () => [] },
-      /^Create VM needs at least one repository\. Connect GitHub and choose repositories in Settings › Repositories first\.$/,
-    ],
   ];
   for (const [overrides, message] of cases) {
     const { value, exeDev } = source(overrides);
@@ -93,7 +88,7 @@ test("the bootstrap points the VM at this Paws and the runner API port", async (
     .find((command) => command.includes("controlPlaneUrl"));
   expect(staged).toContain('"controlPlaneUrl":"https://paws.example.invalid"');
   expect(staged).toContain('"runnerApiUrl":"https://paws.example.invalid:8788"');
-  expect(staged).toContain('"allowedRepositories":["acme/app"]');
+  expect(staged).not.toContain("allowedRepositories");
   expect(staged).toContain("'1.4.0'");
 });
 
