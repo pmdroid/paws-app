@@ -20,6 +20,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
+  setRunnerAgentSignedInSteps,
   syncWorkspaceMember,
   type Db,
   type PgDb,
@@ -586,9 +587,8 @@ test("signing the agent in resumes the held item in the same run and session, wi
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
 
-    await rows(
-      db,
-      sql`UPDATE runner_agent_policy SET ready=1 WHERE runner_id=${fixture.memberRunner}`,
+    await db.transaction((q) =>
+      setRunnerAgentSignedInSteps(q, fixture.memberRunner!, "claude", true, Date.now()),
     );
     const deadline = Date.now() + 20_000;
     const active = async () =>
