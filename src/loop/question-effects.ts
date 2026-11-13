@@ -25,11 +25,13 @@ import {
   listCloseoutRecoveriesSteps,
   markHandoffsCarriedSteps,
   pendingAnswerHandoffsSteps,
+  recordReviewRepliesSteps,
   saveCheckpointSteps,
   savePlanProposalSteps,
   saveVisualReviewMarksSteps,
   setQuestionHandoffVersionSteps,
   setRetryAnswerSteps,
+  unreportedReviewRepliesSteps,
   commandInstance,
   type HeldHandoff,
   type Q,
@@ -57,6 +59,7 @@ import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
 import { AGENT_HUNG_REASON, AGENT_HUNG_STOP } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
+import { replyListSection } from "./review-replies";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
   if (
@@ -144,7 +147,12 @@ export function questionEffects(
       for (const entry of pending) yield* setQuestionHandoffVersionSteps(q, entry.id, version);
     }
   }
-  function* resume(q: Q, question: StoredQuestion, held: readonly HeldHandoff[] = []) {
+  function* resume(
+    q: Q,
+    question: StoredQuestion,
+    held: readonly HeldHandoff[] = [],
+    replyList = "",
+  ) {
     if (input.redirect && question.answerEventKey !== null)
       yield* announceLinearTurnSteps(q, question.sessionId, question.answerEventKey, input.now);
     else yield* consumeTurn(q, question);
@@ -152,11 +160,16 @@ export function questionEffects(
     yield* restartWithAnswers(
       q,
       question,
-      handoffNote({
-        question: question.body,
-        options: question.options,
-        answer: question.answer ?? "",
-      }),
+      [
+        handoffNote({
+          question: question.body,
+          options: question.options,
+          answer: question.answer ?? "",
+        }),
+        replyList,
+      ]
+        .filter((part) => part !== "")
+        .join("\n\n"),
       `resume:answer:${question.id}`,
       held,
     );
@@ -181,8 +194,31 @@ export function questionEffects(
     );
   }
   function* mergeHelp(q: Q, question: StoredQuestion): Steps<void> {
+    const replies = (yield* unreportedReviewRepliesSteps(q, question.itemId)).filter(
+      (reply) => reply.restartKey === `ci-help:${question.id}`,
+    );
+    if (question.reason === "budget_spent" && /^\s*stop\b/i.test(question.answer ?? "")) {
+      yield* consumeTurn(q, question);
+      yield* recordReviewRepliesSteps(q, {
+        itemId: question.itemId,
+        restartKey: `ci-help:${question.id}`,
+        replies: [],
+        now: input.now,
+      });
+      const item = yield* getWorkItemSteps(q, question.itemId);
+      if (item?.state !== "awaiting_input") return;
+      yield* failWorkItemSteps(
+        q,
+        item,
+        "review",
+        `Stopped after the fix rounds were spent, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+        input.now,
+        { stoppedByAnswer: true },
+      );
+      return;
+    }
     if (!retriesMerge(question)) {
-      yield* resume(q, question);
+      yield* resume(q, question, [], replyListSection(replies));
       return;
     }
     yield* consumeTurn(q, question);
