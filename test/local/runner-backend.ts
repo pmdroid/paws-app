@@ -365,7 +365,7 @@ export async function probeRunnerBackend(
           return v.command;
         }
       }
-      await delay(1);
+      await delay(5);
     }
     throw new Error("No dispatched runner command");
   }
@@ -1630,7 +1630,7 @@ export async function probeRunnerBackend(
           )
             break;
           if (i === 499) throw new Error("Response task callbacks did not answer");
-          await delay(1);
+          await delay(5);
         }
         assert.deepEqual(taskUpdates, ["Bounded progress"]);
         let activitySequence = purpose === "artifact" ? 3 : 2;
@@ -2241,7 +2241,7 @@ export async function probeRunnerBackend(
         answered = true;
         break;
       }
-      await delay(1);
+      await delay(5);
     }
     assert(opened && answered);
     await work.event({
@@ -2269,7 +2269,7 @@ export async function probeRunnerBackend(
             after: 1,
           })
         ).length > 0;
-      if (!contextAnswered) await delay(1);
+      if (!contextAnswered) await delay(5);
     }
     assert(contextAnswered);
     const shown = contextBody ?? "";
@@ -2794,7 +2794,7 @@ export async function probeRunnerBackend(
         ((await runnerWorkOf(firstAttempt.runId))?.consumedSequence ?? 0) < 1);
       index++
     )
-      await delay(1);
+      await delay(5);
     await setRunner(hostIds[0]!, { lastSeenAt: now - 60_000 - RUNNER_LEASE_GRACE_MS });
     await leaseUntil(firstAttempt.runId, now - RUNNER_LEASE_GRACE_MS);
     const firstStop = await next(hostIds[0]!, false);
@@ -2858,7 +2858,7 @@ export async function probeRunnerBackend(
     }
     // An online pin waits out its quota instead of taking the idle third runner.
     for (let poll = 0; poll < 500 && !(await usagePause(db, failoverItem.run.id)); poll++)
-      await delay(1);
+      await delay(5);
     const pinnedPause = await usagePause(db, failoverItem.run.id);
     assert(pinnedPause);
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
@@ -3042,7 +3042,7 @@ export async function probeRunnerBackend(
         await terminated(hostIds[0]!, command);
       }
     }
-    for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
+    for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(5);
     assert(continuationState.questionId);
     assert.equal((await getWorkItem(db, artifactItem.id))?.state, "awaiting_input");
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
