@@ -3,10 +3,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changeDecision, listDecisions, decisionAnswers } from "../src/decisions";
-import { sqliteDb } from "../src/db";
+import { isNotNull } from "drizzle-orm";
+import { postgresDb, type PgOrm } from "../src/db";
 import { openQuestion } from "../src/questions";
-import { answer, ask, confirmDecision, suggestDecisions } from "./questions";
+import { answerPg, askPg, confirmDecisionPg, suggestDecisionsPg } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./decision-memory-fixture";
+
+function watchReads(orm: PgOrm, inTransaction: boolean, reads: boolean[]): PgOrm {
+  return new Proxy(orm, {
+    get(target, property) {
+      if (property === "select") reads.push(inTransaction);
+      if (property === "transaction")
+        return (work: (tx: PgOrm) => Promise<unknown>, config?: unknown) =>
+          target.transaction((tx) => work(watchReads(tx, true, reads)), config as never);
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 test("decision memory requires accessible confirmed human answers and never resumes on a search match", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-decisions-"));
@@ -23,8 +37,8 @@ test("only agent and clarification answers are offered as decisions", async () =
   try {
     const asker = { itemId: "controlled", runId: f.runId, sessionId: "session-controlled" };
     for (const kind of ["runner-wait", "repository", "clarification"] as const) {
-      await ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
-      await answer(f.db, {
+      await askPg(f.db, asker, kind, `${kind} question`, { now: Date.now() });
+      await answerPg(f.db, {
         sessionId: "session-controlled",
         deliveryId: kind,
         body: `${kind} answer`,
@@ -32,9 +46,10 @@ test("only agent and clarification answers are offered as decisions", async () =
       });
     }
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
-    expect(
-      (await decisionAnswers(sqliteDb(f.db), actor)).map((row) => row.body).toSorted(),
-    ).toEqual(["Which pagination format?", "clarification question"]);
+    expect((await decisionAnswers(f.db, actor)).map((row) => row.body).toSorted()).toEqual([
+      "Which pagination format?",
+      "clarification question",
+    ]);
   } finally {
     await f.close();
     rmSync(root, { recursive: true, force: true });
@@ -48,7 +63,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
     await changeDecision(
-      sqliteDb(f.db),
+      f.db,
       actor,
       {
         questionId: f.question.id,
@@ -58,52 +73,37 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       },
       Date.now(),
     );
-    const pending = await openQuestion(sqliteDb(f.db), {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
     });
-    const suggestion = (await suggestDecisions(f.db, pending.id, pending.body))[0]!;
-    const prepare = f.db.prepare.bind(f.db);
+    const suggestion = (await suggestDecisionsPg(f.db, pending.id, pending.body))[0]!;
     const transactions: boolean[] = [];
-    f.db.prepare = ((...args: Parameters<typeof f.db.prepare>) => {
-      if (/^\s*select\b/i.test(args[0])) transactions.push(f.db.inTransaction);
-      return prepare(...args);
-    }) as typeof f.db.prepare;
+    const watched = postgresDb(watchReads(f.db.orm as PgOrm, false, transactions));
     await expect(
-      confirmDecision(f.db, pending.id, suggestion.value, "inactive", Date.now()),
+      confirmDecisionPg(watched, pending.id, suggestion.value, "inactive", Date.now()),
     ).rejects.toThrow();
-    f.db.prepare = prepare;
     expect(transactions.length).toBeGreaterThan(0);
     expect(transactions.every(Boolean)).toBe(true);
     const script = `
-      import { Database } from "bun:sqlite";
       import { confirmDecisionSteps } from ${JSON.stringify(join(process.cwd(), "src/decisions/index.ts"))};
-      import { sqliteDb } from ${JSON.stringify(join(process.cwd(), "src/db/index.ts"))};
-      const db = new Database(process.argv[1]);
-      db.run("PRAGMA busy_timeout=5000");
+      import { openPawsStore } from ${JSON.stringify(join(process.cwd(), "src/db/index.ts"))};
+      const db = await openPawsStore({ url: process.argv[1], pgliteDir: "" });
       console.log("ready");
       for await (const _ of Bun.stdin.stream()) break;
       try {
-        await sqliteDb(db).transaction((q) =>
+        await db.store.transaction((q) =>
           confirmDecisionSteps(q, process.argv[2], process.argv[3], "member", Number(process.argv[4])),
         );
         console.log("accepted");
       } catch (error) { console.log(error.message); process.exitCode = 2; }
-      finally { db.close(); }
+      finally { await db.close(); }
     `;
     const outputs = [];
     for (const at of [100, 200]) {
       const child = Bun.spawn(
-        [
-          process.execPath,
-          "--eval",
-          script,
-          join(root, "controls.sqlite"),
-          pending.id,
-          suggestion.value,
-          String(at),
-        ],
+        [process.execPath, "--eval", script, f.url, pending.id, suggestion.value, String(at)],
         {
           stdin: "pipe",
           stdout: "pipe",
@@ -121,17 +121,20 @@ test("two concurrent confirmations accept one suggestion once, with every read i
     }
     expect((await Promise.all(children.map((child) => child.exited))).sort()).toEqual([0, 2]);
     for (const reader of outputs) reader.releaseLock();
-    expect((await listDecisions(sqliteDb(f.db), actor))[0]?.accepted).toBe(1);
+    expect((await listDecisions(f.db, actor))[0]?.accepted).toBe(1);
     await expect(
-      confirmDecision(f.db, pending.id, suggestion.value, "member", 300),
+      confirmDecisionPg(f.db, pending.id, suggestion.value, "member", 300),
     ).rejects.toThrow();
-    const accepted = f.db
-      .query<{ accepted_at: number }, []>(
-        "SELECT accepted_at FROM decision_suggestion WHERE accepted_at IS NOT NULL",
-      )
-      .get();
-    expect(accepted).not.toBeNull();
-    expect([100, 200]).toContain(accepted!.accepted_at);
+    const accepted = await f.db.run((q) =>
+      q.one(
+        q.orm
+          .select({ acceptedAt: q.t.decisionSuggestion.acceptedAt })
+          .from(q.t.decisionSuggestion)
+          .where(isNotNull(q.t.decisionSuggestion.acceptedAt)),
+      ),
+    );
+    expect(accepted).toBeDefined();
+    expect([100, 200]).toContain(accepted!.acceptedAt!);
   } finally {
     for (const child of children) child.kill();
     await f.close();
