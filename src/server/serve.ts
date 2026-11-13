@@ -42,14 +42,12 @@ import {
   type VisualReviewChanges,
 } from "../evidence";
 import {
-  CHECKOUT_SETTINGS_PATH,
   BRIEF_SETTINGS_PATH,
   handleBriefSettingsRequest,
   FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
-  handleCheckoutSettingsRequest,
   handleMergeSettingsRequest,
   handleFindingSettingsRequest,
   handleHookSettingsRequest,
@@ -61,7 +59,6 @@ import {
   type BriefSettingsOptions,
   type HighRiskFile,
   type OverlapHoldView,
-  type RepositoryCheckoutFacts,
 } from "../settings";
 import type { SkillResolver, SkillUpdates } from "../skills";
 import {
@@ -193,8 +190,6 @@ export type ServerOptions = {
     upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
     /** Whether high-risk pull requests wait for an approval in Paws, for Settings → Merging. */
     riskGate?: { on: boolean; reason?: string };
-    /** Files and Closeout check paths of a repository's local mirror, for Repository checkout. */
-    checkoutFacts?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
     /** A repository's `.paws/high-risk-paths` in its local mirror, for Settings → Merging. */
     highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
   };
@@ -679,7 +674,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { githubQueues, upToDateRules, riskGate, checkoutFacts, highRiskFile, ...agentSettings } =
+    const { githubQueues, upToDateRules, riskGate, highRiskFile, ...agentSettings } =
       secrets.agentSettings;
     const repositoryNames = (store: Db) =>
       store.run((q) => listWorkspaceRepositoryNamesSteps(q, principal?.workspaceId));
@@ -709,16 +704,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
               repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.store))],
             }
           : {}),
-      })) ??
-      (await handleCheckoutSettingsRequest(request, {
-        ...shared,
-        ...(path === CHECKOUT_SETTINGS_PATH && secrets.store
-          ? {
-              // The stored GitHub connection and team mappings, not a GitHub call.
-              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.store))],
-            }
-          : {}),
-        ...(checkoutFacts ? { inspect: checkoutFacts } : {}),
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,

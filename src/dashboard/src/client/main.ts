@@ -46,7 +46,6 @@ import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
 import { createQueueSettings } from "./queue-settings";
-import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
@@ -81,7 +80,6 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
-const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
@@ -452,9 +450,6 @@ function paint(): void {
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
-  const checkoutRoot = document.querySelector<HTMLElement>("#checkout-settings");
-  if (checkoutRoot && settingsPage(model.route) === "workspace")
-    checkoutSettings.mount(checkoutRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
   if (skillsRoot) skillSettings.mount(skillsRoot, currentEngine());
   const mergeRoot = document.querySelector<HTMLElement>("#merge-settings");

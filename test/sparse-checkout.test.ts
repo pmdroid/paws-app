@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createWorktree, ensureBareMirror, commitCheckpoint } from "../src/acp";
-import { parseConfigToml, renderConfigToml, writeConfigFile } from "../src/config";
+import { journalRetiredProjectSettings, parseConfigToml } from "../src/config";
 import { checkoutPatterns, exclusionPatterns } from "../src/worktree-checkout";
 
 const roots: string[] = [];
@@ -53,22 +53,21 @@ async function fixture() {
     repo: "demo",
     pawsRoot,
   });
-  const settings = async (exclude: string[]) => {
-    await writeFile(
-      join(pawsRoot, "config.toml"),
-      `[checkout.projects."Acme/Demo"]\nexclude = ${JSON.stringify(exclude)}\n`,
-    );
-  };
-  const create = (itemId = "ONE") =>
-    createWorktree({ owner: "acme", repo: "demo", pawsRoot, itemId });
-  return { root, source, pawsRoot, mirror, settings, create };
+  const create = (itemId = "ONE", checkoutExclusions?: string[]) =>
+    createWorktree({
+      owner: "acme",
+      repo: "demo",
+      pawsRoot,
+      itemId,
+      ...(checkoutExclusions ? { checkoutExclusions } : {}),
+    });
+  return { root, source, pawsRoot, mirror, create };
 }
 
 test("sparse worktrees exclude literal nested folders and keep omissions out of commits", async () => {
   const f = await fixture();
   const originalConfig = await readFile(join(f.source, ".git/config"), "utf8");
-  await f.settings(["large", "nested/omit", "literal[1]", "space folder"]);
-  const tree = await f.create();
+  const tree = await f.create("ONE", ["large", "nested/omit", "literal[1]", "space folder"]);
   for (const folder of ["large", "nested/omit", "literal[1]", "space folder"]) {
     expect(existsSync(join(tree.path, folder))).toBe(false);
   }
@@ -84,32 +83,28 @@ test("sparse worktrees exclude literal nested folders and keep omissions out of 
   expect(await readFile(join(f.source, "large/file.txt"), "utf8")).toBe("large");
 });
 
-test("worktree settings do not bleed and config changes preserve dirty files", async () => {
+test("worktree exclusions do not bleed and changed exclusions preserve dirty files", async () => {
   const f = await fixture();
-  await f.settings(["large"]);
-  const one = await f.create();
-  await f.settings(["nested/omit"]);
-  const two = await f.create("TWO");
+  const one = await f.create("ONE", ["large"]);
+  const two = await f.create("TWO", ["nested/omit"]);
   expect(existsSync(join(one.path, "large"))).toBe(false);
   expect(existsSync(join(two.path, "large"))).toBe(true);
   expect(existsSync(join(two.path, "nested/omit"))).toBe(false);
   expect(git(f.mirror.path, "config", "--get", "core.bare")).toBe("true");
   await writeFile(join(one.path, "README.md"), "unsaved");
   await writeFile(join(one.path, "nested/omit/file.txt"), "unsaved excluded");
-  await f.create();
+  await f.create("ONE", ["nested/omit"]);
   expect(await readFile(join(one.path, "README.md"), "utf8")).toBe("unsaved");
   expect(await readFile(join(one.path, "nested/omit/file.txt"), "utf8")).toBe("unsaved excluded");
   expect(existsSync(join(one.path, "large"))).toBe(true);
-  await f.settings([]);
   await f.create("TWO");
   expect(existsSync(join(two.path, "nested/omit"))).toBe(true);
   expect(git(two.path, "status", "--porcelain")).toBe("");
 });
 
-test("detached verification applies configured exclusions", async () => {
+test("detached verification applies the run's exclusions", async () => {
   const f = await fixture();
-  await f.settings(["large"]);
-  const one = await f.create();
+  const one = await f.create("ONE", ["large"]);
   const detached = join(f.root, "detached");
   git(one.path, "worktree", "add", "--no-checkout", "--detach", detached, "HEAD");
   await checkoutPatterns(detached, exclusionPatterns(["large"]));
@@ -120,53 +115,25 @@ test("detached verification applies configured exclusions", async () => {
 
 test("reuse finishes a worktree left unpopulated during creation", async () => {
   const f = await fixture();
-  await f.settings(["large"]);
   const target = join(f.pawsRoot, "worktrees", "ONE");
   await mkdir(join(f.pawsRoot, "worktrees"));
   git(f.mirror.path, "worktree", "add", "--no-checkout", "-b", "paws/ONE", target, "origin/main");
-  await f.create();
+  await f.create("ONE", ["large"]);
   expect(existsSync(join(target, "large"))).toBe(false);
   expect(existsSync(join(target, "README.md"))).toBe(true);
   expect(git(target, "status", "--porcelain")).toBe("");
 });
 
-test("checkout config rejects unsafe folders and setup preserves project exclusions", async () => {
-  for (const path of [
-    "",
-    "/absolute",
-    "..",
-    "foo/../bar",
-    "foo//bar",
-    ".git",
-    "foo/.git",
-    "foo\\bar",
-  ]) {
-    expect(() =>
-      parseConfigToml(`[checkout.projects."acme/demo"]\nexclude = ${JSON.stringify([path])}`),
-    ).toThrow();
-  }
-  expect(() => parseConfigToml('[checkout.projects."acme/demo"]\nexclude = "large"')).toThrow();
+test("an old checkout.projects table loads, is ignored and is journaled", async () => {
   const f = await fixture();
-  const setup = {
-    linearTeam: "ENG",
-    linearTeamId: "team",
-    linearViewerId: "viewer",
-    linearSecret: "secrets/linear",
-    linearClientFile: null,
-    githubAuth: "app" as const,
-    repo: "acme/demo",
-    checkout: f.source,
-    maxAwakeMs: 5000,
-    implementer: "claude" as const,
-  };
-  await writeFile(
-    join(f.pawsRoot, "config.toml"),
-    `${renderConfigToml(setup)}\n[checkout.projects."Acme/Demo"]\nexclude = ["large"]\n`,
-  );
-  writeConfigFile(join(f.pawsRoot, "config.toml"), setup);
-  expect(
-    parseConfigToml(await readFile(join(f.pawsRoot, "config.toml"), "utf8")).checkoutProjects,
-  ).toEqual({ "acme/demo": { exclude: ["large"] } });
+  const configPath = join(f.pawsRoot, "config.toml");
+  await writeFile(configPath, '[checkout.projects."Acme/Demo"]\nexclude = ["large"]\n');
+  const tree = await f.create();
+  expect(existsSync(join(tree.path, "large/file.txt"))).toBe(true);
+  expect(git(tree.path, "status", "--porcelain")).toBe("");
+  const lines: string[] = [];
+  journalRetiredProjectSettings(configPath, (line) => lines.push(line));
+  expect(lines).toEqual(["checkout.projects is no longer supported"]);
 });
 
 test("excluded files are never passed through checkout filters", async () => {
@@ -191,11 +158,9 @@ test("excluded files are never passed through checkout filters", async () => {
   });
   const touched = join(f.root, "filter-ran");
   git(f.mirror.path, "config", "filter.probe.smudge", `touch ${touched}; cat`);
-  await f.settings(["large"]);
-  const tree = await f.create();
+  const tree = await f.create("ONE", ["large"]);
   expect(existsSync(touched)).toBe(false);
   expect(existsSync(join(tree.path, "README.md"))).toBe(true);
-  await f.settings([]);
   await f.create("FULL");
   expect(existsSync(touched)).toBe(true);
 });
@@ -203,5 +168,4 @@ test("excluded files are never passed through checkout filters", async () => {
 test("legacy config without sparse settings retains its existing parsing behavior", () => {
   const config = parseConfigToml("[caps]\nmax_awake_ms = 3\nmax_awake_ms = 7\n");
   expect(config.maxAwakeMs).toBe(7);
-  expect(config.checkoutProjects).toBeUndefined();
 });

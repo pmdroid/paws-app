@@ -14,8 +14,7 @@ import {
   constants,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { checkoutExclusionsFor, loadConfigFile } from "../config";
-import { join, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import {
   unansweredRunnerQuestionsSteps,
   setRunnerWorkConsumedSequenceSteps,
@@ -1494,16 +1493,9 @@ export function createRemoteAgentRunner(options: {
               signal.throwIfAborted();
               const boundRepository = taskScope?.repository ?? scoped.repository;
               // The command schema refuses a trailing slash, so a folder entry goes as its path.
-              const checkoutExclusions = (
-                input.checkoutExclusions
-                  ? [...input.checkoutExclusions]
-                  : boundRepository
-                    ? checkoutExclusionsFor(
-                        loadConfigFile(join(input.pawsRoot, "config.toml")).checkoutProjects,
-                        `${boundRepository.owner}/${boundRepository.repo}`,
-                      ).agent
-                    : undefined
-              )?.map((entry) => entry.replace(/\/$/, ""));
+              const checkoutExclusions = input.checkoutExclusions?.map((entry) =>
+                entry.replace(/\/$/, ""),
+              );
               const resumeSessionId =
                 !excluded.includes(selected.id) &&
                 (!pinnedRunnerId || pinnedRunnerId === selected.id) &&

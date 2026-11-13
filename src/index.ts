@@ -44,7 +44,6 @@ import {
   runAgent,
   worktreePath,
 } from "./acp";
-import { policyCheckPaths } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
@@ -1394,14 +1393,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           : {}),
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
-        checkoutFacts: async (name: string) => {
-          const [owner, repo] = name.split("/");
-          if (!owner || !repo) return null;
-          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
-          if (!mirror) return null;
-          const policy = policyCheckPaths(mirror.mirror, mirror.commit);
-          return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
-        },
         highRiskFile: async (name: string) => {
           const [owner, repo] = name.split("/");
           if (!owner || !repo) return null;
