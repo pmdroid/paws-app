@@ -45,7 +45,6 @@ async function world(extra: Parameters<typeof worldPg>[0] = {}) {
   return w;
 }
 
-
 describe("improvement decisions", () => {
   test("two reviewers: the second conflicting decision returns the first one with 409", async () => {
     const w = await world();
@@ -573,9 +572,7 @@ describe("daily findings share legacy claims", () => {
       { revision: 1, actor: "user-ada" },
     ]);
     expect(
-      (await listImprovementProposals(w.db, daily.id)).every(
-        (p) => p.verificationCriterion === "",
-      ),
+      (await listImprovementProposals(w.db, daily.id)).every((p) => p.verificationCriterion === ""),
     ).toBe(true);
   });
 
