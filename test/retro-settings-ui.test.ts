@@ -90,6 +90,7 @@ beforeEach(() => {
 const stores: (() => Promise<void>)[] = [];
 const holds: (() => void)[] = [];
 const pending = new Set<Promise<Response>>();
+const held = new Set<Promise<Response>>();
 
 afterEach(async () => {
   for (const release of holds.splice(0)) release();
@@ -160,16 +161,18 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   const requests: { method: string; path: string; body: unknown }[] = [];
   let hold: RegExp | null = null;
   let who = "admin";
+  let delay = 0;
   const override = new Map<string, () => Response>();
-  const answer = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  const answer = async (
+    url: string | URL | Request,
+    init: RequestInit | undefined,
+    gate: Promise<void> | undefined,
+  ): Promise<Response> => {
     const target = new URL(String(url));
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method: init?.method ?? "GET", path: target.pathname, body });
-    if (hold?.test(target.pathname)) {
-      const gate = Promise.withResolvers<void>();
-      holds.push(gate.resolve);
-      await gate.promise;
-    }
+    if (gate) await gate;
+    if (delay) await Bun.sleep(delay);
     const forced = override.get(target.pathname);
     if (forced) return forced();
     if (target.pathname === "/api/runners/models") return Response.json({ catalogs });
@@ -182,8 +185,16 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     return found ?? Response.json({ error: "Not found." }, { status: 404 });
   };
   const serve = (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const call = answer(url, init);
+    const gate = hold?.test(new URL(String(url)).pathname)
+      ? Promise.withResolvers<void>()
+      : undefined;
+    if (gate) holds.push(gate.resolve);
+    const call = answer(url, init, gate?.promise);
     pending.add(call);
+    if (gate) {
+      held.add(call);
+      void gate.promise.then(() => held.delete(call));
+    }
     void call.finally(() => pending.delete(call)).catch(() => {});
     return call;
   };
@@ -194,12 +205,21 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
       root.innerHTML = html;
     },
   });
+  const idle = async () => {
+    for (;;) {
+      await settle();
+      const busy = [...pending].filter((call) => !held.has(call));
+      if (busy.length === 0) break;
+      await Promise.allSettled(busy);
+    }
+    await settle();
+  };
   const page = window.document.createElement("div");
   window.document.body.append(page);
   const open = async (reader = "ws:user-admin") => {
     page.innerHTML = '<div data-retro-settings=""></div>';
     controller.attach(page, "http://127.0.0.1:8787", reader);
-    await settle();
+    await idle();
   };
   const $ = <T = El>(selector: string) => page.querySelector(selector) as unknown as T;
   const text = () => page.textContent ?? "";
@@ -207,23 +227,23 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     const element = $<SelectEl>(selector);
     element.value = value;
     element.dispatchEvent(new window.Event("change", { bubbles: true }));
-    await settle();
+    await idle();
   };
   const type = async (selector: string, value: string) => {
     const element = $<InputEl>(selector);
     element.value = value;
     element.dispatchEvent(new window.Event("input", { bubbles: true }));
-    await settle();
+    await idle();
   };
   const click = async (selector: string) => {
     $<El>(selector).click();
-    await settle();
+    await idle();
   };
   const submit = async () => {
     $<FormEl>("[data-retro-form]").dispatchEvent(
       new window.Event("submit", { bubbles: true, cancelable: true }),
     );
-    await settle();
+    await idle();
   };
   return {
     db,
@@ -233,6 +253,7 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     override,
     holds,
     setHold: (pattern: RegExp | null) => (hold = pattern),
+    setDelay: (ms: number) => (delay = ms),
     as: (name: string) => (who = name),
     settings,
     open,
@@ -282,6 +303,15 @@ test("changing agent or model resets incompatible choices", async () => {
   });
   const models = [...t.$<SelectEl>("#retro-model").options].map((o) => o.value);
   expect(models).toEqual(["", "opus"]);
+});
+
+test("a slow save still shows the saved revision once submit returns", async () => {
+  const t = await harness();
+  await t.open();
+  await t.pick("#retro-model", "gpt-6-mini");
+  t.setDelay(50);
+  await t.submit();
+  expect(t.text()).toContain("Saved revision 1");
 });
 
 test("a saved model no runner offers is shown as unavailable, and kept while catalogs load", async () => {
