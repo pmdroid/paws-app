@@ -194,6 +194,21 @@ forEachDialect((connect) => {
     );
   });
 
+  test("the import skips run-data stores and large files, and they stay files", async () => {
+    const { db, dir } = await setup(connect);
+    writeSecretFile(join(dir, "linear-webhook"), "linear-secret");
+    for (const store of ["runner-identity/inputs", "runner-identity/artifacts", "linear-inputs"]) {
+      mkdirSync(join(dir, store), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dir, store, "blob"), "run data", { mode: 0o600 });
+    }
+    writeFileSync(join(dir, "too-large"), "x".repeat(1_048_577), { mode: 0o600 });
+
+    const store = await install(db, dir);
+    expect((await db.run(secretRowsSteps)).map((row) => row.name)).toEqual(["linear-webhook"]);
+    expect(readFileSync(join(dir, "runner-identity", "inputs", "blob"), "utf8")).toBe("run data");
+    await store.close();
+  });
+
   test("a plaintext secret file is imported encrypted, and a key another instance stored wins", async () => {
     const { db, dir } = await setup(connect);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
