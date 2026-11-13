@@ -6,7 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
 import { createRunnerModels } from "../runner-models";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, removeSecret, saveSecret, writeSecretFile } from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
 import {
   initializeRunnerAuthority,
@@ -345,9 +345,9 @@ const AGENT_READ_FILE = "agent-read-tokens.json";
 function secretList(path: string) {
   return {
     read: () => z.array(z.string()).parse(JSON.parse(readSecretFile(path) ?? "[]")),
-    write(tokens: readonly string[]) {
-      if (tokens.length) writeSecretFile(path, JSON.stringify(tokens));
-      else rmSync(path, { force: true });
+    async write(tokens: readonly string[]) {
+      if (tokens.length) await saveSecret(path, JSON.stringify(tokens));
+      else await removeSecret(path);
     },
   };
 }

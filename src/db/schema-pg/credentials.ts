@@ -14,3 +14,9 @@ export const credential = pgTable(
     check("credential_kind", sql`kind IN ('linear', 'slack')`),
   ],
 );
+
+export const secret = pgTable("secret", {
+  name: text().primaryKey(),
+  ciphertext: text().notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});

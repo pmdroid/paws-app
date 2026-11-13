@@ -21,6 +21,12 @@ At start Paws opens the database, applies the Postgres migrations it has not app
 
 `paws doctor` and `paws probes collect` read the workspace, its GitHub App and the values saved on the Settings page from the same database: the Postgres at the URL, else `~/.paws/pglite`. While Paws is running and holds PGlite, they use `config.toml` and print one line saying the saved Settings-page values were not read.
 
+## Secrets
+
+With `[database] url` set, the control plane keeps its secrets in the `secret` table instead of `~/.paws/secrets`. That covers the GitHub App key, the Linear OAuth client, webhook secrets, Slack, exe.dev and Tailscale keys, members' GitHub user grants and the runner storage settings. Each row holds the same `paws-envelope-v1` ciphertext a secret file would, so a host without a persistent disk keeps its secrets across restarts. Paws opens the table before it reads any configuration and keeps the rows in memory. A change to a secret finishes only once its row is committed: when the database refuses it, the operation that saved it fails and the previous value stays. `paws install secrets` and `paws runner-storage configure` write to the same table. With PGlite, secrets stay in files.
+
+The master key comes from `PAWS_SECRET_KEY` (32 bytes in base64) when it is set, else from `~/.paws/secrets/.envelope-key`. Paws never writes it to the database. To move an existing install, set `PAWS_SECRET_KEY` to `base64 < ~/.paws/secrets/.envelope-key`. Each time Paws or one of those commands opens the table, it copies every encrypted file in `~/.paws/secrets` that has no row yet into the table, unchanged, and journals how many it copied. The files stay where they are, and a file whose secret already has a row is not copied again. `paws doctor` reports where secrets are read from and fails when the key does not decrypt them. A file in a subfolder with its own `.envelope-key`, such as the runner authority's, decrypts with `PAWS_SECRET_KEY` only when that file's key is the same.
+
 A `~/.paws/paws.db` from an earlier release is set aside at the first start: see [Moving to Postgres](database-reset.md).
 
 ## `paws db check`

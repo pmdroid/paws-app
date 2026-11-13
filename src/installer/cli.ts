@@ -11,7 +11,12 @@ import { runSecretsStep } from "./secrets";
 export const INSTALL_USAGE = "usage: paws install secrets [--env-file PATH]";
 
 /** `paws install secrets`. Returns the exit code. */
-export async function runInstallCli(argv: readonly string[], source: EnvSource): Promise<number> {
+export async function runInstallCli(
+  argv: readonly string[],
+  source: EnvSource,
+  withSecrets: (merged: EnvSource, work: () => Promise<void>) => Promise<void> = (_, work) =>
+    work(),
+): Promise<number> {
   const [step, flag, value, ...rest] = argv;
   if (
     step !== "secrets" ||
@@ -29,15 +34,17 @@ export async function runInstallCli(argv: readonly string[], source: EnvSource):
   const config = loadConfigFile(paths.configFile);
   const terminal = openTerminal();
   try {
-    await runSecretsStep({
-      home,
-      config,
-      env,
-      prompter: terminalPrompter(process.stdin, process.stdout, terminal),
-      publicUrl: merged.PAWS_PUBLIC_URL || config.publicUrl,
-      doctor: async () =>
-        doctorChecks(await realProbe({ ...source, ...env.values(), PAWS_HOME: home })),
-    });
+    await withSecrets(merged, () =>
+      runSecretsStep({
+        home,
+        config,
+        env,
+        prompter: terminalPrompter(process.stdin, process.stdout, terminal),
+        publicUrl: merged.PAWS_PUBLIC_URL || config.publicUrl,
+        doctor: async () =>
+          doctorChecks(await realProbe({ ...source, ...env.values(), PAWS_HOME: home })),
+      }),
+    );
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : "paws install secrets failed.");

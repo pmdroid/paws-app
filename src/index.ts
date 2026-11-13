@@ -35,7 +35,14 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { envelopeSubkey, importCredentialFile, loadSecretKey, readSecretFile } from "./credentials";
+import {
+  envelopeSubkey,
+  importCredentialFile,
+  loadSecretKey,
+  readSecretFile,
+  storeSecretKeys,
+  useDatabaseSecrets,
+} from "./credentials";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
@@ -69,7 +76,9 @@ import {
   ignoredCommentBots,
   ignoredCommentMarkers,
   LINEAR_WORKSPACE_REQUIRED,
+  databaseUrlOf,
   loadRuntime,
+  startupSettings,
   resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
@@ -116,6 +125,7 @@ import {
   CONFIG_SETTINGS_KEY,
   setAsideSqliteDatabase,
   openPawsStore,
+  type PawsStore,
   prepareShutdown,
   COMMAND_DELIVERY_MS,
   bindInstance,
@@ -408,15 +418,8 @@ const LOOPBACK = "127.0.0.1";
 const SKILL_UPDATES_KEY = "skills.updates";
 const SETTINGS_REFRESH_MS = 5_000;
 
-/** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
-export async function startPaws(source?: EnvSource, options?: StartOptions): Promise<PawsProcess> {
-  const envSource = source ?? process.env;
-  const execution = envSource.PAWS_EXECUTION;
-  if (execution === "local") throw new Error("Paws places work on a remote runner.");
-  if (execution !== undefined && execution !== "remote")
-    throw new Error("PAWS_EXECUTION must be remote.");
-  let runtime = loadRuntime(envSource);
-  if (runtime.configError !== null) throw new Error(runtime.configError);
+function checkStartup(envSource: EnvSource, execution: string | undefined) {
+  const settings = startupSettings(envSource);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const proxy = publicTlsProxy(envSource);
   const tls = proxy
@@ -424,16 +427,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     : publicDashboard
       ? validatePublicTls(envSource)
       : loadPublicTls(envSource);
-  const runnerConfig = loadRunnerControl(envSource, runtime.env);
-  let repositoryAccess = options?.runnerRepositoryAccess;
-  const remotePlacementReady = runnerConfig !== null;
-  if (execution === "remote" && !remotePlacementReady)
+  const runnerConfig = loadRunnerControl(envSource, settings.env);
+  if (execution === "remote" && runnerConfig === null)
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
   if (runnerConfig !== null && !publicDashboard)
     throw new Error("Runner control requires the public HTTPS dashboard.");
   const runnerTls = runnerConfig === null ? undefined : loadRunnerTls(runnerConfig, tls, proxy);
   if (publicDashboard) {
-    const origin = runtime.publicUrl === null ? null : new URL(runtime.publicUrl);
+    const origin = settings.publicUrl === null ? null : new URL(settings.publicUrl);
     if (
       origin === null ||
       origin.protocol !== "https:" ||
@@ -445,22 +446,68 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     )
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
   }
-  const placeOnRunner = remotePlacementReady;
-  const transcriptStorage = options?.runnerTranscriptObjects
-    ? { objects: options.runnerTranscriptObjects, stores: [options.runnerTranscriptObjects] }
-    : placeOnRunner
-      ? loadRunnerTranscriptStores(runtime.env.home)
-      : undefined;
-  const transcriptObjects = transcriptStorage?.objects;
-  const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
-  const paths = pawsPaths(env.home);
+  return { settings, publicDashboard, proxy, tls, runnerConfig, runnerTls };
+}
+
+async function loadSecretRuntime(
+  envSource: EnvSource,
+  paths: PawsPaths,
+  databaseUrl: string | null,
+) {
+  if (databaseUrl !== null)
+    await storeSecretKeys(
+      [
+        "runner-file.key",
+        RUNNER_EVENT_KEY_FILE,
+        RUNNER_TRANSCRIPT_KEY_FILE,
+        AGENT_SESSION_KEY_FILE,
+      ].map((name) => join(paths.secretsDir, name)),
+    );
+  const runtime = loadRuntime(envSource);
+  if (runtime.configError !== null) throw new Error(runtime.configError);
+  return runtime;
+}
+
+/** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
+export async function startPaws(source?: EnvSource, options?: StartOptions): Promise<PawsProcess> {
+  const envSource = source ?? process.env;
+  const execution = envSource.PAWS_EXECUTION;
+  if (execution === "local") throw new Error("Paws places work on a remote runner.");
+  if (execution !== undefined && execution !== "remote")
+    throw new Error("PAWS_EXECUTION must be remote.");
+  const startup = checkStartup(envSource, execution);
+  const { publicDashboard, proxy, tls, runnerConfig, runnerTls } = startup;
+  const { databaseUrl } = startup.settings;
+  const paths = pawsPaths(startup.settings.env.home);
+  const loadTranscripts = () =>
+    options?.runnerTranscriptObjects
+      ? { objects: options.runnerTranscriptObjects, stores: [options.runnerTranscriptObjects] }
+      : runnerConfig !== null
+        ? loadRunnerTranscriptStores(paths.home)
+        : undefined;
+  const earlyTranscripts = databaseUrl === null ? loadTranscripts() : undefined;
   setAsideSqliteDatabase(paths.db);
   ensureLayout(paths);
   sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
-  const database = await openPawsStore({ url: runtime.databaseUrl, pgliteDir: paths.pgliteDir });
+  const database = await withDatabaseSecrets(
+    await openPawsStore({ url: databaseUrl, pgliteDir: paths.pgliteDir }),
+    databaseUrl,
+    paths.secretsDir,
+  );
+  let runtime = await loadSecretRuntime(envSource, paths, databaseUrl).catch(
+    async (error: unknown) => {
+      await database.close().catch(() => undefined);
+      throw error;
+    },
+  );
+  const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
+  let repositoryAccess = options?.runnerRepositoryAccess;
+  const placeOnRunner = runnerConfig !== null;
   const store = database.store;
+  const transcriptStorage = earlyTranscripts ?? loadTranscripts();
+  const transcriptObjects = transcriptStorage?.objects;
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
   await importCredentialFile(
     store,
@@ -2558,7 +2605,12 @@ Commands:
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
 async function doctorMain(): Promise<number> {
-  const checks = doctorChecks(await realProbe(process.env));
+  const probe = await realProbe(process.env).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    return null;
+  });
+  if (probe === null) return 1;
+  const checks = doctorChecks(probe);
   console.log(formatDoctor(checks));
   return checks.every((item) => item.ok) ? 0 : 1;
 }
@@ -2678,16 +2730,54 @@ async function evidenceMain(args: string[]): Promise<number> {
   }
 }
 
+async function withDatabaseSecrets(
+  opened: PawsStore,
+  url: string | null,
+  secretsDir: string,
+): Promise<PawsStore> {
+  if (url === null) return opened;
+  try {
+    const secrets = await useDatabaseSecrets(opened.store, secretsDir);
+    return {
+      store: opened.store,
+      close: async () => {
+        await secrets.close();
+        await opened.close();
+      },
+    };
+  } catch (error) {
+    await opened.close();
+    throw error;
+  }
+}
+
+async function openCommandStore(source: EnvSource): Promise<PawsStore | null> {
+  const url = databaseUrlOf(source);
+  if (url === null) return null;
+  const paths = pawsPaths(loadEnv(source).home);
+  return withDatabaseSecrets(
+    await openPawsStore({ url, pgliteDir: paths.pgliteDir }),
+    url,
+    paths.secretsDir,
+  );
+}
+
+async function withSecretStore<T>(source: EnvSource, work: () => Promise<T>): Promise<T> {
+  if (source.PAWS_SECRET_KEY) process.env.PAWS_SECRET_KEY ??= source.PAWS_SECRET_KEY;
+  const database = await openCommandStore(source);
+  try {
+    return await work();
+  } finally {
+    await database?.close();
+  }
+}
+
 async function withCommandStore<T>(command: string, work: (store: Db) => Promise<T>): Promise<T> {
-  const runtime = loadRuntime(process.env);
-  if (runtime.databaseUrl === null)
+  const database = await openCommandStore(process.env);
+  if (database === null)
     throw new Error(
       `paws ${command} needs [database] url: only the running Paws opens its embedded PGlite database.`,
     );
-  const database = await openPawsStore({
-    url: runtime.databaseUrl,
-    pgliteDir: pawsPaths(runtime.env.home).pgliteDir,
-  });
   try {
     return await work(database.store);
   } finally {
@@ -2789,7 +2879,11 @@ if (import.meta.main) {
   if (command === "runner-storage" && argv[1] === "migrate")
     process.exit(await runnerStorageMigrateMain(argv.slice(2)));
   if (command === "runner-storage")
-    process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
+    process.exit(
+      await withSecretStore(process.env, () =>
+        runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home),
+      ),
+    );
   if (command === "runner-authority") {
     try {
       if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
@@ -2835,7 +2929,7 @@ if (import.meta.main) {
     process.exit(await dbCheckMain(process.env));
   }
   if (command === "install" && argv[1] === "secrets")
-    process.exit(await runInstallCli(argv.slice(1), process.env));
+    process.exit(await runInstallCli(argv.slice(1), process.env, withSecretStore));
   if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "review-score") process.exit(await reviewScoreMain(argv.slice(1)));
   if (command === "evidence") process.exit(await evidenceMain(argv.slice(1)));

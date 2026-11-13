@@ -3,7 +3,14 @@ import { S3Client } from "bun";
 import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { decodeSecretEnvelope, writeSecretFile } from "../credentials";
+import {
+  decodeSecretEnvelope,
+  openSecretAt,
+  readSecretFile,
+  saveSecret,
+  storedSecrets,
+  writeSecretFile,
+} from "../credentials";
 import { agentSessionObjectKey, createLocalAgentSessionObjects } from "../agent-sessions";
 import { sealedRunFileChunkObjects, type Db } from "../db";
 import { migrateRunFileObjects, type RunFileObjects } from "../run-files";
@@ -56,22 +63,34 @@ const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema])
 
 /** The configured transcript S3 bucket, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
-  return withSecrets(home, false, (directory) => {
+  if (storedSecrets() === null) return withSecrets(home, false, (directory) => s3From(directory));
+  try {
+    return s3From(null, readSecretFile(join(home, "secrets", FILE), false));
+  } catch {
+    throw new Error(FAILURE);
+  }
+}
+
+function s3From(directory: string | null, text: string | null = null) {
+  let plain = text;
+  if (directory !== null) {
     const stored = readProtected(directory, FILE, MAX_BYTES, true);
     if (stored === null) return null;
     const encrypted = stored.toString("utf8");
     if (!encrypted.startsWith("paws-envelope-v1\n")) throw new Error();
-    const key = readProtected(directory, ".envelope-key", 32)!;
-    if (key.length !== 32) throw new Error();
-    const config = schema.parse(JSON.parse(decodeSecretEnvelope(FILE, encrypted, key)));
-    if ("kind" in config) return null;
-    const client = new S3Client({ ...config, sessionToken: config.sessionToken ?? "" });
-    const token = new URL(client.presign("paws-config-check")).searchParams.get(
-      "X-Amz-Security-Token",
-    );
-    if (token !== (config.sessionToken ?? null)) throw new Error();
-    return { client, bucket: config.bucket };
-  });
+    plain = process.env.PAWS_SECRET_KEY
+      ? openSecretAt(join(directory, FILE), encrypted)
+      : decodeSecretEnvelope(FILE, encrypted, readProtected(directory, ".envelope-key", 32)!);
+  }
+  if (plain === null) return null;
+  const config = schema.parse(JSON.parse(plain));
+  if ("kind" in config) return null;
+  const client = new S3Client({ ...config, sessionToken: config.sessionToken ?? "" });
+  const token = new URL(client.presign("paws-config-check")).searchParams.get(
+    "X-Amz-Security-Token",
+  );
+  if (token !== (config.sessionToken ?? null)) throw new Error();
+  return { client, bucket: config.bucket };
 }
 
 /**
@@ -116,16 +135,24 @@ export async function migrateRunnerStorage(options: {
   };
 }
 
+function parseStorage(text: string) {
+  if (Buffer.byteLength(text) > MAX_BYTES) throw new Error();
+  return schema.parse(JSON.parse(text));
+}
+
 export function configureRunnerTranscriptStorage(home: string, text: string): void {
   try {
-    if (Buffer.byteLength(text) > MAX_BYTES) throw new Error();
-    const config = schema.parse(JSON.parse(text));
+    const config = parseStorage(text);
     withSecrets(home, true, (directory) => {
       const existing = readProtected(directory, FILE, MAX_BYTES, true);
-      const key = readProtected(directory, ".envelope-key", 32, true);
-      if ((key !== null && key.length !== 32) || (existing !== null && key === null))
-        throw new Error();
-      if (existing !== null) decodeSecretEnvelope(FILE, existing.toString("utf8"), key!);
+      if (existing !== null && process.env.PAWS_SECRET_KEY)
+        openSecretAt(join(directory, FILE), existing.toString("utf8"));
+      else {
+        const key = readProtected(directory, ".envelope-key", 32, true);
+        if ((key !== null && key.length !== 32) || (existing !== null && key === null))
+          throw new Error();
+        if (existing !== null) decodeSecretEnvelope(FILE, existing.toString("utf8"), key!);
+      }
       writeSecretFile(join(directory, FILE), JSON.stringify(config));
     });
   } catch {
@@ -144,7 +171,9 @@ export async function runRunnerTranscriptStorageCli(args: string[], home: string
       if (size > MAX_BYTES) throw new Error();
       chunks.push(bytes);
     }
-    configureRunnerTranscriptStorage(home, Buffer.concat(chunks).toString("utf8"));
+    const text = Buffer.concat(chunks).toString("utf8");
+    if (storedSecrets() === null) configureRunnerTranscriptStorage(home, text);
+    else await saveSecret(join(home, "secrets", FILE), JSON.stringify(parseStorage(text)));
     console.log("Runner transcript storage configured.");
     return 0;
   } catch {

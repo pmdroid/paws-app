@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
 import {
   EXE_DEV_TOKEN_FILE,
   isTailnetUrl,
@@ -110,7 +110,7 @@ async function githubApp(input: SecretsStepInput, origin: string, dir: string): 
     changed ||= value.length > 0;
     app[key] = value || saved[key] || null;
   }
-  const keySet = existsSync(pemPath);
+  const keySet = secretFileExists(pemPath);
   let privateKeyPath = keySet ? pemPath : null;
   for (;;) {
     const path = await io.ask(
@@ -142,7 +142,7 @@ async function githubApp(input: SecretsStepInput, origin: string, dir: string): 
     privateKeyPath: privateKeyPath!,
     installationId: app.installationId ?? null,
   };
-  saveGitHubAppCredentials(input.home, credentials);
+  await saveGitHubAppCredentials(input.home, credentials);
   io.say("  GitHub App saved.");
 }
 
@@ -161,7 +161,7 @@ async function linearClient(input: SecretsStepInput, origin: string): Promise<vo
     clientId: clientId || saved.clientId,
     clientSecret: clientSecret || saved.clientSecret,
   };
-  writeSecretFile(path, `${JSON.stringify(next)}\n`);
+  await saveSecret(path, `${JSON.stringify(next)}\n`);
   io.say("  Linear OAuth app saved.");
 }
 
@@ -182,7 +182,7 @@ async function webhookSecret(
     if (choice === "p") {
       const value = await io.secret(`${label}: `);
       if (!value) continue;
-      writeSecretFile(path, value);
+      await saveSecret(path, value);
       io.say(`  ${label} saved.`);
       return;
     }
@@ -192,7 +192,7 @@ async function webhookSecret(
         io.say("  There is no terminal to show a generated secret on. Paste one instead.");
         continue;
       }
-      writeSecretFile(path, value);
+      await saveSecret(path, value);
       io.say(`  ${label} saved.`);
       return;
     }
@@ -209,7 +209,7 @@ async function textSecret(
     const set = isSet(path);
     const value = await io.secret(prompt(label, set));
     if (value) {
-      writeSecretFile(path, value);
+      await saveSecret(path, value);
       io.say(`  ${label} saved.`);
       return;
     }
@@ -238,7 +238,7 @@ async function slackApp(io: Prompter, path: string): Promise<void> {
     io.say("  Slack not saved: client ID, client secret and signing secret are all required.");
     return;
   }
-  writeSecretFile(path, JSON.stringify(app));
+  await saveSecret(path, JSON.stringify(app));
   io.say("  Slack saved. Run paws login slack to connect it.");
 }
 

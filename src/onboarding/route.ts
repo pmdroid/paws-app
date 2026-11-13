@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { writeSecretFile } from "../credentials";
+import { saveSecret } from "../credentials";
 import {
   consumeBrowserInstallation,
   consumeWorkspaceBootstrap,
@@ -234,7 +234,7 @@ export function createBrowserOnboarding(options: {
       const bound = await installationOrganization();
       signal.throwIfAborted();
       if (bound !== organization.id) return retry("workspace-mismatch");
-      writeSecretFile(
+      await saveSecret(
         join(home, "secrets", "linear-client.json"),
         JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
       );

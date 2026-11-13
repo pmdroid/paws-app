@@ -338,78 +338,90 @@ export function createHostedGitHubConnect(options: {
       }
       if (typeof installationId !== "string")
         return Response.json({ error: "Install the GitHub App first." }, { status: 409 });
-      return store.transaction(function* (q) {
-        if (!(yield* permittedSteps(q))) return yield* deniedSteps(q);
-        const workspaceId = access!.principal.workspaceId;
-        const scope = JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, workspaceId));
-        if (scope !== initialScope)
-          return Response.json(
-            { error: "Workspace access changed. Refresh and try again." },
-            { status: 409 },
-          );
-        const repositories = [
-          ...new Set(
-            (yield* listWorkspaceRepositoriesSteps(q, workspaceId)).map(
-              (entry) => entry.repository,
-            ),
-          ),
-        ];
-        if (!repositories.length)
-          return Response.json(
-            { error: "An owner must approve workspace repositories first." },
-            { status: 409 },
-          );
-        let app: ActiveGitHubApp;
-        try {
-          app = activation.template();
-        } catch (caughtError6) {
-          journalCaught(caughtError6, "github-connect.createHostedGitHubConnect.template", null);
-          return Response.json(
-            {
-              error:
-                "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
-            },
-            { status: 503 },
-          );
-        }
-        if (discoveredApp && JSON.stringify(app) !== JSON.stringify(discoveredApp))
-          return Response.json(
-            { error: "GitHub setup changed. Refresh and try again." },
-            { status: 409 },
-          );
-        const secret = newGitHubOAuthSecret();
-        activation.save(secret.id, {
-          app,
-          verifier: secret.verifier,
-          installationId,
-          repositories,
-          scope,
-        } satisfies Intent);
-        yield* ensureGithubConnectionSteps(q, workspaceId);
-        const generation = (yield* githubConnectionSteps(q, workspaceId))!.generation;
-        yield* insertGithubOAuthSteps(q, {
-          stateHash: hash(secret.state),
-          workspaceId,
-          userId: access!.principal.userId,
-          sessionHash: access!.session.tokenHash,
-          secretId: secret.id,
-          expectedGeneration: generation,
-          intent: JSON.stringify({ appId: app.appId, installationId, scope }),
-          expiresAt: now() + 600000,
-        });
-        yield* auditSteps(q, "github.connect.started");
+      const repositories = [...new Set(initialRepositories.map((entry) => entry.repository))];
+      if (!repositories.length)
+        return Response.json(
+          { error: "An owner must approve workspace repositories first." },
+          { status: 409 },
+        );
+      let app: ActiveGitHubApp;
+      try {
+        app = activation.template();
+      } catch (caughtError6) {
+        journalCaught(caughtError6, "github-connect.createHostedGitHubConnect.template", null);
         return Response.json(
           {
-            authorizationUrl: githubAppAuthorization({
-              clientId: app.clientId,
-              redirectUri: origin + CALLBACK,
-              state: secret.state,
-              verifier: secret.verifier,
-            }),
+            error:
+              "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
           },
-          { headers: { "cache-control": "no-store" } },
+          { status: 503 },
         );
-      });
+      }
+      if (discoveredApp && JSON.stringify(app) !== JSON.stringify(discoveredApp))
+        return Response.json(
+          { error: "GitHub setup changed. Refresh and try again." },
+          { status: 409 },
+        );
+      const secret = newGitHubOAuthSecret();
+      const intent: Intent = {
+        app,
+        verifier: secret.verifier,
+        installationId,
+        repositories,
+        scope: initialScope,
+      };
+      try {
+        await activation.save(secret.id, intent);
+      } catch (caught) {
+        journalCaught(caught, "github-connect.createHostedGitHubConnect.save", null);
+        return Response.json(
+          { error: "Paws could not save the GitHub connection. Try again." },
+          { status: 503 },
+        );
+      }
+      const started = { inserted: false };
+      try {
+        return await store.transaction(function* (q) {
+          if (!(yield* permittedSteps(q))) return yield* deniedSteps(q);
+          const workspaceId = access!.principal.workspaceId;
+          const scope = JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, workspaceId));
+          if (scope !== initialScope)
+            return Response.json(
+              { error: "Workspace access changed. Refresh and try again." },
+              { status: 409 },
+            );
+          yield* ensureGithubConnectionSteps(q, workspaceId);
+          const generation = (yield* githubConnectionSteps(q, workspaceId))!.generation;
+          yield* insertGithubOAuthSteps(q, {
+            stateHash: hash(secret.state),
+            workspaceId,
+            userId: access!.principal.userId,
+            sessionHash: access!.session.tokenHash,
+            secretId: secret.id,
+            expectedGeneration: generation,
+            intent: JSON.stringify({ appId: app.appId, installationId, scope }),
+            expiresAt: now() + 600000,
+          });
+          yield* auditSteps(q, "github.connect.started");
+          started.inserted = true;
+          return Response.json(
+            {
+              authorizationUrl: githubAppAuthorization({
+                clientId: app.clientId,
+                redirectUri: origin + CALLBACK,
+                state: secret.state,
+                verifier: secret.verifier,
+              }),
+            },
+            { headers: { "cache-control": "no-store" } },
+          );
+        });
+      } catch (error) {
+        started.inserted = false;
+        throw error;
+      } finally {
+        if (!started.inserted) await activation.remove(secret.id);
+      }
     }
     if (request.method !== "GET") return denied();
     const state = url.searchParams.get("state");
@@ -441,7 +453,7 @@ export function createHostedGitHubConnect(options: {
         ...(options.fetch ? { fetch: options.fetch } : {}),
       });
       const secretId = randomUUID();
-      activation.save(secretId, { ...intent.app, installationId: intent.installationId });
+      await activation.save(secretId, { ...intent.app, installationId: intent.installationId });
       const job = { ready: false };
       const response = await store.transaction(function* (q) {
         const currentApp = activation.template();

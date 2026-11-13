@@ -120,6 +120,13 @@
       "when": 1794549526778,
       "tag": "0016_member_vm_many_per_member",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794569731916,
+      "tag": "0017_secret_table",
+      "breakpoints": true
     }
   ]
 }

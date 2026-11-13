@@ -64,6 +64,7 @@ export type GitHubDoctorFacts = {
 export type ProbeFacts = {
   configError: string | null;
   databaseHeld?: boolean;
+  secrets?: { where: string; count: number; failed: string[]; stored: string[] | null };
   overriddenSections?: string[];
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;

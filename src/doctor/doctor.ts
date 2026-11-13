@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { checkSecrets, storedSecrets } from "../credentials";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
   LINEAR_WORKSPACE_REQUIRED,
@@ -117,6 +118,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   );
   if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
+  if (facts.secrets) checks.push(secretsCheck(facts.secrets));
   const overridden = facts.overriddenSections ?? [];
   if (overridden.length > 0) checks.push(overriddenSectionsNote(overridden));
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
@@ -169,7 +171,17 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
 }
 
 export async function realProbe(env: EnvSource = process.env): Promise<DoctorProbe> {
-  const facts = await withSavedStore(env, (saved) => realProbeFacts(env, saved));
+  const facts = await withSavedStore(env, async (saved) => {
+    const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
+    const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
+    const secrets = { ...checkSecrets(secretsDir), stored };
+    try {
+      return { ...(await realProbeFacts(env, saved)), secrets };
+    } catch (error) {
+      if (secrets.failed.length === 0) throw error;
+      throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
+    }
+  });
   return {
     env,
     facts,
@@ -180,6 +192,7 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
       return Bun.which(command);
     },
     stat(path) {
+      if (facts.secrets?.stored?.includes(resolve(path))) return { mode: 0o100600 };
       try {
         return { mode: statSync(path).mode };
       } catch (caughtError1) {
@@ -378,6 +391,18 @@ function webhookDeliveryCheck(warning: LinearWebhookWarning | null): DoctorCheck
         describeLinearWebhookWarning(warning),
         LINEAR_WEBHOOK_FIX,
       );
+}
+
+function secretsCheck(secrets: NonNullable<ProbeFacts["secrets"]>): DoctorCheck {
+  const key = process.env.PAWS_SECRET_KEY ? "PAWS_SECRET_KEY" : "the .envelope-key file";
+  return check(
+    "secrets",
+    secrets.failed.length === 0,
+    secrets.failed.length === 0
+      ? `${secrets.count} read from ${secrets.where} with ${key}`
+      : `${key} does not decrypt ${secrets.failed.join(", ")} in ${secrets.where}`,
+    "Set PAWS_SECRET_KEY to the base64 of the .envelope-key these secrets were written with.",
+  );
 }
 
 function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {

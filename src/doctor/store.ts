@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { loadRuntime, pawsPaths, useSettingsStore, type EnvSource } from "../config";
+import { databaseUrlOf, loadEnv, pawsPaths, useSettingsStore, type EnvSource } from "../config";
 import {
   CONFIG_SETTINGS_KEY,
   openPawsStore,
@@ -11,6 +11,7 @@ import {
   type Db,
   type PawsStore,
 } from "../db";
+import { storedSecrets, useDatabaseSecrets } from "../credentials";
 import { journalCaught } from "../journal";
 
 export const DATABASE_HELD =
@@ -31,13 +32,21 @@ export async function withSavedStore<T>(
   env: EnvSource,
   work: (saved: SavedStore) => Promise<T>,
 ): Promise<T> {
-  const runtime = loadRuntime(env);
-  const paths = pawsPaths(runtime.env.home);
+  const paths = pawsPaths(loadEnv(env).home);
+  let databaseUrl: string | null = null;
+  try {
+    databaseUrl = databaseUrlOf(env);
+  } catch (error) {
+    journalCaught(error, "doctor.withSavedStore.databaseUrl", null);
+  }
   let opened: PawsStore | null = null;
   let settings: { release(): void } | null = null;
+  let secrets: { close(): Promise<void> } | null = null;
   try {
-    opened = await openSaved(runtime.databaseUrl, paths.pgliteDir);
+    opened = await openSaved(databaseUrl, paths.pgliteDir);
     const store = opened?.store;
+    if (store && databaseUrl !== null && storedSecrets() === null)
+      secrets = await useDatabaseSecrets(store, paths.secretsDir, { copy: false });
     if (store)
       settings = await useSettingsStore(paths.configFile, {
         read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
@@ -45,6 +54,7 @@ export async function withSavedStore<T>(
           store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
       });
   } catch (error) {
+    await secrets?.close().catch(() => undefined);
     await opened?.close().catch(() => undefined);
     if (error instanceof PgliteInUseError) return work({ store: null, held: true });
     journalCaught(error, "doctor.withSavedStore.open", null);
@@ -54,6 +64,7 @@ export async function withSavedStore<T>(
     return await work({ store: opened?.store ?? null, held: false });
   } finally {
     settings?.release();
+    await secrets?.close();
     await opened?.close();
   }
 }
