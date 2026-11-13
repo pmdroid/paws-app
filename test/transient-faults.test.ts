@@ -382,9 +382,44 @@ test("Stop while the task waits for a busy runner pauses it", async () => {
   ).toEqual([]);
 }, 90_000);
 
+test("an auth error while the runner's sign-in check passes is retried and the task continues", async () => {
+  const result = await runWithFault({ error: () => null, times: 0, authErrors: 1, signedIn: true });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(result.implementations, result.detail).toBe(2);
+  expect(result.signInChecks, result.detail).toEqual(["claude"]);
+  expect(result.journal, result.detail).toContain(
+    "item ENG-7 retrying auth error: runner goldbox agent claude signed in",
+  );
+}, 90_000);
+
+test("an auth error while the runner's sign-in check fails still fails the task", async () => {
+  const result = await runWithFault({
+    error: () => null,
+    times: 0,
+    authErrors: 1,
+    signedIn: false,
+  });
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.implementations, result.detail).toBe(1);
+  expect(result.events, result.detail).toContain("run_failed");
+  expect(result.journal.filter((line) => line.includes("retrying auth error"))).toEqual([]);
+}, 90_000);
+
+test("a fourth auth error within 15 minutes fails the task", async () => {
+  const result = await runWithFault({ error: () => null, times: 0, authErrors: 4, signedIn: true });
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.implementations, result.detail).toBe(4);
+  expect(result.retries, result.detail).toEqual([1, 2, 3]);
+  expect(result.journal.filter((line) => line.includes("retrying auth error"))).toHaveLength(3);
+}, 90_000);
+
 async function runWithFault(fault: {
   error: () => unknown;
   times: number;
+  authErrors?: number;
+  signedIn?: boolean;
   tracker?: boolean;
   clock?: FakeClock;
   /** Stops driving the loop once the fake clock has moved this far. */
@@ -409,6 +444,8 @@ async function runWithFault(fault: {
   elapsedMs: number;
   awakeMs: number;
   waitingMs: number;
+  signInChecks: string[];
+  journal: string[];
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
@@ -442,6 +479,9 @@ async function runWithFault(fault: {
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
   let sequence = 0;
+  let authErrors = fault.authErrors ?? 0;
+  const signInChecks: string[] = [];
+  const journal: string[] = [];
   let orchestrator: ReturnType<typeof attachOrchestrator>;
   const gate = new LinearTaskAccess(db, {
     access: access.adapter,
@@ -465,6 +505,15 @@ async function runWithFault(fault: {
     retryBaseMs: 10,
     placementPollMs: 1_000,
     clock,
+    journal: (line) => journal.push(line),
+    ...(fault.authErrors
+      ? {
+          runnerSignIn: async (_runId: string, agent: string) => {
+            signInChecks.push(agent);
+            return { runner: "goldbox", signedIn: fault.signedIn ?? false };
+          },
+        }
+      : {}),
     launch(input) {
       if (fault.atClassify && input.purpose === "classify" && remaining > 0) {
         remaining -= 1;
@@ -486,7 +535,9 @@ async function runWithFault(fault: {
             ]
           : input.purpose === "review"
             ? emptyReview().steps
-            : [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }];
+            : input.purpose === "implement" && authErrors-- > 0
+              ? [{ type: "auth_error" }]
+              : [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }];
       const script = path.join(layout.root, `fault-${sequence}.json`);
       writeFileSync(
         script,
@@ -620,6 +671,8 @@ async function runWithFault(fault: {
       elapsedMs: clock.now() - startedAt,
       awakeMs: recorded?.awakeMs ?? 0,
       waitingMs: recorded?.waitingMs ?? 0,
+      signInChecks,
+      journal,
       state: await stateOfPg(db, "ENG-7"),
       states,
       thoughts: progress("thought"),

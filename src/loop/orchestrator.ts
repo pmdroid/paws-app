@@ -833,6 +833,11 @@ export type OrchestratorOptions = {
     now: number,
   ) => Promise<{ repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null>;
   repositoryAllowedOn?: (itemId: string, runnerId: string, now: number) => Promise<boolean>;
+  runnerSignIn?: (
+    runId: string,
+    agent: string,
+    signal: AbortSignal,
+  ) => Promise<{ runner: string; signedIn: boolean } | null>;
   /**
    * A runner the item's owner may use for this agent now, for the line that resumes a
    * runner-setup hold. Null when none is eligible. SQLite only.
@@ -935,6 +940,7 @@ export class Orchestrator {
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
+  private readonly authRetries = new Map<string, number[]>();
   private readonly runtimeLists = createRuntimeLists(
     {
       originMain: trustedOriginMain,
@@ -3959,7 +3965,12 @@ export class Orchestrator {
       const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
-        await this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
+        const message = executed.run.errorMessage ?? "Claude login is missing.";
+        if (
+          await this.retryAuthError(finished, run.id, profiles.implementer.agent, controller.signal)
+        )
+          throw new AgentServiceError(message);
+        await this.fail(finished, "auth", message);
         return;
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
@@ -4132,6 +4143,29 @@ export class Orchestrator {
         live.finish();
       }
     }
+  }
+
+  private async retryAuthError(
+    item: WorkItemRecord,
+    runId: string,
+    agent: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const at = this.now();
+    const recent = (this.authRetries.get(item.id) ?? []).filter(
+      (retried) => retried > at - AUTH_RETRY_WINDOW_MS,
+    );
+    if (recent.length >= AUTH_RETRIES || !this.options.runnerSignIn) return false;
+    const check = await this.options.runnerSignIn(runId, agent, signal).catch((error: unknown) => {
+      journalCaught(error, "orchestrator.retryAuthError", item.id, undefined, this.options.journal);
+      return null;
+    });
+    if (!check?.signedIn) return false;
+    this.authRetries.set(item.id, [...recent, at]);
+    this.options.journal?.(
+      `item ${item.linearIdentifier} retrying auth error: runner ${check.runner} agent ${agent} signed in`,
+    );
+    return true;
   }
 
   private async verify(
@@ -11284,6 +11318,8 @@ const ACCEPTED_ON_REMOTE =
   "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
+const AUTH_RETRIES = 3;
+const AUTH_RETRY_WINDOW_MS = 15 * 60_000;
 const OUTBOX_WAIT_MS = 30_000;
 const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;

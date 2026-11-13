@@ -567,6 +567,14 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       send({ jsonrpc: "2.0", id: prompt, result: { stopReason: "cancelled" } });
       return true;
     }
+    if (step.type === "auth_error") {
+      send({
+        jsonrpc: "2.0",
+        id: prompt,
+        error: { code: -32000, message: "Authentication required" },
+      });
+      return true;
+    }
     if (step.type === "end") {
       send({ jsonrpc: "2.0", id: prompt, result: { stopReason: step.stopReason ?? "end_turn" } });
       for (const update of step.updatesAfterResponse ?? [])
