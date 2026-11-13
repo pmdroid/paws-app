@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { count, eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
   listRunnerRuntimes,
@@ -11,11 +12,8 @@ import {
   skillRollouts,
   type RunnerSkillView,
   markSkillRemoved,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   saveSkill,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
@@ -28,9 +26,13 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { json, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function temporary() {
@@ -41,17 +43,17 @@ function temporary() {
 
 async function fixture() {
   const root = temporary();
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   let now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -68,7 +70,7 @@ async function fixture() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -81,9 +83,11 @@ async function fixture() {
     ...pending,
     token: (await control.createEnrollment(principal, pending)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+  );
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -175,20 +179,23 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   expect((await runner.heartbeat({ ...sample, cpuPercent: 5 }))!.status).toBe(200);
   const updated = (await runner.list()).runners[0]!;
   expect(updated.metrics).toMatchObject({ cpuPercent: 5, reportedAt: runner.now() });
-  expect(runner.db.query("SELECT COUNT(*) AS count FROM runner_host_status").get()).toEqual({
-    count: 1,
-  });
+  const versions = () =>
+    runner.db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            runnerVersion: q.t.runnerHostStatus.runnerVersion,
+            miseVersion: q.t.runnerHostStatus.miseVersion,
+          })
+          .from(q.t.runnerHostStatus),
+      ),
+    );
   expect(
-    runner.db
-      .query(
-        "SELECT runner_version AS runnerVersion,mise_version AS miseVersion FROM runner_host_status",
-      )
-      .get(),
-  ).toEqual({ runnerVersion: "1.4.0", miseVersion: "2026.10.18" });
+    await runner.db.run((q) => q.one(q.orm.select({ count: count() }).from(q.t.runnerHostStatus))),
+  ).toEqual({ count: 1 });
+  expect(await versions()).toEqual([{ runnerVersion: "1.4.0", miseVersion: "2026.10.18" }]);
   expect((await runner.heartbeat({ runnerVersion: "1.4.0" }))!.status).toBe(200);
-  expect(
-    runner.db.query("SELECT mise_version AS miseVersion FROM runner_host_status").get(),
-  ).toEqual({ miseVersion: null });
+  expect(await versions()).toEqual([{ runnerVersion: "1.4.0", miseVersion: null }]);
 });
 
 test("the runner list says who a runner starts agents as", async () => {
@@ -238,12 +245,22 @@ test("out-of-range or unknown heartbeat fields are rejected", async () => {
 
 test("a runner with a pending command or open work is not idle", async () => {
   const runner = await fixture();
-  runner.db.run(
-    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('probe-1',?,'probe','{}',?)",
-    [runner.runnerId, runner.now() + 60_000],
+  await seed(runner.db, (q) =>
+    q.orm.insert(q.t.runnerCommand).values({
+      id: "probe-1",
+      runnerId: runner.runnerId,
+      kind: "probe",
+      envelope: json(runner.db, {}),
+      expiresAt: runner.now() + 60_000,
+    }),
   );
   expect((await runner.list()).runners[0]!.idle).toBe(false);
-  runner.db.run("UPDATE runner_command SET acknowledged_at=? WHERE id='probe-1'", [runner.now()]);
+  await seed(runner.db, (q) =>
+    q.orm
+      .update(q.t.runnerCommand)
+      .set({ acknowledgedAt: runner.now() })
+      .where(eq(q.t.runnerCommand.id, "probe-1")),
+  );
   expect((await runner.list()).runners[0]!.idle).toBe(true);
 });
 
@@ -386,9 +403,9 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     agents: ["claude" as const, "codex" as const],
     updatedAt: runner.now(),
   };
-  await saveSkill(sqliteDb(runner.db), pin);
-  await saveSkill(sqliteDb(runner.db), { ...pin, name: "gone", version: "1.0.0" });
-  await markSkillRemoved(sqliteDb(runner.db), "gone", runner.now());
+  await saveSkill(runner.db, pin);
+  await saveSkill(runner.db, { ...pin, name: "gone", version: "1.0.0" });
+  await markSkillRemoved(runner.db, "gone", runner.now());
 
   const older = (await (await runner.heartbeat({}))!.json()) as Record<string, unknown>;
   expect(older.skills).toBeUndefined();
@@ -408,7 +425,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
       agents: ["claude", "codex"],
     },
   ]);
-  expect(await listRunnerSkills(sqliteDb(runner.db), runner.runnerId)).toEqual([
+  expect(await listRunnerSkills(runner.db, runner.runnerId)).toEqual([
     { ...installed[0]!, status: "installed", error: null, waiting: null, reportedAt: runner.now() },
   ]);
   const refused = {
@@ -419,7 +436,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     error: "Skill impeccable 2.4.1 failed its checksum and was not installed.",
   };
   expect((await runner.heartbeat({ skills: [refused] }))!.status).toBe(200);
-  expect(await listRunnerSkills(sqliteDb(runner.db), runner.runnerId)).toEqual([
+  expect(await listRunnerSkills(runner.db, runner.runnerId)).toEqual([
     { ...refused, status: "refused", waiting: null, reportedAt: runner.now() },
   ]);
 
@@ -501,19 +518,19 @@ test("a runner waiting on running tasks says how many still hold the earlier ver
     agents: ["claude" as const],
     updatedAt: runner.now(),
   };
-  await saveSkill(sqliteDb(runner.db), pin);
+  await saveSkill(runner.db, pin);
   const pending = { name: pin.name, version: pin.version, sha256: pin.sha256, status: "pending" };
   expect((await runner.heartbeat({ skills: [{ ...pending, waiting: 2 }] }))?.status).toBe(200);
   const list = (await runner.list()) as unknown as {
     runners: { skills: RunnerSkillView[] }[];
   };
   expect(list.runners[0]!.skills[0]).toMatchObject({ state: "installing", waiting: 2 });
-  expect((await skillRollouts(sqliteDb(runner.db)))[0]).toMatchObject({
+  expect((await skillRollouts(runner.db))[0]).toMatchObject({
     installing: [],
     waiting: [{ runner: "Host VM", tasks: 2 }],
   });
   expect((await runner.heartbeat({ skills: [pending] }))?.status).toBe(200);
-  expect((await skillRollouts(sqliteDb(runner.db)))[0]).toMatchObject({
+  expect((await skillRollouts(runner.db))[0]).toMatchObject({
     installing: ["Host VM"],
     waiting: [],
   });
@@ -529,7 +546,7 @@ test("the runner list shows each registered skill as up to date, installing, out
     updatedAt: runner.now(),
   };
   for (const name of ["current", "failing", "missing", "older", "pending"])
-    await saveSkill(sqliteDb(runner.db), { ...pin, name, version: "2.0.0" });
+    await saveSkill(runner.db, { ...pin, name, version: "2.0.0" });
   const reported = (name: string, status: string, sha256 = pin.sha256, version = "2.0.0") => ({
     name,
     version,
@@ -598,9 +615,7 @@ test("the runner list shows each registered skill as up to date, installing, out
       reportedAt: runner.now(),
     },
   ]);
-  expect(
-    (await skillRollouts(sqliteDb(runner.db))).map(({ name, ...rollout }) => [name, rollout]),
-  ).toEqual([
+  expect((await skillRollouts(runner.db)).map(({ name, ...rollout }) => [name, rollout])).toEqual([
     ["current", { total: 1, upToDate: 1, installing: [], waiting: [], outOfDate: [], failed: [] }],
     [
       "failing",
@@ -642,14 +657,14 @@ test("a heartbeat with runtimes stores them and the runner list returns them", a
     { tool: "node", version: "22", status: "installed", error: null, reportedAt: at },
     { tool: "python", version: "3.99", status: "failed", error: failure, reportedAt: at },
   ];
-  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
+  expect(await listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
   const list = (await runner.list()) as unknown as { runners: { runtimes: unknown }[] };
   expect(list.runners[0]!.runtimes).toEqual(expected);
 
   // A heartbeat without the field, from a runner that has not installed any, keeps the rows.
   runner.advance(15_000);
   expect((await runner.heartbeat(sample))?.status).toBe(200);
-  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
+  expect(await listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
 
   // The next report replaces the last one.
   expect(
@@ -659,7 +674,7 @@ test("a heartbeat with runtimes stores them and the runner list returns them", a
       })
     )?.status,
   ).toBe(200);
-  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual([
+  expect(await listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([
     {
       tool: "python",
       version: "3.99",
@@ -680,22 +695,27 @@ test("a heartbeat with a malformed runtime is refused", async () => {
     { tool: "node", version: "22", status: "installed", path: "/usr/bin" },
   ])
     expect((await runner.heartbeat({ runtimes: [runtime] }))?.status).toBe(403);
-  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual([]);
+  expect(await listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([]);
 });
 
 test("first activation ignores sign-in probes and remembers work after its lease moves", async () => {
   const runner = await fixture();
   const hasRunWork = async () => (await runner.list()).runners[0]!.hasRunWork;
   expect(await hasRunWork()).toBe(false);
-  runner.db.run(
-    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES('login',?,'login_check','{}',?,?)",
-    [runner.runnerId, runner.now(), runner.now()],
-  );
+  const command = (id: string, kind: string) =>
+    seed(runner.db, (q) =>
+      q.orm.insert(q.t.runnerCommand).values({
+        id,
+        runnerId: runner.runnerId,
+        kind,
+        envelope: json(runner.db, {}),
+        expiresAt: runner.now(),
+        acknowledgedAt: runner.now(),
+      }),
+    );
+  await command("login", "login_check");
   expect(await hasRunWork()).toBe(false);
   // Commands retain the assignment history when runner_work is replaced during failover.
-  runner.db.run(
-    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES('review',?,'review','{}',?,?)",
-    [runner.runnerId, runner.now(), runner.now()],
-  );
+  await command("review", "review");
   expect(await hasRunWork()).toBe(true);
 });
