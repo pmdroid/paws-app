@@ -39,7 +39,6 @@ const INSTALLER = '#!/bin/sh\nset -eu\necho "installing $1"\n';
 const CONFIG = JSON.stringify({
   controlPlaneUrl: "https://paws.example.com",
   runnerApiUrl: "https://paws.example.com:8788",
-  allowedRepositories: [],
 });
 const CONFIG_SHA = createHash("sha256").update(`${CONFIG}\n`).digest("hex");
 
@@ -87,6 +86,7 @@ const STAGE = [
   `printf '%s' ${q(INSTALLER)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/install-runner.sh`,
   `printf '%s' ${q(RUN_SCRIPT)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/run.sh`,
   `printf '%s\\n' ${q(CONFIG)} | sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/config.json`,
+  "{ sudo test ! -e /etc/paws-runner/config.json || sudo install -o root -g paws-runner -m 0640 /var/lib/paws-bootstrap/config.json /etc/paws-runner/config.json; }",
 ].join(" && ");
 
 const TOKEN_KEY = [
@@ -396,6 +396,7 @@ test("installStatus reports running, succeeded or failed from the unit and the i
 test("enroll runs the enroll command with the token file and returns the runner", async () => {
   const exe = setup();
   const paired = JSON.stringify({ paired: true, runnerId: "run_01", workspaceId: "ws_01" });
+  exe.scriptExec(VM, STAGE, {});
   exe.scriptExec(VM, ENROLL, { stdout: `${paired}\n` });
   const bootstrap = createExeDevBootstrap(options(exe));
 
@@ -403,7 +404,9 @@ test("enroll runs the enroll command with the token file and returns the runner"
   // A retry after the token file is gone: the daemon is already paired and prints the same JSON.
   expect(await bootstrap.enroll(VM)).toEqual({ runnerId: "run_01", workspaceId: "ws_01" });
   expect(exe.calls).toEqual([
+    { operation: "execVm", vm: VM, command: STAGE, timeoutMs: 25_000 },
     { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: null },
+    { operation: "execVm", vm: VM, command: STAGE, timeoutMs: 25_000 },
     { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: null },
   ]);
   expect(ENROLL).not.toContain(TOKEN);
@@ -423,6 +426,7 @@ test("enroll fails with BootstrapError('enroll') on anything but a paired runner
   ];
   for (const output of outputs) {
     const exe = setup();
+    exe.scriptExec(VM, STAGE, {});
     exe.scriptExec(VM, ENROLL, output);
     const error = await bootstrapError(createExeDevBootstrap(options(exe)).enroll(VM));
     expect(error.step).toBe("enroll");
@@ -439,6 +443,7 @@ test("an enroll failure keeps the runner's cause in the step error", async () =>
   const dns = Object.assign(new Error(`getaddrinfo ENOTFOUND ${TOKEN}`), { code: "ENOTFOUND" });
   const line = runnerFailureLine(transportFailure(dns, url, "POST", url.pathname, 5), [TOKEN]);
   const exe = setup();
+  exe.scriptExec(VM, STAGE, {});
   exe.scriptExec(VM, ENROLL, { exitCode: 1, stderr: `${line}\n` });
   const error = await bootstrapError(createExeDevBootstrap(options(exe)).enroll(VM));
   expect(error.step).toBe("enroll");
@@ -447,6 +452,7 @@ test("an enroll failure keeps the runner's cause in the step error", async () =>
   // The longest cause still survives the stderr tail the step error keeps.
   const long = `${line.slice(0, line.indexOf("Cause: "))}Cause: ${"x".repeat(299)}.`;
   const tail = setup();
+  tail.scriptExec(VM, STAGE, {});
   tail.scriptExec(VM, ENROLL, { exitCode: 1, stderr: `${long}\n` });
   const trimmed = await bootstrapError(createExeDevBootstrap(options(tail)).enroll(VM));
   expect(trimmed.message).toContain(`${"x".repeat(299)}.`);
@@ -500,7 +506,6 @@ test("unpinned or invalid inputs are refused before any command runs", () => {
     { runnerApiUrl: "http://paws.example.com:8788" },
     { controlPlaneUrl: "not a url" },
     { serverCa: "secret" },
-    { allowedRepositories: ["no-slash"] },
   ];
   for (const change of invalid) {
     let step: string | null = null;
@@ -515,7 +520,7 @@ test("unpinned or invalid inputs are refused before any command runs", () => {
   expect(exe.calls).toEqual([]);
 });
 
-test("the config carries the server CA and allowed repositories but no secret", async () => {
+test("the config carries the server CA but no repository list or secret", async () => {
   const exe = setup();
   const ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
   exe.scriptExec(VM, PROBE, { stdout: probe({}) });
@@ -525,12 +530,10 @@ test("the config carries the server CA and allowed repositories but no secret", 
   await createExeDevBootstrap({
     ...options(exe),
     serverCa: ca,
-    allowedRepositories: ["pmdroid/paws-app"],
   }).startInstall(VM, TOKEN);
   const config = JSON.stringify({
     controlPlaneUrl: "https://paws.example.com",
     runnerApiUrl: "https://paws.example.com:8788",
-    allowedRepositories: ["pmdroid/paws-app"],
     serverCa: ca,
   });
   expect(commands(exe)[1]).toContain(
@@ -600,11 +603,13 @@ function localVm() {
     ].join("\n"),
   );
   const stage = join(root, "var/lib/paws-bootstrap");
+  const etc = join(root, "etc/paws-runner");
+  const local = (text: string) =>
+    text.replaceAll("/var/lib/paws-bootstrap", stage).replaceAll("/etc/paws-runner", etc);
   const run = (command: string) => {
-    const result = Bun.spawnSync(
-      ["/bin/sh", "-c", command.replaceAll("/var/lib/paws-bootstrap", stage)],
-      { env: { PATH: `${bin}:/usr/bin:/bin` } },
-    );
+    const result = Bun.spawnSync(["/bin/sh", "-c", local(command)], {
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    });
     return {
       exitCode: result.exitCode,
       stdout: result.stdout.toString(),
@@ -612,16 +617,14 @@ function localVm() {
     };
   };
   const modes = () => readFileSync(join(root, "modes"), "utf8").replaceAll(stage, "<stage>");
-  return { stage, run, modes };
+  return { stage, installed: join(etc, "config.json"), local, run, modes };
 }
 
 test("the staged files land with the right modes and the commands are valid shell", () => {
   const vm = localVm();
   expect(vm.run(STAGE).exitCode).toBe(0);
   expect(readFileSync(join(vm.stage, "install-runner.sh"), "utf8")).toBe(INSTALLER);
-  expect(readFileSync(join(vm.stage, "run.sh"), "utf8")).toBe(
-    RUN_SCRIPT.replaceAll("/var/lib/paws-bootstrap", vm.stage),
-  );
+  expect(readFileSync(join(vm.stage, "run.sh"), "utf8")).toBe(vm.local(RUN_SCRIPT));
   expect(readFileSync(join(vm.stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
   expect(vm.modes()).toBe(
     ["0700 <stage>/install-runner.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join(
@@ -638,6 +641,37 @@ test("the staged files land with the right modes and the commands are valid shel
     RESET_IDENTITY,
   ]) {
     expect(Bun.spawnSync(["/bin/sh", "-n", "-c", script]).exitCode).toBe(0);
+  }
+});
+
+test("a second startInstall or enroll puts the config it computes now over an earlier attempt's", async () => {
+  const OLD = `${JSON.stringify({ controlPlaneUrl: "https://paws.example.com", allowedRepositories: [] })}\n`;
+  for (const second of ["startInstall", "enroll"] as const) {
+    const vm = localVm();
+    const { installed } = vm;
+    mkdirSync(join(installed, ".."), { recursive: true });
+    mkdirSync(vm.stage, { recursive: true });
+    writeFileSync(join(vm.stage, "config.json"), OLD);
+    writeFileSync(installed, OLD);
+    const exe = setup();
+    exe.scriptExec(VM, STAGE, (command) => vm.run(command));
+    const oldSha = createHash("sha256").update(OLD).digest("hex");
+    exe.scriptExec(VM, PROBE, {
+      stdout: probe({ active: "active", sub: "exited", ...INSTALLED, config: oldSha }),
+    });
+    scriptToken(exe);
+    exe.scriptExec(VM, START_INSTALL, {});
+    const paired = JSON.stringify({ paired: true, runnerId: "run_01", workspaceId: "ws_01" });
+    exe.scriptExec(VM, ENROLL, { stdout: `${paired}\n` });
+    const bootstrap = createExeDevBootstrap(options(exe));
+
+    if (second === "startInstall") expect(await bootstrap.startInstall(VM, TOKEN)).toBe("started");
+    else expect(await bootstrap.enroll(VM)).toEqual({ runnerId: "run_01", workspaceId: "ws_01" });
+    expect(commands(exe)).toContain(STAGE);
+    expect(readFileSync(join(vm.stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
+    expect(readFileSync(installed, "utf8")).toBe(`${CONFIG}\n`);
+    expect(vm.modes()).toContain("0600 <stage>/config.json\n");
+    expect(vm.modes()).toContain(`0640 ${installed}\n`);
   }
 });
 
@@ -729,6 +763,7 @@ test("the VM's own openssl key receives the token, and a failed enroll still rem
 
 test("a slow step starts detached, is polled in calls under 30 s, and reports its status and log", async () => {
   const exe = setup();
+  exe.scriptExec(VM, STAGE, {});
   exe.scriptExec(VM, detachCommand("enroll", ENROLL), { stdout: "4242\n" });
   const log = "enrolling ada-paws\nRunner command failed. Cause: the token expired.\n";
   exe.scriptExec(VM, pollCommand("enroll"), [
@@ -746,6 +781,7 @@ test("a slow step starts detached, is polled in calls under 30 s, and reports it
     "ada-paws: enrollment failed (exit 1): enrolling ada-paws\nRunner command failed. Cause: the token expired.",
   );
   expect(commands(exe)).toEqual([
+    STAGE,
     detachCommand("enroll", ENROLL),
     ...Array<string>(4).fill(pollCommand("enroll")),
   ]);

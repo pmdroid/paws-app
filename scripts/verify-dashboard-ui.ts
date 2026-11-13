@@ -118,7 +118,6 @@ try {
             implementer: { agent: "claude", model: "opus" },
             reviewer: { agent: "codex", model: "gpt-5.4" },
           },
-          projects: [],
           presets: {
             Opus: { agent: "claude", model: "opus", effort: "high" },
             Codex: { agent: "codex", model: "gpt-5.4", effort: "high" },

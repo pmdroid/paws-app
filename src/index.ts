@@ -78,6 +78,7 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
+  journalRetiredAgentProjects,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -120,7 +121,6 @@ import {
   roleRunsJobs,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
-  listRepositoryCatalogSteps,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -522,6 +522,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    journalRetiredAgentProjects(paths.configFile, journal);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }
@@ -965,8 +966,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   void uploadLocalCloseoutEvidence(store, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
-  const catalogRepositories = async () =>
-    (await store.run(listRepositoryCatalogSteps)).map((entry) => `${entry.owner}/${entry.repo}`);
   let runner: RunnerCoordinator | undefined;
   if (runnerConfig !== null)
     periodic.push(
@@ -1067,7 +1066,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     },
     publicUrl: runtime.publicUrl,
     runnerUrl: runnerConfig?.url ?? null,
-    repositories: catalogRepositories,
     latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
       const coordinator = await runnerReady;

@@ -104,6 +104,7 @@ function fixtureGitHub(input: {
   ciPending?: boolean;
   noCi?: boolean;
   refusedToken?: { token: string; status: number };
+  mergeServerErrors?: number;
 }): {
   client: GitHubClient;
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
@@ -120,6 +121,7 @@ function fixtureGitHub(input: {
   const merged = new Map<number, string>();
   const ci = { pending: input.ciPending ?? false, failed: false, dirty: false };
   const comments = new Map<number, { body: string; html_url: string }[]>();
+  let serverErrors = input.mergeServerErrors ?? 0;
   const pullJson = (number: number) => ({
     number,
     state: closed.has(number) ? "closed" : "open",
@@ -192,6 +194,8 @@ function fixtureGitHub(input: {
       return { status: 200, body: pullJson(number) };
     }
     if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) {
+      if (serverErrors-- > 0)
+        return { status: 500, body: { message: "Server Error" }, requestId: "PROOF:500" };
       const { sha } = request.body as { sha: string };
       await git("-C", input.origin, "merge-base", "--is-ancestor", "main", sha);
       await git("-C", input.origin, "update-ref", "refs/heads/main", sha);
@@ -271,6 +275,8 @@ export type Proof = {
   summary: string;
   ciPending?: boolean;
   noCi?: boolean;
+  /** How many squash merges GitHub answers with HTTP 500 before it merges. */
+  mergeServerErrors?: number;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
   files?: Record<string, string>;
@@ -325,6 +331,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     origin: bare,
     ciPending: proof.ciPending,
     noCi: proof.noCi,
+    mergeServerErrors: proof.mergeServerErrors,
     ...(proof.member?.refused
       ? { refusedToken: { token: proof.member.token, status: proof.member.refused } }
       : {}),

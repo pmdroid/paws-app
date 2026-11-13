@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   claimImprovementDelegation,
   claimImprovementDelivery,
@@ -10,7 +11,6 @@ import {
   recordImprovementIssueSync,
   settleImprovementDelivery,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import {
   createFakeIssueLookup,
@@ -20,7 +20,29 @@ import {
   type StartIssueSession,
 } from "../src/improvements";
 import { createFakeImprovementLinear } from "../src/linear";
-import { accept, END, seedDaily, world } from "./improvement-fixtures";
+import {
+  accept,
+  END,
+  insertMergeFact,
+  insertPassedCloseoutStep,
+  insertPullRequest,
+  seedDaily,
+  updateImprovement,
+  updateWorkItem,
+  worldPg,
+} from "./improvement-fixtures";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
+
+async function world(extra: Parameters<typeof worldPg>[0] = {}) {
+  const w = await worldPg(extra);
+  open.push(w.close);
+  return w;
+}
 
 const ISSUE = "issue-x";
 const MERGE = "c0ffee1234567890c0ffee1234567890c0ffee12";
@@ -53,14 +75,14 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
   const id = w.retro.a;
   const decided = await w.api("ada", `/api/improvements/${id}/decision`, accept());
   expect(decided.body.status).toBe("decided");
-  const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
-  await claimImprovementDelivery(sqliteDb(w.db), {
+  const delivery = (await listImprovementDeliveries(w.db, id))[0]!;
+  await claimImprovementDelivery(w.db, {
     deliveryId: delivery.id,
     owner: "outbox",
     now: END + 2_000,
     leaseMs: 60_000,
   });
-  await settleImprovementDelivery(sqliteDb(w.db), {
+  await settleImprovementDelivery(w.db, {
     deliveryId: delivery.id,
     attempt: 1,
     owner: "outbox",
@@ -79,30 +101,29 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
     delegated: options.delegated ?? false,
   });
   const sync = () =>
-    syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
+    syncImprovementOutcomes({ store: w.db, linearFor: async () => linear, now: w.now });
   const follow = async (who = "ada") => {
     const response = await w.api(who, `/api/improvements/${id}/follow-through`);
     return response.body.followThrough;
   };
   const post = (action: string, body: unknown, who = "ada") =>
     w.api(who, `/api/improvements/${id}/${action}`, body);
-  const version = async () => (await getImprovement(sqliteDb(w.db), id))!.version;
+  const version = async () => (await getImprovement(w.db, id))!.version;
   const setIssue = (change: Record<string, unknown>) =>
     linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, ...change });
+  let queued = false;
   const work = async (state: string) => {
-    if (!w.db.query("SELECT 1 FROM work_item WHERE id = 'work-x'").get()) {
+    if (!queued) {
       await insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
-      w.db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = 'work-x'", [ISSUE]);
+      await updateWorkItem(w.db, "work-x", { linearIssueId: ISSUE });
+      queued = true;
     }
-    w.db.run("UPDATE work_item SET state = ? WHERE id = 'work-x'", [state]);
+    await updateWorkItem(w.db, "work-x", { state });
   };
   const merge = async () => {
     await work("merged");
-    w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 42, 'https://gh/pull/42', ?)", [END]);
-    w.db.run(
-      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
-      [MERGE, END + 3_000],
-    );
+    await insertPullRequest(w.db, "work-x", 42, END);
+    await insertMergeFact(w.db, "work-x", MERGE, END + 3_000);
   };
   return { w, id, linear, starter, sync, follow, post, version, setIssue, work, merge };
 }
@@ -152,7 +173,7 @@ describe("follow-through from create to verified", () => {
       verification: { state: "due" },
       work: { merge: { number: 42, sha: MERGE } },
     });
-    const tracks = (await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).map(
+    const tracks = (await listImprovementOutcomes(t.w.db, t.id)).map(
       (o) => `${o.track}:${o.state}`,
     );
     expect(tracks).toEqual([
@@ -174,7 +195,7 @@ describe("follow-through from create to verified", () => {
       verify(await t.version(), { revision: MERGE.slice(0, 12) }),
     );
     expect(done.body).toMatchObject({ status: "recorded", item: { attention: "verified" } });
-    const recorded = (await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).at(-1)!;
+    const recorded = (await listImprovementOutcomes(t.w.db, t.id)).at(-1)!;
     expect(recorded).toMatchObject({
       track: "verification",
       state: "verified",
@@ -182,10 +203,7 @@ describe("follow-through from create to verified", () => {
       actor: "user-ada",
     });
     expect(recorded.evidence).toContain("check:Weekly retro push-recovery questions");
-    const audit = (await listImprovementActions(sqliteDb(t.w.db), t.id)).map((a) => [
-      a.action,
-      a.prior,
-    ]);
+    const audit = (await listImprovementActions(t.w.db, t.id)).map((a) => [a.action, a.prior]);
     expect(audit).toEqual([
       ["delegate", { delegation: null, implementation: "not_started", work: null }],
       ["follow_work", { work: null, state: null }],
@@ -218,7 +236,7 @@ describe("lost, duplicate and out-of-order events", () => {
     const t = await linked();
     const at = END + 50_000;
     const write = async (stateType: string, observedAt: number) =>
-      await recordImprovementIssueSync(sqliteDb(t.w.db), {
+      await recordImprovementIssueSync(t.w.db, {
         improvementId: t.id,
         issueId: ISSUE,
         status: "available",
@@ -230,12 +248,7 @@ describe("lost, duplicate and out-of-order events", () => {
     expect(await write("canceled", at)).toBe(true);
     expect(await write("unstarted", at - 1)).toBe(false);
     expect(await write("canceled", at)).toBe(false);
-    const view = (await improvementFollowThrough(
-      sqliteDb(t.w.db),
-      { workspaceId: "ws" },
-      t.id,
-      at,
-    ))!;
+    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, at))!;
     expect(view.followThrough).toMatchObject({
       attention: "canceled",
       implementation: { state: "canceled", source: "linear" },
@@ -244,7 +257,7 @@ describe("lost, duplicate and out-of-order events", () => {
 
   test("a lost delegation response reconciles the same issue after restart", async () => {
     const t = await linked();
-    await claimImprovementDelegation(sqliteDb(t.w.db), {
+    await claimImprovementDelegation(t.w.db, {
       improvementId: t.id,
       issueId: ISSUE,
       actor: "user-ada",
@@ -262,7 +275,7 @@ describe("lost, duplicate and out-of-order events", () => {
 
   test("a delegation nobody heard back from fails visibly and an explicit retry starts once", async () => {
     const t = await linked();
-    await claimImprovementDelegation(sqliteDb(t.w.db), {
+    await claimImprovementDelegation(t.w.db, {
       improvementId: t.id,
       issueId: ISSUE,
       actor: "user-ada",
@@ -292,14 +305,14 @@ describe("lost, duplicate and out-of-order events", () => {
       verification: { state: "due" },
     });
     expect(
-      (await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).filter((o) => o.state === "verified"),
+      (await listImprovementOutcomes(t.w.db, t.id)).filter((o) => o.state === "verified"),
     ).toEqual([]);
   });
 
   test("a closed pull request on cancelled work is not fixed", async () => {
     const t = await linked();
     await t.work("cancelled");
-    t.w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 43, null, ?)", [END]);
+    await insertPullRequest(t.w.db, "work-x", 43, END);
     await t.sync();
     const view = await t.follow();
     expect(view).toMatchObject({ attention: "canceled", implementation: { state: "canceled" } });
@@ -317,7 +330,7 @@ describe("lost, duplicate and out-of-order events", () => {
       attention: "verification_stale",
       verification: { state: "contradicted" },
     });
-    expect((await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).at(-1)).toMatchObject({
+    expect((await listImprovementOutcomes(t.w.db, t.id)).at(-1)).toMatchObject({
       track: "verification",
       state: "contradicted",
       actor: "paws",
@@ -347,14 +360,14 @@ describe("daily findings", () => {
       ),
     );
     expect(decided.body.status).toBe("decided");
-    const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
-    await claimImprovementDelivery(sqliteDb(w.db), {
+    const delivery = (await listImprovementDeliveries(w.db, id))[0]!;
+    await claimImprovementDelivery(w.db, {
       deliveryId: delivery.id,
       owner: "o",
       now: END,
       leaseMs: 1,
     });
-    await settleImprovementDelivery(sqliteDb(w.db), {
+    await settleImprovementDelivery(w.db, {
       deliveryId: delivery.id,
       attempt: 1,
       owner: "o",
@@ -372,14 +385,14 @@ describe("daily findings", () => {
       delegated: false,
     });
     const sync = () =>
-      syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
+      syncImprovementOutcomes({ store: w.db, linearFor: async () => linear, now: w.now });
     const follow = async () =>
       (await w.api("ada", `/api/improvements/${id}/follow-through`)).body.followThrough;
     await sync();
-    w.db.run("UPDATE review_finding SET status = 'gone'");
+    await w.db.run((q) => q.exec(q.orm.update(q.t.reviewFinding).set({ status: "gone" })));
     await sync();
     expect((await follow()).attention).toBe("awaiting_verification");
-    const version = (await getImprovement(sqliteDb(w.db), id))!.version;
+    const version = (await getImprovement(w.db, id))!.version;
     expect(
       (
         await w.api(
@@ -389,11 +402,16 @@ describe("daily findings", () => {
         )
       ).body.status,
     ).toBe("recorded");
-    const form = (await getImprovement(sqliteDb(w.db), id))!.version;
-    w.db.run("UPDATE review_finding SET status = 'open', last_seen_at = ? WHERE id = ?", [
-      w.now() + 10_000,
-      findings[0]!.id,
-    ]);
+    const form = (await getImprovement(w.db, id))!.version;
+    const seenAt = w.now() + 10_000;
+    await w.db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.reviewFinding)
+          .set({ status: "open", lastSeenAt: seenAt })
+          .where(eq(q.t.reviewFinding.id, findings[0]!.id)),
+      ),
+    );
     expect(await follow()).toMatchObject({
       attention: "verification_stale",
       verification: { stale: "recurred" },
@@ -404,9 +422,9 @@ describe("daily findings", () => {
       verify(form, { deployment: "v6" }),
     );
     expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
-    expect((await getImprovement(sqliteDb(w.db), id))!.verificationState).toBe("contradicted");
+    expect((await getImprovement(w.db, id))!.verificationState).toBe("contradicted");
     await sync();
-    expect((await listImprovementOutcomes(sqliteDb(w.db), id)).at(-1)).toMatchObject({
+    expect((await listImprovementOutcomes(w.db, id)).at(-1)).toMatchObject({
       state: "contradicted",
       evidence: [`review_finding:${findings[0]!.key}`],
     });
@@ -419,15 +437,14 @@ describe("evidence must match the criterion", () => {
     const t = await linked();
     await t.merge();
     await t.sync();
-    t.w.db.run(
-      `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
-         updated_at) VALUES ('p1', 'work-x', 't', 'b', ?, 'd', 1, 1)`,
-      [MERGE],
-    );
-    t.w.db.run(
-      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal)
-       VALUES ('p1', 'retro-recovery', 'command', 'passed', 'bun test test/retro.test.ts', 1, 0)`,
-    );
+    await insertPassedCloseoutStep(t.w.db, {
+      progressId: "p1",
+      itemId: "work-x",
+      head: MERGE,
+      at: 1,
+      stepId: "retro-recovery",
+      command: "bun test test/retro.test.ts",
+    });
     const evidence = { kind: "closeout_step", progressId: "p1", stepId: "retro-recovery" };
     const unnamed = await t.post("verification", verify(await t.version(), { evidence }));
     expect(unnamed.body.reason).toBe("not_applicable");
@@ -441,16 +458,15 @@ describe("evidence must match the criterion", () => {
       criterion: "The retro-recovery check passes on the merged revision.",
     });
     expect(annotated.body.item.verification.criterion).toContain("retro-recovery");
-    t.w.db.run(
-      `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
-         updated_at) VALUES ('p0', 'work-x', 't', 'b', ?, 'd', 0, 0)`,
-      ["0".repeat(40)],
-    );
-    t.w.db.run(
-      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal)
-       VALUES ('p0', 'retro-recovery', 'command', 'passed', 'bun test test/retro.test.ts', 1, 0)`,
-    );
-    t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
+    await insertPassedCloseoutStep(t.w.db, {
+      progressId: "p0",
+      itemId: "work-x",
+      head: "0".repeat(40),
+      at: 0,
+      stepId: "retro-recovery",
+      command: "bun test test/retro.test.ts",
+    });
+    await updateWorkItem(t.w.db, "work-x", { acceptedHead: MERGE });
     const older = await t.post("verification", {
       ...verify(await t.version()),
       evidence: { kind: "closeout_step", progressId: "p0", stepId: "retro-recovery" },
@@ -458,7 +474,7 @@ describe("evidence must match the criterion", () => {
     expect(older.body.reason).toBe("evidence_outdated");
     const verified = await t.post("verification", verify(await t.version(), { evidence }));
     expect(verified.body.item.attention).toBe("verified");
-    expect((await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).at(-1)!.revision).toBe(MERGE);
+    expect((await listImprovementOutcomes(t.w.db, t.id)).at(-1)!.revision).toBe(MERGE);
   });
 
   test("verification needs merged or completed work", async () => {
@@ -503,11 +519,11 @@ describe("review fixes", () => {
       reason: "Not worth pursuing",
     });
     expect(done.body.item.attention).toBe("closed");
-    const before = (await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).length;
+    const before = (await listImprovementOutcomes(t.w.db, t.id)).length;
     await t.sync();
     await t.sync();
     expect((await t.follow()).attention).toBe("closed");
-    expect((await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).length).toBe(before);
+    expect((await listImprovementOutcomes(t.w.db, t.id)).length).toBe(before);
   });
 
   test("access revoked while the request body streams refuses the mutation", async () => {
@@ -518,7 +534,7 @@ describe("review fixes", () => {
       async pull(controller) {
         if (sent) return controller.close();
         sent = true;
-        await syncWorkspaceMember(sqliteDb(t.w.db), {
+        await syncWorkspaceMember(t.w.db, {
           workspaceId: "ws",
           userId: "user-ada",
           role: "member",
@@ -543,7 +559,7 @@ describe("review fixes", () => {
       ["session-a"],
     );
     expect(response!.status).toBe(403);
-    expect((await getImprovement(sqliteDb(t.w.db), t.id))!.version).toBe(version);
+    expect((await getImprovement(t.w.db, t.id))!.version).toBe(version);
   });
 
   test("a wrong open issue can return to review; active Paws work cannot", async () => {
@@ -578,16 +594,14 @@ describe("second review fixes", () => {
     expect(await t.version()).toBeGreaterThan(form);
     const replayed = await t.post("verification", verify(form, { deployment: "v1" }));
     expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
-    expect((await getImprovement(sqliteDb(t.w.db), t.id))!.verificationState).toBe("contradicted");
+    expect((await getImprovement(t.w.db, t.id))!.verificationState).toBe("contradicted");
   });
 
   test("a redelegated issue follows its replacement work item, not the cancelled one", async () => {
     const t = await linked();
     await t.work("cancelled");
     await insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
-    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-y'", [
-      ISSUE,
-    ]);
+    await updateWorkItem(t.w.db, "work-y", { linearIssueId: ISSUE, state: "running" });
     await t.sync();
     expect(await t.follow()).toMatchObject({
       attention: "working",
@@ -598,13 +612,22 @@ describe("second review fixes", () => {
   test("two improvements linked to one issue delegate it once", async () => {
     const t = await linked();
     const other = t.w.retro.b;
-    t.w.db.run("INSERT INTO workspace_repository VALUES ('ws', 'acme/b', 'team-a')");
-    t.w.db.run(
-      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
-         intent_issue_id = ?, issue_id = ?, issue_identifier = 'PAS-70', issue_confirmed_at = ?
-       WHERE id = ?`,
-      [ISSUE, ISSUE, END, other],
+    await t.w.db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: "ws", repository: "acme/b", teamId: "team-a" }),
+      ),
     );
+    await updateImprovement(t.w.db, other, {
+      reviewState: "accepted",
+      reviewedProposal: 1,
+      intent: "link",
+      intentIssueId: ISSUE,
+      issueId: ISSUE,
+      issueIdentifier: "PAS-70",
+      issueConfirmedAt: END,
+    });
     const first = await t.post("delegate", { expectedVersion: await t.version() });
     expect(first.body.status).toBe("delegated");
     const view = await t.w.api("admin", `/api/improvements/${other}/follow-through`);
@@ -613,7 +636,7 @@ describe("second review fixes", () => {
       delegate: { offered: false },
     });
     const second = await t.w.api("admin", `/api/improvements/${other}/delegate`, {
-      expectedVersion: (await getImprovement(sqliteDb(t.w.db), other))!.version,
+      expectedVersion: (await getImprovement(t.w.db, other))!.version,
     });
     expect(second.body.status).toBe("existing");
     expect(t.starter.calls).toEqual([ISSUE]);
@@ -621,7 +644,7 @@ describe("second review fixes", () => {
 
   test("a delayed read for a replaced issue is not recorded", async () => {
     const t = await linked();
-    const stale = await recordImprovementIssueSync(sqliteDb(t.w.db), {
+    const stale = await recordImprovementIssueSync(t.w.db, {
       improvementId: t.id,
       issueId: "issue-old",
       status: "available",
@@ -635,7 +658,7 @@ describe("second review fixes", () => {
   test("a workspace without a Linear connection still advances and shows unavailable", async () => {
     const t = await linked();
     await syncImprovementOutcomes({
-      store: sqliteDb(t.w.db),
+      store: t.w.db,
       linearFor: async () => null,
       now: t.w.now,
     });
@@ -649,12 +672,15 @@ describe("second review fixes", () => {
 describe("one bound work item", () => {
   const second = async (t: Awaited<ReturnType<typeof linked>>, state: string, repo?: string) => {
     await insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
-    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-y'", [
-      ISSUE,
-      state,
-    ]);
+    await updateWorkItem(t.w.db, "work-y", { linearIssueId: ISSUE, state });
     if (repo)
-      t.w.db.run("INSERT INTO work_item_repository VALUES ('work-y', 'acme', ?, 'x')", [repo]);
+      await t.w.db.run((q) =>
+        q.exec(
+          q.orm
+            .insert(q.t.workItemRepository)
+            .values({ itemId: "work-y", owner: "acme", repo, remoteUrl: "x" }),
+        ),
+      );
   };
 
   test("a newer run on the issue replaces verified merged work and makes verification stale", async () => {
@@ -674,9 +700,7 @@ describe("one bound work item", () => {
   test("work that finished before the issue was linked is not this improvement's work", async () => {
     const t = await linked();
     await insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
-    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-old'", [
-      ISSUE,
-    ]);
+    await updateWorkItem(t.w.db, "work-old", { linearIssueId: ISSUE, state: "merged" });
     await t.sync();
     expect(await t.follow()).toMatchObject({
       work: null,
@@ -701,16 +725,14 @@ describe("one bound work item", () => {
     });
     const id = w.retro.a;
     const settle = async (at: number) => {
-      const d = (await listImprovementDeliveries(sqliteDb(w.db), id)).find(
-        (x) => x.state !== "succeeded",
-      )!;
-      await claimImprovementDelivery(sqliteDb(w.db), {
+      const d = (await listImprovementDeliveries(w.db, id)).find((x) => x.state !== "succeeded")!;
+      await claimImprovementDelivery(w.db, {
         deliveryId: d.id,
         owner: "o",
         now: at,
         leaseMs: 60_000,
       });
-      await settleImprovementDelivery(sqliteDb(w.db), {
+      await settleImprovementDelivery(w.db, {
         deliveryId: d.id,
         attempt: 1,
         owner: "o",
@@ -719,11 +741,11 @@ describe("one bound work item", () => {
         now: at + 1,
       });
     };
-    const version = async () => (await getImprovement(sqliteDb(w.db), id))!.version;
+    const version = async () => (await getImprovement(w.db, id))!.version;
     const post = (action: string, body: unknown) =>
       w.api("ada", `/api/improvements/${id}/${action}`, body);
     const sync = () =>
-      syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
+      syncImprovementOutcomes({ store: w.db, linearFor: async () => linear, now: w.now });
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     await settle(END + 2_000);
     linear.issues.set(ISSUE, {
@@ -736,13 +758,8 @@ describe("one bound work item", () => {
       delegated: false,
     });
     await insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
-    w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-x'", [
-      ISSUE,
-    ]);
-    w.db.run(
-      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
-      [MERGE, END + 3_000],
-    );
+    await updateWorkItem(w.db, "work-x", { linearIssueId: ISSUE, state: "merged" });
+    await insertMergeFact(w.db, "work-x", MERGE, END + 3_000);
     await sync();
     expect(
       (await post("verification", verify(await version(), { revision: MERGE }))).body.item
@@ -781,10 +798,7 @@ describe("one bound work item", () => {
   test("an older run still active at link time is shown instead of a second run", async () => {
     const t = await linked();
     await insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
-    t.w.db.run(
-      "UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-old'",
-      [ISSUE],
-    );
+    await updateWorkItem(t.w.db, "work-old", { linearIssueId: ISSUE, state: "running" });
     const shown = await t.post("delegate", { expectedVersion: await t.version() });
     expect(shown.body).toMatchObject({
       status: "existing",
@@ -802,7 +816,7 @@ describe("one bound work item", () => {
     await t.sync();
     await t.sync();
     expect(await t.follow()).toMatchObject({ work: { itemId: "work-y" } });
-    const follows = (await listImprovementActions(sqliteDb(t.w.db), t.id)).filter(
+    const follows = (await listImprovementActions(t.w.db, t.id)).filter(
       (a) => a.action === "follow_work",
     );
     expect(follows.map((a) => [a.prior["work"], a.detail["work"]])).toEqual([
@@ -824,7 +838,7 @@ describe("one bound work item", () => {
     const t = await linked();
     await t.work("cancelled");
     await t.sync();
-    await claimImprovementDelegation(sqliteDb(t.w.db), {
+    await claimImprovementDelegation(t.w.db, {
       improvementId: t.id,
       issueId: ISSUE,
       actor: "user-ada",
@@ -832,7 +846,7 @@ describe("one bound work item", () => {
       leaseMs: 1,
     });
     await syncImprovementOutcomes({
-      store: sqliteDb(t.w.db),
+      store: t.w.db,
       linearFor: async () => t.linear,
       now: () => END + 10_000,
     });
@@ -867,17 +881,16 @@ describe("one bound work item", () => {
   test("a Closeout step only matches the criterion as a whole word", async () => {
     const t = await linked();
     await t.merge();
-    t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
+    await updateWorkItem(t.w.db, "work-x", { acceptedHead: MERGE });
     await t.sync();
-    t.w.db.run(
-      `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
-         updated_at) VALUES ('p1', 'work-x', 't', 'b', ?, 'd', 1, 1)`,
-      [MERGE],
-    );
-    t.w.db.run(
-      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal)
-       VALUES ('p1', 'test', 'command', 'passed', 'bun run unit', 1, 0)`,
-    );
+    await insertPassedCloseoutStep(t.w.db, {
+      progressId: "p1",
+      itemId: "work-x",
+      head: MERGE,
+      at: 1,
+      stepId: "test",
+      command: "bun run unit",
+    });
     await t.post("criterion", {
       expectedVersion: await t.version(),
       criterion: "The latest weekly retro shows no push-recovery question.",
@@ -893,15 +906,24 @@ describe("one bound work item", () => {
 });
 
 describe("settled before every mutation", () => {
-  const share = (t: Awaited<ReturnType<typeof linked>>) => {
+  const share = async (t: Awaited<ReturnType<typeof linked>>) => {
     const other = t.w.retro.b;
-    t.w.db.run("INSERT INTO workspace_repository VALUES ('ws', 'acme/b', 'team-a')");
-    t.w.db.run(
-      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
-         intent_issue_id = ?, issue_id = ?, issue_identifier = 'PAS-70', issue_confirmed_at = ?
-       WHERE id = ?`,
-      [ISSUE, ISSUE, END, other],
+    await t.w.db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: "ws", repository: "acme/b", teamId: "team-a" }),
+      ),
     );
+    await updateImprovement(t.w.db, other, {
+      reviewState: "accepted",
+      reviewedProposal: 1,
+      intent: "link",
+      intentIssueId: ISSUE,
+      issueId: ISSUE,
+      issueIdentifier: "PAS-70",
+      issueConfirmedAt: END,
+    });
     return other;
   };
 
@@ -924,7 +946,7 @@ describe("settled before every mutation", () => {
 
   test("another improvement's finished delegation does not block redelegating the issue", async () => {
     const t = await linked();
-    const other = share(t);
+    const other = await share(t);
     expect((await t.post("delegate", { expectedVersion: await t.version() })).body.status).toBe(
       "delegated",
     );
@@ -945,12 +967,15 @@ describe("settled before every mutation", () => {
   test("a workspace whose reads keep failing does not starve the next one", async () => {
     const t = await linked();
     const other = t.w.retro.b;
-    t.w.db.run(
-      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
-         intent_issue_id = 'issue-y', issue_id = 'issue-y', issue_identifier = 'PAS-80',
-         issue_confirmed_at = ? WHERE id = ?`,
-      [END, other],
-    );
+    await updateImprovement(t.w.db, other, {
+      reviewState: "accepted",
+      reviewedProposal: 1,
+      intent: "link",
+      intentIssueId: "issue-y",
+      issueId: "issue-y",
+      issueIdentifier: "PAS-80",
+      issueConfirmedAt: END,
+    });
     const reader = {
       async findIssue(id: string) {
         if (id === ISSUE) return { ok: false as const, failure: "rate_limited" as const };
@@ -962,13 +987,18 @@ describe("settled before every mutation", () => {
     };
     for (let i = 0; i < 2; i++)
       await syncImprovementOutcomes({
-        store: sqliteDb(t.w.db),
+        store: t.w.db,
         linearFor: async () => reader,
         now: t.w.now,
         limit: 1,
       });
     expect(
-      t.w.db.query("SELECT status FROM improvement_issue_sync WHERE improvement_id = ?").get(other),
+      await t.w.db.run((q) => {
+        const table = q.t.improvementIssueSync;
+        return q.one(
+          q.orm.select({ status: table.status }).from(table).where(eq(table.improvementId, other)),
+        );
+      }),
     ).toEqual({ status: "available" });
   });
 });
@@ -994,8 +1024,8 @@ describe("manual recovery", () => {
     ]);
     expect([first.body.status, second.status]).toEqual(["recorded", 409]);
     expect(first.body.item).toMatchObject({ attention: "needs_review", issue: null });
-    expect(await listImprovementDeliveries(sqliteDb(s.w.db), s.id)).toEqual([]);
-    const audit = (await listImprovementActions(sqliteDb(s.w.db), s.id)).at(-1)!;
+    expect(await listImprovementDeliveries(s.w.db, s.id)).toEqual([]);
+    const audit = (await listImprovementActions(s.w.db, s.id)).at(-1)!;
     expect(audit).toMatchObject({
       action: "return_to_review",
       prior: { attention: "canceled", issue: { id: ISSUE, identifier: "PAS-70" } },
@@ -1026,7 +1056,7 @@ describe("access", () => {
 
   test("revoked membership and other repositories cannot delegate or verify", async () => {
     const t = await linked();
-    await syncWorkspaceMember(sqliteDb(t.w.db), {
+    await syncWorkspaceMember(t.w.db, {
       workspaceId: "ws",
       userId: "user-ada",
       role: "member",
@@ -1036,7 +1066,7 @@ describe("access", () => {
     });
     const lost = await t.post("delegate", { expectedVersion: await t.version() });
     expect(lost.status).toBe(404);
-    await syncWorkspaceMember(sqliteDb(t.w.db), {
+    await syncWorkspaceMember(t.w.db, {
       workspaceId: "ws",
       userId: "user-ada",
       role: "member",
@@ -1055,12 +1085,7 @@ describe("access", () => {
     const t = await linked();
     await t.sync();
     const later = END + 2 * IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs;
-    const view = (await improvementFollowThrough(
-      sqliteDb(t.w.db),
-      { workspaceId: "ws" },
-      t.id,
-      later,
-    ))!;
+    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, later))!;
     expect(view.followThrough).toMatchObject({ attention: "stale_sync", issue: { fresh: false } });
   });
 });
@@ -1101,14 +1126,14 @@ describe("attention and activity", () => {
     const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
-    await claimImprovementDelivery(sqliteDb(w.db), {
+    const delivery = (await listImprovementDeliveries(w.db, id))[0]!;
+    await claimImprovementDelivery(w.db, {
       deliveryId: delivery.id,
       owner: "o",
       now: END,
       leaseMs: 1,
     });
-    await settleImprovementDelivery(sqliteDb(w.db), {
+    await settleImprovementDelivery(w.db, {
       deliveryId: delivery.id,
       attempt: 1,
       owner: "o",

@@ -1,38 +1,30 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { Database } from "bun:sqlite";
-import {
-  insertQueuedItem,
-  legacyMigrate,
-  migrate,
-  migrations,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../src/db";
+import { and, eq } from "drizzle-orm";
+import { insertQueuedItem, putWorkspaceUser, syncWorkspaceMember, type Db } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerLogin } from "../src/runner-login";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import type { RunnerCommand } from "../src/runner-protocol";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const stores: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const store of stores.splice(0)) await store.close();
 });
 
 async function fixture() {
-  const db = new Database(":memory:");
-  databases.push(db);
-  db.run("PRAGMA foreign_keys=ON");
-  migrate(db);
+  const store = await tempStore();
+  stores.push(store);
+  const { db } = store;
   let at = Date.now();
   const workspace = workspaceId();
-  db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
-    workspace,
-    "login-org",
-    "Login",
-    at,
-  ]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: workspace, linearOrganizationId: "login-org", name: "Login", createdAt: at }),
+  );
   // The runner's owner is an admin too, so the other admin is refused only for not owning it.
   const members: WorkspacePrincipal[] = [];
   for (const [index, [name, role]] of (
@@ -42,13 +34,13 @@ async function fixture() {
       ["member", "member"],
     ] as const
   ).entries()) {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `login-user-${index}`,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace,
       userId,
       role,
@@ -66,25 +58,32 @@ async function fixture() {
   }
   const [owner, admin, member] = [members[0]!, members[1]!, members[2]!];
   const runnerId = workspaceId();
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
-    [runnerId, workspace, owner.userId, "Owner runner", at],
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: runnerId,
+        workspaceId: workspace,
+        ownerUserId: owner.userId,
+        name: "Owner runner",
+        status: "active",
+        createdAt: at,
+      }),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId, sharing: 1 }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId, runnerVersion: "0.1.53", reportedAt: at }),
   );
-  db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,1)", [runnerId]);
-  db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-    runnerId,
-    "0.1.53",
-    at,
-  ]);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "login",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const login = createRunnerLogin({ store: sqliteDb(db), work, now: () => at });
+  const login = createRunnerLogin({ store: db, work, now: () => at });
   const waiting = {
     state: "waiting" as const,
     terminal: "",
@@ -99,12 +98,23 @@ async function fixture() {
   };
   const url = (id: string, suffix = "") =>
     `https://paws.example.invalid/api/runners/${runnerId}/accounts/codex/login/${id}${suffix}`;
-  const policy = (agent: string) =>
-    db
-      .query<{ ready: number; authExpired: number }, [string, string]>(
-        "SELECT ready,auth_expired AS authExpired FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-      )
-      .get(runnerId, agent);
+  const policy = async (agent: string) =>
+    (await db.run((q) =>
+      q.one(
+        q.orm
+          .select({
+            ready: q.t.runnerAgentPolicy.ready,
+            authExpired: q.t.runnerAgentPolicy.authExpired,
+          })
+          .from(q.t.runnerAgentPolicy)
+          .where(
+            and(
+              eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+              eq(q.t.runnerAgentPolicy.agent, agent),
+            ),
+          ),
+      ),
+    )) ?? null;
   return {
     db,
     owner,
@@ -134,9 +144,9 @@ test("the owner's sign-in carries no member and readies the runner's own agent",
   expect(command.type).toBe("login");
   expect(command.memberId).toBeUndefined();
   await f.login.exchange(f.runnerId, session.id, f.waiting);
-  expect(f.policy("codex")).toBeNull();
+  expect(await f.policy("codex")).toBeNull();
   await f.login.exchange(f.runnerId, session.id, f.connected);
-  expect(f.policy("codex")).toEqual({ ready: 1, authExpired: 0 });
+  expect(await f.policy("codex")).toEqual({ ready: 1, authExpired: 0 });
   expect((await f.login.list(f.owner, f.runnerId)).accounts[1]!.connected).toBe(true);
 });
 
@@ -146,7 +156,7 @@ test("only the runner owner can start, read, answer or list a sign-in", async ()
     await expect(f.login.start(principal, f.runnerId, "claude")).rejects.toThrow();
     await expect(f.login.list(principal, f.runnerId)).rejects.toThrow();
   }
-  expect(f.db.query("SELECT 1 FROM runner_login").get()).toBeNull();
+  expect(await logins(f.db)).toEqual([]);
   const session = await f.login.start(f.owner, f.runnerId, "codex");
   await f.login.exchange(f.runnerId, session.id, f.waiting);
   for (const method of ["GET", "DELETE"])
@@ -178,15 +188,25 @@ test("revocation, expiry and cancellation fence provider completion", async () =
     const f = await fixture();
     const session = await f.login.start(f.owner, f.runnerId, "codex");
     if (condition === "revoked")
-      f.db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [f.owner.userId]);
+      await seed(f.db, (q) =>
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(eq(q.t.workspaceMember.userId, f.owner.userId)),
+      );
     if (condition === "expired") f.advance(600001);
     if (condition === "shutdown") await f.login.stop();
     if (condition === "transferred")
-      f.db.run("UPDATE runner SET owner_user_id=? WHERE id=?", [f.admin.userId, f.runnerId]);
+      await seed(f.db, (q) =>
+        q.orm
+          .update(q.t.runner)
+          .set({ ownerUserId: f.admin.userId })
+          .where(eq(q.t.runner.id, f.runnerId)),
+      );
     if (condition === "cancelled")
       await f.login.browser(new Request(f.url(session.id), { method: "DELETE" }), f.owner);
     expect((await f.login.exchange(f.runnerId, session.id, f.connected)).cancelled).toBe(true);
-    expect(f.policy("codex")).toBeNull();
+    expect(await f.policy("codex")).toBeNull();
   }
 });
 
@@ -208,11 +228,18 @@ test("delayed login input is rejected after cancellation, revocation, expiry or 
     const session = await f.login.start(f.owner, f.runnerId, "codex");
     await f.login.exchange(f.runnerId, session.id, f.waiting);
     let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({
-      start(value) {
-        controller = value;
+    const reading = Promise.withResolvers<void>();
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start(value) {
+          controller = value;
+        },
+        pull() {
+          reading.resolve();
+        },
       },
-    });
+      { highWaterMark: 0 },
+    );
     const pending = f.login.browser(
       new Request(f.url(session.id, "/input"), {
         method: "POST",
@@ -221,10 +248,16 @@ test("delayed login input is rejected after cancellation, revocation, expiry or 
       }),
       f.owner,
     );
+    await reading.promise;
     if (change === "cancelled")
       await f.login.browser(new Request(f.url(session.id), { method: "DELETE" }), f.owner);
     if (change === "revoked")
-      f.db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [f.owner.userId]);
+      await seed(f.db, (q) =>
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(eq(q.t.workspaceMember.userId, f.owner.userId)),
+      );
     if (change === "expired") f.advance(600001);
     const current = change === "prompt" ? { ...f.waiting, inputId: randomUUID() } : f.waiting;
     if (change === "prompt") await f.login.exchange(f.runnerId, session.id, current);
@@ -298,92 +331,46 @@ test("starting another sign-in keeps an agent that is already connected", async 
   ).toBe(true);
 });
 
-test("migration 091 drops member accounts and asks their runners to sign in again", () => {
-  const db = new Database(":memory:");
-  databases.push(db);
-  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
-  for (const migration of migrations.slice(
-    0,
-    migrations.findIndex((entry) => entry.id === "091_runner_owner_accounts"),
-  )) {
-    db.run(migration.sql);
-    db.run("INSERT INTO schema_migration VALUES(?,0)", [migration.id]);
-  }
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',1)",
+function logins(db: Db) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select({ agent: q.t.runnerLogin.agent, state: q.t.runnerLogin.state })
+        .from(q.t.runnerLogin),
+    ),
   );
-  for (const user of ["owner", "member"]) {
-    db.run("INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES(?,?,?,?)", [
-      user,
-      `linear-${user}`,
-      user,
-      `${user}@example.invalid`,
-    ]);
-    db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES('w',?,?,'linear',1,1)",
-      [user, user],
-    );
-  }
-  for (const runner of ["shared", "plain"]) {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,'w','owner',?,'active',1)",
-      [runner, runner],
-    );
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runner]);
-  }
-  for (const user of ["owner", "member"]) {
-    db.run(
-      "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES('shared',?,'codex',1,1)",
-      [user],
-    );
-    db.run(
-      "INSERT INTO runner_agent_usage(runner_id,member_id,agent,limits_json,observed_at) VALUES('shared',?,'codex','[]',1)",
-      [user],
-    );
-    db.run(
-      "INSERT INTO agent_model_catalog(runner_id,user_id,agent,model,result_json,updated_at) VALUES('shared',?,'codex','','{}',1)",
-      [user],
-    );
-  }
-  db.run(
-    "INSERT INTO runner_agent_usage(runner_id,member_id,agent,limits_json,observed_at) VALUES('plain','','codex','[]',2)",
-  );
-  legacyMigrate(db);
-  expect(
-    db.query("SELECT name FROM sqlite_master WHERE name='runner_member_account'").get(),
-  ).toBeNull();
-  expect(
-    db
-      .query("SELECT runner_id,ready,auth_expired FROM runner_agent_policy ORDER BY runner_id")
-      .all(),
-  ).toEqual([
-    { runner_id: "plain", ready: 1, auth_expired: 0 },
-    { runner_id: "shared", ready: 0, auth_expired: 1 },
-  ]);
-  expect(db.query("SELECT runner_id,agent,observed_at FROM runner_agent_usage").all()).toEqual([
-    { runner_id: "plain", agent: "codex", observed_at: 2 },
-  ]);
-  expect(db.query("SELECT user_id FROM agent_model_catalog").all()).toEqual([{ user_id: "owner" }]);
-  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
-});
+}
 
 async function busy(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
+  const runId = `busy-run-${agent}`;
   await insertQueuedItem(f.db, { id: `busy-item-${agent}`, now: 0 });
-  f.db.run(
-    "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,?,'implement',?,'active',0,0)",
-    [`busy-run-${agent}`, `busy-item-${agent}`, agent],
+  await seed(
+    f.db,
+    (q) =>
+      q.orm.insert(q.t.run).values({
+        id: runId,
+        itemId: `busy-item-${agent}`,
+        kind: "implement",
+        agent,
+        status: "active",
+        createdAt: 0,
+        updatedAt: 0,
+      }),
+    (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId,
+        runnerId: f.runnerId,
+        workspaceId: f.owner.workspaceId,
+        generation: 1,
+        runnerFence: 0,
+        commandId: `busy-command-${agent}`,
+        leaseUntil: Date.now() + 60_000,
+      }),
   );
-  f.db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
-    [
-      `busy-run-${agent}`,
-      f.runnerId,
-      f.owner.workspaceId,
-      `busy-command-${agent}`,
-      Date.now() + 60_000,
-    ],
-  );
-  return () => f.db.query("SELECT * FROM runner_work WHERE run_id=?").get(`busy-run-${agent}`);
+  return () =>
+    f.db.run((q) =>
+      q.one(q.orm.select().from(q.t.runnerWork).where(eq(q.t.runnerWork.runId, runId))),
+    );
 }
 
 for (const agent of ["claude", "grok"] as const) {
@@ -401,9 +388,7 @@ for (const agent of ["claude", "grok"] as const) {
     ))!;
     expect(response.status).toBe(200);
     expect(((await response.json()) as { state: string }).state).toBe("starting");
-    expect(f.db.query("SELECT agent,state FROM runner_login").all()).toEqual([
-      { agent, state: "starting" },
-    ]);
+    expect(await logins(f.db)).toEqual([{ agent, state: "starting" }]);
     const accounts = (await f.login.list(f.owner, f.runnerId)).accounts;
     expect(accounts.map((account) => [account.agent, account.running])).toEqual([
       ["claude", 1],
@@ -421,10 +406,12 @@ test("a runner with four sign-ins waiting refuses another, even while it works",
     await f.login.start(f.owner, f.runnerId, agent);
   // Sign-ins left waiting by the runner's earlier owners still count.
   for (const earlier of [f.admin, f.member]) {
-    f.db.run("UPDATE runner_login SET user_id=? WHERE user_id=? AND agent='grok'", [
-      earlier.userId,
-      f.owner.userId,
-    ]);
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.runnerLogin)
+        .set({ userId: earlier.userId })
+        .where(and(eq(q.t.runnerLogin.userId, f.owner.userId), eq(q.t.runnerLogin.agent, "grok"))),
+    );
     if (earlier === f.admin)
       expect((await f.login.start(f.owner, f.runnerId, "grok")).state).toBe("starting");
   }
@@ -442,17 +429,18 @@ test("a runner with four sign-ins waiting refuses another, even while it works",
 
 test("a sign-in that succeeds during a live turn of its agent clears auth_expired and leaves the turn", async () => {
   const f = await fixture();
-  f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1)",
-    [f.runnerId],
+  await seed(f.db, (q) =>
+    q.orm
+      .insert(q.t.runnerAgentPolicy)
+      .values({ runnerId: f.runnerId, agent: "claude", ready: 0, authExpired: 1 }),
   );
   const turn = await busy(f, "claude");
-  const before = turn();
+  const before = await turn();
   const session = await f.login.start(f.owner, f.runnerId, "claude");
   expect(session.state).toBe("starting");
   await f.login.exchange(f.runnerId, session.id, f.connected);
-  expect(f.policy("claude")).toEqual({ ready: 1, authExpired: 0 });
-  expect(turn()).toEqual(before);
+  expect(await f.policy("claude")).toEqual({ ready: 1, authExpired: 0 });
+  expect(await turn()).toEqual(before);
   expect((await f.login.list(f.owner, f.runnerId)).accounts[0]).toMatchObject({
     agent: "claude",
     connected: true,
@@ -462,12 +450,16 @@ test("a sign-in that succeeds during a live turn of its agent clears auth_expire
 
 test("the owner can sign in agents on a paused runner, not on a draining or revoked one", async () => {
   const f = await fixture();
-  f.db.run("UPDATE runner SET status='paused' WHERE id=?", [f.runnerId]);
+  const status = (value: string) =>
+    seed(f.db, (q) =>
+      q.orm.update(q.t.runner).set({ status: value }).where(eq(q.t.runner.id, f.runnerId)),
+    );
+  await status("paused");
   const session = await f.login.start(f.owner, f.runnerId, "claude");
   expect(session.state).toBe("starting");
   expect((await f.login.list(f.owner, f.runnerId)).accounts.length).toBeGreaterThan(0);
-  for (const status of ["draining", "revoked"]) {
-    f.db.run("UPDATE runner SET status=? WHERE id=?", [status, f.runnerId]);
+  for (const value of ["draining", "revoked"]) {
+    await status(value);
     await expect(f.login.start(f.owner, f.runnerId, "codex")).rejects.toThrow();
   }
 });

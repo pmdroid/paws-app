@@ -2,7 +2,7 @@
 
 Paws reads two kinds of configuration:
 
-- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[agents.projects…]`, `[merge…]`, `[queue]`, `[time_limits…]`, `[checkout.projects…]` and `[brief…]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
+- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[merge…]`, `[queue]`, `[time_limits…]`, `[checkout.projects…]` and `[brief…]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
@@ -145,7 +145,7 @@ Grouping is maintenance work. An interactive classification or repository-select
 
 ### Agent presets and Linear labels
 
-Named profiles can be stored alongside agent defaults and project overrides:
+Named profiles can be stored alongside the global agent defaults:
 
 ```toml
 [agents.presets.Opus]
@@ -165,7 +165,7 @@ are refused. Quote TOML names containing spaces or dots.
 
 The Linear label groups are **Implementer** and **Reviewer**. Each group's label
 name identifies a preset. The profile resolver accepts these names independently:
-label preset, then repository override, then global default. Unknown names and
+label preset, then global default. Unknown names and
 reviewer labels matching the implementer's agent and model return label problems
 and retain the inherited profile for that role. Reviewer fallback is still omitted
 when it uses the resolved reviewer's agent.
@@ -183,4 +183,10 @@ An item about to wait for a runner has its labels read first when presets exist,
 so it waits for, or starts on, a runner with the labelled agent.
 
 The existing admin-protected `/api/settings/agents` endpoint reads and writes
-a `presets` object keyed by name alongside `defaults` and `projects`.
+a `presets` object keyed by name alongside `defaults`.
+
+Agent profiles are global: every repository uses the same implementer and
+reviewer. A `config.toml` that still has `[agents.projects…]` tables keeps
+loading; Paws ignores them and journals once at startup "agents.projects is no
+longer supported; using the global profiles". The next save of agent settings
+leaves them out.

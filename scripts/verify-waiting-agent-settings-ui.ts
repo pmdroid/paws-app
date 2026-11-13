@@ -93,7 +93,7 @@ const errors: string[] = [];
 try {
   for (const width of [1440, 390]) {
     for (const file of files) writeFileSync(file, JSON.stringify({ profiles: original }));
-    writeAgentSettings(configPath, { defaults: original, projects: [] });
+    writeAgentSettings(configPath, { defaults: original });
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/agents`);

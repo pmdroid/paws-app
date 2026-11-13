@@ -4,12 +4,14 @@ import { eq } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunnerCapacityWait } from "../src/core";
+import { JOB_KIND, RunnerCapacityWait } from "../src/core";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  enqueueJob,
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -237,4 +239,38 @@ test("a run held between commands keeps its slot, and the rejection names what f
   } finally {
     warn.mockRestore();
   }
+});
+
+test("a run holding its slot between commands resumes there even while others are admitted to that runner", async () => {
+  const f = await fixture();
+  await seed(f.db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set({ ready: 1 })
+      .where(eq(q.t.runnerAgentPolicy.runnerId, f.goldbox)),
+  );
+  f.tick(90_000);
+  await f.heartbeat(f.goldbox);
+  await insertQueuedItem(f.db, { id: "admitted", now: 0 });
+  await applyWorkItemEvent(f.db, "admitted", "dispatched");
+  const jobId = await enqueueJob(f.db, {
+    queue: JOB_KIND.resume,
+    payload: { itemId: "admitted", admissionRunnerId: f.goldbox },
+    runAt: 0,
+    now: 0,
+  });
+  await seed(f.db, (q) =>
+    q.orm.insert(q.t.schedulerAdmission).values({
+      itemId: "admitted",
+      jobId,
+      projectKey: "p",
+      repositoryKey: "r",
+      paths: [],
+      hot: 0,
+      createdAt: 0,
+    }),
+  );
+  const held = f.item(true);
+  void held.catch(() => undefined);
+  expect((await f.probe(f.goldbox)).type).toBe("probe");
 });

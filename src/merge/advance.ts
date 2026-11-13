@@ -35,6 +35,7 @@ import {
   readPullFacts,
   rebaseOntoMain,
   squashPull,
+  SquashServerError,
   type GitExec,
   type GitHubBinding,
   type PullFacts,
@@ -104,6 +105,7 @@ export type MergeResultPolicyError = { error: string; reference: string };
 export type PolicyRead = { digest: string; recheck: string } | MainPolicyUnreadable | null;
 
 export type MergeCapabilities = OrderCapabilities & {
+  sleep?(ms: number): Promise<void>;
   runnerRebase?(
     item: WorkItemRecord,
     heads: { head: string; main: string },
@@ -282,6 +284,7 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
+    ...(caps.sleep ? { sleep: caps.sleep } : {}),
     ...(mergeSettings.mainMoved === "overlap" || mergeSettings.mainMoved === "green"
       ? {
           overlap: {
@@ -339,7 +342,11 @@ export async function advanceMerge(
         },
         { head, base: facts.base },
         published.summary,
-      );
+      ).catch(async (error: unknown) => {
+        if (error instanceof SquashServerError)
+          await store.run((q) => endMergeCallSteps(q, item.id));
+        throw error;
+      });
       if (!squashed.merged && squashed.outcome !== "unknown")
         await store.run((q) => endMergeCallSteps(q, item.id));
       return squashed;

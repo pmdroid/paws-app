@@ -20,6 +20,12 @@ import {
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
+import {
+  createGitHubStatusCache,
+  everyLimited,
+  type GitHubStatus,
+  type GitHubStatusCache,
+} from "./github-status-cache";
 import { randomUUID } from "node:crypto";
 import {
   createWorkspaceGitHubActivation,
@@ -48,9 +54,11 @@ export function createHostedGitHubConnect(options: {
   origin: string;
   fetch?: typeof fetch;
   now?: () => number;
+  cache?: GitHubStatusCache;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
+  const cache = options.cache ?? createGitHubStatusCache(0);
   const origin = new URL(options.origin).origin;
   if (new URL(origin).protocol !== "https:")
     throw new Error("Hosted GitHub connect requires HTTPS.");
@@ -115,6 +123,7 @@ export function createHostedGitHubConnect(options: {
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
+    if (request.method !== "GET") cache.clear(access!.principal.workspaceId);
     if (url.pathname === START && request.method === "GET") {
       let app: ActiveGitHubApp;
       try {
@@ -135,6 +144,22 @@ export function createHostedGitHubConnect(options: {
       const repositories = [
         ...new Set((await repositoriesOf(workspaceId)).map((entry) => entry.repository)),
       ];
+      const connection = await store.run((q) => githubConnectionSteps(q, workspaceId));
+      const key = hash(
+        JSON.stringify([scope, connection?.installation_id, connection?.generation, app]),
+      );
+      const reply = async (github: GitHubStatus) =>
+        Response.json(
+          {
+            ...github,
+            canManage: await administrator(),
+            requiresSignIn: !(await permitted()),
+            lastDelivery: await store.run(latestGitHubDeliverySteps),
+          },
+          { headers: { "cache-control": "no-store" } },
+        );
+      const cached = cache.get(workspaceId, key, now());
+      if (cached) return reply(cached);
       try {
         const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30000)]);
         const discovered = await discoverGitHubInstallation(
@@ -143,7 +168,6 @@ export function createHostedGitHubConnect(options: {
           signal,
           options.fetch,
         );
-        const connection = await store.run((q) => githubConnectionSteps(q, workspaceId));
         const expected = repositories.map((name) => name.toLowerCase()).sort();
         const approved: unknown = connection ? JSON.parse(connection.repositories) : null;
         let connected = Boolean(
@@ -163,8 +187,9 @@ export function createHostedGitHubConnect(options: {
             fetch: options.fetch,
             resolve: (repository) => activation.resolve(repository),
           });
-          for (const repository of repositories)
-            if (!(await check(repository, "write", signal))) connected = false;
+          connected = await everyLimited(repositories, 8, (repository) =>
+            check(repository, "write", signal),
+          );
         }
         if (!(await signedIn())) return await denied();
         if (
@@ -175,8 +200,8 @@ export function createHostedGitHubConnect(options: {
             { error: "Workspace access changed. Refresh to check GitHub again." },
             { status: 409 },
           );
-        return Response.json(
-          {
+        return await reply(
+          cache.set(workspaceId, key, now(), {
             status: !repositories.length
               ? "needs_repositories"
               : !discovered.installed
@@ -186,13 +211,9 @@ export function createHostedGitHubConnect(options: {
                   : connected
                     ? "connected"
                     : "needs_connection",
-            canManage: await administrator(),
-            requiresSignIn: !(await permitted()),
             installationUrl: discovered.installationUrl,
             repositoryCount: repositories.length,
-            lastDelivery: await store.run(latestGitHubDeliverySteps),
-          },
-          { headers: { "cache-control": "no-store" } },
+          }),
         );
       } catch (caughtError2) {
         journalCaught(caughtError2, "github-connect.createHostedGitHubConnect.any", null);

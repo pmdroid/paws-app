@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { Database } from "bun:sqlite";
+import { and, asc, eq } from "drizzle-orm";
 import {
   legacyAgentBindingId,
-  migrate,
   putWorkspaceUser,
   recordAccountObservation,
   recordLinearInstallation,
@@ -11,7 +10,7 @@ import {
   recordRunnerAgentUsage,
   runnerAgentUsage,
   syncWorkspaceMember,
-  sqliteDb,
+  type Q,
 } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
@@ -20,32 +19,37 @@ import { createRunnerLogin } from "../src/runner-login";
 import { createRunnerHttp, type RunnerControl } from "../src/runner-control";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import { RunnerHealthResultSchema, type RunnerCommand } from "../src/runner-protocol";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const stores: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const store of stores.splice(0)) await store.close();
 });
 
+type AgentPolicy = Partial<Q["t"]["runnerAgentPolicy"]["$inferInsert"]>;
+
 async function fixture() {
-  const db = new Database(":memory:");
-  databases.push(db);
-  db.run("PRAGMA foreign_keys=ON");
-  migrate(db);
+  const store = await tempStore();
+  stores.push(store);
+  const { db } = store;
   let at = 1_800_000_000_000;
   const workspace = workspaceId();
-  db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
-    workspace,
-    "sign-in-org",
-    "Sign-in",
-    at,
-  ]);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workspace).values({
+      id: workspace,
+      linearOrganizationId: "sign-in-org",
+      name: "Sign-in",
+      createdAt: at,
+    }),
+  );
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "sign-in-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace,
     userId,
     role: "admin",
@@ -61,51 +65,61 @@ async function fixture() {
     authenticatedAt: at,
   };
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "sign-in",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => at });
-  const runner = (
+  const health = createRunnerHealth({ store: db, work, now: () => at });
+  const runner = async (
     status: "active" | "paused" | "draining" | "revoked" = "active",
     lastSeenAt: number | null = at,
   ) => {
     const id = workspaceId();
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at,revoked_at) VALUES(?,?,?,?,?,?,?,?)",
-      [
-        id,
-        workspace,
-        userId,
-        `Runner ${status}`,
-        status,
-        at,
-        lastSeenAt,
-        status === "revoked" ? at : null,
-      ],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: workspace,
+          ownerUserId: userId,
+          name: `Runner ${status}`,
+          status,
+          createdAt: at,
+          lastSeenAt,
+          revokedAt: status === "revoked" ? at : null,
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({ runnerId: id, runnerVersion: "0.1.53", reportedAt: at }),
     );
-    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-      id,
-      "0.1.53",
-      at,
-    ]);
     return id;
   };
-  const checks = (runnerId?: string) =>
-    db
-      .query<{ envelope: string }, []>(
-        "SELECT envelope FROM runner_command WHERE kind='login_check' ORDER BY ordinal",
+  const version = (runnerId: string, runnerVersion: string) =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerHostStatus)
+        .set({ runnerVersion })
+        .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
+    );
+  const checks = async (runnerId?: string) =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ envelope: q.t.runnerCommand.envelope })
+            .from(q.t.runnerCommand)
+            .where(eq(q.t.runnerCommand.kind, "login_check"))
+            .orderBy(asc(q.t.runnerCommand.ordinal)),
+        ),
       )
-      .all()
+    )
       .map(
         (row) =>
           JSON.parse(
-            Buffer.from(
-              (JSON.parse(row.envelope) as { payload: string }).payload,
-              "base64url",
-            ).toString(),
+            Buffer.from((row.envelope as { payload: string }).payload, "base64url").toString(),
           ) as Extract<RunnerCommand, { type: "login_check" }>,
       )
       .filter((command) => !runnerId || command.runnerId === runnerId);
@@ -131,21 +145,44 @@ async function fixture() {
       ...(limits ? { agentLimits: limits } : {}),
     });
   const seen = (runnerId: string) =>
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
-  const used = (runnerId: string, agent: string, usedAt = at) =>
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,last_used_at) VALUES(?1,?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET last_used_at=?3",
-      [runnerId, agent, usedAt],
+    seed(db, (q) =>
+      q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
     );
+  const setPolicy = (runnerId: string, agent: string, values: AgentPolicy) =>
+    seed(db, (q) =>
+      q.orm
+        .insert(q.t.runnerAgentPolicy)
+        .values({ runnerId, agent, ...values })
+        .onConflictDoUpdate({
+          target: [q.t.runnerAgentPolicy.runnerId, q.t.runnerAgentPolicy.agent],
+          set: values,
+        }),
+    );
+  const policy = async (runnerId: string, agent: string) =>
+    await db.run((q) =>
+      q.one(
+        q.orm
+          .select()
+          .from(q.t.runnerAgentPolicy)
+          .where(
+            and(
+              eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+              eq(q.t.runnerAgentPolicy.agent, agent),
+            ),
+          ),
+      ),
+    );
+  const used = (runnerId: string, agent: string, usedAt = at) =>
+    setPolicy(runnerId, agent, { lastUsedAt: usedAt });
   const helpers = createRunnerHelpers({
-    store: sqliteDb(db),
+    store: db,
     keyId: "sign-in",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => at,
   });
   const helper = async (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
     const sessionId = crypto.randomUUID();
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "sign-in-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -185,6 +222,9 @@ async function fixture() {
     work,
     health,
     runner,
+    version,
+    setPolicy,
+    policy,
     checks,
     answer,
     seen,
@@ -201,45 +241,44 @@ async function fixture() {
 
 test("background sign-in checks run once per agent per interval and never while one is in flight", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
-  expect(f.checks().map((check) => check.agent)).toEqual(["claude", "codex", "grok", "opencode"]);
-  expect(f.checks().every((check) => check.memberId === undefined)).toBe(true);
+  expect((await f.checks()).map((check) => check.agent)).toEqual([
+    "claude",
+    "codex",
+    "grok",
+    "opencode",
+  ]);
+  expect((await f.checks()).every((check) => check.memberId === undefined)).toBe(true);
   await f.health.refresh();
-  expect(f.checks()).toHaveLength(4);
-  const [claude, codex] = f.checks();
+  expect(await f.checks()).toHaveLength(4);
+  const [claude, codex] = await f.checks();
   f.advance(10_000);
   await f.answer(claude!);
   await f.answer(codex!, false);
-  f.used(runnerId, "codex");
+  await f.used(runnerId, "codex");
 
   f.advance(3 * 60_000);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  expect(f.checks()).toHaveLength(4);
+  expect(await f.checks()).toHaveLength(4);
 
   f.advance(2 * 60_000 - 5_000);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  expect(
-    f
-      .checks()
-      .slice(4)
-      .map((check) => check.agent),
-  ).toEqual(["grok", "opencode"]);
+  expect((await f.checks()).slice(4).map((check) => check.agent)).toEqual(["grok", "opencode"]);
 
   f.advance(10_000);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
+  expect((await f.checks()).slice(6).map((check) => check.agent)).toEqual(["codex"]);
   expect(
-    f
-      .checks()
-      .slice(6)
-      .map((check) => check.agent),
-  ).toEqual(["codex"]);
-  expect(f.db.query("SELECT 1 FROM runner_command WHERE kind='probe'").get()).toBeNull();
+    await f.db.run((q) =>
+      q.all(q.orm.select().from(q.t.runnerCommand).where(eq(q.t.runnerCommand.kind, "probe"))),
+    ),
+  ).toEqual([]);
 
-  const inFlight = f.checks().length;
+  const inFlight = (await f.checks()).length;
   await f.work.enqueue({
     id: crypto.randomUUID(),
     type: "login_check",
@@ -250,41 +289,40 @@ test("background sign-in checks run once per agent per interval and never while 
     expiresAt: f.now() + 20 * 60_000,
   });
   f.advance(6 * 60_000);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  expect(
-    f
-      .checks()
-      .slice(inFlight + 1)
-      .map((check) => check.agent),
-  ).toEqual(["codex", "grok", "opencode"]);
+  expect((await f.checks()).slice(inFlight + 1).map((check) => check.agent)).toEqual([
+    "codex",
+    "grok",
+    "opencode",
+  ]);
 });
 
 test("four signed-in agents get at most one passing check each in 30 minutes", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
-  for (const check of f.checks()) await f.answer(check);
+  for (const check of await f.checks()) await f.answer(check);
   for (let minute = 5; minute <= 30; minute += 5) {
     f.advance(5 * 60_000);
-    f.seen(runnerId);
+    await f.seen(runnerId);
     await f.health.refresh();
-    expect(f.checks()).toHaveLength(4);
+    expect(await f.checks()).toHaveLength(4);
   }
   f.advance(1);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  expect(
-    f
-      .checks()
-      .slice(4)
-      .map((check) => check.agent),
-  ).toEqual(["claude", "codex", "grok", "opencode"]);
+  expect((await f.checks()).slice(4).map((check) => check.agent)).toEqual([
+    "claude",
+    "codex",
+    "grok",
+    "opencode",
+  ]);
 });
 
 test("a pending helper goes out before a queued login check, which waits until the helper finishes", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
   const [first] = await f.delivered(runnerId);
@@ -304,15 +342,15 @@ test("a pending helper goes out before a queued login check, which waits until t
 
 test("a helper that expired unserved, or a conversation in its own lane, holds no check back", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.77' WHERE runner_id=?", [runnerId]);
-  await recordRunnerCapacity(sqliteDb(f.db), runnerId, 1, 1, 2);
+  const runnerId = await f.runner();
+  await f.version(runnerId, "0.1.77");
+  await recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
   await f.health.refresh();
   await f.helper(runnerId, "conversation");
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 
   const g = await fixture();
-  const other = g.runner();
+  const other = await g.runner();
   await g.health.refresh();
   await g.helper(other);
   expect(await g.delivered(other)).toEqual([]);
@@ -322,35 +360,32 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
 
 test("no check is queued while a helper waits for the lane", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.helper(runnerId);
   await f.health.refresh();
-  expect(f.checks()).toHaveLength(0);
+  expect(await f.checks()).toHaveLength(0);
 });
 
 test("a signed-out agent, and one whose check failed, is still checked every 5 minutes", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
-  const [claude, codex] = f.checks();
+  const [claude, codex] = await f.checks();
   await f.answer(codex!, false);
   await f.answer(claude!);
-  f.used(runnerId, "codex");
-  f.used(runnerId, "claude");
-  f.db.run(
-    "UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id=? AND agent='claude'",
-    [runnerId],
-  );
-  const agents = () => f.checks(runnerId).map((check) => check.agent);
-  const count = (agent: string) => agents().filter((name) => name === agent).length;
+  await f.used(runnerId, "codex");
+  await f.used(runnerId, "claude");
+  await f.setPolicy(runnerId, "claude", { ready: 0, authExpired: 1 });
+  const count = async (agent: string) =>
+    (await f.checks(runnerId)).filter((check) => check.agent === agent).length;
   for (let round = 1; round <= 3; round += 1) {
     f.advance(5 * 60_000 + 1);
-    f.seen(runnerId);
+    await f.seen(runnerId);
     await f.health.refresh();
-    expect(count("claude")).toBe(1 + round);
-    expect(count("codex")).toBe(1 + round);
+    expect(await count("claude")).toBe(1 + round);
+    expect(await count("codex")).toBe(1 + round);
     await f.answer(
-      f.checks(runnerId).findLast((check) => check.agent === "codex")!,
+      (await f.checks(runnerId)).findLast((check) => check.agent === "codex")!,
       false,
     );
   }
@@ -358,36 +393,33 @@ test("a signed-out agent, and one whose check failed, is still checked every 5 m
 
 test("a signed-out agent not used for a day is left alone, and one signed in is still checked", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
-  const [claude, codex] = f.checks();
+  const [claude, codex] = await f.checks();
   await f.answer(claude!);
   await f.answer(codex!, false);
-  f.used(runnerId, "codex", f.now() - 24 * 60 * 60_000);
+  await f.used(runnerId, "codex", f.now() - 24 * 60 * 60_000);
   f.advance(31 * 60_000);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  const later = f
-    .checks()
-    .slice(4)
-    .map((check) => check.agent);
+  const later = (await f.checks()).slice(4).map((check) => check.agent);
   expect(later).toContain("claude");
   expect(later).not.toContain("codex");
 });
 
 test("paused, draining, revoked and unseen runners are skipped", async () => {
   const f = await fixture();
-  const active = f.runner();
-  for (const status of ["paused", "draining", "revoked"] as const) f.runner(status);
-  f.runner("active", null);
-  f.runner("active", f.now() - 2 * 60_000);
+  const active = await f.runner();
+  for (const status of ["paused", "draining", "revoked"] as const) await f.runner(status);
+  await f.runner("active", null);
+  await f.runner("active", f.now() - 2 * 60_000);
   await f.health.refresh();
-  expect(new Set(f.checks().map((check) => check.runnerId))).toEqual(new Set([active]));
+  expect(new Set((await f.checks()).map((check) => check.runnerId))).toEqual(new Set([active]));
 });
 
 test("runner list reports signed in, signed out, checking, usage limit and unknown per agent", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   const statuses = async () =>
     Object.fromEntries(
       (await f.health.agents(f.owner, runnerId)).map(({ agent, ...rest }) => [agent, rest]),
@@ -400,7 +432,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
   });
   await f.health.refresh();
   expect((await statuses()).claude!.status).toBe("checking");
-  const [claude, codex] = f.checks();
+  const [claude, codex] = await f.checks();
   await f.answer(claude!);
   await f.answer(codex!, false);
   expect(await statuses()).toEqual({
@@ -410,10 +442,11 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     opencode: { status: "checking", checkedAt: null },
   });
   const resetsAt = f.now() + 3_600_000;
-  f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?1,'claude','exhausted',?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET quota_state='exhausted',resets_at=?2,cooldown_until=?3",
-    [runnerId, resetsAt, resetsAt],
-  );
+  await f.setPolicy(runnerId, "claude", {
+    quotaState: "exhausted",
+    resetsAt,
+    cooldownUntil: resetsAt,
+  });
   expect((await statuses()).claude).toEqual({
     status: "usage_limit",
     checkedAt: f.now(),
@@ -449,25 +482,19 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
 test("a spent usage window cools the agent down unless the runner keeps it on extra usage", async () => {
   for (const extra of [0, 1]) {
     const f = await fixture();
-    const runnerId = f.runner();
-    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,extra_usage) VALUES(?,'claude',?)", [
-      runnerId,
-      extra,
-    ]);
+    const runnerId = await f.runner();
+    await f.setPolicy(runnerId, "claude", { extraUsage: extra });
     await f.health.refresh();
-    const [claude] = f.checks();
+    const [claude] = await f.checks();
     const resetsAt = f.now() + 3_600_000;
     await f.answer(claude!, true, [
       { window: "5-hour", usedPercent: 100, resetsAt },
       { window: "Weekly", usedPercent: 46, resetsAt: null },
     ]);
-    const policy = f.db
-      .query<{ quota: string; cooldown: number }, [string]>(
-        "SELECT quota_state AS quota, cooldown_until AS cooldown FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
-      )
-      .get(runnerId);
-    expect(policy).toEqual(
-      extra ? { quota: "spent_extra", cooldown: 0 } : { quota: "exhausted", cooldown: resetsAt },
+    expect(await f.policy(runnerId, "claude")).toMatchObject(
+      extra
+        ? { quotaState: "spent_extra", cooldownUntil: 0 }
+        : { quotaState: "exhausted", cooldownUntil: resetsAt },
     );
     const status = (await f.health.agents(f.owner, runnerId))[0]!;
     expect(status.status).toBe(extra ? "extra_usage" : "usage_limit");
@@ -477,9 +504,9 @@ test("a spent usage window cools the agent down unless the runner keeps it on ex
 
 test("the latest usage windows reach the runner list with when they were read", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   await f.health.refresh();
-  const [claude] = f.checks();
+  const [claude] = await f.checks();
   const limits = [
     { window: "5-hour", usedPercent: 16, resetsAt: f.now() + 3_600_000 },
     { window: "Weekly", usedPercent: 3, resetsAt: null },
@@ -494,10 +521,11 @@ test("the latest usage windows reach the runner list with when they were read", 
     limitsAt: f.now(),
   });
   const resetsAt = f.now() + 60_000;
-  f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?1,'claude','exhausted',?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET quota_state='exhausted',resets_at=?2,cooldown_until=?3",
-    [runnerId, resetsAt, resetsAt],
-  );
+  await f.setPolicy(runnerId, "claude", {
+    quotaState: "exhausted",
+    resetsAt,
+    cooldownUntil: resetsAt,
+  });
   expect(await status()).toEqual({
     agent: "claude",
     status: "usage_limit",
@@ -520,10 +548,10 @@ test("the latest usage windows reach the runner list with when they were read", 
 
 test("an older usage reading never replaces a newer one", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   const reading = (usedPercent: number) => [{ window: "Weekly", usedPercent, resetsAt: null }];
   const record = async (usedPercent: number, observedAt: number) =>
-    await recordRunnerAgentUsage(sqliteDb(f.db), {
+    await recordRunnerAgentUsage(f.db, {
       runnerId,
       agent: "codex",
       limits: reading(usedPercent),
@@ -531,33 +559,33 @@ test("an older usage reading never replaces a newer one", async () => {
     });
   await record(40, 2_000);
   await record(10, 1_000);
-  expect(await runnerAgentUsage(sqliteDb(f.db), runnerId, "codex")).toEqual({
+  expect(await runnerAgentUsage(f.db, runnerId, "codex")).toEqual({
     limits: reading(40),
     observedAt: 2_000,
   });
   await record(55, 3_000);
-  expect((await runnerAgentUsage(sqliteDb(f.db), runnerId, "codex"))!.limits).toEqual(reading(55));
-  expect(await runnerAgentUsage(sqliteDb(f.db), runnerId, "claude")).toBeNull();
+  expect((await runnerAgentUsage(f.db, runnerId, "codex"))!.limits).toEqual(reading(55));
+  expect(await runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
 });
 
 test("a completed sign-in queues one login check for that agent", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   const login = createRunnerLogin({
-    store: sqliteDb(f.db),
+    store: f.db,
     work: f.work,
     now: f.now,
     onSignedIn: (signedIn) => f.health.afterSignIn(signedIn.runnerId, signedIn.agent),
   });
   const session = await login.start(f.owner, runnerId, "claude");
-  expect(f.checks()).toHaveLength(0);
+  expect(await f.checks()).toHaveLength(0);
   await login.exchange(runnerId, session.id, {
     state: "connected",
     terminal: "",
     authorization: null,
     inputId: null,
   });
-  expect(f.checks().map(({ agent, memberId }) => [agent, memberId])).toEqual([
+  expect((await f.checks()).map(({ agent, memberId }) => [agent, memberId])).toEqual([
     ["claude", undefined],
   ]);
   expect(await f.health.afterSignIn(runnerId, "claude")).toBe(false);
@@ -573,8 +601,8 @@ test("a completed sign-in queues one login check for that agent", async () => {
 
 test("a sign-in goes to the runner before sign-in checks queued ahead of it", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
-  const login = createRunnerLogin({ store: sqliteDb(f.db), work: f.work, now: f.now });
+  const runnerId = await f.runner();
+  const login = createRunnerLogin({ store: f.db, work: f.work, now: f.now });
   for (const agent of ["codex", "grok"] as const)
     await f.work.enqueue({
       id: crypto.randomUUID(),
@@ -617,43 +645,36 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
 
 test("a login check readies the runner's agent or marks it signed out", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
-  const policy = () =>
-    f.db
-      .query<{ ready: number; authExpired: number }, [string]>(
-        "SELECT ready,auth_expired AS authExpired FROM runner_agent_policy WHERE runner_id=? AND agent='grok'",
-      )
-      .get(runnerId);
+  const runnerId = await f.runner();
+  const policy = async () => {
+    const row = await f.policy(runnerId, "grok");
+    return row && { ready: row.ready, authExpired: row.authExpired };
+  };
   await f.health.refresh();
-  await f.answer(f.checks(runnerId).find((command) => command.agent === "grok")!);
-  expect(policy()).toEqual({ ready: 1, authExpired: 0 });
+  await f.answer((await f.checks(runnerId)).find((command) => command.agent === "grok")!);
+  expect(await policy()).toEqual({ ready: 1, authExpired: 0 });
   f.advance(30 * 60_000 + 1);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
   await f.answer(
-    f.checks(runnerId).findLast((command) => command.agent === "grok")!,
+    (await f.checks(runnerId)).findLast((command) => command.agent === "grok")!,
     false,
   );
-  expect(policy()).toEqual({ ready: 0, authExpired: 1 });
+  expect(await policy()).toEqual({ ready: 0, authExpired: 1 });
 });
 
 test("a login check issued before a newer sign-in failure cannot mark the agent ready", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
-  const policy = () =>
-    f.db
-      .query<{ ready: number; authExpired: number }, [string]>(
-        "SELECT ready,auth_expired AS authExpired FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
-      )
-      .get(runnerId);
+  const runnerId = await f.runner();
+  const policy = async () => {
+    const row = await f.policy(runnerId, "claude");
+    return row && { ready: row.ready, authExpired: row.authExpired };
+  };
   await f.health.refresh();
-  const late = f.checks(runnerId).find((command) => command.agent === "claude")!;
+  const late = (await f.checks(runnerId)).find((command) => command.agent === "claude")!;
   f.advance(10_000);
-  f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1) ON CONFLICT DO UPDATE SET ready=0,auth_expired=1",
-    [runnerId],
-  );
-  await recordAccountObservation(sqliteDb(f.db), {
+  await f.setPolicy(runnerId, "claude", { ready: 0, authExpired: 1 });
+  await recordAccountObservation(f.db, {
     bindingId: legacyAgentBindingId(runnerId, "claude"),
     source: "result",
     sourceId: "failed-run",
@@ -663,67 +684,83 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
   });
   f.advance(10_000);
   await f.answer(late);
-  expect(policy()).toEqual({ ready: 0, authExpired: 1 });
-  f.used(runnerId, "claude");
+  expect(await policy()).toEqual({ ready: 0, authExpired: 1 });
+  await f.used(runnerId, "claude");
 
   f.advance(5 * 60_000 + 1);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  await f.answer(f.checks(runnerId).findLast((command) => command.agent === "claude")!);
-  expect(policy()).toEqual({ ready: 1, authExpired: 0 });
+  await f.answer((await f.checks(runnerId)).findLast((command) => command.agent === "claude")!);
+  expect(await policy()).toEqual({ ready: 1, authExpired: 0 });
 });
 
 test("a sign-in check's usage reading replaces a stale usage limit", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
+  const runnerId = await f.runner();
   const reset = f.now() + 3 * 86_400_000;
-  f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired,quota_state,resets_at,cooldown_until) VALUES(?,'claude',1,0,'exhausted',?,?)",
-    [runnerId, reset, reset],
-  );
-  const policy = () =>
-    f.db
-      .query<{ quotaState: string; resetsAt: number | null; cooldownUntil: number }, [string]>(
-        "SELECT quota_state AS quotaState,resets_at AS resetsAt,cooldown_until AS cooldownUntil FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
-      )
-      .get(runnerId);
-  const claude = () => f.checks(runnerId).findLast((command) => command.agent === "claude")!;
+  await f.setPolicy(runnerId, "claude", {
+    ready: 1,
+    authExpired: 0,
+    quotaState: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
+  });
+  const policy = async () => {
+    const row = await f.policy(runnerId, "claude");
+    return (
+      row && {
+        quotaState: row.quotaState,
+        resetsAt: row.resetsAt,
+        cooldownUntil: row.cooldownUntil,
+      }
+    );
+  };
+  const claude = async () =>
+    (await f.checks(runnerId)).findLast((command) => command.agent === "claude")!;
   await f.health.refresh();
-  await f.answer(claude(), true, [
+  await f.answer(await claude(), true, [
     { window: "5-hour", usedPercent: 0, resetsAt: null },
     { window: "Weekly", usedPercent: 8, resetsAt: reset + 16 * 3_600_000 },
   ]);
-  expect(policy()).toEqual({ quotaState: "ok", resetsAt: null, cooldownUntil: 0 });
+  expect(await policy()).toEqual({ quotaState: "ok", resetsAt: null, cooldownUntil: 0 });
 
   f.advance(30 * 60_000 + 1);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  await f.answer(claude(), true, [
+  await f.answer(await claude(), true, [
     { window: "5-hour", usedPercent: 12, resetsAt: null },
     { window: "Weekly", usedPercent: 100, resetsAt: reset },
   ]);
-  expect(policy()).toEqual({ quotaState: "exhausted", resetsAt: reset, cooldownUntil: reset });
+  expect(await policy()).toEqual({
+    quotaState: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
+  });
 
   f.advance(30 * 60_000 + 1);
-  f.seen(runnerId);
+  await f.seen(runnerId);
   await f.health.refresh();
-  await f.answer(claude());
-  expect(policy()).toEqual({ quotaState: "exhausted", resetsAt: reset, cooldownUntil: reset });
+  await f.answer(await claude());
+  expect(await policy()).toEqual({
+    quotaState: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
+  });
 });
 
 test("older runners keep their three login checks and reject OpenCode before dispatch", async () => {
   const f = await fixture();
-  const runnerId = f.runner();
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [runnerId]);
+  const runnerId = await f.runner();
+  await f.version(runnerId, "0.1.52");
   await f.health.refresh();
-  expect(f.checks().map((command) => command.agent)).toEqual(["claude", "codex", "grok"]);
+  expect((await f.checks()).map((command) => command.agent)).toEqual(["claude", "codex", "grok"]);
   await expect(
     f.health.request(f.owner, runnerId, { type: "login_check", agent: "opencode" }),
   ).rejects.toThrow("OpenCode needs runner 0.1.53");
-  expect(f.checks()).toHaveLength(3);
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
+  expect(await f.checks()).toHaveLength(3);
+  await f.version(runnerId, "0.1.53");
   await f.health.refresh();
-  expect(f.checks().map((command) => command.agent)).toEqual([
+  expect((await f.checks()).map((command) => command.agent)).toEqual([
     "claude",
     "codex",
     "grok",

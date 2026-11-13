@@ -34,6 +34,7 @@ export type GitHubResponse = {
   status: number;
   body: unknown;
   retryAfterMs?: number;
+  requestId?: string;
 };
 
 /**
@@ -99,6 +100,7 @@ export class GitHubHttpError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly retryAfterMs?: number;
+  readonly requestId?: string;
   constructor(response: GitHubResponse, message?: string) {
     const detail = (response.body as { message?: unknown } | null)?.message;
     super(
@@ -107,8 +109,11 @@ export class GitHubHttpError extends Error {
     this.status = response.status;
     this.body = response.body;
     this.retryAfterMs = response.retryAfterMs;
+    this.requestId = response.requestId;
   }
 }
+
+export class SquashServerError extends GitHubHttpError {}
 
 export class GitCommandError extends Error {
   readonly args: string[];

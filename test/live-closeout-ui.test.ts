@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   accrueAwake,
   appendCloseoutOutput,
@@ -16,14 +15,16 @@ import {
   finishCloseoutProgress,
   insertQueuedItem,
   markRun,
-  migrate,
-  openDatabase,
   saveCheckpoint,
   upsertCloseoutStep,
   type CloseoutProgressIdentity,
   type CloseoutStepWrite,
-  sqliteDb,
+  openPawsStore,
+  type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
+import { seed } from "./dialects";
+import { copyMigratedPglite, tempStore } from "./pglite";
 import { handleStatusRequest } from "../src/dashboard";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
 import { attemptsOf, checkKey } from "../src/dashboard/src/client/closeout";
@@ -44,21 +45,24 @@ type Status = {
   details: Map<string, IssueDetailResponse>;
 };
 
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 const dirs: string[] = [];
 
-afterEach(() => {
-  for (const db of open) db.close();
-  open.length = 0;
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs.length = 0;
 });
 
-function database(file?: string): Database {
-  const db = openDatabase(file ?? ":memory:");
-  migrate(db);
-  open.push(db);
+async function database(): Promise<Db> {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
+}
+
+async function persisted(dir: string): Promise<{ db: Db; close(): Promise<void> }> {
+  const opened = await openPawsStore({ url: null, pgliteDir: dir });
+  return { db: opened.store, close: () => opened.close() };
 }
 
 function tempDir(): string {
@@ -128,15 +132,15 @@ function portable(
   return `${kind}/${hex}/${head}/${checkId}/1.${ext}`;
 }
 
-async function seedVerifying(db: Database, id: string, head: string, now: number): Promise<void> {
-  const started = await beginImplementRun(sqliteDb(db), id, now, {
+async function seedVerifying(db: Db, id: string, head: string, now: number): Promise<void> {
+  const started = await beginImplementRun(db, id, now, {
     phase: "verifying",
     baseSha: sha("c"),
     wipCommit: head,
   });
-  await markRun(sqliteDb(db), started.run.id, "ended", now);
-  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
-  await saveCheckpoint(sqliteDb(db), id, {
+  await markRun(db, started.run.id, "ended", now);
+  await applyWorkItemEvent(db, id, "turn_ended");
+  await saveCheckpoint(db, id, {
     phase: "verifying",
     baseSha: sha("c"),
     wipCommit: head,
@@ -144,13 +148,13 @@ async function seedVerifying(db: Database, id: string, head: string, now: number
 }
 
 async function acceptVerdict(
-  db: Database,
+  db: Db,
   id: string,
   head: string,
   body: string,
   now: number,
 ): Promise<void> {
-  await enqueueOutbox(sqliteDb(db), {
+  await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -165,8 +169,8 @@ async function acceptVerdict(
  * `checkLog`, as the issue page shows a check once its row has loaded the log. Neither
  * `/api/issues` nor the detail carries check output.
  */
-async function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Promise<Status> {
-  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now), env });
+async function snapshotOf(db: Db, now: number, env: NodeJS.ProcessEnv = {}): Promise<Status> {
+  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
   const list = await provider.issues();
   const withLogs = async (itemId: string, attempt: number, checks: readonly StatusCheck[]) => {
     const logged: StatusCheck[] = [];
@@ -225,29 +229,31 @@ function paint(snapshot: Status, id: string, checkId: string): string {
 
 describe("live closeout ui", () => {
   test("a paused task retains its status when its prior session is lost", async () => {
-    const db = database();
+    const db = await database();
     const id = "ENG-302";
     await insertQueuedItem(db, { id });
-    const { run } = await beginImplementRun(sqliteDb(db), id, 1);
-    await applyWorkItemEvent(sqliteDb(db), id, "pause");
-    await markRun(sqliteDb(db), run.id, "lost", 2);
+    const { run } = await beginImplementRun(db, id, 1);
+    await applyWorkItemEvent(db, id, "pause");
+    await markRun(db, run.id, "lost", 2);
     expect((await snapshotOf(db, 3)).runs.find((entry) => entry.itemId === id)?.state).toBe(
       "paused",
     );
   });
 
   test("a cap during verification shows the stopped run and its reason", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const id = "ENG-302";
     await insertQueuedItem(db, { id, title: "Capped repair", limits: { closeout: 1_000 }, now });
-    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ sessionKey: null }).where(eq(q.t.workItem.id, id)),
+    );
     await seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
-    await enqueueJob(sqliteDb(db), { queue: "run.reverify", payload: { itemId: id }, now });
-    await claimNextJob(sqliteDb(db), { now, leaseMs: 60_000, queues: ["run.reverify"] });
-    await accrueAwake(sqliteDb(db), id, 0, now);
-    await accrueAwake(sqliteDb(db), id, 1_000, now + 1_000);
+    await enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });
+    await claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
+    await accrueAwake(db, id, 0, now);
+    await accrueAwake(db, id, 1_000, now + 1_000);
     const run = (await snapshotOf(db, now + 1_000)).runs.find((entry) => entry.itemId === id);
     expect(run?.state).toBe("stopped");
     expect(run?.summary).toBe(
@@ -257,13 +263,13 @@ describe("live closeout ui", () => {
   });
 
   test("shows streamed checks before closeout finishes", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const id = "ENG-74";
     const head = sha("b");
     await insertQueuedItem(db, { id, title: "Live closeout", now });
     await seedVerifying(db, id, head, now);
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -276,9 +282,9 @@ describe("live closeout ui", () => {
       now,
     });
     const current = identity(id, head, policy("b"));
-    await ensureCloseoutProgress(sqliteDb(db), id, current, now, true);
+    await ensureCloseoutProgress(db, id, current, now, true);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       current,
       step("typecheck", "running", {
@@ -288,7 +294,7 @@ describe("live closeout ui", () => {
       now + 1,
     );
     await appendCloseoutOutput(
-      sqliteDb(db),
+      db,
       id,
       current,
       "typecheck",
@@ -321,18 +327,18 @@ describe("live closeout ui", () => {
   });
 
   test("keeps a merge-queue recheck running until the new decision is stored", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const id = "ENG-75";
     const oldHead = sha("a");
     const newHead = sha("d");
     await insertQueuedItem(db, { id, title: "Recheck", now });
-    await beginImplementRun(sqliteDb(db), id, now, {
+    await beginImplementRun(db, id, now, {
       phase: "merge_queue",
       baseSha: sha("c"),
       wipCommit: oldHead,
     });
-    await enterMergeQueue(sqliteDb(db), id, {
+    await enterMergeQueue(db, id, {
       phase: "merge_queue",
       baseSha: sha("c"),
       wipCommit: oldHead,
@@ -350,14 +356,14 @@ describe("live closeout ui", () => {
     ].join("\n");
     await acceptVerdict(db, id, oldHead, accepted, now + 1);
     const previous = identity(id, oldHead, policy("a"));
-    await ensureCloseoutProgress(sqliteDb(db), id, previous, now + 1, true);
-    await upsertCloseoutStep(sqliteDb(db), id, previous, step("stale-check", "passed"), now + 2);
-    await finishCloseoutProgress(sqliteDb(db), id, previous, "accepted", now + 3);
+    await ensureCloseoutProgress(db, id, previous, now + 1, true);
+    await upsertCloseoutStep(db, id, previous, step("stale-check", "passed"), now + 2);
+    await finishCloseoutProgress(db, id, previous, "accepted", now + 3);
 
     const current = identity(id, newHead, policy("b"));
-    await ensureCloseoutProgress(sqliteDb(db), id, current, now + 4, true);
-    await upsertCloseoutStep(sqliteDb(db), id, current, step("recheck", "pending"), now + 5);
-    await upsertCloseoutStep(sqliteDb(db), id, current, step("recheck", "running"), now + 6);
+    await ensureCloseoutProgress(db, id, current, now + 4, true);
+    await upsertCloseoutStep(db, id, current, step("recheck", "pending"), now + 5);
+    await upsertCloseoutStep(db, id, current, step("recheck", "running"), now + 6);
 
     const running = verdictOf(await snapshotOf(db, now + 7), id);
     expect(running.decision).toBe("running");
@@ -370,14 +376,8 @@ describe("live closeout ui", () => {
     expect(runningHtml).toContain("Closeout is verifying the work");
     expect(runningHtml).not.toContain("Closeout accepted. Waiting to merge.");
 
-    await upsertCloseoutStep(
-      sqliteDb(db),
-      id,
-      current,
-      step("recheck", "failed", { exitCode: 1 }),
-      now + 8,
-    );
-    await finishCloseoutProgress(sqliteDb(db), id, current, "rejected", now + 9);
+    await upsertCloseoutStep(db, id, current, step("recheck", "failed", { exitCode: 1 }), now + 8);
+    await finishCloseoutProgress(db, id, current, "rejected", now + 9);
     const finished = verdictOf(await snapshotOf(db, now + 10), id);
     expect(finished.decision).toBe("rejected");
     expect(finished.summary).toBe("Closeout rejected.");
@@ -388,7 +388,7 @@ describe("live closeout ui", () => {
   });
 
   test("lists every Closeout attempt of an item, oldest first, and renders the latest", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const id = "ENG-77";
     const firstHead = sha("a");
@@ -396,10 +396,10 @@ describe("live closeout ui", () => {
     await insertQueuedItem(db, { id, title: "Fix loop", now });
     await seedVerifying(db, id, secondHead, now);
     const first = identity(id, firstHead, policy("a"));
-    await ensureCloseoutProgress(sqliteDb(db), id, first, now + 1, true);
-    await upsertCloseoutStep(sqliteDb(db), id, first, step("unit", "running"), now + 2);
+    await ensureCloseoutProgress(db, id, first, now + 1, true);
+    await upsertCloseoutStep(db, id, first, step("unit", "running"), now + 2);
     await appendCloseoutOutput(
-      sqliteDb(db),
+      db,
       id,
       first,
       "unit",
@@ -409,7 +409,7 @@ describe("live closeout ui", () => {
       now + 3,
     );
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       first,
       step("unit", "failed", {
@@ -418,17 +418,11 @@ describe("live closeout ui", () => {
       }),
       now + 4,
     );
-    await finishCloseoutProgress(sqliteDb(db), id, first, "rejected", now + 5);
+    await finishCloseoutProgress(db, id, first, "rejected", now + 5);
     const second = identity(id, secondHead, policy("a"));
-    await ensureCloseoutProgress(sqliteDb(db), id, second, now + 6, true);
-    await upsertCloseoutStep(
-      sqliteDb(db),
-      id,
-      second,
-      step("unit", "passed", { exitCode: 0 }),
-      now + 7,
-    );
-    await finishCloseoutProgress(sqliteDb(db), id, second, "accepted", now + 8);
+    await ensureCloseoutProgress(db, id, second, now + 6, true);
+    await upsertCloseoutStep(db, id, second, step("unit", "passed", { exitCode: 0 }), now + 7);
+    await finishCloseoutProgress(db, id, second, "accepted", now + 8);
 
     const snapshot = await snapshotOf(db, now + 9);
     const verdict = verdictOf(snapshot, id);
@@ -458,7 +452,7 @@ describe("live closeout ui", () => {
   });
 
   test("does not attach an older accepted verdict to another candidate or policy", async () => {
-    const db = database();
+    const db = await database();
     const now = 1_700_000_000_000;
     const id = "ENG-76";
     const oldHead = sha("a");
@@ -473,13 +467,13 @@ describe("live closeout ui", () => {
     ].join("\n");
     await acceptVerdict(db, id, oldHead, accepted, now + 1);
     const stale = identity(id, oldHead, policy("a"));
-    await ensureCloseoutProgress(sqliteDb(db), id, stale, now + 10, true);
-    await upsertCloseoutStep(sqliteDb(db), id, stale, step("stale-check", "passed"), now + 11);
-    await finishCloseoutProgress(sqliteDb(db), id, stale, "accepted", now + 50);
+    await ensureCloseoutProgress(db, id, stale, now + 10, true);
+    await upsertCloseoutStep(db, id, stale, step("stale-check", "passed"), now + 11);
+    await finishCloseoutProgress(db, id, stale, "accepted", now + 50);
     const fresh = identity(id, newHead, policy("b"));
-    await ensureCloseoutProgress(sqliteDb(db), id, fresh, now + 12, true);
+    await ensureCloseoutProgress(db, id, fresh, now + 12, true);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       fresh,
       step("fresh-check", "running", { startedAt: now + 13 }),
@@ -495,13 +489,13 @@ describe("live closeout ui", () => {
     expect(verdict.summary).not.toContain("Closeout: accepted");
 
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       fresh,
       step("fresh-check", "failed", { exitCode: 1 }),
       now + 60,
     );
-    await finishCloseoutProgress(sqliteDb(db), id, fresh, "rejected", now + 61);
+    await finishCloseoutProgress(db, id, fresh, "rejected", now + 61);
     const settled = verdictOf(await snapshotOf(db, now + 62), id);
     expect(settled.decision).toBe("rejected");
     expect(settled.headSha).toBe(newHead);
@@ -511,7 +505,7 @@ describe("live closeout ui", () => {
   });
 
   test("serves only the named log or evidence file and redacts secrets", async () => {
-    const db = database();
+    const db = await database();
     const root = tempDir();
     const evidence = join(root, "closeout", "evidence");
     const now = 1_700_000_000_000;
@@ -529,18 +523,18 @@ describe("live closeout ui", () => {
     const current = identity(id, head, digest);
     const logRel = portable("logs", digest, head, "typecheck");
     const evidenceRel = portable("evidence", digest, head, "typecheck");
-    await ensureCloseoutProgress(sqliteDb(db), id, current, now, true);
+    await ensureCloseoutProgress(db, id, current, now, true);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       current,
       step("typecheck", "running", { logPath: logRel, evidencePath: evidenceRel }),
       now + 1,
     );
     const otherIdentity = identity(other, head, digest);
-    await ensureCloseoutProgress(sqliteDb(db), other, otherIdentity, now, true);
+    await ensureCloseoutProgress(db, other, otherIdentity, now, true);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       other,
       otherIdentity,
       step("typecheck", "running", {
@@ -558,7 +552,7 @@ describe("live closeout ui", () => {
     writeFileSync(logFile, `token ${secret}\n${pat}\n${ghp}\nline two\n`);
     writeFileSync(evidenceFile, `{"note":"${secret}"}\n`);
     await appendCloseoutOutput(
-      sqliteDb(db),
+      db,
       id,
       current,
       "typecheck",
@@ -575,7 +569,7 @@ describe("live closeout ui", () => {
     mkdirSync(join(link, ".."), { recursive: true });
     symlinkSync(outside, link);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       current,
       step("linked", "running", {
@@ -586,7 +580,7 @@ describe("live closeout ui", () => {
       now + 2,
     );
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       current,
       step("escape", "running", {
@@ -603,7 +597,7 @@ describe("live closeout ui", () => {
       home: { evidenceRoot?: string; closeoutHome?: string } = { closeoutHome: root },
     ) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/closeout-artifact?${query}`), {
-        store: sqliteDb(db),
+        store: db,
         env,
         staticDir: null,
         ...home,
@@ -660,9 +654,9 @@ describe("live closeout ui", () => {
     const linkedTask = "ENG-SYMLINK";
     await insertQueuedItem(db, { id: linkedTask, now });
     const linkedIdentity = identity(linkedTask, head, digest);
-    await ensureCloseoutProgress(sqliteDb(db), linkedTask, linkedIdentity, now, true);
+    await ensureCloseoutProgress(db, linkedTask, linkedIdentity, now, true);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       linkedTask,
       linkedIdentity,
       step("typecheck", "passed", { logPath: logRel }),
@@ -677,7 +671,7 @@ describe("live closeout ui", () => {
     mkdirSync(join(otherPolicyFile, ".."), { recursive: true });
     writeFileSync(otherPolicyFile, "another policy's output");
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       id,
       current,
       step("wrong-policy-path", "passed", { logPath: otherPolicyPath }),
@@ -713,18 +707,19 @@ describe("live closeout ui", () => {
 
   test("reopens a persisted database without replaying closeout", async () => {
     const dir = tempDir();
-    const file = join(dir, "status.db");
+    const file = join(dir, "pglite");
+    await copyMigratedPglite(file);
     const now = 1_700_000_000_000;
     const id = "ENG-79";
     const head = sha("1");
-    const first = database(file);
+    const { db: first, close } = await persisted(file);
     await insertQueuedItem(first, { id, title: "Persisted", now });
     await seedVerifying(first, id, head, now);
     const current = identity(id, head, policy("1"));
-    await ensureCloseoutProgress(sqliteDb(first), id, current, now, true);
-    await upsertCloseoutStep(sqliteDb(first), id, current, step("typecheck", "passed"), now + 1);
+    await ensureCloseoutProgress(first, id, current, now, true);
+    await upsertCloseoutStep(first, id, current, step("typecheck", "passed"), now + 1);
     await appendCloseoutOutput(
-      sqliteDb(first),
+      first,
       id,
       current,
       "typecheck",
@@ -733,12 +728,13 @@ describe("live closeout ui", () => {
       false,
       now + 2,
     );
-    await finishCloseoutProgress(sqliteDb(first), id, current, "accepted", now + 3);
+    await finishCloseoutProgress(first, id, current, "accepted", now + 3);
     const before = verdictOf(await snapshotOf(first, now + 4), id);
-    first.close();
-    open.pop();
+    await close();
 
-    const again = database(file);
+    const reopened = await persisted(file);
+    open.push(reopened.close);
+    const again = reopened.db;
     const after = verdictOf(await snapshotOf(again, now + 5), id);
     expect(after.decision).toBe("accepted");
     expect(after.headSha).toBe(before.headSha);

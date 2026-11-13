@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import type { Database } from "bun:sqlite";
+import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyWorkItemEventSteps,
   bindLinearSessionTask,
-  migrate,
-  openDatabase,
+  openPawsStore,
   recordLinearInstallation,
   saveTaskModeSteps,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../../src/db";
 import {
   createItemReconciler,
@@ -20,24 +20,33 @@ import {
   type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
+import { pgliteServer } from "../pglite";
 
 async function delegationReadyItemIds(
-  db: Database,
+  db: Db,
   delegationId: string,
   workspaceId: string,
 ): Promise<string[]> {
-  const items = db
-    .query<{ id: string }, [string]>(
-      `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
-    )
-    .all(delegationId);
+  const items = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.workItem.id })
+        .from(q.t.workItem)
+        .leftJoin(q.t.workItemSpecification, eq(q.t.workItemSpecification.itemId, q.t.workItem.id))
+        .where(
+          and(
+            eq(q.t.workItem.delegationId, delegationId),
+            sql`COALESCE(${q.t.workItemSpecification.present},1)=1`,
+          ),
+        )
+        .orderBy(asc(q.t.workItem.position), asc(q.t.workItem.id)),
+    ),
+  );
   const ready: string[] = [];
   for (const item of items) {
     try {
       ready.push(
-        ...(await sqliteDb(db).run((q) => readyItemsSteps(q, { itemId: item.id, workspaceId })))
-          .readyItemIds,
+        ...(await db.run((q) => readyItemsSteps(q, { itemId: item.id, workspaceId }))).readyItemIds,
       );
     } catch (error) {
       if (
@@ -52,8 +61,13 @@ async function delegationReadyItemIds(
 
 export async function probeEpicReconciliation(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const postgres = await pgliteServer();
+  const db = postgres.store;
+  const change = (update: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(update(q)));
+  const rows = (table: "itemReconciliationEffect" | "itemReconciliationRequest") =>
+    db.run(function* (q) {
+      return (yield* q.one(q.orm.select({ n: count() }).from(q.t[table])))!.n;
+    });
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -79,13 +93,20 @@ export async function probeEpicReconciliation(root: string) {
   const observe = (name: string, observed: unknown) =>
     observations.push({ name, passed: true, observed });
   try {
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       now: 1000,
     });
     assert(intake.ok);
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    await recordLinearInstallation(sqliteDb(db), {
+    await change((q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
+    );
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -93,7 +114,7 @@ export async function probeEpicReconciliation(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+    await bindLinearSessionTask(db, "session", intake.delegation.id, {
       actorId: "human",
     });
     const delegationId = intake.delegation.id;
@@ -102,18 +123,20 @@ export async function probeEpicReconciliation(root: string) {
     const joinedChanges: ItemChanges[] = [];
     let fail = false;
     const reconciler = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       lifecycle,
       *onChanges(q, changes) {
         yield* [];
-        assert(db.inTransaction);
         if (fail) throw new Error("Injected canonical effect failure");
         for (const id of changes.addedItemIds) yield* saveTaskModeSteps(q, id, "code", 0, true);
         for (const id of [...changes.removedItemIds, ...changes.canceledItemIds]) {
-          const row = db
-            .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
-            .get(id)!;
+          const row = (yield* q.one(
+            q.orm
+              .select({ state: q.t.workItem.state })
+              .from(q.t.workItem)
+              .where(eq(q.t.workItem.id, id)),
+          ))!;
           if (!["cancelled", "merged", "completed"].includes(row.state))
             yield* applyWorkItemEventSteps(q, id, "cancel");
         }
@@ -124,53 +147,61 @@ export async function probeEpicReconciliation(root: string) {
       },
     });
     await reconciler.reconcile(target);
-    const specification = () =>
-      db
-        .query<{ hash: string; revision: number; present: number }, [string]>(
-          "SELECT hash,revision,present FROM work_item_specification WHERE item_id=?",
-        )
-        .get(intake.items[0]!.id)!;
-    assert.equal(specification().revision, 1);
-    assert.equal(specification().hash.length, 64);
+    const specification = async () =>
+      (await db.run((q) =>
+        q.one(
+          q.orm
+            .select({
+              hash: q.t.workItemSpecification.hash,
+              revision: q.t.workItemSpecification.revision,
+              present: q.t.workItemSpecification.present,
+            })
+            .from(q.t.workItemSpecification)
+            .where(eq(q.t.workItemSpecification.itemId, intake.items[0]!.id)),
+        ),
+      ))!;
+    const itemField = async (id: string) =>
+      (await db.run((q) =>
+        q.one(q.orm.select().from(q.t.workItem).where(eq(q.t.workItem.id, id))),
+      ))!;
+    assert.equal((await specification()).revision, 1);
+    assert.equal((await specification()).hash.length, 64);
     assert.deepEqual(recorded[0]!.specChangedItemIds, []);
     await reconciler.reconcile(target);
-    assert.equal(specification().revision, 1);
+    assert.equal((await specification()).revision, 1);
     observe(
       "Initial specifications are persisted without invalidating unchanged evidence",
-      specification(),
+      await specification(),
     );
-    const firstHash = specification().hash;
+    const firstHash = (await specification()).hash;
     tracker.epics.get("parent")!.subIssues[0]!.description = "Changed acceptance criteria";
     await reconciler.reconcile(target);
-    assert.equal(specification().revision, 2);
-    assert.notEqual(specification().hash, firstHash);
+    assert.equal((await specification()).revision, 2);
+    assert.notEqual((await specification()).hash, firstHash);
     assert.deepEqual(recorded.at(-1)!.specChangedItemIds, [intake.items[0]!.id]);
     tracker.epics.get("parent")!.description = "Changed parent instructions";
     await reconciler.reconcile(target);
-    assert.equal(specification().revision, 3);
+    assert.equal((await specification()).revision, 3);
     observe(
       "Child and parent instruction edits produce durable specification revisions",
       recorded.at(-1),
     );
-    const before = specification();
+    const before = await specification();
     tracker.epics.get("parent")!.subIssues[0]!.description = "Must roll back";
     fail = true;
     await assert.rejects(reconciler.reconcile(target), /Injected canonical effect failure/);
-    assert.deepEqual(specification(), before);
+    assert.deepEqual(await specification(), before);
     assert(
-      !db
-        .query<{ brief: string }, [string]>("SELECT brief FROM work_item WHERE id=?")
-        .get(intake.items[0]!.id)!
-        .brief.includes("Must roll back"),
+      !JSON.stringify((await itemField(intake.items[0]!.id)).brief).includes("Must roll back"),
     );
     fail = false;
     observe(
       "A failed canonical invalidation rolls back brief and specification publication",
-      specification(),
+      await specification(),
     );
     let interruptedEffects: ItemChanges | null = null;
     const interrupted = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       lifecycle,
       *onChanges(q, changes) {
@@ -182,16 +213,13 @@ export async function probeEpicReconciliation(root: string) {
       },
     });
     await assert.rejects(interrupted.reconcile(target), /coordinator interruption/);
-    assert.equal(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_effect").get()!.n,
-      1,
-    );
+    assert.equal(await rows("itemReconciliationEffect"), 1);
     assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
-    const recoveredDb = openDatabase(join(root, "paws.sqlite"));
+    const recoveredDb = await openPawsStore({ url: postgres.url, pgliteDir: "" });
     try {
       let recoveredEffects: ItemChanges | null = null;
       const recovered = createItemReconciler({
-        store: sqliteDb(recoveredDb),
+        store: recoveredDb.store,
         tracker,
         lifecycle,
         *onChanges(q, changes) {
@@ -204,18 +232,13 @@ export async function probeEpicReconciliation(root: string) {
       });
       await recovered.reconcile(target);
       assert.deepEqual(recoveredEffects!.specChangedItemIds, []);
-      assert.equal(
-        recoveredDb
-          .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_effect")
-          .get()!.n,
-        0,
-      );
+      assert.equal(await rows("itemReconciliationEffect"), 0);
       observe(
         "Interrupted live effects survive coordinator reconstruction until joined and refreshed",
         recoveredEffects,
       );
     } finally {
-      recoveredDb.close();
+      await recoveredDb.close();
     }
     const loadDependencies = tracker.listDeps.bind(tracker);
     tracker.listDeps = async (id) => {
@@ -233,17 +256,17 @@ export async function probeEpicReconciliation(root: string) {
     assert.deepEqual(recorded.at(-1)!.removedItemIds, [intake.items[0]!.id]);
     assert.equal(recorded.at(-1)!.addedItemIds.length, 1);
     const b = recorded.at(-1)!.addedItemIds[0]!;
-    assert.equal(specification().present, 0);
+    assert.equal((await specification()).present, 0);
+    assert.equal((await itemField(intake.items[0]!.id)).state, "cancelled");
     assert.equal(
-      db
-        .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
-        .get(intake.items[0]!.id)!.state,
-      "cancelled",
-    );
-    assert.equal(
-      db
-        .query<{ mode: string }, [string]>("SELECT mode FROM work_item_task WHERE item_id=?")
-        .get(b)!.mode,
+      (await db.run((q) =>
+        q.one(
+          q.orm
+            .select({ mode: q.t.workItemTask.mode })
+            .from(q.t.workItemTask)
+            .where(eq(q.t.workItemTask.itemId, b)),
+        ),
+      ))!.mode,
       "code",
     );
     observe(
@@ -261,9 +284,7 @@ export async function probeEpicReconciliation(root: string) {
     assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), [b]);
     observe(
       "External blocker events resync only matching organization epics",
-      await sqliteDb(db).run((q) =>
-        readyItemsSteps(q, { itemId: b, workspaceId: target.workspaceId }),
-      ),
+      await db.run((q) => readyItemsSteps(q, { itemId: b, workspaceId: target.workspaceId })),
     );
     const beforeSweep = recorded.length;
     const sweptAt = Date.now();
@@ -282,7 +303,7 @@ export async function probeEpicReconciliation(root: string) {
     let loads = 0;
     let publications = 0;
     const coalesced = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       lifecycle,
       tracker: {
         ...tracker,
@@ -298,7 +319,6 @@ export async function probeEpicReconciliation(root: string) {
       },
       *onChanges() {
         yield* [];
-        assert(db.inTransaction);
         publications++;
       },
     });
@@ -331,7 +351,7 @@ export async function probeEpicReconciliation(root: string) {
     const staleGate = new Promise<void>((resolve) => (staleRelease = resolve));
     const staleEntered = new Promise<void>((resolve) => (staleEnter = resolve));
     const stale = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       lifecycle,
       tracker: {
         ...tracker,
@@ -349,9 +369,19 @@ export async function probeEpicReconciliation(root: string) {
     });
     const old = stale.reconcile(target);
     await staleEntered;
-    db.run(
-      "UPDATE linear_session SET creator_id='new-owner' WHERE session_id IN (SELECT session_key FROM work_item WHERE delegation_id=?)",
-      [delegationId],
+    await change((q) =>
+      q.orm
+        .update(q.t.linearSession)
+        .set({ creatorId: "new-owner" })
+        .where(
+          inArray(
+            q.t.linearSession.sessionId,
+            q.orm
+              .select({ sessionKey: sql<string>`${q.t.workItem.sessionKey}` })
+              .from(q.t.workItem)
+              .where(eq(q.t.workItem.delegationId, delegationId)),
+          ),
+        ),
     );
     staleRelease();
     await assert.rejects(old, /authority changed/);
@@ -366,7 +396,9 @@ export async function probeEpicReconciliation(root: string) {
     lifecycle.issues.set("keep", { ...lifecycle.issue, id: "keep", stateType: "started" });
     await reconciler.reconcile(target);
     const keep = recorded.at(-1)!.addedItemIds[0]!;
-    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [keep]);
+    await change((q) =>
+      q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, keep)),
+    );
     lifecycle.issues.get("b")!.stateType = "canceled";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.canceledItemIds, [b]);
@@ -391,7 +423,7 @@ export async function probeEpicReconciliation(root: string) {
     assert.notEqual(firstRestoration, b);
     tracker.epics.get("parent")!.subIssues = [keepIssue];
     const pendingRemoval = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       lifecycle,
       *onChanges(q, changes) {
@@ -419,15 +451,25 @@ export async function probeEpicReconciliation(root: string) {
     ]);
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.addedItemIds, []);
-    const childHistory = db
-      .query<
-        { id: string; state: string; present: number; taskKey: string; branch: string },
-        [string]
-      >(
-        `SELECT i.id,i.state,p.present,i.task_key AS taskKey,i.branch_name AS branch FROM work_item i
-       JOIN work_item_specification p ON p.item_id=i.id WHERE i.linear_issue_id=? ORDER BY i.created_at,i.id`,
-      )
-      .all("b");
+    const childHistory = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            id: q.t.workItem.id,
+            state: q.t.workItem.state,
+            present: q.t.workItemSpecification.present,
+            taskKey: sql<string>`${q.t.workItem.taskKey}`,
+            branch: q.t.workItem.branchName,
+          })
+          .from(q.t.workItem)
+          .innerJoin(
+            q.t.workItemSpecification,
+            eq(q.t.workItemSpecification.itemId, q.t.workItem.id),
+          )
+          .where(eq(q.t.workItem.linearIssueId, "b"))
+          .orderBy(asc(q.t.workItem.createdAt), asc(q.t.workItem.id)),
+      ),
+    );
     assert.equal(childHistory.filter((item) => item.present === 1).length, 1);
     assert.equal(childHistory.length, 3);
     assert(
@@ -452,7 +494,7 @@ export async function probeEpicReconciliation(root: string) {
     const stopGate = new Promise<void>((resolve) => (stopRelease = resolve));
     const stopEntered = new Promise<void>((resolve) => (stopEnter = resolve));
     const stopping = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       lifecycle,
       tracker: {
         ...tracker,
@@ -480,10 +522,7 @@ export async function probeEpicReconciliation(root: string) {
     stopRelease();
     await Promise.all([stoppedRequest, shutdown]);
     assert(joined);
-    assert.equal(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_request").get()!.n,
-      1,
-    );
+    assert.equal(await rows("itemReconciliationRequest"), 1);
     observe("Shutdown rejects new work and joins held tracker reads before database closure", {
       joined,
     });
@@ -497,7 +536,7 @@ export async function probeEpicReconciliation(root: string) {
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
     return observations;
   } finally {
-    db.close();
+    await postgres.close();
   }
 }
 

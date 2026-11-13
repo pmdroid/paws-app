@@ -92,8 +92,6 @@ export type ExeDevBootstrapOptions = {
   controlPlaneUrl: string;
   /** The PEM CA the runner trusts for this Paws, or null when public TLS suffices. */
   serverCa: string | null;
-  /** Repositories the runner may check out. Defaults to none; a run gets a scoped credential. */
-  allowedRepositories?: readonly string[];
   /** Join the VM to the Paws tailnet before enrollment. Absent skips the `tailnet` step. */
   tailnet?: ExeDevBootstrapTailnet;
   /** How long to wait between polls of a detached step. Defaults to two seconds. */
@@ -169,7 +167,6 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
 /** A Tailscale auth key; RSA-OAEP with a 3072-bit key carries at most 318 bytes. */
 const AUTHKEY = /^tskey-[A-Za-z0-9_-]{8,240}$/;
-const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const MAX_INSTALLER_BYTES = 48 * 1024;
 const MAX_CA_BYTES = 32768;
 const MIN_TOKEN_KEY_BITS = 3072;
@@ -397,6 +394,8 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
     async enroll(vm) {
       checkVm("enroll", vm);
+      const stage = await exec("enroll", vm, stageCommand(pinned));
+      if (stage.exitCode !== 0) throw failure("enroll", vm, "could not stage the config", stage);
       const result = await detached("enroll", "enroll", vm, enrollCommand(vm), ENROLL_TIMEOUT_MS);
       if (result.exitCode !== 0) throw failure("enroll", vm, "enrollment failed", result);
       // The log holds stdout and stderr together; the paired runner is the last JSON line.
@@ -510,13 +509,9 @@ function validate(options: ExeDevBootstrapOptions): Pinned {
       refuse("The Tailscale platform must be amd64 or arm64.");
     tailscale = { version: release.version, sha256: release.sha256, platform: arch };
   }
-  const repositories = [...(options.allowedRepositories ?? [])];
-  if (repositories.length > 256 || repositories.some((name) => !REPOSITORY.test(name)))
-    refuse("Allowed repositories must be owner/name, at most 256.");
   const config = JSON.stringify({
     controlPlaneUrl,
     runnerApiUrl,
-    allowedRepositories: repositories,
     ...(serverCa !== null ? { serverCa } : {}),
   });
   return {
@@ -800,15 +795,16 @@ function reachCommand(controlPlaneUrl: string, serverCa: string | null): string 
   return [
     `host=${shellQuote(url.hostname)}`,
     `url=${shellQuote(health)}`,
+    `body=$(mktemp)`,
     ...(serverCa === null
-      ? []
+      ? [`trap 'rm -f "$body"' EXIT`]
       : [
           `ca=$(mktemp)`,
-          `trap 'rm -f "$ca"' EXIT`,
+          `trap 'rm -f "$body" "$ca"' EXIT`,
           `printf '%s\\n' ${shellQuote(serverCa)} > "$ca"`,
         ]),
     "i=0",
-    `until getent hosts "$host" >/dev/null 2>&1 && curl --proto '=https' --tlsv1.2 ${trust}-fsS --max-time 5 -o /dev/null "$url" 2>/dev/null; do i=$((i+1)); if [ "$i" -ge 30 ]; then if getent hosts "$host" >/dev/null 2>&1; then echo "$url did not answer" >&2; exit 3; fi; echo "cannot resolve $host" >&2; exit 2; fi; sleep 2; done`,
+    `until getent hosts "$host" >/dev/null 2>&1 && curl --proto '=https' --tlsv1.2 ${trust}-sS --max-time 5 -o "$body" "$url" 2>/dev/null && grep -q '"service":"paws"' "$body"; do i=$((i+1)); if [ "$i" -ge 30 ]; then if getent hosts "$host" >/dev/null 2>&1; then echo "$url did not answer" >&2; exit 3; fi; echo "cannot resolve $host" >&2; exit 2; fi; sleep 2; done`,
   ].join("; ");
 }
 
@@ -882,7 +878,10 @@ function runScript(pinned: Pinned): string {
   ].join("\n");
 }
 
-/** Write the installer, unit script and config into the root-only stage directory. */
+/**
+ * Write the installer, unit script and config into the root-only stage directory, and put the
+ * config over the installed one when an earlier attempt installed it.
+ */
 function stageCommand(pinned: Pinned): string {
   const write = (format: string, content: string, mode: string, name: string) =>
     `printf '${format}' ${shellQuote(content)} | sudo install -o root -g root -m ${mode} /dev/stdin ${BOOTSTRAP_STAGE_DIR}/${name}`;
@@ -891,6 +890,7 @@ function stageCommand(pinned: Pinned): string {
     write("%s", pinned.installer, "0700", "install-runner.sh"),
     write("%s", runScript(pinned), "0700", "run.sh"),
     write("%s\\n", pinned.config, "0600", "config.json"),
+    `{ sudo test ! -e ${RUNNER_CONFIG_PATH} || sudo install -o root -g paws-runner -m 0640 ${BOOTSTRAP_STAGE_DIR}/config.json ${RUNNER_CONFIG_PATH}; }`,
   ].join(" && ");
 }
 

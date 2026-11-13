@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND, isTerminalWorkItemState } from "../src/core";
-import { applyLinearCommand, claimNextJob, completeJob, getWorkItem, sqliteDb } from "../src/db";
+import { and, eq, isNull } from "drizzle-orm";
+import {
+  applyLinearCommand,
+  claimNextJob,
+  completeJob,
+  getWorkItem,
+  pgSchema,
+  type PgDb,
+} from "../src/db";
 import { questionEffects } from "../src/loop";
-import { answer } from "./questions";
+import { answerPg } from "./questions";
 import {
   FIXTURES,
   HOUR,
@@ -12,6 +20,7 @@ import {
   dump,
   factsOf,
   failWrites,
+  injectedWriteFailure,
   leaseRunnerWork,
   unexpectedViolations,
   type Fixture,
@@ -99,7 +108,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
   const id = (index: number) => sequence.fixtures[index % sequence.fixtures.length]!;
   switch (action.kind) {
     case "crash_start":
-      w.crash();
+      await w.crash();
       await w.start();
       return;
     case "stop_start":
@@ -122,7 +131,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       w.advance(-action.ms);
       return;
     case "answer": {
-      const item = (await getWorkItem(sqliteDb(w.db), id(action.item)))!;
+      const item = (await getWorkItem(w.db, id(action.item)))!;
       if (item.sessionKey === null) return;
       const reply = {
         sessionId: item.sessionKey,
@@ -131,16 +140,16 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
         answeredBy: "lead",
         now: w.now,
       };
-      const first = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
-      const after = dump(w.db);
-      w.crash();
-      const again = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
+      const first = await answerPg(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const after = await dump(w.db);
+      await w.crash();
+      const again = await answerPg(w.db, reply, questionEffects(w.db, { now: w.now }));
       if (first.status === "answered") expect(again.status).toBe("duplicate");
-      expect(dump(w.db)).toEqual(after);
+      expect(await dump(w.db)).toEqual(after);
       return;
     }
     case "stop":
-      await applyLinearCommand(sqliteDb(w.db), {
+      await applyLinearCommand(w.db, {
         type: "stop",
         itemId: id(action.item),
         source: "linear",
@@ -148,41 +157,42 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       });
       return;
     case "write_failure": {
-      const before = dump(w.db);
-      failWrites(w.db, WRITE_POINTS[action.point]!);
+      const before = await dump(w.db);
+      await failWrites(w.db, WRITE_POINTS[action.point]!);
       let failed = false;
       try {
         await w.start();
       } catch (error) {
         failed = true;
-        expect(String(error)).toContain("injected write failure");
+        expect(injectedWriteFailure(error)).toBe(true);
       } finally {
-        allowWrites(w.db);
+        await allowWrites(w.db);
       }
-      if (failed) expect(dump(w.db)).toEqual(before);
-      w.crash();
+      if (failed) expect(await dump(w.db)).toEqual(before);
+      await w.crash();
       await w.start();
       return;
     }
     case "reconnect": {
-      const item = (await getWorkItem(sqliteDb(w.db), id(action.item)))!;
-      const open = w.db
-        .query<{ generation: number }, [string]>(
-          "SELECT generation FROM runner_work WHERE run_id=? AND ended_at IS NULL",
-        )
-        .get(item.currentRunId ?? "");
-      if (open !== null) leaseRunnerWork(w.db, item.currentRunId!, w.now, MINUTE, open.generation);
+      const item = (await getWorkItem(w.db, id(action.item)))!;
+      const { runnerWork } = pgSchema;
+      const [open] = await (w.db as PgDb).orm
+        .select({ generation: runnerWork.generation })
+        .from(runnerWork)
+        .where(and(eq(runnerWork.runId, item.currentRunId ?? ""), isNull(runnerWork.endedAt)));
+      if (open !== undefined)
+        await leaseRunnerWork(w.db, item.currentRunId!, w.now, MINUTE, open.generation);
       return;
     }
     case "ack": {
-      const job = await claimNextJob(sqliteDb(w.db), { now: w.now, queues: ACK_QUEUES });
+      const job = await claimNextJob(w.db, { now: w.now, queues: ACK_QUEUES });
       if (job === null) return;
       if (action.crashBefore) {
-        w.crash();
+        await w.crash();
         return;
       }
-      expect(await completeJob(sqliteDb(w.db), job, w.now)).toBe(true);
-      if (action.twice) expect(await completeJob(sqliteDb(w.db), job, w.now)).toBe(false);
+      expect(await completeJob(w.db, job, w.now)).toBe(true);
+      if (action.twice) expect(await completeJob(w.db, job, w.now)).toBe(false);
       return;
     }
     default: {
@@ -220,7 +230,7 @@ function transitionFailure(
 }
 
 async function failure(sequence: Sequence): Promise<string | null> {
-  const w = await new World().seed(sequence.fixtures);
+  const w = await World.seeded(sequence.fixtures);
   const ids = sequence.fixtures;
   try {
     for (const [step, action] of sequence.actions.entries()) {
@@ -244,14 +254,14 @@ async function failure(sequence: Sequence): Promise<string | null> {
       const unsafe = await unexpectedViolations(w.db, w.now, { liveness: false });
       if (unsafe.length > 0) return `step ${step} ${action.kind}: ${unsafe.join("; ")}`;
     }
-    w.crash();
+    await w.crash();
     await w.start();
     await w.settle();
     const stuck = await unexpectedViolations(w.db, w.now);
     if (stuck.length > 0) return `after settling: ${stuck.join("; ")}`;
     return null;
   } finally {
-    w.close();
+    await w.close();
   }
 }
 
