@@ -317,7 +317,7 @@ export function createRunnerLogin(options: {
         });
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
         if (update.state === "connected" && row.bindingId === null) {
-          yield* setRunnerAgentSignedInSteps(q, runnerId, row.agent, true);
+          yield* setRunnerAgentSignedInSteps(q, runnerId, row.agent, true, now());
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, now());
           inputs.delete(id);
           signedIn = { runnerId, agent: row.agent };

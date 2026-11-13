@@ -168,6 +168,7 @@ import {
   runPendingJobNowSteps,
   stopInstanceSteps,
   takeOverGoneRunsSteps,
+  enqueueRunnerSetupChecks,
   type Steps,
 } from "./db";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
@@ -1995,6 +1996,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
       await registerScheduler(created.jobs, () => attached.reconcileExecution());
+      await enqueueRunnerSetupChecks(store, Date.now());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
       created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());

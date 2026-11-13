@@ -2,6 +2,8 @@ import { and, count, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
+import { setRunnerAgentSignedInSteps } from "./runner-work";
+import { noteRunnerSeenSteps } from "./runners";
 
 const HEALTH_KINDS = ["probe", "login_check"];
 
@@ -134,15 +136,14 @@ export function* insertHealthResultSteps(
   );
 }
 
-export function* setLegacyAgentReadySteps(q: Q, runnerId: string, agent: string, ready: boolean) {
-  const { runnerAgentPolicy: p } = q.t;
-  const flags = { ready: ready ? 1 : 0, authExpired: ready ? 0 : 1 };
-  yield* q.exec(
-    q.orm
-      .insert(p)
-      .values({ runnerId, agent, ...flags })
-      .onConflictDoUpdate({ target: [p.runnerId, p.agent], set: flags }),
-  );
+export function* setLegacyAgentReadySteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+  ready: boolean,
+  now: number,
+) {
+  yield* setRunnerAgentSignedInSteps(q, runnerId, agent, ready, now);
 }
 
 export function* setLegacyAgentQuotaSteps(
@@ -165,8 +166,7 @@ export function* setLegacyAgentQuotaSteps(
 }
 
 export function* touchRunnerSeenSteps(q: Q, runnerId: string, at: number) {
-  const { runner } = q.t;
-  yield* q.exec(q.orm.update(runner).set({ lastSeenAt: at }).where(eq(runner.id, runnerId)));
+  yield* noteRunnerSeenSteps(q, runnerId, at);
 }
 
 export const HEALTH_COMMAND_KINDS: readonly string[] = HEALTH_KINDS;
