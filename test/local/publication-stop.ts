@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { and, eq, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../../src/core";
@@ -9,9 +10,8 @@ import {
   ensureLinearSession,
   getWorkItem,
   JobLoop,
-  migrate,
-  openDatabase,
   OutboxDispatcher,
+  pgSchema,
   recordLinearInstallation,
   saveTaskMode,
   insertRun,
@@ -20,24 +20,83 @@ import {
   saveRunResult,
   applyLinearCommand,
   applyWorkItemEvent,
-  sqliteDb,
   applyLinearCommandSteps,
+  type Q,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
-import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
+import { confirmFakeMergePg, workspaceAdmission } from "../fake-workspace";
 import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
+import { tempStore } from "../pglite";
+
+const { job, outbox, question, workItem } = pgSchema;
 
 export async function probePublicationStop(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  const change = (update: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(update(q)));
+  const jobs = (where: SQL | undefined) =>
+    db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            id: job.id,
+            queue: job.queue,
+            status: job.status,
+            attempts: job.attempts,
+            runAt: job.runAt,
+          })
+          .from(job)
+          .where(where),
+      ),
+    );
+  const forItem = (itemId: string) => sql`${job.payload}->>'itemId' = ${itemId}`;
+  const cycleNotices = async () =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: outbox.id })
+            .from(outbox)
+            .where(like(outbox.idempotencyKey, "dependency-cycle:cycle:%")),
+        ),
+      )
+    ).length;
+  const cycleQuestions = async (open: boolean) =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: question.id })
+            .from(question)
+            .where(
+              and(
+                eq(question.sessionId, "cycle-session"),
+                open ? and(eq(question.status, "open"), isNull(question.cancelledAt)) : undefined,
+              ),
+            ),
+        ),
+      )
+    ).length;
+  type ItemRow = typeof workItem.$inferInsert;
+  const insertItem = (row: Omit<ItemRow, "linearIdentifier" | "title"> & Partial<ItemRow>) =>
+    change((q) =>
+      q.orm.insert(q.t.workItem).values({
+        linearIdentifier: row.delegationId,
+        title: row.delegationId,
+        ...row,
+      }),
+    );
+  const specify = (itemId: string, hash: string, present: number) =>
+    change((q) =>
+      q.orm.insert(q.t.workItemSpecification).values({ itemId, hash, revision: 1, present }),
+    );
   const clock = new FakeClock(1000);
   const calls: { method: string; path: string; body: unknown }[] = [];
   let open = true;
@@ -107,7 +166,7 @@ export async function probePublicationStop(
   const create = (scheduling?: OrchestratorOptions["scheduling"]) => {
     const jobs = new JobLoop(db, clock);
     const orchestrator = new Orchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       clock,
@@ -143,25 +202,34 @@ export async function probePublicationStop(
     tokenProvider: github.tokenProvider,
   });
   try {
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','STOP-1','Stop','merge_queue','paws/stop-1',0,1,'session')",
-    );
-    await ensureLinearSession(sqliteDb(db), {
+    await insertItem({
+      id: "item",
+      delegationId: "epic",
+      linearIssueId: "issue",
+      linearIdentifier: "STOP-1",
+      title: "Stop",
+      state: "merge_queue",
+      branchName: "paws/stop-1",
+      position: 0,
+      createdAt: 1,
+      sessionKey: "session",
+    });
+    await ensureLinearSession(db, {
       sessionId: "session",
       issueId: "issue",
       now: clock.now(),
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", "epic");
-    await bindWorkItemRepository(sqliteDb(db), "item", repository);
-    branch = (await getWorkItem(sqliteDb(db), "item"))!.branchName;
-    await enqueueJob(sqliteDb(db), {
+    await bindLinearSessionTask(db, "session", "epic");
+    await bindWorkItemRepository(db, "item", repository);
+    branch = (await getWorkItem(db, "item"))!.branchName;
+    await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "item" },
       jobKey: "old-merge",
       now: clock.now(),
     });
     await assert.rejects(
-      sqliteDb(db).transaction(function* (q) {
+      db.transaction(function* (q) {
         yield* applyLinearCommandSteps(q, {
           type: "stop",
           source: "dashboard",
@@ -173,13 +241,9 @@ export async function probePublicationStop(
     );
     observe(
       "canonical Stop and pull cleanup roll back in the same transaction",
-      (await getWorkItem(sqliteDb(db), "item"))?.state === "merge_queue" &&
-        db
-          .query<{ n: number }, []>(
-            "SELECT COUNT(*) AS n FROM job WHERE queue='github.close_stopped'",
-          )
-          .get()?.n === 0,
-      (await getWorkItem(sqliteDb(db), "item"))?.state,
+      (await getWorkItem(db, "item"))?.state === "merge_queue" &&
+        (await jobs(eq(job.queue, "github.close_stopped"))).length === 0,
+      (await getWorkItem(db, "item"))?.state,
     );
     await current.orchestrator.onLinearEvent({
       dedupeKey: "stop",
@@ -197,23 +261,22 @@ export async function probePublicationStop(
     });
     observe(
       "a Linear Stop pauses the item, cancels canonical merge work and leaves the pull request open",
-      (await getWorkItem(sqliteDb(db), "item"))?.state === "paused" &&
-        db.query<{ status: string }, []>("SELECT status FROM job WHERE job_key='old-merge'").get()
-          ?.status === "cancelled" &&
-        db.query("SELECT 1 FROM job WHERE queue='github.close_stopped'").get() === null &&
+      (await getWorkItem(db, "item"))?.state === "paused" &&
+        (await jobs(eq(job.jobKey, "old-merge")))[0]?.status === "cancelled" &&
+        (await jobs(eq(job.queue, "github.close_stopped"))).length === 0 &&
         open &&
         calls.length === 0,
       { calls, joined },
     );
     await applyLinearCommand(
-      sqliteDb(db),
+      db,
       { type: "stop", source: "dashboard", itemId: "item", requestedAt: clock.now() },
       clock.now(),
       undefined,
       { keepPullRequest: true },
     );
     // Only an explicit request closes a stopped pull request now.
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: JOB_KIND.closeStoppedPull,
       payload: { itemId: "item" },
       jobKey: "explicit-close",
@@ -224,12 +287,8 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "a GitHub outage retains durable stopped PR cleanup without failing the item",
-      (await getWorkItem(sqliteDb(db), "item"))?.state === "cancelled" &&
-        db
-          .query<{ status: string }, []>(
-            "SELECT status FROM job WHERE queue='github.close_stopped'",
-          )
-          .get()?.status === "pending" &&
+      (await getWorkItem(db, "item"))?.state === "cancelled" &&
+        (await jobs(eq(job.queue, "github.close_stopped")))[0]?.status === "pending" &&
         open,
       { calls, open },
     );
@@ -240,11 +299,7 @@ export async function probePublicationStop(
       "restart retries close only the owned Paws PR after remote joining",
       !open &&
         joined >= 2 &&
-        db
-          .query<{ status: string }, []>(
-            "SELECT status FROM job WHERE queue='github.close_stopped'",
-          )
-          .get()?.status === "done" &&
+        (await jobs(eq(job.queue, "github.close_stopped")))[0]?.status === "done" &&
         calls
           .filter((call) => call.method === "PATCH")
           .every(
@@ -320,14 +375,23 @@ export async function probePublicationStop(
       calls.length === prior + 1,
       calls.at(-1),
     );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('pending-item','pending','pending','PEND-1','Pending','merge_queue','paws/pending',0,1,'pending-session')",
-    );
-    await ensureLinearSession(sqliteDb(db), { sessionId: "pending-session", issueId: "pending" });
-    await bindLinearSessionTask(sqliteDb(db), "pending-session", "pending");
-    await bindWorkItemRepository(sqliteDb(db), "pending-item", repository);
+    await insertItem({
+      id: "pending-item",
+      delegationId: "pending",
+      linearIssueId: "pending",
+      linearIdentifier: "PEND-1",
+      title: "Pending",
+      state: "merge_queue",
+      branchName: "paws/pending",
+      position: 0,
+      createdAt: 1,
+      sessionKey: "pending-session",
+    });
+    await ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
+    await bindLinearSessionTask(db, "pending-session", "pending");
+    await bindWorkItemRepository(db, "pending-item", repository);
     pendingEpics.add("pending");
-    const pendingJob = await enqueueJob(sqliteDb(db), {
+    const pendingJob = await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "pending-item" },
       jobKey: "pending-refresh-merge",
@@ -336,16 +400,15 @@ export async function probePublicationStop(
     const beforePending = calls.length;
     await current.jobs.tick();
     await current.jobs.tick();
-    const successor = db
-      .query<{ n: number; runAt: number }, [string]>(
-        "SELECT COUNT(*) AS n,MIN(run_at) AS runAt FROM job WHERE job_key=? AND status='pending'",
-      )
-      .get(`merge-reconciliation:${pendingJob}`);
+    const successors = await jobs(
+      and(eq(job.jobKey, `merge-reconciliation:${pendingJob}`), eq(job.status, "pending")),
+    );
+    const successor = { n: successors.length, runAt: successors[0]?.runAt };
     observe(
       "production merge waits durably without exhausting retry attempts or asking a person",
-      successor?.n === 1 &&
+      successor.n === 1 &&
         successor.runAt === clock.now() + 30000 &&
-        (await getWorkItem(sqliteDb(db), "pending-item"))?.state === "merge_queue" &&
+        (await getWorkItem(db, "pending-item"))?.state === "merge_queue" &&
         calls.length === beforePending,
       { successor, calls: calls.length },
     );
@@ -359,49 +422,55 @@ export async function probePublicationStop(
       parentCanceled: true,
     });
     for (const [position, id] of ["a", "b", "free"].entries()) {
-      db.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key,brief) VALUES(?,'cycle',?,?,?,'queued',?, ?,1,'cycle-session',?)",
-        [
-          `cycle-${id}`,
-          id,
-          id,
-          id,
-          `paws/${id}`,
-          position,
-          JSON.stringify({
-            issue: {
-              source: "linear",
-              issueId: id,
-              identifier: id,
-              title: id,
-              description: null,
-              acceptanceCriteria: null,
-            },
-            epic: {
-              source: "linear",
-              issueId: "cycle-parent",
-              identifier: "CYC-1",
-              title: "Cycle",
-              description: null,
-              acceptanceCriteria: null,
-            },
-          }),
-        ],
-      );
-      await saveTaskMode(sqliteDb(db), `cycle-${id}`, "code");
+      await insertItem({
+        id: `cycle-${id}`,
+        delegationId: "cycle",
+        linearIssueId: id,
+        linearIdentifier: id,
+        title: id,
+        state: "queued",
+        branchName: `paws/${id}`,
+        position,
+        createdAt: 1,
+        sessionKey: "cycle-session",
+        brief: {
+          issue: {
+            source: "linear",
+            issueId: id,
+            identifier: id,
+            title: id,
+            description: null,
+            acceptanceCriteria: null,
+          },
+          epic: {
+            source: "linear",
+            issueId: "cycle-parent",
+            identifier: "CYC-1",
+            title: "Cycle",
+            description: null,
+            acceptanceCriteria: null,
+          },
+        },
+      });
+      await saveTaskMode(db, `cycle-${id}`, "code");
     }
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('cycle-workspace','cycle-org','Cycle workspace',1)",
+    await change((q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: "cycle-workspace",
+        linearOrganizationId: "cycle-org",
+        name: "Cycle workspace",
+        createdAt: 1,
+      }),
     );
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "cycle-session",
       issueId: "cycle-parent",
       organizationId: "cycle-org",
       appUserId: "cycle-app",
       creatorId: "cycle-human",
     });
-    await bindLinearSessionTask(sqliteDb(db), "cycle-session", "cycle");
-    await recordLinearInstallation(sqliteDb(db), {
+    await bindLinearSessionTask(db, "cycle-session", "cycle");
+    await recordLinearInstallation(db, {
       sessionId: "cycle-session",
       organizationId: "cycle-org",
       oauthClientId: "cycle-client",
@@ -423,34 +492,22 @@ export async function probePublicationStop(
     const lifecycle = createFakeLinearIssueLifecycle({ id: "a", ...ownership });
     lifecycle.issues.set("b", { id: "b", ...ownership });
     for (const itemId of ["cycle-a", "cycle-b", "cycle-free"])
-      await syncItemDependencies(sqliteDb(db), {
+      await syncItemDependencies(db, {
         itemId,
         workspaceId: "cycle-workspace",
         expectedGeneration: (
-          await sqliteDb(db).run((q) =>
-            readyItemsSteps(q, { itemId, workspaceId: "cycle-workspace" }),
-          )
+          await db.run((q) => readyItemsSteps(q, { itemId, workspaceId: "cycle-workspace" }))
         ).generation,
         tracker: cycleTracker,
         lifecycle,
       });
     await current.orchestrator.reconcileExecution();
     await current.orchestrator.reconcileExecution();
-    const cycleQuestion = db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE 'dependency-cycle:cycle:%'",
-      )
-      .get()?.n;
-    const openQuestions = db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM question WHERE session_id='cycle-session' AND status='open' AND cancelled_at IS NULL",
-      )
-      .get()?.n;
-    const freeJob = db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND json_extract(payload,'$.itemId')='cycle-free' AND status='pending'",
-      )
-      .get()?.n;
+    const cycleQuestion = await cycleNotices();
+    const openQuestions = await cycleQuestions(true);
+    const freeJob = (
+      await jobs(and(eq(job.queue, "item.start"), forItem("cycle-free"), eq(job.status, "pending")))
+    ).length;
     observe(
       "authoritative cycles notice once while unaffected queued work remains dispatchable",
       cycleQuestion === 1 && openQuestions === 0 && freeJob === 1,
@@ -459,102 +516,77 @@ export async function probePublicationStop(
     await current.orchestrator.reconcileExecution();
     observe(
       "a cycle notice stays one-shot and does not open a stall question",
-      db
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE 'dependency-cycle:cycle:%'",
-        )
-        .get()?.n === 1 &&
-        db
-          .query<{ n: number }, []>(
-            "SELECT COUNT(*) AS n FROM question WHERE session_id='cycle-session' AND status='open' AND cancelled_at IS NULL",
-          )
-          .get()?.n === 0,
-      db
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM question WHERE session_id='cycle-session'",
-        )
-        .get(),
-    );
-    db.run(
-      `CREATE TABLE IF NOT EXISTS work_item_specification(item_id TEXT PRIMARY KEY REFERENCES work_item(id),hash TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),present INTEGER NOT NULL CHECK(present IN(0,1))) STRICT`,
+      (await cycleNotices()) === 1 && (await cycleQuestions(true)) === 0,
+      { n: await cycleQuestions(false) },
     );
     for (const [delegationId, oldState, newState] of [
       ["restored", "cancelled", "queued"],
       ["all-removed", "cancelled", null],
       ["delivered-history", "merged", "cancelled"],
     ] as const) {
-      db.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
-        [
-          `${delegationId}-old`,
+      for (const [suffix, state, present] of [
+        ["old", oldState, 0],
+        ...(newState ? [["new", newState, 1] as const] : []),
+      ] as const) {
+        await insertItem({
+          id: `${delegationId}-${suffix}`,
           delegationId,
-          `${delegationId}-issue`,
-          delegationId,
-          delegationId,
-          oldState,
-          `paws/${delegationId}-old`,
-        ],
-      );
-      db.run(
-        "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'old',1,0)",
-        [`${delegationId}-old`],
-      );
-      if (newState) {
-        db.run(
-          "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
-          [
-            `${delegationId}-new`,
-            delegationId,
-            `${delegationId}-issue`,
-            delegationId,
-            delegationId,
-            newState,
-            `paws/${delegationId}-new`,
-          ],
-        );
-        db.run(
-          "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'new',1,1)",
-          [`${delegationId}-new`],
-        );
+          linearIssueId: `${delegationId}-issue`,
+          state,
+          branchName: `paws/${delegationId}-${suffix}`,
+          position: 0,
+          createdAt: 1,
+        });
+        await specify(`${delegationId}-${suffix}`, suffix, present);
       }
     }
-    db.run("UPDATE work_item SET state='cancelled' WHERE id='cycle-free'");
+    await change((q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ state: "cancelled" })
+        .where(eq(q.t.workItem.id, "cycle-free")),
+    );
     pendingEpics.add("all-removed");
     await current.orchestrator.reconcileExecution();
-    const restored = db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM job WHERE json_extract(payload,'$.itemId')='restored-new' AND status='pending'",
-      )
-      .get()?.n;
+    const restored = (await jobs(and(forItem("restored-new"), eq(job.status, "pending")))).length;
     observe(
       "restored child dispatch ignores archived history while refresh holds empty epics",
       restored === 1 &&
-        (await getWorkItem(sqliteDb(db), "all-removed-old"))?.state === "cancelled" &&
-        (await getWorkItem(sqliteDb(db), "restored-old"))?.state === "cancelled",
+        (await getWorkItem(db, "all-removed-old"))?.state === "cancelled" &&
+        (await getWorkItem(db, "restored-old"))?.state === "cancelled",
       { restored },
     );
     pendingEpics.delete("all-removed");
     await current.orchestrator.reconcileExecution();
     const outcomes = [
-      (await getWorkItem(sqliteDb(db), "all-removed-old"))?.state,
-      (await getWorkItem(sqliteDb(db), "delivered-history-old"))?.state,
-      (await getWorkItem(sqliteDb(db), "delivered-history-new"))?.state,
+      (await getWorkItem(db, "all-removed-old"))?.state,
+      (await getWorkItem(db, "delivered-history-old"))?.state,
+      (await getWorkItem(db, "delivered-history-new"))?.state,
     ];
     observe(
       "all removed work stays cancelled and delivered history stays terminal",
       JSON.stringify(outcomes) === JSON.stringify(["cancelled", "merged", "cancelled"]),
       outcomes,
     );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('owned-refresh-item','owned-refresh','owned-refresh','OWN-1','Owned','merge_queue','paws/owned-refresh',0,1,'owned-refresh-session')",
-    );
-    await ensureLinearSession(sqliteDb(db), {
+    await insertItem({
+      id: "owned-refresh-item",
+      delegationId: "owned-refresh",
+      linearIssueId: "owned-refresh",
+      linearIdentifier: "OWN-1",
+      title: "Owned",
+      state: "merge_queue",
+      branchName: "paws/owned-refresh",
+      position: 0,
+      createdAt: 1,
+      sessionKey: "owned-refresh-session",
+    });
+    await ensureLinearSession(db, {
       sessionId: "owned-refresh-session",
       issueId: "owned-refresh",
     });
-    await bindLinearSessionTask(sqliteDb(db), "owned-refresh-session", "owned-refresh");
-    await bindWorkItemRepository(sqliteDb(db), "owned-refresh-item", repository);
-    const ownedRun = await insertRun(sqliteDb(db), {
+    await bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
+    await bindWorkItemRepository(db, "owned-refresh-item", repository);
+    const ownedRun = await insertRun(db, {
       itemId: "owned-refresh-item",
       kind: "implement",
       agent: "codex",
@@ -562,8 +594,8 @@ export async function probePublicationStop(
       freshSession: true,
       now: clock.now(),
     });
-    await setCurrentRun(sqliteDb(db), "owned-refresh-item", ownedRun.id);
-    await saveCheckpoint(sqliteDb(db), "owned-refresh-item", {
+    await setCurrentRun(db, "owned-refresh-item", ownedRun.id);
+    await saveCheckpoint(db, "owned-refresh-item", {
       phase: "merge_queue",
       wipCommit: "a".repeat(40),
       baseSha: "b".repeat(40),
@@ -576,13 +608,12 @@ export async function probePublicationStop(
         profiles: { implementer: { agent: "codex" }, reviewer: { agent: "codex" } },
       }),
     );
-    freshness = async (itemId) =>
-      !pendingEpics.has((await getWorkItem(sqliteDb(db), itemId))!.delegationId);
+    freshness = async (itemId) => !pendingEpics.has((await getWorkItem(db, itemId))!.delegationId);
     onToken = () => {
       onToken = undefined;
       pendingEpics.add("owned-refresh");
     };
-    const tokenRace = await enqueueJob(sqliteDb(db), {
+    const tokenRace = await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -591,21 +622,20 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "a refresh arriving during token acquisition defers without consuming job retries",
-      db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(tokenRace)
-        ?.status === "done" &&
-        db
-          .query("SELECT 1 FROM job WHERE job_key=? AND status='pending'")
-          .get(`merge-reconciliation:${tokenRace}`) !== null,
-      db
-        .query("SELECT id,status,attempts FROM job WHERE id=? OR job_key=?")
-        .all(tokenRace, `merge-reconciliation:${tokenRace}`),
+      (await jobs(eq(job.id, tokenRace)))[0]?.status === "done" &&
+        (
+          await jobs(
+            and(eq(job.jobKey, `merge-reconciliation:${tokenRace}`), eq(job.status, "pending")),
+          )
+        ).length === 1,
+      await jobs(or(eq(job.id, tokenRace), eq(job.jobKey, `merge-reconciliation:${tokenRace}`))),
     );
     pendingEpics.delete("owned-refresh");
     freshness = async () => {
-      await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "reverify_requested");
+      await applyWorkItemEvent(db, "owned-refresh-item", "reverify_requested");
       return false;
     };
-    const verifyingRace = await enqueueJob(sqliteDb(db), {
+    const verifyingRace = await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -614,15 +644,19 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "pending reconciliation retains required verification rather than skipping its successor",
-      (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state === "verifying" &&
-        db
-          .query("SELECT 1 FROM job WHERE job_key=? AND queue=? AND status='pending'")
-          .get(`merge-reconciliation:${verifyingRace}`, JOB_KIND.reverify) !== null,
-      db
-        .query("SELECT queue,status FROM job WHERE job_key=?")
-        .get(`merge-reconciliation:${verifyingRace}`),
+      (await getWorkItem(db, "owned-refresh-item"))?.state === "verifying" &&
+        (
+          await jobs(
+            and(
+              eq(job.jobKey, `merge-reconciliation:${verifyingRace}`),
+              eq(job.queue, JOB_KIND.reverify),
+              eq(job.status, "pending"),
+            ),
+          )
+        ).length === 1,
+      (await jobs(eq(job.jobKey, `merge-reconciliation:${verifyingRace}`)))[0],
     );
-    await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "closeout_accepted");
+    await applyWorkItemEvent(db, "owned-refresh-item", "closeout_accepted");
     let shared: Promise<void> | undefined;
     let callerAborted = false;
     let joinedRefresh = false;
@@ -658,7 +692,7 @@ export async function probePublicationStop(
       });
       return waiter;
     };
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: JOB_KIND.merge,
       priority: 0,
       payload: { itemId: "owned-refresh-item" },
@@ -681,12 +715,12 @@ export async function probePublicationStop(
       "criteria invalidation aborts an owned publication freshness waiter before joining its job",
       callerAborted &&
         joinedRefresh &&
-        (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state === "queued" &&
+        (await getWorkItem(db, "owned-refresh-item"))?.state === "queued" &&
         calls.length === beforeOwned,
       {
         callerAborted,
         joinedRefresh,
-        item: (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state,
+        item: (await getWorkItem(db, "owned-refresh-item"))?.state,
         calls: calls.length,
       },
     );
@@ -703,17 +737,21 @@ export async function probePublicationStop(
       ] as const) {
         const itemId = `${delegationId}-${suffix}`;
         const issueId = suffix === "consumer" ? itemId : `${delegationId}-issue`;
-        db.run(
-          "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
-          [itemId, delegationId, issueId, itemId, itemId, state, `paws/${itemId}`],
-        );
-        db.run(
-          "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'version',1,?)",
-          [itemId, present],
-        );
+        await insertItem({
+          id: itemId,
+          delegationId,
+          linearIssueId: issueId,
+          linearIdentifier: itemId,
+          title: itemId,
+          state,
+          branchName: `paws/${itemId}`,
+          position: 0,
+          createdAt: 1,
+        });
+        await specify(itemId, "version", present);
         if (state === "merged") {
-          await confirmFakeMerge(db, itemId);
-          const producer = await insertRun(sqliteDb(db), {
+          await confirmFakeMergePg(db, itemId);
+          const producer = await insertRun(db, {
             itemId,
             kind: "implement",
             agent: "codex",
@@ -722,25 +760,28 @@ export async function probePublicationStop(
             now: clock.now(),
           });
           await saveRunResult(
-            sqliteDb(db),
+            db,
             producer.id,
             suffix === "old" ? "Obsolete schema" : "Current schema",
             clock.now(),
           );
-          await setCurrentRun(sqliteDb(db), itemId, producer.id);
+          await setCurrentRun(db, itemId, producer.id);
         }
       }
-      db.run(
-        "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
-        [`${delegationId}-issue`, `${delegationId}-consumer`],
+      await change((q) =>
+        q.orm.insert(q.t.taskBlock).values({
+          blockerLinearIssueId: `${delegationId}-issue`,
+          blockedLinearIssueId: `${delegationId}-consumer`,
+        }),
       );
     }
     await current.orchestrator.reconcileExecution();
     const handoff = await current.orchestrator.dependencyHandoff("handoff-history-consumer");
-    const readyIds = db
-      .query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission")
-      .all()
-      .map((row) => row.id);
+    const readyIds = (
+      await db.run((q) =>
+        q.all(q.orm.select({ id: q.t.schedulerAdmission.itemId }).from(q.t.schedulerAdmission)),
+      )
+    ).map((row) => row.id);
     observe(
       "active dependency handoffs and readiness ignore archived producers sharing the Linear issue",
       handoff?.includes("Current schema") === true &&
@@ -751,7 +792,7 @@ export async function probePublicationStop(
   } finally {
     await current.orchestrator.shutdown();
     server.stop(true);
-    db.close();
+    await close();
   }
 }
 
