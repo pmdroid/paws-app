@@ -8,13 +8,7 @@ To have Paws make and enroll an exe.dev VM for you, including on a Paws reachabl
 
 Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace admin. The first workspace is created when a Linear workspace administrator authorizes Paws.
 
-Initialize the runner authority once on the Paws machine, using the same Paws home as its service:
-
-```sh
-bun run paws runner-authority init
-```
-
-Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAWS_RUNNER_PORT=8788` to the HTTPS service's environment, then restart Paws. On Tailscale, use the Paws machine's Tailscale IP as the listener address and its Tailscale DNS hostname in the HTTPS URLs below.
+Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAWS_RUNNER_PORT=8788` to the HTTPS service's environment, then restart Paws. Paws creates the runner identity on its first start with `PAWS_RUNNER_HOST` set; `bun run paws runner-authority init` with the service's Paws home does the same ahead of time, is optional, and is safe to rerun. On Tailscale, use the Paws machine's Tailscale IP as the listener address and its Tailscale DNS hostname in the HTTPS URLs below.
 
 ### A separate runner address and certificate
 
