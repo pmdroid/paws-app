@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   and,
   desc,
@@ -135,7 +134,7 @@ function* updateLeasedSteps(
   return rows.length;
 }
 
-type JobReadySource = Database | Db;
+type JobReadySource = Db;
 
 const jobReadyListeners = new Set<(db: JobReadySource) => void>();
 

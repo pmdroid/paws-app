@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getWorkItem, insertQueuedItem, migrate, openDatabase, setJournalSink } from "../src/db";
+import { getWorkItem, insertQueuedItem, openDatabase, setJournalSink } from "../src/db";
 import { saveSecret, useDatabaseSecrets } from "../src/credentials";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
@@ -34,15 +34,14 @@ test("an existing paws.db is renamed with its WAL and SHM, untouched, and only o
   const home = tempHome();
   const path = join(home, "paws.db");
   const old = openDatabase(path);
-  migrate(old);
   old.run("PRAGMA wal_autocheckpoint = 0");
-  await insertQueuedItem(old, { id: "old", now: 1 });
+  old.run("CREATE TABLE work_item(id TEXT PRIMARY KEY)");
+  old.run("INSERT INTO work_item(id) VALUES('old')");
   const before = {
     file: readFileSync(path),
     wal: readFileSync(`${path}-wal`),
     shm: readFileSync(`${path}-shm`),
   };
-  old.close();
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -54,6 +53,7 @@ test("an existing paws.db is renamed with its WAL and SHM, untouched, and only o
     }
   } finally {
     restore();
+    old.close();
   }
   const moved = readdirSync(home)
     .filter((name) => name.startsWith("paws.db.pre-postgres-"))

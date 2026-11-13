@@ -9,7 +9,7 @@ import {
   LinearRateLimitError,
 } from "../src/linear";
 import { transientRetryDelayMs } from "../src/core";
-import { migrate, openDatabase } from "../src/db";
+import { tempStore } from "./pglite";
 import { startServer } from "../src/server";
 
 const AUTH = {
@@ -347,8 +347,7 @@ describe("shared Linear budget", () => {
       complexity: null,
     });
     ledger.limited("tracker", new LinearRateLimitError(15 * 60_000, ledger.usage().budget!));
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     const server = startServer({
       port: 0,
       hostname: "127.0.0.1",
@@ -371,7 +370,7 @@ describe("shared Linear budget", () => {
       });
     } finally {
       await server.stop(true);
-      db.close();
+      await close();
     }
   });
 });

@@ -3,9 +3,8 @@ import {
   workspaceMemberSteps,
   workspaceMemberUsable,
 } from "./workspace";
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { dashboardPath } from "../dashboard-links";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
@@ -117,14 +116,6 @@ export async function beginGitHubAttribution(
 }
 
 type ConsumeInput = { stateHash: string; browserHash: string; now: number };
-
-export async function consumeGitHubAttribution(
-  db: Database,
-  binding: AttributionBinding,
-  input: ConsumeInput,
-): Promise<number> {
-  return (await consumeGitHubAttributionRequest(sqliteDb(db), binding, input)).revision;
-}
 
 export function* consumeGitHubAttributionRequestSteps(
   q: Q,
