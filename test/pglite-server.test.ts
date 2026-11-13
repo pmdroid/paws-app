@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
-import { pgliteServer } from "./pglite";
+import { sql } from "drizzle-orm";
+import type { Db } from "../src/db";
+import { pgliteServer, tempStore } from "./pglite";
 
 const SERVER = process.env.PAWS_TEST_DATABASE_URL;
 
@@ -13,6 +15,49 @@ async function version(url: string): Promise<string> {
     await client.close();
   }
 }
+
+async function storeDatabase(db: Db): Promise<{ name: string; version: string }> {
+  if (db.dialect !== "postgres") throw new Error(`tempStore opened ${db.dialect}`);
+  const result = (await db.orm.execute(
+    sql`SELECT current_database() AS name, version() AS version`,
+  )) as unknown as
+    | { name: string; version: string }[]
+    | { rows: { name: string; version: string }[] };
+  return (Array.isArray(result) ? result : result.rows)[0]!;
+}
+
+test("without PAWS_TEST_DATABASE_URL tempStore is in-memory PGlite", async () => {
+  const { db, close } = await tempStore({});
+  try {
+    expect((await storeDatabase(db)).version).toContain("emscripten");
+  } finally {
+    await close();
+  }
+});
+
+test.skipIf(!SERVER)(
+  "with PAWS_TEST_DATABASE_URL tempStore is a fresh, migrated database there, dropped on close",
+  async () => {
+    const first = await tempStore({ PAWS_TEST_DATABASE_URL: SERVER });
+    const second = await tempStore({ PAWS_TEST_DATABASE_URL: SERVER });
+    const { name, version: serverVersion } = await storeDatabase(first.db);
+    try {
+      expect(serverVersion).not.toContain("emscripten");
+      expect(name).toStartWith("paws_test_");
+      expect((await storeDatabase(second.db)).name).not.toBe(name);
+      expect(await first.db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+    const admin = new SQL({ url: SERVER!, max: 1 });
+    try {
+      expect(await admin`SELECT 1 FROM pg_database WHERE datname = ${name}`).toHaveLength(0);
+    } finally {
+      await admin.close();
+    }
+  },
+);
 
 test("without PAWS_TEST_DATABASE_URL the test server is PGlite", async () => {
   const server = await pgliteServer({});
