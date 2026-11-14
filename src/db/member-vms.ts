@@ -77,7 +77,6 @@ export async function memberVmById(store: Db, id: string): Promise<MemberVm | nu
 }
 
 export function* lockMemberVmsSteps(q: Q, workspaceId: string, userId: string) {
-  if (q.dialect !== "postgres") return;
   const key = `member-vm:${workspaceId}:${userId}`;
   yield* q.exec(
     q.orm
@@ -378,7 +377,7 @@ export async function beginMemberVmDelete(
 
 export function* retryMemberVmDeleteSteps(q: Q, id: string, force: number, now: number) {
   const { memberVm: m } = q.t;
-  const greatest = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const greatest = sql`GREATEST`;
   yield* q.exec(
     q.orm
       .update(m)

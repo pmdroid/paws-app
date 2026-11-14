@@ -32,9 +32,7 @@ function oauthColumns(q: Q) {
 
 function intentKind(q: Q) {
   const intent = q.t.workspaceGithubOauth.intent;
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${intent}, '$.kind')`
-    : sql`(${intent}::jsonb ->> 'kind')`;
+  return sql`(${intent}::jsonb ->> 'kind')`;
 }
 
 export function* githubOAuthStateExistsSteps(

@@ -4,14 +4,12 @@ import {
   asc,
   desc,
   eq,
-  getTableColumns,
   gt,
   gte,
   ilike,
   inArray,
   isNotNull,
   isNull,
-  like,
   max,
   min,
   ne,
@@ -138,44 +136,8 @@ function selectItems(q: Q, columns: object = q.t.workItem) {
     .$dynamic();
 }
 
-const completeItemTables = new WeakSet<object>();
-
-/** A database migrated only partway, as migration tests build, has no `item_continuation` yet. */
-function* itemQuerySteps(q: Q) {
-  if (q.dialect === "postgres" || completeItemTables.has(q.orm)) return selectItems(q);
-  const { workItem } = q.t;
-  const names = new Set(
-    (yield* q.all(
-      q.orm.select({ name: sql<string>`name` }).from(sql`pragma_table_info('work_item')`),
-    )).map((row) => row.name),
-  );
-  const continuation = yield* q.one(
-    q.orm
-      .select({ name: sql<string>`name` })
-      .from(sql`sqlite_master`)
-      .where(sql`type = 'table' AND name = 'item_continuation'`),
-  );
-  const columns = Object.fromEntries(
-    Object.entries(getTableColumns(workItem)).filter(([, column]) => names.has(column.name)),
-  );
-  const complete = Object.keys(columns).length === Object.keys(getTableColumns(workItem)).length;
-  if (complete && continuation !== undefined) {
-    completeItemTables.add(q.orm);
-    return selectItems(q);
-  }
-  if (continuation !== undefined) return selectItems(q, columns);
-  return q.orm
-    .select({
-      item: columns,
-      continuesItemId: sql<string | null>`NULL`,
-      continuesBranch: sql<string | null>`NULL`,
-    })
-    .from(workItem)
-    .$dynamic() as unknown as ReturnType<typeof selectItems>;
-}
-
 export function* getWorkItemSteps(q: Q, id: string) {
-  const items = yield* itemQuerySteps(q);
+  const items = selectItems(q);
   const row = yield* q.one(items.where(eq(q.t.workItem.id, id)));
   return row === undefined ? null : mapItem(row);
 }
@@ -186,7 +148,7 @@ export async function getWorkItem(store: Db, id: string): Promise<WorkItemRecord
 
 export function* listWorkItemsSteps(q: Q) {
   const { workItem } = q.t;
-  const items = yield* itemQuerySteps(q);
+  const items = selectItems(q);
   const rows = yield* q.all(items.orderBy(asc(workItem.createdAt), asc(workItem.id)));
   return rows.map(mapItem);
 }
@@ -198,7 +160,7 @@ export async function listWorkItems(store: Db): Promise<WorkItemRecord[]> {
 export function* listWorkItemsByStatesSteps(q: Q, states: readonly WorkItemState[]) {
   if (states.length === 0) return [];
   const { workItem } = q.t;
-  const items = yield* itemQuerySteps(q);
+  const items = selectItems(q);
   const rows = yield* q.all(
     items
       .where(inArray(workItem.state, [...states]))
@@ -529,7 +491,7 @@ function addedToFloored(q: Q, columns: readonly ItemColumn[], amount: number) {
   return Object.fromEntries(
     columns.map((column) => {
       const sum = sql`${q.t.workItem[column]} + ${amount}`;
-      return [column, q.dialect === "sqlite" ? sql`MAX(${sum}, 0)` : sql`GREATEST(${sum}, 0)`];
+      return [column, sql`GREATEST(${sum}, 0)`];
     }),
   ) as Partial<PgWorkItem>;
 }
@@ -711,11 +673,7 @@ export function* markJobAwakeWaitSteps(
   const table = q.t.job;
   const { jobReady } = yield* accrueAwakeSteps(q, itemId, mono, now);
   if (waiting) {
-    const marked =
-      q.dialect === "sqlite"
-        ? sql`json_set(${table.payload}, '$.awakeWait',
-            json_object('kind', ${reason}, 'worker', ${table.lockedBy}, 'attempt', ${table.attempts}))`
-        : sql`jsonb_set(${table.payload}, '{awakeWait}',
+    const marked = sql`jsonb_set(${table.payload}, '{awakeWait}',
             jsonb_build_object('kind', ${reason}::text, 'worker', ${table.lockedBy}, 'attempt', ${table.attempts}))`;
     yield* q.exec(
       q.orm
@@ -732,10 +690,7 @@ export function* markJobAwakeWaitSteps(
         ),
     );
   } else {
-    const cleared =
-      q.dialect === "sqlite"
-        ? sql`json_remove(${table.payload}, '$.awakeWait')`
-        : sql`${table.payload} - 'awakeWait'`;
+    const cleared = sql`${table.payload} - 'awakeWait'`;
     yield* q.exec(
       q.orm
         .update(table)
@@ -745,10 +700,7 @@ export function* markJobAwakeWaitSteps(
             eq(table.id, job.id),
             eq(jsonPath(q, table.payload, "awakeWait", "worker"), job.lockedBy ?? sql`NULL`),
             // Postgres reads the JSON field as text, SQLite as the stored integer.
-            eq(
-              jsonPath(q, table.payload, "awakeWait", "attempt"),
-              q.dialect === "sqlite" ? job.attempts : String(job.attempts),
-            ),
+            eq(jsonPath(q, table.payload, "awakeWait", "attempt"), String(job.attempts)),
           ),
         ),
     );
@@ -998,8 +950,7 @@ export async function markCloseoutAccepted(store: Db, id: string, head: string, 
 function* extendAwakeCapSteps(q: Q, id: string, stage: TimeStage, extraMs: number) {
   const limit = q.t.workItem[LIMIT_COLUMN[stage]];
   const spent = q.t.workItem[STAGE_COLUMN[stage]];
-  const larger =
-    q.dialect === "sqlite" ? sql`MAX(${limit}, ${spent})` : sql`GREATEST(${limit}, ${spent})`;
+  const larger = sql`GREATEST(${limit}, ${spent})`;
   yield* setItemSteps(q, id, { [LIMIT_COLUMN[stage]]: sql`${larger} + ${extraMs}` });
 }
 
@@ -1489,10 +1440,7 @@ export async function reviewerAlertedSince(
 
 export function* releaseReviewerFaultHoldsSteps(q: Q, itemId: string, now: number) {
   const { job } = q.t;
-  const released =
-    q.dialect === "sqlite"
-      ? sql`json_remove(${job.payload}, '$.closeoutFaults', '$.reviewerFault')`
-      : sql`${job.payload} - 'closeoutFaults' - 'reviewerFault'`;
+  const released = sql`${job.payload} - 'closeoutFaults' - 'reviewerFault'`;
   const rows = yield* q.all(
     q.orm
       .update(job)
@@ -1672,23 +1620,19 @@ function jsonText(value: unknown): string {
 }
 
 function jsonValue(q: Q, value: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+  return value;
 }
 
 function jsonField(q: Q, column: AnyColumn, key: string): SQL {
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${column}, ${sql.raw(`'$.${key}'`)})`
-    : sql`${column}->>${sql.raw(`'${key}'`)}`;
+  return sql`${column}->>${sql.raw(`'${key}'`)}`;
 }
 
 function jsonValueAt(q: Q, column: AnyColumn, key: string): SQL<unknown> {
-  return q.dialect === "sqlite"
-    ? jsonField(q, column, key)
-    : sql`${column}->${sql.raw(`'${key}'`)}`;
+  return sql`${column}->${sql.raw(`'${key}'`)}`;
 }
 
 function likeText(q: Q, column: AnyColumn, pattern: string): SQL {
-  return q.dialect === "sqlite" ? like(column, pattern) : ilike(column, pattern);
+  return ilike(column, pattern);
 }
 
 export function* itemDelegationIdSteps(q: Q, itemId: string) {

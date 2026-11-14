@@ -142,7 +142,7 @@ export function* revokeLinearInstallationSteps(
   validateTime(input.createdAtMs);
   const { linearAppRevocation, linearSession } = q.t;
   if (!(yield* recordEventSteps(q, input.eventKey, input.createdAtMs))) return [];
-  const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const later = sql`GREATEST`;
   const changed = yield* q.all(
     q.orm
       .insert(linearAppRevocation)

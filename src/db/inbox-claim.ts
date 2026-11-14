@@ -31,7 +31,7 @@ function claimed(
   if (row === undefined) return null;
   return {
     ...row,
-    payload: q.dialect === "sqlite" ? (row.payload as string) : JSON.stringify(row.payload),
+    payload: JSON.stringify(row.payload),
   };
 }
 

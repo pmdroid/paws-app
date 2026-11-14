@@ -12,7 +12,7 @@ export function* keepTaskLinearReadSteps(
 ) {
   const { workItemLinearRead } = q.t;
   const text = JSON.stringify(value);
-  const valueJson = q.dialect === "sqlite" ? text : sql`${text}::text::jsonb`;
+  const valueJson = sql`${text}::text::jsonb`;
   yield* q.exec(
     q.orm
       .insert(workItemLinearRead)
@@ -43,7 +43,7 @@ export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearRe
       .where(and(eq(workItemLinearRead.itemId, itemId), eq(workItemLinearRead.kind, kind))),
   );
   if (row === undefined) return undefined;
-  return q.dialect === "sqlite" ? (JSON.parse(row.valueJson as string) as unknown) : row.valueJson;
+  return row.valueJson;
 }
 
 export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {

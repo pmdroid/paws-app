@@ -271,7 +271,7 @@ export async function mergeQueuePosition(
 
 export function* wakeMergesBehindSteps(q: Q, now: number) {
   const { job } = q.t;
-  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const least = sql`LEAST`;
   yield* q.exec(
     q.orm
       .update(job)
