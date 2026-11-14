@@ -792,7 +792,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     db: store,
     store,
     signal: abort.signal,
-    countItemRequest: async (itemId, caller) => await countLinearRequest(store, itemId, caller),
+    countItemRequest: async (itemId) => await countLinearRequest(store, itemId),
     budget: linearBudgetStore(store, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: async () => !(await linearRevoked()),

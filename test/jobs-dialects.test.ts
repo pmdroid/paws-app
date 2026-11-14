@@ -94,28 +94,22 @@ forEachDialect((open) => {
       expect((await db.run(listJobsSteps)).map((row) => row.id)).toEqual([id]);
     }));
 
-  test("each new job gets its own activation row, and a keyed repeat adds none", async () =>
+  test("each new job gets its own increasing activation id, and a keyed repeat keeps it", async () =>
     withDb(open, async (db) => {
       const first = await enqueue(db, { queue: "work", now: 1 });
       const second = await db.run((q) =>
         enqueueJobOnceSteps(q, { queue: "work", jobKey: "k", now: 2 }),
       );
+      const before = (await getJob(db, second.id))!.activationId;
       await db.run((q) => enqueueJobOnceSteps(q, { queue: "work", jobKey: "k", now: 3 }));
-      const activations = await db.run((q) =>
-        q.all(
-          q.orm
-            .select({
-              id: q.t.jobActivation.id,
-              jobId: q.t.jobActivation.jobId,
-            })
-            .from(q.t.jobActivation)
-            .orderBy(q.t.jobActivation.id),
-        ),
+      const third = await enqueue(db, { queue: "work", now: 4 });
+      const ids = await Promise.all(
+        [first, second.id, third].map(async (id) => (await getJob(db, id))!.activationId),
       );
-      expect(activations.map((row) => row.jobId)).toEqual([first, second.id]);
-      expect((await getJob(db, first))!.activationId).toBe(activations[0]!.id);
-      expect((await getJob(db, second.id))!.activationId).toBe(activations[1]!.id);
-      expect(activations[1]!.id).toBeGreaterThan(activations[0]!.id);
+      expect(ids[0]).toBeGreaterThan(0);
+      expect(ids[1]).toBeGreaterThan(ids[0]!);
+      expect(ids[2]).toBeGreaterThan(ids[1]!);
+      expect(ids[1]).toBe(before);
     }));
 
   test("a keyed job is enqueued once, and a finished recurring key is armed again", async () =>

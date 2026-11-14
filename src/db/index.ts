@@ -100,7 +100,6 @@ export * from "./artifacts";
 export * from "./evidence";
 export * from "./visual-reviews";
 export * from "./question-rows";
-export * from "./linear-inputs";
 export * from "./linear-session-url";
 export * from "./acp-conversations";
 export * from "./remote-merges";

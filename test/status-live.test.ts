@@ -260,7 +260,7 @@ test("each task on /api/issues carries the Linear requests it made", async () =>
   try {
     await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
     await insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
-    for (let request = 0; request < 3; request++) await countLinearRequest(db, "item-1", "outbox");
+    for (let request = 0; request < 3; request++) await countLinearRequest(db, "item-1");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       store: db,
       env: {},

@@ -63,7 +63,6 @@ import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
   saveCheckpointSteps,
-  recordReviewRoundsSteps,
   jobVersionCurrentSteps,
   refreshVerificationJobVersionSteps,
 } from "../db";
@@ -1008,7 +1007,6 @@ export class Orchestrator {
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
@@ -4319,7 +4317,6 @@ export class Orchestrator {
         ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
         : before;
       const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
-      await this.recordReviewRounds(item, verdict.owner.runId);
       if ((await this.closeoutStopped(item.id)) !== null) return;
       const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
@@ -5515,25 +5512,6 @@ export class Orchestrator {
               : "setup_fault",
     });
     await this.flush();
-  }
-
-  /** Records on the verifying run how many review rounds the item has needed so far. */
-  private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
-    if (runId === null) return;
-    await this.pullCloseoutEvidence(item);
-    try {
-      const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
-      if (rounds.length > 0)
-        await this.store.run((q) => recordReviewRoundsSteps(q, runId, rounds.length));
-    } catch (caught) {
-      journalCaught(
-        caught,
-        "orchestrator.recordReviewRounds",
-        item.id,
-        undefined,
-        this.options.journal,
-      );
-    }
   }
 
   /**

@@ -11,7 +11,7 @@ import {
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { question } from "./asks";
-import { run, workItem } from "./items";
+import { workItem } from "./items";
 import { workspace } from "./workspace";
 import { job } from "./jobs";
 
@@ -286,17 +286,6 @@ export const closeoutBypassCheck = pgTable(
       name: "closeout_bypass_check_question_id_check_id_pk",
     }),
   ],
-);
-
-export const runReviewRounds = pgTable(
-  "run_review_rounds",
-  {
-    runId: text("run_id")
-      .primaryKey()
-      .references(() => run.id),
-    rounds: bigint({ mode: "number" }).notNull(),
-  },
-  () => [check("run_review_rounds_check_1", sql`rounds >= 0`)],
 );
 
 export const reviewEscape = pgTable(
