@@ -1,0 +1,1 @@
+ALTER TABLE `runner` ADD `fix_slots` integer DEFAULT 1 NOT NULL;
