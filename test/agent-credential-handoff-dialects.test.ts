@@ -154,7 +154,7 @@ forEachDialect((connect) => {
     );
     const created = await db.run((q) => readAgentCredentialSteps(q, secretsDir, fresh));
     expect(created).toMatchObject({ version: 1, runnerId: "new", agent: "codex" });
-    expect(JSON.parse(created!.blob)).toEqual(files);
+    expect(JSON.parse(created!.blob!)).toEqual(files);
     expect((await db.run((q) => readAgentCredentialSteps(q, secretsDir, stored)))?.version).toBe(2);
     await expect(
       work.storeCredential("new", { accountId: foreign, version: 1, files }),

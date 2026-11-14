@@ -329,6 +329,17 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       sample: pattern!.replaceAll(":id", "01JRUNNER0000000000000000A"),
     }),
   ),
+  api("GET POST", "/api/runners/agent-accounts", "delegated", "src/account-management"),
+  ...[
+    ["PUT", "/api/runners/agent-accounts/order"],
+    ["PUT", "/api/runners/agent-accounts/:id/extra-usage"],
+    ["POST", "/api/runners/agent-accounts/:id/sign-in"],
+    ["DELETE", "/api/runners/agent-accounts/:id/credential"],
+  ].map(([method, pattern]) =>
+    api(method!, pattern!, "delegated", "src/account-management", {
+      via: "/api/runners/agent-accounts",
+    }),
+  ),
   api("POST", "/api/runner-enrollments", "delegated", "src/runner-control"),
   ...[
     ["GET", "/api/auth/session", 401],

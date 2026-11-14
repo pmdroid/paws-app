@@ -1217,7 +1217,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ store });
-  const accountManagement = createAccountManagement();
+  const accountManagement = createAccountManagement({ store });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,
