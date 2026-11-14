@@ -4,6 +4,7 @@ import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
 import { setMergeSettingsText, type StoredMerge } from "./merge";
 import { setQueueSettingsText, type QueueSettings } from "./queue";
+import { setAgentCommandsText, type AgentCommands } from "./agent-commands";
 
 export type AgentProfile = {
   agent: ImplementerName;
@@ -291,11 +292,13 @@ export function writeAgentSettings(
   input: AgentSettings,
   merge?: StoredMerge,
   queue?: QueueSettings,
+  commands?: AgentCommands,
 ): Promise<void> {
   return updateConfigText(path, (current) => {
     const agents = renderAgentSettingsText(current, input);
     const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
-    return queue === undefined ? merged : setQueueSettingsText(merged, queue);
+    const queued = queue === undefined ? merged : setQueueSettingsText(merged, queue);
+    return commands === undefined ? queued : setAgentCommandsText(queued, commands);
   });
 }
 
