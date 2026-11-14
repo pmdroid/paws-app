@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-type Step = { name?: string; run?: string; env?: Record<string, string> };
+type Step = { shell?: string; name?: string; run?: string; env?: Record<string, string> };
 const workflow = Bun.YAML.parse(
   readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8"),
 ) as { jobs: Record<string, { name: string; needs?: string[]; if?: string; steps: Step[] }> };
@@ -62,26 +62,39 @@ test("stress is intentionally skipped only outside pull requests", () => {
   expect(workflow.jobs["changed-tests"]!.if).toBe("github.event_name == 'pull_request'");
 });
 
-for (const diffFails of [false, true]) {
-  test(diffFails ? "diff failure fails stress" : "zero selected tests succeeds", () => {
-    const dir = mkdtempSync(join(tmpdir(), "paws-ci-gate-"));
-    try {
-      writeFileSync(join(dir, "git"), `#!/bin/sh\nexit ${diffFails ? 1 : 0}\n`, { mode: 0o755 });
-      const step = workflow.jobs["changed-tests"]!.steps.find((entry) =>
-        entry.run?.includes("git diff"),
-      )!;
-      const result = Bun.spawnSync(["bash", "-e", "-c", step.run!], {
-        env: {
-          ...process.env,
-          PATH: `${dir}:${process.env.PATH}`,
-          RUNNER_TEMP: dir,
-          BASE_REF: "main",
-        },
-      });
-      expect(result.exitCode === 0).toBe(!diffFails);
-      if (!diffFails) expect(result.stdout.toString()).toContain("No new or changed test files");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+for (const failure of ["none", "diff", "selection"]) {
+  test(
+    failure === "none" ? "zero selected tests succeeds" : `${failure} failure fails stress`,
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "paws-ci-gate-"));
+      try {
+        writeFileSync(join(dir, "git"), `#!/bin/sh\nexit ${failure === "diff" ? 1 : 0}\n`, {
+          mode: 0o755,
+        });
+        if (failure === "selection") {
+          writeFileSync(join(dir, "head"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+        }
+        const step = workflow.jobs["changed-tests"]!.steps.find((entry) =>
+          entry.run?.includes("git diff"),
+        )!;
+        expect(step.shell).toBe("bash");
+        const result = Bun.spawnSync(
+          ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step.run!],
+          {
+            env: {
+              ...process.env,
+              PATH: `${dir}:${process.env.PATH}`,
+              RUNNER_TEMP: dir,
+              BASE_REF: "main",
+            },
+          },
+        );
+        expect(result.exitCode === 0).toBe(failure === "none");
+        if (failure === "none")
+          expect(result.stdout.toString()).toContain("No new or changed test files");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 }
