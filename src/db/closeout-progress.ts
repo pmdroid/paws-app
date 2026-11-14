@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, min, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, max, min, or, sql } from "drizzle-orm";
 import type { Q, Steps, Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 
@@ -845,4 +845,91 @@ export function* latestCloseoutProgressMarkerSteps(q: Q, itemId: string) {
 
 export async function latestCloseoutProgressMarker(store: Db, itemId: string) {
   return store.run((q) => latestCloseoutProgressMarkerSteps(q, itemId));
+}
+
+export type RunnerCloseoutStep =
+  | { type: "started"; head: string; id: string; kind: string; command: string; attempt: number }
+  | {
+      type: "finished";
+      head: string;
+      id: string;
+      kind: string;
+      command: string;
+      attempt: number;
+      state: "passed" | "failed" | "exhausted" | "cancelled";
+      exitCode: number | null;
+      timedOut: boolean;
+      durationMs: number;
+    };
+
+export function* applyRunnerCloseoutStepSteps(
+  q: Q,
+  itemId: string,
+  head: string,
+  step: RunnerCloseoutStep,
+  now: number,
+) {
+  if (step.kind !== "setup" && step.kind !== "command") return;
+  if (step.type === "finished" && step.state === "cancelled") return;
+  const { closeoutProgress, closeoutStep } = q.t;
+  const open = yield* q.one(
+    q.orm
+      .select({ id: closeoutProgress.id })
+      .from(closeoutProgress)
+      .where(
+        and(
+          eq(closeoutProgress.itemId, itemId),
+          eq(closeoutProgress.head, head),
+          isNull(closeoutProgress.decision),
+        ),
+      )
+      .orderBy(desc(closeoutProgress.updatedAt), desc(closeoutProgress.id))
+      .limit(1),
+  );
+  if (open === undefined) return;
+  const last = yield* q.one(
+    q.orm
+      .select({ ordinal: max(closeoutStep.ordinal) })
+      .from(closeoutStep)
+      .where(eq(closeoutStep.progressId, open.id)),
+  );
+  const values =
+    step.type === "started"
+      ? {
+          state: "running",
+          startedAt: now,
+          finishedAt: null,
+          exitCode: null,
+          timedOut: 0,
+          durationMs: null,
+          detail: null,
+        }
+      : {
+          state: step.state,
+          finishedAt: now,
+          exitCode: step.exitCode,
+          timedOut: step.timedOut ? 1 : 0,
+          durationMs: step.durationMs,
+        };
+  yield* q.exec(
+    q.orm
+      .insert(closeoutStep)
+      .values({
+        progressId: open.id,
+        stepId: step.id,
+        kind: step.kind,
+        command: step.command.length > 0 ? step.command : step.id,
+        attempt: step.attempt,
+        ordinal: (last?.ordinal ?? -1) + 1,
+        startedAt: step.type === "finished" ? now - step.durationMs : now,
+        ...values,
+      })
+      .onConflictDoUpdate({
+        target: [closeoutStep.progressId, closeoutStep.stepId],
+        set: values,
+      }),
+  );
+  yield* q.exec(
+    q.orm.update(closeoutProgress).set({ updatedAt: now }).where(eq(closeoutProgress.id, open.id)),
+  );
 }
