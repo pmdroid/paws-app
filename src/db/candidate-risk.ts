@@ -17,7 +17,15 @@ export type CandidateRisk = RiskClassification & {
   matches?: RiskMatch[];
 };
 
-export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
+/**
+ * Records the head's tier with every path it changes since its base, which the scheduler and hot
+ * files read. A repeat of the head replaces it; one saved without changed paths keeps the stored
+ * ones.
+ */
+export function* saveCandidateRiskSteps(
+  q: Q,
+  risk: CandidateRisk & { changedPaths?: readonly string[] },
+) {
   const { candidateRisk } = q.t;
   const values = {
     baseSha: risk.base,
@@ -25,6 +33,9 @@ export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
     paths: jsonValue(q, risk.paths),
     matches: risk.matches === undefined ? null : jsonValue(q, risk.matches),
     classifiedAt: risk.classifiedAt,
+    ...(risk.changedPaths === undefined
+      ? {}
+      : { changedPaths: jsonValue(q, [...new Set(risk.changedPaths)].sort()) }),
   };
   yield* q.exec(
     q.orm

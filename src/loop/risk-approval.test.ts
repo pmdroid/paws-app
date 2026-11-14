@@ -25,7 +25,6 @@ import {
   listOutbox,
   saveCandidateRiskSteps,
   getCandidateRisk,
-  saveCandidatePaths,
   getCandidatePaths,
   getCloseoutProgress,
   listCloseoutProgress,
@@ -48,7 +47,7 @@ import {
 } from "./risk-approval";
 
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { seed } from "../../test/dialects";
+import { saveChangedPaths, seed } from "../../test/dialects";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
@@ -724,7 +723,7 @@ test("a rebase that changed the patch asks again, even when the change is only a
 async function cleanRiskFixture() {
   const fixture = await held();
   const { db, itemId } = fixture;
-  await saveCandidatePaths(db, {
+  await saveChangedPaths(db, {
     itemId,
     head: heads.s,
     paths: ["session.ts"],
@@ -885,7 +884,7 @@ for (const policyPath of [
   test(`changing ${policyPath} always asks`, async () => {
     const f = await cleanRiskFixture();
     // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
-    await saveCandidatePaths(f.db, {
+    await saveChangedPaths(f.db, {
       itemId: f.itemId,
       head: heads.s,
       paths: ["session.ts", policyPath],
@@ -1092,8 +1091,8 @@ for (const severity of ["P0", "P1", "P2"] as const) {
 
 test("unknown or malformed candidate paths never reuse another head's path list", async () => {
   const f = await cleanRiskFixture();
-  await f.db.run((q) => q.exec(q.orm.delete(q.t.candidatePaths)));
-  await saveCandidatePaths(f.db, {
+  await f.db.run((q) => q.exec(q.orm.update(q.t.candidateRisk).set({ changedPaths: null })));
+  await saveChangedPaths(f.db, {
     itemId: f.itemId,
     head: heads.changed,
     paths: ["session.ts"],
@@ -1101,7 +1100,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
   });
   expect(await getCandidatePaths(f.db, f.itemId, heads.s)).toBeNull();
   expect(await f.read()).toBe("missing");
-  await saveCandidatePaths(f.db, {
+  await saveChangedPaths(f.db, {
     itemId: f.itemId,
     head: heads.s,
     paths: ["session.ts"],
@@ -1110,9 +1109,9 @@ test("unknown or malformed candidate paths never reuse another head's path list"
   await f.db.run((q) =>
     q.exec(
       q.orm
-        .update(q.t.candidatePaths)
-        .set({ paths: {} })
-        .where(eq(q.t.candidatePaths.headSha, heads.s)),
+        .update(q.t.candidateRisk)
+        .set({ changedPaths: {} })
+        .where(eq(q.t.candidateRisk.headSha, heads.s)),
     ),
   );
   const lines: string[] = [];
@@ -1124,7 +1123,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
   const f = await cleanRiskFixture();
   await classify(f.db, heads.rebased, heads.newMain);
-  await saveCandidatePaths(f.db, {
+  await saveChangedPaths(f.db, {
     itemId: f.itemId,
     head: heads.rebased,
     paths: ["session.ts"],
@@ -1233,7 +1232,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       if (scenario === "P2") await f.step("security-review", "Unsafe access", ["P2"]);
       if (scenario === "missing security") await deleteStep(f.db, "security-review");
       if (scenario === "rules change")
-        await saveCandidatePaths(f.db, {
+        await saveChangedPaths(f.db, {
           itemId: f.itemId,
           head: heads.s,
           paths: ["tools/rules.ts"],

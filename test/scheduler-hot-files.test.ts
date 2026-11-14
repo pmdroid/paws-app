@@ -7,11 +7,11 @@ import {
   listOverlapHoldAges,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
-  saveCandidatePaths,
   type Db,
 } from "../src/db";
 import { sql, type SQL } from "drizzle-orm";
 import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
+import { saveChangedPaths } from "./dialects";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
@@ -32,7 +32,7 @@ async function item(
     sql`INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(${id},${owner},'repo',${`https://github.com/${owner}/repo.git`})`,
   );
   if (paths)
-    await saveCandidatePaths(db, {
+    await saveChangedPaths(db, {
       itemId: id,
       head: `head-${id}`,
       paths,
@@ -360,14 +360,14 @@ test("a later candidate does not change the files of an earlier conflict", async
       recordedAt: NOW - 60_000,
     });
     // The fix drops provider.ts and adds c.ts, which the merge also changed.
-    await saveCandidatePaths(db, {
+    await saveChangedPaths(db, {
       itemId: "returned",
       head: "head-fixed",
       paths: ["src/b.ts", "src/c.ts"],
       recordedAt: NOW - 30_000,
     });
     // A later candidate of the merged item does not change what it merged.
-    await saveCandidatePaths(db, {
+    await saveChangedPaths(db, {
       itemId: "merged",
       head: "head-later",
       paths: ["src/b.ts"],

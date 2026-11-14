@@ -41,6 +41,36 @@ export function seed(db: Db, ...inserts: ((q: Q) => PromiseLike<unknown>)[]): Pr
   });
 }
 
+/**
+ * Every path the candidate `head` changes. A head without a stored tier gets a normal one
+ * classified at `recordedAt`; a classified head keeps its tier and only takes the paths.
+ */
+export function saveChangedPaths(
+  db: Db,
+  input: { itemId: string; head: string; paths: readonly string[]; recordedAt: number },
+): Promise<void> {
+  const changedPaths = [...new Set(input.paths)].sort();
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.candidateRisk)
+        .values({
+          itemId: input.itemId,
+          headSha: input.head,
+          baseSha: "base",
+          tier: "normal",
+          paths: [],
+          classifiedAt: input.recordedAt,
+          changedPaths,
+        })
+        .onConflictDoUpdate({
+          target: [q.t.candidateRisk.itemId, q.t.candidateRisk.headSha],
+          set: { changedPaths },
+        }),
+    ),
+  );
+}
+
 export function json(_db: Db, value: unknown): unknown {
   return value;
 }

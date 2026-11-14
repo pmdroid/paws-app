@@ -3,7 +3,7 @@ import {
   getCandidatePathsSteps,
   hotFilesSteps,
   latestCandidatePathsSteps,
-  saveCandidatePathsSteps,
+  saveCandidateRiskSteps,
   type Db,
 } from "../src/db";
 import { forEachDialect, insertWorkItem, json, seed, type DialectDb } from "./dialects";
@@ -14,7 +14,17 @@ afterEach(async () => {
 });
 
 const save = (db: Db, itemId: string, head: string, paths: string[], recordedAt: number) =>
-  db.run((q) => saveCandidatePathsSteps(q, { itemId, head, paths, recordedAt }));
+  db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId,
+      head,
+      base: "base",
+      tier: "normal",
+      paths: [],
+      changedPaths: paths,
+      classifiedAt: recordedAt,
+    }),
+  );
 
 forEachDialect((connect) => {
   test("candidate paths are stored per head, sorted and unique, and the latest wins", async () => {

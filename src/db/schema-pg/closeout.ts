@@ -253,12 +253,14 @@ export const candidateRisk = pgTable(
     paths: jsonb().notNull(),
     classifiedAt: bigint("classified_at", { mode: "number" }).notNull(),
     matches: jsonb(),
+    changedPaths: jsonb("changed_paths"),
   },
   (table) => [
     primaryKey({
       columns: [table.itemId, table.headSha],
       name: "candidate_risk_item_id_head_sha_pk",
     }),
+    index("candidate_risk_item").on(table.itemId, table.classifiedAt),
     check("candidate_risk_check_1", sql`tier IN ('high', 'normal')`),
   ],
 );
@@ -359,25 +361,6 @@ export const reviewFindingIssue = pgTable(
     filedAt: bigint("filed_at", { mode: "number" }).notNull(),
   },
   () => [check("review_finding_issue_check_1", sql`length(key)=64`)],
-);
-
-export const candidatePaths = pgTable(
-  "candidate_paths",
-  {
-    itemId: text("item_id")
-      .notNull()
-      .references(() => workItem.id),
-    headSha: text("head_sha").notNull(),
-    paths: jsonb().notNull(),
-    recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.itemId, table.headSha],
-      name: "candidate_paths_item_id_head_sha_pk",
-    }),
-    index("candidate_paths_item").on(table.itemId, table.recordedAt),
-  ],
 );
 
 export const reviewFinding = pgTable(

@@ -34,7 +34,6 @@ const DETAIL_TABLES = [
   "runner_transcript",
   "runner_transcript_chunk",
   "ci_round",
-  "candidate_risk",
   "review_finding",
   "visual_review",
 ];
@@ -187,6 +186,9 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   expect(JSON.stringify(queue)).not.toContain("check output");
   for (const table of DETAIL_TABLES)
     expect(reads.join("\n")).not.toMatch(new RegExp(`\\b${table}\\b`));
+  const riskReads = reads.filter((read) => /\bcandidate_risk\b/.test(read));
+  expect(riskReads).toHaveLength(1);
+  expect(riskReads[0]).toStartWith('select "item_id", "changed_paths"::text from "candidate_risk"');
   const issueReads = await queriesDuring(db, () => provider.issue("ENG-1"));
   expect(issueReads.join("\n")).toMatch(/\bcloseout_step\b/);
 });
