@@ -82,6 +82,8 @@ import {
   startupSettings,
   resolveAgentProfiles,
   loadEnv,
+  githubMirrorsOn,
+  useActiveGitHubMirrors,
   loadConfigFile,
   resolveTimeLimits,
   loadRunnerControl,
@@ -615,8 +617,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  useActiveGitHubMirrors(startupMirrors);
   useGitReader(
-    loadConfigFile(paths.configFile).githubMirrors === false
+    !startupMirrors
       ? createGitHubGitReader({
           locate: (path) => {
             const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");

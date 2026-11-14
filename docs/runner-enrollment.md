@@ -313,12 +313,7 @@ Paws keeps the turn's live tokens in an encrypted file in the runner authority f
 
 The journal records each mint with its repository, each refresh and the revoke, never the token; a mint failure or a revoke failure is one journal line for the turn. A mint failure doesn't stop the turn: it runs without a token. Paws leaves the token out of the stored transcript, the runner's own `acp.jsonl`, `post_update` and `ask_team` text, pull request and Linear text, and the journal, matching both the exact token and the `ghs_` prefix.
 
-The turn's prompt says `gh` is signed in only when Paws minted a token for it. Runners before 0.1.68 get no token and still run the item. To turn the token off for a repository, list it in `config.toml`; the next turn reads the setting, without a restart:
-
-```toml
-[github]
-agent_read_off = ["acme/monorepo"]
-```
+The turn's prompt says `gh` is signed in only when Paws minted a token for it. Runners before 0.1.68 get no token and still run the item. To turn the token off, save `agentRead: false` through Settings' [GitHub access](configuration.md#github_access) (`PUT /api/settings/github-access`); the next turn reads it, without a restart. Until that section is saved, `[github] agent_read_off = ["acme/monorepo"]` in `config.toml` turns it off for the listed repositories.
 
 Code the agent runs during a turn can read this token. It is read-only, limited to the task's repositories, and revoked when the turn ends.
 

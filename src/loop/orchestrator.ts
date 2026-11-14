@@ -167,6 +167,7 @@ import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   highRiskPaths,
   agentReadAllowed,
+  githubMirrorsOn,
   loadConfigFile,
   mergeLaneKey,
   parallelFiles,
@@ -5896,7 +5897,7 @@ export class Orchestrator {
         },
         packages: (repository) => this.repositoryPackages(repository),
         changedFilesFromGitHub: () =>
-          loadConfigFile(join(this.options.pawsRoot, "config.toml")).githubMirrors === false,
+          !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {

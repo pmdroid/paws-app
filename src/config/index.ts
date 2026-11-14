@@ -5,6 +5,7 @@ export {
   closeoutPolicyRoot,
   defaultAgents,
   emptyConfigFile,
+  githubMirrorsOn,
   isImplementer,
   loadConfigFile,
   parseConfigToml,
@@ -27,6 +28,13 @@ export {
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";
+export {
+  activeGitHubMirrors,
+  parseGitHubAccessSettings,
+  useActiveGitHubMirrors,
+  readGitHubAccessSettings,
+  writeGitHubAccess,
+} from "./github-access";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
