@@ -19,6 +19,11 @@ export { FINDING_SETTINGS_PATH, handleFindingSettingsRequest } from "./findings"
 export type { FindingSettingsOptions } from "./findings";
 export { TIME_LIMIT_SETTINGS_PATH, handleTimeLimitSettingsRequest } from "./time-limits";
 export type { TimeLimitSettingsOptions } from "./time-limits";
+export {
+  LINEAR_COMMENT_SETTINGS_PATH,
+  handleLinearCommentSettingsRequest,
+} from "./linear-comments";
+export type { LinearCommentSettingsOptions } from "./linear-comments";
 export { GITHUB_ACCESS_SETTINGS_PATH, handleGitHubAccessSettingsRequest } from "./github-access";
 export type { GitHubAccessSettingsOptions } from "./github-access";
 export { CLOSEOUT_SETTINGS_PATH, handleCloseoutSettingsRequest } from "./closeout";

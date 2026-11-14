@@ -60,6 +60,8 @@ import {
   handleSkillSettingsRequest,
   handleMemberVmSettingsRequest,
   handleTimeLimitSettingsRequest,
+  handleLinearCommentSettingsRequest,
+  LINEAR_COMMENT_SETTINGS_PATH,
   handleGitHubAccessSettingsRequest,
   GITHUB_ACCESS_SETTINGS_PATH,
   handleCloseoutSettingsRequest,
@@ -721,6 +723,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleMemberVmSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === LINEAR_COMMENT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleLinearCommentSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

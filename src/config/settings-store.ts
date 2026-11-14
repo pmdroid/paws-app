@@ -136,7 +136,8 @@ function isSettingsSection(section: string): boolean {
     within("skills") ||
     name === "github_access" ||
     name === "findings" ||
-    name === "member_vm"
+    name === "member_vm" ||
+    name === "linear_comments"
   );
 }
 

@@ -88,6 +88,7 @@ import {
   githubMirrorsOn,
   useActiveGitHubMirrors,
   loadConfigFile,
+  resolveLinearCommentAgents,
   resolveTimeLimits,
   loadRunnerControl,
   pawsPaths,
@@ -1824,7 +1825,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         linearComments: {
           appUserId: runtime.linearViewerId,
           get agents() {
-            return loadConfigFile(paths.configFile).linearCommentAgents ?? [];
+            return resolveLinearCommentAgents(loadConfigFile(paths.configFile));
           },
           ...(workspace
             ? {
