@@ -48,7 +48,7 @@ forEachDialect((connect) => {
       ),
     );
     expect(await db.run((q) => listRunnerRuntimesSteps(q, "box"))).toEqual([
-      { tool: "node", version: "22", status: "installed", error: null, reportedAt: 20 },
+      { tool: "node", version: "22", status: "installed", error: null, reportedAt: 10 },
     ]);
     expect(await db.run((q) => listRunnerRuntimesSteps(q, "other"))).toHaveLength(1);
   });
