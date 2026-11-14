@@ -271,11 +271,19 @@ export async function runWithFollowUps(
 ): Promise<RunAgentResult> {
   const lifecycle = createAcpPromptLifecycle([], runner);
   let prompt = agent.prompt;
-  for (let sequence = 1; ; sequence++) {
+  let sequence = 1;
+  for (;;) {
     const waiting = new AbortController();
     const signal = agent.signal ? AbortSignal.any([waiting.signal, agent.signal]) : waiting.signal;
     const turn = lifecycle.prompt({ ...agent, prompt });
-    const message = next(sequence, signal).then(
+    const delivery = async () => {
+      for (;;) {
+        const text = await next(sequence, signal);
+        sequence++;
+        if (text.trim()) return text;
+      }
+    };
+    const message = delivery().then(
       (text) => ({ text }),
       (caughtError1) => {
         journalCaught(caughtError1, "runner-worker.runWithFollowUps.next", null);
@@ -285,7 +293,10 @@ export async function runWithFollowUps(
     const first = await Promise.race([turn.then((result) => ({ result })), message]);
     if (first === null || "result" in first) {
       waiting.abort();
-      return first?.result ?? turn;
+      const result = first?.result ?? (await turn);
+      if (result.interrupted && result.stopReason !== "cancelled" && !agent.signal?.aborted)
+        continue;
+      return result;
     }
     writeJournal(`item ${agent.itemId} run ${agent.runId} interrupt source=follow_up`);
     await lifecycle.interrupt();
