@@ -38,7 +38,13 @@ export function createAgentAuth(options: {
     const value = JSON.stringify({ ...state, lock: randomUUID(), lockUntil: now() + 120_000 });
     return (await store.transaction((q) => claimAgentAuthSteps(q, id, raw, value))) ? value : null;
   }
-  async function save(id: string, locked: string, state: State, tokens?: Tokens) {
+  async function save(
+    id: string,
+    locked: string,
+    state: State,
+    tokens?: Tokens,
+    deviceSession = false,
+  ) {
     delete state.lock;
     delete state.lockUntil;
     await store.transaction(function* (q) {
@@ -48,8 +54,11 @@ export function createAgentAuth(options: {
         tokens = undefined;
       }
       if (tokens) state.version = (previous?.version ?? 0) + 1;
-      if (!(yield* claimAgentAuthSteps(q, id, locked, JSON.stringify(state)))) return;
+      const key = deviceSession ? "device:" + id : id;
+      const claimed = yield* claimAgentAuthSteps(q, key, locked, JSON.stringify(state));
+      if (!claimed) return;
       if (tokens) {
+        if (deviceSession) yield* writeAgentAuthSteps(q, id, JSON.stringify(state));
         const result = yield* writeAgentCredentialSteps(q, secretsDir, {
           accountId: id,
           runnerId: null,
@@ -73,20 +82,18 @@ export function createAgentAuth(options: {
           failures: 0,
           retryAt: 0,
         };
-        await store.transaction((q) => writeAgentAuthSteps(q, id, JSON.stringify(state)));
-        return {
-          userCode: device.userCode,
-          verificationUri: device.verificationUri,
-          interval: device.interval,
-          expiresAt: device.expiresAt,
-        };
+        await store.transaction((q) =>
+          writeAgentAuthSteps(q, "device:" + id, JSON.stringify(state)),
+        );
+        const { deviceId: _, ...publicDevice } = device;
+        return publicDevice;
       }
-      const raw = await store.run((q) => readAgentAuthSteps(q, id));
+      const raw = await store.run((q) => readAgentAuthSteps(q, "device:" + id));
       if (!raw) return { state: "expired" };
       const state = JSON.parse(raw) as State;
       if (state.state !== "pending") return { state: state.state };
       if (state.nextPoll > now()) return { state: "pending" };
-      const locked = await claim(id, raw, state);
+      const locked = await claim("device:" + id, raw, state);
       if (!locked) return { state: "pending" };
       try {
         const result = await provider.pollDevice(state.device!);
@@ -100,10 +107,22 @@ export function createAgentAuth(options: {
           next.expiresAt = result.tokens.expiresAt;
           next.health = "ok";
         }
-        await save(id, locked, next, result.state === "signed-in" ? result.tokens : undefined);
+        await save(
+          id,
+          locked,
+          next,
+          result.state === "signed-in" ? result.tokens : undefined,
+          true,
+        );
         return { state: result.state };
       } catch {
-        await save(id, locked, { ...state, nextPoll: now() + state.device!.interval * 1000 });
+        await save(
+          id,
+          locked,
+          { ...state, nextPoll: now() + state.device!.interval * 1000 },
+          undefined,
+          true,
+        );
         throw new Error("Device sign-in is unavailable");
       }
     },

@@ -1,3 +1,4 @@
+import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError } from "./agent-accounts";
@@ -126,7 +127,12 @@ export function* writeAgentCredentialCiphertextSteps(
   );
   if (!account) throw new AgentAccountError("not_found", "Agent account is unavailable");
   const lease = yield* agentAccountLeaseSteps(q, input.accountId);
-  if (lease && lease.expiresAt > input.now && lease.runnerId !== input.runnerId)
+  if (
+    input.runnerId !== null &&
+    lease &&
+    lease.expiresAt > input.now &&
+    lease.runnerId !== input.runnerId
+  )
     return "not_holder";
   const stored = yield* agentCredentialCiphertextSteps(q, input.accountId);
   if ((stored?.version ?? 0) + 1 !== input.version) return "stale_version";
@@ -209,7 +215,9 @@ export function* centralAgentAccountsSteps(
       )
       .orderBy(asc(a.position), asc(a.createdAt), asc(a.id)),
   );
-  return rows.map((row) => ({
+  const eligible = [];
+  for (const row of rows) if (!(yield* agentAuthFailureSteps(q, row.id))) eligible.push(row);
+  return eligible.map((row) => ({
     id: row.id,
     concurrency: row.concurrency,
     extraUsage: row.extraUsage === 1,

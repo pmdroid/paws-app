@@ -59,3 +59,26 @@ export function* listAgentAuthSteps(q: Q) {
   const ids = new Set(live.map((account) => account.id));
   return rows.map((r) => ({ id: r.key.slice(11), value: r.value })).filter((r) => ids.has(r.id));
 }
+
+export function* agentAuthFailureSteps(q: Q, id: string) {
+  const raw = yield* readAgentAuthSteps(q, id);
+  if (!raw) return null;
+  const state = JSON.parse(raw) as {
+    health?: string;
+    version?: number;
+    retryAt: number;
+    failures: number;
+  };
+  const c = q.t.agentAccountCredential;
+  const credential = yield* q.one(
+    q.orm
+      .select({ version: c.version, ciphertext: c.ciphertext, updatedAt: c.updatedAt })
+      .from(c)
+      .where(eq(c.accountId, id)),
+  );
+  return state.health === "auth-expired" &&
+    credential?.ciphertext &&
+    credential.version === state.version
+    ? { ...state, updatedAt: credential.updatedAt }
+    : null;
+}

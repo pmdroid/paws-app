@@ -125,24 +125,14 @@ export function createCodexProvider(
       const auth = claims(value.id_token)["https://api.openai.com/auth"] as
         | { chatgpt_account_id?: string }
         | undefined;
-      return [
-        {
-          path: ".codex/auth.json",
-          data: Buffer.from(
-            JSON.stringify({
-              auth_mode: "chatgpt",
-              OPENAI_API_KEY: null,
-              tokens: {
-                id_token: value.id_token,
-                access_token: value.access_token,
-                refresh_token: value.refresh_token,
-                account_id: auth?.chatgpt_account_id ?? null,
-              },
-              last_refresh: new Date(now()).toISOString(),
-            }),
-          ).toString("base64"),
-        },
-      ];
+      const { expiresAt: _, ...storedTokens } = value;
+      const json = JSON.stringify({
+        auth_mode: "chatgpt",
+        OPENAI_API_KEY: null,
+        tokens: { ...storedTokens, account_id: auth?.chatgpt_account_id ?? null },
+        last_refresh: new Date(now()).toISOString(),
+      });
+      return [{ path: ".codex/auth.json", data: Buffer.from(json).toString("base64") }];
     },
   };
 }

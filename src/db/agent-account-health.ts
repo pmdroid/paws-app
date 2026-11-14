@@ -1,3 +1,4 @@
+import { agentAuthFailureSteps } from "./agent-auth";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
@@ -230,6 +231,26 @@ export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: stri
   const binding = yield* bindingForSteps(q, bindingId);
   if (!binding) return [];
   const found: AccountHealth[] = [];
+  const failure = yield* agentAuthFailureSteps(q, binding.accountId);
+  if (failure)
+    found.push({
+      kind: "auth",
+      scope: "account",
+      scopeId: binding.accountId,
+      model: "",
+      workspaceId: binding.workspaceId,
+      agent: binding.agent,
+      state: "auth_required",
+      source: "login_check",
+      sourceId: "control-plane-refresh",
+      bindingId,
+      runnerId: binding.runnerId,
+      observedAt: failure.updatedAt,
+      updatedAt: failure.updatedAt,
+      resetsAt: null,
+      nextCheckAt: failure.retryAt,
+      failures: failure.failures,
+    });
   for (const kind of ["provider", "auth", "model", "quota"] as const) {
     if (kind === "model" && !model) continue;
     const health = yield* rowSteps(
