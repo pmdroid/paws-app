@@ -234,6 +234,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "skills",
     "time-limits",
     "github-access",
+    "storage",
   ].map((page) =>
     api(
       page === "brief/preview" ? "POST" : "GET PUT",
@@ -245,6 +246,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       },
     ),
   ),
+  api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
+    sample: "/api/settings/storage/check",
+  }),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {
     sample: "/api/retros/settings",

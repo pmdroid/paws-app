@@ -23,3 +23,5 @@ export { GITHUB_ACCESS_SETTINGS_PATH, handleGitHubAccessSettingsRequest } from "
 export type { GitHubAccessSettingsOptions } from "./github-access";
 export { CLOSEOUT_SETTINGS_PATH, handleCloseoutSettingsRequest } from "./closeout";
 export type { CloseoutSettingsOptions } from "./closeout";
+export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
+export type { StorageSettingsOptions } from "./storage";
