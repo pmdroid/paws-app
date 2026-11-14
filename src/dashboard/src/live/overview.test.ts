@@ -173,7 +173,7 @@ describe("overview resource", () => {
     ]);
     expect(parsed.response.mergeQueueCount).toBe(1);
     expect(parsed.response.issues.find((issue) => issue.id === "ENG-2")?.verdict?.decision).toBe(
-      (await live.issues()).verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
+      (await live.issue("ENG-2"))?.verdicts[0]?.decision,
     );
   });
 

@@ -131,7 +131,6 @@ describe("status payload budget", () => {
     expect(await get("/api/issues/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     const overviewBytes = await get("/api/overview");
     expect(overviewBytes).toBeLessThanOrEqual(OVERVIEW_BUDGET_BYTES);
-    expect(overviewBytes * 10).toBeLessThan(await get("/api/issues"));
     expect(await get("/api/merge-queue")).toBeLessThanOrEqual(MERGE_QUEUE_BUDGET_BYTES);
     expect(await get("/api/questions")).toBeLessThanOrEqual(QUESTIONS_BUDGET_BYTES);
     expect(await get("/api/questions/q-PAS-2000")).toBeLessThanOrEqual(QUESTION_BUDGET_BYTES);

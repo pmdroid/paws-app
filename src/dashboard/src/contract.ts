@@ -569,35 +569,6 @@ export interface StatusCloseoutAttempt {
   skippedRules?: string[];
 }
 
-/** The list's Closeout of an item: the latest verdict, with each check's kind and state only. */
-export interface StatusVerdictSummary {
-  itemId: string;
-  /** The `StatusRun.id` of the attempt this verdict belongs to, when the issue had several. */
-  runId?: string;
-  decision: VerdictDecision;
-  headSha: string | null;
-  checks: StatusCheckSummary[];
-}
-
-export interface StatusCheckSummary {
-  id: string;
-  kind: CheckKind;
-  state: CheckState;
-}
-
-/** The list's agent-side Closeout of a run: its latest state, without attempts or steps. */
-export interface StatusAgentCloseoutSummary {
-  itemId: string;
-  runId: string;
-  /** The latest attempt's decision, null before the agent's first attempt. */
-  decision: VerdictDecision | null;
-  headSha: string | null;
-  blocked: string | null;
-  updatedAt: string;
-  endedAt?: string;
-  continuesIn?: string;
-}
-
 export interface StatusAgentCloseout {
   itemId: string;
   runId: string;
@@ -761,15 +732,49 @@ export const CHECK_LOG_TAIL_BYTES = 64 * 1024;
 
 export const ISSUES_API_PATH = "/api/issues";
 
+export type IssueListItem = Pick<
+  StatusItem,
+  | "id"
+  | "title"
+  | "state"
+  | "project"
+  | "blockers"
+  | "queue"
+  | "held"
+  | "doing"
+  | "activeMs"
+  | "stateTimes"
+>;
+
+const LIST_STATE_MIN_MS = 60_000;
+
+export function issueListItem(item: StatusItem): IssueListItem {
+  const { id, title, state, project, blockers, queue, held, doing, activeMs, stateTimes } = item;
+  return {
+    id,
+    title,
+    state,
+    project,
+    blockers,
+    ...(queue === undefined ? {} : { queue }),
+    ...(held === undefined ? {} : { held }),
+    ...(doing === undefined ? {} : { doing, ...(activeMs === undefined ? {} : { activeMs }) }),
+    ...(stateTimes === undefined || stateTimes.current === null
+      ? {}
+      : {
+          stateTimes: {
+            ...stateTimes,
+            states: stateTimes.states.filter((entry) => entry.ms >= LIST_STATE_MIN_MS),
+          },
+        }),
+  };
+}
+
 export interface IssueListResponse {
   source: StatusSource;
   generatedAt: string;
   project: StatusProject;
-  issues: StatusItem[];
-  runs: StatusRun[];
-  verdicts: StatusVerdictSummary[];
-  agentCloseout: StatusAgentCloseoutSummary[];
-  mergedTimes: StatusMergedTimes | null;
+  issues: IssueListItem[];
 }
 
 export interface IssueDetailResponse {
@@ -860,18 +865,9 @@ export function parseIssueListResponse(input: unknown): IssueListParseResult {
       const head = readResourceHead(body, path);
       return {
         ...head,
-        issues: array(body, "issues", path).map((entry, index) => readItem(entry, index)),
-        runs: array(body, "runs", path).map((entry, index) => readRun(entry, index)),
-        verdicts: array(body, "verdicts", path).map((entry, index) =>
-          readVerdictSummary(entry, `${path}.verdicts[${index}]`),
+        issues: array(body, "issues", path).map((entry, index) =>
+          readListItem(entry, `${path}.issues[${index}]`),
         ),
-        agentCloseout: array(body, "agentCloseout", path).map((entry, index) =>
-          readAgentCloseoutSummary(entry, `${path}.agentCloseout[${index}]`),
-        ),
-        mergedTimes:
-          body.mergedTimes === null
-            ? null
-            : readMergedTimes(body.mergedTimes, `${path}.mergedTimes`),
       };
     },
     "contract.parseIssueListResponse",
@@ -1025,6 +1021,26 @@ function readOverviewSetup(input: unknown, path: string): OverviewSetup {
     runner: boolean(body, "runner", path),
     agent: boolean(body, "agent", path),
     delegated: boolean(body, "delegated", path),
+  };
+}
+
+function readListItem(input: unknown, path: string): IssueListItem {
+  const body = object(input, path);
+  const optional = <K extends string, T>(key: K, read: (entry: unknown, at: string) => T) =>
+    (body[key] === undefined ? {} : { [key]: read(body[key], `${path}.${key}`) }) as {
+      [P in K]?: T;
+    };
+  return {
+    id: text(body, "id", path),
+    title: text(body, "title", path),
+    state: oneOf(string(body, "state", path), ITEM_STATES, `${path}.state`),
+    project: readItemProject(body.project, `${path}.project`),
+    blockers: stringArray(body, "blockers", path),
+    ...optional("queue", readQueue),
+    ...optional("held", readHeld),
+    ...optional("doing", readDoing),
+    ...(body.activeMs === undefined ? {} : { activeMs: count(body, "activeMs", path) }),
+    ...optional("stateTimes", readStateTimes),
   };
 }
 
@@ -1315,32 +1331,6 @@ export function parseEvidenceMetadataResponse(input: unknown): EvidenceMetadataP
     "contract.parseEvidenceMetadataResponse",
     "Invalid evidence metadata",
   );
-}
-
-/** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
-export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
-  return {
-    itemId: verdict.itemId,
-    ...(verdict.runId === undefined ? {} : { runId: verdict.runId }),
-    decision: verdict.decision,
-    headSha: verdict.headSha,
-    checks: verdict.checks.map((check) => ({ id: check.id, kind: check.kind, state: check.state })),
-  };
-}
-
-/** The list's summary of a run's agent Closeout: its latest attempt's decision and head. */
-export function agentCloseoutSummary(agent: StatusAgentCloseout): StatusAgentCloseoutSummary {
-  const latest = agent.attempts.at(-1);
-  return {
-    itemId: agent.itemId,
-    runId: agent.runId,
-    decision: latest?.decision ?? null,
-    headSha: latest?.headSha ?? null,
-    blocked: agent.blocked,
-    updatedAt: agent.updatedAt,
-    ...(agent.endedAt === undefined ? {} : { endedAt: agent.endedAt }),
-    ...(agent.continuesIn === undefined ? {} : { continuesIn: agent.continuesIn }),
-  };
 }
 
 function readItemRisk(input: unknown): StatusItemRisk | null {
@@ -1682,21 +1672,6 @@ function readCiRound(input: unknown, path: string): StatusCiRound {
         logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
       };
     }),
-  };
-}
-
-function readAgentCloseoutSummary(input: unknown, path: string): StatusAgentCloseoutSummary {
-  const body = object(input, path);
-  const decision = optionalText(body, "decision");
-  return {
-    itemId: text(body, "itemId", path),
-    runId: text(body, "runId", path),
-    decision: decision === null ? null : oneOf(decision, VERDICT_DECISIONS, `${path}.decision`),
-    headSha: optionalText(body, "headSha"),
-    blocked: optionalText(body, "blocked"),
-    updatedAt: dateString(body, "updatedAt", path),
-    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
-    ...(body.continuesIn === undefined ? {} : { continuesIn: text(body, "continuesIn", path) }),
   };
 }
 
@@ -2270,25 +2245,6 @@ function readFiledIssue(input: unknown, path: string): StatusFiledIssue {
   return {
     identifier: text(body, "identifier", path),
     url: body.url === null || body.url === undefined ? null : string(body, "url", path),
-  };
-}
-
-function readVerdictSummary(input: unknown, path: string): StatusVerdictSummary {
-  const body = object(input, path);
-  return {
-    itemId: text(body, "itemId", path),
-    ...(body.runId === undefined ? {} : { runId: text(body, "runId", path) }),
-    decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
-    headSha: optionalText(body, "headSha"),
-    checks: array(body, "checks", path).map((entry, index) => {
-      const at = `${path}.checks[${index}]`;
-      const check = object(entry, at);
-      return {
-        id: text(check, "id", at),
-        kind: oneOf(string(check, "kind", at), CHECK_KINDS, `${at}.kind`),
-        state: oneOf(string(check, "state", at), CHECK_STATES, `${at}.state`),
-      };
-    }),
   };
 }
 

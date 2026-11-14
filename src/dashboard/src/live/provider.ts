@@ -132,9 +132,8 @@ import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
-  agentCloseoutSummary,
   isBlockerSatisfied,
-  verdictSummary,
+  issueListItem,
   type StatusDeadDelivery,
   type ActivityKind,
   type CheckKind,
@@ -341,21 +340,13 @@ type IssueScope = {
 /** One issue's sessions with `blocks` and the Risk card, before `toIssueDetail` names them. */
 type ItemDetail = IssueScope & { id: string; blocks: string[]; risk: StatusItemRisk | null };
 
-/**
- * The issue list: one Closeout summary per item and each run's latest agent Closeout state.
- * Attempts, check output and findings are only in the issue detail.
- */
 async function readIssueList(store: Db, options: LiveStatusOptions): Promise<IssueListResponse> {
   const { scope } = await readIssueScope(store, options);
   return {
     source: scope.source,
     generatedAt: scope.generatedAt,
     project: scope.project,
-    issues: scope.items,
-    runs: scope.runs,
-    verdicts: scope.verdicts.map(verdictSummary),
-    agentCloseout: scope.agentCloseout.map(agentCloseoutSummary),
-    mergedTimes: scope.mergedTimes ?? null,
+    issues: scope.items.map(issueListItem),
   };
 }
 
@@ -775,10 +766,6 @@ export function emptyIssueList(
     generatedAt: now.toISOString(),
     project: projectOf([], project),
     issues: [],
-    runs: [],
-    verdicts: [],
-    agentCloseout: [],
-    mergedTimes: null,
   };
 }
 

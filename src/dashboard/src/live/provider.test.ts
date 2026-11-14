@@ -44,10 +44,10 @@ import {
   parseOverviewResponse,
   parseQuestionListResponse,
   statusIntegrity,
-  type IssueListResponse,
 } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
+import { issueRecords } from "../../test/issue-records";
 import { waitReason } from "../client/format";
 import { renderMergeQueue } from "../client/merge-queue";
 
@@ -65,9 +65,9 @@ async function database(): Promise<Db> {
   return store.db;
 }
 
-/** The list's records for `statusIntegrity`: it carries no questions or merge queue. */
-function listRecords(list: IssueListResponse) {
-  return { ...list, items: list.issues, questions: [], mergeQueue: [] };
+async function listRecords(provider: Parameters<typeof issueRecords>[0]) {
+  const records = await issueRecords(provider);
+  return { ...records, items: records.issues, questions: [], mergeQueue: [] };
 }
 
 type QuestionRow = Q["t"]["question"]["$inferInsert"];
@@ -271,7 +271,7 @@ describe("live status provider", () => {
       },
       { ...shared, questionId: "q-3", evidenceIds: ["shot-2"], createdAt: 4000, answeredBy: null },
     ]);
-    const list = await createLiveStatusProvider(db).issues();
+    const list = await issueRecords(createLiveStatusProvider(db));
     expect(list.issues[0]?.visualReviews).toEqual([
       {
         questionId: "q-1",
@@ -355,7 +355,7 @@ describe("live status provider", () => {
         carried,
       },
     ]);
-    const list = await createLiveStatusProvider(db).issues();
+    const list = await issueRecords(createLiveStatusProvider(db));
     const reviews = list.issues[0]?.visualReviews;
     expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
       ["q-1", 1, "stale"],
@@ -372,7 +372,6 @@ describe("live status provider", () => {
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
     const profiles = ["grok", "claude", "codex"] as const;
-    const ids: string[] = [];
     for (const [index, reviewer] of profiles.entries()) {
       const item = await insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
       const { run } = await beginImplementRun(db, item.id, 2);
@@ -390,7 +389,6 @@ describe("live status provider", () => {
           },
         }),
       );
-      ids.push(run.id);
     }
     writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
@@ -402,23 +400,19 @@ describe("live status provider", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/issues`);
       expect(response.status).toBe(200);
-      const parsed = parseIssueListResponse(await response.json());
-      expect(parsed.ok).toBe(true);
-      if (!parsed.ok) return;
-      expect(ids.map((id) => parsed.response.runs.find((run) => run.id === id)?.reviewer)).toEqual([
-        "Grok",
-        "Claude",
-        "Codex",
-      ]);
-      expect(parsed.response.runs.every((run) => run.agent === "Codex")).toBe(true);
-      const responseFromEnv = await handleStatusRequest(
-        new Request("http://127.0.0.1/api/issues"),
-        { store: db, env: { PAWS_HOME: home } },
+      const detail = async (id: string) => {
+        const read = await fetch(`http://127.0.0.1:${server.port}/api/issues/${id}`);
+        const parsed = parseIssueDetailResponse(await read.json());
+        if (!parsed.ok) throw new Error(parsed.error);
+        return parsed.response.runs[0]!;
+      };
+      const runs = [await detail("ENG-1"), await detail("ENG-2"), await detail("ENG-3")];
+      expect(runs.map((run) => run.reviewer)).toEqual(["Grok", "Claude", "Codex"]);
+      expect(runs.every((run) => run.agent === "Codex")).toBe(true);
+      const fromEnv = await createLiveStatusProvider(db, { env: { PAWS_HOME: home } }).issue(
+        "ENG-1",
       );
-      const fromEnv = parseIssueListResponse(await responseFromEnv!.json());
-      expect(fromEnv.ok).toBe(true);
-      if (fromEnv.ok)
-        expect(fromEnv.response.runs.find((run) => run.id === ids[0])?.reviewer).toBe("Grok");
+      expect(fromEnv?.runs[0]?.reviewer).toBe("Grok");
     } finally {
       void server.stop(true);
     }
@@ -440,13 +434,13 @@ describe("live status provider", () => {
       JSON.stringify({ profiles: { reviewer: { agent: "unexpected-secret" } } }),
     ]) {
       if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
-      const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+      const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-1"), {
         store: db,
         closeoutHome: home,
         env: {},
       });
       expect(response?.status).toBe(200);
-      const body = parseIssueListResponse(await response!.json());
+      const body = parseIssueDetailResponse(await response!.json());
       expect(body.ok).toBe(true);
       if (body.ok) expect(body.response.runs[0]?.reviewer).toBe("Unknown");
       expect(JSON.stringify(body)).not.toContain("unexpected-secret");
@@ -466,11 +460,8 @@ describe("live status provider", () => {
     if (!parsed.ok) return;
     expect(parsed.response.source).toBe("live");
     expect(parsed.response.issues).toEqual([]);
-    expect(parsed.response.runs).toEqual([]);
-    expect(parsed.response.verdicts).toEqual([]);
     expect((await createLiveStatusProvider(db).questions()).questions).toEqual([]);
     expect((await createLiveStatusProvider(db).mergeQueue()).entries).toEqual([]);
-    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
     expect(JSON.stringify(body)).not.toContain("acme");
   });
@@ -567,7 +558,7 @@ describe("live status provider", () => {
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(list)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
+    expect(statusIntegrity(await listRecords(provider))).toEqual([]);
     expect(parsed.response.source).toBe("live");
     expect(parsed.response.project.team).toBe("ENG");
     expect(parsed.response.issues.map((item) => [item.id, item.state])).toEqual([
@@ -575,11 +566,10 @@ describe("live status provider", () => {
       ["ENG-2", "awaiting_input"],
     ]);
     expect(parsed.response.issues.every((item) => item.blockers.length === 0)).toBe(true);
-    expect(
-      parsed.response.issues.every((item) => item.owner === null && item.project === null),
-    ).toBe(true);
-    expect(parsed.response.runs.map((run) => run.itemId).sort()).toEqual(["ENG-2", "ENG-3"]);
-    const parked = parsed.response.runs.find((run) => run.itemId === "ENG-2");
+    const records = await issueRecords(provider);
+    expect(records.issues.every((item) => item.owner === null && item.project === null)).toBe(true);
+    expect(records.runs.map((run) => run.itemId).sort()).toEqual(["ENG-2", "ENG-3"]);
+    const parked = records.runs.find((run) => run.itemId === "ENG-2");
     expect(parked?.state).toBe("awaiting_input");
     expect(parked?.agent).toBe("Cursor");
     expect(parked?.activity.some((line) => line.text === "Need a product decision.")).toBe(true);
@@ -599,7 +589,7 @@ describe("live status provider", () => {
         ],
       }),
     ]);
-    const verdict = parsed.response.verdicts.find((entry) => entry.itemId === "ENG-3");
+    const verdict = records.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
     expect(verdict?.headSha).toBe(head);
     expect((await provider.issue("ENG-3"))?.verdicts[0]?.baseSha).toBe(base);
@@ -618,7 +608,7 @@ describe("live status provider", () => {
         settings: { order: "queue", mainMoved: "ci", rule: null },
       }),
     ]);
-    expect(parsed.response.issues.find((item) => item.id === "ENG-3")?.pr).toEqual({
+    expect(records.issues.find((item) => item.id === "ENG-3")?.pr).toEqual({
       number: 7,
       url: "https://github.com/pmdroid/paws-demo/pull/7",
     });
@@ -835,13 +825,13 @@ describe("live status provider", () => {
       reason:
         "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
     };
-    const parsed = parseIssueListResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issues())),
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issue("ENG-7"))),
     );
-    expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
+    expect(parsed.ok && parsed.response.issue.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     await risk("aaaa111122", now + 1);
-    expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
+    expect((await createLiveStatusProvider(db).issue("ENG-7"))?.issue.riskCarryOver).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", async () => {
@@ -929,7 +919,7 @@ describe("live status provider", () => {
     const queue = resource.response;
     expect(
       statusIntegrity({
-        ...listRecords(await provider.issues()),
+        ...(await listRecords(provider)),
         mergeQueue: queue.entries,
         mergeHistory: queue.history,
       }),
@@ -999,7 +989,7 @@ describe("live status provider", () => {
       [3, "ENG-23", "ahead", "Starts when ENG-22 merges"],
     ]);
     const items = new Map(
-      (await provider.issues()).issues.map((item) => [item.id, item.mergeQueue]),
+      (await issueRecords(provider)).issues.map((item) => [item.id, item.mergeQueue]),
     );
     expect(items.get("ENG-21")).toMatchObject({ position: 1, ahead: null, rechecking: true });
     expect(items.get("ENG-22")).toMatchObject({ position: 2, ahead: null });
@@ -1161,9 +1151,7 @@ describe("live status provider", () => {
     await upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
     await upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
     await finishCloseoutProgress(db, item.id, identity, "accepted", now);
-    const list = await createLiveStatusProvider(db, {
-      now: () => new Date(now),
-    }).issues();
+    const list = await issueRecords(createLiveStatusProvider(db, { now: () => new Date(now) }));
     expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
@@ -1203,7 +1191,7 @@ describe("live status provider", () => {
     expect(capped.map((item) => item.id)).toContain("ENG-OPEN");
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
+    expect(statusIntegrity(await listRecords(provider))).toEqual([]);
   });
 
   test("the item detail reads each review round's findings from the stored review evidence", async () => {
@@ -1425,17 +1413,9 @@ describe("live status provider", () => {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_8"],
     });
-    // The list carries one summary per item: no attempts, output or findings.
     const list = JSON.stringify(await provider.issues());
     expect(list).not.toContain("secret log");
     expect(list).not.toContain("test failed");
-    expect(Object.keys((await provider.issues()).verdicts[0]!)).toEqual([
-      "itemId",
-      "runId",
-      "decision",
-      "headSha",
-      "checks",
-    ]);
     const detail = (await provider.issue("ENG-8"))!;
     expect([detail.issue, ...detail.earlierSessions].map((entry) => entry.id)).toEqual(["ENG-8"]);
     expect(detail.blocks).toEqual(["ENG-9"]);
@@ -1944,10 +1924,11 @@ describe("live status provider", () => {
         },
       ],
     );
-    const list = await createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
+    const provider = createLiveStatusProvider(db, { now: () => new Date(30) });
+    const list = await provider.issues();
     expect(list.issues.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
     expect(list.issues.some((item) => item.id === "ENG-OLD")).toBe(true);
-    expect(statusIntegrity(listRecords(list))).toEqual([]);
+    expect(statusIntegrity(await listRecords(provider))).toEqual([]);
   });
 
   test("the serving database is the single source despite retired overrides", async () => {
