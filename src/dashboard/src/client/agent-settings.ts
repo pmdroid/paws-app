@@ -109,6 +109,7 @@ export function renderAgentSettings(view: SettingsView): string {
         })
         .join("")}
       <button class="btn" type="button" data-settings="add-preset">Add preset</button></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Agent commands</h2><p class="sub">Use an absolute binary path on the runner, or leave blank to use the pinned installation.</p></div><div class="col">${(["grok", "opencode"] as const).map((agent) => `<div class="settings-field"><label for="${agent}-path">${AGENTS[agent]} binary path</label><input id="${agent}-path" name="${agent}-path" value="${esc(view.data![agent]?.path ?? "")}" maxlength="4096" spellcheck="false" autocapitalize="none" placeholder="Pinned installation"></div>`).join("")}<label class="settings-inherit"><input type="checkbox" name="grok-allow-api-key" ${view.data.grok?.allowApiKey ? "checked" : ""}>Let Grok use XAI_API_KEY</label></div></section>
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
       <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
@@ -238,6 +239,17 @@ export function createAgentSettings(
       for (const role of ROLES)
         row.preset[role] = read(`preset-${index}-${role}`, row.preset[role]);
     });
+    for (const agent of ["grok", "opencode"] as const) {
+      const path =
+        form.querySelector<HTMLInputElement>(`[name="${agent}-path"]`)?.value.trim() || null;
+      if (agent === "grok")
+        view.data.grok = {
+          path,
+          allowApiKey:
+            form.querySelector<HTMLInputElement>('[name="grok-allow-api-key"]')?.checked ?? false,
+        };
+      else view.data.opencode = { path };
+    }
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
     view.saved = false;

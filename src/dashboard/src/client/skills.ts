@@ -50,6 +50,7 @@ export type FoundSkill = {
 
 export type SkillListing = {
   found?: FoundSkill[];
+  projectRoots?: { projects: Record<string, { root: string }> };
   skills: SkillPin[];
   rollouts?: SkillRollout[];
   updates?: Record<string, string>;
@@ -66,6 +67,7 @@ export type SkillView = {
   error: string | null;
   notice: string | null;
   denied?: boolean;
+  roots?: { repo: string; root: string }[];
   draft?: SkillDraft;
   found?: { key: string; skills: FoundSkill[] };
 };
@@ -232,6 +234,7 @@ export function renderSkillSettings(view: SkillView): string {
         : "";
   const megabytes = Math.round(view.data.limitBytes / (1024 * 1024));
   return `<section class="settings-section">${intro}<div class="col">${table}${feedback}
+    <form id="skill-roots-form" class="col"><h3>Repository skill roots</h3><p class="sub">Absolute directories on the Paws host for each repository's skills.</p><fieldset class="settings-fields" ${busy ? "disabled" : ""}>${(view.roots ?? Object.entries(view.data.projectRoots?.projects ?? {}).map(([repo, value]) => ({ repo, root: value.root }))).map((entry, index) => `<div class="settings-controls" data-root-row><div class="settings-field"><label for="root-repo-${index}">Repository</label><input id="root-repo-${index}" name="root-repo" value="${esc(entry.repo)}" placeholder="owner/repo" required></div><div class="settings-field"><label for="root-path-${index}">Skill root</label><input id="root-path-${index}" name="root-path" value="${esc(entry.root)}" required spellcheck="false"></div><button class="btn" type="button" data-skill="remove-root" data-index="${index}">Remove root</button></div>`).join("")}<div class="row"><button class="btn" type="button" data-skill="add-root">Add repository</button><button class="btn primary" type="submit">Save skill roots</button></div></fieldset></form>
     <form id="skill-add-form" class="col"><fieldset class="settings-fields" ${busy ? "disabled" : ""}>
       <div class="settings-field"><label for="skill-source">Add a skill</label><input id="skill-source" name="skill-source" value="${esc(draft.source)}" placeholder="npm package, git URL, or upload a folder" autocapitalize="none" spellcheck="false" aria-describedby="skill-source-help"><small class="sub" id="skill-source-help">Paws pins the exact package version or commit. Each skill needs a SKILL.md and stays under ${megabytes} MB.</small></div>
       ${view.found ? foundMarkup(view.found.skills) : ""}
@@ -244,18 +247,18 @@ export function renderSkillSettings(view: SkillView): string {
 
 async function skillRequest(
   engine: string,
-  init: { method: "GET" } | { method: "POST"; body: unknown },
+  init: { method: "GET" } | { method: "POST" | "PUT"; body: unknown },
 ): Promise<SkillListing> {
-  const upload = init.method === "POST" && init.body instanceof FormData;
+  const upload = init.method !== "GET" && init.body instanceof FormData;
   const response = await fetch(new URL(PATH, engine), {
     method: init.method,
     cache: "no-store",
     headers: {
       Accept: "application/json",
-      ...(init.method === "POST" ? { "x-paws-csrf": readCsrfToken(document) } : {}),
-      ...(init.method === "POST" && !upload ? { "Content-Type": "application/json" } : {}),
+      ...(init.method !== "GET" ? { "x-paws-csrf": readCsrfToken(document) } : {}),
+      ...(init.method !== "GET" && !upload ? { "Content-Type": "application/json" } : {}),
     },
-    ...(init.method === "POST"
+    ...(init.method !== "GET"
       ? { body: upload ? (init.body as FormData) : JSON.stringify(init.body) }
       : {}),
   });
@@ -295,10 +298,26 @@ export function createSkillSettings(): {
       ),
     };
   };
-  const run = async (busy: string, body: unknown, reset = false, found?: string) => {
+  const readRoots = () => {
+    if (!root?.querySelector("#skill-roots-form")) return;
+    const rows = root.querySelectorAll<HTMLElement>("[data-root-row]");
+    if (rows)
+      view.roots = [...rows].map((row) => ({
+        repo: row.querySelector<HTMLInputElement>('[name="root-repo"]')!.value.trim(),
+        root: row.querySelector<HTMLInputElement>('[name="root-path"]')!.value.trim(),
+      }));
+  };
+  const run = async (
+    busy: string,
+    body: unknown,
+    reset = false,
+    found?: string,
+    method: "POST" | "PUT" = "POST",
+  ) => {
     if (!engine) return;
     const started = generation;
     view.draft = readDraft();
+    readRoots();
     view.busy = busy;
     view.error = null;
     view.notice = null;
@@ -306,10 +325,11 @@ export function createSkillSettings(): {
     try {
       const data = await skillRequest(
         engine,
-        body === undefined ? { method: "GET" } : { method: "POST", body },
+        body === undefined ? { method: "GET" } : { method, body },
       );
       if (started !== generation) return;
       view.data = data;
+      if (method === "PUT") view.roots = undefined;
       view.denied = false;
       view.notice = data.notice ?? null;
       if (found !== undefined) view.found = { key: found, skills: data.found ?? [] };
@@ -329,6 +349,14 @@ export function createSkillSettings(): {
   const click = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-skill]");
     if (!button || view.busy) return;
+    if (button.dataset.skill === "add-root" || button.dataset.skill === "remove-root") {
+      view.draft = readDraft();
+      readRoots();
+      if (button.dataset.skill === "add-root") view.roots!.push({ repo: "", root: "" });
+      else view.roots!.splice(Number(button.dataset.index), 1);
+      paint();
+      return;
+    }
     const name = button.dataset.name ?? "";
     if (button.dataset.skill === "reload") void run("Loading skills…", undefined);
     if (button.dataset.skill === "update")
@@ -339,6 +367,21 @@ export function createSkillSettings(): {
   const submit = (event: Event) => {
     event.preventDefault();
     if (view.busy) return;
+    if ((event.target as HTMLFormElement).id === "skill-roots-form") {
+      readRoots();
+      const projects: Record<string, { root: string }> = {};
+      for (const entry of view.roots ?? []) {
+        const repo = entry.repo.toLowerCase();
+        if (Object.hasOwn(projects, repo)) {
+          view.error = "Duplicate skills project";
+          paint();
+          return;
+        }
+        projects[repo] = { root: entry.root };
+      }
+      void run("Saving skill roots…", { projectRoots: { projects } }, false, undefined, "PUT");
+      return;
+    }
     const draft = readDraft();
     const source = draft && parseSkillSource(draft.source, draft.ref, draft.subfolder);
     if (!draft || !source || draft.agents.length === 0) {
