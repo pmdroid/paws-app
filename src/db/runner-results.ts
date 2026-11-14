@@ -412,10 +412,15 @@ export function* sealRunnerEventSteps(
 }
 
 /**
- * Deletes up to `limit` events of runs that ended before `cutoff`, keeping the questions and
- * artifacts nobody answered, and returns how many it deleted.
+ * Deletes up to `limit` events of runs that ended before `cutoff`, only those of `type` when
+ * given, keeping the questions and artifacts nobody answered, and returns how many it deleted.
  */
-export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+export function* pruneRunnerEventsSteps(
+  q: Q,
+  cutoff: number,
+  limit: number,
+  type?: string,
+): Steps<number> {
   const { runnerEvent: e } = q.t;
   const prunableRuns = sql`
     SELECT r.id FROM run r
@@ -431,6 +436,7 @@ export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): St
   const prunable = sql`
     SELECT e.run_id, e.generation, e.sequence FROM runner_event e
     WHERE e.run_id IN (${prunableRuns})
+      AND ${type === undefined ? sql`1=1` : sql`e.type=${type}`}
       AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
         WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
     LIMIT ${limit}`;

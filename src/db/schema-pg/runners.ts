@@ -31,6 +31,7 @@ export const runner = pgTable(
     lastSeenAt: bigint("last_seen_at", { mode: "number" }),
     liveReportedAt: bigint("live_reported_at", { mode: "number" }),
     terminationsSince: bigint("terminations_since", { mode: "number" }),
+    fixSlots: integer("fix_slots").default(1).notNull(),
   },
   (table) => [
     foreignKey({

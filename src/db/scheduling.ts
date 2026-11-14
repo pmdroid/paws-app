@@ -294,6 +294,7 @@ export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
     q.orm
       .select({
         id: r.id,
+        fixSlots: r.fixSlots,
         capacity: num(
           sql`COALESCE((SELECT ${least}(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1)`,
         ),

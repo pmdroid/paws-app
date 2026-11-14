@@ -11,6 +11,7 @@ import {
   type RunnerAgentUser,
   RUNNER_SKILLS_ENV,
   runnerAccountBindings,
+  runnerAgentCredentials,
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
@@ -355,6 +356,10 @@ export async function runRunnerCli(
           runnerUid: ids.runnerUid,
           agentGid: ids.agentGid,
         }),
+      agentCredentials: runnerAgentCredentials("/var/lib/paws-agent", {
+        runnerUid: ids.runnerUid,
+        agentGid: ids.agentGid,
+      }),
     });
     try {
       await runPairedDaemon(daemon, daemonIds, abort.signal, (failure) =>

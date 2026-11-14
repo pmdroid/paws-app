@@ -1,5 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   describeOverriddenSections,
@@ -25,7 +32,9 @@ import {
   type Db,
 } from "../src/db";
 import { withSavedStore } from "../src/doctor";
-import { handleTimeLimitSettingsRequest } from "../src/settings";
+import { snapshotImplementationSkills } from "../src/acp";
+import { handleSkillSettingsRequest, handleTimeLimitSettingsRequest } from "../src/settings";
+import { fakeSkillResolver } from "../src/skills";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, pgliteServer, tempStore } from "./pglite";
 
@@ -321,4 +330,80 @@ test("a checkout.projects table in both config.toml and the saved settings loads
   const lines: string[] = [];
   journalRetiredProjectSettings(a.configPath, (line) => lines.push(line));
   expect(lines).toEqual(["checkout.projects is no longer supported"]);
+});
+
+test("project skill roots save to the database and the next turn's skill loading uses them", async () => {
+  const a = await instance(await shared(), "ACME");
+  const home = join(a.configPath, "..");
+  const skills = (name: string) => {
+    const root = join(home, name);
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(join(root, name, "SKILL.md"), `# ${name}\n`);
+    return root;
+  };
+  const fileRoot = skills("from-file");
+  const savedRoot = skills("from-settings");
+  const worktree = join(home, "worktree");
+  mkdirSync(worktree);
+  appendFileSync(a.configPath, `\n[skills.projects."acme/app"]\nroot = "${fileRoot}"\n`);
+  const audit: string[] = [];
+  const request = (role: string, init?: RequestInit) =>
+    handleSkillSettingsRequest(new Request("http://127.0.0.1:8787/api/settings/skills", init), {
+      store: a.db,
+      configPath: a.configPath,
+      root: join(home, "skills"),
+      resolver: fakeSkillResolver(),
+      csrfToken: "csrf",
+      role,
+      audit: async (_action, subject) => {
+        audit.push(subject);
+      },
+    });
+  const put = (role: string, projectRoots: unknown) =>
+    request(role, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-paws-csrf": "csrf" },
+      body: JSON.stringify({ projectRoots }),
+    });
+  const roots = async () =>
+    ((await (await request("admin"))!.json()) as { projectRoots: unknown }).projectRoots;
+  const loaded = async () =>
+    new TextDecoder().decode(
+      await snapshotImplementationSkills({ pawsRoot: home, worktree, repository: "acme/app" }),
+    );
+
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: fileRoot } } });
+  expect(await loaded()).toContain("from-file");
+
+  expect((await put("member", { projects: { "acme/app": { root: savedRoot } } }))!.status).toBe(
+    403,
+  );
+  for (const root of [
+    "relative/skills",
+    join(home, "missing"),
+    join(fileRoot, "from-file", "SKILL.md"),
+  ]) {
+    const refused = await put("admin", { projects: { "acme/app": { root } } });
+    expect(refused!.status).toBe(400);
+    expect(((await refused!.json()) as { error: string }).error).toContain("acme/app root");
+  }
+  expect((await put("admin", { projects: { "not a repo": { root: savedRoot } } }))!.status).toBe(
+    400,
+  );
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
+
+  expect((await put("admin", { projects: { "Acme/App": { root: savedRoot } } }))!.status).toBe(200);
+  expect(audit).toEqual([`Set project skill roots: acme/app ${savedRoot}`]);
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain(savedRoot);
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
+  expect(await loaded()).toContain("from-settings");
+
+  appendFileSync(a.configPath, `\n[skills.projects."acme/other"]\nroot = "${fileRoot}"\n`);
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
+  expect(overriddenConfigSections(a.configPath)).toEqual([
+    "merge",
+    'skills.projects."acme/app"',
+    'skills.projects."acme/other"',
+  ]);
+  expect(await loaded()).toContain("from-settings");
 });

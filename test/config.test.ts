@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   closeoutPolicyRoot,
@@ -10,39 +10,20 @@ import {
   loadRuntime,
   parseConfigToml,
   pawsPaths,
-  renderConfigToml,
-  writeConfigFile,
-  writeImplementer,
   readMergeSettings,
 } from "../src/config";
+import { DEFAULT_MAX_AWAKE_MS } from "../src/core";
 import { tempHome } from "./helpers";
 
 describe("config", () => {
-  test("configured repository candidates survive setup rewrites", () => {
+  test("configured repository candidates and Closeout roots load", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    const setup = {
-      linearTeam: "ENG",
-      linearTeamId: "team",
-      linearViewerId: "human",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app" as const,
-      repo: "acme/one",
-      checkout: paths.home,
-      maxAwakeMs: 1_000,
-      implementer: "claude" as const,
-    };
-    const text = renderConfigToml({
-      ...setup,
-      githubRepos: ["acme/one", "acme/two"],
-      closeoutProjects: { "acme/one": "policies/one" },
-    });
-    expect(parseConfigToml(text).githubRepos).toEqual(["acme/one", "acme/two"]);
-    writeFileSync(paths.configFile, `${text}\n[merge]\nmain_moved = "closeout"\n`, {
-      mode: 0o600,
-    });
-    writeConfigFile(paths.configFile, { ...setup, maxAwakeMs: 2_000 });
+    writeFileSync(
+      paths.configFile,
+      '[github]\nrepo = "acme/one"\nrepos = ["acme/one", "acme/two"]\n\n[closeout.projects."acme/one"]\npolicy_root = "policies/one"\n\n[merge]\nmain_moved = "closeout"\n',
+      { mode: 0o600 },
+    );
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
     expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
     expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
@@ -79,7 +60,7 @@ describe("config", () => {
     ensureLayout(paths);
     expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     writeFileSync(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
-    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(60 * 60 * 1000);
+    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     expect(loadRuntime({ PAWS_HOME: paths.home, PAWS_MAX_AWAKE_MS: "7200000" }).maxAwakeMs).toBe(
       2 * 60 * 60 * 1000,
     );
@@ -146,22 +127,8 @@ describe("config", () => {
     expect(parsed.maxAwakeMs).toBe(5_000);
     expect(parsed).not.toHaveProperty("maxTurns");
     const runtime = loadRuntime({ PAWS_HOME: home, PAWS_MAX_TURNS: "3" });
-    expect(runtime.maxAwakeMs).toBe(5_000);
+    expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
     expect(runtime).not.toHaveProperty("maxTurns");
-    const rendered = renderConfigToml({
-      linearTeam: "ENG",
-      linearTeamId: "team",
-      linearViewerId: "human",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app",
-      repo: "acme/one",
-      checkout: home,
-      maxAwakeMs: 5_000,
-      implementer: "claude",
-    });
-    expect(rendered).toContain("[caps]\nmax_awake_ms = 5000\n");
-    expect(rendered).not.toContain("max_turns");
   });
 
   test("missing config.toml is empty", () => {
@@ -170,22 +137,15 @@ describe("config", () => {
     expect(loadConfigFile(paths.configFile)).toEqual(emptyConfigFile());
   });
 
-  test("setup config.toml is the source and env overrides one field", () => {
+  test("config.toml is the source and env overrides one field", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeConfigFile(paths.configFile, {
-      linearTeam: "ENG",
-      linearTeamId: "team_eng",
-      linearViewerId: "viewer_1",
-      linearSecret: "secrets/acme-linear.json",
-      linearClientFile: null,
-      githubAuth: "app",
-      repo: "pmdroid/paws-demo",
-      checkout: home,
-      maxAwakeMs: 1_000,
-      implementer: "claude",
-    });
+    writeFileSync(
+      paths.configFile,
+      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nsecret = "secrets/acme-linear.json"\n\n[github]\nrepo = "pmdroid/paws-demo"\n\n[caps]\nmax_awake_ms = 1000\n',
+      { mode: 0o600 },
+    );
     mkdirSync(paths.secretsDir, { recursive: true });
     writeFileSync(
       join(paths.secretsDir, "acme-linear.json"),
@@ -209,7 +169,7 @@ describe("config", () => {
     expect(runtime.linearTokenFile).toBe(join(paths.secretsDir, "acme-linear.json"));
     expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
-    expect(runtime.maxAwakeMs).toBe(1_000);
+    expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
     expect(runtime.webhooks).toBe(false);
 
     const overridden = loadRuntime({
@@ -220,7 +180,7 @@ describe("config", () => {
   });
 
   test("unknown keys and sections fail with plain config errors", () => {
-    for (const section of ["linear", "merge", "tracker"]) {
+    for (const section of ["linear", "merge"]) {
       expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(
         `config.toml line 2 has an unknown key: ${section}.unknown`,
       );
@@ -302,22 +262,6 @@ describe("config", () => {
     expect(parsed.agents.opencode).toEqual({ path: "/opt/opencode" });
   });
 
-  test("writeImplementer keeps grok path and other keys", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    writeFileSync(
-      paths.configFile,
-      '# team\nrepo = "pmdroid/paws-demo"\n\n[agents.grok]\npath = "/opt/grok"\nallow_api_key = false\n',
-    );
-    writeImplementer(paths.configFile, "grok");
-    const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.repo).toBe("pmdroid/paws-demo");
-    expect(parsed.agents.implementer).toBe("grok");
-    expect(parsed.agents.grok).toEqual({ path: "/opt/grok", allowApiKey: false });
-    expect(statSync(paths.configFile).mode & 0o777).toBe(0o600);
-  });
-
   test("old configs without github.auth or tracker load as the App and linear", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
@@ -326,35 +270,21 @@ describe("config", () => {
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.trackerKind).toBe("linear");
-    expect(runtime.file.githubAuth).toBeNull();
   });
 
-  test("config.toml accepts only github.auth = app and drops oauth_client_id", () => {
+  test("retired [tracker] kind, [checkout] path and github.auth load and are ignored", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeConfigFile(paths.configFile, {
-      linearTeam: "ENG",
-      linearTeamId: "team_eng",
-      linearViewerId: "viewer_1",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app",
-      trackerKind: "linear",
-      repo: "pmdroid/paws-demo",
-      checkout: home,
-      maxAwakeMs: 1_000,
-      implementer: "claude",
-    });
+    const retired =
+      '[github]\nauth = "oauth"\nrepo = "pmdroid/paws-demo"\n\n[tracker]\nkind = "jira"\n\n[checkout]\npath = "/repo"\n';
+    writeFileSync(paths.configFile, retired, { mode: 0o600 });
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.configError).toBeNull();
     expect(runtime.githubAuth).toBe("app");
-    const text = readFileSync(paths.configFile, "utf8");
-    expect(text).toContain('auth = "app"');
-    expect(text).not.toContain("oauth_client_id");
-    for (const auth of ["oauth", "gh"]) {
-      writeFileSync(paths.configFile, `[github]\nauth = "${auth}"\n`, { mode: 0o600 });
-      expect(loadRuntime({ PAWS_HOME: home }).configError).toContain('github.auth must be "app"');
-    }
+    expect(runtime.trackerKind).toBe("linear");
+    expect(parseConfigToml(retired)).toEqual(
+      parseConfigToml('[github]\nrepo = "pmdroid/paws-demo"\n'),
+    );
   });
 });

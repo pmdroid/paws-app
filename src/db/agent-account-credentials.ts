@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError } from "./agent-accounts";
 import { type Q, type Steps } from "./db";
@@ -179,7 +179,7 @@ export function* centralAgentAccountsSteps(
   workspaceId: string,
   agent: RunnerCodingAgent,
 ): Steps<CentralAgentAccount[]> {
-  const { agentAccount: a, agentAccountUsage: u } = q.t;
+  const { agentAccount: a, agentAccountUsage: u, agentAccountCredential: c } = q.t;
   const rows = yield* q.all(
     q.orm
       .select({
@@ -190,8 +190,10 @@ export function* centralAgentAccountsSteps(
       })
       .from(a)
       .leftJoin(u, eq(u.accountId, a.id))
+      .leftJoin(c, eq(c.accountId, a.id))
       .where(
         and(
+          or(isNull(c.ciphertext), ne(c.ciphertext, "")),
           eq(a.workspaceId, workspaceId),
           eq(a.agent, agent),
           eq(a.legacy, 0),

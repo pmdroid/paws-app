@@ -30,7 +30,7 @@ export async function classifyCandidateRisk(input: {
 }
 
 /** Every path the candidate at `head` changes since `base`. A rename counts as both paths. */
-export async function changedPaths(git: RiskGit, base: string, head: string): Promise<string[]> {
+async function changedPaths(git: RiskGit, base: string, head: string): Promise<string[]> {
   return (await git(["diff", "--name-only", "--no-renames", "-z", base, head, "--"]))
     .split("\0")
     .filter((path) => path !== "");

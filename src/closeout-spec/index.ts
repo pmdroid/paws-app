@@ -114,6 +114,7 @@ export {
   trustedPolicyFiles,
   trustedMirrorMain,
   useGitReader,
+  trustedChangedPaths,
   trustedOriginMain,
   trustedRootFiles,
   trustedRootFilesAt,

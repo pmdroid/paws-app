@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { SettingsPage } from "./settings-pages";
+import { setSettingsAdmin, type SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
@@ -8,6 +8,7 @@ import { initializeWorkspaceMembers } from "./workspace-members";
 import { routeHref } from "./route";
 import { DASHBOARD_PATH } from "../../../dashboard-links";
 import { clearSettingsLoads, settingsPageShown } from "./settings-loads";
+import { renderSetupScreen, TWO_ROLE_REQUIREMENT } from "./setup-screen";
 
 type BrowserSession = {
   userId?: string;
@@ -16,6 +17,7 @@ type BrowserSession = {
   workspaceId: string;
   csrfToken: string;
   workspaces: { id: string; name: string; role: string }[];
+  setup?: { complete: boolean };
 };
 
 const SIGN_IN_RETURN = "paws.signInReturn";
@@ -51,6 +53,7 @@ export function takeSignInReturn(): string | null {
 
 export async function initializeWorkspaceAccess(page: () => SettingsPage | null): Promise<boolean> {
   signedInReader = "";
+  setSettingsAdmin(false);
   const root = document.querySelector<HTMLElement>("#workspace-access");
   let response: Response;
   try {
@@ -73,6 +76,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   }
   if (response.status === 404) {
     signedInReader = "local";
+    setSettingsAdmin(true);
     if (root) {
       root.dataset.loaded = "true";
       renderMarkup(
@@ -127,7 +131,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     if (content !== null)
       renderMarkup(
         content,
-        `<section class="login-panel"><h1>${heading}</h1><p class="muted">${lead}</p>${error ? `<p role="alert">${escapeHtml(error)}</p>` : ""}${configured ? '<a class="btn primary" href="/auth/linear">Sign in with Linear</a>' : '<p role="status">The Paws server needs its Linear app credentials. Ask the server operator to configure them, then reload this page.</p>'}</section>`,
+        `<section class="login-panel"><h1>${heading}</h1><p class="muted">${lead}</p>${evidence || reconnect ? "" : `<p>${TWO_ROLE_REQUIREMENT}</p>`}${error ? `<p role="alert">${escapeHtml(error)}</p>` : ""}${configured ? '<a class="btn primary" href="/auth/linear">Sign in with Linear</a>' : '<p role="status">The Paws server needs its Linear app credentials. Ask the server operator to configure them, then reload this page.</p>'}</section>`,
       );
     if (root !== null) root.hidden = true;
     return false;
@@ -152,10 +156,23 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   }
   const session = (await response.json()) as BrowserSession;
   signedInReader = JSON.stringify([session.userId ?? null, session.workspaceId, session.role]);
-  document.body.classList.remove("paws-login");
-  setLoginLayout(false);
+  setSettingsAdmin(session.role === "admin");
   const csrf = document.querySelector('meta[name="paws-csrf"]');
   csrf?.setAttribute("content", session.csrfToken);
+  if (session.setup?.complete === false) {
+    setLoginLayout(true);
+    if (root !== null) root.hidden = true;
+    const content = document.querySelector<HTMLElement>("#page-content");
+    if (content !== null)
+      renderSetupScreen(content, {
+        admin: session.role === "admin",
+        csrfToken: session.csrfToken,
+        signOut: () => signOut(session.csrfToken),
+      });
+    return false;
+  }
+  document.body.classList.remove("paws-login");
+  setLoginLayout(false);
   if (root === null) return true;
   clearSettingsLoads();
   root.hidden = false;

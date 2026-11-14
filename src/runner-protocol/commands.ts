@@ -1,3 +1,4 @@
+import { RunnerAgentCredentialSchema } from "./agent-credentials";
 import { z } from "zod";
 import { RunnerAccountSchema } from "./accounts";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
@@ -445,6 +446,7 @@ export const SignedRunnerCommandSchema = z.strictObject({
     .regex(/^[A-Za-z0-9_-]+$/)
     .max(524_288),
   signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
+  credential: RunnerAgentCredentialSchema.optional(),
 });
 
 export type RunnerCommand = z.infer<typeof RunnerCommandSchema>;

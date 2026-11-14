@@ -24,6 +24,7 @@ export {
   reviewRequirements,
   trustedPolicyFiles,
   useGitReader,
+  trustedChangedPaths,
   trustedOriginMain,
   trustedRootFiles,
   trustedRootFilesAt,
