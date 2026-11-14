@@ -143,10 +143,59 @@ describe("when Paws finishes the Linear session", () => {
     }
   });
 
-  test("pull_request leaves an opened thought alone", async () => {
-    const db = await opened({ sessionDone: "pull_request" });
-    expect(await finish(db, "green", OPENED + 5 * 60 * MINUTE)).toEqual([]);
+  test("an approval or review webhook restarts the quiet minutes", async () => {
+    const db = await opened({ sessionDone: "settled" });
+    const now = OPENED + 30 * MINUTE;
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm.insert(q.t.workItemRepository).values({
+          itemId: "item",
+          owner: "acme",
+          repo: "app",
+          remoteUrl: "https://github.com/acme/app.git",
+        }),
+      );
+      yield* q.exec(
+        q.orm.insert(q.t.githubDelivery).values({
+          deliveryId: "approval",
+          event: "pull_request_review",
+          payload: JSON.stringify({
+            action: "submitted",
+            repository: { full_name: "Acme/App" },
+            pull_request: { number: 7 },
+            review: { state: "approved" },
+          }),
+          receivedAt: now - MINUTE,
+        }),
+      );
+      yield* q.exec(
+        q.orm.insert(q.t.pullReview).values({
+          itemId: "item",
+          state: "changes_requested",
+          pullNumber: 7,
+          body: "Please rename it",
+          receivedAt: now - 3 * MINUTE,
+        }),
+      );
+    });
+    await finish(db, "green", now);
     expect(await responses(db)).toEqual([]);
+    await finish(db, "green", now + 8.5 * MINUTE);
+    expect(await responses(db)).toEqual([]);
+    await finish(db, "green", now + 9 * MINUTE);
+    expect(await responses(db)).toHaveLength(1);
+  });
+
+  test("unknown CI, as on a pull request closed on GitHub, posts nothing even past 4 hours", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await finish(db, "unknown", OPENED + 5 * 60 * MINUTE);
+    expect(await responses(db)).toEqual([]);
+  });
+
+  test("switching to pull_request finishes a session that was waiting", async () => {
+    const db = await opened({ sessionDone: "pull_request" });
+    expect(await finish(db, "pending", OPENED + MINUTE)).toEqual([]);
+    expect(await responses(db)).toEqual([BODY]);
   });
 });
 

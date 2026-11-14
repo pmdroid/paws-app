@@ -3,7 +3,7 @@ import {
   getItemPullRequestSteps,
   getLinearSessionGenerationSteps,
   getWorkItemSteps,
-  lastPullCommentAtSteps,
+  lastPullActivityAtSteps,
   openedSessionsSteps,
   readSessionDone,
   sessionHasFinalResponseSteps,
@@ -30,6 +30,7 @@ export function sessionDoneLine(
   settings: SessionDoneSettings,
   facts: SessionDoneFacts,
 ): string | null {
+  if (settings.sessionDone === "pull_request") return "";
   const green = facts.ci === "green";
   const quiet =
     !facts.fixRound &&
@@ -56,12 +57,12 @@ export async function finishOpenedSessions(
   deps: SessionDoneDeps,
   itemId?: string,
 ): Promise<void> {
+  const opened = (await store.run((q) => openedSessionsSteps(q))).filter(
+    (session) => itemId === undefined || session.itemId === itemId,
+  );
+  if (opened.length === 0) return;
   const settings = await readSessionDone(store);
-  if (settings.sessionDone === "pull_request") return;
-  const opened = await store.run((q) => openedSessionsSteps(q));
-  for (const session of opened)
-    if (itemId === undefined || session.itemId === itemId)
-      await finishOpenedSession(store, deps, settings, session);
+  for (const session of opened) await finishOpenedSession(store, deps, settings, session);
 }
 
 async function finishOpenedSession(
@@ -80,21 +81,32 @@ async function finishOpenedSession(
     return {
       item: yield* getWorkItemSteps(q, session.itemId),
       pull: yield* getItemPullRequestSteps(q, session.itemId),
-      lastCommentAt: yield* lastPullCommentAtSteps(q, session.itemId),
     };
   });
   if (!facts?.item) return;
   const { item, pull } = facts;
-  const ci: PullCi["state"] =
-    pull && item.acceptedHead
-      ? (await deps.readPullCi(item, { number: pull.pullNumber, head: item.acceptedHead })).state
-      : "pending";
+  const now = deps.now();
+  const read: PullCi | null =
+    settings.sessionDone !== "pull_request" && pull && item.acceptedHead
+      ? await deps.readPullCi(item, { number: pull.pullNumber, head: item.acceptedHead })
+      : null;
+  if (read?.state === "unknown" && !read.moved) return;
+  const lastCommentAt = pull
+    ? await store.run((q) =>
+        lastPullActivityAtSteps(
+          q,
+          item.id,
+          pull.pullNumber,
+          now - settings.sessionQuietMinutes * 60_000,
+        ),
+      )
+    : null;
   const line = sessionDoneLine(settings, {
-    ci,
+    ci: read?.state ?? "pending",
     fixRound: FIX_ROUND_STATES.has(item.state),
-    lastCommentAt: facts.lastCommentAt,
+    lastCommentAt,
     openedAt: session.openedAt,
-    now: deps.now(),
+    now,
   });
   if (line === null) return;
   await store.transaction(function* (q) {
@@ -117,7 +129,7 @@ async function finishOpenedSession(
         itemId: item.id,
         issueId: item.linearIssueId,
         kind: "response",
-        body: `${session.body}\n\n${line}`,
+        body: line ? `${session.body}\n\n${line}` : session.body,
       },
       now: deps.now(),
     });

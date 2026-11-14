@@ -1,6 +1,7 @@
-import { and, eq, like, max, ne, notInArray } from "drizzle-orm";
+import { and, eq, gte, inArray, like, max, ne, notInArray } from "drizzle-orm";
 import { type Db, type Q } from "./db";
 import { jsonField, parsedJson } from "./json-text";
+import { getWorkItemRepositorySteps } from "./repositories";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 
 export const SESSION_DONE = ["pull_request", "ci_green", "settled"] as const;
@@ -77,13 +78,66 @@ export function* openedSessionsSteps(q: Q) {
   });
 }
 
-export function* lastPullCommentAtSteps(q: Q, itemId: string) {
-  const { pullComment } = q.t;
-  const row = yield* q.one(
+const PULL_ACTIVITY_EVENTS = [
+  "issue_comment",
+  "pull_request_review",
+  "pull_request_review_comment",
+];
+
+function deliveryPull(payload: string): { repository: unknown; number: unknown } {
+  try {
+    const body = JSON.parse(payload) as {
+      repository?: { full_name?: unknown };
+      pull_request?: { number?: unknown };
+      issue?: { number?: unknown };
+    };
+    return {
+      repository: body.repository?.full_name,
+      number: body.pull_request?.number ?? body.issue?.number,
+    };
+  } catch {
+    return { repository: null, number: null };
+  }
+}
+
+export function* lastPullActivityAtSteps(q: Q, itemId: string, pullNumber: number, since: number) {
+  const { githubDelivery, pullComment, pullReview } = q.t;
+  const comment = yield* q.one(
     q.orm
       .select({ at: max(pullComment.receivedAt) })
       .from(pullComment)
       .where(eq(pullComment.itemId, itemId)),
   );
-  return row?.at == null ? null : Number(row.at);
+  const review = yield* q.one(
+    q.orm
+      .select({ at: max(pullReview.receivedAt) })
+      .from(pullReview)
+      .where(eq(pullReview.itemId, itemId)),
+  );
+  const repository = yield* getWorkItemRepositorySteps(q, itemId);
+  const name = repository ? `${repository.owner}/${repository.repo}`.toLowerCase() : null;
+  const deliveries = yield* q.all(
+    q.orm
+      .select({ payload: githubDelivery.payload, at: githubDelivery.receivedAt })
+      .from(githubDelivery)
+      .where(
+        and(
+          gte(githubDelivery.receivedAt, since),
+          inArray(githubDelivery.event, PULL_ACTIVITY_EVENTS),
+        ),
+      ),
+  );
+  const times = [
+    comment?.at,
+    review?.at,
+    ...deliveries.flatMap((row) => {
+      const pull = deliveryPull(row.payload);
+      return typeof pull.repository === "string" &&
+        pull.repository.toLowerCase() === name &&
+        pull.number === pullNumber
+        ? [row.at]
+        : [];
+    }),
+  ].flatMap((at) => (at == null ? [] : [Number(at)]));
+  return times.length ? Math.max(...times) : null;
 }
