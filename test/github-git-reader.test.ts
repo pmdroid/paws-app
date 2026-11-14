@@ -5,7 +5,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { tempStore } from "./pglite";
-import { githubBlobCache } from "../src/db";
+import { eq } from "drizzle-orm";
+import { repositoryAtPath, itemPathId } from "../src/loop";
+import { githubBlobCache, bindWorkItemRepository, getWorkItem, insertQueuedItem } from "../src/db";
 import { createGitHubGitReader, type GitHubClient } from "../src/github";
 import {
   reviewRequirements,
@@ -407,4 +409,48 @@ test("remote risk classification reads changed paths and the base policy without
   expect(input.changed).toContain(".paws/high-risk-paths");
   expect(calls.some((path) => path.includes(`/git/trees/${base}`))).toBe(true);
   expect(calls.some((path) => path.includes("/git/blobs/"))).toBe(true);
+});
+
+test("production reader locates inspection checkouts by their stored item binding", async () => {
+  const { client, home, head } = fixture();
+  const store = await tempStore();
+  try {
+    const id = "01M7DP1GAA120M2M902AX9Q32A";
+    await insertQueuedItem(store.db, { id });
+    await store.db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workItem)
+          .set({ taskKey: "task", linearIdentifier: "ENG-7" })
+          .where(eq(q.t.workItem.id, id)),
+      ),
+    );
+    const item = (await getWorkItem(store.db, id))!;
+    const bound = { owner: "acme", repo: "app", remoteUrl: "https://github.com/acme/app.git" };
+    await bindWorkItemRepository(store.db, id, bound);
+    const checkout = join(home, "worktrees", itemPathId(item));
+    const makeReader = () =>
+      createGitHubGitReader({
+        locate: async (path) => {
+          const repository = await repositoryAtPath(store.db, home, path);
+          return repository
+            ? { ...repository, client, tokenProvider: { mode: "app", tokenFor: async () => "t" } }
+            : null;
+        },
+      });
+    expect(await repositoryAtPath(store.db, home, checkout)).toEqual(bound);
+    expect((await loadPolicy({ repo: checkout, git: makeReader(), home })).ok).toBe(true);
+    expect(await makeReader().changedPaths(checkout, head, head)).toEqual({ ok: true, paths: [] });
+    expect((await loadPolicy({ repo: checkout, git: makeReader(), home })).ok).toBe(true);
+    expect(
+      await repositoryAtPath(store.db, home, join(home, "worktrees", `forged-${id}`)),
+    ).toBeNull();
+    expect(await repositoryAtPath(store.db, home, join(checkout, "nested"))).toBeNull();
+    expect(await repositoryAtPath(store.db, home, join(home, "repos", "acme", "app.git"))).toEqual(
+      bound,
+    );
+    expect(await repositoryAtPath(store.db, home, join(home, "outside", "app.git"))).toBeNull();
+  } finally {
+    await store.close();
+  }
 });

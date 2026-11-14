@@ -145,3 +145,5 @@ export {
   type LinearCommentPolicy,
   type LinearConversations,
 } from "./linear-comments";
+
+export { repositoryAtPath } from "./repository-location";

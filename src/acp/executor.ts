@@ -1,6 +1,11 @@
 import { mkdir } from "node:fs/promises";
-import { branchName, mirrorPath } from "./paths";
-import { createWorktree, ensureBareMirror, ensureCandidateRef } from "./worktree";
+import { branchName, mirrorPath, worktreePath } from "./paths";
+import {
+  createItemCheckout,
+  createWorktree,
+  ensureBareMirror,
+  ensureCandidateRef,
+} from "./worktree";
 import { runAgent } from "./run";
 import type { ExecuteItemOptions, ExecuteItemResult } from "./types";
 
@@ -14,16 +19,22 @@ export async function executeItem({
   storedCandidate,
   ...options
 }: ExecuteItemOptions): Promise<ExecuteItemResult> {
-  const stored = storedCandidate === true;
-  const mirror = stored
-    ? { path: mirrorPath(options.pawsRoot, options.owner, options.repo) }
-    : await ensureBareMirror({
-        remoteUrl: options.remoteUrl,
-        owner: options.owner,
-        repo: options.repo,
-        pawsRoot: options.pawsRoot,
-        ...(options.networkGit ? { networkGit: options.networkGit } : {}),
-      });
+  const stored = storedCandidate === true && options.workspace !== undefined;
+  const independent = options.mirrors === false || storedCandidate === true;
+  const mirror =
+    stored || independent
+      ? {
+          path: independent
+            ? worktreePath(options.pawsRoot, options.itemId)
+            : mirrorPath(options.pawsRoot, options.owner, options.repo),
+        }
+      : await ensureBareMirror({
+          remoteUrl: options.remoteUrl,
+          owner: options.owner,
+          repo: options.repo,
+          pawsRoot: options.pawsRoot,
+          ...(options.networkGit ? { networkGit: options.networkGit } : {}),
+        });
   const placement = {
     owner: options.owner,
     repo: options.repo,
@@ -37,11 +48,14 @@ export async function executeItem({
     await mkdir(options.workspace, { recursive: true, mode: 0o700 });
     worktree = { path: options.workspace, branch: branchName(options.itemId) };
   } else
-    worktree = await createWorktree({
-      ...placement,
-      ...(stored ? { cloneFrom: options.remoteUrl, networkGit: options.networkGit } : {}),
-      ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
-    });
+    worktree = independent
+      ? await createItemCheckout(options)
+      : await createWorktree({
+          ...placement,
+          remoteUrl: options.remoteUrl,
+          networkGit: options.networkGit,
+          ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
+        });
   const run = await (options.promptRunner ?? runAgent)({
     ...options,
     role: options.role ?? "implementer",

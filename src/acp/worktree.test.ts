@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, stat, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { commitCheckpoint } from "./checkpoint";
 import { GitError, git } from "./git";
-import { createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
+import { createItemCheckout, createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
 import { branchName } from "./paths";
 
 const roots: string[] = [];
@@ -102,7 +102,6 @@ test("a worktree starts from a continued branch's tip and never falls back to ma
 }, 20_000);
 
 async function initRepo(dir: string): Promise<void> {
-  const { mkdir } = await import("node:fs/promises");
   await mkdir(dir, { recursive: true });
   await git(["init", "-b", "main"], { cwd: dir });
   await writeFile(join(dir, "README.md"), "hello\n");
@@ -227,6 +226,264 @@ test("a worktree waits for an in-flight mirror refresh before touching the mirro
   release.resolve();
   await refresh;
   expect((await worktree).branch).toBe(branchName("ENG-8"));
+});
+
+test("independent item checkouts reuse WIP and clean up without creating repos", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-checkout-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const pawsRoot = join(root, "home");
+  const options = { remoteUrl: source, pawsRoot, itemId: "ENG-9" };
+  const created = await createItemCheckout(options);
+  await writeFile(join(created.path, "notes.txt"), "unfinished");
+  await createItemCheckout(options);
+  expect(await readFile(join(created.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect(await stat(join(pawsRoot, "repos")).catch(() => null)).toBeNull();
+  await removeWorktree({ ...options, owner: "acme", repo: "demo" });
+  expect(await stat(created.path).catch(() => null)).toBeNull();
+});
+
+test("a fresh inspection checkout fetches an unadvertised candidate before checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-candidate-recovery-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const origin = join(root, "origin.git");
+  await git(["clone", "--bare", source, origin]);
+  await writeFile(join(source, "candidate.txt"), "recover this commit");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Candidate"]);
+  const sha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+  await git(["-C", source, "push", origin, "HEAD:refs/heads/temporary"]);
+  await git(["--git-dir", origin, "update-ref", "-d", "refs/heads/temporary"]);
+  const pawsRoot = join(root, "home");
+  let fetched = false;
+  const created = await createItemCheckout({
+    remoteUrl: `file://${origin}`,
+    itemId: "ENG-10",
+    pawsRoot,
+    startRef: sha,
+    async networkGit(args) {
+      if (args.at(-1) === sha) {
+        const path = args[1]!;
+        expect(
+          await git(["-C", path, "cat-file", "-e", sha]).then(
+            () => true,
+            () => false,
+          ),
+        ).toBe(false);
+        fetched = true;
+      }
+      return git(args);
+    },
+  });
+  expect(fetched).toBe(true);
+  expect((await git(["-C", created.path, "rev-parse", "HEAD"])).trim()).toBe(sha);
+  expect(await readFile(join(created.path, "candidate.txt"), "utf8")).toBe("recover this commit");
+  expect(await stat(join(pawsRoot, "repos")).catch(() => null)).toBeNull();
+});
+
+test("reusing an inspection checkout refreshes main policy and preserves WIP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-policy-refresh-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = { remoteUrl: source, pawsRoot: join(root, "home"), itemId: "ENG-11" };
+  const created = await createItemCheckout(options);
+  const head = (await git(["-C", created.path, "rev-parse", "HEAD"])).trim();
+  await writeFile(join(created.path, "notes.txt"), "unfinished");
+  await writeFile(join(source, "reviews.yaml"), "required: security\n");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Require security review"]);
+  await createItemCheckout({ ...options, startRef: head });
+  expect(await git(["-C", created.path, "show", "origin/main:reviews.yaml"])).toBe(
+    "required: security\n",
+  );
+  expect((await git(["-C", created.path, "rev-parse", "origin/main"])).trim()).toBe(
+    (await git(["-C", source, "rev-parse", "HEAD"])).trim(),
+  );
+  expect((await git(["-C", created.path, "rev-parse", "HEAD"])).trim()).toBe(head);
+  expect(await readFile(join(created.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect(await stat(join(options.pawsRoot, "repos")).catch(() => null)).toBeNull();
+});
+
+test("disabling mirrors detaches a linked worktree without losing commits or staged WIP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-disable-mirror-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = {
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-12",
+    pawsRoot: join(root, "home"),
+    remoteUrl: source,
+  };
+  await ensureBareMirror(options);
+  const linked = await createWorktree(options);
+  await writeFile(join(linked.path, "local.txt"), "local commit");
+  await git(["-C", linked.path, "add", "."]);
+  await git(["-C", linked.path, "commit", "-m", "Unpublished work"]);
+  const head = (await git(["-C", linked.path, "rev-parse", "HEAD"])).trim();
+  await writeFile(join(linked.path, "README.md"), "staged change");
+  await git(["-C", linked.path, "add", "README.md"]);
+  await writeFile(join(linked.path, "README.md"), "unstaged change");
+  await writeFile(join(linked.path, "untracked.txt"), "untracked");
+  const status = await git(["-C", linked.path, "status", "--porcelain"]);
+  await createItemCheckout(options);
+  expect((await stat(join(linked.path, ".git"))).isDirectory()).toBe(true);
+  await rm(join(options.pawsRoot, "repos"), { recursive: true });
+  await createItemCheckout(options);
+  expect((await git(["-C", linked.path, "rev-parse", "HEAD"])).trim()).toBe(head);
+  expect(await git(["-C", linked.path, "status", "--porcelain"])).toBe(status);
+  expect(await git(["-C", linked.path, "show", ":README.md"])).toBe("staged change");
+  expect(await readFile(join(linked.path, "README.md"), "utf8")).toBe("unstaged change");
+  await git(["-C", linked.path, "commit", "-m", "Keep staged modification"]);
+  expect(await git(["-C", linked.path, "show", "HEAD:README.md"])).toBe("staged change");
+  expect(await readFile(join(linked.path, "README.md"), "utf8")).toBe("unstaged change");
+});
+
+test("enabling mirrors preserves an existing independent item checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-enable-mirror-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = {
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-13",
+    pawsRoot: join(root, "home"),
+    remoteUrl: source,
+  };
+  const independent = await createItemCheckout(options);
+  await writeFile(join(independent.path, "notes.txt"), "unfinished");
+  const originalHead = (await git(["-C", independent.path, "rev-parse", "HEAD"])).trim();
+  await ensureBareMirror(options);
+  await writeFile(join(source, "reviews.yaml"), "required: security\n");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Require security review"]);
+  await ensureBareMirror(options);
+  const calls: string[][] = [];
+  const networkGit = async (args: string[]) => {
+    calls.push(args);
+    return git(args);
+  };
+  expect((await createWorktree({ ...options, networkGit })).path).toBe(independent.path);
+  expect(await readFile(join(independent.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect((await stat(join(independent.path, ".git"))).isDirectory()).toBe(true);
+  expect(
+    calls.some(
+      (args) => args[0] === "-C" && args[1] === independent.path && args.includes("fetch"),
+    ),
+  ).toBe(true);
+  expect((await git(["-C", independent.path, "rev-parse", "origin/main"])).trim()).toBe(
+    (await git(["-C", source, "rev-parse", "HEAD"])).trim(),
+  );
+  expect(await git(["-C", independent.path, "show", "origin/main:reviews.yaml"])).toBe(
+    "required: security\n",
+  );
+  expect((await git(["-C", independent.path, "rev-parse", "HEAD"])).trim()).toBe(originalHead);
+});
+
+for (const dependency of ["alternates", "commondir"] as const) {
+  test(`mirrors-off detaches an existing checkout with ${dependency} storage`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "paws-shared-storage-"));
+    roots.push(root);
+    const source = join(root, "source");
+    await initRepo(source);
+    const options = {
+      owner: "acme",
+      repo: "demo",
+      itemId: "ENG-14",
+      pawsRoot: join(root, "home"),
+      remoteUrl: source,
+    };
+    const mirror = await ensureBareMirror(options);
+    const path = join(options.pawsRoot, "worktrees", options.itemId);
+    if (dependency === "alternates") {
+      await mkdir(join(path, ".."), { recursive: true });
+      await git(["clone", "--shared", "--", mirror.path, path]);
+    } else {
+      await createWorktree(options);
+      const metadata = (await git(["-C", path, "rev-parse", "--absolute-git-dir"])).trim();
+      const saved = join(root, "metadata");
+      await cp(metadata, saved, { recursive: true });
+      await rm(join(path, ".git"));
+      await cp(saved, join(path, ".git"), { recursive: true });
+      await writeFile(join(path, ".git", "commondir"), `${mirror.path}\n`);
+    }
+    const blobFile = join(root, "staged.txt");
+    await writeFile(blobFile, "staged blob outside commit history");
+    const blob = (await git(["--git-dir", mirror.path, "hash-object", "-w", blobFile])).trim();
+    await git([
+      "-C",
+      path,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `100644,${blob},index-only.txt`,
+    ]);
+    await writeFile(join(path, "index-only.txt"), "staged blob outside commit history");
+    await writeFile(join(path, "notes.txt"), "unfinished");
+    const head = (await git(["-C", path, "rev-parse", "HEAD"])).trim();
+    const status = await git(["-C", path, "status", "--porcelain"]);
+    await createItemCheckout(options);
+    expect(await stat(join(path, ".git", "commondir")).catch(() => null)).toBeNull();
+    expect(
+      await stat(join(path, ".git", "objects", "info", "alternates")).catch(() => null),
+    ).toBeNull();
+    await rm(join(options.pawsRoot, "repos"), { recursive: true });
+    await createItemCheckout(options);
+    expect((await git(["-C", path, "rev-parse", "HEAD"])).trim()).toBe(head);
+    expect(await git(["-C", path, "status", "--porcelain"])).toBe(status);
+    expect(await git(["-C", path, "show", ":index-only.txt"])).toBe(
+      "staged blob outside commit history",
+    );
+    expect(await readFile(join(path, "notes.txt"), "utf8")).toBe("unfinished");
+    await git(["-C", path, "commit", "-m", "Keep staged content after mirror removal"]);
+    expect(await git(["-C", path, "show", "HEAD:index-only.txt"])).toBe(
+      "staged blob outside commit history",
+    );
+  });
+}
+
+test("detaching a linked checkout preserves every stash and its reflog", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-stash-detach-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = {
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-15",
+    pawsRoot: join(root, "home"),
+    remoteUrl: source,
+  };
+  await ensureBareMirror(options);
+  const checkout = await createWorktree(options);
+  for (const content of ["first saved change", "second saved change"]) {
+    await writeFile(join(checkout.path, "README.md"), content);
+    await git(["-C", checkout.path, "stash", "push", "-m", content]);
+  }
+  const list = await git(["-C", checkout.path, "stash", "list"]);
+  const log = await git(["-C", checkout.path, "reflog", "show", "--format=%H %gs", "refs/stash"]);
+  await writeFile(join(checkout.path, "notes.txt"), "unfinished");
+  await createItemCheckout(options);
+  await rm(join(options.pawsRoot, "repos"), { recursive: true });
+  expect(await git(["-C", checkout.path, "stash", "list"])).toBe(list);
+  expect(await git(["-C", checkout.path, "reflog", "show", "--format=%H %gs", "refs/stash"])).toBe(
+    log,
+  );
+  expect(await git(["-C", checkout.path, "show", "stash@{0}:README.md"])).toBe(
+    "second saved change",
+  );
+  expect(await git(["-C", checkout.path, "show", "stash@{1}:README.md"])).toBe(
+    "first saved change",
+  );
+  await git(["-C", checkout.path, "stash", "apply", "stash@{1}"]);
+  expect(await readFile(join(checkout.path, "README.md"), "utf8")).toBe("first saved change");
+  expect(await readFile(join(checkout.path, "notes.txt"), "utf8")).toBe("unfinished");
 });
 
 test("plain item clones reuse work and are removed without creating repos", async () => {

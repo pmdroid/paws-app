@@ -225,6 +225,7 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
    */
   workspace?: string;
   storedCandidate?: boolean;
+  mirrors?: boolean;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
 }
 

@@ -357,8 +357,7 @@ test("with mirrors off a runner run starts from the stored candidate and never c
     while (Date.now() < deadline && (await checkpoint())?.wipCommit !== candidate)
       await Bun.sleep(10);
     expect(await checkpoint(), detail).toMatchObject({ baseSha: main, wipCommit: candidate });
-    const mirror = join(root, "repos", "acme", "fixture.git");
-    expect(existsSync(mirror)).toBe(false);
+    expect(existsSync(join(root, "repos"))).toBe(false);
   } finally {
     controller.abort();
     await orchestrator.shutdown().catch(() => undefined);
