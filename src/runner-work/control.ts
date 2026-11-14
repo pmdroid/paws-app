@@ -932,7 +932,7 @@ export function createRunnerWork(options: {
         const leaseUntil =
           work.leaseUntil > now() ? work.leaseUntil : yield* renewSteps(q, work, now());
         const expiresAt = Math.min(leaseUntil, now() + 60_000);
-        yield* deleteRunnerWorkGrantsSteps(q, input.runId);
+        yield* deleteRunnerWorkGrantsSteps(q, input.runId, now());
         yield* insertRunnerWorkGrantSteps(q, {
           tokenHash: workspaceTokenHash(token),
           runId: input.runId,

@@ -935,18 +935,15 @@ export function createRemoteAgentRunner(options: {
             ? (JSON.parse(redactedJson(value, options.agentRead.tokens(readCommand))) as T)
             : value;
         const reattached = attached?.assigned;
-        if (
-          reattached?.type === "run" &&
-          reattached.githubRead &&
-          options.agentRead &&
-          (await options.agentRead.open({
+        if (reattached?.type === "run" && reattached.githubRead && options.agentRead) {
+          readCommand = reattached.id;
+          await options.agentRead.open({
             commandId: reattached.id,
             itemId,
             runId: reattached.runId,
             repository: `${reattached.repository.owner}/${reattached.repository.repo}`,
-          }))
-        )
-          readCommand = reattached.id;
+          });
+        }
         const emit = async (raw: AcpEvent, origin?: AcpEventOrigin) => {
           const event = scrub(raw);
           const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;
