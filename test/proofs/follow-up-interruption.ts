@@ -17,6 +17,12 @@ export default {
     const delivery = (async () => {
       while (proof.launches.length === 0) await Bun.sleep(20);
       proof.expect("the item starts running", (await proof.itemState()) === "running");
+      await proof.delegate();
+      await proof.answerInLinear("   ");
+      proof.expect(
+        "session-start replays leave the first turn running",
+        proof.launches.length === 1 && (await proof.itemState()) === "running",
+      );
       await proof.answerInLinear("Also count the widgets per shelf.");
     })();
     const continued = await proof.waitFor(

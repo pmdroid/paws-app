@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { readFile, stat } from "node:fs/promises";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { runAgent } from "./run";
@@ -19,7 +19,7 @@ export type AcpConversationEntry = {
 
 export interface AcpPromptLifecycle {
   prompt(options: RunAgentOptions): Promise<RunAgentResult>;
-  interrupt(): Promise<void>;
+  interrupt(followUp?: string): Promise<void>;
   stop(): Promise<void>;
   snapshot(): AcpConversationEntry[];
 }
@@ -31,6 +31,8 @@ export function createAcpPromptLifecycle(
   const history = context.map((entry) => ({ ...entry }));
   let active: { controller: AbortController; done: Promise<RunAgentResult> } | undefined;
   let stopped = false;
+  let origin: { itemId: string; runId: string } | undefined;
+  let ignored = false;
   let worktree: string | undefined;
 
   return {
@@ -41,6 +43,8 @@ export function createAcpPromptLifecycle(
         return Promise.reject(new Error("ACP conversation worktree changed"));
       }
       worktree = options.worktreePath;
+      origin = options;
+      ignored = false;
       const controller = new AbortController();
       const onAbort = () => controller.abort(options.signal?.reason);
       if (options.signal?.aborted) onAbort();
@@ -83,7 +87,18 @@ export function createAcpPromptLifecycle(
       active = { controller, done };
       return done;
     },
-    async interrupt() {
+    async interrupt(followUp) {
+      if (!followUp?.trim()) {
+        if (!ignored)
+          journal(
+            `item ${origin?.itemId} run ${origin?.runId} interrupt source=lifecycle ignored=no_follow_up`,
+          );
+        ignored = true;
+        return;
+      }
+      journal(
+        `item ${origin?.itemId} run ${origin?.runId} interrupt source=lifecycle followUpBytes=${Buffer.byteLength(followUp)}`,
+      );
       active?.controller.abort(FOLLOW_UP_INTERRUPTION);
       await active?.done;
     },

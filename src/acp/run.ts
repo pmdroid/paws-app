@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -261,6 +261,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     if (state.cancelling) return;
     state.cancelling = true;
     state.kind = kind;
+    if (kind === FOLLOW_UP_INTERRUPTION)
+      journal(
+        `item ${options.itemId} run ${options.runId} interrupt source=acp_signal followUp=external`,
+      );
     runAbort.abort();
     if (activeCtx && activeSessionId) {
       void activeCtx

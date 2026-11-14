@@ -44,12 +44,20 @@ test("a handover that fails after the interrupt sends the item back to the agent
   expect(result.prompts[1], result.detail).toContain("the move failed after your turn was stopped");
 }, 90_000);
 
+test("a follow-up interruption with an error stop reason continues instead of failing", async () => {
+  const result = await handOver({ followUpError: true });
+  expect(result.state, result.detail).toBe("running");
+  expect(result.prompts.length, result.detail).toBe(2);
+  expect(result.prompts[1], result.detail).toContain("address any pending follow-up");
+}, 90_000);
+
 /**
  * The remote runner hands the run over: it optionally asks, then Paws holds the WIP commit. With
  * `failure`, the first turn's handover fails after the interrupt instead.
  */
 async function handOver(options: {
   ask?: string;
+  followUpError?: boolean;
   failure?: "commit" | "snapshot" | "publication";
 }) {
   const layout = await repoLayout("paws-handover-loop-");
@@ -125,6 +133,17 @@ async function handOver(options: {
               baseSha: git(["rev-parse", "HEAD~1"]),
               wipCommit: wip,
             });
+            if (options.followUpError && prompts.length === 1)
+              return {
+                role: input.role,
+                stopReason: "error",
+                errorMessage: "Error.",
+                interrupted: true,
+                cancelled: false,
+                timedOut: false,
+                authRequired: false,
+                agentExited: true,
+              };
             handed = !failing;
             return {
               role: input.role,

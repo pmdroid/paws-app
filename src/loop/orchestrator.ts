@@ -1126,9 +1126,17 @@ export class Orchestrator {
         ))
       ) {
         const sessionItems = await this.itemsForSession(event.sessionId);
-        for (const live of this.live.values())
-          if (sessionItems.some((item) => item.id === live.itemId))
-            live.controller.abort(FOLLOW_UP_INTERRUPTION);
+        for (const [runId, live] of this.live)
+          if (sessionItems.some((item) => item.id === live.itemId)) {
+            const pending = await this.store.run((q) =>
+              listPendingLinearTurnsSteps(q, announcedSession),
+            );
+            const followUp = pending.find((entry) => entry.eventKey === turn.eventKey);
+            (this.options.journal ?? journal)(
+              `item ${live.itemId} run ${runId} interrupt source=linear_prompt followUp=${followUp?.eventKey ?? "none"}`,
+            );
+            if (followUp) live.controller.abort(FOLLOW_UP_INTERRUPTION);
+          }
         await this.stopTaskPlanning(event.sessionId);
       }
     }
@@ -4007,7 +4015,7 @@ export class Orchestrator {
       if (executed.run.stopReason === "end_turn" || this.askedRuns.has(run.id))
         await this.settleLinearCommentBrief(item, comments);
       await this.assertJobCurrent(item.id);
-      controller.signal.throwIfAborted();
+      if (controller.signal.reason !== FOLLOW_UP_INTERRUPTION) controller.signal.throwIfAborted();
       const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
@@ -4035,7 +4043,7 @@ export class Orchestrator {
         return;
       }
       if (
-        executed.run.interrupted &&
+        (executed.run.interrupted || controller.signal.reason === FOLLOW_UP_INTERRUPTION) &&
         executed.run.stopReason !== "cancelled" &&
         !this.askedRuns.has(run.id)
       ) {
@@ -7366,8 +7374,13 @@ export class Orchestrator {
       return redirect ? ("redirect" as const) : ("answered" as const);
     });
     if (outcome === "redirect")
-      for (const live of this.live.values())
-        if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
+      for (const [runId, live] of this.live)
+        if (live.itemId === open.itemId) {
+          (this.options.journal ?? journal)(
+            `item ${live.itemId} run ${runId} interrupt source=question_redirect followUp=${event.dedupeKey}`,
+          );
+          live.controller.abort(FOLLOW_UP_INTERRUPTION);
+        }
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (item?.state === "completed")
