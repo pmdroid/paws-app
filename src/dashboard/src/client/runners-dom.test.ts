@@ -348,3 +348,41 @@ test("a runner that is not a member VM has no Delete VM", async () => {
   expect(root.textContent).toContain("Execution history");
   expect(root.querySelector("[data-vm-delete]")).toBeNull();
 });
+
+test("admin VM size saves with PUT and keeps the server validation message", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const path = new URL(String(url), ORIGIN).pathname;
+    if (path === "/api/auth/session") return Response.json({ userId: "owner", role: "admin" });
+    if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
+    if (path === "/api/settings/member-vm") {
+      requests.push({ url: path, init });
+      return init?.method === "PUT"
+        ? Response.json({ error: "member_vm.cpu must be a positive integer" }, { status: 400 })
+        : Response.json({ cpu: 4, memoryGb: 8 });
+    }
+    return original(url, init);
+  }) as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as never);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  const input = root.querySelector<HTMLInputElement>("#vm-size-cpu")!;
+  expect(input.value).toBe("4");
+  input.value = "-1";
+  input.dispatchEvent(new window.Event("input", { bubbles: true }) as never);
+  input.closest("form")!.dispatchEvent(new window.Event("submit", { bubbles: true }) as never);
+  await settle();
+  expect(requests.find((r) => r.init?.method === "PUT")?.init?.body).toContain('"cpu":-1');
+  expect(root.textContent).toContain("member_vm.cpu must be a positive integer");
+  expect(root.querySelector<HTMLInputElement>("#vm-size-cpu")!.value).toBe("-1");
+});
+
+test("members do not request or edit member VM settings", async () => {
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as never);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  expect(requests.some((request) => request.url === "/api/settings/member-vm")).toBe(false);
+  expect(root.querySelector("[data-vm-size]")).toBeNull();
+});

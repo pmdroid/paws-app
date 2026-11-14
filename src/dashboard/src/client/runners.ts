@@ -1465,6 +1465,8 @@ export function createRunners() {
   let hostName = "";
   let dockerAccess = true;
   let enrollment: HostEnrollment | null = null;
+  let vmSize: MemberVmSize | null = null;
+  let vmSizeDraft: Record<string, string> | null = null;
   let memberVm: MemberVmState = { available: false };
   let pools: PoolList = { state: "loading" };
   let poolChoice = "";
@@ -1526,10 +1528,15 @@ export function createRunners() {
   function addsHosts() {
     return session !== null;
   }
-  async function api<T>(path: string, body?: unknown, timeoutMs = 15_000): Promise<T> {
+  async function api<T>(
+    path: string,
+    body?: unknown,
+    timeoutMs = 15_000,
+    method = "POST",
+  ): Promise<T> {
     if (!available) throw new Error("Connect to your Paws dashboard to see runners.");
     const response = await fetch(path, {
-      method: body === undefined ? "GET" : "POST",
+      method: body === undefined ? "GET" : method,
       cache: "no-store",
       signal: AbortSignal.timeout(timeoutMs),
       headers:
@@ -1620,6 +1627,11 @@ export function createRunners() {
       );
       if (current !== generation) return;
       memberVm = vm;
+      vmSize =
+        identity.role === "admin"
+          ? await api<MemberVmSize>("/api/settings/member-vm").catch(() => vmSize)
+          : null;
+      if (current !== generation) return;
       // exe.dev's pool list is read once per page, for Create VM and Move to pool.
       if (vm.available && pools.state === "loading")
         pools = await api<{ available: boolean; pools?: ExeDevPool[] }>(
@@ -1694,6 +1706,25 @@ export function createRunners() {
       paint();
     }
   }
+  function vmSizeSettings(): string {
+    if (!manages() || vmSize === null) return "";
+    const fields = [
+      ["cpu", "CPUs"],
+      ["memoryGb", "Memory (GB)"],
+      ["diskGb", "Disk (GB)"],
+      ["image", "Image"],
+      ["pool", "Default pool"],
+    ] as const;
+    const values = fields
+      .map(([key, label]) => {
+        const value = vmSizeDraft?.[key] ?? String(vmSize?.[key] ?? "");
+        return manages()
+          ? `<div class="settings-field"><label for="vm-size-${key}">${label}</label><input id="vm-size-${key}" name="${key}" data-focus="vm-size:${key}" value="${esc(value)}"${busy ? " disabled" : ""}></div>`
+          : `<p>${label}: ${esc(String(vmSize?.[key] ?? "exe.dev default"))}</p>`;
+      })
+      .join("");
+    return `<section class="runner-section"><h2>Member VM size</h2><p class="muted">Applies to new VMs. Leave fields blank to use exe.dev defaults. Existing VMs keep their size.</p>${manages() ? `<form data-vm-size><div class="settings-grid">${values}</div><button class="btn" type="submit"${busy ? " disabled" : ""}>Save VM size</button></form>` : values}</section>`;
+  }
   function listView(now: number, disabled: string, status: string): string {
     const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
     const adding = addsHosts() && addingHost;
@@ -1741,7 +1772,7 @@ export function createRunners() {
           )
           .join("")
       : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSizeSettings()}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1836,6 +1867,31 @@ export function createRunners() {
     }, false);
   }
   function bind() {
+    const sizeForm = root!.querySelector<HTMLFormElement>("[data-vm-size]");
+    sizeForm?.addEventListener("input", () => {
+      vmSizeDraft = Object.fromEntries(
+        [...sizeForm.querySelectorAll<HTMLInputElement>("input")].map((input) => [
+          input.name,
+          input.value,
+        ]),
+      );
+    });
+    sizeForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const body: Record<string, string | number> = {};
+      for (const input of sizeForm.querySelectorAll<HTMLInputElement>("input")) {
+        const value = input.value.trim();
+        if (value)
+          body[input.name] = ["cpu", "memoryGb", "diskGb"].includes(input.name)
+            ? Number(value)
+            : value;
+      }
+      void change(async () => {
+        vmSize = await api<MemberVmSize>("/api/settings/member-vm", body, 15_000, "PUT");
+        vmSizeDraft = null;
+        feedback = "Member VM size saved.";
+      });
+    });
     root!.querySelector("[data-runners-setup]")?.addEventListener("click", () => void load());
     for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-sharing]"))
       box.addEventListener("change", () =>

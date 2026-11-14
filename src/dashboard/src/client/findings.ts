@@ -30,6 +30,7 @@ import { renderMarkup } from "./theme";
 export type FindingsView = {
   data: FindingsResponse | null;
   groups?: FindingGroupsResponse | null;
+  groupingTime?: string;
   groupsError?: string | null;
   mode?: "findings" | "groups";
   filter: FindingFilter;
@@ -51,7 +52,7 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
 /** The Findings page: the severity control and filters in one row, then one row per finding. */
 export function renderFindings(view: FindingsView): string {
   const tabs = `<div class="row" role="group" aria-label="Findings view"><button class="btn${view.mode !== "groups" ? " on" : ""}" type="button" data-findings-mode="findings" aria-pressed="${view.mode !== "groups"}">Findings</button><button class="btn${view.mode === "groups" ? " on" : ""}" type="button" data-findings-mode="groups" aria-pressed="${view.mode === "groups"}">Groups</button></div>`;
-  const top = `${renderGroupingRow(view.groups, view.local, view.busy)}${tabs}`;
+  const top = `${renderGroupingRow(view.groups, view.local, view.busy, view.groupingTime)}${tabs}`;
   if (view.mode === "groups")
     return `${top}${(view.groupsError ?? view.error) ? `<p role="alert" class="checkout-error">${esc(view.groupsError ?? view.error ?? "")} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
   const intro = `<p>Review findings that did not block a merge: in code the change did not touch, or below the review's <code>failOn</code>. Each is listed once, however many issues reported it.</p>`;
@@ -260,8 +261,13 @@ export function createFindings(): {
     const started = ++groupsGeneration;
     try {
       const groups = (await findingGroupsRequest(engine)) as FindingGroupsResponse;
+      const settings =
+        view.local && groups.canChange
+          ? await findingSettingsRequest(engine).catch(() => null)
+          : null;
       if (root !== mounted || started !== groupsGeneration) return;
-      view.groups = groups;
+      view.groups = groups as FindingGroupsResponse;
+      view.groupingTime = settings?.groupingTime;
       view.groupsError = null;
     } catch (error) {
       journalCaught(error, "findings.loadGroups", null);
@@ -388,6 +394,30 @@ export function createFindings(): {
   };
   const submit = (event: Event) => {
     const form = event.target as HTMLFormElement;
+    if (form.dataset.groupingTime !== undefined) {
+      event.preventDefault();
+      const groupingTime = form.querySelector<HTMLInputElement>('[name="groupingTime"]')!.value;
+      if (!engine || view.busy || !view.groups?.canChange) return;
+      view.groupingTime = groupingTime;
+      view.busy = true;
+      paint();
+      void findingSettingsRequest(engine, { groupingTime })
+        .then(
+          (settings) => {
+            view.groupingTime = settings.groupingTime;
+            view.error = null;
+            view.message = "Grouping time saved.";
+          },
+          (error: unknown) => {
+            view.error = error instanceof Error ? error.message : "Could not save grouping time.";
+          },
+        )
+        .finally(() => {
+          view.busy = false;
+          paint();
+        });
+      return;
+    }
     if (form.dataset.findingsFilters !== undefined) {
       event.preventDefault();
       filterTo(formFilter(form));

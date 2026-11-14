@@ -173,6 +173,42 @@ try {
       else expect([name, loads > 1]).toEqual([name, true]);
     }
     const admin = await open(width, f.adminCookie);
+    let groupingTime = "06:00";
+    await admin.route("**/api/settings/findings", async (route) => {
+      if (route.request().method() === "PUT")
+        groupingTime = route.request().postDataJSON().groupingTime;
+      await route.fulfill({ json: { grouping: true, groupingTime } });
+    });
+    await visit(admin, width, "findings-editable", "/dashboard/findings", "Findings");
+    await admin.locator("#grouping-time").fill("13:45");
+    await admin.getByRole("button", { name: "Save time", exact: true }).click();
+    await expect(admin.locator("[data-findings-message]")).toContainText("Grouping time saved.");
+    await admin.screenshot({ path: join(out, `findings-editable-${width}.png`), fullPage: true });
+    await admin.route("**/api/runners", (route) =>
+      route.fulfill({ json: { runners: [], serverVersion: null, workspaceReady: true } }),
+    );
+    let vmSize = { cpu: 4, memoryGb: 8 };
+    await admin.route("**/api/settings/member-vm", async (route) => {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        if (body.cpu < 1) {
+          await route.fulfill({ status: 400, json: { error: "CPUs must be a positive integer." } });
+          return;
+        }
+        vmSize = body;
+      }
+      await route.fulfill({ json: vmSize });
+    });
+    await visit(admin, width, "runners-editable", "/dashboard/runners", "Runners");
+    await admin.locator("#vm-size-cpu").fill("6");
+    await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("Member VM size saved.");
+    await admin.locator("#vm-size-cpu").fill("-1");
+    await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
+    await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
+    await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
+    await admin.screenshot({ path: join(out, `runners-editable-${width}.png`), fullPage: true });
+
     let merging = {
       default: { order: "queue", mainMoved: "overlap" },
       sessionDone: "pull_request",

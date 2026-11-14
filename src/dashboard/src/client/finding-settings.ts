@@ -12,6 +12,7 @@ export function renderGroupingRow(
   groups: FindingGroupsResponse | null | undefined,
   local: boolean,
   busy: boolean,
+  time?: string,
 ): string {
   if (!groups) return "";
   const editable = local && groups.canChange && !busy;
@@ -21,15 +22,15 @@ export function renderGroupingRow(
   const note = groups.canChange
     ? ""
     : '<span class="muted">Only workspace admins can change this.</span>';
-  return `<div class="row wrap" data-finding-grouping=""><label class="settings-inherit"><input type="checkbox" role="switch" name="finding-grouping" ${groups.enabled ? "checked" : ""} ${editable ? "" : "disabled"}><span class="min-w-0 flex-1">Group similar findings into suggested fixes once a day</span></label><span class="muted">${run}</span>${note}</div>`;
+  return `<div class="row wrap" data-finding-grouping=""><label class="settings-inherit"><input type="checkbox" role="switch" name="finding-grouping" ${groups.enabled ? "checked" : ""} ${editable ? "" : "disabled"}><span class="min-w-0 flex-1">Group similar findings into suggested fixes once a day</span></label><span class="muted">${run}</span>${note}</div>${!groups.canChange ? "" : time === undefined ? '<p class="muted">Grouping time is unavailable.</p>' : local && groups.canChange ? `<form class="row wrap" data-grouping-time><label for="grouping-time">Daily grouping time (UTC)</label><input id="grouping-time" name="groupingTime" type="time" required value="${esc(time)}"${busy ? " disabled" : ""}><button class="btn" type="submit"${busy ? " disabled" : ""}>Save time</button></form>` : `<p>Daily grouping time: ${esc(time)} UTC</p>`}`;
 }
 
 export async function findingSettingsRequest(
   engine: string,
-  body?: { grouping: boolean },
+  body?: { grouping: boolean } | { groupingTime: string },
 ): Promise<FindingSettings> {
   const response = await fetch(new URL(PATH, engine), {
-    method: body ? "POST" : "GET",
+    method: body ? ("groupingTime" in body ? "PUT" : "POST") : "GET",
     cache: "no-store",
     headers: {
       Accept: "application/json",

@@ -52,6 +52,9 @@ beforeEach(() => {
     const body = init.body ? JSON.parse(String(init.body)) : null;
     requests.push({ method: init.method ?? "GET", path: target.pathname, body });
     if (target.pathname === "/api/settings/findings") {
+      if (!body) return Response.json({ grouping: groups.enabled, groupingTime: "06:00" });
+      if (body.groupingTime)
+        return Response.json({ grouping: groups.enabled, groupingTime: body.groupingTime });
       groups = { ...groups, enabled: body.grouping };
       return Response.json({ grouping: body.grouping, groupingTime: "06:00" });
     }
@@ -114,4 +117,23 @@ test("Settings no longer lists Findings and its old path opens the Findings page
   expect(SETTINGS_PAGES.map((page) => page.id)).not.toContain("findings");
   expect(renderSettingsPage("agents")).not.toContain("/settings/findings");
   expect(matchRoute("/settings/findings")).toEqual({ view: "findings" });
+});
+
+test("grouping time loads and saves independently of the grouping switch", async () => {
+  const root = await mount();
+  const input = root.querySelector<HTMLInputElement>('[name="groupingTime"]')!;
+  expect(input.value).toBe("06:00");
+  input.value = "13:45";
+  input.closest("form")!.dispatchEvent(new window.Event("submit", { bubbles: true }) as never);
+  await settle();
+  await settle();
+  expect(requests.find((r) => r.method === "PUT")?.body).toEqual({ groupingTime: "13:45" });
+  expect(root.textContent).toContain("Grouping time saved.");
+});
+
+test("members do not request the admin-only settings route", async () => {
+  groups = { ...groups, canRun: false, canChange: false };
+  const root = await mount();
+  expect(root.querySelector('[name="groupingTime"]')).toBeNull();
+  expect(requests.some((request) => request.path === "/api/settings/findings")).toBe(false);
 });
