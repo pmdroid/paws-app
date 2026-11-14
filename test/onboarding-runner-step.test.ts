@@ -370,7 +370,7 @@ test("the member's own runner, a lead's shared runner, and none render the runne
   expect(mineOffline.buttons()).toEqual(["add-host"]);
 });
 
-test("a missing agent sign-in links to the sign-in on the member's own runner", async () => {
+test("a missing account links to Agent accounts for own and shared runners", async () => {
   const own = await render(
     {},
     {
@@ -381,12 +381,11 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
   );
   const agents = own.document.querySelectorAll("#steps > li")[3]!;
   expect(agents.querySelector(".detail")?.textContent).toBe(
-    "Sign in to Codex on mia-box. The Codex sign-in expired.",
+    "Ask a workspace admin to add or reconnect Codex in Settings › Agent accounts for mia-box. The Codex account sign-in expired.",
   );
   const link = agents.querySelector("a.action");
-  expect(link?.getAttribute("href")).toBe("/dashboard/runners/01RUNNER");
-  expect(link?.textContent).toBe("Sign in on mia-box");
-  // Only the owner can sign in on a shared runner, so the page names them instead of linking.
+  expect(link?.getAttribute("href")).toBe("/dashboard/settings/agent-accounts");
+  expect(link?.textContent).toBe("Open Agent accounts");
   const shared = await render(
     {},
     {
@@ -397,9 +396,11 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
   );
   const sharedAgents = shared.document.querySelectorAll("#steps > li")[3]!;
   expect(sharedAgents.querySelector(".detail")?.textContent).toBe(
-    "Ask Lena Lead to sign in to Claude on lead-box.",
+    "Ask a workspace admin to add or reconnect Claude in Settings › Agent accounts for lead-box.",
   );
-  expect(sharedAgents.querySelector("a")).toBeNull();
+  expect(sharedAgents.querySelector("a")?.getAttribute("href")).toBe(
+    "/dashboard/settings/agent-accounts",
+  );
 });
 
 test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
@@ -439,9 +440,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   await heartbeat(f.db, vm.runnerId!, f.clock.now());
   await page.poll();
   const { name } = (await getRunner(f.db, vm.runnerId!))!;
-  expect(page.detail()).toBe(
-    `${name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
-  );
+  expect(page.detail()).toBe(`${name} is paused. Turn it on so Paws can use your agent accounts.`);
   expect(page.runner()?.getAttribute("data-runner")).toBe("paused");
   expect(page.document.querySelector(`a[href="/dashboard/runners/${vm.runnerId}"]`)).not.toBeNull();
   // Readiness is the scheduler's gate for a held first delegation: once the agents sign in on
@@ -475,9 +474,9 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect((await candidates()).map((runner) => runner.id)).toEqual([vm.runnerId!]);
   await page.poll();
   expect(page.document.querySelector("#lead")?.textContent).toBe(
-    `You're set up. Paws runs TEST-1 on ${name}.`,
+    "One more step before Paws starts TEST-1.",
   );
-  expect(page.pending()).toBe(0);
+  expect(page.pending()).toBe(1);
   // Only the page and the existing VM route were requested.
   expect(new Set(f.requests)).toEqual(new Set(["POST /api/runners/vm", "GET /onboard/link"]));
 });
@@ -543,9 +542,7 @@ test("Add a host shows the one command with a single-use token that a reload nev
   const other = await createRunnerKey(join(roots[0]!, "host-b"));
   expect(f.control.enroll({ token: token!, name: "ada-host", csr: other.csr })).rejects.toThrow();
   await page.poll();
-  expect(page.detail()).toBe(
-    "ada-host is paused. Sign in the coding agents this runner should use, then turn it on.",
-  );
+  expect(page.detail()).toBe("ada-host is paused. Turn it on so Paws can use your agent accounts.");
   await f.control.setStatus(f.member, enrolled.runnerId, "active");
   await page.poll();
   expect(page.detail()).toBe("ada-host will run this task.");

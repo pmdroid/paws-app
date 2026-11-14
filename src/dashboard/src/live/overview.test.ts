@@ -9,6 +9,7 @@ import {
   insertLinkAsk,
   insertQueuedItem,
   saveCandidateRiskSteps,
+  recordAccountObservation,
   upsertCloseoutStep,
   type Db,
 } from "../../../db";
@@ -301,9 +302,40 @@ describe("overview resource", () => {
       agent: false,
       delegated: false,
     });
-    await seed(db, (q) =>
-      q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "claude", ready: 1 }),
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.agentAccount).values({
+          id: "account",
+          workspaceId: "ws",
+          agent: "claude",
+          label: "Team",
+          legacy: 0,
+          enabled: 1,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      (q) =>
+        q.orm.insert(q.t.agentAccountBinding).values({
+          id: "binding",
+          workspaceId: "ws",
+          accountId: "account",
+          agent: "claude",
+          runnerId: "box",
+          legacy: 0,
+          quotaScope: "account",
+          createdAt: NOW,
+        }),
     );
+    await recordAccountObservation(db, {
+      bindingId: "binding",
+      source: "sign_in",
+      sourceId: "sign-in",
+      observedAt: NOW,
+      now: NOW,
+      state: "ok",
+      clears: ["auth"],
+    });
     await insertQueuedItem(db, { id: "ENG-1", title: "First", sessionKey: "s1", now: NOW });
     expect((await read()).setup).toEqual({
       github: true,
