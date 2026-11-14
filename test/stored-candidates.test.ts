@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { getItemCandidate, recordItemCandidate } from "../src/db";
+import { CHECKPOINT_COMMIT_MESSAGE } from "../src/core";
 import { pushBranch, readBranchTip, readRef, type GitHubClient } from "../src/github";
 import {
   ensureStoredStartOnGitHub,
   RemoteStartUnverified,
+  storedCheckpointStart,
   type GitHubCommits,
 } from "../src/runner-backend";
 import { forEachDialect, insertWorkItem, type DialectDb } from "./dialects";
@@ -159,10 +161,15 @@ test("a hidden checkpoint ref reads through the refs API", async () => {
   expect(calls).toEqual(["GET /repos/acme/app/git/ref/paws/checkpoints/paws/acme-1"]);
 });
 
-function commits(refs: Record<string, string>, history: Record<string, string[]>): GitHubCommits {
+function commits(
+  refs: Record<string, string>,
+  history: Record<string, string[]>,
+  log: Record<string, { subject: string; parents: string[] }> = {},
+): GitHubCommits {
   return {
     ref: async (name) => refs[name] ?? null,
     contains: async (tip, sha) => tip === sha || (history[tip] ?? []).includes(sha),
+    commit: async (sha) => log[sha] ?? { subject: "work", parents: [] },
   };
 }
 
@@ -225,4 +232,38 @@ test("a stored head with nothing on GitHub to start from is unverified", async (
     ensureStoredStartOnGitHub({ ...startInput(github, moved, []), baseSha: "f".repeat(40) }),
   ).rejects.toBeInstanceOf(RemoteStartUnverified);
   expect(moved).toEqual([]);
+});
+
+test("a failed branch lookup leaves the start unverified and the candidate in place", async () => {
+  const moved: string[] = [];
+  const saved: string[] = [];
+  const github: GitHubCommits = {
+    ...commits({ "refs/heads/main": MAIN }, {}),
+    ref: async (name) => {
+      if (name === "refs/heads/main") return MAIN;
+      throw new Error("GitHub GET failed with status 502");
+    },
+  };
+  await expect(ensureStoredStartOnGitHub(startInput(github, moved, saved))).rejects.toBeInstanceOf(
+    RemoteStartUnverified,
+  );
+  expect(moved).toEqual([]);
+  expect(saved).toEqual([]);
+});
+
+test("a hidden checkpoint is checked through the API and starts on its parent", async () => {
+  const checkpoint = "9".repeat(40);
+  const signal = new AbortController().signal;
+  const github = commits(
+    {},
+    { [CANDIDATE]: [MAIN] },
+    { [checkpoint]: { subject: CHECKPOINT_COMMIT_MESSAGE, parents: [CANDIDATE] } },
+  );
+  expect(await storedCheckpointStart(github, checkpoint, [MAIN], signal)).toBe(CANDIDATE);
+  expect(await storedCheckpointStart(github, CANDIDATE, ["e".repeat(40), MAIN], signal)).toBe(
+    CANDIDATE,
+  );
+  await expect(storedCheckpointStart(github, checkpoint, ["e".repeat(40)], signal)).rejects.toThrow(
+    /does not descend/,
+  );
 });

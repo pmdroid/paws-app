@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { git } from "../acp";
+import { CHECKPOINT_COMMIT_MESSAGE } from "../core";
 
 export type StartCommit =
   /** GitHub's item branch or default branch already holds the head. */
@@ -179,7 +180,21 @@ function permissionRefusal(error: string): boolean {
 export type GitHubCommits = {
   ref(name: string, signal: AbortSignal): Promise<string | null>;
   contains(tip: string, sha: string, signal: AbortSignal): Promise<boolean>;
+  commit(sha: string, signal: AbortSignal): Promise<{ subject: string; parents: string[] }>;
 };
+
+export async function storedCheckpointStart(
+  github: GitHubCommits,
+  checkpoint: string,
+  bases: readonly string[],
+  signal: AbortSignal,
+): Promise<string> {
+  const read = await github.commit(checkpoint, signal);
+  const start = read.subject === CHECKPOINT_COMMIT_MESSAGE ? read.parents[0] : checkpoint;
+  if (!start) throw new Error(`Checkpoint ${checkpoint.slice(0, 7)} has no parent`);
+  for (const base of bases) if (await github.contains(start, base, signal)) return start;
+  throw new Error(`Commit ${start} does not descend from ${bases.join(" or ")}.`);
+}
 
 export async function ensureStoredStartOnGitHub(input: {
   head: string;
@@ -192,8 +207,13 @@ export async function ensureStoredStartOnGitHub(input: {
   signal: AbortSignal;
 }): Promise<StartCommit> {
   const { github, head, signal } = input;
-  const branchHead = await github.ref(`refs/heads/${input.branch}`, signal).catch(() => null);
-  const mainHead = await github.ref("refs/heads/main", signal).catch(() => null);
+  const read = (name: string) =>
+    github.ref(name, signal).catch((error: unknown) => {
+      signal.throwIfAborted();
+      throw new RemoteStartUnverified(head, `reading ${name} failed: ${message(error)}`);
+    });
+  const branchHead = await read(`refs/heads/${input.branch}`);
+  const mainHead = await read("refs/heads/main");
   const tips = [branchHead, mainHead].filter((tip): tip is string => tip !== null);
   if (!tips.length)
     throw new RemoteStartUnverified(head, `GitHub has neither ${input.branch} nor main`);

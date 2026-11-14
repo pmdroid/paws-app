@@ -161,6 +161,9 @@ test("with mirrors off a runner run starts from the stored candidate and never c
       if (name === "refs/heads/main") return main;
       return pushed && name.startsWith("refs/heads/paws/") ? candidate : null;
     },
+    async commit(sha) {
+      return { subject: "", parents: sha === candidate ? [main] : [] };
+    },
     async contains(tip, sha) {
       return tip === sha || (tip === candidate && sha === main);
     },

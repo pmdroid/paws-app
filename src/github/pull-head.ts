@@ -172,3 +172,23 @@ export async function readRef(input: HeadRead & { ref: string }): Promise<string
     throw new Error(`Could not read ${input.ref}`);
   return object.sha.toLowerCase();
 }
+
+export async function readCommit(
+  input: HeadRead & { sha: string },
+): Promise<{ subject: string; parents: string[] }> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/git/commits/${encodeURIComponent(input.sha)}`),
+    token,
+    signal: input.signal,
+  });
+  const body = read.body as { message?: unknown; parents?: { sha?: unknown }[] } | null;
+  if (read.status !== 200 || typeof body?.message !== "string" || !Array.isArray(body.parents))
+    throw new Error(`Could not read commit ${input.sha.slice(0, 7)}`);
+  return {
+    subject: body.message.split("\n")[0]!.trim(),
+    parents: body.parents.map((parent) => String(parent.sha).toLowerCase()),
+  };
+}

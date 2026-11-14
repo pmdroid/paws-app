@@ -206,6 +206,7 @@ import {
   createGitHubGitReader,
   branchContains,
   readRef,
+  readCommit,
   useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
@@ -1227,6 +1228,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       ref: (ref, signal) => readRef({ ...read(), ref, signal }),
       contains: async (tip, sha, signal) =>
         (await branchContains({ ...read(), branch: tip, sha, signal })).contains,
+      commit: (sha, signal) => readCommit({ ...read(), sha, signal }),
     };
   };
   const remote = placeOnRunner

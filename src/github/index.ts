@@ -165,6 +165,7 @@ export {
   readBranchTip,
   readBranchWork,
   readRef,
+  readCommit,
   readOpenPullHead,
 } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

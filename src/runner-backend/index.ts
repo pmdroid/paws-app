@@ -137,6 +137,7 @@ import {
   ensureStartOnRemote,
   ensureStoredStartOnGitHub,
   lostCommitsNote,
+  storedCheckpointStart,
   RemoteStartUnverified,
   type GitHubCommits,
 } from "./start-commit";
@@ -1392,10 +1393,9 @@ export function createRemoteAgentRunner(options: {
                   ?.checkpointMain;
                 const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
                 const startsOn = (bases: string[]) =>
-                  checkpointStart(
-                    (args) => git(["--git-dir", mirror!, ...args]),
-                    saved,
-                    bases,
+                  (github
+                    ? storedCheckpointStart(github, saved, bases, signal)
+                    : checkpointStart((args) => git(["--git-dir", mirror!, ...args]), saved, bases)
                   ).then(
                     () => true,
                     (error: unknown) => {
@@ -2859,6 +2859,7 @@ export {
   ensureStartOnRemote,
   ensureStoredStartOnGitHub,
   RemoteStartUnverified,
+  storedCheckpointStart,
   type GitHubCommits,
 } from "./start-commit";
 
