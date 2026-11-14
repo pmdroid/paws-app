@@ -7,6 +7,7 @@ import { tempStore } from "./pglite";
 import { githubBlobCache } from "../src/db";
 import { createGitHubGitReader, type GitHubClient } from "../src/github";
 import {
+  reviewRequirements,
   createGitReader,
   mergeResultPolicyError,
   POLICY_CHANGED_ON_BOTH_SIDES,
@@ -362,4 +363,13 @@ test("a repository the GitHub reader does not locate keeps its local git diff", 
     useGitReader(null);
   }
   expect(calls).toEqual([]);
+});
+
+test("remote preflight reads review requirements through an explicit cold GitHub reader", async () => {
+  const { client, home, calls } = fixture();
+  const result = await reviewRequirements(MIRROR, home, undefined, apiReader(client));
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.items.map((item) => item.id)).toEqual(["review"]);
+  expect(calls.some((path) => path.includes("/git/ref/heads/main"))).toBe(true);
+  expect(calls.some((path) => path.includes("/git/blobs/"))).toBe(true);
 });

@@ -10,6 +10,8 @@ export default {
     "src/github/merge.ts",
     "src/config/file.ts",
     "src/config/paths.ts",
+    "src/closeout-spec/facade.ts",
+    "src/github/candidate-reads.ts",
     "src/acp/worktree.ts",
     "src/acp/executor.ts",
   ],

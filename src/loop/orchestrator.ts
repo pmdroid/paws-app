@@ -438,6 +438,8 @@ import {
   branchContains,
   hasOpenPullOnPrefix,
   readOpenPullHead,
+  createGitHubGitReader,
+  readGitHubCandidateRange,
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
   readBranchTip,
@@ -4063,7 +4065,10 @@ export class Orchestrator {
         throw new Error("Implementer did not report a concrete session model");
       await this.saveCandidate(run.id, executed.run.identity);
       const at = await this.itemHead(finished);
-      const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
+      const range = this.storedCandidates()
+        ? await this.storedCandidateRange(finished, at.ref)
+        : null;
+      const head = range?.head ?? (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
       await recordAgentFindingDecisions(
         this.store,
         item.id,
@@ -4071,7 +4076,8 @@ export class Orchestrator {
         await this.fixCommit(at.repo, item.id, head),
         this.now(),
       );
-      const base = (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
+      const base =
+        range?.base ?? (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
       const checkpoint = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint;
       await this.store.run((q) =>
         saveCheckpointSteps(q, item.id, {
@@ -4081,9 +4087,9 @@ export class Orchestrator {
           wipCommit: head,
         }),
       );
-      const commits = Number(
-        (await git(["-C", at.repo, "rev-list", "--count", `${base}..${head}`])).trim(),
-      );
+      const commits =
+        range?.commits ??
+        Number((await git(["-C", at.repo, "rev-list", "--count", `${base}..${head}`])).trim());
       await this.store.run((q) =>
         recordItemBranchStateSteps(q, {
           itemId: item.id,
@@ -4331,9 +4337,10 @@ export class Orchestrator {
       const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
-        const acceptedHead = (
-          await git(["-C", worktree, "rev-parse", (await this.itemHead(item)).ref])
-        ).trim();
+        const acceptedRef = (await this.itemHead(item)).ref;
+        const acceptedHead = this.storedCandidates()
+          ? acceptedRef
+          : (await git(["-C", worktree, "rev-parse", acceptedRef])).trim();
         const mergeJob = await acceptCloseout(this.store, {
           itemId: item.id,
           expected: verdict.owner,
@@ -5759,8 +5766,10 @@ export class Orchestrator {
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
     try {
-      head = (await git(["-C", worktree, "rev-parse", ref])).trim();
-      if (base === "" || item.checkpoint?.wipCommit !== head) {
+      const range = this.storedCandidates() ? await this.storedCandidateRange(item, ref) : null;
+      head = range?.head ?? (await git(["-C", worktree, "rev-parse", ref])).trim();
+      if (range) base = range.base;
+      else if (base === "" || item.checkpoint?.wipCommit !== head) {
         const upstream = await git([
           "-C",
           worktree,
@@ -6148,7 +6157,9 @@ export class Orchestrator {
       link: pawsIssueUrl(publicUrl, item),
     };
     const openLine = openFindingsLine(open);
-    const candidateHead = await git(["-C", worktree, "rev-parse", ref])
+    const candidateHead = await (
+      this.storedCandidates() ? Promise.resolve(ref) : git(["-C", worktree, "rev-parse", ref])
+    )
       .then((head) => head.trim())
       .catch((caughtError: unknown) => {
         journalCaught(
@@ -6382,11 +6393,13 @@ export class Orchestrator {
   ): Promise<RiskClassification> {
     const run = (args: string[]) => git(["-C", worktree, ...args]);
     const { ref } = await this.itemHead(item);
-    const head = (await run(["rev-parse", ref])).trim();
+    const range = this.storedCandidates() ? await this.storedCandidateRange(item, ref) : null;
+    const head = range?.head ?? (await run(["rev-parse", ref])).trim();
     const base =
-      candidate?.sha === head
+      range?.base ??
+      (candidate?.sha === head
         ? candidate.baseSha
-        : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
+        : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim());
     const listed = await trustedChangedPaths(worktree, base, head);
     if (!listed.ok) throw new Error(listed.message);
     const changed = listed.paths;
@@ -7017,7 +7030,9 @@ export class Orchestrator {
     let head = "";
     let base = current.checkpoint?.baseSha ?? "";
     try {
-      head = (await git(["-C", worktree, "rev-parse", ref])).trim();
+      const range = this.storedCandidates() ? await this.storedCandidateRange(current, ref) : null;
+      head = range?.head ?? (await git(["-C", worktree, "rev-parse", ref])).trim();
+      if (range) base = range.base;
     } catch (caughtError13) {
       journalCaught(
         caughtError13,
@@ -10711,6 +10726,18 @@ export class Orchestrator {
       worktree.repo,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
+      ...(this.storedCandidates()
+        ? ([
+            createGitHubGitReader({
+              locate: (path) => {
+                const github = this.githubForRepository(repository);
+                return path === worktree.repo && github
+                  ? { ...repository, client: github.client, ...this.gitHubCredentials(github) }
+                  : null;
+              },
+            }),
+          ] as const)
+        : []),
     );
     if (!required.ok)
       throw required.message.startsWith("origin/main is unavailable") &&
@@ -10969,6 +10996,16 @@ export class Orchestrator {
       repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
       ref: stored ?? candidateRef(itemPathId(item)),
     };
+  }
+
+  private async storedCandidateRange(item: WorkItemRecord, head: string) {
+    const repository = await this.repositoryForItem(item);
+    const github = repository && this.githubForRepository(repository);
+    if (!repository || !github) throw new Error("Candidate GitHub access is unavailable");
+    return readGitHubCandidateRange(
+      { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+      head,
+    );
   }
 
   private async sameCandidatePatch(

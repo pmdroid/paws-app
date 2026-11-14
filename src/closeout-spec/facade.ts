@@ -359,6 +359,7 @@ export async function reviewRequirements(
   repo: string,
   home?: string,
   policyRoot?: string,
+  reader: GitReader = gitReader,
 ): Promise<
   | {
       ok: true;
@@ -374,7 +375,12 @@ export async function reviewRequirements(
     }
   | { ok: false; message: string }
 > {
-  const loaded = await loadOrigin(repo, home, policyRoot);
+  const loaded = await loadPolicy({
+    repo,
+    git: reader,
+    ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
+  });
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,

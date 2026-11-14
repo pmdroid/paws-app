@@ -76,7 +76,7 @@ export async function sameGitHubCandidatePatch(
       if (typeof file.filename !== "string" || typeof file.patch !== "string") return null;
       const changes = file.patch
         .split("\n")
-        .filter((line: string) => line.startsWith("+") || line.startsWith("-"));
+        .map((line: string) => line.replace(/^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/, "@@ -$1 +$2 @@"));
       files.push(JSON.stringify([file.filename, file.previous_filename, file.status, changes]));
     }
     return files.sort().join("\n");
@@ -92,4 +92,28 @@ export async function sameGitHubCandidatePatch(
     if (oldModes.get(path) !== newModes.get(path)) return false;
   }
   return true;
+}
+
+export async function readGitHubCandidateRange(
+  repository: GitHubGitRepository,
+  head: string,
+): Promise<{ head: string; base: string; commits: number }> {
+  if (!/^[a-f0-9]{40}$/.test(head)) throw new Error("Invalid candidate head");
+  const get = repositoryGet({
+    ...repository,
+    token: await acquireOperationToken(repository, "pr"),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const comparison = await get(`/compare/main...${head}?per_page=1`);
+  const base = (comparison.merge_base_commit as { sha?: unknown } | undefined)?.sha;
+  const commits = comparison.ahead_by;
+  if (
+    typeof base !== "string" ||
+    !/^[a-f0-9]{40}$/.test(base) ||
+    typeof commits !== "number" ||
+    !Number.isSafeInteger(commits) ||
+    commits < 0
+  )
+    throw new Error("GitHub returned an incomplete candidate range");
+  return { head, base, commits };
 }
