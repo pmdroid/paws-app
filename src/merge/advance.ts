@@ -36,6 +36,7 @@ import {
   rebaseOntoMain,
   squashPull,
   SquashServerError,
+  updateBranchOnGitHub,
   type GitExec,
   type GitHubBinding,
   type PullFacts,
@@ -132,7 +133,7 @@ export type MergeCapabilities = OrderCapabilities & {
   ): MergeResultPolicyError | undefined | Promise<MergeResultPolicyError | undefined>;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
-  changedFilesFromGitHub?(): boolean;
+  mirrorsOff?(): boolean;
   assertReady(item: WorkItemRecord): Promise<void>;
   /** Whether head S needs, and has, a person's risk approval in Paws. */
   riskApproval(item: WorkItemRecord, published: MergePublication): Promise<RiskApproval>;
@@ -293,7 +294,7 @@ export async function advanceMerge(
           overlap: {
             packages: caps.packages(`${repository.owner}/${repository.repo}`),
             anyFiles: mergeSettings.mainMoved === "green",
-            ...(caps.changedFilesFromGitHub?.() ? { fromGitHub: true } : {}),
+            ...(caps.mirrorsOff?.() ? { fromGitHub: true } : {}),
           },
         }
       : {}),
@@ -311,7 +312,10 @@ export async function advanceMerge(
       });
     },
     rebase: async (facts) => {
-      const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
+      const rebased =
+        mergeSettings.mainMoved === "ci" && caps.mirrorsOff?.()
+          ? await updateOnGitHub(item, caps, lane, facts, published.signal)
+          : await rebaseOnRunner(item, caps, lane, facts, published.signal);
       if (rebased.rebased)
         await store.run((q) =>
           recordItemCandidateSteps(q, {
@@ -688,6 +692,29 @@ async function returnForPolicy(
     return { kind: "asked" };
   }
   return { kind: "failed", reason: "merge", message };
+}
+
+async function updateOnGitHub(
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  lane: SerialMergeInput,
+  pull: PullFacts,
+  signal: AbortSignal,
+): Promise<RebaseResult> {
+  const updated = await updateBranchOnGitHub(
+    lane,
+    { head: pull.head, base: pull.base },
+    signal,
+  ).catch((error: unknown) => {
+    if (signal.aborted) throw error;
+    return { refused: error instanceof Error ? error.message : String(error) };
+  });
+  signal.throwIfAborted();
+  if (!("refused" in updated)) return updated;
+  journal(
+    `item ${item.linearIdentifier} rebases without GitHub's update-branch: ${updated.refused}`,
+  );
+  return rebaseOnRunner(item, caps, lane, pull, signal);
 }
 
 async function rebaseOnRunner(
