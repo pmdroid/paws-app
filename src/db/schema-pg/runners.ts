@@ -83,6 +83,9 @@ export const runnerWork = pgTable(
     confirmedAt: bigint("confirmed_at", { mode: "number" }),
     lostAt: bigint("lost_at", { mode: "number" }),
     teardownConfirmedAt: bigint("teardown_confirmed_at", { mode: "number" }),
+    skills: text(),
+    hooks: text(),
+    setupRecordedAt: bigint("setup_recorded_at", { mode: "number" }),
   },
   (table) => [
     unique().on(table.commandId),
@@ -411,18 +414,6 @@ export const runnerSkill = pgTable(
     check("runner_skill_check_1", sql`status IN ('installed','pending','refused')`),
   ],
 );
-
-export const runAgentSetup = pgTable("run_agent_setup", {
-  runId: text("run_id")
-    .primaryKey()
-    .references(() => run.id),
-  runnerId: text("runner_id")
-    .notNull()
-    .references(() => runner.id),
-  skills: text().notNull(),
-  hooks: text().notNull(),
-  recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-});
 
 export const runnerRuntime = pgTable(
   "runner_runtime",

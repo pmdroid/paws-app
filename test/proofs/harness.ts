@@ -114,6 +114,8 @@ function fixtureGitHub(input: {
   closed: Set<number>;
   merged: Map<number, string>;
   opened: FakeGitHub["opened"];
+  /** Each `updatePullRequestBranch` call: the expected head, and the head GitHub's rebase made. */
+  branchUpdates: { expected: string; rebased: string }[];
 } {
   const { pulls, repository } = input;
   const calls: GitHubCall[] = [];
@@ -130,9 +132,54 @@ function fixtureGitHub(input: {
     head: { ref: pulls.opened[number - 1]!.head, repo: { full_name: repository } },
     base: { ref: "main", repo: { full_name: repository } },
   });
+  async function updateBranch(body: { query: string; variables: Record<string, unknown> }) {
+    if (body.query.startsWith("query PullRequestBranch")) {
+      const pull = pulls.opened[Number(body.variables.number) - 1];
+      const headRefOid =
+        pull && (await git("-C", input.origin, "rev-parse", `refs/heads/${pull.head}`));
+      return {
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: pull ? { id: `PR_${body.variables.number}`, headRefOid } : null,
+            },
+          },
+        },
+      };
+    }
+    if (!body.query.startsWith("mutation UpdatePullRequestBranch")) return null;
+    const pull = pulls.opened[Number(String(body.variables.id).replace(/^PR_/, "")) - 1]!;
+    const clone = join(input.origin, "..", `github-update-${branchUpdates.length + 1}`);
+    await git("clone", "-q", input.origin, clone);
+    await git("-C", clone, "checkout", "-q", String(body.variables.expectedHead));
+    await git(
+      "-C",
+      clone,
+      "-c",
+      "user.name=GitHub",
+      "-c",
+      "user.email=noreply@github.com",
+      "rebase",
+      "-q",
+      "origin/main",
+    );
+    await git("-C", clone, "push", "-qf", "origin", `HEAD:refs/heads/${pull.head}`);
+    const headRefOid = await git("-C", clone, "rev-parse", "HEAD");
+    branchUpdates.push({ expected: String(body.variables.expectedHead), rebased: headRefOid });
+    return {
+      status: 200,
+      body: { data: { updatePullRequestBranch: { pullRequest: { headRefOid } } } },
+    };
+  }
+  const branchUpdates: { expected: string; rebased: string }[] = [];
   async function respond(request: GitHubRequest) {
     const { method, path } = request;
     if (path === "/graphql") {
+      const update = await updateBranch(
+        request.body as { query: string; variables: Record<string, unknown> },
+      );
+      if (update) return update;
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
       if (input.noCi || ci.dirty) {
@@ -238,7 +285,7 @@ function fixtureGitHub(input: {
       }
     },
   };
-  return { client, ci, calls, comments, closed, merged, opened: pulls.opened };
+  return { client, ci, calls, comments, closed, merged, opened: pulls.opened, branchUpdates };
 }
 
 export const ACME = {
@@ -288,6 +335,8 @@ export type Proof = {
   mergeServerErrors?: number;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
+  /** Appended to the scenario's `config.toml`. */
+  config?: string;
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
   member?: { login: string; token: string; refused?: number };
@@ -313,7 +362,10 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
-  writeFileSync(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "claude"\n`);
+  writeFileSync(
+    join(pawsRoot, "config.toml"),
+    `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`,
+  );
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents"), { recursive: true });

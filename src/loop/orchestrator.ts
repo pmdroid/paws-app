@@ -5880,7 +5880,7 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
-        changedFilesFromGitHub: () =>
+        mirrorsOff: () =>
           !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
