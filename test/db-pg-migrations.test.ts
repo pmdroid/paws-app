@@ -386,26 +386,33 @@ describe("Postgres drizzle-kit migrations", () => {
         ...bodies.map((value) => JSON.stringify(value)),
         "invalid",
         "null",
-        JSON.stringify({ comment: "\u0000" }),
-        '{"number":1e1000000}',
+        JSON.stringify({
+          repository: { full_name: "Acme/App" },
+          pull_request: { number: 7 },
+          comment: "\u0000",
+        }),
+        '{"repository":{"full_name":"Acme/App"},"issue":{"number":8},"number":1e1000000}',
+        ...["\ud800", "\udc00", "\ud83d\udc36", String.raw`\u0000`].map((comment) =>
+          JSON.stringify({
+            repository: { full_name: "Acme/App" },
+            pull_request: { number: 7 },
+            comment,
+          }),
+        ),
+        ...["Acme/🐶", String.raw`Acme/\u0000`].map((full_name) =>
+          JSON.stringify({ repository: { full_name }, pull_request: { number: 7 } }),
+        ),
       ].entries())
         await pg.$client.query("INSERT INTO github_delivery VALUES ($1, 'issue_comment', $2, $3)", [
           String(i),
           body,
           i + 100,
         ]);
-      const validJson = await pg.$client.query(
-        "SELECT payload IS JSON AS valid_json, pg_input_is_valid(payload, 'jsonb') AS valid_jsonb FROM github_delivery WHERE delivery_id IN ('6', '7') ORDER BY delivery_id",
-      );
-      expect(validJson.rows).toEqual([
-        { valid_json: true, valid_jsonb: false },
-        { valid_json: true, valid_jsonb: false },
-      ]);
       await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
       const rows = await pg
         .select()
         .from(pgSchema.githubDelivery)
-        .orderBy(pgSchema.githubDelivery.deliveryId);
+        .orderBy(pgSchema.githubDelivery.receivedAt);
       expect(
         rows.map(({ repository, pullNumber, receivedAt }) => [repository, pullNumber, receivedAt]),
       ).toEqual([
@@ -415,8 +422,14 @@ describe("Postgres drizzle-kit migrations", () => {
         ["acme/app", null, 103],
         [null, null, 104],
         [null, null, 105],
-        [null, null, 106],
-        [null, null, 107],
+        ["acme/app", 7, 106],
+        ["acme/app", 8, 107],
+        ["acme/app", 7, 108],
+        ["acme/app", 7, 109],
+        ["acme/app", 7, 110],
+        ["acme/app", 7, 111],
+        ["acme/🐶", 7, 112],
+        [String.raw`acme/\u0000`, 7, 113],
       ]);
       expect(Object.keys(rows[0]!)).not.toContain("payload");
     } finally {
