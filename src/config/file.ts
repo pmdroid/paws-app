@@ -386,11 +386,7 @@ function assignConfig(
   line: number,
 ): void {
   if (section === "findings") {
-    if (
-      key !== "grouping_time" ||
-      typeof value !== "string" ||
-      !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)
-    )
+    if (key !== "grouping_time" || typeof value !== "string" || !GROUPING_TIME_PATTERN.test(value))
       throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
     config.findingsGroupingTime = value;
     return;
@@ -499,6 +495,16 @@ function assignConfig(
     else if (key === "repo") config.repo = asString(value, line);
     else if (key === "linear_team" || key === "team") config.linearTeam = asString(value, line);
   }
+}
+
+const GROUPING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export function writeFindingsGroupingTime(path: string, groupingTime: string): Promise<void> {
+  if (!GROUPING_TIME_PATTERN.test(groupingTime))
+    throw new Error("findings.grouping_time must be HH:MM UTC");
+  return updateConfigText(path, (text) =>
+    setConfigKeys(text, "findings", { grouping_time: groupingTime }),
+  );
 }
 
 function oneOf<T extends string>(
