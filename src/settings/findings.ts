@@ -1,3 +1,4 @@
+import { loadConfigFile, writeFindingsGroupingTime } from "../config";
 import { findingGroupingEnabledSteps, setFindingGroupingSteps, type Db } from "../db";
 import { journalCaught } from "../journal";
 import { isWorkspaceAdmin } from "../workspace";
@@ -9,7 +10,7 @@ export type FindingSettingsOptions = {
   store: Db;
   csrfToken: string;
   workspaceId: string;
-  groupingTime: string;
+  configPath?: string;
   trustedOrigin?: string;
   role?: string;
   audit: (action: string, subject: string) => Promise<void>;
@@ -28,10 +29,12 @@ export async function handleFindingSettingsRequest(
   const listing = async () =>
     json({
       grouping: await store.run((q) => findingGroupingEnabledSteps(q, options.workspaceId)),
-      groupingTime: options.groupingTime,
+      groupingTime:
+        (options.configPath && loadConfigFile(options.configPath).findingsGroupingTime) || "06:00",
     });
   if (request.method === "GET") return listing();
-  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.method !== "POST" && request.method !== "PUT")
+    return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
   let body: unknown;
@@ -40,6 +43,23 @@ export async function handleFindingSettingsRequest(
   } catch (error) {
     journalCaught(error, "findings.handleFindingSettingsRequest.readJson", null);
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
+  }
+  if (request.method === "PUT") {
+    if (!isRecord(body) || typeof body.groupingTime !== "string")
+      return json({ error: "Send groupingTime as HH:MM (24-hour, UTC)." }, 400);
+    if (!options.configPath) return json({ error: "Settings storage is not available." }, 503);
+    const groupingTime = body.groupingTime;
+    try {
+      await writeFindingsGroupingTime(options.configPath, groupingTime);
+    } catch (error) {
+      journalCaught(error, "findings.handleFindingSettingsRequest.write", null);
+      return json({ error: "Send groupingTime as HH:MM (24-hour, UTC)." }, 400);
+    }
+    await options.audit(
+      "settings.findings.grouping_time",
+      `Set daily finding grouping time to ${groupingTime} UTC`,
+    );
+    return listing();
   }
   if (!isRecord(body) || typeof body.grouping !== "boolean")
     return json({ error: "Send grouping as true or false." }, 400);

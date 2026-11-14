@@ -1,5 +1,5 @@
 {
-  "id": "4f74fd0e-95ed-41f3-85c3-195df7af4321",
+  "id": "05394946-89db-45a0-83fe-9e435eb32417",
   "prevId": "9d49a6a8-3f8c-4592-aba2-85e6e06fbcff",
   "version": "7",
   "dialect": "postgresql",
@@ -580,6 +580,12 @@
           "primaryKey": true,
           "notNull": true
         },
+        "entries": {
+          "name": "entries",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
         "transcript": {
           "name": "transcript",
           "type": "text",
@@ -628,58 +634,6 @@
           "value": "blocked IN (0,1)"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.linear_conversation_entry": {
-      "name": "linear_conversation_entry",
-      "schema": "",
-      "columns": {
-        "item_id": {
-          "name": "item_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "entry": {
-          "name": "entry",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "linear_conversation_entry_item_id_linear_conversation_item_id_fk": {
-          "name": "linear_conversation_entry_item_id_linear_conversation_item_id_fk",
-          "tableFrom": "linear_conversation_entry",
-          "tableTo": "linear_conversation",
-          "columnsFrom": ["item_id"],
-          "columnsTo": ["item_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "linear_conversation_entry_item_id_position_pk": {
-          "name": "linear_conversation_entry_item_id_position_pk",
-          "columns": ["item_id", "position"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.linear_installation_permission": {
@@ -4342,29 +4296,7 @@
           "notNull": false
         }
       },
-      "indexes": {
-        "agent_closeout_event_item": {
-          "name": "agent_closeout_event_item",
-          "columns": [
-            {
-              "expression": "item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "agent_closeout_event_run_id_sequence_pk": {
@@ -15881,23 +15813,7 @@
           "notNull": true
         }
       },
-      "indexes": {
-        "scheduler_project": {
-          "name": "scheduler_project",
-          "columns": [
-            {
-              "expression": "project_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "scheduler_admission_item_id_work_item_id_fk": {
           "name": "scheduler_admission_item_id_work_item_id_fk",

@@ -38,6 +38,8 @@ const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
+
+const LINEAR_OUTBOX_NOT_BEFORE = "linear_outbox_not_before";
 export const LINEAR_PROGRESS_INTERVAL_MS = 30_000;
 
 function jsonText(payload: string, key: string): string {
@@ -246,7 +248,7 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
        WHERE r.position=1 AND o.status='pending' AND o.not_before<=${now}
          AND (o.locked_until IS NULL OR o.locked_until<=${now})
          AND (o.target<>'linear' OR NOT EXISTS(
-           SELECT 1 FROM linear_outbox_backoff WHERE not_before>${now}
+           SELECT 1 FROM setting WHERE key=${LINEAR_OUTBOX_NOT_BEFORE} AND value::bigint>${now}
          ))
          ${blocked}
          AND NOT EXISTS (
@@ -449,7 +451,7 @@ export function* retryOutboxSteps(
   error: unknown,
   options: RetryOptions = {},
 ): Steps<{ reasked: boolean }> {
-  const { outbox, linearOutboxBackoff: backoff } = q.t;
+  const { outbox, setting } = q.t;
   const now = options.now ?? Date.now();
   const retryAfter =
     row.target === "linear" && error instanceof Error && error.name === "LinearRateLimitError"
@@ -468,14 +470,16 @@ export function* retryOutboxSteps(
         options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
       );
   if (rateLimited) {
-    const later = sql`GREATEST`;
     yield* q.exec(
       q.orm
-        .insert(backoff)
-        .values({ id: 1, notBefore: now + delay })
+        .insert(setting)
+        .values({ key: LINEAR_OUTBOX_NOT_BEFORE, value: String(now + delay), updatedAt: now })
         .onConflictDoUpdate({
-          target: backoff.id,
-          set: { notBefore: sql`${later}(${backoff.notBefore}, excluded.not_before)` },
+          target: setting.key,
+          set: {
+            value: sql`GREATEST(${setting.value}::bigint, excluded.value::bigint)::text`,
+            updatedAt: now,
+          },
         }),
     );
   }
@@ -1174,7 +1178,10 @@ export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation
           eq(outbox.target, "linear"),
           eq(outbox.orderingKey, sessionId),
           eq(outbox.deliveryGeneration, generation),
-          ilike(outbox.idempotencyKey, "pull-request-ready:%"),
+          or(
+            ilike(outbox.idempotencyKey, "pull-request-ready:%"),
+            ilike(outbox.idempotencyKey, "pull-request-opened:%"),
+          ),
           ne(outbox.status, "dropped"),
         ),
       )
@@ -1297,6 +1304,7 @@ export function* sessionPullRequestOpenSteps(
           lte(outbox.deliveryGeneration, generation),
           or(
             prefixed(outbox.idempotencyKey, "pull-request-ready:%"),
+            prefixed(outbox.idempotencyKey, "pull-request-opened:%"),
             prefixed(outbox.idempotencyKey, "merged:%"),
             prefixed(outbox.idempotencyKey, "closed:%"),
           ),
@@ -1307,7 +1315,7 @@ export function* sessionPullRequestOpenSteps(
       .orderBy(desc(outbox.id))
       .limit(1),
   );
-  return row?.key.startsWith("pull-request-ready:") ?? false;
+  return /^pull-request-(ready|opened):/.test(row?.key ?? "");
 }
 
 export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { git } from "../acp";
+import { CHECKPOINT_COMMIT_MESSAGE } from "../core";
 
 export type StartCommit =
   /** GitHub's item branch or default branch already holds the head. */
@@ -174,4 +175,63 @@ function permissionRefusal(error: string): boolean {
   return /(?:returned error: 403|Permission denied|write access.*not granted|Permission to .* denied|\(403\))/i.test(
     error,
   );
+}
+
+export type GitHubCommits = {
+  ref(name: string, signal: AbortSignal): Promise<string | null>;
+  contains(tip: string, sha: string, signal: AbortSignal): Promise<boolean>;
+  commit(sha: string, signal: AbortSignal): Promise<{ subject: string; parents: string[] }>;
+};
+
+export async function storedCheckpointStart(
+  github: GitHubCommits,
+  checkpoint: string,
+  bases: readonly string[],
+  signal: AbortSignal,
+): Promise<string | null> {
+  const read = await github.commit(checkpoint, signal);
+  const start = read.subject === CHECKPOINT_COMMIT_MESSAGE ? read.parents[0] : checkpoint;
+  if (!start) return null;
+  for (const base of bases) if (await github.contains(start, base, signal)) return start;
+  return null;
+}
+
+export async function ensureStoredStartOnGitHub(input: {
+  head: string;
+  branch: string;
+  github: GitHubCommits;
+  wipCommit?: string;
+  baseSha?: string;
+  persistFallback: (fallback: { head: string; start: string; lost: string[] }) => Promise<void>;
+  moveCandidate: (start: string) => Promise<void>;
+  signal: AbortSignal;
+}): Promise<StartCommit> {
+  const { github, head, signal } = input;
+  const read = (name: string) =>
+    github.ref(name, signal).catch((error: unknown) => {
+      signal.throwIfAborted();
+      throw new RemoteStartUnverified(head, `reading ${name} failed: ${message(error)}`);
+    });
+  const branchHead = await read(`refs/heads/${input.branch}`);
+  const mainHead = await read("refs/heads/main");
+  const tips = [branchHead, mainHead].filter((tip): tip is string => tip !== null);
+  if (!tips.length)
+    throw new RemoteStartUnverified(head, `GitHub has neither ${input.branch} nor main`);
+  const onRemote = async (sha: string) => {
+    for (const tip of tips) if (await github.contains(tip, sha, signal)) return true;
+    signal.throwIfAborted();
+    return false;
+  };
+  if (await onRemote(head)) return { status: "remote", head };
+  let start: string | undefined;
+  for (const candidate of [branchHead, input.wipCommit, input.baseSha])
+    if (candidate && (candidate === branchHead || (await onRemote(candidate)))) {
+      start = candidate;
+      break;
+    }
+  const error = "the head is not on GitHub and Paws keeps no mirror to push it from";
+  if (!start) throw new RemoteStartUnverified(head, `no earlier commit is on GitHub; ${error}`);
+  await input.persistFallback({ head, start, lost: [] });
+  await input.moveCandidate(start);
+  return { status: "fallback", head, start, lost: [], error };
 }
