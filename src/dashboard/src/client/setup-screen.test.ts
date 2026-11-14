@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { TWO_ROLE_REQUIREMENT } from "./setup-screen";
 import { settleReactWork } from "./settle-react";
 import { initializeWorkspaceAccess } from "./workspace";
 
@@ -54,6 +53,9 @@ test("an admin of an unfinished setup sees only the setup steps with the Integra
     "Choose repositories",
   ]);
   expect(content.querySelector('[data-setup-step="done"] b')?.textContent).toBe("Linear connected");
+  expect(content.querySelector('[data-setup-step="next"] span.muted')?.textContent).toBe(
+    "Paws's GitHub App must be installed on the organization or account whose repositories it will work on. Installing it needs an owner of that organization; connecting it here needs only read access to those repositories.",
+  );
   expect(content.querySelector("[data-setup-github] #workspace-github-integration")).not.toBeNull();
   expect(window.document.querySelector("#top")!.hasAttribute("hidden")).toBe(true);
   expect(window.document.querySelector("#workspace-access")!.hasAttribute("hidden")).toBe(true);
@@ -80,6 +82,6 @@ test("the sign-in page states both roles before sign-in", async () => {
   respond(Response.json({ configured: true }, { status: 401 }));
   expect(await initializeWorkspaceAccess(() => null)).toBe(false);
   expect(window.document.querySelector("#page-content")?.textContent).toContain(
-    TWO_ROLE_REQUIREMENT,
+    "To set up Paws you need to be an admin of your Linear workspace. Paws's GitHub App must be installed on the GitHub organization or account whose repositories it will work on; installing it needs an owner of that organization. After setup, other people only need to sign in with Linear.",
   );
 });
