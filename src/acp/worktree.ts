@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { assertDescendsFromAny } from "../core";
 import { git } from "./git";
@@ -193,6 +193,12 @@ export async function createItemCheckout(options: {
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });
         await fetch(["clone", "--no-checkout", "--", options.remoteUrl, path]);
       }
+      const backup = `${path}/.git.paws-linked`;
+      if (!fresh && !(await exists(`${path}/.git`)) && (await exists(backup)))
+        await rename(backup, `${path}/.git`);
+      if (!fresh && !(await stat(`${path}/.git`)).isDirectory())
+        await detachItemCheckout(path, options.remoteUrl);
+      if (await exists(backup)) await rm(backup);
       await fetch([
         "-C",
         path,
@@ -221,6 +227,29 @@ export async function createItemCheckout(options: {
   });
 }
 
+async function detachItemCheckout(path: string, remoteUrl: string): Promise<void> {
+  const staging = await mkdtemp(`${path}-detach-`);
+  const backup = `${path}/.git.paws-linked`;
+  try {
+    const index = (
+      await git(["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    ).trim();
+    await git(["clone", "--no-hardlinks", "--dissociate", "--no-checkout", "--", path, staging]);
+    await copyFile(index, `${staging}/.git/index`);
+    await git(["-C", staging, "remote", "set-url", "origin", remoteUrl]);
+    await rename(`${path}/.git`, backup);
+    try {
+      await rename(`${staging}/.git`, `${path}/.git`);
+    } catch (error) {
+      await rename(backup, `${path}/.git`);
+      throw error;
+    }
+    await rm(backup);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+}
+
 async function addWorktree(
   gitDir: string,
   options: Parameters<typeof createWorktree>[0],
@@ -232,6 +261,11 @@ async function addWorktree(
   const branch = branchName(options.itemId);
   const patterns = exclusionPatterns(options.checkoutExclusions ?? []);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+
+  if ((await stat(`${path}/.git`).catch(() => null))?.isDirectory()) {
+    await checkoutPatterns(path, patterns);
+    return { path, branch, mirrorPath: path, itemId: options.itemId, startRef: "HEAD" };
+  }
 
   if (await isRegisteredWorktree(gitDir, path)) {
     await checkoutPatterns(path, patterns);

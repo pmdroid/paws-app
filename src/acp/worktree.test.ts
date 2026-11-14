@@ -308,3 +308,56 @@ test("reusing an inspection checkout refreshes main policy and preserves WIP", a
   expect(await readFile(join(created.path, "notes.txt"), "utf8")).toBe("unfinished");
   expect(await stat(join(options.pawsRoot, "repos")).catch(() => null)).toBeNull();
 });
+
+test("disabling mirrors detaches a linked worktree without losing commits or staged WIP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-disable-mirror-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = {
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-12",
+    pawsRoot: join(root, "home"),
+    remoteUrl: source,
+  };
+  await ensureBareMirror(options);
+  const linked = await createWorktree(options);
+  await writeFile(join(linked.path, "local.txt"), "local commit");
+  await git(["-C", linked.path, "add", "."]);
+  await git(["-C", linked.path, "commit", "-m", "Unpublished work"]);
+  const head = (await git(["-C", linked.path, "rev-parse", "HEAD"])).trim();
+  await writeFile(join(linked.path, "README.md"), "staged change");
+  await git(["-C", linked.path, "add", "README.md"]);
+  await writeFile(join(linked.path, "README.md"), "unstaged change");
+  await writeFile(join(linked.path, "untracked.txt"), "untracked");
+  const status = await git(["-C", linked.path, "status", "--porcelain"]);
+  await createItemCheckout(options);
+  expect((await stat(join(linked.path, ".git"))).isDirectory()).toBe(true);
+  await rm(join(options.pawsRoot, "repos"), { recursive: true });
+  await createItemCheckout(options);
+  expect((await git(["-C", linked.path, "rev-parse", "HEAD"])).trim()).toBe(head);
+  expect(await git(["-C", linked.path, "status", "--porcelain"])).toBe(status);
+  expect(await git(["-C", linked.path, "show", ":README.md"])).toBe("staged change");
+  expect(await readFile(join(linked.path, "README.md"), "utf8")).toBe("unstaged change");
+});
+
+test("enabling mirrors preserves an existing independent item checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-enable-mirror-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = {
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-13",
+    pawsRoot: join(root, "home"),
+    remoteUrl: source,
+  };
+  const independent = await createItemCheckout(options);
+  await writeFile(join(independent.path, "notes.txt"), "unfinished");
+  await ensureBareMirror(options);
+  expect((await createWorktree(options)).path).toBe(independent.path);
+  expect(await readFile(join(independent.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect((await stat(join(independent.path, ".git"))).isDirectory()).toBe(true);
+});
