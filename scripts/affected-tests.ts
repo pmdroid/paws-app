@@ -35,6 +35,7 @@ export function testFiles(root = "."): string[] {
 }
 
 const SHARED_FILES = new Set(["package.json", "bun.lock", "bunfig.toml"]);
+const KNOWN_FAILURES = "test/postgres-known-failures.txt";
 const EXTENSIONS = ["", ".ts", ".tsx", ".js", "/index.ts", "/index.tsx"];
 
 export type Selection =
@@ -52,12 +53,45 @@ export function changedPaths(root: string, base: string, head: string): string[]
   return diff.stdout.split("\0").filter((path) => path.length > 0);
 }
 
+function knownFailureEntries(text: string): Set<string> {
+  return new Set(
+    text
+      .split("\n")
+      .map((line) => line.replace(/#.*/, "").trimEnd())
+      .filter((line) => line.length > 0),
+  );
+}
+
+export function knownFailureChanges(root: string, base: string, head: string): string[] | null {
+  const read = (ref: string): string | null => {
+    const show = spawnSync("git", ["show", `${ref}:${KNOWN_FAILURES}`], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (show.status === 0 && !show.error) return show.stdout;
+    const commit = spawnSync("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], {
+      cwd: root,
+    });
+    return commit.status === 0 && !commit.error ? "" : null;
+  };
+  const from = read(base);
+  const to = read(head);
+  if (from === null || to === null) return null;
+  const before = knownFailureEntries(from);
+  const after = knownFailureEntries(to);
+  return [
+    ...[...before].filter((path) => !after.has(path)),
+    ...[...after].filter((path) => !before.has(path)),
+  ].sort();
+}
+
 /** Why a changed path needs the full suite, or undefined when it does not. */
 export function sharedReason(path: string): string | undefined {
   if (SHARED_FILES.has(path)) return `${path} changed`;
   if (/(^|\/)tsconfig[^/]*\.json$/.test(path)) return `${path} changed`;
   if (path.startsWith("scripts/")) return `${path} changed`;
-  if (path.startsWith("test/") && !TEST_FILE.test(path)) return `test helper ${path} changed`;
+  if (path.startsWith("test/") && !TEST_FILE.test(path) && path !== KNOWN_FAILURES)
+    return `test helper ${path} changed`;
   return undefined;
 }
 
@@ -75,6 +109,7 @@ export function selectTests(input: {
   root: string;
   changed: readonly string[] | null;
   tests?: readonly string[];
+  knownFailures?: readonly string[] | null;
 }): Selection {
   const { root, changed } = input;
   if (changed === null) return { full: true, reason: "the diff could not be read" };
@@ -82,6 +117,9 @@ export function selectTests(input: {
     const reason = sharedReason(path);
     if (reason !== undefined) return { full: true, reason };
   }
+  const listChanged = changed.includes(KNOWN_FAILURES);
+  if (listChanged && !input.knownFailures)
+    return { full: true, reason: `${KNOWN_FAILURES} changed and its diff could not be read` };
   const tests = input.tests ?? testFiles(root);
   const chosen = new Map<string, Set<string>>();
   const choose = (path: string, reason: string) => {
@@ -91,7 +129,11 @@ export function selectTests(input: {
   };
   const units = new Set<string>();
   const others: string[] = [];
+  if (listChanged)
+    for (const path of input.knownFailures ?? [])
+      if (tests.includes(path)) choose(path, `changed in ${KNOWN_FAILURES}`);
   for (const path of changed) {
+    if (path === KNOWN_FAILURES) continue;
     if (TEST_FILE.test(path)) {
       if (tests.includes(path)) choose(path, "changed");
     }
@@ -290,7 +332,12 @@ if (import.meta.main) {
   const selection =
     from === null
       ? ({ full: true, reason: "no base: origin/main and HEAD have no merge base" } as const)
-      : selectTests({ root, changed: changedPaths(root, from, head), tests });
+      : selectTests({
+          root,
+          changed: changedPaths(root, from, head),
+          tests,
+          knownFailures: knownFailureChanges(root, from, head),
+        });
   if (from !== null) console.log(`affected-tests: base ${from}, head ${head}`);
   console.log(describeSelection(selection, tests.length));
   if (!list && (selection.full || selection.files.length > 0)) {
