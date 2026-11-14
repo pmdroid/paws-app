@@ -1,6 +1,6 @@
 {
-  "id": "5e45369d-3787-4405-a993-d78644690511",
-  "prevId": "2a35d15e-b0f8-4a1a-94f9-685214976fc5",
+  "id": "392cfbb1-40ca-4185-8b33-130d5ee376dd",
+  "prevId": "f44892e6-4fff-4091-bdee-a3e8e8aa8075",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1001,6 +1001,12 @@
         },
         "installation_observed_at": {
           "name": "installation_observed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activities_listed_generation": {
+          "name": "activities_listed_generation",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -7315,6 +7321,18 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "published_head": {
+          "name": "published_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "open_findings_line": {
+          "name": "open_findings_line",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -9257,68 +9275,34 @@
           "name": "base_sha",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "tier": {
           "name": "tier",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "paths": {
           "name": "paths",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "classified_at": {
           "name": "classified_at",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "matches": {
           "name": "matches",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "changed_paths": {
-          "name": "changed_paths",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
         }
       },
-      "indexes": {
-        "candidate_risk_item": {
-          "name": "candidate_risk_item",
-          "columns": [
-            {
-              "expression": "item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "recorded_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "candidate_risk_item_id_work_item_id_fk": {
           "name": "candidate_risk_item_id_work_item_id_fk",

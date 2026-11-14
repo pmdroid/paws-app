@@ -1,6 +1,6 @@
 {
-  "id": "e062eb6c-de6d-4ce9-b31e-25eb29f1363d",
-  "prevId": "5e45369d-3787-4405-a993-d78644690511",
+  "id": "0dd8a211-467c-4f04-8e8c-606c37065d40",
+  "prevId": "392cfbb1-40ca-4185-8b33-130d5ee376dd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -16,31 +16,6 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.linear_activity_listing": {
-      "name": "linear_activity_listing",
-      "schema": "",
-      "columns": {
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "generation": {
-          "name": "generation",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
@@ -1001,6 +976,12 @@
         },
         "installation_observed_at": {
           "name": "installation_observed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activities_listed_generation": {
+          "name": "activities_listed_generation",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -7315,6 +7296,18 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "published_head": {
+          "name": "published_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "open_findings_line": {
+          "name": "open_findings_line",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -9163,8 +9156,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.candidate_risk": {
-      "name": "candidate_risk",
+    "public.candidate_paths": {
+      "name": "candidate_paths",
       "schema": "",
       "columns": {
         "item_id": {
@@ -9179,52 +9172,22 @@
           "primaryKey": false,
           "notNull": true
         },
-        "base_sha": {
-          "name": "base_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tier": {
-          "name": "tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "paths": {
           "name": "paths",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
-        },
-        "classified_at": {
-          "name": "classified_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "matches": {
-          "name": "matches",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "changed_paths": {
-          "name": "changed_paths",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "recorded_at": {
           "name": "recorded_at",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         }
       },
       "indexes": {
-        "candidate_risk_item": {
-          "name": "candidate_risk_item",
+        "candidate_paths_item": {
+          "name": "candidate_paths_item",
           "columns": [
             {
               "expression": "item_id",
@@ -9245,6 +9208,76 @@
           "with": {}
         }
       },
+      "foreignKeys": {
+        "candidate_paths_item_id_work_item_id_fk": {
+          "name": "candidate_paths_item_id_work_item_id_fk",
+          "tableFrom": "candidate_paths",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "candidate_paths_item_id_head_sha_pk": {
+          "name": "candidate_paths_item_id_head_sha_pk",
+          "columns": ["item_id", "head_sha"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.candidate_risk": {
+      "name": "candidate_risk",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tier": {
+          "name": "tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "paths": {
+          "name": "paths",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "classified_at": {
+          "name": "classified_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "matches": {
+          "name": "matches",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
       "foreignKeys": {
         "candidate_risk_item_id_work_item_id_fk": {
           "name": "candidate_risk_item_id_work_item_id_fk",
@@ -10888,53 +10921,6 @@
           "value": "outcome IN ('fixed', 'not_fixed', 'asked', 'abandoned')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.open_findings": {
-      "name": "open_findings",
-      "schema": "",
-      "columns": {
-        "item_id": {
-          "name": "item_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "head_sha": {
-          "name": "head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "line": {
-          "name": "line",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "open_findings_item_id_work_item_id_fk": {
-          "name": "open_findings_item_id_work_item_id_fk",
-          "tableFrom": "open_findings",
-          "tableTo": "work_item",
-          "columnsFrom": ["item_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.review_escape": {

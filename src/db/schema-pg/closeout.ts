@@ -338,15 +338,6 @@ export const riskFix = pgTable(
   ],
 );
 
-export const openFindings = pgTable("open_findings", {
-  itemId: text("item_id")
-    .primaryKey()
-    .references(() => workItem.id),
-  headSha: text("head_sha").notNull(),
-  line: text().notNull(),
-  recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-});
-
 export const reviewFindingIssue = pgTable(
   "review_finding_issue",
   {

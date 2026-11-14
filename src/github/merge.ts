@@ -205,7 +205,7 @@ const RUNNER_REBASED_REF = "refs/paws/runner-rebased";
 
 export async function adoptRunnerRebase(
   input: SerialMergeInput,
-  heads: { head: string; base: string; rebased: string },
+  heads: { head: string; base: string; rebased: string; ontoFetchedMain?: boolean },
   signal: AbortSignal,
 ): Promise<RebaseResult | { refused: string }> {
   const branch = laneBranch(input);
@@ -229,6 +229,7 @@ export async function adoptRunnerRebase(
     signal.throwIfAborted();
     throw new Error(`fetch failed: ${gitFailureReason(token, error)}`, { cause: error });
   });
+  if (heads.ontoFetchedMain) await fetchMain(input.worktree, url, token, gitExec, input.sleep);
   const fetched = await run(["rev-parse", RUNNER_REBASED_REF]);
   if (fetched !== heads.rebased) return { refused: `the branch is at ${fetched.slice(0, 7)}` };
   const descends = await run(["merge-base", "--is-ancestor", heads.base, heads.rebased]).then(
@@ -238,14 +239,115 @@ export async function adoptRunnerRebase(
   signal.throwIfAborted();
   if (!descends) return { refused: `it does not descend from main ${heads.base.slice(0, 7)}` };
   const oldBase = await run(["merge-base", heads.base, heads.head]);
+  const onto = heads.ontoFetchedMain
+    ? await run(["merge-base", UPSTREAM_MAIN_REF, heads.rebased])
+    : heads.base;
   const [before, after] = await Promise.all([
     patchId(input.worktree, oldBase, heads.head, signal),
-    patchId(input.worktree, heads.base, heads.rebased, signal),
+    patchId(input.worktree, onto, heads.rebased, signal),
   ]);
   if (before !== after) return { refused: "its patch-id differs from the accepted head's" };
   if (input.ref) await run(["update-ref", input.ref, heads.rebased, heads.head]);
   else await run(["reset", "--hard", heads.rebased]);
-  return { rebased: true, branch, base: heads.base, head: heads.rebased };
+  return { rebased: true, branch, base: onto, head: heads.rebased };
+}
+
+const pullBranchQuery = `query PullRequestBranch($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      id
+      headRefOid
+    }
+  }
+}`;
+
+const updateBranchMutation = `mutation UpdatePullRequestBranch($id: ID!, $expectedHead: GitObjectID!) {
+  updatePullRequestBranch(
+    input: { pullRequestId: $id, expectedHeadOid: $expectedHead, updateMethod: REBASE }
+  ) {
+    pullRequest {
+      headRefOid
+    }
+  }
+}`;
+
+type GraphqlAnswer = {
+  data?: {
+    repository?: { pullRequest?: { id?: string; headRefOid?: string } | null } | null;
+    updatePullRequestBranch?: { pullRequest?: { headRefOid?: string } | null } | null;
+  } | null;
+  errors?: { message?: string }[];
+};
+
+const UPDATE_BRANCH_READS = 10;
+
+/**
+ * `[merge] main_moved = "ci"` with `[github] mirrors = false`: GitHub rebases the pull request onto
+ * main through `updatePullRequestBranch`, guarded by the head the lane read. The head GitHub made is
+ * adopted only when its patch-id matches the accepted head's. A conflict is the lane's conflict; any
+ * other refusal leaves the branch where it was and is returned as `refused`.
+ */
+export async function updateBranchOnGitHub(
+  input: SerialMergeInput,
+  heads: { head: string; base: string },
+  signal: AbortSignal,
+): Promise<RebaseResult | { refused: string }> {
+  const branch = laneBranch(input);
+  if (typeof branch !== "string") return { rebased: false, result: branch };
+  if (await input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
+  const token = await operationToken(input, "push");
+  input.onCredential?.("push", token);
+  const ask = async (query: string, variables: Record<string, unknown>) => {
+    signal.throwIfAborted();
+    const response = await input.client.request({
+      method: "POST",
+      path: "/graphql",
+      token,
+      body: { query, variables },
+      signal,
+    });
+    const body = (response.body ?? {}) as GraphqlAnswer;
+    const errors = (body.errors ?? []).map((error) => error.message ?? "").filter(Boolean);
+    if (response.status !== 200 || body.errors?.length)
+      return { body, error: errors.join("; ") || `status ${response.status}` };
+    return { body, error: null };
+  };
+  const readHead = async () => {
+    const read = await ask(pullBranchQuery, {
+      owner: input.owner,
+      repo: input.repo,
+      number: input.prNumber,
+    });
+    const pull = read.body.data?.repository?.pullRequest;
+    return read.error === null && pull?.id && pull.headRefOid
+      ? { id: pull.id, head: pull.headRefOid }
+      : null;
+  };
+  const read = await readHead();
+  if (!read) return { refused: "GitHub could not read the pull request" };
+  if (read.head !== heads.head) return { refused: `the branch is at ${read.head.slice(0, 7)}` };
+  const updated = await ask(updateBranchMutation, { id: read.id, expectedHead: heads.head });
+  if (updated.error !== null) {
+    if (/conflict/i.test(updated.error))
+      return {
+        rebased: false,
+        result: {
+          merged: false,
+          outcome: "conflict",
+          branch,
+          base: heads.base,
+          message: "rebase conflict",
+        },
+      };
+    return { refused: `GitHub did not update the branch: ${updated.error}` };
+  }
+  let rebased = updated.body.data?.updatePullRequestBranch?.pullRequest?.headRefOid ?? heads.head;
+  for (let reads = 0; rebased === heads.head && reads < UPDATE_BRANCH_READS; reads++) {
+    await (input.sleep ?? pause)(1_000);
+    rebased = (await readHead())?.head ?? heads.head;
+  }
+  if (rebased === heads.head) return { refused: "GitHub did not move the branch" };
+  return adoptRunnerRebase(input, { ...heads, rebased, ontoFetchedMain: true }, signal);
 }
 
 async function patchId(

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  capSelection,
   changedPaths,
   describeSelection,
   knownFailureChanges,
@@ -387,4 +388,65 @@ test("--bail or PAWS_TEST_BAIL=1 adds --bail=1 to the test command; without eith
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+const MANY = [
+  "src/merge/step.test.ts",
+  "src/merge/lane/order.test.ts",
+  "src/loop/loop.test.ts",
+  "test/boundaries.test.ts",
+  "test/empty-catches.test.ts",
+  "test/loop.test.ts",
+  "test/merge-lane.test.ts",
+];
+
+test("a selection at or under the cap runs as selected", () => {
+  const selection: Selection = {
+    full: false,
+    files: [{ path: "test/merge-lane.test.ts", reasons: ["imports src/merge"] }],
+  };
+  expect(capSelection(selection, ["src/merge/step.ts"], MANY, 1)).toEqual({
+    selection,
+    leftToCi: 0,
+  });
+});
+
+test("a selection over the cap keeps the changed tests, the changed units' tests and the always tests", () => {
+  const selection: Selection = {
+    full: false,
+    files: MANY.map((path) => ({ path, reasons: ["imports src/merge"] })),
+  };
+  expect(capSelection(selection, ["src/merge/step.ts", "test/loop.test.ts"], MANY, 3)).toEqual({
+    selection: {
+      full: false,
+      files: [
+        { path: "src/merge/lane/order.test.ts", reasons: ["in src/merge"] },
+        { path: "src/merge/step.test.ts", reasons: ["in src/merge"] },
+        { path: "test/boundaries.test.ts", reasons: ["always"] },
+        { path: "test/empty-catches.test.ts", reasons: ["always"] },
+        { path: "test/loop.test.ts", reasons: ["changed"] },
+      ],
+    },
+    leftToCi: 2,
+  });
+});
+
+test("a full suite over the cap runs the direct tests and leaves the rest to CI", () => {
+  const capped = capSelection(
+    { full: true, reason: "test helper test/workflow-world.ts changed" },
+    ["test/workflow-world.ts", "test/loop.test.ts"],
+    MANY,
+    3,
+  );
+  expect(capped.leftToCi).toBe(4);
+  expect(paths(capped.selection)).toEqual([
+    "test/boundaries.test.ts",
+    "test/empty-catches.test.ts",
+    "test/loop.test.ts",
+  ]);
+});
+
+test("an unreadable diff keeps the full suite", () => {
+  const full: Selection = { full: true, reason: "the diff could not be read" };
+  expect(capSelection(full, null, MANY, 3)).toEqual({ selection: full, leftToCi: 0 });
 });

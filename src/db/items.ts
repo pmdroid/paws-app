@@ -61,7 +61,7 @@ import { closeFixRecordsSteps, type FixOutcome } from "./fix-records";
 import { journal } from "./journal";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { getLinearSessionGenerationSteps } from "./linear-sessions";
-import { withOpenFindingsSteps } from "./open-findings";
+import { withOpenFindingsSteps } from "./stop-response";
 import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
 import {
   endMergeCallSteps,
@@ -1535,7 +1535,10 @@ function* commitFailureSteps(
             eq(outbox.target, "linear"),
             eq(outbox.orderingKey, sessionId),
             eq(outbox.deliveryGeneration, generation),
-            likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+            or(
+              likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+              likeText(q, outbox.idempotencyKey, "pull-request-opened:%"),
+            ),
             ne(outbox.status, "dropped"),
           ),
         )

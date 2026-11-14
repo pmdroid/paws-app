@@ -13,6 +13,7 @@ export {
   loadConfigFile,
   parseConfigToml,
   setConfigKeys,
+  writeFindingsGroupingTime,
   IMPLEMENTERS,
 } from "./file";
 export type {

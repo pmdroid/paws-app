@@ -27,7 +27,7 @@ export const AFTER_PULL_REQUEST_RESPONSE =
  * of the turn it starts) answers them, so it passes too.
  */
 export const AFTER_PULL_REQUEST_THOUGHT =
-  /^(risk-approval:|pull-feedback:|linear-feedback-seen:|merge-conflict:|turn:ack:|fresh-budget:)/;
+  /^(pull-request-opened:|risk-approval:|pull-feedback:|linear-feedback-seen:|merge-conflict:|turn:ack:|fresh-budget:)/;
 
 export function* hasPublishedPullRequestSteps(
   q: Q,

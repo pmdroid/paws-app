@@ -21,6 +21,7 @@ import {
   savePullRequestDraftSteps,
   startAgentWaitSteps,
   TransitionRejectedError,
+  recordItemPullRequestSteps,
   withOpenFindingsSteps,
   type Db,
   type Job,
@@ -446,11 +447,13 @@ describe("postgres", () => {
         }),
       );
       await db.run((q) =>
-        q.exec(
-          q.orm
-            .insert(q.t.openFindings)
-            .values({ itemId: "pr", headSha: "h", line: "Open: one", recordedAt: 1 }),
-        ),
+        recordItemPullRequestSteps(q, {
+          itemId: "pr",
+          pullNumber: 1,
+          pullUrl: null,
+          openedAt: 1,
+          published: { head: "h", line: "Open: one" },
+        }),
       );
       expect(
         await db.transaction((q) =>

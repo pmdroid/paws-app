@@ -159,22 +159,50 @@
     {
       "idx": 22,
       "version": "7",
-      "when": 1794675443602,
-      "tag": "0022_merge_candidate_paths_into_candidate_risk",
+      "when": 1794646313303,
+      "tag": "0022_open_findings_and_activity_listing_columns",
       "breakpoints": true
     },
     {
       "idx": 23,
       "version": "7",
-      "when": 1794675444147,
-      "tag": "0023_backfill_candidate_changed_paths",
+      "when": 1794646313929,
+      "tag": "0023_backfill_open_findings_and_activity_listing",
       "breakpoints": true
     },
     {
       "idx": 24,
       "version": "7",
-      "when": 1794675444781,
-      "tag": "0024_drop_merged_candidate_paths",
+      "when": 1794646322077,
+      "tag": "0024_drop_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794670342492,
+      "tag": "0025_fold_run_owner_and_agent_setup",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794679102684,
+      "tag": "0026_merge_candidate_paths_into_candidate_risk",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794679105054,
+      "tag": "0027_backfill_candidate_changed_paths",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794679107457,
+      "tag": "0028_drop_merged_candidate_paths",
       "breakpoints": true
     }
   ]
