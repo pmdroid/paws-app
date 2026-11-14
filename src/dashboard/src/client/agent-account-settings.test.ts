@@ -210,7 +210,9 @@ for (const state of ["expired", "denied"]) {
     deviceState = "pending";
     retry.click();
     await settle();
-    expect(dialog.querySelector<HTMLElement>("[data-device-challenge]")!.hidden).toBe(false);
+    expect((dialog.querySelector("[data-device-challenge]") as unknown as HTMLElement).hidden).toBe(
+      false,
+    );
     expect(requests.filter((entry) => entry.path.endsWith("/device"))).toHaveLength(2);
     (dialog.querySelector("[data-device-close]") as unknown as HTMLButtonElement).click();
   });
