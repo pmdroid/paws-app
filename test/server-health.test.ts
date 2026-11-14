@@ -99,7 +99,7 @@ async function healthyStore(): Promise<Db> {
     (q) =>
       q.orm
         .insert(q.t.githubDelivery)
-        .values({ deliveryId: "delivery", event: "push", payload: "{}", receivedAt: NOW }),
+        .values({ deliveryId: "delivery", event: "push", receivedAt: NOW }),
   );
   return db;
 }
