@@ -96,6 +96,17 @@ export function mountRepositorySettings(engine: string | null): void {
     if (!admin || busy || !loaded) return;
     draft();
     const section = (event as SubmitEvent).submitter?.getAttribute("value");
+    if (section === "access" && access.agentReadOff?.length) {
+      const effect = access.agentRead
+        ? "Agents will be allowed to read every repository, including those currently excluded."
+        : "Agents will be denied read access to every repository.";
+      if (
+        !window.confirm(
+          `Saving GitHub access replaces the legacy read exclusions for ${access.agentReadOff.join(", ")} with one workspace-wide setting, even when only mirrors changed. ${effect} Replace the exclusions and save?`,
+        )
+      )
+        return;
+    }
     void run(async () => {
       if (linear)
         agents = (await request<{ agents: string[] }>("/api/settings/linear-comments", { agents }))

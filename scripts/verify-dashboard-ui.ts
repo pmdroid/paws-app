@@ -380,7 +380,7 @@ try {
     await page.unroute("**/api/runners/agent-accounts");
     for (const viewer of [admin, page]) {
       for (const [path, initial] of [
-        ["github-access", { agentRead: true, mirrors: false }],
+        ["github-access", { agentRead: true, mirrors: false, agentReadOff: ["private/repo"] }],
         ["closeout", { projects: { "pmdroid/paws-app": { policyRoot: "/srv/paws/policy" } } }],
         ["linear-comments", { agents: ["app_kyoto"] }],
       ] as const) {
@@ -403,7 +403,22 @@ try {
       await expect(admin.locator(`#${name}-settings [role="alert"]`)).toHaveCount(0);
       if (name === "repositories") {
         await admin.getByLabel("Use local mirrors").check();
-        await admin.getByRole("button", { name: "Save GitHub access" }).click();
+        const saveAccess = admin.getByRole("button", { name: "Save GitHub access" });
+        const beforeSave = requests.filter(
+          (request) => request.path === "/api/settings/github-access",
+        ).length;
+        admin.once("dialog", async (dialog) => {
+          expect(dialog.message()).toContain("private/repo");
+          expect(dialog.message()).toContain("allowed to read every repository");
+          await dialog.dismiss();
+        });
+        await saveAccess.click();
+        expect(
+          requests.filter((request) => request.path === "/api/settings/github-access").length,
+        ).toBe(beforeSave);
+        await expect(admin.getByLabel("Use local mirrors")).toBeChecked();
+        admin.once("dialog", (dialog) => dialog.accept());
+        await saveAccess.click();
         await expect(
           admin.getByText("Restart Paws for Closeout policy reads to use the new mirrors setting."),
         ).toBeVisible();
