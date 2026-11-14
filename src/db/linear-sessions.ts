@@ -526,15 +526,22 @@ function mapTurn(row: Q["t"]["linearTurn"]["$inferSelect"]): StoredLinearTurn {
 }
 
 export function* listLinearTurnsForItemSteps(q: Q, itemId: string): Steps<StoredLinearTurn[]> {
+  return (yield* listLinearTurnsForItemsSteps(q, [itemId])).get(itemId) ?? [];
+}
+
+export function* listLinearTurnsForItemsSteps(
+  q: Q,
+  itemIds: readonly string[],
+): Steps<Map<string | null, StoredLinearTurn[]>> {
   const { linearTurn } = q.t;
   const rows = yield* q.all(
     q.orm
       .select()
       .from(linearTurn)
-      .where(and(eq(linearTurn.itemId, itemId), eq(linearTurn.state, "applied")))
+      .where(and(inArray(linearTurn.itemId, [...itemIds]), eq(linearTurn.state, "applied")))
       .orderBy(asc(linearTurn.createdAtMs), asc(linearTurn.ordinal)),
   );
-  return rows.map(mapTurn);
+  return Map.groupBy(rows.map(mapTurn), (turn) => turn.itemId);
 }
 
 export async function listLinearTurnsForItem(

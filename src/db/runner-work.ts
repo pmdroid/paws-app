@@ -346,6 +346,24 @@ export async function runnerWorkActive(store: Db, runId: string): Promise<boolea
   return store.run((q) => runnerWorkActiveSteps(q, runId));
 }
 
+export function* runnerWorkActiveForRunsSteps(q: Q, runIds: readonly string[]) {
+  const { runnerWork } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runId: runnerWork.runId,
+        agent:
+          sql<number>`CASE WHEN EXISTS(SELECT 1 FROM runner_event e WHERE e.run_id=runner_work.run_id
+          AND e.generation=runner_work.generation AND e.type='activity') THEN 1 ELSE 0 END`.mapWith(
+            Number,
+          ),
+      })
+      .from(runnerWork)
+      .where(inArray(runnerWork.runId, [...runIds])),
+  );
+  return new Map(rows.map((row) => [row.runId, row.agent === 1]));
+}
+
 /** Whether a helper that takes the runner's single health lane has not finished yet. */
 export function* runnerLaneHelperWaitingSteps(q: Q, runnerId: string, now: number) {
   const { runnerHelper } = q.t;

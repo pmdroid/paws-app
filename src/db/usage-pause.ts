@@ -49,8 +49,12 @@ export function* startUsagePauseSteps(
 }
 
 export function* usagePauseSteps(q: Q, runId: string): Steps<UsagePause | null> {
+  return (yield* usagePausesSteps(q, [runId])).get(runId) ?? null;
+}
+
+export function* usagePausesSteps(q: Q, runIds: readonly string[]): Steps<Map<string, UsagePause>> {
   const pauses = q.t.usagePause;
-  const row = yield* q.one(
+  const rows = yield* q.all(
     q.orm
       .select({
         runId: pauses.runId,
@@ -62,9 +66,9 @@ export function* usagePauseSteps(q: Q, runId: string): Steps<UsagePause | null> 
         pausedAt: pauses.pausedAt,
       })
       .from(pauses)
-      .where(eq(pauses.runId, runId)),
+      .where(inArray(pauses.runId, [...runIds])),
   );
-  return row ?? null;
+  return new Map(rows.map((row) => [row.runId, row]));
 }
 
 export async function usagePause(store: Db, runId: string): Promise<UsagePause | null> {

@@ -912,6 +912,18 @@ export function* runRunnerNameSteps(q: Q, runId: string) {
   return row?.name ?? null;
 }
 
+export function* runRunnerNamesSteps(q: Q, runIds: readonly string[]) {
+  const { runner, runnerWork } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId, name: runner.name })
+      .from(runnerWork)
+      .innerJoin(runner, eq(runner.id, runnerWork.runnerId))
+      .where(inArray(runnerWork.runId, [...runIds])),
+  );
+  return new Map(rows.map((row) => [row.runId, row.name]));
+}
+
 export type RunnerAvailability = {
   id: string;
   name: string;

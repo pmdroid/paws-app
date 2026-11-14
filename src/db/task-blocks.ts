@@ -64,6 +64,21 @@ export async function listTaskBlockers(store: Db, blockedLinearIssueId: string):
   return store.run((q) => listTaskBlockersSteps(q, blockedLinearIssueId));
 }
 
+export function* listTaskBlockersForIssuesSteps(q: Q, blockedLinearIssueIds: readonly string[]) {
+  const { taskBlock } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ blocker: taskBlock.blockerLinearIssueId, blocked: taskBlock.blockedLinearIssueId })
+      .from(taskBlock)
+      .where(inArray(taskBlock.blockedLinearIssueId, [...blockedLinearIssueIds]))
+      .orderBy(asc(taskBlock.blockedLinearIssueId), asc(taskBlock.blockerLinearIssueId)),
+  );
+  const blockers = new Map<string, string[]>();
+  for (const row of rows)
+    blockers.set(row.blocked, [...(blockers.get(row.blocked) ?? []), row.blocker]);
+  return blockers;
+}
+
 export function* listTaskBlocksSteps(q: Q) {
   const { taskBlock } = q.t;
   return yield* q.all(

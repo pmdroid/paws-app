@@ -386,6 +386,21 @@ export async function listWorkItemEventRows(
   return store.run((q) => listWorkItemEventRowsSteps(q, itemId, limit));
 }
 
+export function* listWorkItemEventRowsForItemsSteps(q: Q, itemIds: readonly string[], limit = 200) {
+  const { workItemEvent } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(workItemEvent)
+      .where(inArray(workItemEvent.itemId, [...itemIds]))
+      .orderBy(asc(workItemEvent.id)),
+  );
+  const history = new Map<string, WorkItemEventRow[]>();
+  for (const [itemId, item] of Map.groupBy(rows as WorkItemEventRow[], (row) => row.itemId))
+    history.set(itemId, item.slice(-limit));
+  return history;
+}
+
 export function* configureWorkItemSteps(
   q: Q,
   id: string,

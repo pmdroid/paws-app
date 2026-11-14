@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
@@ -48,21 +48,26 @@ export async function recordCiRerun(store: Db, rerun: CiRerun): Promise<boolean>
 }
 
 export function* listCiRerunsSteps(q: Q, itemId: string) {
+  return (yield* listCiRerunsForItemsSteps(q, [itemId])).get(itemId) ?? [];
+}
+
+export function* listCiRerunsForItemsSteps(q: Q, itemIds: readonly string[]) {
   const { ciRerun } = q.t;
   const rows = yield* q.all(
     q.orm
       .select()
       .from(ciRerun)
-      .where(eq(ciRerun.itemId, itemId))
+      .where(inArray(ciRerun.itemId, [...itemIds]))
       .orderBy(asc(ciRerun.at), asc(ciRerun.headSha)),
   );
-  return rows.map((row): CiRerun => ({
+  const reruns = rows.map((row): CiRerun => ({
     itemId: row.itemId,
     head: row.headSha,
     runIds: parsedJson<number[]>(q, row.runIds),
     reason: row.reason,
     at: row.at,
   }));
+  return Map.groupBy(reruns, (rerun) => rerun.itemId);
 }
 
 export async function listCiReruns(store: Db, itemId: string): Promise<CiRerun[]> {
