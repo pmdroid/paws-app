@@ -6,7 +6,6 @@ import {
   bindWorkItemRepository,
   fixRounds,
   enterMergeQueue,
-  getPullComment,
   getRun,
   getWorkItem,
   insertQueuedItem,
@@ -18,6 +17,7 @@ import {
   type PullFeedbackWait,
   syncSteps,
 } from "../db";
+import { pullCommentOutcome } from "../../test/dialects";
 import {
   commentOnPullRequest,
   createFakeMergeQueue,
@@ -328,7 +328,7 @@ describe("a review and the comments after it reach the agent together", () => {
     expect(text).toContain("@pascal requested changes on pull request #7.");
     expect(text).toContain("Bug: the cache key ignores the tenant.");
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(1);
-    expect((await getPullComment(db, "inline", 9101))?.outcome).toBe("covered");
+    expect(await pullCommentOutcome(db, "inline", 9101)).toBe("covered");
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
   });
 });
@@ -543,7 +543,7 @@ describe("Paws replies to every handed-off comment", () => {
   ])("Paws replies from %s never come back as new comments", async (author, body) => {
     const { db, conversation } = await setup();
     await conversation({ id: 3002, author, body });
-    expect(await getPullComment(db, "conversation", 3002)).toBeNull();
+    expect(await pullCommentOutcome(db, "conversation", 3002)).toBeUndefined();
   });
 });
 

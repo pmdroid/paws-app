@@ -1,4 +1,4 @@
-import { asc, desc, eq, lt } from "drizzle-orm";
+import { desc, eq, lt } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import type { githubDelivery } from "./schema";
 
@@ -56,20 +56,6 @@ export async function latestGitHubDelivery(
   store: Db,
 ): Promise<Pick<IntegrationEvent, "event" | "receivedAt"> | null> {
   return store.run((q) => latestGitHubDeliverySteps(q));
-}
-
-export function* listGitHubDeliveriesSteps(q: Q) {
-  const { githubDelivery } = q.t;
-  return yield* q.all(
-    q.orm
-      .select()
-      .from(githubDelivery)
-      .orderBy(asc(githubDelivery.receivedAt), asc(githubDelivery.deliveryId)),
-  );
-}
-
-export async function listGitHubDeliveries(store: Db): Promise<IntegrationEvent[]> {
-  return store.run((q) => listGitHubDeliveriesSteps(q));
 }
 
 export function* githubDeliveryRecordedSteps(q: Q, deliveryId: string) {

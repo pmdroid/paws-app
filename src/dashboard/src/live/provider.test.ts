@@ -30,7 +30,7 @@ import {
   startCloseoutRound,
   upsertCloseoutStep,
   type CloseoutStepWrite,
-  saveCandidateRisk,
+  saveCandidateRiskSteps,
   saveRiskFix,
   type Db,
   type Q,
@@ -723,14 +723,16 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    await saveCandidateRisk(db, {
-      itemId: item.id,
-      head,
-      base: "base",
-      tier: "high",
-      paths: ["src/auth/session.ts"],
-      classifiedAt: now,
-    });
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: item.id,
+        head,
+        base: "base",
+        tier: "high",
+        paths: ["src/auth/session.ts"],
+        classifiedAt: now,
+      }),
+    );
     const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
     expect(detail.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
@@ -771,14 +773,16 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    await saveCandidateRisk(db, {
-      itemId: item.id,
-      head,
-      base: "base",
-      tier: "high",
-      paths: ["src/auth/session.ts", "src/auth/token.ts"],
-      classifiedAt: now,
-    });
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: item.id,
+        head,
+        base: "base",
+        tier: "high",
+        paths: ["src/auth/session.ts", "src/auth/token.ts"],
+        classifiedAt: now,
+      }),
+    );
     await saveRiskFix(db, {
       itemId: item.id,
       head,
@@ -804,14 +808,16 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const item = await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
     const risk = async (head: string, at: number) =>
-      await saveCandidateRisk(db, {
-        itemId: item.id,
-        head,
-        base: "base",
-        tier: "high",
-        paths: ["src/auth/session.ts"],
-        classifiedAt: at,
-      });
+      await db.run((q) =>
+        saveCandidateRiskSteps(q, {
+          itemId: item.id,
+          head,
+          base: "base",
+          tier: "high",
+          paths: ["src/auth/session.ts"],
+          classifiedAt: at,
+        }),
+      );
     await risk("9c1d2e3ff0", now);
     await saveRiskFix(db, {
       itemId: item.id,
@@ -1497,18 +1503,20 @@ describe("live status provider", () => {
     });
     await upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
     await finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
-    await saveCandidateRisk(db, {
-      itemId: item.id,
-      head,
-      base,
-      tier: "high",
-      paths: ["infra/main.tf", "src/auth/session.ts"],
-      matches: [
-        { path: "infra/main.tf", lists: ["file"] },
-        { path: "src/auth/session.ts", lists: ["settings", "file"] },
-      ],
-      classifiedAt: now,
-    });
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: item.id,
+        head,
+        base,
+        tier: "high",
+        paths: ["infra/main.tf", "src/auth/session.ts"],
+        matches: [
+          { path: "infra/main.tf", lists: ["file"] },
+          { path: "src/auth/session.ts", lists: ["settings", "file"] },
+        ],
+        classifiedAt: now,
+      }),
+    );
     await upsertCloseoutStep(
       db,
       docs.id,
@@ -1517,15 +1525,17 @@ describe("live status provider", () => {
       now,
     );
     await finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
-    await saveCandidateRisk(db, {
-      itemId: docs.id,
-      head,
-      base,
-      tier: "normal",
-      paths: [],
-      matches: [],
-      classifiedAt: now,
-    });
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: docs.id,
+        head,
+        base,
+        tier: "normal",
+        paths: [],
+        matches: [],
+        classifiedAt: now,
+      }),
+    );
     const high = parseIssueDetailResponse(
       JSON.parse(JSON.stringify(await provider.issue("ENG-11"))),
     );

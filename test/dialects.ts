@@ -1,5 +1,5 @@
 import { describe } from "bun:test";
-import { sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db, Q } from "../src/db";
 import { rows, tempStore } from "./pglite";
 
@@ -78,4 +78,32 @@ export function insertLinearSession(db: Db, sessionId: string, issueId: string |
   return db.run(function* (q) {
     yield* q.exec(q.orm.insert(q.t.linearSession).values({ sessionId, issueId, createdAt: 0 }));
   });
+}
+
+export async function pullCommentOutcome(
+  db: Db,
+  source: string,
+  commentId: number,
+): Promise<string | null | undefined> {
+  const row = await db.run(function* (q) {
+    const { pullComment } = q.t;
+    return yield* q.one(
+      q.orm
+        .select({ outcome: pullComment.outcome })
+        .from(pullComment)
+        .where(and(eq(pullComment.source, source), eq(pullComment.commentId, commentId))),
+    );
+  });
+  return row?.outcome;
+}
+
+export function githubDeliveryRows(db: Db) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.githubDelivery)
+        .orderBy(asc(q.t.githubDelivery.receivedAt), asc(q.t.githubDelivery.deliveryId)),
+    ),
+  );
 }

@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, max, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
@@ -91,26 +91,4 @@ export function* listCiRoundsSteps(q: Q, itemId?: string) {
 
 export async function listCiRounds(store: Db, itemId?: string): Promise<CiRound[]> {
   return store.run((q) => listCiRoundsSteps(q, itemId));
-}
-
-export function* countCiFixesSteps(q: Q, itemId: string, sinceJobId: number) {
-  const { ciRound, job } = q.t;
-  const since = q.orm.select({ createdAt: job.createdAt }).from(job).where(eq(job.id, sinceJobId));
-  const row = yield* q.one(
-    q.orm
-      .select({ n: max(ciRound.fix) })
-      .from(ciRound)
-      .where(
-        and(
-          eq(ciRound.itemId, itemId),
-          eq(ciRound.next, "agent"),
-          gte(ciRound.recordedAt, sql`COALESCE((${since}), 0)`),
-        ),
-      ),
-  );
-  return Number(row?.n ?? 0);
-}
-
-export async function countCiFixes(store: Db, itemId: string, sinceJobId: number): Promise<number> {
-  return store.run((q) => countCiFixesSteps(q, itemId, sinceJobId));
 }
