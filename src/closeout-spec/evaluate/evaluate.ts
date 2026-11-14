@@ -354,7 +354,7 @@ function retryTally(
       !request.retryBaseline?.includes(evidenceAttemptKey(record)) &&
       recordFailed(item, record, request, trust)
     ) {
-      failedHeads.add(record.head);
+      failedHeads.add(item.kind === "setup" ? attemptKey : record.head);
       if (isReview(item) && record.recordType === "review") {
         const keys = new Set(
           blockingFindings(record, request)

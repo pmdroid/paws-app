@@ -290,7 +290,7 @@ test("commands and setup retain the ordinary limit with progress-aware reviews",
       for (let round = 0; round < 3; round += 1) {
         const result = await run({ ...fx.input(), pawsHome: join(fx.root, "paws") });
         expect(result.items.find((item) => item.id === "fail")?.state).toBe(
-          (kind === "setup" && round > 0) || round === 2 ? "exhausted" : "failed",
+          kind === "setup" || round === 2 ? "exhausted" : "failed",
         );
         fx.next();
       }

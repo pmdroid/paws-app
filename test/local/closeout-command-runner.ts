@@ -144,7 +144,7 @@ export async function probeCloseoutCommandRunner(
           headMoved: "command moved HEAD",
           timedOut: "command timed out",
           exit: "command exited 1",
-          failedSetup: "command exited 1",
+          failedSetup: "2 of 2 allowed failed attempts used. Stop retrying and ask for help.",
         }[variant],
       );
       assert.equal(calls.length, 2);
