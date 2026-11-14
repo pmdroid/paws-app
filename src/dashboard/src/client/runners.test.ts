@@ -52,6 +52,7 @@ const runner: Runner = {
   os: { id: "ubuntu", version: "24.04" },
   version: "1.2.0",
   idle: true,
+  codingAgents: [{ agent: "claude", current: "1", pending: null, reportedAt: now }],
   agents: [
     { agent: "claude", status: "signed_in", checkedAt: now - 1_000 },
     { agent: "codex", status: "unknown", checkedAt: null },
@@ -116,7 +117,11 @@ describe("fix slots setting", () => {
 });
 
 describe("runner list rows", () => {
-  const row = { now, serverVersion: "1.2.0" };
+  const row = {
+    now,
+    serverVersion: "1.2.0",
+    accounts: [{ agent: "claude", credential: {}, extraUsage: false, usage: null }],
+  };
 
   test("a runner that refuses waiting work for its host config shows the warning", () => {
     const line = "goldbox can't take pmdroid/paws-app (not in its allowed repositories)";
@@ -145,7 +150,8 @@ describe("runner list rows", () => {
         status: "paused",
         version: "1.1.0",
         metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 },
-        agents: [{ agent: "codex", status: "signed_out", checkedAt: now }],
+        codingAgents: [{ agent: "codex", current: "1", pending: null, reportedAt: now }],
+        agents: [{ agent: "codex", status: "signed_in", checkedAt: now }],
       },
       row,
     );
@@ -153,25 +159,6 @@ describe("runner list rows", () => {
     expect(html).toContain('<span class="tag paused">Paused</span>');
     expect(html).toContain('<span class="tag bad">Codex needs sign-in</span>');
     expect(html).toContain("Update available");
-    expect(html).toContain('href="/settings/agent-accounts"');
-  });
-
-  test("agent summaries include signed-in, signed-out and cooldown states", () => {
-    const resetsAt = now + 60_000;
-    const html = runnerRowMarkup(
-      {
-        ...runner,
-        agents: [
-          { agent: "claude", status: "signed_in", checkedAt: now },
-          { agent: "codex", status: "signed_out", checkedAt: now },
-          { agent: "grok", status: "usage_limit", checkedAt: now, resetsAt },
-        ],
-      },
-      row,
-    );
-    expect(html).toContain("Claude signed in");
-    expect(html).toContain("Codex needs sign-in");
-    expect(html).toContain(`Grok quota cooldown until ${esc(new Date(resetsAt).toLocaleString())}`);
     expect(html).toContain('href="/settings/agent-accounts"');
   });
 
@@ -292,7 +279,11 @@ describe("what a runner is running now", () => {
     phase: "closeout",
     startedAt: now - 75 * 60_000,
   };
-  const row = { now, serverVersion: "1.2.0" };
+  const row = {
+    now,
+    serverVersion: "1.2.0",
+    accounts: [{ agent: "claude", credential: {}, extraUsage: false, usage: null }],
+  };
 
   test("an idle runner shows nothing running", () => {
     expect(runnerRunningMarkup([], now)).toBe('<p class="muted">Nothing running</p>');

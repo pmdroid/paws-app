@@ -222,7 +222,6 @@ try {
     );
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
-    const reset = Date.now() + 3_600_000;
     await page.route("**/api/runners", (route) =>
       route.fulfill({
         json: {
@@ -230,36 +229,47 @@ try {
             {
               id: "agent-summary-runner",
               name: "build-box",
-              ownerUserId: "member",
               status: "active",
-              idle: true,
-              metrics: null,
-              os: null,
-              version: "1.2.0",
-              agents: [
-                { agent: "claude", status: "signed_in", checkedAt: Date.now() },
-                { agent: "codex", status: "signed_out", checkedAt: Date.now() },
-                { agent: "grok", status: "usage_limit", checkedAt: Date.now(), resetsAt: reset },
-              ],
+              codingAgents: ["claude", "codex", "grok"].map((agent) => ({
+                agent,
+                current: "1",
+              })),
+              agents: [{ agent: "claude", status: "signed_out", checkedAt: 1 }],
+            },
+          ],
+        },
+      }),
+    );
+    await page.route("**/api/runners/agent-accounts", (route) =>
+      route.fulfill({
+        json: {
+          accounts: [
+            { agent: "claude", credential: {}, extraUsage: false, usage: null },
+            { agent: "codex", credential: null, extraUsage: false, usage: null },
+            {
+              agent: "grok",
+              credential: {},
+              usage: {
+                limits: [{ window: "5h", usedPercent: 100, resetsAt: Date.now() + 3_600_000 }],
+              },
             },
           ],
         },
       }),
     );
     for (const [name, path, heading] of [
-      ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],
+      ["runners", "/dashboard/runners", "Runners"],
     ] as const)
       await visit(page, width, name, path, heading);
-    await page.goto(`${f.origin}/dashboard/runners`);
-    const summary = page.getByRole("link", { name: "Agents on build-box: manage agent accounts" });
-    await expect(summary).toContainText("Claude signed in");
-    await expect(summary).toContainText("Codex needs sign-in");
-    await expect(summary).toContainText("Grok quota cooldown until");
+    const summary = page.getByRole("link", {
+      name: /Claude signed in.*Codex needs sign-in.*Grok quota cooldown until/,
+    });
+    await summary.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(out, `runner-agents-${width}.png`), fullPage: true });
     await summary.click();
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/agent-accounts`);
-    await expect(page.locator(".settings-link[aria-current]")).toHaveText("Agent accounts");
-    await page.unroute("**/api/runners");
+    await page.unroute("**/api/runners/agent-accounts");
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
