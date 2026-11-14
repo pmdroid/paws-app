@@ -2,5 +2,3 @@
 # against a Postgres server, though they pass on PGlite. One path per line; text after `#`
 # is the reason. Remove a line when its file passes with PAWS_TEST_DATABASE_URL set.
 
-# Two concurrent confirmations both succeed on a server; on PGlite one is refused.
-test/decision-memory.test.ts # concurrent suggestion confirmation accepts twice
