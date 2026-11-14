@@ -8,10 +8,7 @@ export {
   isImplementer,
   loadConfigFile,
   parseConfigToml,
-  renderConfigToml,
   setConfigKeys,
-  writeConfigFile,
-  writeImplementer,
   IMPLEMENTERS,
 } from "./file";
 export type {
@@ -21,7 +18,6 @@ export type {
   GrokConfig,
   ImplementerName,
   PawsConfigFile,
-  PawsSetupConfig,
   TrackerKind,
 } from "./file";
 export {

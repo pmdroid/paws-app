@@ -29,15 +29,7 @@ Set these on the Paws server:
 
 Paws can also read these from `~/.paws/secrets/github-app.json` and `github-app.pem`. Both files are envelope-encrypted, mode `0600`, inside the mode `0700` secrets directory. Environment variables override the saved files.
 
-`config.toml` needs no GitHub credential. `github.auth` is optional, and the only accepted value is `app`:
-
-```toml
-[github]
-auth = "app"
-repo = "owner/name"
-```
-
-A config that still sets `auth = "oauth"` or `auth = "gh"`, or a `GITHUB_AUTH` with either value, stops Paws at startup with a message that points here. Remove the line or set it to `app`. `oauth_client_id` is no longer read. Delete it from `config.toml`.
+`config.toml` needs no GitHub credential. Paws ignores a leftover `[github] auth` key, and `oauth_client_id` is no longer read.
 
 ## Integrations
 
