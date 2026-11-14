@@ -1,8 +1,8 @@
-import { and, eq, isNull, like } from "drizzle-orm";
+import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { AgentAccountError } from "./agent-accounts";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 import type { Q, Steps } from "./db";
-
 const key = (id: string) => `agent-auth:${id}`;
 export function* deviceAccountSteps(q: Q, workspaceId: string, id: string): Steps<void> {
   const a = q.t.agentAccount;
@@ -47,19 +47,14 @@ export function* claimAgentAuthSteps(
 export function* listAgentAuthSteps(q: Q) {
   const s = q.t.setting;
   const a = q.t.agentAccount;
-  const rows = yield* q.all(
-    q.orm.select({ key: s.key, value: s.value }).from(s).where(like(s.key, "agent-auth:%")),
-  );
-  const live = yield* q.all(
+  return yield* q.all(
     q.orm
-      .select({ id: a.id })
+      .select({ id: a.id, value: s.value })
       .from(a)
+      .innerJoin(s, eq(s.key, sql`'agent-auth:' || ${a.id}`))
       .where(and(eq(a.agent, "codex"), isNull(a.removedAt))),
   );
-  const ids = new Set(live.map((account) => account.id));
-  return rows.map((r) => ({ id: r.key.slice(11), value: r.value })).filter((r) => ids.has(r.id));
 }
-
 export function* agentAuthFailureSteps(q: Q, id: string) {
   const raw = yield* readAgentAuthSteps(q, id);
   if (!raw) return null;
@@ -69,13 +64,7 @@ export function* agentAuthFailureSteps(q: Q, id: string) {
     retryAt: number;
     failures: number;
   };
-  const c = q.t.agentAccountCredential;
-  const credential = yield* q.one(
-    q.orm
-      .select({ version: c.version, ciphertext: c.ciphertext, updatedAt: c.updatedAt })
-      .from(c)
-      .where(eq(c.accountId, id)),
-  );
+  const credential = yield* agentCredentialCiphertextSteps(q, id);
   return state.health === "auth-expired" &&
     credential?.ciphertext &&
     credential.version === state.version

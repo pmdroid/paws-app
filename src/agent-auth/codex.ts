@@ -1,10 +1,5 @@
 import { z } from "zod";
-export type Tokens = {
-  id_token: string;
-  access_token: string;
-  refresh_token: string;
-  expiresAt: number;
-};
+export type Tokens = z.infer<typeof shape> & { expiresAt: number };
 export type Device = {
   userCode: string;
   verificationUri: string;

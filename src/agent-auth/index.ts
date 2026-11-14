@@ -46,16 +46,18 @@ export function createAgentAuth(options: {
   ) {
     delete state.lock;
     delete state.lockUntil;
-    await store.transaction(function* (q) {
+    return await store.transaction(function* (q) {
       const previous = yield* readAgentCredentialSteps(q, secretsDir, id);
       if (tokens && state.version !== undefined && previous?.version !== state.version) {
-        state.state = "expired";
+        state.state = previous?.blob ? "signed-in" : "expired";
+        state.version = previous?.version;
+        state.health = "auth-expired";
         tokens = undefined;
       }
       if (tokens) state.version = (previous?.version ?? 0) + 1;
       const key = deviceSession ? "device:" + id : id;
       const claimed = yield* claimAgentAuthSteps(q, key, locked, JSON.stringify(state));
-      if (!claimed) return;
+      if (!claimed) return false;
       if (tokens) {
         if (deviceSession) yield* writeAgentAuthSteps(q, id, JSON.stringify(state));
         const result = yield* writeAgentCredentialSteps(q, secretsDir, {
@@ -67,6 +69,7 @@ export function createAgentAuth(options: {
         });
         if (result !== "written") throw new Error("Agent credential write conflicted");
       }
+      return state.state;
     });
   }
   return {
@@ -106,14 +109,14 @@ export function createAgentAuth(options: {
           next.expiresAt = result.tokens.expiresAt;
           next.health = "ok";
         }
-        await save(
+        const saved = await save(
           id,
           locked,
           next,
           result.state === "signed-in" ? result.tokens : undefined,
           true,
         );
-        return { state: result.state };
+        return { state: saved || "pending" };
       } catch {
         await save(
           id,
@@ -140,10 +143,11 @@ export function createAgentAuth(options: {
           const credential = await store.run((q) =>
             readAgentCredentialSteps(q, secretsDir, row.id),
           );
-          if (!credential?.blob || credential.version !== state.version) {
+          if (!credential?.blob) {
             await save(row.id, locked, { ...state, state: "expired" });
             continue;
           }
+          state.version = credential.version;
           const files = JSON.parse(credential.blob) as { data: string }[];
           const previous = JSON.parse(Buffer.from(files[0]!.data, "base64").toString()) as {
             tokens: Omit<Tokens, "expiresAt">;

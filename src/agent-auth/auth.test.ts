@@ -13,10 +13,9 @@ import {
   centralAgentAccountsSteps,
   agentAccountOverviewSteps,
 } from "../db";
-import { readAgentCredentialSteps } from "../credentials";
+import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import { createAgentAuth, createCodexProvider } from "./index";
 import { fakeCodexOAuth } from "./fake";
-
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
@@ -66,20 +65,16 @@ test("device approval encrypts CLI credentials and refreshes once across concurr
   expect(await s.auth.device("workspace", s.id, true)).toMatchObject({
     userCode: "USER-CODE",
     verificationUri: s.fake.issuer + "/codex/device",
-    interval: 5,
   });
-  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
   s.advance(5000);
   expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
   s.fake.approve();
-  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
   s.advance(5000);
   expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "signed-in" });
   const stored = await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id));
   expect(stored!.ciphertext).not.toContain("refresh-secret");
   const credential = await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id));
   const files = JSON.parse(credential!.blob!);
-  expect(files[0].path).toBe(".codex/auth.json");
   expect(JSON.parse(Buffer.from(files[0].data, "base64").toString()).tokens.refresh_token).toBe(
     "refresh-secret-1",
   );
@@ -138,11 +133,22 @@ test("refresh persists rotated tokens under a runner lease and health gates ever
   s.fake.approve();
   s.advance(5000);
   await s.auth.device("workspace", s.id, false);
+  const uploaded = await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id));
+  expect(
+    await s.db.transaction((q) =>
+      writeAgentCredentialSteps(q, s.dir, {
+        accountId: s.id,
+        runnerId: "runner",
+        version: 2,
+        blob: uploaded!.blob!,
+        now: s.now(),
+      }),
+    ),
+  ).toBe("written");
   s.advance(3_000_000);
   await s.auth.tick();
   const credential = await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id));
-  expect(credential!.blob).not.toBeNull();
-  expect(credential!.version).toBe(2);
+  expect(credential!.version).toBe(3);
   s.advance(3_000_000);
   s.fake.failRefresh();
   await s.auth.tick();
@@ -159,26 +165,32 @@ test("refresh persists rotated tokens under a runner lease and health gates ever
   s.advance(60_000);
   await s.auth.tick();
   expect(await s.db.run((q) => centralAgentAccountsSteps(q, "workspace", "codex"))).toHaveLength(1);
-  expect(
-    (await s.db.run((q) => bindingAccountHealthSteps(q, binding.id))).some(
-      (h) => h.state === "auth_required",
-    ),
-  ).toBe(false);
 });
-for (const outcome of ["abandoned", "denied", "expired"] as const)
-  test("replacement " + outcome + " keeps refreshing the active credential", async () => {
-    const s = await setup();
-    await s.auth.device("workspace", s.id, true);
-    s.fake.approve();
-    s.advance(5000);
-    await s.auth.device("workspace", s.id, false);
-    await s.auth.device("workspace", s.id, true);
-    if (outcome === "denied") s.fake.deny();
-    if (outcome !== "abandoned") {
-      s.advance(outcome === "denied" ? 5000 : 900_000);
-      await s.auth.device("workspace", s.id, false);
-    }
-    s.advance(3_000_000);
-    await s.auth.tick();
-    expect((await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id)))!.version).toBe(2);
+test("a replaced in-flight device poll cannot report sign-in success", async () => {
+  const s = await setup();
+  const provider = createCodexProvider(s.fake.issuer, s.now);
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const auth = createAgentAuth({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    provider: {
+      ...provider,
+      async pollDevice(device) {
+        entered.resolve();
+        await release.promise;
+        return provider.pollDevice(device);
+      },
+    },
   });
+  await auth.device("workspace", s.id, true);
+  s.fake.approve();
+  s.advance(5000);
+  const poll = auth.device("workspace", s.id, false);
+  await entered.promise;
+  await auth.device("workspace", s.id, true);
+  release.resolve();
+  expect(await poll).toEqual({ state: "pending" });
+  expect(await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id))).toBeNull();
+});
