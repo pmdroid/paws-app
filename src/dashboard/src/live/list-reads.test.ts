@@ -155,8 +155,7 @@ async function world(extra: number): Promise<Db> {
         .insert(q.t.itemHold)
         .values({ itemId: "PAS-2", reason: "blocked", blockers: ["PAS-1"] }),
     (q) => q.orm.insert(q.t.itemBlockerCheck).values({ itemId: "PAS-2", checkedAt: T0 + 5_000 }),
-    (q) =>
-      q.orm.insert(q.t.linearConversation).values({ itemId: "PAS-4", entries: "[]", blocked: 1 }),
+    (q) => q.orm.insert(q.t.linearConversation).values({ itemId: "PAS-4", blocked: 1 }),
     (q) =>
       q.orm.insert(q.t.inboxEvent).values({
         dedupeKey: "created-PAS-1",
