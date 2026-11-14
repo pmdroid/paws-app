@@ -86,6 +86,7 @@ import {
   listQueuePositions,
   listRunsSteps,
   listTaskBlockersSteps,
+  listTaskBlocksSteps,
   listVisualReviewMarksSteps,
   listVisualReviewsSteps,
   listWorkItemEventRowsSteps,
@@ -1049,6 +1050,7 @@ async function readIssueScope(
     ? { mergeQueue: [] }
     : await mergeQueueFor(store, {
         records: visible,
+        listed: records,
         items,
         jobs,
         queues,
@@ -1108,15 +1110,7 @@ async function readIssueScope(
         ),
       );
   }
-  const blocks: string[] = [];
-  if (only !== undefined)
-    for (const record of visible)
-      if (
-        publicId(record) !== only &&
-        (await blockersFor(store, record, itemsByIssue)).includes(only) &&
-        !blocks.includes(publicId(record))
-      )
-        blocks.push(publicId(record));
+  const blocks = only === undefined ? [] : await blockedBy(store, only, visible, itemsByIssue);
   const current = records[0]!;
   return {
     scope,
@@ -1725,6 +1719,38 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
   }
 }
 
+async function blockedBy(
+  store: Db,
+  only: string,
+  visible: readonly WorkItemRecord[],
+  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
+): Promise<string[]> {
+  const blocked = new Set<string>();
+  const satisfied = new Map<string, boolean>();
+  for (const edge of await store.run((q) => listTaskBlocksSteps(q))) {
+    const blocker = itemsByIssue.get(edge.blocker);
+    if (blocker === undefined || publicId(blocker) !== only) continue;
+    if (!satisfied.has(blocker.id))
+      satisfied.set(blocker.id, await blockerSatisfied(store, blocker));
+    if (!satisfied.get(blocker.id)) blocked.add(edge.blocked);
+  }
+  const blocks: string[] = [];
+  for (const record of visible)
+    if (
+      publicId(record) !== only &&
+      blocked.has(record.linearIssueId) &&
+      !blocks.includes(publicId(record))
+    )
+      blocks.push(publicId(record));
+  return blocks;
+}
+
+async function blockerSatisfied(store: Db, blocker: WorkItemRecord): Promise<boolean> {
+  const mode = await store.run((q) => getTaskModeSteps(q, blocker.id));
+  const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, blocker.id));
+  return isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null });
+}
+
 export async function blockersFor(
   store: Db,
   record: WorkItemRecord,
@@ -1734,10 +1760,7 @@ export async function blockersFor(
   for (const issueId of await store.run((q) => listTaskBlockersSteps(q, record.linearIssueId))) {
     const blocker = itemsByIssue.get(issueId);
     if (blocker === undefined) continue;
-    const mode = await store.run((q) => getTaskModeSteps(q, blocker.id));
-    const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, blocker.id));
-    if (isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null }))
-      continue;
+    if (await blockerSatisfied(store, blocker)) continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
   }
@@ -2353,6 +2376,7 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
 
 type MergeQueueInput = {
   records: readonly WorkItemRecord[];
+  listed?: readonly WorkItemRecord[];
   items: readonly Pick<StatusItem, "id" | "pr">[];
   jobs: readonly Job[];
   queues: readonly MergeQueuePosition[];
@@ -2387,7 +2411,7 @@ async function mergeQueueFor(
   };
   const paths = await store.run(latestCandidatePathsSteps);
   const waiting: StatusMergeEntry[] = [];
-  for (const record of records) {
+  for (const record of input.listed ?? records) {
     if (record.state !== "merge_queue" && !(record.state === "verifying" && places.has(record.id)))
       continue;
     const job = mergeJob(record.id, jobs);
@@ -2449,7 +2473,7 @@ async function mergeQueueFor(
   );
   const since = input.now - DAY_MS;
   const history: StatusMergeOutcome[] = [];
-  for (const record of records) {
+  for (const record of input.listed ?? records) {
     if (record.state === "merged" || record.state === "completed") {
       const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, record.id));
       if (!merge || merge.confirmedAt < since) continue;

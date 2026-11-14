@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startDashboardFixture } from "../test/dashboard-fixture";
+import { replaceWorkspaceRepositories } from "../src/db";
 
 const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-dashboard-ui-${Date.now()}`);
@@ -30,9 +31,9 @@ let current = "";
 const PAGE_RESOURCE =
   /^\/api\/(overview|issues|questions|merge-queue|evidence(\/[^/]+\/metadata)?$|status)/;
 
-async function open(width: number) {
+async function open(width: number, cookie = f.cookie) {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
-  await context.setExtraHTTPHeaders({ cookie: f.cookie });
+  await context.setExtraHTTPHeaders({ cookie });
   const page = await context.newPage();
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", async (response) => {
@@ -53,7 +54,9 @@ async function visit(page: Page, width: number, name: string, path: string, head
   current = `${name}@${width}`;
   const before = { requests: requests.length, statements: f.statements() };
   await page.goto(`${f.origin}${f.fill(path)}`);
-  await expect(page.locator("#content h1").first()).toHaveText(heading);
+  await expect(page.locator("#content h1, .settings-link[aria-current]").first()).toHaveText(
+    heading,
+  );
   await page.waitForTimeout(5_600);
   const seen = requests.slice(before.requests);
   visits.push({
@@ -78,7 +81,60 @@ async function follow(page: Page, from: string, expected: string, text?: string)
   });
 }
 
+const REFUSAL = "Your GitHub account can't read acme/widgets.";
 try {
+  for (const [name, cookie, text, width] of (
+    [
+      ["setup-admin", f.adminCookie, "Choose repositories"],
+      ["setup-member", f.cookie, "An admin is still setting up Paws."],
+      ["sign-in", "", "After setup, other people only need to sign in with Linear."],
+    ] as const
+  ).flatMap((screen) => [1440, 390].map((size) => [...screen, size] as const))) {
+    current = `${name}@${width}`;
+    const page = await open(width, cookie);
+    await page.route("**/api/workspaces/github-connect", (route) =>
+      route.fulfill({
+        json: { status: "needs_repositories", canManage: true, requiresSignIn: false },
+      }),
+    );
+    await page.route("**/api/workspaces/github-setup*", (route) =>
+      route.request().method() === "PUT"
+        ? route.fulfill({ status: 409, json: { error: REFUSAL } })
+        : route.fulfill({
+            json: {
+              signedIn: true,
+              login: "octo",
+              installations: [{ id: "1", account: "acme" }],
+              installationId: "1",
+              repositories: [{ repository: "acme/app", private: true }],
+              teams: [{ id: "team", name: "Team", key: "TEAM" }],
+              mappings: [],
+            },
+          }),
+    );
+    for (const path of ["/dashboard", "/dashboard/settings/merging", "/dashboard/runners"]) {
+      await page.goto(f.origin + path);
+      await expect(page.locator("#content")).toContainText(text);
+      await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(0);
+      await expect(page.locator("[data-setup-github] #workspace-github-integration")).toHaveCount(
+        name === "setup-admin" ? 1 : 0,
+      );
+    }
+    if (name === "setup-admin") {
+      await page.getByLabel("Match acme/app to Team").check();
+      await page.getByRole("button", { name: "Save repository access" }).click();
+      await expect(page.locator("[data-setup-github] [data-feedback]")).toHaveText(REFUSAL);
+    }
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.screenshot({ path: join(out, `${name}-${width}.png`), fullPage: true });
+    await page.context().close();
+  }
+  await replaceWorkspaceRepositories(f.db, {
+    workspaceId: "workspace",
+    actorId: "admin",
+    repositories: [{ repository: "acme/app", teamId: "team" }],
+    now: Date.now(),
+  });
   for (const width of [1440, 390]) {
     const page = await open(width);
     const resources = (seen: Request[]) => [
@@ -107,7 +163,8 @@ try {
       if (name.startsWith("evidence")) expect([name, loads]).toEqual([name, 1]);
       else expect([name, loads > 1]).toEqual([name, true]);
     }
-    await page.route("**/api/settings/agents", (route) =>
+    const admin = await open(width, f.adminCookie);
+    await admin.route("**/api/settings/agents", (route) =>
       route.fulfill({
         json: {
           defaults: {
@@ -115,13 +172,19 @@ try {
             reviewer: { agent: "codex", model: "gpt-5.4" },
           },
           presets: {
-            Opus: { agent: "claude", model: "opus", effort: "high" },
-            Codex: { agent: "codex", model: "gpt-5.4", effort: "high" },
+            Opus: {
+              implementer: { agent: "claude", model: "opus", effort: "high" },
+              reviewer: { agent: "codex", model: "gpt-5.4", effort: "high" },
+            },
+            Codex: {
+              implementer: { agent: "codex", model: "gpt-5.4", effort: "high" },
+              reviewer: { agent: "claude", model: "opus", effort: "high" },
+            },
           },
         },
       }),
     );
-    await page.route("**/api/runners/models", (route) =>
+    await admin.route("**/api/runners/models", (route) =>
       route.fulfill({
         json: {
           catalogs: [
@@ -141,21 +204,29 @@ try {
         },
       }),
     );
-    await visit(page, width, "settings-agents", "/dashboard/settings/agents", "Agents");
-    await expect(page.locator("#preset-0-name")).toHaveValue("Opus");
-    await expect(page.locator("#preset-1-name")).toHaveValue("Codex");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+    await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
+    await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
+    await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
+    await expect(admin.locator(".settings-nav a")).toHaveCount(9);
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await page.unroute("**/api/settings/agents");
-    await page.unroute("**/api/runners/models");
+    await admin.unroute("**/api/settings/agents");
+    await admin.unroute("**/api/runners/models");
     for (const [name, path, heading] of [
       ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],
+    ] as const)
+      await visit(page, width, name, path, heading);
+    for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
     ] as const)
-      await visit(page, width, name, path, heading);
+      await visit(admin, width, name, path, heading);
+    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
+    await expect(page.locator(".settings-nav a")).toHaveText(["Your account"]);
+    await expect(page.locator("#merge-settings")).toHaveCount(0);
+    await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 
     current = `links@${width}`;

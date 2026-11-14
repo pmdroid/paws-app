@@ -263,6 +263,19 @@ export function useGitReader(reader: GitReader | null): void {
   gitReader = reader ?? mirrorReader;
 }
 
+export async function trustedChangedPaths(
+  repo: string,
+  base: string,
+  head: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<{ ok: true; paths: string[] } | { ok: false; message: string }> {
+  const read = await gitReader.changedPaths?.(repo, base, head);
+  if (!read) return diffPaths(repo, base, head, scrubCommandEnv(env));
+  return read.ok
+    ? read
+    : { ok: false, message: `changed paths are unavailable: ${read.stderr.split("\n")[0]}` };
+}
+
 export async function trustedPolicyFiles(
   repo: string,
   home?: string,
@@ -1072,7 +1085,7 @@ async function candidatePolicyError(
 ): Promise<string | undefined> {
   const diff = changed
     ? { ok: true as const, paths: changed }
-    : await diffPaths(repo, base, head, scrubCommandEnv(env));
+    : await trustedChangedPaths(repo, base, head, env);
   if (diff.ok && !changesPolicyInput(policy, diff.paths)) return undefined;
   const reader = { repo, git: gitReader };
   const candidate = await filled(reader, () => loadCommitPolicy(reader, head));
@@ -1228,7 +1241,7 @@ async function readChangedPaths(
   env: NodeJS.ProcessEnv | undefined,
 ): Promise<{ ok: true; paths?: string[] } | { ok: false; message: string }> {
   if (!needsPaths(policy, gate)) return { ok: true };
-  const diff = await diffPaths(repo, base, head, scrubCommandEnv(env));
+  const diff = await trustedChangedPaths(repo, base, head, env);
   if (!diff.ok) return diff;
   return { ok: true, paths: diff.paths };
 }

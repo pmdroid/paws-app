@@ -52,6 +52,20 @@ export async function startDashboardFixture(
       now: Date.now(),
     });
   await sync();
+  await putWorkspaceUser(db, {
+    id: "admin",
+    linearUserId: "admin",
+    name: "Admin",
+    email: "a@x.test",
+  });
+  await syncWorkspaceMember(db, {
+    workspaceId: "workspace",
+    userId: "admin",
+    role: "admin",
+    active: true,
+    teamIds: ["team"],
+    now: Date.now(),
+  });
   const evidenceDir = join(home, "evidence");
   const store = createEvidenceStore({ store: db, root: evidenceDir });
   const answers: Parameters<QuestionAnswer>[0][] = [];
@@ -120,6 +134,7 @@ export async function startDashboardFixture(
       wipCommit: head,
     });
   }
+  const clock = Date.now();
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
@@ -147,6 +162,7 @@ export async function startDashboardFixture(
     db,
     workspaceAccess: access,
     evidenceDir,
+    dashboardNow: () => new Date(clock),
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
         store: db,
@@ -161,6 +177,11 @@ export async function startDashboardFixture(
     userId: "member",
     now: Date.now(),
   });
+  const admin = await issueWorkspaceSession(db, {
+    workspaceId: "workspace",
+    userId: "admin",
+    now: Date.now(),
+  });
   return {
     db,
     statements: () => statements,
@@ -170,6 +191,7 @@ export async function startDashboardFixture(
     answers,
     csrfToken: session.session.csrfToken,
     cookie: `${WORKSPACE_COOKIE}=${session.token}`,
+    adminCookie: `${WORKSPACE_COOKIE}=${admin.token}`,
     sessionToken: session.token,
     fill: (path: string) =>
       path

@@ -4,24 +4,25 @@ export {
   agentReadAllowed,
   closeoutPolicyRoot,
   defaultAgents,
+  parseCloseoutSettings,
+  readCloseoutSettings,
+  writeCloseoutSettings,
   emptyConfigFile,
+  githubMirrorsOn,
   isImplementer,
   loadConfigFile,
   parseConfigToml,
-  renderConfigToml,
   setConfigKeys,
-  writeConfigFile,
-  writeImplementer,
   IMPLEMENTERS,
 } from "./file";
 export type {
   AgentsConfig,
+  CloseoutSettings,
   ConfigKeyValue,
   GitHubConfigAuth,
   GrokConfig,
   ImplementerName,
   PawsConfigFile,
-  PawsSetupConfig,
   TrackerKind,
 } from "./file";
 export {
@@ -31,11 +32,24 @@ export {
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";
+export {
+  activeGitHubMirrors,
+  parseGitHubAccessSettings,
+  useActiveGitHubMirrors,
+  readGitHubAccessSettings,
+  writeGitHubAccess,
+} from "./github-access";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";
-export { databaseUrlOf, LINEAR_WORKSPACE_REQUIRED, loadRuntime, startupSettings } from "./runtime";
+export {
+  databaseUrlOf,
+  LINEAR_WORKSPACE_REQUIRED,
+  loadRuntime,
+  maxAwakeMsFrom,
+  startupSettings,
+} from "./runtime";
 export { describeDatabaseUrl, redactDatabaseUrl } from "./database";
 export type { PawsRole, RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
@@ -49,6 +63,8 @@ export {
   writeAgentSettings,
 } from "./agents";
 export type { AgentLabelProblem, AgentProfile, AgentProfiles, AgentSettings } from "./agents";
+export { parseAgentCommands, readAgentCommands } from "./agent-commands";
+export type { AgentCommands } from "./agent-commands";
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
@@ -60,6 +76,7 @@ export {
   ignoredCommentMarkers,
   MAIN_MOVED,
   MAX_CI_FIX_ATTEMPTS,
+  MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   MERGE_ORDERS,
   MERGE_OVERRIDES_IGNORED,
@@ -97,6 +114,7 @@ export type {
 } from "./merge";
 
 export {
+  copyCapsToTimeLimits,
   MAX_TIME_LIMIT_MINUTES,
   parseTimeLimitSettings,
   readTimeLimitSettings,
@@ -127,8 +145,13 @@ export {
 } from "./tailscale";
 export type { TailscaleAuthKeyStatus } from "./tailscale";
 
-export { projectSkillsRoot } from "./skills";
-export type { ProjectSkills } from "./skills";
+export {
+  parseProjectSkillRoots,
+  projectSkillsRoot,
+  readProjectSkillRoots,
+  writeProjectSkills,
+} from "./skills";
+export type { ProjectSkillRoots, ProjectSkills } from "./skills";
 export {
   parseBriefTemplates,
   renderBriefTemplates,

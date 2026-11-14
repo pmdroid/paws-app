@@ -628,3 +628,23 @@ function validateTime(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new Error("Linear access timestamp is invalid");
 }
+
+export function* pruneLinearAccessEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { linearAccessEvent: a } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(a)
+      .where(
+        inArray(
+          a.eventKey,
+          q.orm
+            .select({ eventKey: a.eventKey })
+            .from(a)
+            .where(lt(a.createdAt, cutoff))
+            .limit(limit),
+        ),
+      )
+      .returning({ eventKey: a.eventKey }),
+  );
+  return deleted.length;
+}

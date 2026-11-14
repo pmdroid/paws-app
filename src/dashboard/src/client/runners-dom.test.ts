@@ -170,6 +170,27 @@ test("with no runners the list explains what a runner is and offers Add a runner
   expect(root.querySelector("table")).toBeNull();
 });
 
+test("the setup state asks only for the runner listener environment", async () => {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) =>
+    new URL(String(url), ORIGIN).pathname === "/api/runners"
+      ? Response.json({ runners: [], setupRequired: true, workspaceReady: true })
+      : fallback(url as string, init)) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  const setup = root.querySelector('[aria-labelledby="runner-setup-heading"]');
+  expect(setup?.querySelector("h2")?.textContent).toBe("Set up remote runners");
+  expect([...(setup?.querySelectorAll("ol > li") ?? [])].map((li) => li.textContent)).toEqual([
+    "Set PAWS_RUNNER_HOST to the address runners connect to, and PAWS_RUNNER_PORT (usually 8788), in the Paws service environment, then restart Paws.",
+  ]);
+  expect(setup?.textContent).toContain(
+    "Then select Add a runner and run its command on the Linux runner.",
+  );
+  expect(setup?.textContent).not.toContain("runner-authority init");
+});
+
 async function mountWithAgents(role: string) {
   const fallback = globalThis.fetch;
   globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {

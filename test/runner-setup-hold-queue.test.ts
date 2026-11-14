@@ -34,6 +34,7 @@ import { seed } from "./dialects";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const DAY = 24 * 60 * 60 * 1000;
 const START = 1_000;
@@ -559,10 +560,10 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
     await label("Codex");
     await paws.reconcileExecution();
     expect(await getRunnerSetupHold(db, "mine")).toBeNull();
-    await Bun.sleep(0);
-    expect(counted.reads).toBe(1);
+    await waitFor(async () => counted.reads === 1 && (await itemJobs(db, "mine")) === 1, {
+      what: "the label read and the item's job",
+    });
     expect(await getRunnerSetupHold(db, "mine")).toBeNull();
-    expect(await itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
     await close();
@@ -579,7 +580,11 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     await addRunner(db, "own", users.me!, START, 0);
     await label("Codex");
     await paws.reconcileExecution();
-    await Bun.sleep(0);
+    await waitFor(
+      async () =>
+        (await getRunnerSetupHold(db, "mine")) !== null && (await thoughts(db)).length > 0,
+      { what: "the setup hold and its thought" },
+    );
     expect(await getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "agent-not-signed-in",
     });
@@ -609,7 +614,9 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
   try {
     await workspace(db);
     await paws.reconcileExecution();
-    await Bun.sleep(0);
+    await waitFor(async () => (await getRunnerSetupHold(db, "mine")) !== null, {
+      what: "the setup hold",
+    });
     expect(counted.reads).toBe(0);
     expect(await getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "no-runner" });
   } finally {
