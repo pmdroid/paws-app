@@ -177,6 +177,14 @@ try {
       default: { order: "queue", mainMoved: "overlap" },
       sessionDone: "pull_request",
       sessionQuietMinutes: 10,
+      repositories: {
+        "acme/platform": {
+          packages: ["apps/*"],
+          reviewApps: ["review-bot"],
+          suggestedFindings: false,
+        },
+      },
+      projects: { "project-one": { lane: "repository" } },
     };
     await admin.route("**/api/settings/merging", async (route) => {
       if (route.request().method() === "PUT")
@@ -184,6 +192,9 @@ try {
       await route.fulfill({ json: merging });
     });
     await visit(admin, width, "settings-merging", "/dashboard/settings/merging", "Merging");
+    await expect(admin.locator("#repo-packages-0")).toHaveValue("apps/*");
+    await admin.locator("#repo-apps-0").fill("updated-review");
+    await admin.locator("#project-lane-0").selectOption("project");
     await admin.locator('[name="session-done"][value="settled"]').check();
     const quiet = admin.locator('[name="session-quiet"]');
     await expect(quiet).toHaveValue("10");
@@ -199,6 +210,10 @@ try {
     expect((await savedSession).postDataJSON()).toMatchObject({
       sessionDone: "settled",
       sessionQuietMinutes: 17,
+      repositories: {
+        "acme/platform": { reviewApps: ["updated-review"], suggestedFindings: false },
+      },
+      projects: { "project-one": { lane: "project" } },
     });
     await expect(admin.getByText("Merging settings saved.", { exact: false })).toBeVisible();
     await admin.reload();
@@ -440,15 +455,26 @@ try {
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
     ] as const)
       await visit(admin, width, name, path, heading);
-    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
+    await page.route("**/api/settings/merging", (route) => route.fulfill({ json: merging }));
+    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Merging");
     await expect(page.locator(".settings-nav a")).toHaveText([
       "Agent accounts",
+      "Merging",
       "Repositories",
       "Linear",
       "Integrations",
       "Your account",
     ]);
-    await expect(page.locator("#merge-settings")).toHaveCount(0);
+    await expect(
+      page.locator(
+        "#merge-settings input, #merge-settings select, #merge-settings textarea, #merge-settings button",
+      ),
+    ).toHaveCount(0);
+    await expect(page.locator("#merge-settings")).toContainText("updated-review");
+    await page.screenshot({
+      path: join(out, `settings-merging-member-${width}.png`),
+      fullPage: true,
+    });
     for (const viewer of [admin, page])
       await viewer.route("**/api/workspaces/github-connect", (route) =>
         route.fulfill({

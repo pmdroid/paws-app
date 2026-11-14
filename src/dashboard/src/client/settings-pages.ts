@@ -73,6 +73,7 @@ export function settingsAreEditable(): boolean {
 }
 
 const MEMBER_PAGES: readonly SettingsPage[] = [
+  "merging",
   "agent-accounts",
   "integrations",
   "account",

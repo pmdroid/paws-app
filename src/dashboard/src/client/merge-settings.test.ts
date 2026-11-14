@@ -107,19 +107,26 @@ describe("Settings → Merging", () => {
     ).toContain("Only workspace admins can change merging settings.");
   });
 
-  test("saves neither projects nor rules, with the CSRF token", async () => {
+  test("saves project lanes but no retired rules, with the CSRF token", async () => {
     let sent: { url: string; init: RequestInit } | null = null;
     const fake = (async (url: URL, init: RequestInit) => {
       sent = { url: String(url), init };
       return Response.json(JSON.parse(String(init.body)));
     }) as unknown as typeof fetch;
-    const old = { ...data(), projects: [{ id: "p-paws" }], rules: [{ label: "Bug" }] };
+    const old = {
+      ...data(),
+      projects: { "p-paws": { lane: "repository" as const } },
+      rules: [{ label: "Bug" }],
+    };
     const body = mergeSettingsBody(old);
     expect(await mergeSettingsRequest("http://127.0.0.1:8787", "PUT", body, "csrf", fake)).toEqual(
       body,
     );
     expect(sent!.url).toBe("http://127.0.0.1:8787/api/settings/merging");
-    expect(JSON.parse(String(sent!.init.body))).toEqual({ default: data().default });
+    expect(JSON.parse(String(sent!.init.body))).toEqual({
+      default: data().default,
+      projects: old.projects,
+    });
     expect((sent!.init.headers as Record<string, string>)["x-paws-csrf"]).toBe("csrf");
   });
 
@@ -467,4 +474,25 @@ test("Linear session controls render saved choices and save only applicable minu
   expect(renderMergeSettings({ data: settings, busy: null, error: null, saved: false })).toContain(
     'min="1" max="120" step="1" required value="10"',
   );
+});
+
+test("repository settings round trip and members see values without controls", () => {
+  const value: MergeSettingsView = {
+    ...data(),
+    repositories: {
+      "acme/app": { packages: ["apps/*"], reviewApps: ["review-bot"], suggestedFindings: false },
+    },
+    projects: { abc: { lane: "repository" } },
+  };
+  expect(mergeSettingsBody(value)).toEqual(value);
+  const html = renderMergeSettings({
+    data: value,
+    busy: null,
+    error: null,
+    saved: false,
+    editable: false,
+  });
+  for (const text of ["apps/*", "review-bot", "Off", "abc", "repository"])
+    expect(html).toContain(text);
+  expect(html).not.toMatch(/<(input|textarea|select|button)\b/);
 });

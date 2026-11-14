@@ -9,6 +9,11 @@ export type MergeSettings = {
   sessionQuietMinutes?: number;
   autoApproveHighRisk?: boolean;
   default: MergeChoice;
+  repositories?: Record<
+    string,
+    { packages?: string[]; reviewApps?: string[]; suggestedFindings?: boolean }
+  >;
+  projects?: Record<string, { lane?: "project" | "repository" }>;
   lanes?: MergeLaneSplit[];
   noProject?: MergeNoProject;
   parallel?: number;
