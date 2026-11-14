@@ -38,17 +38,16 @@ export function* forwardCommandSteps(
 ): Steps<{ owners: string[]; inserted: boolean }> {
   const stoppedAtVersion = (yield* getWorkItemSteps(q, command.itemId))?.version;
   if (stoppedAtVersion === undefined) return { owners: [], inserted: false };
-  const { instance, run, runOwner } = q.t;
+  const { instance, run } = q.t;
   const owners = (yield* q.all(
     q.orm
-      .selectDistinct({ id: runOwner.ownerInstance })
+      .selectDistinct({ id: instance.id })
       .from(run)
-      .innerJoin(runOwner, eq(runOwner.runId, run.id))
-      .innerJoin(instance, eq(instance.id, runOwner.ownerInstance))
+      .innerJoin(instance, eq(instance.id, run.ownerInstance))
       .where(
         and(
           eq(run.itemId, command.itemId),
-          ne(runOwner.ownerInstance, self),
+          ne(instance.id, self),
           gt(instance.heartbeatAt, now - INSTANCE_DEAD_MS),
         ),
       ),
