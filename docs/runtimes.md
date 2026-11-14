@@ -56,7 +56,3 @@ Runtimes go into a cache under the agent's home in `/var/lib/paws-agent`, shared
 An install that fails, or runs longer than ten minutes, fails the task. Its Linear session names the runtime and gives mise's last line of output. A successful install posts one line with the runtimes and how long they took.
 
 The runner's card under **Runners** lists each runtime it has installed, with its version as the config wrote it. A failed install shows **Install failed** and the reason. Older runner releases do not report runtimes, so their cards list none.
-
-## Check it end to end
-
-[Smoke test](smoke-test.md#runtimes) runs a Node 22 and Python 3.12 repository from delegation to merge.

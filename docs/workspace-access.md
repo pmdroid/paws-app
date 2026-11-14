@@ -30,19 +30,15 @@ If Linear revokes the app authorization, the dashboard offers **Reconnect Linear
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
-Paws has two workspace roles: `admin` and `member`. Admins assign roles on **Settings › Members** and map repositories to verified Linear teams in **Settings › Integrations**. Members see the mapped repositories there read-only. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
+Paws has two workspace roles: `admin` and `member`. Admins assign roles on Settings > Members lists workspace members and lets administrators filter active or revoked access, change roles, revoke access and restore it. Before revoking someone, review the confirmation naming the runners and work it will stop. Changes appear in Settings > Audit history.
 
-## Members page
-
-**Settings › Members** lists everyone with a membership row. `GET /api/workspaces/members` (admins only) returns each member's `id`, `name`, `email`, `role`, `active`, `revokedAt`, `revokedBy` and `revokedByName`, `lastSignInAt` (the latest `session.created` audit entry), `runners` (runners not yet revoked) and `openItems` (the items a revoke would stop). The page filters by All, Active or Revoked; Not in Linear (`active=0`) rows show under All.
-
-An admin changes a role with `PUT /api/workspaces/members` and `{ userId, role }`, revokes with `{ userId, revoked: true }` after a confirmation that names the runners and items it cuts off, and restores with `{ userId, revoked: false }`. Each request carries the CSRF token, and each change is an entry in **Settings › Audit history**. Your own row has no revoke, and the last active admin's role and revoke are disabled with the reason. Restoring access does not restore runners; the member pairs them again. A member sees "Ask an admin to change members or roles."
+You cannot revoke yourself or remove the last active administrator. Restoring a member does not restore their runners; they must pair them again. Ask an administrator to change members or roles.
 
 ## Admission
 
 There is one admission mode: automatic. No admin approves a new member. When a person signs in with Linear, Paws reads their current Linear membership and creates their Paws membership as `member`; a Linear workspace admin becomes `admin`. A role an admin set by hand survives later syncs.
 
-Who may delegate an issue to Paws is decided when the delegation arrives, with the person's live Linear membership (`canAct` in `src/workspace/eligibility.ts`). Each refusal ends the session with an error that starts "Paws did not start this work.":
+Who may delegate an issue to Paws is decided when the delegation arrives, with the person's live Linear membership. Each refusal ends the session with an error that starts "Paws did not start this work.":
 
 | Delegator                           | Reason in the error                                                       |
 | ----------------------------------- | ------------------------------------------------------------------------- |
@@ -54,7 +50,7 @@ Who may delegate an issue to Paws is decided when the delegation arrives, with t
 
 ## A first delegation
 
-A Linear member who has never signed in to Paws can delegate an issue anyway. Paws holds the delegation instead of refusing it, and the same Linear session carries the person through setup. What the session shows is in [Linear agent sessions](linear-agent-sessions.md#a-first-delegation).
+A Linear member who has never signed in to Paws can delegate an issue anyway. Paws holds the delegation instead of refusing it, and the same Linear session carries the person through setup. What the session shows is in [Linear agent sessions](linear-agent-sessions.md).
 
 1. The delegator presses **Sign in to Paws** in the session. It opens `/onboard/<link id>`, which starts Linear sign-in.
 2. After sign-in, Paws creates the membership as in [Admission](#admission), releases the hold, and redirects to `/onboard/<link id>`, now the onboarding page.
@@ -83,13 +79,3 @@ Repository access comes from the Linear team to repository mapping in Integratio
 - "<team> has no repository in Paws yet. Ask <admins> to map one in Integrations, then delegate again."
 - "<owner/repo> isn't mapped to <team> in Paws."
 - "You're not a member of <team> in Paws."
-
-## Onboarding link rules
-
-- **The link is an address, not a credential.** `/onboard/<link id>` uses a random 26-character id that grants nothing by itself. Authority comes only from Linear OAuth (PKCE, a browser cookie, and a single-use `state` that lives ten minutes). That is why the link may sit in Linear's activity data and in logs.
-- **Only the session creator.** If someone else signs in through the link, Paws answers "This link belongs to <name>." with HTTP 403. It records their own membership as in [Admission](#admission), but does not sign them in to the dashboard and leaves the hold as it was. After onboarding, the link shows the page only to its signed-in creator; everyone else gets the same 404 as an unknown link ("This sign-in link is not active.").
-- **Expiry.** The link works while its hold is pending, for at most one day (`ONBOARDING_HOLD_MS`). After that Paws posts one final response, "This sign-in link expired. Delegate the issue again to retry.", and ends the session. A stopped or replaced session ends its link too.
-- **One action per session.** Waiting writes nothing to Linear. A session generation gets one sign-in action and never a second one. Signing in from the dashboard instead of the link releases the same hold.
-- **Rate limits.** In memory: 10 visits to `/onboard/*` per client IP per minute, 20 sign-in starts per link per day, and 5 failed Linear callbacks per IP per ten minutes. Over a limit Paws answers 429 with `Retry-After` and "Too many sign-in attempts. Try again later." Nothing reaches Linear or the outbox.
-- **Old links.** `/auth/linear?assignment=…` links, which carried a secret in the query string, answer 410: "This sign-in link was replaced. Use the latest Sign in to Paws action in Linear." A hold that was pending at upgrade got one new-form link.
-- Paws logs never contain OAuth codes, `state` values or cookies.
