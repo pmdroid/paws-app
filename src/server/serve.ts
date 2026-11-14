@@ -53,6 +53,8 @@ import {
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   handleTimeLimitSettingsRequest,
+  handleGitHubAccessSettingsRequest,
+  GITHUB_ACCESS_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
@@ -631,6 +633,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       csrfToken,
       workspaceId,
       groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === GITHUB_ACCESS_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleGitHubAccessSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {

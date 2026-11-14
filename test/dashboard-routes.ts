@@ -232,6 +232,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "merging",
     "skills",
     "time-limits",
+    "github-access",
   ].map((page) =>
     api(
       page === "brief/preview" ? "POST" : "GET PUT",

@@ -77,6 +77,7 @@ export type PawsConfigFile = {
   githubRepos: string[];
   agentReadOff?: string[];
   githubMirrors?: boolean;
+  githubAccess?: GitHubAccess;
   publicUrl: string | null;
   maxAwakeMs: number | null;
   closeoutProjects?: Record<string, string>;
@@ -154,7 +155,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
+        !/^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
@@ -188,9 +189,19 @@ export function parseConfigToml(text: string): PawsConfigFile {
   return config;
 }
 
-export function agentReadAllowed(config: Pick<PawsConfigFile, "agentReadOff">, repository: string) {
+export type GitHubAccess = { agentRead?: boolean; mirrors?: boolean };
+
+export function agentReadAllowed(
+  config: Pick<PawsConfigFile, "agentReadOff" | "githubAccess">,
+  repository: string,
+) {
+  if (config.githubAccess?.agentRead !== undefined) return config.githubAccess.agentRead;
   const name = repository.toLowerCase();
   return !(config.agentReadOff ?? []).some((entry) => entry.toLowerCase() === name);
+}
+
+export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubMirrors" | "githubAccess">) {
+  return config.githubAccess?.mirrors ?? config.githubMirrors ?? true;
 }
 
 export type ConfigKeyValue = string | number | readonly string[] | null;
@@ -408,6 +419,13 @@ function assignConfig(
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
     else if (key === "agent_read_off") config.agentReadOff = asStringArray(value, line);
     else if (key === "mirrors") config.githubMirrors = asBoolean(value, line);
+    return;
+  }
+  if (section === "github_access") {
+    const access = (config.githubAccess ??= {});
+    if (key === "agent_read") access.agentRead = asBoolean(value, line);
+    else if (key === "mirrors") access.mirrors = asBoolean(value, line);
+    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   const closeoutProject = /^closeout\.projects\."([^"\\]+)"$/.exec(section);

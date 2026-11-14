@@ -126,7 +126,8 @@ function isSettingsSection(section: string): boolean {
     within("time_limits") ||
     within("checkout.projects") ||
     within("brief") ||
-    within("skills")
+    within("skills") ||
+    name === "github_access"
   );
 }
 
