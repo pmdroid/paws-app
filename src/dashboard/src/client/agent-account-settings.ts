@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { openAgentAccounts } from "./agent-accounts";
+import { openAgentDeviceDialog } from "./agent-device-dialog";
 import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
@@ -154,6 +155,18 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     );
   };
   const signIn = async (id: string) => {
+    const account = view.accounts?.find((entry) => entry.id === id);
+    if (!account) return;
+    if (account.agent !== "claude") {
+      openAgentDeviceDialog(
+        AGENTS[account.agent],
+        account.label,
+        <T>(method: string) =>
+          request<T>(`/api/runners/agent-accounts/${encodeURIComponent(id)}/device`, method),
+        () => void run("Loading agent accounts…"),
+      );
+      return;
+    }
     const target = await request<{ runnerId: string; bindingId: string; agent: Agent }>(
       `/api/runners/agent-accounts/${encodeURIComponent(id)}/sign-in`,
       "POST",
@@ -163,7 +176,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
       target.agent,
       () => void run("Loading agent accounts…"),
       target.bindingId,
-      view.accounts?.find((account) => account.id === id)?.label,
+      account.label,
     );
   };
   const click = (event: Event) => {
@@ -179,7 +192,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
           extraUsage: (control as HTMLInputElement).checked,
         }),
       );
-    else if (action === "sign-in") void run("Finding one of your runners…", () => signIn(id));
+    else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id));
     else if (action === "sign-out" || action === "keep") {
       view.confirm = action === "keep" ? null : id;
       paint();
