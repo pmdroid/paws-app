@@ -1,6 +1,6 @@
-import { aliasedTable, and, asc, desc, eq, gt, lte, or, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, desc, eq, gt, isNotNull, lte, or, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
-import { jsonText, jsonValue } from "./json-text";
+import { jsonText } from "./json-text";
 
 /** Conflict restarts this recent make their files hot. */
 export const HOT_FILE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -16,44 +16,15 @@ export type HotFile = {
   items: string[];
 };
 
-export function* saveCandidatePathsSteps(
-  q: Q,
-  input: { itemId: string; head: string; paths: readonly string[]; recordedAt: number },
-) {
-  const { candidatePaths } = q.t;
-  yield* q.exec(
-    q.orm
-      .insert(candidatePaths)
-      .values({
-        itemId: input.itemId,
-        headSha: input.head,
-        paths: jsonValue(q, [...new Set(input.paths)].sort()),
-        recordedAt: input.recordedAt,
-      })
-      .onConflictDoUpdate({
-        target: [candidatePaths.itemId, candidatePaths.headSha],
-        set: { paths: sql`excluded.paths`, recordedAt: sql`excluded.recorded_at` },
-      }),
-  );
-}
-
-/** Records every path a candidate head changes since its base. A repeat of the head replaces it. */
-export async function saveCandidatePaths(
-  store: Db,
-  input: { itemId: string; head: string; paths: readonly string[]; recordedAt: number },
-): Promise<void> {
-  await store.run((q) => saveCandidatePathsSteps(q, input));
-}
-
 export function* getCandidatePathsSteps(q: Q, itemId: string, head: string) {
-  const { candidatePaths } = q.t;
+  const { candidateRisk } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ paths: jsonText(q, candidatePaths.paths) })
-      .from(candidatePaths)
-      .where(and(eq(candidatePaths.itemId, itemId), eq(candidatePaths.headSha, head))),
+      .select({ paths: jsonText(q, candidateRisk.changedPaths) })
+      .from(candidateRisk)
+      .where(and(eq(candidateRisk.itemId, itemId), eq(candidateRisk.headSha, head))),
   );
-  if (row === undefined) return null;
+  if (row?.paths == null) return null;
   const paths: unknown = JSON.parse(row.paths);
   if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string"))
     throw new Error("Invalid stored candidate paths");
@@ -71,19 +42,19 @@ export async function getCandidatePaths(
 
 /** Same-millisecond candidates of an item are told apart by head, the table's natural key. */
 export function* latestCandidatePathsSteps(q: Q): Steps<Map<string, string[]>> {
-  const { candidatePaths } = q.t;
-  const later = aliasedTable(candidatePaths, "later");
+  const { candidateRisk } = q.t;
+  const later = aliasedTable(candidateRisk, "later");
   const latest = q.orm
     .select({ head: later.headSha })
     .from(later)
-    .where(eq(later.itemId, candidatePaths.itemId))
+    .where(and(eq(later.itemId, candidateRisk.itemId), isNotNull(later.changedPaths)))
     .orderBy(desc(later.recordedAt), desc(later.headSha))
     .limit(1);
   const rows = yield* q.all(
     q.orm
-      .select({ itemId: candidatePaths.itemId, paths: jsonText(q, candidatePaths.paths) })
-      .from(candidatePaths)
-      .where(eq(candidatePaths.headSha, sql`(${latest})`)),
+      .select({ itemId: candidateRisk.itemId, paths: jsonText(q, candidateRisk.changedPaths) })
+      .from(candidateRisk)
+      .where(eq(candidateRisk.headSha, sql`(${latest})`)),
   );
   return new Map(rows.map((row) => [row.itemId, JSON.parse(row.paths) as string[]]));
 }
@@ -101,21 +72,22 @@ export async function latestCandidatePaths(store: Db): Promise<Map<string, strin
  * Later publications never change it, so a past conflict or merge keeps the files it had.
  */
 function* candidatePathsAtSteps(q: Q, itemId: string, head: string | null, at: number) {
-  const { candidatePaths } = q.t;
+  const { candidateRisk } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ paths: jsonText(q, candidatePaths.paths) })
-      .from(candidatePaths)
+      .select({ paths: jsonText(q, candidateRisk.changedPaths) })
+      .from(candidateRisk)
       .where(
         and(
-          eq(candidatePaths.itemId, itemId),
-          or(eq(candidatePaths.headSha, head ?? ""), lte(candidatePaths.recordedAt, at)),
+          eq(candidateRisk.itemId, itemId),
+          isNotNull(candidateRisk.changedPaths),
+          or(eq(candidateRisk.headSha, head ?? ""), lte(candidateRisk.recordedAt, at)),
         ),
       )
       .orderBy(
-        desc(sql`${candidatePaths.headSha} = ${head ?? ""}`),
-        desc(candidatePaths.recordedAt),
-        desc(candidatePaths.headSha),
+        desc(sql`${candidateRisk.headSha} = ${head ?? ""}`),
+        desc(candidateRisk.recordedAt),
+        desc(candidateRisk.headSha),
       )
       .limit(1),
   );

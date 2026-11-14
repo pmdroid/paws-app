@@ -9,7 +9,6 @@ import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/co
 import {
   insertQueuedItem,
   saveCandidateRiskSteps,
-  saveCandidatePaths,
   upsertCloseoutStep,
   finishCloseoutProgress,
   insertLinkAsk,
@@ -58,15 +57,10 @@ async function fixture(
       base: "base",
       tier: "high",
       paths: ["auth.ts"],
+      changedPaths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
       classifiedAt: now,
     }),
   );
-  await saveCandidatePaths(db, {
-    itemId: item.id,
-    head: "head",
-    paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
-    recordedAt: now,
-  });
   let settingsReads = 0;
   const settings: Pick<MergeSettings, "autoApproveHighRisk" | "repositories"> = {
     autoApproveHighRisk: scenario !== "off",
@@ -127,9 +121,9 @@ async function fixture(
     await db.run((q) =>
       q.exec(
         q.orm
-          .update(q.t.candidatePaths)
-          .set({ paths: {} })
-          .where(eq(q.t.candidatePaths.itemId, item.id)),
+          .update(q.t.candidateRisk)
+          .set({ changedPaths: {} })
+          .where(eq(q.t.candidateRisk.itemId, item.id)),
       ),
     );
   const provider = createLiveStatusProvider(db, {

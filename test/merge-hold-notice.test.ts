@@ -5,10 +5,10 @@ import {
   listOutbox,
   recordRebaseReturn,
   restart,
-  saveCandidatePaths,
   type Db,
 } from "../src/db";
 import { joinFakeWorkspacePg, workspaceDispatchPg } from "./fake-workspace";
+import { saveChangedPaths } from "./dialects";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
@@ -50,7 +50,7 @@ async function item(
 ): Promise<void> {
   await insertItem(db, id, state, position);
   await joinFakeWorkspacePg(db, id);
-  await saveCandidatePaths(db, { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
+  await saveChangedPaths(db, { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
 }
 
 /** A file that caused a merge-queue conflict lately, so the overlap gate holds work on it. */

@@ -5,7 +5,6 @@ import {
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
   readSessionDone,
-  saveCandidatePathsSteps,
   saveCandidateRiskSteps,
 } from "../db";
 import {
@@ -6389,10 +6388,7 @@ export class Orchestrator {
     const listed = await trustedChangedPaths(worktree, base, head);
     if (!listed.ok) throw new Error(listed.message);
     const changed = listed.paths;
-    // Every changed path, so the scheduler can hold work that changes the same hot files.
-    await this.store.run((q) =>
-      saveCandidatePathsSteps(q, { itemId: item.id, head, paths: changed, recordedAt: this.now() }),
-    );
+    const recordedAt = this.now();
     const risk = await classifyPathsRisk({
       git: run,
       base,
@@ -6403,7 +6399,15 @@ export class Orchestrator {
       ),
     });
     await this.store.run((q) =>
-      saveCandidateRiskSteps(q, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() }),
+      saveCandidateRiskSteps(q, {
+        itemId: item.id,
+        head,
+        base,
+        ...risk,
+        changedPaths: changed,
+        recordedAt,
+        classifiedAt: this.now(),
+      }),
     );
     return risk;
   }
