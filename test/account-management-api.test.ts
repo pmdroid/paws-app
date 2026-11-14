@@ -24,9 +24,7 @@ const call = (method: string, path: string) =>
   );
 
 test("every named-account and account-order route answers 410 with where sign-in moved", async () => {
-  expect(AGENT_ACCOUNTS_RETIRED).toBe(
-    "Agent accounts were replaced by per-runner sign-in on the Runners page",
-  );
+  expect(AGENT_ACCOUNTS_RETIRED).toBe("This route was replaced by /api/runners/agent-accounts.");
   for (const [method, path] of [
     ["GET", "/api/runners/accounts"],
     ["POST", "/api/runners/accounts"],
