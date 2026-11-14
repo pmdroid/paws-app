@@ -112,6 +112,8 @@ export function createStorageSettings() {
       const result = await response.json();
       if (started !== generation) return;
       if (!response.ok) throw new Error(result.error ?? `Request failed (${response.status}).`);
+      if (action === "check" && result.ok !== true)
+        throw new Error(result.error ?? "Connection check failed.");
       if (action !== "check") {
         data = result as Storage;
         restart ||= !!data.restartRequired;
