@@ -253,7 +253,7 @@ try {
                 limits: [{ window: "5h", usedPercent: 100, resetsAt: Date.now() + 3_600_000 }],
               },
             },
-          ],
+          ].map((account) => ({ ...account, id: account.agent, label: account.agent })),
         },
       }),
     );

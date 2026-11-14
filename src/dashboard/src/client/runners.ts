@@ -624,7 +624,6 @@ type AccountSummary = {
   usage: { limits: AgentLimit[] } | null;
 };
 type RunnerListView = { now: number; serverVersion: string | null; accounts?: AccountSummary[] };
-
 type RowTag = [tone: string, text: string];
 
 /** The Status and Agents cells of a runner's row, as tone and text. */
