@@ -42,6 +42,7 @@ import {
 } from "../src/workspace";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const roots: string[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -122,12 +123,14 @@ async function fixture() {
   const exeDev = createFakeExeDev();
   const hold: {
     create: Promise<void> | null;
+    createCalls: number;
     enroll: Promise<void> | null;
     enrollDies: boolean;
     stalled: string | null;
     enrollStalls: boolean;
   } = {
     create: null,
+    createCalls: 0,
     enroll: null,
     enrollDies: false,
     stalled: null,
@@ -136,6 +139,7 @@ async function fixture() {
   const provisioningExeDev: ExeDev = {
     ...exeDev,
     async createVm(name) {
+      hold.createCalls += 1;
       await hold.create;
       return exeDev.createVm(name);
     },
@@ -667,7 +671,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
-    await Bun.sleep(5);
+    await waitFor(() => f.hold.createCalls > 0, { what: "the VM create request" });
     expect((await getMemberVm(f.db, row.id))!.createRequestedAt).not.toBeNull();
 
     expect((await f.remove(f.member, row.id)).status).toBe(200);
@@ -690,7 +694,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
-    await Bun.sleep(5);
+    await waitFor(() => f.hold.createCalls > 0, { what: "the VM create request" });
     await f.remove(f.member, row.id);
     await pump(f, 3);
     expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
@@ -716,10 +720,9 @@ describe("Delete VM while a provisioning step is still running", () => {
     const held = gate();
     f.hold.enroll = held.promise;
     const enrolling = f.loop.tick();
-    for (let index = 0; index < 100; index++) {
-      if (await runnerNamed(f.db, "ada-lovelace-paws")) break;
-      await Bun.sleep(5);
-    }
+    await waitFor(async () => !!(await runnerNamed(f.db, "ada-lovelace-paws")), {
+      what: "the runner enrollment",
+    });
     const runner = (await runnerNamed(f.db, "ada-lovelace-paws"))!;
     expect((await getMemberVm(f.db, row.id))!.runnerId).toBeNull();
 

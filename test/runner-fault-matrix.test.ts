@@ -549,7 +549,14 @@ async function runRemoteFault(fault: Fault) {
         }),
       ),
     );
-  async function recover() {
+  let recovering: Promise<void> | null = null;
+  function recover(): Promise<void> {
+    recovering ??= recoverOnce().finally(() => {
+      recovering = null;
+    });
+    return recovering;
+  }
+  async function recoverOnce() {
     if (!runner.faulty) return;
     const paused = await db.run((q) =>
       q.one(q.orm.select({ runId: q.t.usagePause.runId }).from(q.t.usagePause)),

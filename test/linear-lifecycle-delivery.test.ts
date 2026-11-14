@@ -6,6 +6,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   advanceLinearSessionGeneration,
+  getLinearSessionGeneration,
   getWorkItem,
   insertQueuedItem,
   listOutbox,
@@ -16,6 +17,7 @@ import { attachOrchestrator } from "../src/loop";
 import { createFakeTracker, openLinear, type AcceptedLinearEvent } from "../src/linear";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 function created(): AcceptedLinearEvent {
   return {
@@ -98,8 +100,7 @@ for (const [body, existing] of [
         signal: "stop",
         updatedAtMs: 2,
       });
-      for (let i = 0; i < 100 && !signal.aborted; i++) await Bun.sleep(1);
-      expect(signal.aborted).toBe(true);
+      await waitFor(() => signal.aborted, { what: "Stop to abort the first activity" });
       expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
       release.resolve();
       await stopping;
@@ -193,6 +194,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
     progressReporter: (event) => orchestrator.sessionProgressReporter(event),
     followUp: async () => {
+      await getLinearSessionGeneration(db, "session");
       ready.resolve();
       await release.promise;
       throw new Error("old intake failure");
@@ -291,6 +293,10 @@ test.each([false, true])(
             updatedAtMs: 2,
           }),
         );
+      if (superseded)
+        await waitFor(async () => (await getLinearSessionGeneration(db, "session")) > 1, {
+          what: "the newer prompt's generation",
+        });
       release.resolve();
       await old;
       await next;

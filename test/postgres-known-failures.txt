@@ -2,18 +2,9 @@
 # against a Postgres server, though they pass on PGlite. One path per line; text after `#`
 # is the reason. Remove a line when its file passes with PAWS_TEST_DATABASE_URL set.
 
-# A fixed Bun.sleep or a single tick stands in for "the query finished", which holds for
-# in-process PGlite and not for a server over TCP.
-test/improvement-inbox-ui.test.ts # dashboard reads still loading when the test looks
-test/improvement-review.test.ts # filing not recorded after one tick; store closed under a query
-test/linear-lifecycle-delivery.test.ts # old intake failure posts after the newer generation
-test/linear-poller.test.ts # shutdown aborts the handler before the "shutting down" check
-test/loop-keepalive.test.ts # flaky: the keepalive callback is not awaited before the outbox drain
-test/member-vm-delete.test.ts # create not requested within 5 ms; store closed under a query
-test/member-vm.test.ts # VM not created within 5 ms; store closed under a query
-test/onboarding-runner-step.test.ts # runner step still "needed" when the page repaints
-test/runner-fault-matrix.test.ts # one faulted attempt recorded where three are expected
-test/runner-handover-resume.test.ts # moves, start_work slot waits and question replays time out; connection closed under a query
-test/runner-setup-hold-queue.test.ts # setup hold not written after one tick
 # Two concurrent confirmations both succeed on a server; on PGlite one is refused.
 test/decision-memory.test.ts # concurrent suggestion confirmation accepts twice
+# Moving a draining runner's sessions sends B two run commands for one run on a server.
+test/runner-handover-resume.test.ts # draining move lands one run twice; question replays fail
+# A failed preparation's reservation is released after the next recovering item asks for the slot.
+test/recovering-slot-reservation.test.ts # next item waits for a free slot before the release lands
