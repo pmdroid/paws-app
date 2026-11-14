@@ -373,6 +373,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       ...(typeof anonymous === "number" ? { anonymous } : {}),
     }),
   ),
+  api("GET POST", "/setup", "delegated", "src/onboarding"),
   api("GET", "/auth/linear", "delegated", "src/workspace"),
   api("GET", "/auth/linear/callback", "delegated", "src/workspace"),
   api("GET", "/auth/linear/install/callback", "delegated", "src/onboarding"),

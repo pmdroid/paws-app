@@ -96,6 +96,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "webhook-body": [],
   journal: ["core"],
   onboarding: [
+    "webhook-body",
     "journal",
     "config",
     "credentials",

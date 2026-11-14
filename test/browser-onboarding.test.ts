@@ -1,6 +1,6 @@
 import { migratedHome } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startPaws, type PawsProcess } from "../src/index";
@@ -13,7 +13,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function freshInstance(expectedOrganizationId?: string) {
+async function freshInstance(expectedOrganizationId?: string, setup = false, accessToken?: string) {
   const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-onboarding-")));
   roots.push(home);
   const cert = join(home, "server.crt");
@@ -52,8 +52,9 @@ async function freshInstance(expectedOrganizationId?: string) {
     PAWS_PUBLIC_URL: "https://localhost:8787",
     PAWS_TLS_KEY_PATH: key,
     PAWS_TLS_CERT_PATH: cert,
-    LINEAR_CLIENT_ID: "fixture-client",
-    LINEAR_CLIENT_SECRET: "fixture-client-secret",
+    LINEAR_ACCESS_TOKEN: accessToken,
+    LINEAR_CLIENT_ID: setup ? undefined : "fixture-client",
+    LINEAR_CLIENT_SECRET: setup ? undefined : "fixture-client-secret",
     LINEAR_ORGANIZATION_ID: expectedOrganizationId,
   });
   processes.push(paws);
@@ -106,7 +107,7 @@ test("a fresh HTTPS instance refuses sign-in until its organization is configure
 });
 
 import { existsSync } from "node:fs";
-import { createBrowserOnboarding } from "../src/onboarding";
+import { browserSetupRuntime, webhookFileDigest, createBrowserOnboarding } from "../src/onboarding";
 import {
   openPawsStore,
   workspaceForOrganization,
@@ -116,7 +117,7 @@ import {
   getLinearSessionAccess,
   type Db,
 } from "../src/db";
-import { pawsPaths } from "../src/config";
+import { loadRuntime, pawsPaths } from "../src/config";
 import { seed } from "./dialects";
 
 type Table = "workspace" | "workspaceOauthRequest" | "browserInstallationRequest" | "credential";
@@ -134,15 +135,16 @@ const foreignWorkspace = (db: Db) =>
       createdAt: 0,
     }),
   );
-import { readStoredToken } from "../src/linear";
+import { readStoredToken, writeStoredToken } from "../src/linear";
 import { createWorkspaceAccess } from "../src/workspace";
 
-async function fixture() {
+async function fixture(setup = false) {
   const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-install-")));
   roots.push(home);
   const open = () => openPawsStore({ url: null, pgliteDir: pawsPaths(home).pgliteDir });
   let database = await open();
   let db = database.store;
+  const secrets = setup ? await useDatabaseSecrets(db, join(home, "secrets")) : null;
   const state = {
     admin: true,
     active: true,
@@ -216,8 +218,9 @@ async function fixture() {
       db,
       home,
       origin,
-      clientId: "fixture-client",
-      clientSecret: "fixture-client-secret",
+      setupToken: setup ? "setup-token" : undefined,
+      clientId: setup ? null : "fixture-client",
+      clientSecret: setup ? null : "fixture-client-secret",
       expectedOrganizationId: state.expectedOrganizationId,
       prepare: async () => state.prepare?.(),
       fetch: fakeFetch,
@@ -229,6 +232,7 @@ async function fixture() {
     });
   }
   let handle = handler();
+  let setupCookie = "";
   return {
     home,
     state,
@@ -236,12 +240,24 @@ async function fixture() {
     get db() {
       return db;
     },
+    raw: async (request: Request) => {
+      const response = await handle(request);
+      const cookies = response.headers.getSetCookie();
+      setupCookie =
+        cookies.find((cookie) => cookie.startsWith("__Host-paws-setup="))?.split(";")[0] ??
+        setupCookie;
+      return response;
+    },
     request: (path: string, cookie = "") =>
       handle(new Request(origin + path, { headers: { cookie } })),
     async user() {
-      const response = await handle(new Request(origin + "/auth/linear"));
+      const response = await handle(
+        new Request(origin + "/auth/linear", { headers: { cookie: setupCookie } }),
+      );
       const url = new URL(response.headers.get("location")!);
-      const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+      const cookie =
+        response.headers.get("set-cookie")!.split(";")[0]! +
+        (setupCookie ? "; " + setupCookie : "");
       return { state: url.searchParams.get("state")!, cookie };
     },
     async installation() {
@@ -253,7 +269,9 @@ async function fixture() {
       const url = new URL(response.headers.get("location")!, origin);
       return {
         state: url.searchParams.get("state")!,
-        cookie: response.headers.get("set-cookie")?.split(";")[0] ?? "",
+        cookie:
+          (response.headers.get("set-cookie")?.split(";")[0] ?? "") +
+          (setupCookie ? "; " + setupCookie : ""),
         response,
         url,
       };
@@ -265,6 +283,7 @@ async function fixture() {
       handle = handler();
     },
     async close() {
+      await secrets?.close();
       await database.close();
     },
   };
@@ -541,3 +560,235 @@ for (const admin of [false, true]) {
     }
   });
 }
+
+import { useDatabaseSecrets, readSecretFile } from "../src/credentials";
+
+for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outside-client.json"]) {
+  test(
+    "token protects setup and stores the client at " + (clientFile ?? "the default path"),
+    async () => {
+      const scene = await fixture(true);
+      try {
+        scene.state.expectedOrganizationId = null;
+        await writeStoredToken(scene.db, join(scene.home, "secrets"), {
+          actor: "app",
+          scope: null,
+          accessToken: "old-token",
+          refreshToken: "old-refresh",
+          expiresAtMs: Date.now() + 600000,
+        });
+        expect((await scene.request("/setup")).status).toBe(403);
+        expect((await scene.request("/setup?token=wrong")).status).toBe(403);
+        expect((await scene.request("/api/issues")).status).toBe(503);
+        expect((await scene.request("/setup?token=setup-token")).status).toBe(200);
+        const response = await scene.raw(
+          new Request("https://paws.example/setup?token=setup-token", {
+            method: "POST",
+            headers: { origin: "https://paws.example" },
+            body: new URLSearchParams({
+              clientId: "fixture-client",
+              clientSecret: "fixture-client-secret",
+              webhookSecret: "signing-secret",
+            }),
+          }),
+        );
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toContain("client_id=fixture-client");
+        const dir = join(scene.home, "secrets");
+        expect(
+          JSON.parse(readSecretFile(join(scene.home, "secrets/linear-browser-client.json"))!),
+        ).toMatchObject({ clientId: "fixture-client", clientSecret: "fixture-client-secret" });
+        expect(readSecretFile(join(dir, "linear-webhook"))).toBe("signing-secret");
+        expect(existsSync(join(dir, "linear-webhook"))).toBe(false);
+        expect(existsSync(join(scene.home, "config.toml"))).toBe(false);
+        const stored = await scene.db.run((q) => q.all(q.orm.select().from(q.t.secret)));
+        expect(JSON.stringify(stored)).not.toContain("signing-secret");
+        expect(JSON.stringify(stored)).not.toContain("fixture-client-secret");
+        expect((await scene.request("/auth/linear")).status).toBe(403);
+        expect((await scene.request("/auth/linear/callback?code=attacker")).status).toBe(403);
+        expect((await scene.request("/auth/linear/install/callback?code=attacker")).status).toBe(
+          403,
+        );
+        if (clientFile) {
+          expect(existsSync(join(scene.home, clientFile))).toBe(false);
+          writeFileSync(
+            join(scene.home, "config.toml"),
+            '[linear]\nclient_file = "' + clientFile + '"\n',
+          );
+          expect(
+            (await browserSetupRuntime(scene.db, loadRuntime({ PAWS_HOME: scene.home }))).runtime
+              .linearClientId,
+          ).toBe("fixture-client");
+        }
+        const install = await scene.installation();
+        const connected = await scene.request(
+          `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+          install.cookie,
+        );
+        expect(connected.headers.get("location")).toBe(
+          "/dashboard/settings/integrations?connecting=1",
+        );
+        expect(scene.state.installed).toBe(1);
+        expect(readSecretFile(join(dir, "linear-setup-pending"))).toBeNull();
+        expect((await scene.request("/setup?token=setup-token")).status).toBe(403);
+      } finally {
+        await scene.close();
+      }
+    },
+  );
+}
+
+import { setJournalSink } from "../src/journal";
+
+test("a process without a Linear client starts in token-protected setup mode", async () => {
+  const messages: string[] = [];
+  const restore = setJournalSink((message) => messages.push(message));
+  try {
+    const paws = await freshInstance(undefined, true, "existing-token");
+    await paws.ready;
+    const setupUrl = messages.find((message) => message.includes("/setup?token="))!;
+    expect(setupUrl).toStartWith("https://localhost:8787/setup?token=");
+    expect((await paws.server.fetch(new Request(setupUrl))).status).toBe(200);
+    expect((await paws.server.fetch(new Request("https://localhost:8787/setup"))).status).toBe(403);
+    expect(
+      (await paws.server.fetch(new Request("https://localhost:8787/setup?token=wrong"))).status,
+    ).toBe(403);
+    expect((await paws.server.fetch(new Request("https://localhost:8787/health"))).status).toBe(
+      503,
+    );
+
+    await paws.server.fetch(
+      new Request(setupUrl, {
+        method: "POST",
+        headers: { origin: "https://localhost:8787" },
+        body: new URLSearchParams({
+          clientId: "saved-client",
+          clientSecret: "saved-secret",
+          webhookSecret: "saved-webhook",
+        }),
+      }),
+    );
+    await paws.stop();
+    processes.splice(processes.indexOf(paws), 1);
+    const restarted = await startPaws({
+      LINEAR_ACCESS_TOKEN: "existing-token",
+      PAWS_HOME: paws.paths.home,
+      PAWS_HOST: "127.0.0.1",
+      PAWS_PORT: "0",
+      PAWS_PUBLIC_DASHBOARD: "1",
+      PAWS_PUBLIC_URL: "https://localhost:8787",
+      PAWS_TLS_KEY_PATH: join(paws.paths.home, "server.key"),
+      PAWS_TLS_CERT_PATH: join(paws.paths.home, "server.crt"),
+    });
+    processes.push(restarted);
+    const resumedUrl = messages.filter((message) => message.includes("/setup?token=")).at(-1)!;
+    expect(resumedUrl).not.toBe(setupUrl);
+    expect((await restarted.server.fetch(new Request(setupUrl))).status).toBe(403);
+    expect((await restarted.server.fetch(new Request(resumedUrl))).status).toBe(200);
+    expect(
+      (await restarted.server.fetch(new Request("https://localhost:8787/auth/linear"))).status,
+    ).toBe(403);
+  } finally {
+    restore();
+  }
+});
+
+test("setup rejects oversized and stalled bodies and releases its save lock", async () => {
+  const scene = await fixture(true);
+  const post = (body: NonNullable<RequestInit["body"]>, headers: Record<string, string> = {}) =>
+    scene.raw(
+      new Request("https://paws.example/setup?token=setup-token", {
+        method: "POST",
+        headers: { origin: "https://paws.example", ...headers },
+        body,
+      }),
+    );
+  try {
+    expect((await post("x", { "content-length": "16385" })).status).toBe(413);
+    expect(
+      (
+        await post(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(16385));
+              controller.close();
+            },
+          }),
+        )
+      ).status,
+    ).toBe(413);
+    expect((await post(new ReadableStream({ start() {} }))).status).toBe(408);
+    expect((await post("")).status).toBe(400);
+  } finally {
+    await scene.close();
+  }
+});
+
+test("an existing Linear access token still enters setup when the client is missing", async () => {
+  const messages: string[] = [];
+  const restore = setJournalSink((message) => messages.push(message));
+  try {
+    const paws = await freshInstance(undefined, true, "existing-token");
+    const url = messages.find((message) => message.includes("/setup?token="))!;
+    expect((await paws.server.fetch(new Request(url))).status).toBe(200);
+  } finally {
+    restore();
+  }
+});
+
+test("browser credentials survive runtime reloads and webhook precedence is env then database then file", async () => {
+  const scene = await fixture(true);
+  const { saveSecret } = await import("../src/credentials");
+  try {
+    const dir = join(scene.home, "secrets");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "linear-webhook"), "legacy-webhook");
+    await saveSecret(
+      join(dir, "linear-browser-client.json"),
+      JSON.stringify({
+        webhookFileDigest: webhookFileDigest(dir),
+        clientId: "browser-id",
+        clientSecret: "browser-secret",
+      }),
+    );
+    await saveSecret(join(dir, "linear-webhook"), "browser-webhook");
+    for (const source of [
+      { PAWS_HOME: scene.home },
+      {
+        PAWS_HOME: scene.home,
+        LINEAR_WEBHOOK_SECRET: "env-webhook",
+        LINEAR_CLIENT_ID: "env-id",
+        LINEAR_CLIENT_SECRET: "env-secret",
+      },
+    ]) {
+      for (let reload = 0; reload < 2; reload++) {
+        const loaded = loadRuntime(source);
+        loaded.linearClientSecret = source.LINEAR_CLIENT_SECRET ?? "unrelated-legacy-secret";
+        loaded.env.linearWebhookSecret = source.LINEAR_WEBHOOK_SECRET ?? "legacy-webhook";
+        const { runtime } = await browserSetupRuntime(scene.db, loaded, source);
+        expect(runtime.linearClientId).toBe(source.LINEAR_CLIENT_ID ?? "browser-id");
+        expect(runtime.linearClientSecret).toBe(source.LINEAR_CLIENT_SECRET ?? "browser-secret");
+        expect(runtime.env.linearWebhookSecret).toBe(
+          source.LINEAR_WEBHOOK_SECRET ?? "browser-webhook",
+        );
+      }
+    }
+    writeFileSync(join(dir, "linear-webhook"), "rotated-webhook");
+    const loaded = loadRuntime({ PAWS_HOME: scene.home });
+    loaded.env.linearWebhookSecret = "rotated-webhook";
+    expect((await browserSetupRuntime(scene.db, loaded)).runtime.env.linearWebhookSecret).toBe(
+      "rotated-webhook",
+    );
+    writeFileSync(join(dir, "linear-webhook"), "legacy-webhook");
+    loaded.env.linearWebhookSecret = "legacy-webhook";
+    expect((await browserSetupRuntime(scene.db, loaded)).runtime.env.linearWebhookSecret).toBe(
+      "legacy-webhook",
+    );
+    expect(
+      (await browserSetupRuntime(scene.db, loaded, { LINEAR_WEBHOOK_SECRET: "override" })).runtime
+        .env.linearWebhookSecret,
+    ).toBe("override");
+  } finally {
+    await scene.close();
+  }
+});

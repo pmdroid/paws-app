@@ -34,3 +34,4 @@ export { handleFindingGroupsRequest } from "./src/server/finding-groups";
 export type { FindingGroupServices } from "./src/server/finding-groups";
 export { FINDING_GROUPS_API_PATH } from "./src/finding-groups";
 export type { FindingGroupsResponse, FindingGroupView } from "./src/finding-groups";
+export { linearSetupPage } from "./src/server/linear-setup";
