@@ -148,6 +148,7 @@ export * from "./repository-commands";
 export * from "./agent-accounts";
 export * from "./agent-account-credentials";
 export * from "./agent-account-health";
+export * from "./agent-account-overview";
 export * from "./run-fallback";
 export * from "./retros";
 export * from "./retro-dispatch";

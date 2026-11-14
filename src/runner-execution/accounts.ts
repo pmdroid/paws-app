@@ -19,15 +19,19 @@ import {
   rmSync,
   rmdirSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
+  RUNNER_AGENT_CREDENTIAL_FILES,
   RUNNER_CODING_AGENTS,
   RunnerAccountSchema,
   runnerAccountAgentUnsupported,
   type RunnerAccount,
+  type RunnerAgentCredentialFiles,
+  type RunnerAgentCredentialStore,
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
@@ -145,6 +149,119 @@ export function markRunnerAccountSignedIn(
     return;
   }
   writeSharedFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`, owners);
+}
+
+const CLAUDE_STATE = ".claude/.claude.json";
+const CREDENTIAL_LIMIT = 196_608;
+
+export function runnerAgentCredentials(
+  agentHome: string,
+  owners: RunnerAccountOwners = processOwners(),
+): RunnerAgentCredentialStore {
+  const files = (account: RunnerAccount, agent: RunnerCodingAgent) =>
+    RUNNER_AGENT_CREDENTIAL_FILES[agent].map((path) => ({
+      path,
+      target: join(runnerAccountHome(agentHome, account), path),
+    }));
+  return {
+    write(account, agent, written) {
+      const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
+      markRunnerAccountSignedIn(home, account, agent, owners);
+      const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
+      const busy = activeExecutions(home).length > 0;
+      for (const file of written) {
+        if (!allowed.has(file.path)) throw new RunnerAccountHomeError("Agent sign-in is unsafe");
+        const target = join(home, file.path);
+        let folder = home;
+        for (const part of relative(home, dirname(target)).split(sep).filter(Boolean))
+          credentialFolder((folder = join(folder, part)), owners);
+        if ((busy || file.path === CLAUDE_STATE) && present(target)) continue;
+        writeSharedFile(target, Buffer.from(file.data, "base64"), owners, 0o660);
+      }
+    },
+    busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
+    remove(account, agent) {
+      for (const { path, target } of files(account, agent))
+        if (path !== CLAUDE_STATE) rmSync(target, { force: true });
+    },
+  };
+}
+
+export function returnRunnerAgentCredentials(
+  home: string,
+  agent: RunnerCodingAgent,
+  executionId: string,
+  publish: (files: RunnerAgentCredentialFiles) => void,
+): void {
+  const read: RunnerAgentCredentialFiles = [];
+  const raw = new Map<string, Buffer>();
+  for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent]) {
+    let data = readCredentialFile(join(home, path));
+    if (data && path !== CLAUDE_STATE) raw.set(path, data);
+    if (data && path === CLAUDE_STATE) {
+      const { oauthAccount } = JSON.parse(data.toString("utf8")) as { oauthAccount?: unknown };
+      data = oauthAccount === undefined ? null : Buffer.from(JSON.stringify({ oauthAccount }));
+    }
+    if (data) read.push({ path, data: data.toString("base64") });
+  }
+  publish(read);
+  if (activeExecutions(home, executionId).length > 0) return;
+  for (const path of raw.keys()) rmSync(join(home, path), { force: true });
+  if (activeExecutions(home, executionId).length === 0) return;
+  for (const [path, data] of raw)
+    if (!present(join(home, path))) {
+      const temporary = `${join(home, path)}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, data, { mode: 0o600, flag: "wx" });
+      renameSync(temporary, join(home, path));
+    }
+}
+
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function credentialFolder(path: string, owners: RunnerAccountOwners): void {
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    privateDirectory(path, true, owners);
+    return;
+  }
+  const self = process.getuid?.() ?? info.uid;
+  if (info.uid === self || info.uid === owners.runnerUid) privateDirectory(path, false, owners);
+  else if (
+    info.isSymbolicLink() ||
+    !info.isDirectory() ||
+    info.gid !== owners.agentGid ||
+    (info.mode & 0o077) !== 0o070
+  )
+    throw new RunnerAccountHomeError("Agent sign-in folder is not shared with the runner");
+}
+
+function readCredentialFile(path: string): Buffer | null {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || info.size > CREDENTIAL_LIMIT)
+      throw new RunnerAccountHomeError("Agent sign-in file is unsafe");
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function runnerAccountBindings(
@@ -606,18 +723,23 @@ function shareRunnerPaths(
   }
 }
 
-function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {
+function shareWithAgents(descriptor: number, owners: RunnerAccountOwners, mode = 0o640): void {
   fchownSync(descriptor, -1, owners.agentGid);
-  fchmodSync(descriptor, 0o640);
+  fchmodSync(descriptor, mode);
 }
 
-function writeSharedFile(path: string, text: string, owners: RunnerAccountOwners): void {
+function writeSharedFile(
+  path: string,
+  text: string | Buffer,
+  owners: RunnerAccountOwners,
+  mode = 0o640,
+): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    const descriptor = openSync(temporary, "wx", 0o640);
+    const descriptor = openSync(temporary, "wx", mode);
     try {
-      shareWithAgents(descriptor, owners);
-      writeSync(descriptor, text);
+      shareWithAgents(descriptor, owners, mode);
+      writeSync(descriptor, typeof text === "string" ? Buffer.from(text) : text);
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);

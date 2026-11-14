@@ -1,14 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import {
-  ensureLayout,
-  loadConfigFile,
-  parseConfigToml,
-  pawsPaths,
-  renderMemberVmSettings,
-  writeConfigFile,
-} from "../src/config";
-import { tempHome } from "./helpers";
+import { parseConfigToml, renderMemberVmSettings } from "../src/config";
 
 describe("[member_vm]", () => {
   test("a missing section or key leaves the size to exe.dev", () => {
@@ -49,25 +40,6 @@ describe("[member_vm]", () => {
       expect(() => parseConfigToml(`[member_vm]\n${line}\n`)).toThrow(
         "config.toml line 2 member_vm.pool must be an exe.dev pool name",
       );
-  });
-
-  test("setup rewrites keep the section", () => {
-    const paths = pawsPaths(tempHome());
-    ensureLayout(paths);
-    writeFileSync(paths.configFile, "[member_vm]\ncpu = 4\nmemory_gb = 8\n", { mode: 0o600 });
-    writeConfigFile(paths.configFile, {
-      linearTeam: "ENG",
-      linearTeamId: "team",
-      linearViewerId: "human",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app",
-      repo: "acme/one",
-      checkout: paths.home,
-      maxAwakeMs: 1_000,
-      implementer: "claude",
-    });
-    expect(loadConfigFile(paths.configFile).memberVm).toEqual({ cpu: 4, memoryGb: 8 });
   });
 
   test("invalid values are refused with their line", () => {

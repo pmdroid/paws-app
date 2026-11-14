@@ -4,6 +4,7 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
   loadConfigFile,
+  MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   parseCommentWait,
   parseHighRiskPathSettings,
@@ -124,6 +125,7 @@ export async function handleMergeSettingsRequest(
       autoApproveHighRisk: policy.autoApproveHighRisk,
       lanes: policy.lanes,
       noProject: policy.noProject,
+      parallel: policy.parallel,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -159,10 +161,23 @@ export async function handleMergeSettingsRequest(
   let parallelFiles: Record<string, string[]> | undefined;
   let lanes: MergeLaneSplit[] | undefined;
   let noProject: MergeNoProject | undefined;
+  let parallel: number | undefined;
   try {
     if (isRecord(body) && "parallelFiles" in body) {
       const { parallelFiles: files, ...rest } = body;
       parallelFiles = parseParallelFileSettings(files);
+      body = rest;
+    }
+    if (isRecord(body) && "parallel" in body) {
+      const { parallel: count, ...rest } = body;
+      if (
+        typeof count !== "number" ||
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > MAX_MERGE_PARALLEL
+      )
+        throw new Error(`parallel must be a whole number from 1 to ${MAX_MERGE_PARALLEL}`);
+      parallel = count;
       body = rest;
     }
     if (isRecord(body) && "lanes" in body) {
@@ -262,6 +277,7 @@ export async function handleMergeSettingsRequest(
         ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
         ...(lanes === undefined ? {} : { lanes }),
         ...(noProject === undefined ? {} : { noProject }),
+        ...(parallel === undefined ? {} : { parallel }),
       },
       highRiskPaths,
       commentWait,
@@ -288,6 +304,11 @@ export async function handleMergeSettingsRequest(
     await options.audit?.(
       "settings.merging",
       `Issues without a project merge: ${before?.noProject ?? "own"} → ${noProject}`,
+    );
+  if (parallel !== undefined && parallel !== (before?.parallel ?? 1))
+    await options.audit?.(
+      "settings.merging",
+      `Merges at once in a lane: ${before?.parallel ?? 1} → ${parallel}`,
     );
   if (
     autoApproveHighRisk !== undefined &&
@@ -343,6 +364,7 @@ export async function handleMergeSettingsRequest(
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
     lanes: after?.lanes ?? lanes,
     noProject: after?.noProject ?? noProject,
+    parallel: after?.parallel ?? parallel,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)

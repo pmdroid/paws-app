@@ -31,6 +31,8 @@ const settings: AgentSettings = {
   },
 };
 
+const NO_COMMANDS = { grok: { path: null, allowApiKey: false }, opencode: { path: null } };
+
 function request(
   path = "/api/settings/agents",
   method = "GET",
@@ -45,7 +47,7 @@ function request(
 }
 
 describe("local agent settings API", () => {
-  test("GET returns the global profiles without any vendor settings or projects", async () => {
+  test("GET returns the global profiles and agent commands without projects", async () => {
     const { options } = fixture();
     writeFileSync(
       options.configPath,
@@ -60,11 +62,12 @@ describe("local agent settings API", () => {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "codex", model: null },
       },
+      grok: { path: "/secret/bin", allowApiKey: false },
+      opencode: { path: null },
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
-    expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
 
   test("a profile's fast mode round trips through the settings API", async () => {
@@ -169,6 +172,7 @@ describe("local agent settings API", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       ...settings,
+      ...NO_COMMANDS,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -502,6 +506,7 @@ describe("reviewer profile validation", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       ...settings,
+      ...NO_COMMANDS,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),

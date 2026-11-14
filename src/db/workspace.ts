@@ -189,7 +189,6 @@ export function* syncWorkspaceMemberSteps(q: Q, input: WorkspaceMemberSync) {
       (previous.checkedAt === input.now && input.active && !previous.active))
   )
     return false;
-  const kept = sql`COALESCE(${member.manualRole},${member.role})`;
   yield* q.exec(
     q.orm
       .insert(member)
@@ -204,8 +203,6 @@ export function* syncWorkspaceMemberSteps(q: Q, input: WorkspaceMemberSync) {
       .onConflictDoUpdate({
         target: [member.workspaceId, member.userId],
         set: {
-          role: sql`CASE WHEN ${member.source}='manual' THEN ${kept} ELSE excluded.role END`,
-          manualRole: sql`CASE WHEN ${member.source}='manual' THEN ${kept} ELSE ${member.manualRole} END`,
           active: sql`excluded.active`,
           checkedAt: sql`excluded.checked_at`,
         },

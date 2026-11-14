@@ -10,6 +10,7 @@ import {
   rebaseReturnedForSteps,
   recordPullCommentSteps,
   recordRebaseReturnSteps,
+  recordReviewRepliesSteps,
   restartSteps,
   settlePullCiFailuresSteps,
   settlePullCommentsSteps,
@@ -42,7 +43,7 @@ import {
   pullCiHandoff,
   pullCiQuestionSteps,
 } from "./pull-ci";
-import { REVIEW_REPLY_MARKER } from "./review-replies";
+import { REVIEW_REPLY_MARKER, replyTargets } from "./review-replies";
 import { holdForReviewChecks } from "./review-checks";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import {
@@ -372,7 +373,7 @@ export async function handlePullComments(
       if (failure !== null) yield* settlePullCiFailuresSteps(q, [failure], "dropped", now);
       return "dropped";
     }
-    yield* askSteps(
+    const asked = yield* askSteps(
       q,
       { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
       "ci-help",
@@ -386,6 +387,14 @@ export async function handlePullComments(
         : yield* pullCiQuestionSteps(q, failure!, limit),
       { reason: "budget_spent", now },
     );
+    const targets = replyTargets({ pullNumber, threads, reviews: [], comments });
+    if (targets.length > 0)
+      yield* recordReviewRepliesSteps(q, {
+        itemId: current.id,
+        restartKey: `ci-help:${asked.question.id}`,
+        replies: targets,
+        now,
+      });
     yield* settlePullCommentsSteps(q, comments, "asked", now);
     if (failure !== null) yield* pullCiAskedSteps(q, { item: current, failure, limit, now });
     return "asked";

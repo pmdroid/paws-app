@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentSettings } from "../agent-settings";
-import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
+import { SETTINGS_PAGES, renderSettingsPage, setSettingsAdmin } from "./settings-pages";
 import { createQueueSettings, queueProblems, renderQueueSettings } from "./queue-settings";
 import { themedMarkup } from "./theme";
 import { settleReactWork } from "./settle-react";
@@ -91,6 +91,7 @@ let requests: { url: string; init: RequestInit }[];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  setSettingsAdmin(true);
   window = new Window({ url: "http://127.0.0.1:8787/settings/limits" });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);

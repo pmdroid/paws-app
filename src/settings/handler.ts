@@ -4,7 +4,9 @@ import {
   DEFAULT_CI_FIX_ATTEMPTS,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   loadConfigFile,
+  parseAgentCommands,
   parseAgentSettings,
+  readAgentCommands,
   parseMergeSettings,
   parseQueueSettings,
   readAgentSettings,
@@ -13,6 +15,7 @@ import {
   readQueueSettings,
   storedMerge,
   writeAgentSettings,
+  type AgentCommands,
   type ImplementerName,
   type QueueSettings,
   type StoredMerge,
@@ -51,6 +54,7 @@ export async function handleAgentSettingsRequest(
       const config = loadConfigFile(options.configPath);
       return json({
         ...readAgentSettings(config),
+        ...readAgentCommands(config),
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
         revision: settingsRevision(options.configPath),
@@ -73,6 +77,8 @@ export async function handleAgentSettingsRequest(
   let settings;
   let mergeBody: unknown;
   let queueBody: unknown;
+  let grokBody: unknown;
+  let opencodeBody: unknown;
   let applyToWaiting = false;
   let expectedRevision: string | undefined;
   try {
@@ -80,6 +86,8 @@ export async function handleAgentSettingsRequest(
     const {
       merge,
       queue,
+      grok,
+      opencode,
       applyToWaiting: apply,
       revision,
       ...agents
@@ -93,6 +101,8 @@ export async function handleAgentSettingsRequest(
     settings = parseAgentSettings(isRecord(body) ? agents : body);
     mergeBody = merge;
     queueBody = queue;
+    grokBody = grok;
+    opencodeBody = opencode;
   } catch (error) {
     journalCaught(error, "handler.handleAgentSettingsRequest.isRecord", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
@@ -100,16 +110,28 @@ export async function handleAgentSettingsRequest(
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
   let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
+  let previousCommands: AgentCommands | null = null;
   try {
     const config = loadConfigFile(options.configPath);
     previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
+    previousCommands = readAgentCommands(config);
   } catch (caughtError3) {
     journalCaught(caughtError3, "handler.handleAgentSettingsRequest.loadConfigFile", null);
   }
   let merge: StoredMerge | undefined;
   let queue: QueueSettings | undefined;
+  let commands: AgentCommands | undefined;
   try {
+    if (grokBody !== undefined || opencodeBody !== undefined)
+      commands = parseAgentCommands(
+        previousCommands ?? {
+          grok: { path: null, allowApiKey: false },
+          opencode: { path: null },
+        },
+        grokBody,
+        opencodeBody,
+      );
     if (mergeBody !== undefined) merge = { ...previous, ...parseMergeSettings(mergeBody) };
     if (queueBody !== undefined)
       queue = {
@@ -133,10 +155,12 @@ export async function handleAgentSettingsRequest(
     );
   let saved: number;
   let savedQueue: QueueSettings;
+  let savedCommands: AgentCommands;
   let waitingRuns = 0;
   try {
-    await writeAgentSettings(options.configPath, settings, merge, queue);
+    await writeAgentSettings(options.configPath, settings, merge, queue, commands);
     const config = loadConfigFile(options.configPath);
+    savedCommands = readAgentCommands(config);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
     if (applyToWaiting) waitingRuns = (await options.applyToWaiting?.()) ?? 0;
@@ -162,6 +186,11 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
+  if (commands !== undefined && JSON.stringify(commands) !== JSON.stringify(previousCommands))
+    await options.audit?.(
+      "settings.agent-commands",
+      `Grok path ${commands.grok.path ?? "pinned"}, Grok API key ${commands.grok.allowApiKey ? "allowed" : "not allowed"}, OpenCode path ${commands.opencode.path ?? "pinned"}`,
+    );
   let warnings: string[] = [];
   try {
     if (options.runnerReadiness)
@@ -171,6 +200,7 @@ export async function handleAgentSettingsRequest(
   }
   return json({
     ...settings,
+    ...savedCommands,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
     revision: settingsRevision(options.configPath),

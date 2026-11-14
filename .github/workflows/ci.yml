@@ -64,10 +64,7 @@ jobs:
           sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' test/postgres-known-failures.txt > "$RUNNER_TEMP/known-failures"
           grep -rlE "$DATABASE_TESTS" test --include='*.test.ts' | grep -vxFf "$RUNNER_TEMP/known-failures" | sed 's|^|./|' > "$RUNNER_TEMP/database-tests"
           wc -l < "$RUNNER_TEMP/database-tests"
-      # --retry=2 absorbs the timing flakes of tests written against in-process PGlite
-      # (a fixed number of ticks standing in for "the query finished"); a test that
-      # fails every time still fails the job.
-      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --retry=2 --shard=${{ matrix.shard }}/3 ./src/db/ $(cat "$RUNNER_TEMP/database-tests")
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/3 ./src/db/ $(cat "$RUNNER_TEMP/database-tests")
 
   check:
     name: lint, format, types, test, dashboard build
