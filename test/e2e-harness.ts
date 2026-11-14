@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Database } from "bun:sqlite";
 import { cloneRunner } from "./helpers";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
@@ -115,13 +114,6 @@ export async function gitIdentity(dir: string): Promise<void> {
   await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
   await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
   await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
-}
-
-export function stateOf(db: Database, identifier: string): string | null {
-  const row = db
-    .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  return row?.state ?? null;
 }
 
 export async function stateOfPg(db: Db, identifier: string): Promise<string | null> {

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  ensureLinearSession,
   getTaskLinearReadSteps,
   keepTaskLinearReadSteps,
   linearActivitiesListedAtSteps,
@@ -29,6 +30,7 @@ forEachDialect((open) => {
   test("a session's activity listing keeps its latest generation", async () => {
     const { db, close } = await open();
     try {
+      await ensureLinearSession(db, { sessionId: "session", now: 1 });
       expect(await db.run((q) => linearActivitiesListedAtSteps(q, "session"))).toBeNull();
       await db.run((q) => markLinearActivitiesListedSteps(q, "session", 1));
       await db.run((q) => markLinearActivitiesListedSteps(q, "session", 3));

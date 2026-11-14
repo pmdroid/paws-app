@@ -450,7 +450,6 @@ export async function probeWorkspaceAuthorization(
       "/api/settings/skills",
       "/api/settings/checkout",
       "/api/workspaces/members",
-      "/api/workspaces/repositories",
       "/api/workspaces/audit",
     ];
     const routeStatuses = async (session: typeof owner) =>
@@ -466,6 +465,19 @@ export async function probeWorkspaceAuthorization(
       adminStatuses.every((status) => status !== 401 && status !== 403) &&
         memberStatuses.every((status) => status === 403),
       { adminStatuses, memberStatuses },
+    );
+    const memberRead = await fetch(`${origin}/api/workspaces/repositories`, {
+      headers: headers(member),
+    });
+    const memberWrite = await fetch(`${origin}/api/workspaces/repositories`, {
+      method: "PUT",
+      headers: headers(member),
+      body: JSON.stringify({ repositories: [] }),
+    });
+    observe(
+      "a member reads the workspace repositories and gets 403 changing them",
+      memberRead.status === 200 && memberWrite.status === 403,
+      { read: memberRead.status, write: memberWrite.status },
     );
     const stale = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",

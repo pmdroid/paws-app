@@ -52,7 +52,8 @@ Runner work gets Docker only from a [rootless Docker](https://docs.docker.com/en
 
 Known limits of this setup:
 
-- Containers get no CPU or memory limits. `paws-runner` has no systemd user session, so the daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`.
+- With `"agentUser": "runner"`, containers get no CPU or memory limits. `paws-runner` has no systemd user session, so its daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`. `paws-agent`'s daemon runs under its lingering systemd user manager with the systemd cgroup driver, so its containers get limits.
+- `paws-agent` has a lingering systemd user manager, so an agent can start a user service that outlives its job, as it already can with a container.
 - Networking goes through slirp4netns, so containers can't bind host ports below 1024.
 - One daemon serves every agent job on the runner. Jobs can see and change each other's images, containers and volumes.
 

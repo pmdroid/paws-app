@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
 import type { Db } from "./db";
 import { OutboxDispatcher } from "./dispatcher";
@@ -12,7 +11,7 @@ export const JOB_WORKERS = 64;
 
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
 export async function startLoops(input: {
-  db: Database | Db;
+  db: Db;
   /** The async `Db` over `db`, handed to the job loop and the outbox. */
   store?: Db;
   instanceId: string;

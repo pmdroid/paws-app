@@ -5,7 +5,13 @@ import { json, seed } from "./dialects";
 export function seedRunner(
   db: Db,
   id: string,
-  row: { status?: string; revokedAt?: number; lastSeenAt?: number; liveReportedAt?: number } = {},
+  row: {
+    status?: string;
+    revokedAt?: number;
+    lastSeenAt?: number;
+    liveReportedAt?: number;
+    ownerUserId?: string;
+  } = {},
 ) {
   return seed(db, (q) =>
     q.orm.insert(q.t.runner).values({

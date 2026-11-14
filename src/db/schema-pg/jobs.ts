@@ -25,7 +25,9 @@ export const job = pgTable(
     fireCount: bigint("fire_count", { mode: "number" }).default(0).notNull(),
     lane: text().default("default").notNull(),
     itemVersion: bigint("item_version", { mode: "number" }),
-    activationId: bigint("activation_id", { mode: "number" }).default(0).notNull(),
+    activationId: bigint("activation_id", { mode: "number" })
+      .default(sql`nextval('job_activation_seq')`)
+      .notNull(),
   },
   (table) => [
     unique().on(table.jobKey),
@@ -62,25 +64,5 @@ export const schedulerAdmission = pgTable(
     hot: integer().notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
   },
-  (table) => [
-    unique().on(table.jobId),
-    index("scheduler_project").on(table.projectKey),
-    check("scheduler_admission_check_2", sql`hot IN (0,1)`),
-  ],
+  (table) => [unique().on(table.jobId), check("scheduler_admission_check_2", sql`hot IN (0,1)`)],
 );
-
-export const pawsAlive = pgTable(
-  "paws_alive",
-  {
-    id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-    at: bigint({ mode: "number" }).notNull(),
-  },
-  () => [check("paws_alive_check_1", sql`id=1`)],
-);
-
-export const jobActivation = pgTable("job_activation", {
-  id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-  jobId: bigint("job_id", { mode: "number" })
-    .notNull()
-    .references(() => job.id, { onDelete: "cascade" }),
-});

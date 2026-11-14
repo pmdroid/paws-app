@@ -131,11 +131,14 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     trackerKind: "linear",
     repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
-    maxAwakeMs:
-      positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
+    maxAwakeMs: maxAwakeMsFrom(source),
     webhooks: resolveWebhooks(file, source),
     databaseUrl,
   };
+}
+
+export function maxAwakeMsFrom(source: EnvSource = process.env): number {
+  return positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? DEFAULT_MAX_AWAKE_MS;
 }
 
 function readRole(value: string | null): PawsRole {

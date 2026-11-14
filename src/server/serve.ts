@@ -5,11 +5,15 @@ import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
+import {
+  createInstallationRepositoryCache,
+  refreshingInstallations,
+  type InstallationRepositoryCache,
+} from "./github-installation-cache";
 import { handleSlackWebhook } from "../slack";
-import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -36,7 +40,9 @@ import {
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
   closeoutEvidenceItemOf,
+  closeoutLogStorage,
   hydrateItemCloseoutEvidence,
+  withCloseoutOutput,
   type EvidenceObjects,
   type EvidenceStorage,
   type VisualReviewChanges,
@@ -52,9 +58,18 @@ import {
   handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
+  handleMemberVmSettingsRequest,
   handleTimeLimitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
+  handleGitHubAccessSettingsRequest,
+  GITHUB_ACCESS_SETTINGS_PATH,
+  handleCloseoutSettingsRequest,
+  CLOSEOUT_SETTINGS_PATH,
+  handleStorageSettingsRequest,
+  STORAGE_CHECK_PATH,
+  STORAGE_SETTINGS_PATH,
+  MEMBER_VM_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
@@ -73,7 +88,6 @@ import {
   hotFilesSteps,
   listItemHoldsSteps,
   listWorkspaceRepositoryNamesSteps,
-  storeOf,
   workspaceSessionIdsSteps,
   type Db,
   type Q,
@@ -167,11 +181,13 @@ export type ServerOptions = {
    */
   webhooks?: boolean;
   /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
-  db?: Database | Db;
+  db?: Db;
   /** The async `Db` over `db` for converted routes. Defaults to `sqliteDb(db)`. */
   store?: Db;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Clock the dashboard resources read their time-derived fields from. Defaults to the system clock. */
+  dashboardNow?: () => Date;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
   healthDisk?: HealthOptions["disk"];
@@ -197,6 +213,7 @@ export type ServerOptions = {
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
+    configPath?: string;
     root: string;
     resolver: SkillResolver;
     updates?: SkillUpdates;
@@ -206,7 +223,7 @@ export type ServerOptions = {
 
 /** The `Db` the routes reach: the one startup passes, or `sqliteDb(db)`. */
 export function serverStore(options: Pick<ServerOptions, "db" | "store">): Db | undefined {
-  return options.store ?? (options.db ? storeOf(options.db) : undefined);
+  return options.store ?? options.db;
 }
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -214,7 +231,10 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const port = options.port ?? DEFAULT_PORT;
   const linearWebhookSecret = options.linearWebhookSecret ?? null;
   const slackSigningSecret = options.slackSigningSecret ?? null;
-  const githubWebhook = options.githubWebhook;
+  const installations = createInstallationRepositoryCache();
+  const sweep = setInterval(() => void installations.sweep(), 60_000);
+  sweep.unref();
+  const githubWebhook = refreshingInstallations(installations, options.githubWebhook);
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
@@ -269,6 +289,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          ...(options.dashboardNow ? { dashboardNow: options.dashboardNow } : {}),
           riskApproval: options.riskApproval,
           riskSettingsChanged: options.riskSettingsChanged,
           webhooks,
@@ -297,6 +318,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(store ? { store } : {}),
           ...(statusEnv ? { statusEnv } : {}),
           githubStatus,
+          installations,
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
@@ -315,6 +337,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const stop = server.stop.bind(server);
   server.stop = async (closeActiveConnections) => {
     stopping = true;
+    clearInterval(sweep);
     await stop(closeActiveConnections);
     await Promise.allSettled([...requests]);
   };
@@ -349,6 +372,7 @@ type Secrets = {
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => Promise<LinearUsage>) | undefined;
+  dashboardNow?: ServerOptions["dashboardNow"];
   riskApproval?: ServerOptions["riskApproval"];
   riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
@@ -357,10 +381,11 @@ type Secrets = {
   startLinearSession?: StartLinearSession;
   agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
-  db?: Database | Db;
+  db?: Db;
   store?: Db;
   statusEnv?: Record<string, string | undefined>;
   githubStatus?: GitHubStatusCache;
+  installations?: InstallationRepositoryCache;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
@@ -424,6 +449,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         origin: workspace.origin,
         teams: (setupRequest, signal) => workspace.repositoryTeams(setupRequest, signal),
         cache: secrets.githubStatus,
+        installations: secrets.installations,
       })(request);
       if (setup) return setup;
       return (await createHostedGitHubConnect({
@@ -492,7 +518,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           resolve: (repository) => activation.resolve(repository),
         });
         return (await handleWorkspaceGitHubIntegration(request, {
-          store: storeOf(secrets.db),
+          store: secrets.db,
           principal: access.principal,
           session: access.session,
           origin: workspace.origin,
@@ -552,7 +578,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleVisualReviewChanges(request, {
-      store: secrets.store ?? storeOf(secrets.db),
+      store: secrets.store ?? secrets.db,
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       principal,
@@ -588,7 +614,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleEvidenceRequest(request, {
-      store: secrets.store ?? storeOf(secrets.db),
+      store: secrets.store ?? secrets.db,
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       sessionIds,
@@ -627,7 +653,78 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store,
       csrfToken,
       workspaceId,
-      groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
+      ...(configPath === undefined ? {} : { configPath }),
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === GITHUB_ACCESS_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleGitHubAccessSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === CLOSEOUT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleCloseoutSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if ((path === STORAGE_SETTINGS_PATH || path === STORAGE_CHECK_PATH) && secrets.store) {
+    const store = secrets.store;
+    return (
+      (await handleStorageSettingsRequest(request, {
+        home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+        csrfToken,
+        store,
+        ...(principal === undefined ? {} : { role: principal.role }),
+        audit: (action, subject) =>
+          auditWorkspaceAccess(store, {
+            workspaceId: principal?.workspaceId ?? null,
+            userId: principal?.userId ?? null,
+            action,
+            subject,
+            now: Date.now(),
+          }),
+        ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+      })) ?? Response.json({ error: "Not found" }, { status: 404 })
+    );
+  }
+  if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleMemberVmSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
@@ -736,6 +833,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(highRiskFile ? { highRiskFile } : {}),
         ...(secrets.store
           ? {
+              store: secrets.store,
               hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())),
               overlapHolds: () => secrets.store!.run((q) => overlapHoldsSteps(q)),
             }
@@ -749,7 +847,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
   if (closeoutItem !== null && secrets.db)
     await hydrateItemCloseoutEvidence(
-      secrets.store ?? storeOf(secrets.db),
+      secrets.store ?? secrets.db,
       secrets.closeoutEvidence!,
       closeoutItem,
       sessionIds,
@@ -757,6 +855,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const status = await handleStatusRequest(request, {
     csrfToken,
     resourceCache: dashboardResources,
+    ...(secrets.dashboardNow ? { now: secrets.dashboardNow } : {}),
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact
@@ -782,7 +881,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
           ...(secrets.riskApproval ? { riskApproval: secrets.riskApproval } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
-          ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
+          ...(secrets.closeoutHome
+            ? {
+                closeoutHome: secrets.closeoutHome,
+                closeoutOutput: (record) =>
+                  withCloseoutOutput(
+                    secrets.store!,
+                    closeoutLogStorage(secrets.closeoutHome!, secrets.evidenceObjects),
+                    record,
+                  ),
+              }
+            : {}),
           ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),
         }
       : {

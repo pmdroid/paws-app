@@ -339,9 +339,7 @@ function reclaimableRunningJobSql(now: number): SQL {
 
 function jobPayloadText(q: Q, alias: "job" | "j", key: "itemId" | "retry"): SQL {
   const payload = sql.raw(`${alias}.payload`);
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${payload}, ${sql.raw(`'$.${key}'`)})`
-    : sql`(${payload}->>${sql.raw(`'${key}'`)})`;
+  return sql`(${payload}->>${sql.raw(`'${key}'`)})`;
 }
 
 function* jobOwnsProgressSteps(q: Q, itemId: string, now: number): Steps<boolean> {

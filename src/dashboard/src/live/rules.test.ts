@@ -16,7 +16,7 @@ import {
   type CloseoutStepWrite,
   type Db,
 } from "../../../db";
-import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { createLiveStatusProvider } from "./provider";
 import { seed as insertRows } from "../../../../test/dialects";
@@ -169,23 +169,6 @@ async function seed(): Promise<{ db: Db; home: string }> {
 }
 
 describe("rule results in the issue resources", () => {
-  test("the list summarizes each rule as a check of kind rule", async () => {
-    const { db, home } = await seed();
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: db,
-      env: {},
-      closeoutHome: home,
-    });
-    const parsed = parseIssueListResponse(await response!.json());
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.response.verdicts[0]?.checks).toEqual([
-      { id: "api-contract", kind: "rule", state: "failed" },
-      { id: "migrations-append-only", kind: "rule", state: "passed" },
-      { id: "restart-and-ask-from-loop", kind: "rule", state: "failed" },
-      { id: "test", kind: "command", state: "passed" },
-    ]);
-  });
-
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {

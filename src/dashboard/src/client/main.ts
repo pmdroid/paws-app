@@ -14,6 +14,7 @@ import {
   checkAnchor,
   checkHash,
   checkKey,
+  checkLogRevision,
   emptyCloseoutView,
   isOpen,
   parseCheckHash,
@@ -38,7 +39,7 @@ import {
 } from "./route";
 import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
-import type { SettingsPage } from "./settings-pages";
+import { shownSettingsPage, type SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
@@ -47,6 +48,7 @@ import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
 import { createQueueSettings } from "./queue-settings";
+import { createAgentAccountSettings } from "./agent-account-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
@@ -81,6 +83,7 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
+const agentAccountSettings = createAgentAccountSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
@@ -443,9 +446,11 @@ function paint(): void {
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
-      ["agents", "merging", "limits"].includes(model.route.page ?? "agents");
+      ["agents", "agent-accounts", "merging", "limits"].includes(
+        shownSettingsPage(model.route.page),
+      );
   showWorkspaceSettingsPage(
-    model.route.view === "settings" ? (model.route.page ?? "agents") : null,
+    model.route.view === "settings" ? shownSettingsPage(model.route.page) : null,
   );
   document.title = view.title;
   setHtml("#top", view.top);
@@ -464,6 +469,8 @@ function paint(): void {
   if (mergeRoot) mergeSettings.mount(mergeRoot, currentEngine());
   const hooksRoot = document.querySelector<HTMLElement>("#hook-settings");
   if (hooksRoot) hookSettings.mount(hooksRoot, currentEngine());
+  const accountsRoot = document.querySelector<HTMLElement>("#agent-account-settings");
+  if (accountsRoot) agentAccountSettings.mount(accountsRoot, currentEngine());
   const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");
@@ -510,7 +517,7 @@ function currentRoute(): Route {
 }
 
 function settingsPage(route: Route): SettingsPage | null {
-  return route.view === "settings" ? (route.page ?? "agents") : null;
+  return route.view === "settings" ? shownSettingsPage(route.page) : null;
 }
 
 function source(): string {
@@ -774,15 +781,18 @@ function onClick(event: MouseEvent): void {
   }
   if (action === "check-log-full") {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
-    if (check) void loadLog(itemId, attempt, checkId, check.state, true);
+    if (check)
+      void loadLog(
+        itemId,
+        attempt,
+        checkId,
+        checkLogRevision(check.state, page.issue?.generatedAt),
+        true,
+      );
   }
   if (action === "download-output") void downloadOutput(itemId, attempt, checkId);
 }
 
-/**
- * Starts loading the log of every open check row on the issue page that has none for the
- * check's current state. Polling repaints do not load a log again. True when one started.
- */
 function loadOpenLogs(): boolean {
   if (openIssue(currentRoute()) === null) return false;
   let started = false;
@@ -796,8 +806,9 @@ function loadOpenLogs(): boolean {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
     // Evidence rows show no output, and a pending check has none yet.
     if (!check || check.kind === "evidence" || check.state === "pending") continue;
-    if (closeout.logs?.[checkKey(itemId, attempt, checkId)]?.checkState === check.state) continue;
-    void loadLog(itemId, attempt, checkId, check.state);
+    const revision = checkLogRevision(check.state, page.issue?.generatedAt);
+    if (closeout.logs?.[checkKey(itemId, attempt, checkId)]?.checkState === revision) continue;
+    void loadLog(itemId, attempt, checkId, revision);
     started = true;
   }
   return started;
@@ -821,6 +832,8 @@ async function loadLog(
     next = {
       status: "loaded",
       checkState,
+      findings: log.findings,
+      detail: log.detail,
       stdout: log.stdout,
       stderr: log.stderr,
       truncated: log.truncated,

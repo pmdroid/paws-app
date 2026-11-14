@@ -52,10 +52,7 @@ export function* listCloseoutRoundsSteps(q: Q, itemId?: string): Steps<CloseoutR
       })
       .from(closeoutRound)
       .where(itemId === undefined ? undefined : eq(closeoutRound.itemId, itemId))
-      .orderBy(
-        asc(closeoutRound.startedAt),
-        q.dialect === "sqlite" ? sql`rowid` : asc(closeoutRound.head),
-      ),
+      .orderBy(asc(closeoutRound.startedAt), asc(closeoutRound.head)),
   );
   return rows.map((row) => ({
     ...row,

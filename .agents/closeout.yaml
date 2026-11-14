@@ -123,9 +123,9 @@ items:
       - "src/worktree-checkout/**"
 rules:
   - id: migrations-append-only
-    summary: Shipped drizzle-kit migrations never change and new ones append to the journal; the legacy migrations take no new files.
+    summary: Shipped drizzle-kit migrations never change and new ones append to the journal.
     probe: .agents/probes/migrations-append-only.ts
-    paths: ["src/db/drizzle/**", "src/db/migrations.ts", "src/db/migrations/**"]
+    paths: ["src/db/drizzle-pg/**"]
     failOn: P0
     onFail: fix
   - id: restart-and-ask-from-loop

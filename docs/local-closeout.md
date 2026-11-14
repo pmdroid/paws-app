@@ -1,13 +1,12 @@
 # Local Closeout policy
 
-Keep the Closeout policy for a work repository on your machine. [How Closeout runs](closeout.md) explains the two Closeout passes and how retries work. Add this to `~/.paws/config.toml` before starting Paws:
+Keep the Closeout policy for a work repository on your machine. [How Closeout runs](closeout.md) explains the two Closeout passes and how retries work. Save its root with Settings › Closeout (`PUT /api/settings/closeout`, see [Local Closeout policy roots](configuration.md#local-closeout-policy-roots)):
 
-```toml
-[closeout.projects."acme/widgets"]
-policy_root = "projects/widgets"
+```json
+{ "projects": { "acme/widgets": { "policyRoot": "/home/me/.paws/projects/widgets" } } }
 ```
 
-The project key is the GitHub `owner/repo`, matched without case sensitivity. `policy_root` is an absolute directory or a path relative to `PAWS_HOME`, which defaults to `~/.paws`. Use one section per repository.
+The project key is the GitHub `owner/repo`, matched without case sensitivity. `policyRoot` is an absolute directory on the Paws host. A save applies without restarting Paws. Before the first save, Paws reads `[closeout.projects."owner/repo"] policy_root` from `~/.paws/config.toml`, where a path relative to `PAWS_HOME` also works.
 
 Create this directory layout:
 

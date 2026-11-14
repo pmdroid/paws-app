@@ -278,14 +278,13 @@ export function createRunnerControl(options: {
         // SQLite's immediate transaction already serializes writers. Postgres needs a
         // row lock before checking which certificate is current so a waiting renewal
         // observes the successor committed by the first transaction.
-        if (q.dialect === "postgres")
-          yield* q.one(
-            q.orm
-              .select({ fingerprint: q.t.runnerCertificate.fingerprint })
-              .from(q.t.runnerCertificate)
-              .where(eq(q.t.runnerCertificate.fingerprint, peer.fingerprint))
-              .for("update"),
-          );
+        yield* q.one(
+          q.orm
+            .select({ fingerprint: q.t.runnerCertificate.fingerprint })
+            .from(q.t.runnerCertificate)
+            .where(eq(q.t.runnerCertificate.fingerprint, peer.fingerprint))
+            .for("update"),
+        );
         if (!(yield* runnerForCertificateSteps(q, peer.fingerprint, now())))
           throw new Error("Runner identity is revoked or expired.");
         return yield* renewRunnerCertificateSteps(q, {

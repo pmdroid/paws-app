@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type WorkItemState } from "../src/core";
 import {
   bindLinearSessionTaskSteps,
@@ -6,8 +5,6 @@ import {
   getConfirmedRemoteMergeSteps,
   recordConfirmedRemoteMerge,
   recordLinearInstallationSteps,
-  sqliteDb,
-  storeOf,
   type Db,
   type Q,
   type Steps,
@@ -25,41 +22,17 @@ type Session = {
   teamId: string | null;
 };
 
-const DEPENDENCY_INPUTS = `SELECT json_array(
-  (SELECT json_group_array(json_array(i.id,i.linear_issue_id,i.linear_identifier,i.title,i.state,
-    i.version,i.position,i.created_at,i.cancel_requested,i.session_key,i.brief,i.owner_user_id,
-    i.delegated_by,u.linear_user_id,t.mode,p.present))
-   FROM work_item i LEFT JOIN work_item_task t ON t.item_id=i.id
-   LEFT JOIN work_item_specification p ON p.item_id=i.id
-   LEFT JOIN workspace_user u ON u.id=i.owner_user_id WHERE i.delegation_id=d.delegation_id),
-  (SELECT json_group_array(json_array(s.session_id,s.organization_id,s.oauth_client_id,
-    s.app_user_id,s.team_id,s.creator_id,s.generation,s.stopped_at,w.id))
-   FROM linear_session s LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
-   WHERE s.session_id IN (SELECT session_key FROM work_item WHERE delegation_id=d.delegation_id)),
-  (SELECT json_group_array(json_array(pd.parent_issue_id,pd.stopped_at,sub.issue_id))
-   FROM parent_delegation_issue sub JOIN parent_delegation pd ON pd.delegation_id=sub.parent_delegation_id
-   WHERE sub.delegation_id=d.delegation_id),
-  (SELECT json_array(workspace_id,generation,scope,linear_states)
-   FROM item_dependency_snapshot WHERE item_id=d.id)) AS inputs
-  FROM work_item d WHERE d.id=?`;
-const currentInputs = new WeakMap<Database, Map<string, string>>();
-
-export function workspaceAdmission(
-  source: Database | Db,
-  options: AdmissionOptions = {},
-): ItemAdmission {
-  const store = storeOf(source);
-  const raw = "dialect" in source ? null : source;
+export function workspaceAdmission(store: Db, options: AdmissionOptions = {}): ItemAdmission {
   const admission = createAdmission({ db: store, ...options });
   const joined =
     <R>(check: (id: string) => Promise<R>, byItem: boolean) =>
     async (id: string): Promise<R> => {
-      await store.run((q) => joinFakeWorkspaceSteps(q, raw, id, byItem));
+      await store.run((q) => joinFakeWorkspaceSteps(q, id, byItem));
       return check(id);
     };
   const joinedSteps = <R>(check: (q: Q, id: string) => Steps<R>, byItem: boolean) =>
     function* (q: Q, id: string): Steps<R> {
-      yield* joinFakeWorkspaceSteps(q, raw, id, byItem);
+      yield* joinFakeWorkspaceSteps(q, id, byItem);
       return yield* check(q, id);
     };
   return {
@@ -74,17 +47,6 @@ export function workspaceAdmission(
   };
 }
 
-export function workspaceDispatch(
-  db: Database,
-  options: Omit<Parameters<typeof dispatch>[1], "admission">,
-): Promise<string[]> {
-  return dispatch(sqliteDb(db), { ...options, admission: workspaceAdmission(db) });
-}
-
-export function joinFakeWorkspace(db: Database, delegationId: string): Promise<void> {
-  return sqliteDb(db).run((q) => joinFakeWorkspaceSteps(q, db, delegationId, false));
-}
-
 export function workspaceDispatchPg(
   db: Db,
   options: Omit<Parameters<typeof dispatch>[1], "admission">,
@@ -93,7 +55,7 @@ export function workspaceDispatchPg(
 }
 
 export function joinFakeWorkspacePg(db: Db, delegationId: string): Promise<void> {
-  return db.run((q) => joinFakeWorkspaceSteps(q, null, delegationId, false));
+  return db.run((q) => joinFakeWorkspaceSteps(q, delegationId, false));
 }
 
 const open = (q: Q) => notInArray(q.t.workItem.state, ["completed", "merged", "cancelled"]);
@@ -111,12 +73,7 @@ const present = (q: Q) =>
       ),
   );
 
-function* joinFakeWorkspaceSteps(
-  q: Q,
-  raw: Database | null,
-  id: string,
-  byItem: boolean,
-): Steps<void> {
+function* joinFakeWorkspaceSteps(q: Q, id: string, byItem: boolean): Steps<void> {
   const item = q.t.workItem;
   const delegationId = byItem
     ? (yield* q.one(q.orm.select({ id: item.delegationId }).from(item).where(eq(item.id, id))))?.id
@@ -185,21 +142,12 @@ function* joinFakeWorkspaceSteps(
       typeof saved?.linearStates === "string"
         ? saved.linearStates
         : JSON.stringify(saved?.linearStates);
-    const inputs = raw
-      ?.query<{ inputs: string }, [string]>(DEPENDENCY_INPUTS)
-      .get(itemId)
-      ?.inputs.concat(workspaceId);
-    const cache = raw ? (currentInputs.get(raw) ?? new Map<string, string>()) : null;
-    if (raw && cache) currentInputs.set(raw, cache);
     if (
       saved !== undefined &&
       savedStates === JSON.stringify([...fresh.states]) &&
-      ((inputs !== undefined && cache?.get(itemId) === inputs) ||
-        (yield* itemDependenciesCurrentSteps(q, target)))
-    ) {
-      if (inputs !== undefined) cache?.set(itemId, inputs);
+      (yield* itemDependenciesCurrentSteps(q, target))
+    )
       continue;
-    }
     try {
       yield* recordItemDependenciesSteps(
         q,
@@ -283,10 +231,6 @@ function* readsSteps(q: Q, itemId: string) {
 }
 
 /** Record the evidence a real merge writes before a fixture enters merged. */
-export function confirmFakeMerge(db: Database, itemId: string): Promise<void> {
-  return confirmFakeMergePg(sqliteDb(db), itemId);
-}
-
 export async function confirmFakeMergePg(db: Db, itemId: string): Promise<void> {
   await recordConfirmedRemoteMerge(db, {
     itemId,

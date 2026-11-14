@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { WORK_ITEM_STATES } from "../src/core";
-import { listTaskBlockers, migrations, syncSteps, type Db, type Q } from "../src/db";
+import { listTaskBlockers, syncSteps, type Db, type Q } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempStore } from "./pglite";
@@ -96,7 +96,6 @@ describe("intake", () => {
     );
     expect(await epicTables(db)).toEqual([]);
     for (const state of WORK_ITEM_STATES) expect(check?.definition).toContain(`'${state}'`);
-    expect(migrations[0]?.id).toBe("001_jobs_outbox");
     await close();
   });
 

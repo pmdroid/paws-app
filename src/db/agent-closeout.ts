@@ -1,6 +1,10 @@
 import { asc, eq, inArray, max } from "drizzle-orm";
 import { journalCaught } from "../journal";
-import { CLOSEOUT_OUTPUT_CAP_BYTES } from "./closeout-progress";
+import {
+  CLOSEOUT_OUTPUT_CAP_BYTES,
+  pointerOf,
+  type CloseoutOutputPointer,
+} from "./closeout-progress";
 import { type Q, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 
@@ -44,6 +48,7 @@ export type AgentCloseoutProgress =
       stdout: string;
       stderr: string;
       truncated: boolean;
+      output?: CloseoutOutputPointer;
       base?: string;
       policyDigest?: string;
       clean?: boolean;
@@ -67,6 +72,7 @@ export function* recordAgentCloseoutSteps(
   now: number,
 ) {
   const { agentCloseoutEvent: event } = q.t;
+  const output = progress.type === "finished" ? progress.output : undefined;
   const stdout = progress.type === "finished" ? keepTail(progress.stdout) : null;
   const stderr = progress.type === "finished" ? keepTail(progress.stderr) : null;
   const last = yield* q.one(
@@ -96,6 +102,9 @@ export function* recordAgentCloseoutSteps(
       stderr: stderr?.text ?? "",
       truncated:
         progress.type === "finished" && (progress.truncated || stdout!.cut || stderr!.cut) ? 1 : 0,
+      outputKey: output?.key ?? null,
+      outputBytes: output?.bytes ?? null,
+      outputSha256: output?.sha256 ?? null,
       checks: progress.type === "report" ? JSON.stringify(progress.checks) : null,
       blocked: progress.type === "report" ? progress.blocked : null,
       base: progress.type === "finished" ? (progress.base ?? null) : null,
@@ -176,6 +185,7 @@ function toEvent(row: EventRow): AgentCloseoutEvent {
       stdout: row.stdout,
       stderr: row.stderr,
       truncated: row.truncated === 1,
+      ...(row.outputKey !== null ? { output: pointerOf(row)! } : {}),
       ...(row.base !== null ? { base: row.base } : {}),
       ...(row.policyDigest !== null ? { policyDigest: row.policyDigest } : {}),
       ...(row.clean !== null ? { clean: row.clean === 1 } : {}),

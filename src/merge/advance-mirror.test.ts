@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
+import { tempStore } from "../../test/pglite";
+import { mergeHarnessPg, pendingCi, type MergeHarness } from "./advance-harness";
 
 let harness: MergeHarness | undefined;
 
@@ -10,8 +11,8 @@ afterEach(async () => {
   harness = undefined;
 });
 
-async function start(settings: NonNullable<Parameters<typeof mergeHarness>[0]>["settings"] = {}) {
-  harness = await mergeHarness({ settings, mirror: true });
+async function start(settings: NonNullable<Parameters<typeof mergeHarnessPg>[1]>["settings"] = {}) {
+  harness = await mergeHarnessPg(await tempStore(), { settings, mirror: true });
   return harness;
 }
 

@@ -8,6 +8,7 @@ import { git } from "./git";
 import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
 
 const TRACKING_REF = "+refs/heads/*:refs/remotes/origin/*";
+const REF_RACE = /incorrect old value provided|cannot lock ref/;
 const START_REFS = ["origin/main", "main", "origin/master", "HEAD"] as const;
 
 export interface Mirror {
@@ -96,8 +97,8 @@ async function refreshMirror(
   }
 
   await git(["--git-dir", path, "config", "remote.origin.fetch", TRACKING_REF]);
-  try {
-    await (options.networkGit ?? git)([
+  const fetch = () =>
+    (options.networkGit ?? git)([
       "--git-dir",
       path,
       "fetch",
@@ -105,6 +106,12 @@ async function refreshMirror(
       options.remoteUrl,
       TRACKING_REF,
     ]);
+  try {
+    await fetch().catch((error: unknown) => {
+      if (!REF_RACE.test(error instanceof Error ? error.message : String(error))) throw error;
+      journalCaught(error, "worktree.refreshMirror.refRace", null, "fetching once more");
+      return fetch();
+    });
   } catch (error) {
     if (options.networkGit) throw error;
 
@@ -341,6 +348,56 @@ export async function restoreCandidateRef(options: {
     signal.throwIfAborted();
     await run(["update-ref", ref, sha, local ?? ""]);
   });
+}
+
+export async function ensureMirrorCommit(options: {
+  owner: string;
+  repo: string;
+  remoteUrl: string;
+  pawsRoot: string;
+  sha: string;
+  networkGit?: (args: string[]) => Promise<string>;
+  signal: AbortSignal;
+}): Promise<string> {
+  if (!/^[a-f0-9]{40}$/.test(options.sha))
+    throw new Error(`Stored candidate ${options.sha} is not a commit SHA.`);
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const has = () =>
+    git(["--git-dir", gitDir, "cat-file", "-e", `${options.sha}^{commit}`], {
+      signal: options.signal,
+    }).then(
+      () => true,
+      () => false,
+    );
+  if ((await exists(gitDir)) && (await has())) return gitDir;
+  await ensureBareMirror(options);
+  await onMirror(gitDir, async () => {
+    if (await has()) return;
+    const scratch = `refs/paws/imports/${randomUUID()}`;
+    try {
+      await (options.networkGit ?? git)([
+        "--git-dir",
+        gitDir,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--",
+        options.remoteUrl,
+        `${options.sha}:${scratch}`,
+      ]);
+    } catch (error) {
+      options.signal.throwIfAborted();
+      throw new Error(
+        `Candidate ${options.sha} is missing on GitHub in ${options.owner}/${options.repo}.`,
+        { cause: error },
+      );
+    } finally {
+      await git(["--git-dir", gitDir, "update-ref", "-d", scratch], {
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => undefined);
+    }
+  });
+  return gitDir;
 }
 
 export async function adoptLegacyCandidate(options: {

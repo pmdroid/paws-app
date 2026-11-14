@@ -57,7 +57,7 @@ describe("issue resources", () => {
     expect((await live.issue("ENG-OLD"))?.issue).toMatchObject({ id: "ENG-OLD", state: "stopped" });
   });
 
-  test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
+  test("the list carries the snapshot's issue rows and nothing else", async () => {
     const db = await database();
     await insertQueuedItem(db, {
       id: "ENG-1",
@@ -81,16 +81,7 @@ describe("issue resources", () => {
     await finish(db, "ENG-3", NOW - 5_000);
     const live = provider(db);
     const list = await live.issues();
-    expect(Object.keys(list).sort()).toEqual([
-      "agentCloseout",
-      "generatedAt",
-      "issues",
-      "mergedTimes",
-      "project",
-      "runs",
-      "source",
-      "verdicts",
-    ]);
+    expect(Object.keys(list).sort()).toEqual(["generatedAt", "issues", "project", "source"]);
     expect(list.issues.find((issue) => issue.id === "ENG-1")?.doing).toBeDefined();
   });
 

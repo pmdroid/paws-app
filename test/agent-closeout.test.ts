@@ -14,7 +14,7 @@ import {
   setCurrentRun,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
-import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
+import { parseIssueDetailResponse } from "../src/dashboard/src/contract";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
@@ -129,23 +129,13 @@ if (!text.includes("fixed")) {
   ]);
 
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
-  const list = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
-  if (!list.ok) throw new Error(list.error);
-  expect(list.response.agentCloseout.find((entry) => entry.runId === run.id)).toEqual({
-    itemId: "ENG-7",
-    runId: run.id,
-    decision: "accepted",
-    headSha: head,
-    blocked: null,
-    updatedAt: expect.any(String),
-  });
   const body = JSON.stringify(await provider.issue("ENG-7"));
   expect(body).not.toContain(TOKEN);
   const detail = parseIssueDetailResponse(JSON.parse(body));
   if (!detail.ok) throw new Error(detail.error);
   const agent = detail.response.agentCloseout.find((entry) => entry.runId === run.id);
-  expect(agent).toBeDefined();
-  expect(agent!.itemId).toBe("ENG-7");
+  expect(agent).toMatchObject({ itemId: "ENG-7", runId: run.id, blocked: null });
+  expect(agent!.attempts.at(-1)).toMatchObject({ decision: "accepted", headSha: head });
   expect(agent!.maxAttempts).toBe(3);
   expect(agent!.steps.map((step) => [step.tool, step.checkId, step.state, step.attempt])).toEqual([
     ["get_closeout", null, "reported", null],

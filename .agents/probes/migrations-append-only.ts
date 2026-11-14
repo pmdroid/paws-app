@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
-const DRIZZLE = "src/db/drizzle/";
+const DRIZZLE = "src/db/drizzle-pg/";
 const JOURNAL = `${DRIZZLE}meta/_journal.json`;
-const LEGACY = ["src/db/migrations.ts", "src/db/migrations/"];
 
 const { base, head, repo } = parseArgs({
   options: {
@@ -28,17 +27,7 @@ function git(...args: string[]): { ok: boolean; out: string; err: string } {
 
 /** `[status, path]` pairs. Renames are a deletion and an addition. */
 function changes(): [string, string][] {
-  const ran = git(
-    "diff",
-    "--name-status",
-    "--no-renames",
-    "-z",
-    base!,
-    head!,
-    "--",
-    DRIZZLE,
-    ...LEGACY,
-  );
+  const ran = git("diff", "--name-status", "--no-renames", "-z", base!, head!, "--", DRIZZLE);
   if (!ran.ok) throw new Error(`git diff failed: ${ran.err.trim()}`);
   const fields = ran.out.split("\0");
   const pairs: [string, string][] = [];
@@ -58,13 +47,6 @@ function journal(sha: string): Entry[] {
 const problems: string[] = [];
 const added = new Set<string>();
 for (const [status, path] of changes()) {
-  if (!path.startsWith(DRIZZLE)) {
-    if (status !== "D")
-      problems.push(
-        `${path} is a legacy migration path. The legacy migrations are frozen: generate a drizzle-kit migration under ${DRIZZLE} instead.`,
-      );
-    continue;
-  }
   if (status === "A") added.add(path);
   else if (path !== JOURNAL)
     problems.push(
@@ -94,7 +76,7 @@ fresh.forEach((entry, offset) => {
     problems.push(`${JOURNAL} entry ${entry.tag} has no new ${DRIZZLE}${entry.tag}.sql.`);
 });
 for (const path of added) {
-  const tag = /^src\/db\/drizzle\/([^/]+)\.sql$/.exec(path)?.[1];
+  const tag = /^src\/db\/drizzle-pg\/([^/]+)\.sql$/.exec(path)?.[1];
   if (tag !== undefined && !fresh.some((entry) => entry.tag === tag))
     problems.push(`${path} has no new entry in ${JOURNAL}, so drizzle-kit never applies it.`);
 }

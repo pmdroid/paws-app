@@ -1,0 +1,2 @@
+UPDATE "item_pull_request" SET "published_head" = "open_findings"."head_sha", "open_findings_line" = "open_findings"."line" FROM "open_findings" WHERE "open_findings"."item_id" = "item_pull_request"."item_id";--> statement-breakpoint
+UPDATE "linear_session" SET "activities_listed_generation" = "linear_activity_listing"."generation" FROM "linear_activity_listing" WHERE "linear_activity_listing"."session_id" = "linear_session"."session_id";

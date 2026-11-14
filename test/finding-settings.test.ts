@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { findingGroupingEnabled, type Db } from "../src/db";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfigFile, useSettingsStore } from "../src/config";
+import {
+  CONFIG_SETTINGS_KEY,
+  findingGroupingEnabled,
+  readSetting,
+  readSettingSteps,
+  updateSettingSteps,
+  type Db,
+} from "../src/db";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
@@ -7,6 +18,9 @@ import { tempStore } from "./pglite";
 let db: Db;
 let close: () => Promise<void>;
 let audits: [string, string][];
+let dir: string;
+let configPath: string;
+let release: () => void;
 
 beforeEach(async () => {
   ({ db, close } = await tempStore());
@@ -16,16 +30,27 @@ beforeEach(async () => {
       .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 1 }),
   );
   audits = [];
+  dir = mkdtempSync(join(tmpdir(), "paws-finding-settings-"));
+  configPath = join(dir, "config.toml");
+  writeFileSync(configPath, '[findings]\ngrouping_time = "07:30"\n');
+  ({ release } = await useSettingsStore(configPath, {
+    read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
+    update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
+  }));
 });
 
-afterEach(() => close());
+afterEach(async () => {
+  release();
+  rmSync(dir, { recursive: true, force: true });
+  await close();
+});
 
 function options(role?: string): FindingSettingsOptions {
   return {
     store: db,
     csrfToken: "csrf",
     workspaceId: "ws",
-    groupingTime: "07:30",
+    configPath,
     ...(role ? { role } : {}),
     audit: async (action, subject) => {
       audits.push([action, subject]);
@@ -34,9 +59,9 @@ function options(role?: string): FindingSettingsOptions {
 }
 
 const url = "http://127.0.0.1:8787/api/settings/findings";
-function post(body: unknown, csrf = "csrf"): Request {
+function post(body: unknown, csrf = "csrf", method = "POST"): Request {
   return new Request(url, {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json", "x-paws-csrf": csrf },
     body: JSON.stringify(body),
   });
@@ -69,5 +94,44 @@ test("members, missing CSRF and malformed bodies cannot change grouping", async 
     (await handleFindingSettingsRequest(post({ grouping: "no" }), options("admin")))!.status,
   ).toBe(400);
   expect(await findingGroupingEnabled(db, "ws")).toBe(true);
+  expect(audits).toEqual([]);
+});
+
+test("an admin saves the grouping time to the database and the file no longer applies", async () => {
+  const saved = await handleFindingSettingsRequest(
+    post({ groupingTime: "21:15" }, "csrf", "PUT"),
+    options("admin"),
+  );
+  expect(saved!.status).toBe(200);
+  expect(await saved!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain('grouping_time = "21:15"');
+  writeFileSync(configPath, '[findings]\ngrouping_time = "03:00"\n');
+  expect(loadConfigFile(configPath).findingsGroupingTime).toBe("21:15");
+  const listed = await handleFindingSettingsRequest(new Request(url), options("admin"));
+  expect(await listed!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
+  expect(audits).toEqual([
+    ["settings.findings.grouping_time", "Set daily finding grouping time to 21:15 UTC"],
+  ]);
+});
+
+test("members and invalid times cannot change the grouping time", async () => {
+  expect(
+    (await handleFindingSettingsRequest(
+      post({ groupingTime: "08:00" }, "csrf", "PUT"),
+      options("member"),
+    ))!.status,
+  ).toBe(403);
+  for (const groupingTime of ["24:00", "7:30", "07:60", 730]) {
+    const response = await handleFindingSettingsRequest(
+      post({ groupingTime }, "csrf", "PUT"),
+      options("admin"),
+    );
+    expect(response!.status).toBe(400);
+    expect(await response!.json()).toEqual({
+      error: "Send groupingTime as HH:MM (24-hour, UTC).",
+    });
+  }
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBeNull();
+  expect(readFileSync(configPath, "utf8")).toContain('"07:30"');
   expect(audits).toEqual([]);
 });

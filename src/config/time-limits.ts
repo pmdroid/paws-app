@@ -144,3 +144,19 @@ export function setTimeLimitsText(current: string, settings: StoredTimeLimits): 
 export function writeTimeLimits(path: string, settings: StoredTimeLimits): Promise<void> {
   return updateConfigText(path, (text) => setTimeLimitsText(text, settings));
 }
+
+export async function copyCapsToTimeLimits(
+  configPath: string,
+  config: Pick<PawsConfigFile, "maxAwakeMs" | "timeLimits">,
+): Promise<string | null> {
+  if (config.maxAwakeMs === null || config.timeLimits?.implementationMinutes !== undefined)
+    return null;
+  const rounded = Math.ceil(config.maxAwakeMs / 60_000);
+  const implementationMinutes = Math.min(rounded, MAX_TIME_LIMIT_MINUTES);
+  await writeTimeLimits(configPath, { ...config.timeLimits, implementationMinutes });
+  const capped =
+    rounded > MAX_TIME_LIMIT_MINUTES
+      ? ` (shortened from ${rounded} minutes, the most time limits allow is ${MAX_TIME_LIMIT_MINUTES})`
+      : "";
+  return `config.toml [caps] max_awake_ms copied to the saved time limits as implementation_minutes = ${implementationMinutes}${capped}; the [caps] key is no longer read`;
+}

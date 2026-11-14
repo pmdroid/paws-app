@@ -32,6 +32,7 @@ import {
   worldPg,
   type Json,
 } from "./improvement-fixtures";
+import { waitFor } from "./wait-for";
 
 const open: (() => Promise<void>)[] = [];
 
@@ -768,7 +769,7 @@ describe("individual finding issues share the inbox claim", () => {
     const gate = new Promise<void>((resolve) => (release = resolve));
     const { post, filed } = await route(w, () => gate);
     const pending = post();
-    await Bun.sleep(0);
+    await waitFor(() => filed.length > 0, { what: "the individual filing" });
     expect(filed).toHaveLength(1);
     const during = await acceptDaily(w);
     expect([during.status, during.body.reason]).toEqual([409, "legacy"]);

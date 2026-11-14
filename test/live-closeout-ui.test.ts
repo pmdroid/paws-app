@@ -199,7 +199,12 @@ async function snapshotOf(db: Db, now: number, env: NodeJS.ProcessEnv = {}): Pro
     }
     details.set(item.id, { ...detail, verdicts });
   }
-  return { items: list.issues, runs: list.runs, details };
+  const all = [...details.values()];
+  return {
+    items: all.map((entry) => entry.issue),
+    runs: all.flatMap((entry) => entry.runs),
+    details,
+  };
 }
 
 function verdictOf(snapshot: Status, id: string): StatusVerdict {

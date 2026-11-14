@@ -11,7 +11,7 @@ import {
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { question } from "./asks";
-import { run, workItem } from "./items";
+import { workItem } from "./items";
 import { workspace } from "./workspace";
 import { job } from "./jobs";
 
@@ -55,6 +55,9 @@ export const closeoutStep = pgTable(
     stdout: text().default("").notNull(),
     stderr: text().default("").notNull(),
     truncated: integer().default(0).notNull(),
+    outputKey: text("output_key"),
+    outputBytes: bigint("output_bytes", { mode: "number" }),
+    outputSha256: text("output_sha256"),
     logPath: text("log_path"),
     evidencePath: text("evidence_path"),
     findings: text(),
@@ -248,17 +251,20 @@ export const candidateRisk = pgTable(
       .notNull()
       .references(() => workItem.id),
     headSha: text("head_sha").notNull(),
-    baseSha: text("base_sha").notNull(),
-    tier: text().notNull(),
-    paths: jsonb().notNull(),
-    classifiedAt: bigint("classified_at", { mode: "number" }).notNull(),
+    baseSha: text("base_sha"),
+    tier: text(),
+    paths: jsonb(),
+    classifiedAt: bigint("classified_at", { mode: "number" }),
     matches: jsonb(),
+    changedPaths: jsonb("changed_paths"),
+    recordedAt: bigint("recorded_at", { mode: "number" }),
   },
   (table) => [
     primaryKey({
       columns: [table.itemId, table.headSha],
       name: "candidate_risk_item_id_head_sha_pk",
     }),
+    index("candidate_risk_item").on(table.itemId, table.recordedAt),
     check("candidate_risk_check_1", sql`tier IN ('high', 'normal')`),
   ],
 );
@@ -286,17 +292,6 @@ export const closeoutBypassCheck = pgTable(
       name: "closeout_bypass_check_question_id_check_id_pk",
     }),
   ],
-);
-
-export const runReviewRounds = pgTable(
-  "run_review_rounds",
-  {
-    runId: text("run_id")
-      .primaryKey()
-      .references(() => run.id),
-    rounds: bigint({ mode: "number" }).notNull(),
-  },
-  () => [check("run_review_rounds_check_1", sql`rounds >= 0`)],
 );
 
 export const reviewEscape = pgTable(
@@ -346,15 +341,6 @@ export const riskFix = pgTable(
   ],
 );
 
-export const openFindings = pgTable("open_findings", {
-  itemId: text("item_id")
-    .primaryKey()
-    .references(() => workItem.id),
-  headSha: text("head_sha").notNull(),
-  line: text().notNull(),
-  recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-});
-
 export const reviewFindingIssue = pgTable(
   "review_finding_issue",
   {
@@ -370,25 +356,6 @@ export const reviewFindingIssue = pgTable(
     filedAt: bigint("filed_at", { mode: "number" }).notNull(),
   },
   () => [check("review_finding_issue_check_1", sql`length(key)=64`)],
-);
-
-export const candidatePaths = pgTable(
-  "candidate_paths",
-  {
-    itemId: text("item_id")
-      .notNull()
-      .references(() => workItem.id),
-    headSha: text("head_sha").notNull(),
-    paths: jsonb().notNull(),
-    recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.itemId, table.headSha],
-      name: "candidate_paths_item_id_head_sha_pk",
-    }),
-    index("candidate_paths_item").on(table.itemId, table.recordedAt),
-  ],
 );
 
 export const reviewFinding = pgTable(
@@ -541,12 +508,6 @@ export const reviewReply = pgTable(
     ),
   ],
 );
-
-export const findingGroupingOff = pgTable("finding_grouping_off", {
-  workspaceId: text("workspace_id")
-    .primaryKey()
-    .references(() => workspace.id),
-});
 
 export const riskAutoContext = pgTable(
   "risk_auto_context",

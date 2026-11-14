@@ -1,8 +1,8 @@
-import { asc, eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
-export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
-  const { linearItemCallerRequest, linearItemRequest } = q.t;
+export function* countLinearRequestSteps(q: Q, itemId: string) {
+  const { linearItemRequest } = q.t;
   yield* q.exec(
     q.orm
       .insert(linearItemRequest)
@@ -12,19 +12,10 @@ export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
         set: { requests: sql`${linearItemRequest.requests}+1` },
       }),
   );
-  yield* q.exec(
-    q.orm
-      .insert(linearItemCallerRequest)
-      .values({ itemId, caller, requests: 1 })
-      .onConflictDoUpdate({
-        target: [linearItemCallerRequest.itemId, linearItemCallerRequest.caller],
-        set: { requests: sql`${linearItemCallerRequest.requests}+1` },
-      }),
-  );
 }
 
-export async function countLinearRequest(store: Db, itemId: string, caller: string): Promise<void> {
-  await store.transaction((q) => countLinearRequestSteps(q, itemId, caller));
+export async function countLinearRequest(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => countLinearRequestSteps(q, itemId));
 }
 
 export function* linearRequestsByItemSteps(q: Q) {
@@ -39,29 +30,4 @@ export function* linearRequestsByItemSteps(q: Q) {
 
 export async function linearRequestsByItem(store: Db): Promise<Map<string, number>> {
   return store.run((q) => linearRequestsByItemSteps(q));
-}
-
-export function* linearRequestsByCallerSteps(q: Q, itemId: string) {
-  const { linearItemCallerRequest } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .select({
-        caller: linearItemCallerRequest.caller,
-        requests: linearItemCallerRequest.requests,
-      })
-      .from(linearItemCallerRequest)
-      .where(eq(linearItemCallerRequest.itemId, itemId))
-      .orderBy(asc(linearItemCallerRequest.caller)),
-  );
-  return Object.fromEntries(rows.map((row) => [row.caller, row.requests])) as Record<
-    string,
-    number
-  >;
-}
-
-export async function linearRequestsByCaller(
-  store: Db,
-  itemId: string,
-): Promise<Record<string, number>> {
-  return store.run((q) => linearRequestsByCallerSteps(q, itemId));
 }

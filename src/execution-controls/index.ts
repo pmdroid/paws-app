@@ -14,7 +14,6 @@ import {
   parseDeadDeliveryRef,
   resumeUsagePauseNowSteps,
   retryDeadDeliverySteps,
-  storeOf,
   type Db,
   submitCommandSteps,
   usagePauseSteps,
@@ -25,7 +24,6 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import type { WorkspacePrincipal } from "../workspace";
 
@@ -41,13 +39,13 @@ export type CanAct = (q: Q) => Steps<boolean>;
 export type OnCommitted = (q: Q) => Steps<void>;
 
 export function createExecutionControls(input: {
-  db: Database | Db;
+  db: Db;
   bus: CommandBus;
   getPort: (workspaceId: string) => ExecutionControlPort | null;
   now?: () => number;
 }) {
   const now = input.now ?? Date.now;
-  const store = storeOf(input.db);
+  const store = input.db;
   function* authorizedSteps(
     q: Q,
     itemId: string,

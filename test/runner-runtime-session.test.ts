@@ -28,7 +28,8 @@ import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 import { openRunnerRuntime, type RunnerAgents } from "../src/runner-runtime";
 import type { RunnerWork } from "../src/runner-work";
 import { syncSteps } from "../src/db";
-import { tempDb } from "./helpers";
+import { withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0 && process.getgid!() !== 0;
 
@@ -76,7 +77,7 @@ afterAll(() => rmSync(repository.dir, { recursive: true, force: true }));
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-function fixture(
+async function fixture(
   options: { claudeVersion?: string; codexVersion?: string; grokVersion?: string } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-session-"));
@@ -119,8 +120,8 @@ function fixture(
     prompt: "Implement the assigned issue",
   };
   // The store from the snapshot-store issue, with its fake object storage and a stub grant.
-  const db = tempDb();
-  db.run("PRAGMA foreign_keys=OFF");
+  const { db, close } = await tempStore();
+  await withoutForeignKeys(db);
   const objects = createFakeAgentSessionObjects();
   const work = {
     authorizeSteps: () => syncSteps(() => ({ command })),
@@ -359,15 +360,15 @@ function fixture(
         parts.push(part);
       return Buffer.concat(parts);
     },
-    cleanup() {
-      db.close();
+    async cleanup() {
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
 }
 
 test.skipIf(!linux)("a Grok session folder seals with the runner's Grok version", async () => {
-  const context = fixture({ claudeVersion: "2.1.7", grokVersion: "1.0.50" });
+  const context = await fixture({ claudeVersion: "2.1.7", grokVersion: "1.0.50" });
   const runtime = await context.open();
   try {
     await context.drive(runtime, () => context.started() !== "");
@@ -390,7 +391,7 @@ test.skipIf(!linux)("a Grok session folder seals with the runner's Grok version"
 });
 
 test.skipIf(!linux)("a Codex rollout seals with the runner's Codex version", async () => {
-  const context = fixture({ claudeVersion: "2.1.7", codexVersion: "2.1.1" });
+  const context = await fixture({ claudeVersion: "2.1.7", codexVersion: "2.1.1" });
   const runtime = await context.open();
   try {
     await context.drive(runtime, () => context.started() !== "");
@@ -415,7 +416,7 @@ test.skipIf(!linux)("a Codex rollout seals with the runner's Codex version", asy
 test.skipIf(!linux)(
   "the session uploads in 512 KiB chunks and seals with the version, session, commit and turn before the result",
   async () => {
-    const context = fixture({ claudeVersion: "2.1.7" });
+    const context = await fixture({ claudeVersion: "2.1.7" });
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.started() !== "");
@@ -460,7 +461,7 @@ test.skipIf(!linux)(
 test.skipIf(!linux)(
   "restart recovery validates the session cursor and bounds failure uploads",
   async () => {
-    const context = fixture({ claudeVersion: "2.1.7" });
+    const context = await fixture({ claudeVersion: "2.1.7" });
     const bundle = randomBytes(1_200_000);
     // The earlier process uploaded the first chunk, recorded it, and stopped.
     const journal = openExecutionJournal(context.root);
@@ -496,7 +497,7 @@ test.skipIf(!linux)(
 
 test.skipIf(!linux)("a session snapshot that fails never holds back the result", async () => {
   // No installed Claude version to record, so the snapshot is skipped.
-  const context = fixture();
+  const context = await fixture();
   const runtime = await context.open();
   try {
     await context.drive(runtime, () => context.started() !== "");
@@ -514,7 +515,7 @@ test.skipIf(!linux)("a session snapshot that fails never holds back the result",
 });
 
 test.skipIf(!linux)("Paws refusing a chunk skips the snapshot and the run continues", async () => {
-  const context = fixture({ claudeVersion: "2.1.7" });
+  const context = await fixture({ claudeVersion: "2.1.7" });
   const runtime = await context.open();
   try {
     await context.drive(runtime, () => context.started() !== "");
@@ -538,7 +539,7 @@ test.skipIf(!linux)("Paws refusing a chunk skips the snapshot and the run contin
 test.skipIf(!linux)(
   "a run without a session bundle posts its result without uploading",
   async () => {
-    const context = fixture({ claudeVersion: "2.1.7" });
+    const context = await fixture({ claudeVersion: "2.1.7" });
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.started() !== "");
@@ -556,7 +557,7 @@ test.skipIf(!linux)(
 test.skipIf(!linux)(
   "a moved run downloads its session snapshot and hands it to the worker through the spool",
   async () => {
-    const context = fixture({ claudeVersion: "2.1.7" });
+    const context = await fixture({ claudeVersion: "2.1.7" });
     const bundle = randomBytes(700_000);
     context.served.bytes = bundle;
     context.command.generation = 3;
@@ -593,7 +594,7 @@ test.skipIf(!linux)(
       { header: "0".repeat(64) },
       { bytes: randomBytes(1000) },
     ]) {
-      const context = fixture({ claudeVersion: "2.1.7" });
+      const context = await fixture({ claudeVersion: "2.1.7" });
       const bundle = randomBytes(700_000);
       Object.assign(context.served, { bytes: bundle }, served);
       context.command.resumeSessionId = "claude-session";
@@ -622,7 +623,7 @@ test.skipIf(!linux)(
 test.skipIf(!linux)(
   "each handover command reaches the running worker with its deadline, and the handed-over run seals its session before the result",
   async () => {
-    const context = fixture({ claudeVersion: "2.1.7" });
+    const context = await fixture({ claudeVersion: "2.1.7" });
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.started() !== "");
@@ -676,7 +677,7 @@ test.skipIf(!linux)(
   "a handed-over run whose session cannot be published ends as a handover failure and stays here",
   async () => {
     // No current Claude on the runner: the session can't be sealed.
-    const context = fixture();
+    const context = await fixture();
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.started() !== "");

@@ -189,10 +189,7 @@ export function* enqueueRunnerSetupCheckSteps(
   now: number,
 ): Steps<boolean> {
   const { job } = q.t;
-  const owner =
-    q.dialect === "sqlite"
-      ? sql`json_extract(${job.payload},'$.ownerUserId')`
-      : sql`(${job.payload}->>'ownerUserId')`;
+  const owner = sql`(${job.payload}->>'ownerUserId')`;
   const pending = yield* q.one(
     q.orm
       .select({ one: sql`1` })

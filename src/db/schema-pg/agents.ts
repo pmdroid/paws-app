@@ -43,6 +43,9 @@ export const agentCloseoutEvent = pgTable(
     stdout: text().default("").notNull(),
     stderr: text().default("").notNull(),
     truncated: integer().default(0).notNull(),
+    outputKey: text("output_key"),
+    outputBytes: bigint("output_bytes", { mode: "number" }),
+    outputSha256: text("output_sha256"),
     checks: text(),
     blocked: text(),
     base: text(),
@@ -54,7 +57,6 @@ export const agentCloseoutEvent = pgTable(
       columns: [table.runId, table.sequence],
       name: "agent_closeout_event_run_id_sequence_pk",
     }),
-    index("agent_closeout_event_item").on(table.itemId, table.runId),
     check("agent_closeout_event_check_1", sql`sequence > 0`),
     check("agent_closeout_event_check_2", sql`type IN ('report', 'started', 'finished')`),
     check(
@@ -153,15 +155,6 @@ export const agentVersion = pgTable(
     primaryKey({ columns: [table.agent, table.version], name: "agent_version_agent_version_pk" }),
     check("agent_version_check_1", sql`status IN ('eligible','waiting','ineligible','refused')`),
   ],
-);
-
-export const agentCatalogRefresh = pgTable(
-  "agent_catalog_refresh",
-  {
-    id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-    completedAt: bigint("completed_at", { mode: "number" }).notNull(),
-  },
-  () => [check("agent_catalog_refresh_check_1", sql`id = 1`)],
 );
 
 export const agentSessionSnapshot = pgTable(

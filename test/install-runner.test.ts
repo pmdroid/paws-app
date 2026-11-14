@@ -54,7 +54,7 @@ if [ "$1" = install ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
       -y) shift ;;
-      rootlesskit|uidmap|slirp4netns) shift ;;
+      rootlesskit|uidmap|slirp4netns|dbus-user-session) shift ;;
       *) test -s "$1" || exit 1; cp "$1" "$PAWS_INSTALLED_DEB"; exit 0 ;;
     esac
   done
@@ -404,7 +404,7 @@ test("installer adds the rootless Docker tools before the package when Docker ac
       writeExecutable(join(directory, "bin"), "dockerd", "#!/bin/sh\nexit 0\n");
       expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(2);
-      expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns");
+      expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns dbus-user-session");
       expect(installs()[1]).toEndWith(`/${name}`);
       rmSync(aptLog);
       expect((await install(["--no-docker-access", "1.2.3"], env)).code).toBe(0);

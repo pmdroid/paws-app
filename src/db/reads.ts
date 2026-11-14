@@ -1,13 +1,7 @@
 import { journalCaught } from "../journal";
-import { aliasedTable, and, asc, desc, eq, isNull, notExists, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
-
-export type WorkItemBlockRecord = {
-  delegationId: string;
-  blockerLinearIssueId: string;
-  blockedLinearIssueId: string;
-};
 
 export type OpenQuestionRecord = {
   id: string;
@@ -18,59 +12,6 @@ export type OpenQuestionRecord = {
   options: string[];
   createdAt: number;
 };
-
-export function* listWorkItemBlocksSteps(q: Q, delegationId?: string) {
-  const { taskBlock, workItem, workItemSpecification } = q.t;
-  const candidate = aliasedTable(workItem, "candidate");
-  // The newest live item of the blocked issue whose specification is still present.
-  const latest = q.orm
-    .select({ id: candidate.id })
-    .from(candidate)
-    .where(
-      and(
-        eq(candidate.linearIssueId, taskBlock.blockedLinearIssueId),
-        sql`${candidate.state} <> 'cancelled'`,
-        notExists(
-          q.orm
-            .select({ one: sql`1` })
-            .from(workItemSpecification)
-            .where(
-              and(
-                eq(workItemSpecification.itemId, candidate.id),
-                eq(workItemSpecification.present, 0),
-              ),
-            ),
-        ),
-      ),
-    )
-    .orderBy(desc(candidate.createdAt), desc(candidate.id))
-    .limit(1);
-  const rows = yield* q.all(
-    q.orm
-      .select({
-        delegationId: workItem.delegationId,
-        blockerLinearIssueId: taskBlock.blockerLinearIssueId,
-        blockedLinearIssueId: taskBlock.blockedLinearIssueId,
-      })
-      .from(taskBlock)
-      .innerJoin(workItem, eq(workItem.id, sql`(${latest})`))
-      .where(delegationId === undefined ? undefined : eq(workItem.delegationId, delegationId))
-      .orderBy(
-        asc(workItem.delegationId),
-        asc(taskBlock.blockedLinearIssueId),
-        asc(taskBlock.blockerLinearIssueId),
-      ),
-  );
-  return rows satisfies WorkItemBlockRecord[];
-}
-
-/** `blocks` edges. Pass `epicId` to read one epic. */
-export async function listWorkItemBlocks(
-  store: Db,
-  delegationId?: string,
-): Promise<WorkItemBlockRecord[]> {
-  return store.run((q) => listWorkItemBlocksSteps(q, delegationId));
-}
 
 export type WorkItemFact = {
   itemId: string;
@@ -140,12 +81,9 @@ export type DeliveredLinearIssueState = {
   identifier: string | null;
 };
 
-/** The text at `path` of the payload: `json_extract` on SQLite, `#>>` on Postgres. */
 function payloadText(q: Q, path: string[]) {
   const { payload } = q.t.inboxEvent;
-  return q.dialect === "postgres"
-    ? sql<string | null>`(${payload} #>> ${sql.raw(`'{${path.join(",")}}'`)})`
-    : sql<string | null>`json_extract(${payload}, ${sql.raw(`'$.${path.join(".")}'`)})`;
+  return sql<string | null>`(${payload} #>> ${sql.raw(`'{${path.join(",")}}'`)})`;
 }
 
 export function* deliveredLinearIssueStateSteps(q: Q, organizationId: string, issueId: string) {

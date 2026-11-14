@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { accountStatus, loginChallenge, runningNotice, terminalMarkup } from "./agent-accounts";
+import {
+  accountStatus,
+  dialogAccount,
+  loginChallenge,
+  runningNotice,
+  terminalMarkup,
+} from "./agent-accounts";
 
 const idle = { agent: "claude" as const, connected: false, session: null };
 
@@ -67,4 +73,14 @@ test("the sign-in terminal shows text without escape sequences", () => {
   expect(html).not.toContain("\u001b");
   expect(html).not.toContain("]8;;");
   expect(html).toContain("Paste code here if prompted &gt;");
+});
+
+test("a dialog opened for a binding follows that binding's sign-in, not the runner's own", () => {
+  const login = { id: "b", agent: "claude" as const, state: "waiting" as const, startedAt: 0 };
+  const session = { ...login, expiresAt: 1, terminal: "", authorization: null };
+  const bound = { bindingId: "B1", agent: "claude" as const, session };
+  const result = { accounts: [idle], bindings: [{ ...bound, bindingId: "B0" }, bound] };
+  expect(dialogAccount(result, "claude")).toBe(idle);
+  expect(dialogAccount(result, "claude", "B1")).toEqual({ ...bound, connected: false });
+  expect(dialogAccount({ accounts: [idle] }, "claude", "B1")).toBeNull();
 });

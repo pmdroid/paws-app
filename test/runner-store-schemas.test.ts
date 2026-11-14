@@ -193,7 +193,9 @@ test("a commands.db made by the old bootstrap opens, keeps its rows and prunes",
   });
   const db = openDatabase(join(root, "commands.db"));
   try {
-    expect(definitions(db)).toEqual(before);
+    const added = definitions(db).filter((line) => !before.includes(line));
+    expect(definitions(db).filter((line) => before.includes(line))).toEqual(before);
+    expect(added).toEqual([expect.stringMatching(/^CREATE TABLE agent_credential /)]);
     expect(await daemon.pruneRetired()).toBe(5);
     const q = drizzle(db);
     expect(q.select().from(commandSchema.commandReceipt).all()).toEqual([

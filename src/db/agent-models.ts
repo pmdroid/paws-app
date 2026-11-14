@@ -1,5 +1,5 @@
-import { and, desc, eq, isNull, lte, max, ne, sql } from "drizzle-orm";
-import { type Q, type Db } from "./db";
+import { and, desc, eq, inArray, isNull, lt, lte, max, ne, sql } from "drizzle-orm";
+import { type Q, type Db, type Steps } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
 
@@ -171,4 +171,28 @@ export async function lastAgentModelProbeAt(
   model?: string,
 ): Promise<number> {
   return store.run((q) => lastAgentModelProbeAtSteps(q, owner, model));
+}
+
+export function* pruneFinishedAgentModelProbesSteps(
+  q: Q,
+  cutoff: number,
+  limit: number,
+): Steps<number> {
+  const { agentModelProbe: p } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(p)
+      .where(
+        inArray(
+          p.commandId,
+          q.orm
+            .select({ commandId: p.commandId })
+            .from(p)
+            .where(lt(p.finishedAt, cutoff))
+            .limit(limit),
+        ),
+      )
+      .returning({ commandId: p.commandId }),
+  );
+  return deleted.length;
 }

@@ -26,3 +26,15 @@ export const retroAttempt = sqliteTable("retro_attempt", {
   retroId: text("retro_id").primaryKey(),
   attempt: integer("attempt").notNull(),
 });
+
+export const agentCredential = sqliteTable("agent_credential", {
+  bindingId: text("binding_id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  agent: text("agent").notNull(),
+  version: integer("version").notNull(),
+  digest: text("digest").notNull(),
+  commands: text("commands").notNull(),
+  upload: text("upload"),
+  latest: text("latest"),
+  files: text("files"),
+});

@@ -9,7 +9,6 @@ import {
   getWorkItem,
   insertQueuedItem,
   joinMergeQueue,
-  listGitHubDeliveries,
   listJobs,
   pendingChangeRequests,
   pendingPullComments,
@@ -19,7 +18,7 @@ import {
   type Job,
   type PgDb,
 } from "../db";
-import { seed } from "../../test/dialects";
+import { githubDeliveryRows, seed } from "../../test/dialects";
 import { tempStore } from "../../test/pglite";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
@@ -152,7 +151,7 @@ const failures = [
 ];
 
 async function expectUntouched(db: Db, before: Job[]) {
-  expect(await listGitHubDeliveries(db)).toEqual([]);
+  expect(await githubDeliveryRows(db)).toEqual([]);
   expect((await pendingChangeRequests(db, "first")).map((r) => r.reviewId)).toEqual([40]);
   expect(await pendingPullComments(db, "first")).toEqual([]);
   expect(await listJobs(db)).toEqual(before);
@@ -168,7 +167,7 @@ for (const [name, point, kind] of failures) {
       await expectUntouched(db, before);
       await drop();
       expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
-      expect(await listGitHubDeliveries(db)).toHaveLength(1);
+      expect(await githubDeliveryRows(db)).toHaveLength(1);
       expect(await pendingChangeRequests(db, "first")).toHaveLength(kind === "review" ? 2 : 1);
       expect(await pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
       const queue =
@@ -205,7 +204,7 @@ test("failure after receipt insertion leaves the delivery retryable", async () =
     );
     const drop = await failAt(db, "after receipt", "BEFORE DELETE ON github_delivery");
     await rejects(acceptGitHubDelivery(db, delivery("review"), 1_000), "after receipt");
-    expect((await listGitHubDeliveries(db)).map((row) => row.deliveryId)).toEqual(["expired"]);
+    expect((await githubDeliveryRows(db)).map((row) => row.deliveryId)).toEqual(["expired"]);
     await drop();
     expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
     expect(await pendingChangeRequests(db, "first")).toHaveLength(2);

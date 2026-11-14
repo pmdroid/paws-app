@@ -9,6 +9,7 @@ import {
   type IssueDetailResponse,
 } from "../src/dashboard/src/contract";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { issueRecords } from "../src/dashboard/test/issue-records";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
 import {
   filterEvidence,
@@ -85,7 +86,7 @@ async function runPage(
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   });
-  const itemId = (await provider.issues()).runs.find(
+  const itemId = (await issueRecords(provider)).runs.find(
     (run) => run.id === runId || run.attempts?.includes(runId),
   )!.itemId;
   return page({ view: "issues", id: itemId }, await provider.issue(itemId));

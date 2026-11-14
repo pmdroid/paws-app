@@ -263,7 +263,7 @@ forEachDialect((open) => {
     ]);
   });
 
-  test("a member sync keeps manual roles, skips stale checks and revokes sessions", async () => {
+  test("a member sync sets the role only on creation, skips stale checks and revokes sessions", async () => {
     const db = await empty(open);
     await seedWorkspace(db);
     const sync = { workspaceId: "w", userId: "u", role: "member" as const, active: true };
@@ -282,23 +282,43 @@ forEachDialect((open) => {
     expect(
       await db.transaction((q) => syncWorkspaceMemberSteps(q, { ...sync, teamIds: [], now: 5 })),
     ).toBe(false);
+    const roles = () =>
+      db.run((q) =>
+        q.one(
+          q.orm
+            .select({ role: q.t.workspaceMember.role, manualRole: q.t.workspaceMember.manualRole })
+            .from(q.t.workspaceMember)
+            .where(eq(q.t.workspaceMember.userId, "u")),
+        ),
+      );
+    await db.transaction((q) =>
+      syncWorkspaceMemberSteps(q, { ...sync, role: "admin", teamIds: ["a"], now: 11 }),
+    );
+    expect(await roles()).toEqual({ role: "member", manualRole: null });
     await db.run((q) =>
       q.exec(
         q.orm
           .update(q.t.workspaceMember)
-          .set({ source: "manual", role: "admin" })
+          .set({ role: "admin" })
           .where(eq(q.t.workspaceMember.userId, "u")),
       ),
     );
-    await db.transaction((q) => syncWorkspaceMemberSteps(q, { ...sync, teamIds: ["a"], now: 11 }));
-    const manual = await db.run((q) =>
-      q.one(
+    await db.transaction((q) => syncWorkspaceMemberSteps(q, { ...sync, teamIds: ["a"], now: 12 }));
+    expect(await roles()).toEqual({ role: "admin", manualRole: null });
+    await db.run((q) =>
+      q.exec(
         q.orm
-          .select({ role: q.t.workspaceMember.role, manualRole: q.t.workspaceMember.manualRole })
-          .from(q.t.workspaceMember),
+          .insert(q.t.workspaceUser)
+          .values({ id: "v", linearUserId: "lin-v", name: "Bo", email: "bo@example.com" }),
       ),
     );
-    expect(manual).toEqual({ role: "admin", manualRole: "admin" });
+    await db.transaction((q) =>
+      syncWorkspaceMemberSteps(q, { ...sync, userId: "v", role: "admin", teamIds: [], now: 12 }),
+    );
+    expect(await db.run((q) => workspaceMemberSteps(q, "w", "v"))).toMatchObject({
+      role: "admin",
+      source: "linear",
+    });
     await db.run((q) => saveWorkspaceSessionSteps(q, storedSession));
     expect(
       await db.transaction((q) =>
@@ -315,6 +335,7 @@ forEachDialect((open) => {
     const audit = await db.run((q) => listWorkspaceAuditSteps(q, "w", Number.MAX_SAFE_INTEGER));
     expect(audit.entries.map((entry) => [entry.action, entry.createdAt])).toEqual([
       ["membership.revoked", 20],
+      ["membership.synced", 12],
       ["membership.synced", 11],
       ["membership.synced", 10],
     ]);

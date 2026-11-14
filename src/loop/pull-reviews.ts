@@ -320,7 +320,7 @@ export async function handlePullReview(
       yield* settlePullReviewSteps(q, reviewId, "dropped", caps.now());
       return "dropped";
     }
-    yield* askSteps(
+    const asked = yield* askSteps(
       q,
       {
         itemId: current.id,
@@ -332,6 +332,19 @@ export async function handlePullReview(
       `${reviewer(review)} requested changes on pull request #${review.pullNumber}, and all ${limit} fix rounds are spent. Reply with guidance and Paws hands it to the agent with the review, or stop the task.\n\n${digest}`,
       { reason: "budget_spent", now: caps.now() },
     );
+    const targets = replyTargets({
+      pullNumber: review.pullNumber,
+      threads,
+      reviews: [review],
+      comments,
+    });
+    if (targets.length > 0)
+      yield* recordReviewRepliesSteps(q, {
+        itemId: current.id,
+        restartKey: `ci-help:${asked.question.id}`,
+        replies: targets,
+        now: caps.now(),
+      });
     if (failure !== null)
       yield* pullCiAskedSteps(q, { item: current, failure, limit, now: caps.now() });
     yield* settlePullReviewSteps(q, reviewId, "asked", caps.now());

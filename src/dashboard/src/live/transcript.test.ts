@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beginImplementRun, insertQueuedItem } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
+import { issueRecords } from "../../test/issue-records";
 import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
 import { handleStatusRequest } from "../server/handler";
@@ -78,7 +79,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   });
   const env = { API_KEY: "fixture-secret-value" };
   const read = () => [...fullAgentTranscript(home, run.id, new Date(0).toISOString(), env)];
-  const first = await provider.issues();
+  const first = await issueRecords(provider);
   expect("transcript" in first.runs[0]!).toBe(false);
   expect(read().map((x) => x.text)).toEqual([
     "Preparing a screenshot task",
@@ -104,10 +105,12 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   expect(read().at(-1)?.text).toContain("Screenshot captured");
   expect(
     (
-      await createLiveStatusProvider(db, {
-        pawsHome: home,
-        sessionIds: ["other"],
-      }).issues()
+      await issueRecords(
+        createLiveStatusProvider(db, {
+          pawsHome: home,
+          sessionIds: ["other"],
+        }),
+      )
     ).runs,
   ).toEqual([]);
   await close();

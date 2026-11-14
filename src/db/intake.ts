@@ -39,9 +39,7 @@ export type IntakeItemRow = {
 };
 
 function jsonPath(q: Q, json: SQL, path: readonly string[]): SQL {
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${json}, ${`$.${path.join(".")}`})`
-    : sql`(${json} #>> ${`{${path.join(",")}}`})`;
+  return sql`(${json} #>> ${`{${path.join(",")}}`})`;
 }
 
 export function* readDelegatedIntakeSteps(
@@ -62,8 +60,8 @@ export function* readDelegatedIntakeSteps(
         .from(workItem)
         .where(
           and(
-            sql`${sql.raw(delegationIssueIdSql("work_item", q.dialect))} = ${linearIssueId}`,
-            sql`${sql.raw(parentTaskKeySql("work_item", q.dialect))} = ${taskKey}`,
+            sql`${sql.raw(delegationIssueIdSql("work_item"))} = ${linearIssueId}`,
+            sql`${sql.raw(parentTaskKeySql("work_item"))} = ${taskKey}`,
           ),
         )
         .orderBy(asc(workItem.createdAt), asc(workItem.id))
@@ -116,8 +114,7 @@ type IntakeItem = Omit<IntakeItemRow, "state" | "version"> & {
 };
 
 export function* insertIntakeItemSteps(q: Q, item: IntakeItem): Steps<void> {
-  const brief =
-    item.brief === undefined || q.dialect === "sqlite" ? item.brief : JSON.parse(item.brief);
+  const brief = item.brief === undefined ? item.brief : JSON.parse(item.brief);
   yield* q.exec(q.orm.insert(q.t.workItem).values({ ...item, brief, state: "queued", version: 0 }));
 }
 
@@ -270,10 +267,7 @@ export function* emptyFailedAttemptsSteps(
   const sibling = alias(workItem, "sibling");
   const previous = alias(linearSession, "previous");
   const incoming = alias(linearSession, "incoming");
-  const epicType =
-    q.dialect === "sqlite"
-      ? sql`json_type(${item.brief}, '$.epic')`
-      : sql`jsonb_typeof(${item.brief} -> 'epic')`;
+  const epicType = sql`jsonb_typeof(${item.brief} -> 'epic')`;
   const rows = yield* q.all(
     q.orm
       .select({ id: item.id })

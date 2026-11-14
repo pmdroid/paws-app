@@ -4,6 +4,7 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
   loadConfigFile,
+  MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   parseCommentWait,
   parseHighRiskPathSettings,
@@ -24,6 +25,14 @@ import {
   type MergeSettings,
   type StoredMerge,
 } from "../config";
+import {
+  DEFAULT_SESSION_DONE,
+  parseSessionDone,
+  readSessionDone,
+  saveSessionDone,
+  type Db,
+  type SessionDoneSettings,
+} from "../db";
 import { json, localRequest, readJson, sameToken } from "./handler";
 
 export type MergeSettingsOptions = {
@@ -32,6 +41,7 @@ export type MergeSettingsOptions = {
   changed?: () => void;
   configPath: string;
   csrfToken: string;
+  store?: Db;
   /** Records each change in the audit history. */
   audit?: (action: string, subject: string) => Promise<void>;
   /**
@@ -119,11 +129,20 @@ export async function handleMergeSettingsRequest(
       journalCaught(caughtError1, "merging.handleMergeSettingsRequest.readMergeSettings", null);
       return json({ error: "Merging settings could not be read" }, 503);
     }
+    let session: SessionDoneSettings;
+    try {
+      session = options.store ? await readSessionDone(options.store) : DEFAULT_SESSION_DONE;
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "merging.handleMergeSettingsRequest.readSessionDone", null);
+      return json({ error: "Merging settings could not be read" }, 503);
+    }
     return json({
       default: policy.default,
+      ...session,
       autoApproveHighRisk: policy.autoApproveHighRisk,
       lanes: policy.lanes,
       noProject: policy.noProject,
+      parallel: policy.parallel,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -159,10 +178,29 @@ export async function handleMergeSettingsRequest(
   let parallelFiles: Record<string, string[]> | undefined;
   let lanes: MergeLaneSplit[] | undefined;
   let noProject: MergeNoProject | undefined;
+  let parallel: number | undefined;
+  let session: Partial<Record<keyof SessionDoneSettings, unknown>> | undefined;
   try {
+    if (isRecord(body) && ("sessionDone" in body || "sessionQuietMinutes" in body)) {
+      const { sessionDone, sessionQuietMinutes, ...rest } = body;
+      session = { sessionDone, sessionQuietMinutes };
+      body = rest;
+    }
     if (isRecord(body) && "parallelFiles" in body) {
       const { parallelFiles: files, ...rest } = body;
       parallelFiles = parseParallelFileSettings(files);
+      body = rest;
+    }
+    if (isRecord(body) && "parallel" in body) {
+      const { parallel: count, ...rest } = body;
+      if (
+        typeof count !== "number" ||
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > MAX_MERGE_PARALLEL
+      )
+        throw new Error(`parallel must be a whole number from 1 to ${MAX_MERGE_PARALLEL}`);
+      parallel = count;
       body = rest;
     }
     if (isRecord(body) && "lanes" in body) {
@@ -228,6 +266,16 @@ export async function handleMergeSettingsRequest(
   } catch (caughtError4) {
     journalCaught(caughtError4, "merging.handleMergeSettingsRequest.loadConfigFile", null);
   }
+  let sessionBefore = DEFAULT_SESSION_DONE;
+  let sessionAfter = DEFAULT_SESSION_DONE;
+  try {
+    if (options.store) sessionBefore = await readSessionDone(options.store);
+    sessionAfter = session ? parseSessionDone(session, sessionBefore) : sessionBefore;
+  } catch (error) {
+    journalCaught(error, "merging.handleMergeSettingsRequest.parseSessionDone", null);
+    return json({ error: error instanceof Error ? error.message : "Invalid session setting" }, 400);
+  }
+  if (session && !options.store) return json({ error: "Merging settings could not be saved" }, 503);
   if (autoApproveHighRisk === true && !before?.autoApproveHighRisk && !options.riskGate?.on)
     return json(
       { error: "Turn on the risk gate before enabling automatic high-risk approval." },
@@ -262,6 +310,7 @@ export async function handleMergeSettingsRequest(
         ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
         ...(lanes === undefined ? {} : { lanes }),
         ...(noProject === undefined ? {} : { noProject }),
+        ...(parallel === undefined ? {} : { parallel }),
       },
       highRiskPaths,
       commentWait,
@@ -272,6 +321,20 @@ export async function handleMergeSettingsRequest(
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
+  try {
+    if (session && options.store) await saveSessionDone(options.store, sessionAfter);
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "merging.handleMergeSettingsRequest.saveSessionDone", null);
+    return json({ error: "Merging settings could not be saved" }, 503);
+  }
+  if (
+    sessionAfter.sessionDone !== sessionBefore.sessionDone ||
+    sessionAfter.sessionQuietMinutes !== sessionBefore.sessionQuietMinutes
+  )
+    await options.audit?.(
+      "settings.merging",
+      `Linear session finishes: ${sessionBefore.sessionDone}, ${sessionBefore.sessionQuietMinutes} quiet minutes → ${sessionAfter.sessionDone}, ${sessionAfter.sessionQuietMinutes} quiet minutes`,
+    );
   try {
     options.changed?.();
   } catch (error) {
@@ -288,6 +351,11 @@ export async function handleMergeSettingsRequest(
     await options.audit?.(
       "settings.merging",
       `Issues without a project merge: ${before?.noProject ?? "own"} → ${noProject}`,
+    );
+  if (parallel !== undefined && parallel !== (before?.parallel ?? 1))
+    await options.audit?.(
+      "settings.merging",
+      `Merges at once in a lane: ${before?.parallel ?? 1} → ${parallel}`,
     );
   if (
     autoApproveHighRisk !== undefined &&
@@ -340,9 +408,11 @@ export async function handleMergeSettingsRequest(
       await options.audit?.("settings.merging", change);
   return json({
     default: policy.default,
+    ...sessionAfter,
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
     lanes: after?.lanes ?? lanes,
     noProject: after?.noProject ?? noProject,
+    parallel: after?.parallel ?? parallel,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)

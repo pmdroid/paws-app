@@ -16,6 +16,7 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
+  runnerOccupancy,
   type Db,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
@@ -359,11 +360,33 @@ async function setup() {
     const second = turn();
     const target = options.stay ? runners.a : runners.b;
     const onB = (await next(target)) as RunCommand;
-    await options.dispatched?.(onB, target);
-    await finish(onB, target, options.events);
-    await second;
-    await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
+    let finished = false;
+    try {
+      await options.dispatched?.(onB, target);
+      await finish(onB, target, options.events);
+      finished = true;
+      await second;
+    } finally {
+      if (!finished) await finish(onB, target).catch(() => undefined);
+      await second.catch(() => undefined);
+      await exec(sql`UPDATE run SET status='ended' WHERE id=${record.runId}`);
+      await free();
+    }
     return { record, onA, onB, sealed, notices };
+  }
+  async function free() {
+    const deadline = Date.now() + 5_000;
+    for (const [name, runnerId] of Object.entries(runners)) {
+      let occupied = (await runnerOccupancy(db, runnerId, now)).occupied;
+      while (occupied > 0) {
+        if (Date.now() > deadline)
+          throw new Error(
+            `Runner ${name.toUpperCase()} still holds ${occupied} slot(s) 5 s after the move ended`,
+          );
+        await delay(5);
+        occupied = (await runnerOccupancy(db, runnerId, now)).occupied;
+      }
+    }
   }
   return {
     db,
@@ -442,56 +465,67 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
   ]);
 });
 
-test("each ineligible move falls back with its reason and no restoreSession", async () => {
-  const { runners, otherUserId } = context;
-  const cases: [string, Parameters<Setup["move"]>[0]][] = [
-    ["no saved session", { snapshot: false }],
-    [
-      "B's runner is too old",
-      {
-        change: () =>
-          exec(
-            sql`UPDATE runner_host_status SET runner_version='0.1.42' WHERE runner_id=${runners.b}`,
-          ),
-      },
-    ],
-    [
-      "B is signed in to a different Claude account",
-      {
-        change: () =>
-          exec(
-            sql`UPDATE agent_session_snapshot SET owner_user_id=${otherUserId} WHERE status='sealed'`,
-          ),
-      },
-    ],
-    [
-      "B isn't signed in to Claude",
-      {
-        change: () =>
-          exec(sql`UPDATE runner_agent_policy SET ready=0 WHERE runner_id=${runners.b}`),
-      },
-    ],
-    [
-      "B isn't signed in to Claude",
-      {
-        change: () =>
-          exec(sql`UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=${runners.b}`),
-      },
-    ],
-    [
-      "Claude isn't installed on B",
-      { change: () => exec(sql`DELETE FROM runner_agent WHERE runner_id=${runners.b}`) },
-    ],
-  ];
-  for (const [reason, options] of cases) {
-    const { onB, notices } = await context.move(options);
-    expect(onB.restoreSession).toBeUndefined();
-    expect(onB.resumeSessionId).toBeUndefined();
-    expect(notices).toEqual([`${FALLBACK} (${reason}).\n`]);
-    await exec(sql`DELETE FROM agent_session_snapshot_chunk`);
-    await exec(sql`DELETE FROM agent_session_snapshot`);
-  }
-});
+const INELIGIBLE: [string, string, Parameters<Setup["move"]>[0]][] = [
+  ["no saved session", "no saved session", { snapshot: false }],
+  [
+    "B's runner is too old",
+    "B's runner is too old",
+    {
+      change: () =>
+        exec(
+          sql`UPDATE runner_host_status SET runner_version='0.1.42' WHERE runner_id=${context.runners.b}`,
+        ),
+    },
+  ],
+  [
+    "another member's snapshot",
+    "B is signed in to a different Claude account",
+    {
+      change: () =>
+        exec(
+          sql`UPDATE agent_session_snapshot SET owner_user_id=${context.otherUserId} WHERE status='sealed'`,
+        ),
+    },
+  ],
+  [
+    "Claude not ready on B",
+    "B isn't signed in to Claude",
+    {
+      change: () =>
+        exec(sql`UPDATE runner_agent_policy SET ready=0 WHERE runner_id=${context.runners.b}`),
+    },
+  ],
+  [
+    "Claude sign-in expired on B",
+    "B isn't signed in to Claude",
+    {
+      change: () =>
+        exec(
+          sql`UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=${context.runners.b}`,
+        ),
+    },
+  ],
+  [
+    "Claude missing on B",
+    "Claude isn't installed on B",
+    { change: () => exec(sql`DELETE FROM runner_agent WHERE runner_id=${context.runners.b}`) },
+  ],
+];
+
+test.each(INELIGIBLE)(
+  "an ineligible move falls back without restoreSession: %s",
+  async (_name, reason, options) => {
+    try {
+      const { onB, notices } = await context.move(options);
+      expect(onB.restoreSession).toBeUndefined();
+      expect(onB.resumeSessionId).toBeUndefined();
+      expect(notices).toEqual([`${FALLBACK} (${reason}).\n`]);
+    } finally {
+      await exec(sql`DELETE FROM agent_session_snapshot_chunk`);
+      await exec(sql`DELETE FROM agent_session_snapshot`);
+    }
+  },
+);
 
 test("another Claude version still restores, and a failed load names both versions", async () => {
   const { runners } = context;

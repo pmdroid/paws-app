@@ -56,7 +56,7 @@ test("40 tasks stay under 680 Linear requests and spend one per 25 minutes while
   const ledger = createLinearLedger({
     now: () => clock.now(),
     log: () => {},
-    countItem: async (itemId, caller) => await countLinearRequest(db, itemId, caller),
+    countItem: async (itemId) => await countLinearRequest(db, itemId),
   });
   const runner = await seedRunner(db, clock.now());
   let requests = 0;

@@ -124,7 +124,7 @@ const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccou
   quotaScope: row.quotaScope as AgentAccountBinding["quotaScope"],
 });
 
-const added = (q: Q, id: AnyColumn) => (q.dialect === "sqlite" ? sql`rowid` : asc(id));
+const added = (q: Q, id: AnyColumn) => asc(id);
 
 export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAgent): string {
   return `${LEGACY_ACCOUNT_PREFIX}${agent}_${workspaceId}`;
@@ -564,6 +564,17 @@ export function* recordRunnerAccountCapabilitySteps(
     return;
   }
   const parsed = RunnerAccountCapabilitySchema.parse(capability);
+  const stored = yield* q.one(
+    q.orm
+      .select({ protocol: c.protocol, bindings: jsonText(q, c.bindings) })
+      .from(c)
+      .where(eq(c.runnerId, runnerId)),
+  );
+  if (
+    stored?.protocol === parsed.protocol &&
+    Bun.deepEquals(JSON.parse(stored.bindings), JSON.parse(JSON.stringify(parsed.bindings)), true)
+  )
+    return;
   const set = {
     protocol: parsed.protocol,
     bindings: jsonValue(q, parsed.bindings),

@@ -1,18 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  and,
-  desc,
-  eq,
-  gt,
-  gte,
-  ilike,
-  inArray,
-  like,
-  notInArray,
-  or,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, desc, eq, gt, gte, ilike, inArray, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { JOB_KIND, type RestartReason } from "../core";
 import { type Db, type Q, type Steps } from "./db";
 import { fixRecordSteps, type FixRound } from "./fix-records";
@@ -122,30 +109,23 @@ type Payload =
   | "fixRoundsAfter"
   | "limit";
 
-/** A payload field as text: `json_extract` on SQLite, `->>` on Postgres. */
 function text(q: Q, key: Payload): SQL {
   const { payload } = q.t.job;
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${payload}, ${sql.raw(`'$.${key}'`)})`
-    : sql`(${payload}->>${sql.raw(`'${key}'`)})`;
+  return sql`(${payload}->>${sql.raw(`'${key}'`)})`;
 }
 
 /** A numeric payload field, null when it holds anything else, as `json_extract` returns it. */
 function number(q: Q, key: Payload): SQL {
   const { payload } = q.t.job;
   const field = sql.raw(`'${key}'`);
-  return q.dialect === "sqlite"
-    ? text(q, key)
-    : sql`(CASE WHEN jsonb_typeof(${payload}->${field}) = 'number'
+  return sql`(CASE WHEN jsonb_typeof(${payload}->${field}) = 'number'
         THEN (${payload}->>${field})::float8 END)`;
 }
 
 /** A payload field is `true` or `1`. */
 function one(q: Q, key: Payload): SQL {
   const { payload } = q.t.job;
-  return q.dialect === "sqlite"
-    ? sql`${text(q, key)} = 1`
-    : sql`COALESCE((${payload}->${sql.raw(`'${key}'`)}) IN ('true'::jsonb, '1'::jsonb), false)`;
+  return sql`COALESCE((${payload}->${sql.raw(`'${key}'`)}) IN ('true'::jsonb, '1'::jsonb), false)`;
 }
 
 export function* latestHumanTurnSteps(q: Q, itemId: string): Steps<number> {
@@ -158,10 +138,7 @@ export function* latestHumanTurnSteps(q: Q, itemId: string): Steps<number> {
         and(
           eq(job.queue, JOB_KIND.resume),
           sql`${text(q, "itemId")} = ${itemId}`,
-          or(
-            (q.dialect === "sqlite" ? like : ilike)(job.jobKey, "linear-turn:%"),
-            sql`${text(q, "reason")} = 'answer'`,
-          ),
+          or(ilike(job.jobKey, "linear-turn:%"), sql`${text(q, "reason")} = 'answer'`),
         ),
       ),
   );

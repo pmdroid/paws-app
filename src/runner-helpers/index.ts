@@ -68,6 +68,10 @@ export function createRunnerHelpers(options: {
   keyId: string;
   privateKey: KeyObject;
   now?: () => number;
+  credentials?: (
+    runnerId: string,
+    envelopes: SignedRunnerCommand[],
+  ) => Promise<SignedRunnerCommand[]>;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
@@ -264,7 +268,12 @@ export function createRunnerHelpers(options: {
         Response.json(value, { status, headers: { "cache-control": "no-store" } });
       try {
         if (path === "/v1/helper-commands" && request.method === "GET")
-          return json({ commands: await api.commands(runnerId) });
+          return json({
+            commands: await (options.credentials ?? ((_, sent) => Promise.resolve(sent)))(
+              runnerId,
+              await api.commands(runnerId),
+            ),
+          });
         const match = /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result)$/.exec(path);
         if (!match || request.method !== "POST") return null;
         const id = z

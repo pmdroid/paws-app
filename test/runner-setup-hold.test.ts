@@ -56,7 +56,6 @@ afterAll(() => {
 
 type Rows = Record<string, unknown>[];
 const rows = async (db: Db, query: SQL): Promise<Rows> => {
-  if (db.dialect === "sqlite") return db.sync((orm) => orm.all<Rows[number]>(query));
   const result = (await (db as PgDb).orm.execute(query)) as Rows | { rows: Rows };
   return Array.isArray(result) ? result : result.rows;
 };

@@ -55,7 +55,11 @@ export async function handleWorkspaceAdministration(
       { status: 403, headers: { "cache-control": "no-store" } },
     );
   };
-  if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
+  if (
+    !isWorkspaceAdmin(principal.role) &&
+    !(path === "/api/workspaces/repositories" && request.method === "GET")
+  )
+    return deny("Workspace administration is required.");
   if (path === "/api/workspaces/audit") {
     if (request.method !== "GET")
       return Response.json({ error: "Method not allowed" }, { status: 405 });

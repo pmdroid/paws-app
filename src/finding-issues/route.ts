@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
@@ -9,7 +8,6 @@ import {
   reviewFindingKey,
   reviewFindingPlace,
   saveReviewFindingIssueSteps,
-  storeOf,
   type Db,
   workspaceMemberSteps,
   type Q,
@@ -35,7 +33,7 @@ export type FileFindingIssue = (
 ) => Promise<FiledFindingIssue>;
 
 export type FindingIssueRouteOptions = {
-  db: Database | Db;
+  db: Db;
   /** Each review of a work item, as the issue page shows it. */
   reviews: (itemId: string) => Promise<StatusReview[]>;
   /** Linear's issue filer. Absent without a Linear connection. */
@@ -68,7 +66,7 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
     if (access === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
     if (request.method !== "POST")
       return new Response(null, { status: 405, headers: { allow: "POST" } });
-    const store = storeOf(options.db);
+    const store = options.db;
     const { principal } = access;
     const refuse = async (subject: string, error: string) => {
       const audit = {

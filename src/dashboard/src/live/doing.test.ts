@@ -13,6 +13,7 @@ import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
 import { doingTimeLine, issueTimeLine, itemPill, itemTime } from "../client/doing";
 import { createLiveStatusProvider } from "./provider";
+import { issueRecords } from "../../test/issue-records";
 import { STALL_MS } from "./doing";
 import { seed, withoutForeignKeys } from "../../../../test/dialects";
 import { tempStore } from "../../../../test/pglite";
@@ -87,7 +88,7 @@ function event(db: Db, runId: string, generation: number, type: string) {
 
 async function item(db: Db, id: string, now: number): Promise<StatusItem> {
   const found = (
-    await createLiveStatusProvider(db, { now: () => new Date(now) }).issues()
+    await issueRecords(createLiveStatusProvider(db, { now: () => new Date(now) }))
   ).issues.find((entry) => entry.title === id);
 
   if (!found) throw new Error(`no item ${id}`);

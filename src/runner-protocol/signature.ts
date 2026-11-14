@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { runnerAccountAgentUnsupported, runnerCommandAccount } from "./accounts";
 import { sign, verify, type KeyObject } from "node:crypto";
+import type { RunnerAgentCredential } from "./agent-credentials";
 import {
   RunnerCommandSchema,
   SignedRunnerCommandSchema,
@@ -48,7 +49,7 @@ export function openSignedPayload(
   envelope: unknown,
   trustedKeys: ReadonlyMap<string, KeyObject>,
 ):
-  | { ok: true; bytes: Buffer; payload: unknown }
+  | { ok: true; bytes: Buffer; payload: unknown; credential?: RunnerAgentCredential }
   | {
       ok: false;
       reason: "invalid_envelope" | "untrusted_key" | "invalid_signature" | "invalid_payload";
@@ -70,7 +71,12 @@ export function openSignedPayload(
     return { ok: false, reason: "invalid_envelope" };
   if (!verify(null, bytes, key, signature)) return { ok: false, reason: "invalid_signature" };
   try {
-    return { ok: true, bytes, payload: JSON.parse(bytes.toString("utf8")) };
+    return {
+      ok: true,
+      bytes,
+      payload: JSON.parse(bytes.toString("utf8")),
+      ...(input.credential ? { credential: input.credential } : {}),
+    };
   } catch (caughtError1) {
     journalCaught(caughtError1, "signature.openSignedPayload.parse", null);
     return { ok: false, reason: "invalid_payload" };
@@ -127,7 +133,9 @@ export function verifyRunnerCommand(
   if (
     named &&
     (runnerAccountAgentUnsupported(named.agent) ||
-      (command.type !== "login" && !context.accountBindings?.has(named.account.bindingId)))
+      (command.type !== "login" &&
+        !opened.credential?.sealed &&
+        !context.accountBindings?.has(named.account.bindingId)))
   )
     return { ok: false, reason: "account_unavailable" };
   try {

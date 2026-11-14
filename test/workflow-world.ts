@@ -564,7 +564,6 @@ const DUMPED_TABLES = [
   "merge_call",
   "merge_queue_entry",
   "outbox",
-  "paws_alive",
 ];
 
 export async function dump(

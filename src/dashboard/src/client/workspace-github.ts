@@ -37,14 +37,16 @@ export function initializeWorkspaceGitHub(
   section.className = "settings-section";
   renderMarkup(
     section,
-    '<div><h2>GitHub</h2><p class="sub">Open pull requests for work delegated in Linear.</p></div><div class="settings-account"><div data-github-status role="status" aria-live="polite">Checking connection…</div><p data-github-description></p><p data-github-feedback role="alert"></p><div data-github-actions class="row"></div></div>',
+    '<div><h2>GitHub</h2><p class="sub">Open pull requests for work delegated in Linear.</p></div><div class="settings-account"><div data-github-status role="status" aria-live="polite"><span>Checking connection…</span></div><p data-github-description></p><ul data-github-repositories class="empty:hidden" aria-label="Mapped repositories"></ul><p data-github-feedback role="alert"></p><div data-github-actions class="row"></div></div>',
   );
   root.append(section);
   const status = section.querySelector<HTMLElement>("[data-github-status]")!;
   const description = section.querySelector<HTMLElement>("[data-github-description]")!;
   const feedback = section.querySelector<HTMLElement>("[data-github-feedback]")!;
   const actions = section.querySelector<HTMLElement>("[data-github-actions]")!;
+  const mapped = section.querySelector<HTMLElement>("[data-github-repositories]")!;
   let data: GitHubStatus | null = null;
+  let repositories: string[] = [];
   let pending = false;
   let waitingForInstall = false;
 
@@ -58,9 +60,15 @@ export function initializeWorkspaceGitHub(
       needs_connection: "Ready to connect",
       connected: "Connected",
     };
+    const connected = data.status === "connected";
     renderMarkup(
       status,
-      `<span class="pill ${data.status === "connected" ? "ok" : "warn"}">${labels[data.status]}</span>`,
+      `<div class="row"><span class="pill ${connected ? "ok" : "warn"}">${labels[data.status]}</span>${connected && repositories.length ? `<span>${esc(repositories[0]!.split("/")[0]!)}</span>` : ""}</div>`,
+    );
+    description.classList.toggle("text-muted-foreground", connected);
+    renderMarkup(
+      mapped,
+      connected ? repositories.map((name) => `<li>${esc(name)}</li>`).join("") : "",
     );
     description.textContent =
       data.status === "connected"
@@ -100,7 +108,7 @@ export function initializeWorkspaceGitHub(
         : "";
     renderMarkup(
       actions,
-      `${primary}${manage}<button class="btn" type="button" data-github-refresh>Refresh status</button>`,
+      `${primary}${manage}${connected ? "" : '<button class="btn" type="button" data-github-refresh>Refresh status</button>'}`,
     );
   }
 
@@ -130,6 +138,14 @@ export function initializeWorkspaceGitHub(
       )
         throw new Error(body?.error ?? "GitHub could not be checked. Refresh status to try again.");
       data = body;
+      if (body.status === "connected")
+        repositories = await fetch("/api/workspaces/repositories", { cache: "no-store" })
+          .then((answer) => answer.json() as Promise<{ repositories: { repository: string }[] }>)
+          .then((answer) => [...new Set(answer.repositories.map((entry) => entry.repository))])
+          .catch((caughtError) => {
+            journalCaught(caughtError, "workspace-github.load.repositories", null);
+            return repositories;
+          });
       paint();
     } catch (error) {
       journalCaught(error, "workspace-github.load.fetch", null);

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { count, sql } from "drizzle-orm";
-import { openPglite, pgSchema, postgresDb, schema, type Q } from "../src/db";
+import { openPglite, pgSchema, postgresDb, type Q } from "../src/db";
 import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
 
 function* itemCount(q: Q) {
@@ -78,10 +78,6 @@ forEachDialect((open) => {
       await close();
     }
   });
-});
-
-test("the Postgres and SQLite schemas export the same table names", () => {
-  expect(Object.keys(pgSchema).sort()).toEqual(Object.keys(schema).sort());
 });
 
 test("openPglite() migrates an empty directory once, and opening it again keeps its rows", async () => {

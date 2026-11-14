@@ -62,6 +62,7 @@ import {
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { settleReactWork } from "../src/dashboard/src/client/settle-react";
+import { requestTracker } from "./wait-for";
 
 const DOM_GLOBALS = [
   "window",
@@ -84,6 +85,7 @@ const saved = new Map<string, unknown>();
 let window: Window;
 
 beforeEach(() => {
+  network = requestTracker(30);
   window = new Window({ url: "http://paws.test/dashboard/improvements" });
   for (const name of DOM_GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
@@ -93,6 +95,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settle();
   await settleReactWork();
   for (const name of DOM_GLOBALS) (globalThis as Record<string, unknown>)[name] = saved.get(name);
   await window.happyDOM.close();
@@ -134,9 +137,9 @@ const SCHEDULE = {
   canRun: true,
 };
 
-async function settle() {
-  for (let i = 0; i < 30; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-}
+let network = requestTracker(30);
+
+const settle = () => network.idle();
 
 async function harness() {
   const linear = createFakeImprovementLinear();
@@ -149,25 +152,26 @@ async function harness() {
   stores.push(w.close);
   await seedDaily(w.db);
   const retros = createRetroReviewHttp({ store: w.db, artifactRoot: w.root, now: w.now });
-  const requests: { method: string; path: string }[] = [];
+  const seen: { method: string; path: string }[] = [];
   const holds: { path: string; release: () => void }[] = [];
   let hold: RegExp | null = null;
   let who = "ada";
   const answers = new Map<string, () => Response>();
-  const serve = async (url: string | URL, init?: RequestInit): Promise<Response> => {
+  const serve = (url: string | URL, init?: RequestInit) => network.track(() => answer(url, init));
+  const answer = async (url: string | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
-    requests.push({ method: init?.method ?? "GET", path: `${target.pathname}${target.search}` });
+    seen.push({ method: init?.method ?? "GET", path: `${target.pathname}${target.search}` });
     if (hold?.test(target.pathname)) {
       const gate = Promise.withResolvers<void>();
       holds.push({ path: target.pathname, release: gate.resolve });
-      await gate.promise;
+      await network.held(gate.promise);
     }
     const request = new Request(target.toString(), {
       method: init?.method ?? "GET",
       ...(init?.body ? { body: init.body as string } : {}),
     });
-    const answer = answers.get(target.pathname);
-    if (answer) return answer();
+    const canned = answers.get(target.pathname);
+    if (canned) return canned();
     if (target.pathname === "/api/retros/schedule") return Response.json(SCHEDULE);
     if (target.pathname === "/api/retros/runs")
       return Response.json({ retroId: "r2", created: true, status: SCHEDULE }, { status: 202 });
@@ -251,7 +255,7 @@ async function harness() {
     starts,
     root,
     page,
-    requests,
+    requests: seen,
     saved: downloads,
     counts,
     went,

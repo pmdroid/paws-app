@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { eq, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
@@ -12,9 +11,9 @@ import {
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
-import { legacyMigrate, sqliteDb, type Db } from "../src/db";
+import type { Db } from "../src/db";
 import { seed, withoutForeignKeys } from "./dialects";
-import { legacyTempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -26,52 +25,12 @@ const first = Buffer.concat(
 const second = Buffer.concat([line, line, line]);
 const whole = Buffer.concat([first, second]);
 const RUNS = ["run-a", "run-b", "run-c"];
-const MIGRATION = "20261028T0150_runner_transcript_encrypt_job";
 const prefix = (runId: string) =>
   `paws/transcripts/workspace/command-${runId}/execution-${runId}/chunks`;
 const objectName = (runId: string, offset: number, bytes: Buffer) =>
   `${prefix(runId)}/${offset}-${sha(bytes)}`;
 
 class Refused extends Error {}
-
-const jobs = (database: Database) =>
-  database
-    .query<{ queue: string; status: string }, [string]>(
-      "SELECT queue,status FROM job WHERE job_key=?",
-    )
-    .all(RUNNER_TRANSCRIPT_ENCRYPT_JOB);
-
-/** The legacy SQLite migration that enqueues the job; Postgres starts from its baseline. */
-describe("the migration that enqueues transcript encryption", () => {
-  test("enqueues the job once when chunks were stored before encryption", async () => {
-    const db = legacyTempDb();
-    try {
-      db.exec("PRAGMA foreign_keys=OFF");
-      for (const runId of RUNS)
-        db.run(
-          `INSERT INTO runner_transcript_chunk(run_id,generation,offset,size_bytes,sha256)
-          VALUES(?,1,0,?,?)`,
-          [runId, first.length, sha(first)],
-        );
-      db.run("DELETE FROM schema_migration WHERE id=?", [MIGRATION]);
-      legacyMigrate(db);
-      expect(jobs(db)).toEqual([{ queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB, status: "pending" }]);
-      expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(false);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("a database with no plaintext chunks gets no job", async () => {
-    const fresh = legacyTempDb();
-    try {
-      expect(jobs(fresh)).toEqual([]);
-      expect(await runnerTranscriptsEncrypted(sqliteDb(fresh))).toBe(true);
-    } finally {
-      fresh.close();
-    }
-  });
-});
 
 describe("encrypting runner transcripts stored before encryption", () => {
   let db: Db;

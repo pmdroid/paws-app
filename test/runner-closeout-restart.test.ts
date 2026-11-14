@@ -1,3 +1,5 @@
+import { createFakeGitHub } from "../src/github";
+import { createAgentReadAccess, createAgentReadTokens } from "../src/runner-repository-access";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -238,8 +240,14 @@ async function fixture(agentRead?: AgentRead) {
     profile: { agent: "claude", model: null },
     prompt: `Run the Closeout checks at ${commit}.`,
     mainSha: base,
-    // The orchestrator authorizes the candidate import; the fake fetch needs no network.
-    networkGit: async () => "",
+    networkGit: async (args) => {
+      const target = args.at(-1)!;
+      if (args.includes("fetch")) {
+        const ref = target.slice(target.indexOf(":") + 1);
+        return git(["--git-dir", args[1]!, "update-ref", ref, head]);
+      }
+      return "";
+    },
   });
   const until = async (ready: () => boolean | Promise<boolean>) => {
     for (let i = 0; i < 2_000; i++) {
@@ -282,6 +290,8 @@ async function fixture(agentRead?: AgentRead) {
 
   return {
     head,
+    runnerId,
+    grant,
     root,
     item,
     run,
@@ -347,10 +357,11 @@ async function fixture(agentRead?: AgentRead) {
         },
       });
     },
-    async restart() {
+    async restart(probe?: (dir: string) => Promise<void>) {
       sim.paused = true;
       while (sim.busy) await Bun.sleep(1);
       await store.close();
+      await probe?.(dir);
       store = await openPawsStore({ url: null, pgliteDir: dir });
       db = store.store;
       services = open();
@@ -771,6 +782,168 @@ test("a turn Paws reattaches after a restart gets a fresh read lease, and the ol
       },
     ]);
     expect(read.closed).toEqual([command.id, command.id]);
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a new control-plane process rebuilds read access using a persisted overlapping grant", async () => {
+  const f = await fixture(recordingAgentRead().agentRead);
+  try {
+    const command = await shutDownMidCommand(f, (signal) => ({
+      ...f.checks(signal),
+      githubRead: { prompt: READ_PROMPT },
+    }));
+    const token = await f.grant(command);
+    await f.grant(command);
+    await f.restart(async (dir) => {
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        import { generateKeyPairSync } from "node:crypto";
+        import { openPawsStore } from "./src/db";
+        import { createRunnerWork } from "./src/runner-work";
+        import { createAgentReadAccess, createAgentReadTokens } from "./src/runner-repository-access";
+        import { createFakeGitHub } from "./src/github";
+        const store = await openPawsStore({ url: null, pgliteDir: process.env.PROBE_DIR });
+        try {
+          const work = createRunnerWork({ store: store.store, keyId: "fixture",
+            privateKey: generateKeyPairSync("ed25519").privateKey, eventKey: Buffer.alloc(32, 7) });
+          const github = createFakeGitHub();
+          const agentRead = createAgentReadTokens({ github,
+            installationForRepository: async () => "7", revoke: async () => {} });
+          const route = createAgentReadAccess({ work, agentRead });
+          const request = () => new Request("https://paws/v1/runs/" + process.env.PROBE_RUN + "/github-read-credential", {
+            method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PROBE_TOKEN },
+            body: JSON.stringify({ generation: Number(process.env.PROBE_GENERATION) })
+          });
+          for (let i = 0; i < 2; i++) {
+            const response = await route(request(), process.env.PROBE_RUNNER);
+            if (response?.status !== 200) throw new Error("credential status " + response?.status);
+            if (!(await response.json()).token) throw new Error("missing credential");
+          }
+          if (github.minted.length !== 1) throw new Error("read lease minted more than once");
+          const revoked = [];
+          const mint = github.mintInstallationToken;
+          github.mintInstallationToken = async (input) => {
+            const token = await mint(input);
+            await work.finish(process.env.PROBE_RUN, Number(process.env.PROBE_GENERATION));
+            return token;
+          };
+          const racing = createAgentReadTokens({ github,
+            installationForRepository: async () => "7", revoke: async (token) => { revoked.push(token); } });
+          const fenced = await createAgentReadAccess({ work, agentRead: racing })(request(), process.env.PROBE_RUNNER);
+          if (fenced?.status !== 409 || revoked.length !== 1) throw new Error("fenced mint was not revoked");
+
+        } finally { await store.close(); }
+      `,
+        ],
+        {
+          env: {
+            ...process.env,
+            PROBE_DIR: dir,
+            PROBE_RUN: command.runId,
+            PROBE_RUNNER: f.runnerId,
+            PROBE_TOKEN: token,
+            PROBE_GENERATION: String(command.generation),
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const stderr = await new Response(child.stderr).text();
+      expect(await child.exited, stderr).toBe(0);
+    });
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a Closeout check fenced after restart is placed again without a setup timeout", async () => {
+  const f = await fixture();
+  try {
+    const stale = await shutDownMidCommand(f, f.checks);
+    await restartWithRunnerHolding(f);
+    await f.services.work.finish(stale.runId, stale.generation);
+    const resumed = f.services.backend.forItem(f.item.id)(f.checks(new AbortController().signal));
+    await f.until(() => f.placed.length === 2);
+    const placed = f.placed[1]!;
+    expect(placed.generation).toBe(stale.generation + 1);
+    await f.finish(placed, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await resumed).toMatchObject({ closeoutReport: REPORT });
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a lease recovered after reattachment mint failure is redacted and revoked", async () => {
+  const github = createFakeGitHub();
+  const mint = github.mintInstallationToken;
+  let fail = false;
+  const failed = Promise.withResolvers<void>();
+  github.mintInstallationToken = async (input) => {
+    if (fail) {
+      failed.resolve();
+      throw new Error("transient mint failure");
+    }
+    return mint(input);
+  };
+  const revoked: string[] = [];
+  const create = () =>
+    createAgentReadTokens({
+      github,
+      installationForRepository: async () => "7",
+      revoke: async (token) => {
+        revoked.push(token);
+      },
+    });
+  let tokens = create();
+  const f = await fixture({
+    open: (input) => tokens.open(input),
+    tokens: (id) => tokens.tokens(id),
+    close: (id) => tokens.close(id),
+  });
+  try {
+    const withRead = (signal: AbortSignal) => ({
+      ...f.checks(signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    const command = await shutDownMidCommand(f, withRead);
+    await restartWithRunnerHolding(f);
+    tokens = create();
+    fail = true;
+    const resumed = f.services.backend.forItem(f.item.id)(withRead(new AbortController().signal));
+    await failed.promise;
+    fail = false;
+    const route = createAgentReadAccess({ work: f.services.work, agentRead: tokens });
+    const response = await route(
+      new Request(`https://paws/v1/runs/${command.runId}/github-read-credential`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${await f.grant(command)}`,
+        },
+        body: JSON.stringify({ generation: command.generation }),
+      }),
+      f.runnerId,
+    );
+    expect(response?.status).toBe(200);
+    const credential = (await response!.json()) as { token: string };
+    await f.say(command, 2, credential.token);
+    await f.until(async () => (await f.consumed()) === 2);
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    await resumed;
+    expect(JSON.stringify(f.events)).not.toContain(credential.token);
+    expect(
+      readFileSync(
+        join(runDir(f.root, withRead(new AbortController().signal).runId), "acp.jsonl"),
+        "utf8",
+      ),
+    ).not.toContain(credential.token);
+    expect(revoked).toEqual([credential.token, credential.token]);
+    expect(tokens.tokens(command.id)).toEqual([]);
   } finally {
     await f.close();
   }

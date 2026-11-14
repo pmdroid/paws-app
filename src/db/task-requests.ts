@@ -13,7 +13,7 @@ export type StoredTaskClassification =
   | { mode: "clarify"; question: string };
 
 function stored(q: Q, classification: StoredTaskClassification): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(classification) : classification;
+  return classification;
 }
 
 export function* getTaskClassificationSteps(q: Q, taskKey: string) {
@@ -25,9 +25,7 @@ export function* getTaskClassificationSteps(q: Q, taskKey: string) {
       .where(eq(taskRequest.taskKey, taskKey)),
   );
   if (!row) return null;
-  return (
-    q.dialect === "sqlite" ? JSON.parse(row.classification as string) : row.classification
-  ) as StoredTaskClassification;
+  return row.classification as StoredTaskClassification;
 }
 
 export async function getTaskClassification(

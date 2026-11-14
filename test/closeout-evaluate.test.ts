@@ -542,6 +542,58 @@ describe("closeout evaluate", () => {
     }
   });
 
+  test("failed records on one head count as one failed attempt", () => {
+    const policy = repo({
+      retry: { maxFailedAttemptsPerItem: 3, scope: "task" },
+      items: [command("format", ["false"])],
+    });
+    const failure = (attempt: number, head: string) =>
+      commandRecord("format", ["false"], { exitCode: 1, attempt, head, task: "stable" });
+    const sameHead = run(policy, [failure(1, HEAD), failure(2, HEAD), failure(3, HEAD)], {
+      task: "stable",
+    });
+    expect(sameHead.items[0]).toMatchObject({ state: "failed", message: "command exited 1" });
+    const heads = run(
+      policy,
+      [failure(1, OTHER_HEAD), failure(1, "44".repeat(20)), failure(1, HEAD)],
+      {
+        task: "stable",
+      },
+    );
+    expect(heads.items[0]).toMatchObject({
+      state: "exhausted",
+      message: "3 of 3 allowed failed attempts used. Stop retrying and ask for help.",
+    });
+    expect(
+      run(policy, [failure(1, HEAD), failure(1, HEAD)], { task: "stable" }).items[0]?.state,
+    ).toBe("invalid");
+  });
+
+  test("a review finding repeated on one head counts once", () => {
+    const policy = repo({
+      retry: { maxFailedAttemptsPerItem: 3, maxFailedReviewAttempts: 10, scope: "task" },
+      items: [review("review")],
+    });
+    const failure = (attempt: number, head: string) =>
+      reviewRecord("review", [finding("P1")], { attempt, head, task: "stable" });
+    expect(
+      run(policy, [failure(1, HEAD), failure(2, HEAD), failure(3, HEAD)], { task: "stable" })
+        .items[0]?.state,
+    ).toBe("failed");
+    const heads = run(
+      policy,
+      [
+        failure(1, OTHER_HEAD),
+        failure(2, OTHER_HEAD),
+        failure(1, "44".repeat(20)),
+        failure(1, HEAD),
+      ],
+      { task: "stable" },
+    );
+    expect(heads.items[0]).toMatchObject({ state: "exhausted" });
+    expect(heads.items[0]?.message).toContain("src/lib.rs failed in 3 of 3");
+  });
+
   test("a missing setup does not skip later requirements", () => {
     const decision = run(
       repo({

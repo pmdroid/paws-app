@@ -318,7 +318,7 @@ function judgeItem(
 type RetryTally = {
   retry: RetryPolicy;
   failed: number;
-  /** Failed review attempts per finding location. */
+  /** Distinct heads with a failed review attempt, per finding location. */
   repeats: Map<string, number>;
   /** The finding locations of the latest failed review attempt. */
   latest: Set<string>;
@@ -337,6 +337,8 @@ function retryTally(
   if (item.kind === "setup") retry = { ...retry, maxFailedAttemptsPerItem: 2 };
   const task = taskOf(request);
   const seen = new Set<string>();
+  const failedHeads = new Set<string>();
+  const repeatHeads = new Map<string, Set<string>>();
   const tally: RetryTally = { retry, failed: 0, repeats: new Map(), latest: new Set() };
   for (const record of records) {
     if (record.itemId !== item.id || record.policyDigest !== digest) continue;
@@ -352,18 +354,24 @@ function retryTally(
       !request.retryBaseline?.includes(evidenceAttemptKey(record)) &&
       recordFailed(item, record, request, trust)
     ) {
-      tally.failed += 1;
+      failedHeads.add(item.kind === "setup" ? attemptKey : record.head);
       if (isReview(item) && record.recordType === "review") {
         const keys = new Set(
           blockingFindings(record, request)
             .filter((finding) => severityRank(finding.severity) <= severityRank(item.failOn))
             .map((finding) => findingKey(finding.location)),
         );
-        for (const key of keys) tally.repeats.set(key, (tally.repeats.get(key) ?? 0) + 1);
+        for (const key of keys) {
+          const heads = repeatHeads.get(key) ?? new Set<string>();
+          heads.add(record.head);
+          repeatHeads.set(key, heads);
+        }
         tally.latest = keys;
       }
     }
   }
+  tally.failed = failedHeads.size;
+  for (const [key, heads] of repeatHeads) tally.repeats.set(key, heads.size);
   return tally;
 }
 

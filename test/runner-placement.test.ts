@@ -875,6 +875,66 @@ test("the runner's owner and admins switch extra usage per agent, others get 403
   }
 });
 
+test("the runner's owner and admins set its fix slots within its capacity, others get 403", async () => {
+  const placed = await placeItem();
+  try {
+    const runnerId = workspaceId();
+    await insertRunner(placed.db, {
+      id: runnerId,
+      workspaceId: placed.workspaceId,
+      ownerUserId: placed.colleague,
+      createdAt: 0,
+      lastSeenAt: 0,
+      capacity: 2,
+    });
+    const browser = createRunnerPlacementBrowser({ store: placed.db, now: placed.now });
+    const as = (userId: string, role: "admin" | "member") => ({
+      workspaceId: placed.workspaceId,
+      userId,
+      role,
+      authenticatedAt: placed.now(),
+      teamIds: ["team"],
+    });
+    const save = async (userId: string, role: "admin" | "member", fixSlots: unknown) =>
+      (await browser(
+        new Request(`http://127.0.0.1/api/runners/${runnerId}/fix-slots`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fixSlots }),
+        }),
+        as(userId, role),
+      ))!.status;
+    const read = async () =>
+      (
+        (await (await browser(
+          new Request(`http://127.0.0.1/api/runners/${runnerId}/policy`),
+          as(placed.pool, "member"),
+        ))!.json()) as { fixSlots: number }
+      ).fixSlots;
+    expect(await read()).toBe(1);
+    expect(await save(placed.colleague, "member", 2)).toBe(200);
+    expect(await read()).toBe(2);
+    expect(await save(placed.pool, "member", 0)).toBe(403);
+    expect(await save(placed.owner, "admin", 3)).toBe(400);
+    expect(await save(placed.owner, "admin", -1)).toBe(400);
+    expect(await save(placed.owner, "admin", 1.5)).toBe(400);
+    expect(await read()).toBe(2);
+    expect(await save(placed.owner, "admin", 0)).toBe(200);
+    expect(await read()).toBe(0);
+    const audit = await placed.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.subject, runnerId)),
+      ),
+    );
+    expect(audit.filter((row) => row.action === "runner.fix_slots.updated")).toHaveLength(2);
+  } finally {
+    await placed.close();
+  }
+});
+
 test("run pins apply to every role and never expire while the host is online", async () => {
   const placed = await placeItem();
   try {
@@ -1124,6 +1184,73 @@ test("a moved run whose restoring runner is busy goes to another runner at once"
     expect(
       await placed.ids({ pinnedRunnerId, restore, reserved: new Map([["second", 1]]) }),
     ).toEqual(["own", "second"]);
+  } finally {
+    await placed.close();
+  }
+});
+
+test("two items admitted to the same runner at once both start there", async () => {
+  const placed = await placeItem();
+  try {
+    const { db } = placed;
+    const sibling = await insertQueuedItem(db, {
+      id: "sibling",
+      now: placed.now(),
+      sessionKey: "sibling-session",
+    });
+    await recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "app-client",
+      appUserId: "app",
+      sessionId: "sibling-session",
+      teamId: "team",
+      observedAtMs: placed.now(),
+    });
+    await bindLinearSessionTask(db, "sibling-session", sibling.delegationId, {
+      actorId: "owner",
+    });
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ ownerUserId: placed.owner })
+          .where(eq(q.t.workItem.id, sibling.id)),
+      (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "own", capacity: 2 }),
+    );
+    const profile = { agent: "codex" as const, model: "implementation-model" };
+    for (const itemId of ["item", "sibling"])
+      expect(
+        (
+          await placed.placement.candidates({
+            itemId,
+            profile,
+            role: "implementer",
+            purpose: "work",
+          })
+        ).map((row) => row.id),
+      ).toContain("own");
+    for (const itemId of ["item", "sibling"])
+      await db.transaction((q) =>
+        placed.placement.startedSteps(q, {
+          commandId: `command-${itemId}`,
+          runnerId: "own",
+          itemId,
+          profile,
+          role: "implementer",
+          purpose: "work",
+          startedAt: placed.now(),
+        }),
+      );
+    const started = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ itemId: q.t.runnerExecutionUsage.itemId })
+          .from(q.t.runnerExecutionUsage)
+          .where(eq(q.t.runnerExecutionUsage.runnerId, "own")),
+      ),
+    );
+    expect(started.map((row) => row.itemId).toSorted()).toEqual(["item", "sibling"]);
   } finally {
     await placed.close();
   }

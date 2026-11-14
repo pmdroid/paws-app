@@ -20,10 +20,7 @@ export function* prepareLinearActivitySteps(q: Q, message: OutboxRow) {
     q.orm
       .update(outbox)
       .set({
-        payload:
-          q.dialect === "sqlite"
-            ? sql`json_set(${outbox.payload}, '$.id', ${id})`
-            : sql`jsonb_set(${outbox.payload}, '{id}', to_jsonb(${id}::text))`,
+        payload: sql`jsonb_set(${outbox.payload}, '{id}', to_jsonb(${id}::text))`,
       })
       .where(
         and(

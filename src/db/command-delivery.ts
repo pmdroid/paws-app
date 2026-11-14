@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, ne } from "drizzle-orm";
 import { JOB_KIND, parseLinearCommand, type LinearCommand } from "../core";
 import { journalCaught } from "../journal";
-import { storeOf, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { INSTANCE_DEAD_MS } from "./instances";
 import { getWorkItemSteps } from "./items";
 import {
@@ -21,8 +20,8 @@ export const COMMAND_DELIVERY_MS = 1_000;
 
 const boundInstances = new WeakMap<Db, string>();
 
-export function commandInstance(source: Database | Db): string | undefined {
-  return boundInstances.get(storeOf(source));
+export function commandInstance(source: Db): string | undefined {
+  return boundInstances.get(source);
 }
 
 export function bindInstance(store: Db, instanceId: string): void {
@@ -39,17 +38,16 @@ export function* forwardCommandSteps(
 ): Steps<{ owners: string[]; inserted: boolean }> {
   const stoppedAtVersion = (yield* getWorkItemSteps(q, command.itemId))?.version;
   if (stoppedAtVersion === undefined) return { owners: [], inserted: false };
-  const { instance, run, runOwner } = q.t;
+  const { instance, run } = q.t;
   const owners = (yield* q.all(
     q.orm
-      .selectDistinct({ id: runOwner.ownerInstance })
+      .selectDistinct({ id: instance.id })
       .from(run)
-      .innerJoin(runOwner, eq(runOwner.runId, run.id))
-      .innerJoin(instance, eq(instance.id, runOwner.ownerInstance))
+      .innerJoin(instance, eq(instance.id, run.ownerInstance))
       .where(
         and(
           eq(run.itemId, command.itemId),
-          ne(runOwner.ownerInstance, self),
+          ne(instance.id, self),
           gt(instance.heartbeatAt, now - INSTANCE_DEAD_MS),
         ),
       ),

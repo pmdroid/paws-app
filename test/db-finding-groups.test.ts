@@ -217,6 +217,11 @@ forEachDialect((open) => {
 
   test("grouping is on until it is switched off, and switching twice is harmless", () =>
     withDb(async (db) => {
+      await seed(db, (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "w", linearOrganizationId: "org", name: "W", createdAt: 1 }),
+      );
       const enabled = () => db.run((q) => findingGroupingEnabledSteps(q, "w"));
       expect(await enabled()).toBe(true);
       await db.run((q) => setFindingGroupingSteps(q, "w", false));

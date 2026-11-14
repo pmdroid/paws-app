@@ -3,7 +3,6 @@
   "entry": [
     "src/runner-cli/main.ts",
     "src/dashboard/src/client/main.ts",
-    "src/db/migrations/*.ts",
     "scripts/*.ts",
     "scripts/codemods/*.ts",
     "test/**/*.test.ts",

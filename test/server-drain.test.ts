@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseProbeSteps, openDatabase } from "../src/db";
+import { databaseProbeSteps } from "../src/db";
 import { startPaws } from "../src/index";
 import { migratedHome } from "./helpers";
+import { sqlRows, sqlRun, tempStore } from "./pglite";
 import { startServer } from "../src/server";
 
 test("HTTP shutdown drains an accepted artifact read before SQLite closes", async () => {
-  const db = openDatabase(":memory:");
-  db.run("CREATE TABLE drain_proof(value TEXT)");
-  db.run("INSERT INTO drain_proof VALUES('complete')");
+  const { db, close } = await tempStore();
+  await sqlRun(db, "CREATE TABLE drain_proof(value TEXT)");
+  await sqlRun(db, "INSERT INTO drain_proof VALUES('complete')");
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   const completed = Promise.withResolvers<void>();
@@ -26,7 +27,7 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
       await gate.promise;
       try {
         readCompleted =
-          db.query<{ value: string }, []>("SELECT value FROM drain_proof").get()?.value ===
+          (await sqlRows<{ value: string }>(db, "SELECT value FROM drain_proof"))[0]?.value ===
           "complete";
       } catch (caught) {
         error = String(caught);
@@ -42,8 +43,8 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
   try {
     await entered.promise;
     let stopped = false;
-    const stopping = Promise.resolve(server.stop(true)).then(() => {
-      db.close();
+    const stopping = Promise.resolve(server.stop(true)).then(async () => {
+      await close();
       closed = true;
       stopped = true;
     });
@@ -60,7 +61,7 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
     gate.resolve();
     await server.stop(true);
     await request;
-    if (!closed) db.close();
+    if (!closed) await close();
   }
 });
 

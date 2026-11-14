@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
-import { esc } from "./format";
+import { ago, esc } from "./format";
 import { githubUrl } from "./github-url";
 import { githubDeliveryLine, type GitHubDelivery } from "./github-delivery";
 
@@ -16,6 +16,8 @@ type Catalog = {
   teams?: { id: string; name: string; key: string }[];
   missingPermissions?: string[];
   mappings: Mapping[];
+  cached?: boolean;
+  refreshedAt?: number;
 };
 
 export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: string) {
@@ -25,10 +27,11 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
   section.dataset.settingsPage = "integrations";
   renderMarkup(
     section,
-    '<div><h2>GitHub</h2><p class="sub">Connect GitHub. Paws picks the repository from Linear\'s suggestion among those the app can access. Add repositories to a Linear team to limit that team to them.</p></div><div class="settings-account w-full"><p data-status role="status">Checking GitHub…</p><div class="row" data-actions></div><p data-feedback role="alert" class="empty:hidden"></p><div data-repository-editor class="w-full min-w-0"></div></div>',
+    '<div><h2>GitHub</h2><p class="sub">Connect GitHub. Paws picks the repository from Linear\'s suggestion among those the app can access. Add repositories to a Linear team to limit that team to them.</p></div><div class="settings-account w-full"><div data-badge class="row empty:hidden"></div><p data-status role="status">Checking GitHub…</p><div class="row" data-actions></div><p data-feedback role="alert" class="empty:hidden"></p><div data-repository-editor class="w-full min-w-0"></div></div>',
   );
   root.append(section);
   const status = section.querySelector<HTMLElement>("[data-status]")!;
+  const badge = section.querySelector<HTMLElement>("[data-badge]")!;
   const actions = section.querySelector<HTMLElement>("[data-actions]")!;
   const feedback = section.querySelector<HTMLElement>("[data-feedback]")!;
   const editor = section.querySelector<HTMLElement>("[data-repository-editor]")!;
@@ -36,6 +39,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
   let requiresSignIn = false;
   let pending = false;
   let installationUrl: string | undefined;
+  let connected = false;
   let waitingForInstall = false;
   let selection: Mapping[] = [];
   let page = 0;
@@ -52,6 +56,9 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     }
   }
   function paintActions() {
+    status.classList.toggle("text-muted-foreground", connected);
+    if (connected) return renderMarkup(actions, "");
+    renderMarkup(badge, "");
     renderMarkup(
       actions,
       `${requiresSignIn ? '<a class="btn primary" href="/auth/linear" data-signin>Sign in again</a>' : catalog?.signedIn ? '<button class="btn" type="button" data-login>Switch GitHub account</button>' : '<button class="btn primary" type="button" data-login>Sign in with GitHub</button>'}${catalog?.signedIn && installationUrl ? `<a class="btn" href="${esc(githubUrl(installationUrl, "install"))}" target="_blank" rel="noopener noreferrer" data-install>Choose repositories on GitHub</a>` : ""}<button class="btn" type="button" data-refresh>Refresh repositories</button>`,
@@ -84,6 +91,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
         response.status === 401
       ) {
         requiresSignIn = true;
+        connected = false;
         catalog = null;
         renderMarkup(editor, "");
         paintActions();
@@ -161,7 +169,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     const missing = catalog.missingPermissions ?? [];
     renderMarkup(
       editor,
-      `<form class="flex min-w-0 flex-col gap-4">${missing.length ? `<div role="alert"><p>The Paws GitHub App needs Read and write access to: ${missing.map((permission) => esc(permissionNames[permission] ?? permission)).join(", ")}.</p><p>Ask the Paws operator to update the App permissions, then approve the update on GitHub and refresh repositories.</p><a class="btn" href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Review GitHub App permissions</a></div>` : ""}<p>Signed in as <strong>@${esc(catalog.login ?? "")}</strong></p>${(catalog.installations?.length ?? 0) ? `<label class="field"><span>GitHub account</span><select name="installationId">${catalog.installations!.map((installation) => `<option value="${esc(installation.id)}"${installation.id === catalog!.installationId ? " selected" : ""}>${esc(installation.account)}</option>`).join("")}</select></label>` : ""}${repositories.length && teams.length ? '<label class="field"><span>Find a repository</span><input type="search" name="repositorySearch" placeholder="Search repositories" /></label><p class="sub">Select the Linear teams that can use each repository.</p><div data-repository-rows role="region" aria-label="Repository choices" tabindex="0" class="max-h-[28rem] overflow-auto"></div><div class="row"><button class="btn" type="button" data-previous>Previous</button><span data-page></span><button class="btn" type="button" data-next>Next</button></div>' : `<p>${!catalog.installations?.length ? "Give the Paws App access to your GitHub repositories, then refresh this list." : !repositories.length ? "Choose repositories the App can access on GitHub, then refresh this list." : "Ask your Linear administrator to give Paws access to a team, then refresh this list."}</p>`}<div data-unavailable role="status" class="flex flex-col gap-3 empty:hidden"></div><p data-selection role="status"></p><button class="btn primary" type="submit">Save repository access</button></form>`,
+      `<form class="flex min-w-0 flex-col gap-4">${missing.length ? `<div role="alert"><p>The Paws GitHub App needs Read and write access to: ${missing.map((permission) => esc(permissionNames[permission] ?? permission)).join(", ")}.</p><p>Ask the Paws operator to update the App permissions, then approve the update on GitHub and refresh repositories.</p><a class="btn" href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Review GitHub App permissions</a></div>` : ""}${catalog.cached ? "" : `<p>Signed in as <strong>@${esc(catalog.login ?? "")}</strong></p>`}${(catalog.installations?.length ?? 0) ? `<label class="field"><span>GitHub account</span><select name="installationId">${catalog.installations!.map((installation) => `<option value="${esc(installation.id)}"${installation.id === catalog!.installationId ? " selected" : ""}>${esc(installation.account)}</option>`).join("")}</select></label>` : ""}${repositories.length && teams.length ? '<label class="field"><span>Find a repository</span><input type="search" name="repositorySearch" placeholder="Search repositories" /></label><p class="sub">Select the Linear teams that can use each repository.</p><div data-repository-rows role="region" aria-label="Repository choices" tabindex="0" class="max-h-[28rem] overflow-auto"></div><div class="row"><button class="btn" type="button" data-previous>Previous</button><span data-page></span><button class="btn" type="button" data-next>Next</button></div>' : `<p>${!catalog.installations?.length ? "Give the Paws App access to your GitHub repositories, then refresh this list." : !repositories.length ? "Choose repositories the App can access on GitHub, then refresh this list." : "Ask your Linear administrator to give Paws access to a team, then refresh this list."}</p>`}<div data-unavailable role="status" class="flex flex-col gap-3 empty:hidden"></div><p data-selection role="status"></p><button class="btn primary" type="submit">Save repository access</button></form>`,
     );
     if (repositories.length && teams.length) paintRows();
     else updateSelection();
@@ -199,6 +207,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
       installationUrl = health.installationUrl;
       requiresSignIn = health.requiresSignIn === true;
       if (requiresSignIn) {
+        connected = false;
         catalog = null;
         renderMarkup(editor, "");
         status.textContent = "Sign in again to manage GitHub repositories.";
@@ -220,17 +229,29 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
         selection = structuredClone(catalog.mappings);
         page = 0;
         search = "";
-        status.textContent =
-          health.status === "connected"
-            ? `Connected · ${health.repositoryCount ?? 0} repositories available to Paws.${githubDeliveryLine(health.lastDelivery)}`
-            : catalog.signedIn
-              ? "Choose repositories and match them to Linear teams."
-              : "Sign in with GitHub to choose your repositories.";
+        connected = health.status === "connected" && catalog.cached === true;
+        if (connected) {
+          const account = (catalog.mappings[0] ?? catalog.repositories?.[0])?.repository.split(
+            "/",
+          )[0];
+          const updated = catalog.refreshedAt
+            ? `Updated ${ago(new Date(catalog.refreshedAt).toISOString(), new Date().toISOString())}.`
+            : "";
+          renderMarkup(
+            badge,
+            `<span class="pill ok">Connected</span><span>${esc(account ?? "")}</span>`,
+          );
+          status.textContent = `${updated}${githubDeliveryLine(health.lastDelivery)}`.trim();
+        } else
+          status.textContent = catalog.signedIn
+            ? "Choose repositories and match them to Linear teams."
+            : "Sign in with GitHub to choose your repositories.";
         paintEditor();
       }
       paintActions();
     } catch (error) {
       journalCaught(error, "github-repository-setup.load.fetch", null);
+      connected = false;
       status.textContent = "GitHub connection unavailable.";
       feedback.textContent =
         error instanceof Error ? error.message : "GitHub could not be reached.";

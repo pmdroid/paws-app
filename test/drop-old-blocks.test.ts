@@ -8,7 +8,6 @@ import {
   bindLinearSessionTask,
   insertRun,
   listOutbox,
-  listWorkItemBlocks,
   recordLinearInstallation,
   saveRunResult,
   setCurrentRun,
@@ -72,15 +71,6 @@ test("task_block holds each dependent", async () => {
         }),
       block("hold-0", "hold-1"),
     );
-    const edge = {
-      delegationId: "hold",
-      blockerLinearIssueId: "hold-0",
-      blockedLinearIssueId: "hold-1",
-    };
-    expect(await listWorkItemBlocks(db)).toEqual([edge]);
-    expect(await listWorkItemBlocks(db, "hold")).toEqual([edge]);
-    expect(await listWorkItemBlocks(db, "stale")).toEqual([]);
-
     await orchestrator.reconcileExecution();
     expect(
       await db.run((q) =>

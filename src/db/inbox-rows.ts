@@ -1,6 +1,7 @@
-import { asc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { type Db, type Q, type Steps } from "./db";
-import { jsonFromText, jsonText } from "./json-text";
+import { jsonField, jsonFromText, jsonText } from "./json-text";
 
 export type InboxEventRow = {
   dedupe_key: string;
@@ -164,4 +165,46 @@ export function* setSyncCursorSteps(q: Q, name: string, cursorMs: number) {
 
 export async function setSyncCursor(store: Db, name: string, cursorMs: number): Promise<void> {
   return store.run((q) => setSyncCursorSteps(q, name, cursorMs));
+}
+
+export function* pruneHandledInboxEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const e = q.t.inboxEvent;
+  const newer = alias(e, "newer");
+  const prunable = q.orm
+    .select({ dedupeKey: e.dedupeKey })
+    .from(e)
+    .where(
+      and(
+        eq(e.handled, 1),
+        eq(e.action, "other"),
+        lt(e.receivedAt, cutoff),
+        or(
+          sql`COALESCE(${jsonField(q, e.payload, "type")}, '') <> 'Issue'`,
+          exists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(newer)
+              .where(
+                and(
+                  eq(jsonField(q, newer.payload, "type"), "Issue"),
+                  eq(
+                    jsonField(q, newer.payload, "data", "id"),
+                    jsonField(q, e.payload, "data", "id"),
+                  ),
+                  eq(
+                    jsonField(q, newer.payload, "organizationId"),
+                    jsonField(q, e.payload, "organizationId"),
+                  ),
+                  sql`(${newer.updatedAtMs}, ${newer.receivedAt}) > (${e.updatedAtMs}, ${e.receivedAt})`,
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(e).where(inArray(e.dedupeKey, prunable)).returning({ dedupeKey: e.dedupeKey }),
+  );
+  return deleted.length;
 }

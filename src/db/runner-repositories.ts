@@ -22,6 +22,7 @@ export function* recordRunnerRepositoriesSteps(
       .from(lists)
       .where(eq(lists.runnerId, runnerId)),
   );
+  if (before !== undefined && sameList(before.host, reported)) return false;
   const stored = repositories === null ? null : jsonValue(q, repositories);
   yield* q.exec(
     q.orm
@@ -32,7 +33,6 @@ export function* recordRunnerRepositoriesSteps(
         set: { repositories: stored, reportedAt: at },
       }),
   );
-  if (before !== undefined && sameList(before.host, reported)) return false;
   const woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
   const enqueued = yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
   return woke || enqueued;

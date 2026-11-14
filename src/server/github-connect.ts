@@ -446,12 +446,8 @@ export function createHostedGitHubConnect(options: {
     if (!pending) return denied();
     try {
       const intent = activation.read<Intent>(pending.secret_id);
-      const existing = await store.run((q) =>
-        listWorkspaceRepositoriesSteps(q, pending.workspace_id),
-      );
       const human = await verifyHostedGitHubApp({
         ...intent,
-        authority: existing.length ? "reader" : "owner",
         code,
         redirectUri: origin + CALLBACK,
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),

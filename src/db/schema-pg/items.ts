@@ -28,9 +28,11 @@ export const run = pgTable(
     freshSession: integer("fresh_session").default(0).notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    ownerInstance: text("owner_instance"),
   },
   (table) => [
     index("run_item").on(table.itemId, table.createdAt),
+    index("run_owner_instance").on(table.ownerInstance),
     check("run_check_1", sql`status IN ('provisioning', 'active', 'ended', 'lost')`),
     check("run_check_3", sql`fresh_session IN (0, 1)`),
   ],
@@ -416,6 +418,8 @@ export const itemPullRequest = pgTable(
     pullNumber: bigint("pull_number", { mode: "number" }).notNull(),
     pullUrl: text("pull_url"),
     openedAt: bigint("opened_at", { mode: "number" }).notNull(),
+    publishedHead: text("published_head"),
+    openFindingsLine: text("open_findings_line"),
   },
   () => [check("item_pull_request_check_1", sql`pull_number > 0`)],
 );

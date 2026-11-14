@@ -152,9 +152,21 @@ forEachDialect((open) => {
     const db = await connect(open);
     const payload = (summary: string) => ({ itemId: "item", summary });
     await db.run(function* (q) {
-      yield* enqueueJobSteps(q, { queue: JOB_KIND.merge, payload: payload("old"), now: 1 });
-      yield* enqueueJobSteps(q, { queue: JOB_KIND.merge, payload: payload("new"), now: 2 });
-      yield* enqueueJobSteps(q, { queue: JOB_KIND.start, payload: payload("start"), now: 3 });
+      yield* enqueueJobSteps(q, {
+        queue: JOB_KIND.merge,
+        payload: payload("old"),
+        now: 1,
+      });
+      yield* enqueueJobSteps(q, {
+        queue: JOB_KIND.merge,
+        payload: payload("new"),
+        now: 2,
+      });
+      yield* enqueueJobSteps(q, {
+        queue: JOB_KIND.start,
+        payload: payload("start"),
+        now: 3,
+      });
     });
     expect(await db.run((q) => latestMergeJobSummarySteps(q, "item"))).toBe("new");
     expect(await db.run((q) => latestMergeJobSummarySteps(q, "none"))).toBeNull();
@@ -163,7 +175,11 @@ forEachDialect((open) => {
   test("a running job is found by queue and key", async () => {
     const db = await connect(open);
     const id = await db.run(function* (q) {
-      const created = yield* enqueueJobSteps(q, { queue: JOB_KIND.resume, jobKey: "turn", now: 1 });
+      const created = yield* enqueueJobSteps(q, {
+        queue: JOB_KIND.resume,
+        jobKey: "turn",
+        now: 1,
+      });
       yield* q.exec(
         q.orm.update(q.t.job).set({ status: "running" }).where(eq(q.t.job.id, created)),
       );
@@ -185,7 +201,10 @@ forEachDialect((open) => {
     await db.run((q) => enqueueJobSteps(q, { queue: JOB_KIND.start, payload: {}, now: 1 }));
     const jobs = await db.run((q) => openMergeJobsSteps(q));
     expect(jobs.map((job) => job.id)).toEqual([id]);
-    expect(JSON.parse(jobs[0]!.payload)).toEqual({ itemId: "item", head: "abc" });
+    expect(JSON.parse(jobs[0]!.payload)).toEqual({
+      itemId: "item",
+      head: "abc",
+    });
   });
 
   test("the end of a push outage releases only its pending merge jobs", async () => {
@@ -214,9 +233,12 @@ forEachDialect((open) => {
     const db = await connect(open);
     const final = await db.run(function* (q) {
       yield* q.exec(
-        q.orm
-          .insert(q.t.outboxSessionFence)
-          .values({ target: "linear", orderingKey: "session", generation: 3, updatedAt: 1 }),
+        q.orm.insert(q.t.outboxSessionFence).values({
+          target: "linear",
+          orderingKey: "session",
+          generation: 3,
+          updatedAt: 1,
+        }),
       );
       return yield* enqueueOutboxSteps(q, {
         target: "linear",
@@ -373,9 +395,12 @@ forEachDialect((open) => {
     await insertLinearSession(db, "parent", "epic");
     await db.run(function* (q) {
       yield* q.exec(
-        q.orm
-          .insert(q.t.linearStopReceipt)
-          .values({ sessionId: "parent", eventKey: "stop", generation: 2, createdAt: 1 }),
+        q.orm.insert(q.t.linearStopReceipt).values({
+          sessionId: "parent",
+          eventKey: "stop",
+          generation: 2,
+          createdAt: 1,
+        }),
       );
     });
     expect(await db.run((q) => linearStoppedAfterSteps(q, "parent", 1))).toBe(true);
@@ -402,7 +427,9 @@ forEachDialect((open) => {
     expect(await carried("issue", "c2")).toBe(true);
     expect(await carried("issue", "c3")).toBe(false);
 
-    const team = (name: unknown) => ({ agentSession: { issue: { team: { name } } } });
+    const team = (name: unknown) => ({
+      agentSession: { issue: { team: { name } } },
+    });
     await inbox(db, "10", { sessionId: "s" }, team("Old"));
     await inbox(db, "20", { sessionId: "s" }, team("Platform"));
     await inbox(db, "30", { sessionId: "s" }, team(" "));
@@ -509,9 +536,9 @@ forEachDialect((open) => {
 });
 
 function jsonOptions(db: Db, options: unknown): never {
-  return (db.dialect === "sqlite" ? JSON.stringify(options) : options) as never;
+  return options as never;
 }
 
 function jsonBrief(db: Db, brief: unknown): never {
-  return (db.dialect === "sqlite" ? JSON.stringify(brief) : brief) as never;
+  return brief as never;
 }

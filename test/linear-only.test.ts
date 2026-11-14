@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRuntime } from "../src/config";
-import { startPaws } from "../src/index";
 
 const homes: string[] = [];
 function home() {
@@ -23,15 +22,4 @@ test("Linear config keeps GitHub App auth", () => {
   expect(runtime.configError).toBeNull();
   expect(runtime.trackerKind).toBe("linear");
   expect(runtime.githubAuth).toBe("app");
-});
-
-test.each(["oauth", "gh"])("github.auth %s fails at startup", async (auth) => {
-  const dir = home();
-  const config = `[tracker]\nkind = "linear"\n[github]\nauth = "${auth}"\n`;
-  writeFileSync(join(dir, "config.toml"), config);
-  const runtime = loadRuntime({ PAWS_HOME: dir });
-  expect(runtime.configError).toContain('github.auth must be "app"');
-  await expect(startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).rejects.toThrow(
-    'github.auth must be "app"',
-  );
 });

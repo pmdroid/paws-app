@@ -17,7 +17,7 @@ export function* replaceLeasedJobPayloadSteps(q: Q, job: Job, payload: unknown, 
   const rows = yield* q.all(
     q.orm
       .update(jobTable)
-      .set({ payload: q.dialect === "sqlite" ? JSON.stringify(payload) : payload })
+      .set({ payload: payload })
       .where(leased(q, job, now))
       .returning({ id: jobTable.id }),
   );

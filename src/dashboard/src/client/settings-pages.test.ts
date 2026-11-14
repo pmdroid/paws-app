@@ -2,10 +2,12 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { createBriefSettings } from "./brief-settings";
 import { createHookSettings, type HookListing } from "./hooks";
+import { render } from "./render";
 import { parseRoute } from "./route";
-import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
+import { SETTINGS_PAGES, renderSettingsPage, setSettingsAdmin } from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
 import { settleReactWork } from "./settle-react";
+import { initializeWorkspaceAccess } from "./workspace";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
 
@@ -33,7 +35,7 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("settings shows one tab bar of nine pages in order, marking the current one", () => {
+test("settings shows one tab bar of ten pages in order, marking the current one", () => {
   const doc = new Window().document;
   doc.body.innerHTML = renderSettingsPage("merging");
   const navs = doc.querySelectorAll("nav");
@@ -42,6 +44,7 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   const links = [...navs[0]!.querySelectorAll("a")];
   expect(links.map((link) => link.textContent)).toEqual([
     "Agents",
+    "Agent accounts",
     "Merging",
     "Queue and limits",
     "Agent instructions",
@@ -64,7 +67,26 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   expect(doc.body.textContent).not.toMatch(/\badmin\b|\byou\b|When to touch this/);
   expect(doc.querySelector(".settings-when, h1")).toBeNull();
   expect(doc.querySelector(".settings-body > p.sub")?.textContent).toBe(
-    SETTINGS_PAGES[1]!.description,
+    SETTINGS_PAGES.find((page) => page.id === "merging")!.description,
+  );
+});
+
+test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
+  setSettingsAdmin(false);
+  for (const page of SETTINGS_PAGES.filter((entry) => entry.id !== "agent-accounts")) {
+    const doc = new Window().document;
+    doc.body.innerHTML = renderSettingsPage(page.id);
+    const shown =
+      page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
+    expect(navLinks(doc)).toEqual(["Agent accounts", "Integrations", "Your account"]);
+    expect(doc.querySelector("a[aria-current]")?.textContent).toBe(shown.name);
+    expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
+      `<p class="sub">${shown.description}</p>`,
+    );
+  }
+  const route = { view: "settings", page: "merging" } as const;
+  expect(render({ route, phase: "ready", error: null, engineUrl: ENGINE }).title).toBe(
+    "Paws status · Your account",
   );
 });
 
@@ -121,6 +143,7 @@ let requests: { method: string; path: string }[];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  setSettingsAdmin(true);
   window = new Window({ url: `${ENGINE}/settings/brief` });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
@@ -140,6 +163,29 @@ beforeEach(() => {
       path.endsWith("/brief") ? BRIEF : path.endsWith("/skills") ? SKILLS : HOOKS,
     );
   }) as typeof fetch;
+});
+
+function navLinks(doc: { querySelectorAll(selector: string): Iterable<Element> }) {
+  return [...doc.querySelectorAll("nav a")].map((link) => link.textContent);
+}
+
+test("settings list the admin pages only once the session says admin", async () => {
+  for (const role of ["admin", "member"]) {
+    let respond = (_: Response) => {};
+    globalThis.fetch = (() =>
+      new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
+    const loaded = initializeWorkspaceAccess(() => null);
+    window.document.body.innerHTML = renderSettingsPage("merging");
+    expect(navLinks(window.document)).toEqual(["Agent accounts", "Integrations", "Your account"]);
+    respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
+    expect(await loaded).toBe(true);
+    window.document.body.innerHTML = renderSettingsPage("merging");
+    expect(navLinks(window.document)).toEqual(
+      role === "admin"
+        ? SETTINGS_PAGES.map((page) => page.name)
+        : ["Agent accounts", "Integrations", "Your account"],
+    );
+  }
 });
 
 afterEach(async () => {

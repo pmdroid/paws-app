@@ -1,10 +1,10 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { HookAgent, HookEvent, WorkspaceHook } from "../core";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export function* listHooksSteps(q: Q) {
-  const order = q.dialect === "sqlite" ? sql`rowid` : q.t.agentHook.id;
+  const order = q.t.agentHook.id;
   const rows = yield* q.all(
     q.orm.select().from(q.t.agentHook).orderBy(q.t.agentHook.createdAt, order),
   );

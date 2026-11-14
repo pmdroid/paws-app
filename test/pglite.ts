@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import type { Logger, SQL as Query } from "drizzle-orm";
+import { sql, type Logger, type SQL as Query } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { SQL } from "bun";
@@ -86,27 +86,55 @@ function migratedDump(): Promise<Blob> {
 }
 
 async function migratedClient(): Promise<PGlite> {
-  return await PGlite.create({ extensions: { citext }, loadDataDir: await migratedDump() });
+  return await PGlite.create({
+    extensions: { citext },
+    loadDataDir: await migratedDump(),
+  });
 }
 
 export async function pgliteDb(
-  options: { migrationsFolder?: string; migrated?: boolean; logger?: Logger } = {},
+  options: {
+    migrationsFolder?: string;
+    migrated?: boolean;
+    logger?: Logger;
+  } = {},
 ): Promise<PgliteDb> {
   const { logger } = options;
   if (options.migrated !== false && options.migrationsFolder === undefined)
-    return drizzle({ client: await migratedClient(), schema: pgSchema, logger });
+    return drizzle({
+      client: await migratedClient(),
+      schema: pgSchema,
+      logger,
+    });
   const client = new PGlite({ extensions: { citext } });
   const db = drizzle({ client, schema: pgSchema, logger });
   if (options.migrated !== false)
-    await migrate(db, { migrationsFolder: options.migrationsFolder ?? PG_MIGRATIONS_FOLDER });
+    await migrate(db, {
+      migrationsFolder: options.migrationsFolder ?? PG_MIGRATIONS_FOLDER,
+    });
   return db;
 }
 
 /** Rows of a raw query on either Postgres driver: PGlite returns `{ rows }`, Bun's SQL an array. */
 export async function rows<T>(db: Db, query: Query): Promise<T[]> {
-  if (db.dialect !== "postgres") throw new Error(`rows() reads Postgres, not ${db.dialect}`);
   const result = (await db.orm.execute(query)) as unknown as T[] | { rows: T[] };
   return Array.isArray(result) ? result : result.rows;
+}
+
+/** Rows of a raw statement with `?` placeholders, for tests that seed or read rows by hand. */
+export function sqlRows<T = Record<string, unknown>>(
+  db: Db,
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const [first, ...rest] = text.split("?");
+  const chunks = [sql.raw(first!)];
+  rest.forEach((part, index) => chunks.push(sql`${params[index]}`, sql.raw(part)));
+  return rows<T>(db, sql.join(chunks));
+}
+
+export async function sqlRun(db: Db, text: string, params: unknown[] = []): Promise<void> {
+  await sqlRows(db, text, params);
 }
 
 export async function tempStore(
@@ -169,7 +197,10 @@ function migratedServerTemplate(base: string): Promise<string> {
     if (await exists(admin, name)) return name;
     const build = uniqueName("paws_build");
     await admin.unsafe(`CREATE DATABASE ${build}`);
-    const migrated = await openPawsStore({ url: databaseUrl(base, build), pgliteDir: "" });
+    const migrated = await openPawsStore({
+      url: databaseUrl(base, build),
+      pgliteDir: "",
+    });
     await migrated.close();
     try {
       await admin.unsafe(`ALTER DATABASE ${build} RENAME TO ${name}`);

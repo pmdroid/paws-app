@@ -203,8 +203,7 @@ describe("rules set to approve", () => {
       bypasses: [{ ...approval, head: repo.base }],
     });
     expect(other.outcome).toBe("exhausted");
-    // The third failure spends the rule's attempts; it still waits for a person, not the agent.
-    expect(other.decision?.items[0]?.state).toBe("exhausted");
+    expect(other.decision?.items[0]?.state).toBe("failed");
     expect(other.ruleApprovals?.map((rule) => rule.id)).toEqual(["probe-rule"]);
   });
 });

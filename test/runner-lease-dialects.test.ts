@@ -125,7 +125,18 @@ forEachDialect((connect) => {
     ] as const) {
       await seedWork(db, runId, runnerId, { leaseUntil: 1_000 });
       await seedCommand(db, `command-${runId}`, { runnerId, runId, kind: "run" });
-      await seed(db, (q) => q.orm.insert(q.t.runOwner).values({ runId, ownerInstance: "gone" }));
+      await seed(db, (q) =>
+        q.orm.insert(q.t.run).values({
+          id: runId,
+          itemId: "item",
+          kind: "implement",
+          agent: "codex",
+          status: "active",
+          createdAt: 0,
+          updatedAt: 0,
+          ownerInstance: "gone",
+        }),
+      );
     }
     await seedWork(db, "answered", "box", { leaseUntil: 1_000 });
     await seedCommand(db, "command-answered", { runnerId: "box", runId: "answered", kind: "run" });

@@ -1,20 +1,17 @@
 import { expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { commitCheckpoint, git, reconstructAcpPrompt } from "../src/acp";
-import { listLinearInputs } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
 import { createLinearInputLoader, inputSources } from "../src/loop";
 import { tempHome } from "./helpers";
-import { tempStore } from "./pglite";
 
 const URL = "https://uploads.linear.app/workspace/asset.png";
 const bytes = new Uint8Array([1, 2, 3]);
 
 async function setup() {
   const workspace = await mkdtemp(join(tmpdir(), "paws-inputs-"));
-  const { db, close } = await tempStore();
   const cacheDir = join(tempHome(), "inputs");
   const requests: { url: string; authorization: string | null }[] = [];
   const files = createLinearFileTransfer({
@@ -36,7 +33,7 @@ async function setup() {
       return new Response(bytes, { headers: { "content-type": "image/png" } });
     },
   });
-  const loader = () => createLinearInputLoader({ store: db, files, cacheDir });
+  const loader = () => createLinearInputLoader({ files, cacheDir });
   const request = {
     workspace,
     sessionId: "session",
@@ -44,7 +41,7 @@ async function setup() {
     signal: new AbortController().signal,
     prompt: `Current prompt ![design](${URL}?signature=expired)\nPrevious thread: <${URL}?signature=other>`,
   };
-  return { workspace, db, close, cacheDir, requests, loader, request };
+  return { workspace, cacheDir, requests, loader, request };
 }
 
 test("current and historical private assets share stable cache identity across signed URLs and replay", async () => {
@@ -56,7 +53,6 @@ test("current and historical private assets share stable cache identity across s
   expect(await readFile(result.inputFiles[0]!.path)).toEqual(Buffer.from(bytes));
   expect(result.prompt).not.toContain("uploads.linear.app");
   expect(result.prompt).not.toContain("signature");
-  expect(await listLinearInputs(env.db, "session", "turn-1")).toHaveLength(1);
   const replay = await env.loader()({
     ...env.request,
     turnId: "turn-2",
@@ -64,15 +60,11 @@ test("current and historical private assets share stable cache identity across s
   });
   expect(env.requests).toHaveLength(1);
   expect(replay.inputFiles[0]?.path).not.toBe(result.inputFiles[0]?.path);
-  expect((await listLinearInputs(env.db, "session", "turn-2"))[0]?.assetId).toBe(
-    (await listLinearInputs(env.db, "session", "turn-1"))[0]?.assetId,
-  );
-  expect(JSON.stringify(await listLinearInputs(env.db, "session", "turn-2"))).not.toContain(
-    "signature",
-  );
+  expect(basename(replay.inputFiles[0]!.path)).toBe(basename(result.inputFiles[0]!.path));
+  expect(replay.prompt).toContain(basename(result.inputFiles[0]!.path));
+  expect(replay.prompt).not.toContain("signature");
   for (const filename of await readdir(env.cacheDir))
     expect((await stat(join(env.cacheDir, filename))).mode & 0o777).toBe(0o600);
-  await env.close();
 });
 
 test("private local inputs stay outside Git checkpoints", async () => {
@@ -94,7 +86,6 @@ test("private local inputs stay outside Git checkpoints", async () => {
   await writeFile(join(env.workspace, "result.txt"), "result");
   expect((await commitCheckpoint(env.workspace)).committed).toBe(true);
   expect((await git(["-C", env.workspace, "ls-files"])).trim()).toBe("result.txt");
-  await env.close();
 });
 
 test("input materialization refuses symlink directories and existing symlink destinations", async () => {
@@ -111,7 +102,6 @@ test("input materialization refuses symlink directories and existing symlink des
   await symlink(victim, result.inputFiles[0]!.path);
   await expect(env.loader()(env.request)).rejects.toThrow();
   expect(await readFile(victim, "utf8")).toBe("unchanged");
-  await env.close();
 });
 
 test("invalid cache bytes fail closed without another download", async () => {
@@ -125,7 +115,6 @@ test("invalid cache bytes fail closed without another download", async () => {
   await chmod(join(env.cacheDir, filename), 0o600);
   await expect(env.loader()(env.request)).rejects.toThrow("integrity");
   expect(env.requests).toHaveLength(1);
-  await env.close();
 });
 
 test("foreign URLs, excessive files, and canceled turns cannot acquire host credentials", async () => {
@@ -145,7 +134,6 @@ test("foreign URLs, excessive files, and canceled turns cannot acquire host cred
     }),
   ).rejects.toThrow("file limit");
   expect(env.requests).toHaveLength(0);
-  await env.close();
 });
 
 test("a Linear link that cannot be downloaded stays a link and the turn continues", async () => {
@@ -169,7 +157,6 @@ test("a Linear link that cannot be downloaded stays a link and the turn continue
     });
     const missing = "https://uploads.linear.app/workspace/missing.png?signature=secret";
     const result = await createLinearInputLoader({
-      store: (await tempStore()).db,
       files,
       cacheDir: join(tempHome(), "inputs"),
     })({

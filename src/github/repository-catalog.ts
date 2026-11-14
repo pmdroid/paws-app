@@ -6,6 +6,7 @@ export type CatalogRepository = {
   repo: string;
   remoteUrl: string;
   defaultBranch: string;
+  private?: true;
 };
 
 const PAGE_SIZE = 100;
@@ -87,7 +88,7 @@ async function pages(
 }
 
 function catalogEntry(entry: unknown, pushableOnly: boolean): CatalogRepository | null {
-  if (!isRecord(entry) || entry.archived === true) return null;
+  if (!isRecord(entry) || entry.archived === true || entry.disabled === true) return null;
   if (pushableOnly && isRecord(entry.permissions) && entry.permissions.push === false) return null;
   const owner = isRecord(entry.owner) ? entry.owner.login : null;
   if (
@@ -102,6 +103,7 @@ function catalogEntry(entry: unknown, pushableOnly: boolean): CatalogRepository 
     repo: entry.name,
     remoteUrl: entry.clone_url,
     defaultBranch: entry.default_branch,
+    ...(entry.private === true ? { private: true as const } : {}),
   };
 }
 

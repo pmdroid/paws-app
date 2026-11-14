@@ -1,6 +1,6 @@
 import { fullStatusFixture, issueList, pageData } from "../../test/fixtures";
-import { expect, test } from "bun:test";
-import { SETTINGS_PAGES } from "./settings-pages";
+import { beforeEach, expect, test } from "bun:test";
+import { SETTINGS_PAGES, setSettingsAdmin } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
   issueListRedirect,
@@ -12,6 +12,8 @@ import {
   type Route,
 } from "./route";
 import { render } from "./render";
+
+beforeEach(() => setSettingsAdmin(true));
 
 const model = {
   phase: "ready" as const,

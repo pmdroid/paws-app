@@ -142,7 +142,7 @@ export function* revokeLinearInstallationSteps(
   validateTime(input.createdAtMs);
   const { linearAppRevocation, linearSession } = q.t;
   if (!(yield* recordEventSteps(q, input.eventKey, input.createdAtMs))) return [];
-  const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const later = sql`GREATEST`;
   const changed = yield* q.all(
     q.orm
       .insert(linearAppRevocation)
@@ -627,4 +627,24 @@ function validate(...values: string[]): void {
 function validateTime(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new Error("Linear access timestamp is invalid");
+}
+
+export function* pruneLinearAccessEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { linearAccessEvent: a } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(a)
+      .where(
+        inArray(
+          a.eventKey,
+          q.orm
+            .select({ eventKey: a.eventKey })
+            .from(a)
+            .where(lt(a.createdAt, cutoff))
+            .limit(limit),
+        ),
+      )
+      .returning({ eventKey: a.eventKey }),
+  );
+  return deleted.length;
 }

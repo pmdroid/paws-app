@@ -5,7 +5,7 @@ import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promi
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
-import { getVisualReviewMarkSteps, recordLinearInput, type Db } from "../db";
+import { getVisualReviewMarkSteps, type Db } from "../db";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -14,7 +14,6 @@ const INPUT_DIRECTORY = ".paws-linear-inputs";
 type CachedInput = { filename: string; mimeType: string; sha256: string; data: string };
 
 export function createLinearInputLoader(options: {
-  store: Db;
   files: Pick<LinearFileTransfer, "download">;
   cacheDir: string;
 }) {
@@ -73,15 +72,7 @@ export function createLinearInputLoader(options: {
       const path = join(turnDirectory, `${id}${extension}`);
       await writeAtomic(path, bytes);
       request.signal.throwIfAborted();
-      await recordLinearInput(options.store, {
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-        assetId: id,
-        assetUrl: url,
-        mimeType: file.mimeType,
-        size: bytes.byteLength,
-        sha256: file.sha256,
-      });
+
       inputs.push({ path, mimeType: file.mimeType, bytes: new Uint8Array(bytes) });
       const local = `./${INPUT_DIRECTORY}/${digest(request.turnId)}/${id}${extension}`;
       for (const original of originals) replacements.set(original, local);

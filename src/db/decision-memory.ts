@@ -1,8 +1,6 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
-import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
-import type { Orm } from "./orm";
 import { sessionRepositoryAllowed } from "./workspace-scope";
 
 export type DecisionScope = {
@@ -106,24 +104,10 @@ export function* listDecisionRowsSteps(q: Q, workspaceId: string) {
   return rows as DecisionRow[];
 }
 
-/** SQLite's FTS5 index, created in `raw.ts`. Postgres searches `decision_memory.search` instead. */
-const ftsIndex = sqliteTable("decision_memory_search", {
-  decisionId: text("decision_id").notNull(),
-  statement: text().notNull(),
-  tags: text().notNull(),
-});
-
 function searchFragment(q: Q, query: string) {
-  if (q.dialect === "sqlite")
-    return {
-      index: sql`${ftsIndex}`,
-      match: sql`${ftsIndex} MATCH ${query}`,
-      order: [sql`bm25(${ftsIndex})`],
-    };
   const { search, id } = q.t.decisionMemory;
   const tsquery = sql`websearch_to_tsquery('simple', ${query})`;
   return {
-    index: null,
     match: sql`${search} @@ ${tsquery}`,
     order: [sql`ts_rank(${search}, ${tsquery}) DESC`, asc(id)],
   };
@@ -146,10 +130,10 @@ export async function searchDecisionRows(
 
 export function* searchDecisionRowsSteps(q: Q, search: DecisionSearch) {
   const { decisionMemory: d } = q.t;
-  const { index, match, order } = searchFragment(q, search.query);
+  const { match, order } = searchFragment(q, search.query);
   const rows = decisionRows(q).$dynamic();
   const found = yield* q.all(
-    (index ? rows.innerJoin(index, sql`${ftsIndex.decisionId} = ${d.id}`) : rows)
+    rows
       .where(
         and(
           eq(d.workspaceId, search.workspaceId),
@@ -161,24 +145,6 @@ export function* searchDecisionRowsSteps(q: Q, search: DecisionSearch) {
       .limit(search.limit),
   );
   return found as DecisionRow[];
-}
-
-export async function replaceDecisionSearch(store: Db, entry: DecisionSearchEntry): Promise<void> {
-  await store.run((q) => replaceDecisionSearchSteps(q, entry));
-}
-
-type DecisionSearchEntry = { id: string; statement: string; tags: string };
-
-/** On Postgres the generated `search` column follows the row, so there is nothing to write. */
-export function* replaceDecisionSearchSteps(q: Q, entry: DecisionSearchEntry) {
-  if (q.dialect === "postgres") return;
-  const orm = q.orm as unknown as Orm;
-  yield* q.exec(orm.delete(ftsIndex).where(eq(ftsIndex.decisionId, entry.id)));
-  yield* q.exec(
-    orm
-      .insert(ftsIndex)
-      .values({ decisionId: entry.id, statement: entry.statement, tags: entry.tags }),
-  );
 }
 
 export async function decisionRow(
@@ -371,7 +337,19 @@ export async function acceptDecisionSuggestion(
   await store.run((q) => acceptDecisionSuggestionSteps(q, id, acceptedBy, now));
 }
 
+/**
+ * Accepts an open suggestion once. The update only matches while `accepted_at` is null, so of
+ * two concurrent transactions the second waits on the row lock, re-checks the condition after
+ * the first commits and matches nothing. Returns whether this call accepted it.
+ */
 export function* acceptDecisionSuggestionSteps(q: Q, id: string, acceptedBy: string, now: number) {
   const { decisionSuggestion: s } = q.t;
-  yield* q.exec(q.orm.update(s).set({ acceptedBy, acceptedAt: now }).where(eq(s.id, id)));
+  const rows = yield* q.all(
+    q.orm
+      .update(s)
+      .set({ acceptedBy, acceptedAt: now })
+      .where(and(eq(s.id, id), isNull(s.acceptedAt)))
+      .returning({ id: s.id }),
+  );
+  return rows.length > 0;
 }

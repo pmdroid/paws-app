@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import {
   describeOverriddenSections,
   journalRetiredProjectSettings,
@@ -25,7 +32,17 @@ import {
   type Db,
 } from "../src/db";
 import { withSavedStore } from "../src/doctor";
-import { handleTimeLimitSettingsRequest } from "../src/settings";
+import {
+  resolveGrokCommand,
+  resolveOpencodeCommand,
+  snapshotImplementationSkills,
+} from "../src/acp";
+import {
+  handleAgentSettingsRequest,
+  handleSkillSettingsRequest,
+  handleTimeLimitSettingsRequest,
+} from "../src/settings";
+import { fakeSkillResolver } from "../src/skills";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, pgliteServer, tempStore } from "./pglite";
 
@@ -321,4 +338,182 @@ test("a checkout.projects table in both config.toml and the saved settings loads
   const lines: string[] = [];
   journalRetiredProjectSettings(a.configPath, (line) => lines.push(line));
   expect(lines).toEqual(["checkout.projects is no longer supported"]);
+});
+
+test("project skill roots save to the database and the next turn's skill loading uses them", async () => {
+  const a = await instance(await shared(), "ACME");
+  const home = join(a.configPath, "..");
+  const skills = (name: string) => {
+    const root = join(home, name);
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(join(root, name, "SKILL.md"), `# ${name}\n`);
+    return root;
+  };
+  const fileRoot = skills("from-file");
+  const savedRoot = skills("from-settings");
+  const worktree = join(home, "worktree");
+  mkdirSync(worktree);
+  appendFileSync(a.configPath, `\n[skills.projects."acme/app"]\nroot = "${fileRoot}"\n`);
+  const audit: string[] = [];
+  const request = (role: string, init?: RequestInit) =>
+    handleSkillSettingsRequest(new Request("http://127.0.0.1:8787/api/settings/skills", init), {
+      store: a.db,
+      configPath: a.configPath,
+      root: join(home, "skills"),
+      resolver: fakeSkillResolver(),
+      csrfToken: "csrf",
+      role,
+      audit: async (_action, subject) => {
+        audit.push(subject);
+      },
+    });
+  const put = (role: string, projectRoots: unknown) =>
+    request(role, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-paws-csrf": "csrf" },
+      body: JSON.stringify({ projectRoots }),
+    });
+  const roots = async () =>
+    ((await (await request("admin"))!.json()) as { projectRoots: unknown }).projectRoots;
+  const loaded = async () =>
+    new TextDecoder().decode(
+      await snapshotImplementationSkills({ pawsRoot: home, worktree, repository: "acme/app" }),
+    );
+
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: fileRoot } } });
+  expect(await loaded()).toContain("from-file");
+
+  expect((await put("member", { projects: { "acme/app": { root: savedRoot } } }))!.status).toBe(
+    403,
+  );
+  for (const root of [
+    "relative/skills",
+    join(home, "missing"),
+    join(fileRoot, "from-file", "SKILL.md"),
+  ]) {
+    const refused = await put("admin", { projects: { "acme/app": { root } } });
+    expect(refused!.status).toBe(400);
+    expect(((await refused!.json()) as { error: string }).error).toContain("acme/app root");
+  }
+  expect((await put("admin", { projects: { "not a repo": { root: savedRoot } } }))!.status).toBe(
+    400,
+  );
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
+
+  expect((await put("admin", { projects: { "Acme/App": { root: savedRoot } } }))!.status).toBe(200);
+  expect(audit).toEqual([`Set project skill roots: acme/app ${savedRoot}`]);
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain(savedRoot);
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
+  expect(await loaded()).toContain("from-settings");
+
+  appendFileSync(a.configPath, `\n[skills.projects."acme/other"]\nroot = "${fileRoot}"\n`);
+  expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
+  expect(overriddenConfigSections(a.configPath)).toEqual([
+    "merge",
+    'skills.projects."acme/app"',
+    'skills.projects."acme/other"',
+  ]);
+  expect(await loaded()).toContain("from-settings");
+});
+
+function saveAgentCommands(configPath: string, body: Record<string, unknown>) {
+  return handleAgentSettingsRequest(
+    new Request("http://127.0.0.1:8787/api/settings/agents", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-paws-csrf": "csrf" },
+      body: JSON.stringify({
+        defaults: {
+          implementer: { agent: "grok", model: null },
+          reviewer: { agent: "codex", model: null },
+        },
+        ...body,
+      }),
+    }),
+    { configPath, csrfToken: "csrf" },
+  );
+}
+
+test("saved Grok and OpenCode commands win over config.toml without a restart", async () => {
+  const a = await instance(await shared(), "ACME");
+  const bin = join(dirname(a.configPath), "bin");
+  mkdirSync(bin);
+  for (const name of ["grok-saved", "opencode-saved", "grok-file"])
+    writeFileSync(join(bin, name), "");
+  appendFileSync(a.configPath, `\n[agents.grok]\npath = "${join(bin, "grok-file")}"\n`);
+  expect(loadConfigFile(a.configPath).agents.grok.path).toBe(join(bin, "grok-file"));
+
+  const saved = await saveAgentCommands(a.configPath, {
+    grok: { path: join(bin, "grok-saved"), allowApiKey: true },
+    opencode: { path: join(bin, "opencode-saved") },
+  });
+  expect(saved?.status).toBe(200);
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain("allow_api_key = true");
+  writeFileSync(
+    a.configPath,
+    `${BOOTSTRAP}\n[agents.grok]\npath = "${join(bin, "grok-file")}"\nallow_api_key = false\n`,
+  );
+  const agents = loadConfigFile(a.configPath).agents;
+  expect(agents.grok).toEqual({ path: join(bin, "grok-saved"), allowApiKey: true });
+  expect(resolveGrokCommand(agents).command).toBe(join(bin, "grok-saved"));
+  expect(resolveOpencodeCommand(agents).command).toBe(join(bin, "opencode-saved"));
+  expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "agents.grok"]);
+});
+
+test("settings saved before Grok moved keep config.toml's [agents.grok] until Settings saves it", async () => {
+  const a = await instance(await shared(), "ACME");
+  appendFileSync(a.configPath, '\n[agents.grok]\npath = "/opt/grok"\nallow_api_key = true\n');
+  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  await a.refresh();
+  expect(loadConfigFile(a.configPath).agents.grok).toEqual({
+    path: "/opt/grok",
+    allowApiKey: true,
+  });
+  expect(overriddenConfigSections(a.configPath)).toEqual(["merge"]);
+
+  expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain('path = "/opt/grok"');
+  expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "agents.grok"]);
+});
+
+test("the agents route refuses a relative path or a non-boolean allowApiKey", async () => {
+  const a = await instance(await shared(), "ACME");
+  for (const body of [
+    { grok: { path: "bin/grok" } },
+    { opencode: { path: "opencode" } },
+    { grok: { allowApiKey: "yes" } },
+    { grok: { key: "xai-secret" } },
+  ]) {
+    const response = await saveAgentCommands(a.configPath, body);
+    expect(response?.status).toBe(400);
+    expect(((await response!.json()) as { error: string }).error).toMatch(/grok|opencode/);
+  }
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
+});
+
+test("a save that sends back config.toml's command name keeps it and leaves out fields it omits", async () => {
+  const a = await instance(await shared(), "ACME");
+  appendFileSync(a.configPath, '\n[agents.grok]\npath = "grok"\nallow_api_key = true\n');
+  const echoed = await saveAgentCommands(a.configPath, {
+    grok: { path: "grok", allowApiKey: true },
+    opencode: { path: null },
+  });
+  expect(echoed?.status).toBe(200);
+  expect((await saveAgentCommands(a.configPath, { grok: { path: null } }))?.status).toBe(200);
+  expect(loadConfigFile(a.configPath).agents.grok).toEqual({ path: null, allowApiKey: true });
+});
+
+test("a cleared or never-set command path stays unset when config.toml sets one later", async () => {
+  const a = await instance(await shared(), "ACME");
+  appendFileSync(a.configPath, '\n[agents.opencode]\npath = "/opt/opencode"\n');
+  expect((await saveAgentCommands(a.configPath, { opencode: { path: null } }))?.status).toBe(200);
+  expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
+  appendFileSync(a.configPath, '\n[agents.grok]\npath = "/opt/grok"\n');
+  const agents = loadConfigFile(a.configPath).agents;
+  expect(agents.opencode?.path ?? null).toBe(null);
+  expect(agents.grok.path).toBe(null);
+
+  const b = await instance(await shared(), "ACME-B");
+  expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
+  appendFileSync(b.configPath, '\n[agents.opencode]\npath = "/opt/opencode"\n');
+  expect(loadConfigFile(b.configPath).agents.opencode?.path ?? null).toBe(null);
 });

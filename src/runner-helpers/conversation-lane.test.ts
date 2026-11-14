@@ -6,50 +6,48 @@ import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
   listRunnerOverview,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
   recordRunnerHostStatus,
   runnerHelperAvailability,
   runnerOccupancy,
-  sqliteDb,
 } from "../db";
 import { FAST_MODE_RUNNER_VERSION, RUNNER_CONVERSATION_MS } from "../runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from ".";
+import { sqlRun, tempStore } from "../../test/pglite";
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
 });
 
 async function fixture(version: string | null, conversations?: number) {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-lane-"));
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close: closeDb } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run(
+  await sqlRun(
+    db,
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'Acme box','active',?,?)",
     ["runner", workspace.id, userId, now, now],
   );
   for (const sessionId of ["session-1", "session-2", "session-3", "session-4"])
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -57,11 +55,10 @@ async function fixture(version: string | null, conversations?: number) {
       teamId: "team",
       observedAtMs: now,
     });
-  await recordRunnerCapacity(sqliteDb(db), "runner", 1, 1, conversations);
-  if (version)
-    await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: version }, now);
+  await recordRunnerCapacity(db, "runner", 1, 1, conversations);
+  if (version) await recordRunnerHostStatus(db, "runner", { runnerVersion: version }, now);
   const helpers = createRunnerHelpers({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
@@ -85,8 +82,8 @@ async function fixture(version: string | null, conversations?: number) {
           : {}),
       })
     ).command;
-  cleanup.push(() => {
-    db.close();
+  cleanup.push(async () => {
+    await closeDb();
     rmSync(root, { recursive: true, force: true });
   });
   return { db, now, workspace: workspace.id, dispatch };
@@ -95,13 +92,13 @@ async function fixture(version: string | null, conversations?: number) {
 test("a conversation starts with every work slot busy and fills no work slot", async () => {
   const { db, now, workspace, dispatch } = await fixture("0.1.77", 2);
   await dispatch("session-1", "classify");
-  expect(await runnerOccupancy(sqliteDb(db), "runner", now)).toEqual({ capacity: 1, occupied: 1 });
-  expect((await runnerHelperAvailability(sqliteDb(db), "runner", now, true)).available).toBe(false);
+  expect(await runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
+  expect((await runnerHelperAvailability(db, "runner", now, true)).available).toBe(false);
 
   const command = await dispatch("session-2", "conversation");
   expect(command.expiresAt - command.issuedAt).toBe(RUNNER_CONVERSATION_MS);
-  expect(await runnerOccupancy(sqliteDb(db), "runner", now)).toEqual({ capacity: 1, occupied: 1 });
-  const [runner] = await listRunnerOverview(sqliteDb(db), workspace, now);
+  expect(await runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
+  const [runner] = await listRunnerOverview(db, workspace, now);
   expect(runner!.slots).toEqual({ used: 1, total: 1 });
   expect(runner!.conversations).toEqual({ used: 1, total: 2 });
 });
@@ -121,10 +118,8 @@ test("a third conversation waits for a conversation slot, not a work slot", asyn
   await dispatch("session-1", "conversation");
   await dispatch("session-2", "conversation");
   await expect(dispatch("session-3", "conversation")).rejects.toThrow("Runner is busy");
-  expect((await runnerHelperAvailability(sqliteDb(db), "runner", now, true, true)).available).toBe(
-    false,
-  );
-  expect(await runnerOccupancy(sqliteDb(db), "runner", now)).toEqual({ capacity: 1, occupied: 0 });
+  expect((await runnerHelperAvailability(db, "runner", now, true, true)).available).toBe(false);
+  expect(await runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 0 });
   expect((await dispatch("session-4", "classify")).purpose).toBe("classify");
 });
 
@@ -137,8 +132,6 @@ for (const [name, version, conversations] of [
 ] as const)
   test(`${name} admits no conversation`, async () => {
     const { db, now, dispatch } = await fixture(version, conversations);
-    expect(
-      (await runnerHelperAvailability(sqliteDb(db), "runner", now, true, true)).available,
-    ).toBe(false);
+    expect((await runnerHelperAvailability(db, "runner", now, true, true)).available).toBe(false);
     await expect(dispatch("session-1", "conversation")).rejects.toThrow("Runner is busy");
   });

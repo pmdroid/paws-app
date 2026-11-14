@@ -5,6 +5,7 @@ import { beginImplementRun, insertQueuedItem, openDatabase } from "../../src/db"
 import { openExecutionJournal, type WorkCommand } from "../../src/runner-journal";
 import { RunnerEventSchema } from "../../src/runner-protocol";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
+import { issueRecords } from "../../src/dashboard/test/issue-records";
 import { tempStore } from "../pglite";
 
 export async function probeRunnerPublicActivity(root: string) {
@@ -212,11 +213,13 @@ export async function probeRunnerPublicActivity(root: string) {
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
     const statusRun = (
-      await createLiveStatusProvider(db, {
-        pawsHome: root,
-        sessionIds: options.sessionIds,
-        env: options.env,
-      }).issues()
+      await issueRecords(
+        createLiveStatusProvider(db, {
+          pawsHome: root,
+          sessionIds: options.sessionIds,
+          env: options.env,
+        }),
+      )
     ).runs[0]!;
     assert(!("transcript" in statusRun));
     assert(

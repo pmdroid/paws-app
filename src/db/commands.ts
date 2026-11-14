@@ -24,10 +24,13 @@ import {
   stopOutboxSessionSteps,
   advanceOutboxSessionSteps,
 } from "./outbox";
-import { withOpenFindingsSteps } from "./open-findings";
 import { markRunSteps } from "./runs";
 import { haltSteps } from "./halt";
-import { enqueueEndedSessionFaceSteps, stoppedResponseSteps } from "./stop-response";
+import {
+  enqueueEndedSessionFaceSteps,
+  stoppedResponseSteps,
+  withOpenFindingsSteps,
+} from "./stop-response";
 import { mergeCallInFlightSteps, getConfirmedRemoteMergeSteps } from "./remote-merges";
 import { type Q, type Db, type Steps } from "./db";
 
@@ -185,9 +188,7 @@ export function* applyCommandRowsSteps(
                     eq(jobTable.queue, JOB_KIND.merge),
                     like(jobTable.queue, `${JOB_KIND.merge}.%`),
                   ),
-                  tx0.dialect === "sqlite"
-                    ? sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`
-                    : sql`${jobTable.payload}->>'itemId' = ${item.id}`,
+                  sql`${jobTable.payload}->>'itemId' = ${item.id}`,
                 ),
               ),
           )) !== undefined));

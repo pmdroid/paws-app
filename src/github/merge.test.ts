@@ -321,6 +321,54 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
     }
   });
 
+  test("with mirrors off, overlap reads the changed files from GitHub's compare", async () => {
+    const repo = await twoClones();
+    try {
+      const merging = mergingClient(repo.bare, []);
+      const compared: string[] = [];
+      let mainFiles = ["file.txt"];
+      const client: GitHubClient = {
+        async request(req) {
+          const compare = /\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)/.exec(req.path);
+          if (!compare) return merging.request(req);
+          compared.push(`${compare[1]}...${compare[2]}`);
+          const toMain = compare[2] === (await remoteBranch(repo.bare, "main"));
+          return {
+            status: 200,
+            body: {
+              merge_base_commit: { sha: "b".repeat(40) },
+              files: (toMain ? mainFiles : ["file.txt"]).map((filename) => ({ filename })),
+            },
+          };
+        },
+      };
+      await commitFile(repo.wtA, "file.txt", "candidate\n");
+      await pushBranch({
+        ...creds(client),
+        worktree: repo.wtA,
+        issue: "ENG-8",
+        remoteUrl: repo.bare,
+      });
+      await commitFile(repo.wtB, "other.txt", "new main\n");
+      await exec("git", ["-C", repo.wtB, "push", "origin", "HEAD:main"]);
+      const head = await revParse(repo.wtA, "HEAD");
+      const main = await remoteBranch(repo.bare, "main");
+      const input = {
+        ...lane({ ...repo, work: repo.wtA }, client, 8),
+        overlap: { packages: [], fromGitHub: true },
+      };
+
+      const shared = await readPullFacts(input);
+      expect(shared).toMatchObject({ kind: "facts", apart: false, shared: ["file.txt"] });
+      expect(compared.toSorted()).toEqual([`${head}...${main}`, `${main}...${head}`].toSorted());
+
+      mainFiles = ["other.txt"];
+      expect(await readPullFacts(input)).toMatchObject({ kind: "facts", shared: [] });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("pending CI and unresolved threads are read once, without sleeping", async () => {
     const repo = await oneClone();
     try {

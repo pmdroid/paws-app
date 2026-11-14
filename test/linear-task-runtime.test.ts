@@ -563,7 +563,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     const originalKey = (await db.run((q) =>
       q.one(
         q.orm
-          .select({ taskKey: sql<string>`${sql.raw(parentTaskKeySql("work_item", "postgres"))}` })
+          .select({ taskKey: sql<string>`${sql.raw(parentTaskKeySql("work_item"))}` })
           .from(q.t.workItem)
           .where(eq(q.t.workItem.delegationId, previous.delegationId))
           .orderBy(asc(q.t.workItem.position), asc(q.t.workItem.id))
@@ -800,28 +800,9 @@ test.each(["answer", "artifact"] as const)(
       expect(prompt).not.toContain("signature=old");
       expect(existsSync(join(f.root, "mirrors"))).toBe(false);
       expect(existsSync(join(f.root, "worktrees"))).toBe(false);
-      const inputs = await f.db.run((q) =>
-        q.all(
-          q.orm
-            .select({
-              asset: q.t.linearInput.assetId,
-              url: q.t.linearInput.assetUrl,
-              turn: q.t.linearInput.turnId,
-              session: q.t.linearInput.sessionId,
-            })
-            .from(q.t.linearInput)
-            .orderBy(asc(q.t.linearInput.assetUrl)),
-        ),
-      );
-      expect(inputs.map((input) => input.url)).toEqual([
-        "https://uploads.linear.app/workspace/history.txt",
-        "https://uploads.linear.app/workspace/reference.txt",
-      ]);
-      expect(new Set(inputs.map((input) => input.turn)).size).toBe(1);
-      for (const input of inputs) {
-        expect(input.session).toBe("session");
-        expect(prompt).toContain(input.asset);
-      }
+      const inputs = [...prompt.matchAll(/\.paws-linear-inputs\/([0-9a-f]+)\/([^\s"\\)]+)/g)];
+      expect(new Set(inputs.map((input) => input[2])).size).toBe(2);
+      expect(new Set(inputs.map((input) => input[1])).size).toBe(1);
       // An answer does not finish the issue; a delivered artifact does.
       expect(f.tracker.statuses).toEqual(
         mode === "artifact" ? [{ linearIssueId: "parent", stateType: "completed" }] : [],

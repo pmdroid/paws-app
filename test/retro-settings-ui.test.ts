@@ -20,6 +20,7 @@ import {
 import type { WorkspacePrincipal } from "../src/workspace";
 import { ALL, worldPg } from "./improvement-fixtures";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const client = (path: string) => import(path);
 const { createRetroSettings } = await client("../src/dashboard/src/client/retro-settings.ts");
@@ -573,8 +574,9 @@ test("a report shows the prompt and profile its retro froze", async () => {
   page.innerHTML = '<div data-retro-frozen="r1"></div>';
   controller.attach(page, "http://127.0.0.1:8787", "ws:user-admin");
   expect(page.textContent).toContain("Loading the settings");
-  await settle();
-  expect(page.textContent).toContain("Settings this retro ran with");
+  await waitFor(() => (page.textContent ?? "").includes("Settings this retro ran with"), {
+    what: "the frozen settings",
+  });
   expect(page.textContent).toContain("Settings revision1");
   expect(page.textContent).toContain("Review {{period}}.");
   expect(page.textContent).toContain("15 active minutes, 1 retries");

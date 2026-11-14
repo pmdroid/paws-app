@@ -43,6 +43,7 @@ export const linearSession = pgTable("linear_session", {
   oauthClientId: text("oauth_client_id"),
   teamId: text("team_id"),
   installationObservedAt: bigint("installation_observed_at", { mode: "number" }),
+  activitiesListedGeneration: bigint("activities_listed_generation", { mode: "number" }),
 });
 
 export const linearTurn = pgTable(
@@ -96,38 +97,36 @@ export const linearArtifact = pgTable(
   ],
 );
 
-export const linearInput = pgTable(
-  "linear_input",
-  {
-    sessionId: text("session_id").notNull(),
-    turnId: text("turn_id").notNull(),
-    assetId: text("asset_id").notNull(),
-    assetUrl: text("asset_url").notNull(),
-    mimeType: text("mime_type").notNull(),
-    size: bigint({ mode: "number" }).notNull(),
-    sha256: text().notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.sessionId, table.turnId, table.assetId],
-      name: "linear_input_session_id_turn_id_asset_id_pk",
-    }),
-  ],
-);
-
 export const linearConversation = pgTable(
   "linear_conversation",
   {
     itemId: text("item_id")
       .primaryKey()
       .references(() => workItem.id),
-    entries: jsonb().notNull(),
     transcript: text(),
     transcriptOffset: bigint("transcript_offset", { mode: "number" }).default(0).notNull(),
     blocked: integer().default(0).notNull(),
     blockedAt: bigint("blocked_at", { mode: "number" }),
   },
   () => [check("linear_conversation_check_2", sql`blocked IN (0,1)`)],
+);
+
+export const linearConversationEntry = pgTable(
+  "linear_conversation_entry",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => linearConversation.itemId, { onDelete: "cascade" }),
+    position: integer().notNull(),
+    entry: jsonb().notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.itemId, table.position],
+      name: "linear_conversation_entry_item_id_position_pk",
+    }),
+  ],
 );
 
 export const linearStopReceipt = pgTable(
@@ -271,15 +270,6 @@ export const linearIssueContext = pgTable(
   ],
 );
 
-export const linearOutboxBackoff = pgTable(
-  "linear_outbox_backoff",
-  {
-    id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-    notBefore: bigint("not_before", { mode: "number" }).notNull(),
-  },
-  () => [check("linear_outbox_backoff_check_1", sql`id=1`)],
-);
-
 export const linearRequestBudget = pgTable("linear_request_budget", {
   workspace: text().primaryKey(),
   windowStart: bigint("window_start", { mode: "number" }).notNull(),
@@ -298,30 +288,10 @@ export const linearRequestReservation = pgTable(
   (table) => [index("linear_request_reservation_workspace").on(table.workspace, table.expiresAt)],
 );
 
-export const linearActivityListing = pgTable("linear_activity_listing", {
-  sessionId: text("session_id").primaryKey(),
-  generation: bigint({ mode: "number" }).notNull(),
-});
-
 export const linearItemRequest = pgTable("linear_item_request", {
   itemId: text("item_id").primaryKey(),
   requests: bigint({ mode: "number" }).notNull(),
 });
-
-export const linearItemCallerRequest = pgTable(
-  "linear_item_caller_request",
-  {
-    itemId: text("item_id").notNull(),
-    caller: text().notNull(),
-    requests: bigint({ mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.itemId, table.caller],
-      name: "linear_item_caller_request_item_id_caller_pk",
-    }),
-  ],
-);
 
 export const linearComment = pgTable(
   "linear_comment",

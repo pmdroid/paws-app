@@ -7,7 +7,7 @@ import {
   listWorkItemFacts,
   recordCiRerun,
 } from "../../../db";
-import { parseIssueListResponse } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { historyOf } from "./provider";
 import { tempStore } from "../../../../test/pglite";
@@ -43,12 +43,12 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
     runIds: [41474224082],
   });
   await applyWorkItemEvent(db, "item", "turn_ended");
-  const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+  const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/item"), {
     store: db,
     env: {},
   });
-  const body = parseIssueListResponse(await response!.json());
+  const body = parseIssueDetailResponse(await response!.json());
   if (!body.ok) throw new Error(body.error);
-  const item = body.response.issues.find((candidate) => candidate.id === "item");
+  const item = body.response.issue;
   expect(item?.timeline?.find((entry) => entry.kind === "ci_rerun")?.runIds).toEqual([41474224082]);
 });

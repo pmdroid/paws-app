@@ -8,8 +8,7 @@ import { createLiveStatusProvider } from "../src/dashboard";
 import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
 import {
   insertQueuedItem,
-  saveCandidateRisk,
-  saveCandidatePaths,
+  saveCandidateRiskSteps,
   upsertCloseoutStep,
   finishCloseoutProgress,
   insertLinkAsk,
@@ -51,20 +50,17 @@ async function fixture(
     policyDigest: "policy",
     policyPath: null,
   };
-  await saveCandidateRisk(db, {
-    itemId: item.id,
-    head: "head",
-    base: "base",
-    tier: "high",
-    paths: ["auth.ts"],
-    classifiedAt: now,
-  });
-  await saveCandidatePaths(db, {
-    itemId: item.id,
-    head: "head",
-    paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
-    recordedAt: now,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: item.id,
+      head: "head",
+      base: "base",
+      tier: "high",
+      paths: ["auth.ts"],
+      changedPaths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
+      classifiedAt: now,
+    }),
+  );
   let settingsReads = 0;
   const settings: Pick<MergeSettings, "autoApproveHighRisk" | "repositories"> = {
     autoApproveHighRisk: scenario !== "off",
@@ -125,9 +121,9 @@ async function fixture(
     await db.run((q) =>
       q.exec(
         q.orm
-          .update(q.t.candidatePaths)
-          .set({ paths: {} })
-          .where(eq(q.t.candidatePaths.itemId, item.id)),
+          .update(q.t.candidateRisk)
+          .set({ changedPaths: {} })
+          .where(eq(q.t.candidateRisk.itemId, item.id)),
       ),
     );
   const provider = createLiveStatusProvider(db, {

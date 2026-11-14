@@ -334,28 +334,21 @@ export function* gatherLinearCommentsSteps(
   jobKey: string,
 ): Steps<boolean> {
   // Different comment keys still share one pending quiet window for this item.
-  if (q.dialect === "postgres")
-    yield* q.exec(
-      q.orm
-        .select({
-          lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-comments:${itemId}`}, 0))`,
-        })
-        .from(sql`(SELECT 1) AS lock_scope`),
-    );
+  yield* q.exec(
+    q.orm
+      .select({
+        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-comments:${itemId}`}, 0))`,
+      })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
   const { job } = q.t;
-  const item =
-    q.dialect === "postgres"
-      ? sql`${job.payload}->>'linearCommentsFor'`
-      : sql`json_extract(${job.payload}, '$.linearCommentsFor')`;
+  const item = sql`${job.payload}->>'linearCommentsFor'`;
   const pending = and(
     eq(job.status, "pending"),
     eq(job.queue, JOB_KIND.linearComments),
     eq(item, itemId),
   );
-  const runAt =
-    q.dialect === "postgres"
-      ? sql`LEAST(GREATEST(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`
-      : sql`MIN(MAX(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`;
+  const runAt = sql`LEAST(GREATEST(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`;
   yield* q.exec(q.orm.update(job).set({ runAt }).where(pending));
   if (yield* q.one(q.orm.select({ id: job.id }).from(job).where(pending).limit(1))) return false;
   const { inserted } = yield* enqueueJobOnceSteps(q, {
@@ -424,7 +417,7 @@ export function* commentOpenedAgentSessionSteps(q: Q, issueId: string, commentId
         and(
           eq(inboxEvent.issueId, issueId),
           inArray(inboxEvent.action, ["created", "prompted"]),
-          q.dialect === "sqlite" ? sql`json_valid(${payload})` : undefined,
+          undefined,
           or(
             eq(jsonField(q, payload, "agentActivity", "sourceCommentId"), commentId),
             eq(jsonField(q, payload, "agentSession", "sourceCommentId"), commentId),

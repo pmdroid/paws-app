@@ -9,6 +9,7 @@ import { attachOrchestrator, KEEPALIVE_MS, LINEAR_STALE_MS } from "../src/loop";
 import { emptyReview, repoLayout, stateOfPg, tickWithRestartsPg } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
+import { waitFor as waitUntil } from "./wait-for";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -125,6 +126,15 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
         row.op === "linear.session.plan" &&
         JSON.stringify(row.payload).includes("rank runners by load share"),
     );
+  const delivered = (line: string) =>
+    waitUntil(
+      async () => {
+        await orchestrator.flushPosts();
+        while ((await outbox.tick()).length > 0) await outbox.idle();
+        return thoughts().includes(line);
+      },
+      { what: `the keepalive "${line}"` },
+    );
   let running: Promise<unknown> | undefined;
   try {
     await orchestrator.onLinearEvent(event("created", null));
@@ -134,24 +144,23 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
 
     // Before the agent has a plan, the keepalive would repeat its last post_update line, which
     // the session already shows, so it names the phase instead.
-    for (let i = 0; i < 1_000 && !thoughts().includes("Found the cause in the scheduler."); i++)
-      await Bun.sleep(10);
+    await waitUntil(() => thoughts().includes("Found the cause in the scheduler."), {
+      timeout: 10_000,
+      what: "the agent's first update",
+    });
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
-    await orchestrator.flushPosts();
-    while ((await outbox.tick()).length > 0) await outbox.idle();
+    await delivered("Implementing ENG-25.");
     expect(thoughts().slice(-2)).toEqual([
       "Found the cause in the scheduler.",
       "Implementing ENG-25.",
     ]);
 
     writeFileSync(planned, "go");
-    for (let i = 0; i < 1_000 && !(await hasPlan()); i++) await Bun.sleep(10);
-    expect(await hasPlan()).toBe(true);
+    await waitUntil(hasPlan, { timeout: 10_000, what: "the agent's plan" });
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
-    await orchestrator.flushPosts();
-    while ((await outbox.tick()).length > 0) await outbox.idle();
+    await delivered("Step 3 of 5: rank runners by load share.");
     expect(thoughts().at(-1)).toBe("Step 3 of 5: rank runners by load share.");
     expect(thoughts()).not.toContain("Working on ENG-25.");
     const keepalives = (await listOutbox(db)).filter(

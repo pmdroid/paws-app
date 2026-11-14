@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
 export type TaskMergeSettings = {
@@ -57,6 +57,31 @@ export function* getTaskMergeSettingsSteps(q: Q, itemId: string) {
         mainMoved: row.mainMoved as TaskMergeSettings["mainMoved"],
         resolved: JSON.parse(row.resolvedJson) as Record<string, unknown>,
       };
+}
+
+export function* listTaskMergeSettingsSteps(q: Q, itemIds: readonly string[]) {
+  const { workItemMergeSettings } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: workItemMergeSettings.itemId,
+        mergeOrder: workItemMergeSettings.mergeOrder,
+        mainMoved: workItemMergeSettings.mainMoved,
+        resolvedJson: workItemMergeSettings.resolvedJson,
+      })
+      .from(workItemMergeSettings)
+      .where(inArray(workItemMergeSettings.itemId, [...itemIds])),
+  );
+  return new Map(
+    rows.map((row): [string, TaskMergeSettings] => [
+      row.itemId,
+      {
+        order: row.mergeOrder as TaskMergeSettings["order"],
+        mainMoved: row.mainMoved as TaskMergeSettings["mainMoved"],
+        resolved: JSON.parse(row.resolvedJson) as Record<string, unknown>,
+      },
+    ]),
+  );
 }
 
 export async function getTaskMergeSettings(

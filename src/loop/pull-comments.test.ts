@@ -8,7 +8,6 @@ import {
   bindWorkItemRepository,
   enterMergeQueue,
   fixRounds,
-  getPullComment,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -47,7 +46,7 @@ import {
 } from "./pull-reviews";
 import { readReviewChecks } from "./review-checks";
 import { worktreeBranch } from "./sources";
-import { seed } from "../../test/dialects";
+import { pullCommentOutcome, seed } from "../../test/dialects";
 import { tempStore } from "../../test/pglite";
 
 const THREADS: FakeReviewThread[] = [
@@ -309,8 +308,8 @@ describe("pull request comments restart the item", () => {
     expect(text).not.toContain("cache key");
     expect(text).not.toContain("Done already.");
     expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
-    expect((await getPullComment(db, "inline", 9001))?.outcome).toBe("restarted");
-    expect((await getPullComment(db, "review", 601))?.outcome).toBe("restarted");
+    expect(await pullCommentOutcome(db, "inline", 9001)).toBe("restarted");
+    expect(await pullCommentOutcome(db, "review", 601)).toBe("restarted");
     // The Linear session wakes and says why the agent is back.
     expect(await feedbackThoughts(db)).toEqual([
       "@pascal commented on pull request #7. The agent is working on the comments.",
@@ -482,7 +481,7 @@ describe("comments that do not restart", () => {
         body: "<!-- deploy-security-proof -->\n## Deploy security proof\nResult: **PASS**",
       }),
     ).toBe(true);
-    expect(await getPullComment(db, "conversation", 11)).toBeNull();
+    expect(await pullCommentOutcome(db, "conversation", 11)).toBeUndefined();
     expect(await commentJobs(db)).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(await resumeJobs(db)).toHaveLength(0);
@@ -582,7 +581,7 @@ describe("comments that do not restart", () => {
       pull_request: await pull(),
     });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
-    expect((await getPullComment(db, "inline", 5001))?.outcome).toBe("covered");
+    expect(await pullCommentOutcome(db, "inline", 5001)).toBe("covered");
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
   });
@@ -640,7 +639,7 @@ describe("timing", () => {
     expect(question?.body).toContain("@pascal commented on pull request #7");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect((await getPullComment(db, "conversation", 1))?.outcome).toBe("asked");
+    expect(await pullCommentOutcome(db, "conversation", 1)).toBe("asked");
   });
 });
 

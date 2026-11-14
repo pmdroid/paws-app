@@ -5,6 +5,7 @@ import { resolveAdapter } from "../acp";
 import {
   closeoutPolicyRoot,
   exeDevTokenStatus,
+  loadConfigFile,
   loadRuntime,
   overriddenConfigSections,
   tailscaleAuthKeyStatus,
@@ -12,6 +13,7 @@ import {
   type AgentProfiles,
   type EnvSource,
   type ExeDevTokenStatus,
+  type PawsConfigFile,
   type RuntimeConfig,
   type TailscaleAuthKeyStatus,
   type TrackerKind,
@@ -215,15 +217,26 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
 
 /**
  * Repositories are checked out on the runner, so Closeout reads each policy from the repository's
- * origin/main there. Doctor can only load the local policy roots `config.toml` names.
+ * origin/main there. Doctor can only load the local policy roots Settings › Closeout names.
  */
 async function closeoutPolicyFact(
   runtime: RuntimeConfig,
   repos: readonly string[],
 ): Promise<ProbeFacts["closeout"]> {
   const home = runtime.env.home;
+  let config: PawsConfigFile;
+  try {
+    config = loadConfigFile(pawsPaths(home).configFile);
+  } catch (error) {
+    journalCaught(error, "probe.closeoutPolicyFact.loadConfigFile", null);
+    return {
+      ok: false,
+      detail: "config.toml could not be read for local Closeout policy roots",
+      fix: oneLine(error instanceof Error ? error.message : String(error)),
+    };
+  }
   const local = repos.flatMap((repo) => {
-    const root = closeoutPolicyRoot(runtime.file, home, repo);
+    const root = closeoutPolicyRoot(config, home, repo);
     return root === undefined ? [] : [{ repo, root }];
   });
   for (const { repo, root } of local) {

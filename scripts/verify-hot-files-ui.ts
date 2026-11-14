@@ -62,7 +62,7 @@ const server = Bun.serve({
           },
           {
             repository: "acme/platform",
-            path: "src/db/drizzle/meta/_journal.json",
+            path: "src/db/drizzle-pg/meta/_journal.json",
             conflicts: 2,
             items: ["PAS-771"],
           },
@@ -114,12 +114,12 @@ try {
     const handler = section.locator("li", { hasText: "src/dashboard/src/server/handler.ts" });
     await expect(handler).toContainText("Not held");
     await expect(handler.locator("input")).not.toBeChecked();
-    const journal = section.locator("li", { hasText: "src/db/drizzle/meta/_journal.json" });
+    const journal = section.locator("li", { hasText: "src/db/drizzle-pg/meta/_journal.json" });
     await expect(journal).toContainText("Migrations made side by side need a manual rebase");
     await expect(journal.locator("input")).toBeChecked();
     await journal.locator("input").uncheck();
     await expect(
-      section.locator("li", { hasText: "src/db/drizzle/meta/_journal.json" }),
+      section.locator("li", { hasText: "src/db/drizzle-pg/meta/_journal.json" }),
     ).toContainText("Not held");
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))

@@ -19,8 +19,12 @@ function data(): MergeSettingsView {
 }
 
 describe("Settings → Merging", () => {
-  test("is a settings page after Agents", () => {
-    expect(SETTINGS_PAGES.map((page) => page.id).slice(0, 2)).toEqual(["agents", "merging"]);
+  test("is a settings page after Agents and Agent accounts", () => {
+    expect(SETTINGS_PAGES.map((page) => page.id).slice(0, 3)).toEqual([
+      "agents",
+      "agent-accounts",
+      "merging",
+    ]);
     expect(parseRoute("/settings/merging")).toEqual({ view: "settings", page: "merging" });
   });
 
@@ -404,7 +408,7 @@ describe("Conflict-prone files", () => {
         parallelFiles: [{ repository: "acme/platform", paths: ["src/index.ts"] }],
         hotFiles: [
           { ...file("src/index.ts", 4), held: false, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
-          { ...file("src/db/drizzle/meta/_journal.json", 2), held: true },
+          { ...file("src/db/drizzle-pg/meta/_journal.json", 2), held: true },
         ],
       },
       busy: null,
@@ -417,7 +421,7 @@ describe("Conflict-prone files", () => {
     expect(html).toContain('<li class="hot-file opacity-60"><code>src/index.ts</code>');
     expect(html).not.toContain("Holding");
     expect(html).toContain(
-      'data-path="src/db/drizzle/meta/_journal.json" checked> Hold work that changes this file</label><p class="sub">Migrations made side by side need a manual rebase</p>',
+      'data-path="src/db/drizzle-pg/meta/_journal.json" checked> Hold work that changes this file</label><p class="sub">Migrations made side by side need a manual rebase</p>',
     );
     expect(
       mergeSettingsBody({
@@ -443,4 +447,24 @@ describe("Conflict-prone files", () => {
   test("says nothing is held back without conflicts", () => {
     expect(render([])).toContain("No merge conflicts in the last 7 days, so nothing is held back.");
   });
+});
+
+test("Linear session controls render saved choices and save only applicable minutes", () => {
+  for (const sessionDone of ["pull_request", "ci_green", "settled"] as const) {
+    const settings = { ...data(), sessionDone, sessionQuietMinutes: 17 };
+    const html = renderMergeSettings({ data: settings, busy: null, error: null, saved: false });
+    expect(html).toContain(`value="${sessionDone}" checked`);
+    expect(html.includes('name="session-quiet"')).toBe(sessionDone === "settled");
+    expect(mergeSettingsBody(settings)).toMatchObject({
+      sessionDone,
+      ...(sessionDone === "settled" ? { sessionQuietMinutes: 17 } : {}),
+    });
+    if (sessionDone !== "settled")
+      expect(mergeSettingsBody(settings)).not.toHaveProperty("sessionQuietMinutes");
+  }
+  const settings = { ...data(), sessionDone: "settled" as const };
+  expect(mergeSettingsBody(settings).sessionQuietMinutes).toBe(10);
+  expect(renderMergeSettings({ data: settings, busy: null, error: null, saved: false })).toContain(
+    'min="1" max="120" step="1" required value="10"',
+  );
 });

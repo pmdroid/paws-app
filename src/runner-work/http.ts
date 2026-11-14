@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   RunnerAccountCapabilitySchema,
+  RunnerAgentCredentialUploadSchema,
   RunnerHostStatusSchema,
   RunnerTerminationSchema,
   RunnerInstalledAgentsSchema,
@@ -86,6 +87,10 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             conversationConcurrency,
           ),
         );
+      }
+      if (path === "/v1/agent-credentials" && request.method === "POST") {
+        const upload = RunnerAgentCredentialUploadSchema.parse(await body(request, 1_310_720));
+        return json({ result: await work.storeCredential(runnerId, upload) });
       }
       const download = /^\/v1\/skills\/([^/]+)\/([^/]+)$/.exec(path);
       if (download && request.method === "GET" && options.skillsRoot) {

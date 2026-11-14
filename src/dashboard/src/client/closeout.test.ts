@@ -1,3 +1,4 @@
+import { checkLogRevision } from "./closeout";
 import {
   openedView,
   fullStatusFixture,
@@ -118,10 +119,13 @@ describe("closeout checks", () => {
       checkState: "failed",
       stdout: "",
       stderr: "loaded tail",
+      findings: "current loaded findings",
+      detail: "current loaded detail",
       truncated: true,
       full: false,
     });
     expect(tail).toContain("loaded tail");
+    expect(tail).toContain("current loaded findings");
     expect(tail).toContain("Showing the last 64 KB of each stream.");
     expect(tail).toContain(
       'data-action="check-log-full" data-item="ENG-100" data-attempt="3" data-check="unit"',
@@ -295,4 +299,10 @@ describe("independent review measurements", () => {
     const review = parsed.response.verdicts[0]!.checks.find((check) => check.kind === "review");
     expect(review?.tokens).toBe(52_300);
   });
+});
+
+test("running check logs refresh with each detail snapshot while finished logs stay cached", () => {
+  expect(checkLogRevision("running", "first")).not.toBe(checkLogRevision("running", "second"));
+  expect(checkLogRevision("running", "first")).toBe(checkLogRevision("running", "first"));
+  expect(checkLogRevision("passed", "first")).toBe(checkLogRevision("passed", "second"));
 });

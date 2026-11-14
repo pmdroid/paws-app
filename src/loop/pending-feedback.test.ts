@@ -7,7 +7,6 @@ import {
   bindWorkItemRepository,
   enterMergeQueue,
   fixRounds,
-  getPullComment,
   getWorkItem,
   getWorkItemSteps,
   insertQueuedItem,
@@ -18,6 +17,7 @@ import {
   recordItemPullRequest,
   syncSteps,
 } from "../db";
+import { pullCommentOutcome } from "../../test/dialects";
 import { REBASE_CONFLICT_INSTRUCTION, ciFixHandoff, returnToAgent } from "../merge";
 import { findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery } from "./merge-jobs";
@@ -202,7 +202,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
     expect(handoff.indexOf(COMMENT_FIX_INSTRUCTION)).toBeGreaterThan(digest);
     expect(replies).toBeGreaterThan(digest);
-    expect((await getPullComment(h.db, "inline", 9001))?.outcome).toBe("restarted");
+    expect(await pullCommentOutcome(h.db, "inline", 9001)).toBe("restarted");
     expect(await feedbackThoughts(h.db)).toEqual([
       "@cursor[bot] commented on pull request #7. The agent is working on the comments.",
     ]);
@@ -223,7 +223,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.startsWith(FINDINGS)).toBe(true);
     expect(restarted?.handoff).toContain("@pascal in the conversation:");
     expect(restarted?.handoff).not.toContain(REBASED_LINES_NOTE);
-    expect((await getPullComment(h.db, "conversation", 9101))?.outcome).toBe("restarted");
+    expect(await pullCommentOutcome(h.db, "conversation", 9101)).toBe("restarted");
     expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
@@ -237,7 +237,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.indexOf("CI failed on the pull request.")).toBe(0);
     expect(restarted?.handoff).toContain("- test (0/2)");
     expect(restarted?.handoff).toContain(BOT_FINDING);
-    expect((await getPullComment(h.db, "inline", 9201))?.outcome).toBe("restarted");
+    expect(await pullCommentOutcome(h.db, "inline", 9201)).toBe("restarted");
     expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
@@ -270,7 +270,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     await applyWorkItemEvent(h.db, "eng-1", "turn_ended");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect((await handoffs(h.db))[0]?.handoff).toContain(BOT_FINDING);
-    expect((await getPullComment(h.db, "inline", 9401))?.outcome).toBe("restarted");
+    expect(await pullCommentOutcome(h.db, "inline", 9401)).toBe("restarted");
   });
 
   test("an ignored bot's comment is not carried", async () => {
@@ -340,6 +340,6 @@ test("the merge lane's rebase return carries the stored comment", async () => {
   expect(restarted?.reason).toBe("conflict");
   expect(restarted?.handoff.indexOf(REBASE_CONFLICT_INSTRUCTION)).toBe(0);
   expect(restarted?.handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
-  expect((await getPullComment(h.db, "inline", 9801))?.outcome).toBe("restarted");
+  expect(await pullCommentOutcome(h.db, "inline", 9801)).toBe("restarted");
   expect(await fixRounds(h.db, "eng-1")).toBe(1);
 });

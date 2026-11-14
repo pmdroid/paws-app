@@ -176,7 +176,7 @@ export function* shiftRunnerLeasesForDowntimeSteps(
   budgetMs = RUNNER_OFFLINE_BUDGET_MS,
   self?: string,
 ) {
-  const { instance, runner, runnerCommand, runnerHostStatus, runnerWork, runOwner } = q.t;
+  const { instance, runner, runnerCommand, runnerHostStatus, runnerWork, run } = q.t;
   const hosts = yield* q.all(
     q.orm
       .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
@@ -197,11 +197,11 @@ export function* shiftRunnerLeasesForDowntimeSteps(
         runnerId: runnerWork.runnerId,
         leaseUntil: runnerWork.leaseUntil,
         expiresAt: runnerCommand.expiresAt,
-        owner: runOwner.ownerInstance,
+        owner: run.ownerInstance,
       })
       .from(runnerWork)
       .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
-      .leftJoin(runOwner, eq(runOwner.runId, runnerWork.runId))
+      .leftJoin(run, eq(run.id, runnerWork.runId))
       .where(and(isNull(runnerWork.endedAt), unsettledRunnerWork(q))),
   );
   const rows = open.filter((row) => eligible.has(row.runnerId));

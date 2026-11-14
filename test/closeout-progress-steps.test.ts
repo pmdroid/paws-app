@@ -168,6 +168,7 @@ forEachDialect((open) => {
           preExisting: null,
           stdout: "one two",
           stderr: "err",
+          output: null,
         },
       ]);
       await upsert(db, "h1", step("lint", { attempt: 2, startedAt: 20 }), 6);

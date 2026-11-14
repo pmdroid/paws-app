@@ -10,6 +10,7 @@ import {
   createGitReader,
   mergeResultPolicyError,
   POLICY_CHANGED_ON_BOTH_SIDES,
+  trustedChangedPaths,
   trustedKnownMain,
   trustedMergeResultPolicyError,
   trustedRootFilesAt,
@@ -90,13 +91,23 @@ function fixture(extra: Record<string, string> = {}) {
           },
         };
       const compare = /^\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)/.exec(route);
-      if (compare)
+      if (compare) {
+        const base = git(work, "merge-base", compare[1]!, compare[2]!).trim();
+        const fields = git(work, "diff", "-M", "--name-status", "-z", base, compare[2]!)
+          .split("\0")
+          .filter(Boolean);
+        const files: { filename: string; previous_filename?: string }[] = [];
+        for (let index = 0; index < fields.length;) {
+          const status = fields[index++]!;
+          if (status.startsWith("R"))
+            files.push({ previous_filename: fields[index++]!, filename: fields[index++]! });
+          else files.push({ filename: fields[index++]! });
+        }
         return {
           status: 200,
-          body: {
-            merge_base_commit: { sha: git(work, "merge-base", compare[1]!, compare[2]!).trim() },
-          },
+          body: { merge_base_commit: { sha: base }, files: files.slice(0, 300) },
         };
+      }
       const blob = /^\/git\/blobs\/([0-9a-f]+)$/.exec(route);
       if (blob)
         return {
@@ -272,4 +283,83 @@ test("with mirrors off, a policy file changed on both sides sends the item back"
   expect(await viaApi(client, main, candidate)).toBe(
     `${POLICY_CHANGED_ON_BOTH_SIDES}: .agents/skills/review/notes.md`,
   );
+});
+
+async function changedViaApi(client: GitHubClient, base: string, head: string) {
+  useGitReader(apiReader(client));
+  try {
+    return await trustedChangedPaths(MIRROR, base, head);
+  } finally {
+    useGitReader(null);
+  }
+}
+
+test("with mirrors off, changed paths come from GitHub's compare and count a rename as both paths", async () => {
+  const { work, calls, client, head, candidate } = sides(
+    { "AGENTS.md": "# Main\n" },
+    { "src/app.ts": "export const candidate = 1;\n", "docs/new.md": "New.\n" },
+  );
+  execFileSync("git", ["-C", work, "mv", "src/app.ts", "src/main.ts"]);
+  execFileSync("git", [
+    "-C",
+    work,
+    "-c",
+    "user.name=Acme",
+    "-c",
+    "user.email=acme@example.com",
+    "commit",
+    "-qm",
+    "rename",
+  ]);
+  const renamed = execFileSync("git", ["-C", work, "rev-parse", "HEAD"]).toString().trim();
+  calls.length = 0;
+  expect(await changedViaApi(client, head, renamed)).toEqual({
+    ok: true,
+    paths: ["docs/new.md", "src/app.ts", "src/main.ts"],
+  });
+  expect(calls).toEqual([`/repos/acme/app/compare/${head}...${renamed}?per_page=1`]);
+  expect(await trustedChangedPaths(work, head, renamed)).toEqual({
+    ok: true,
+    paths: ["docs/new.md", "src/app.ts", "src/main.ts"],
+  });
+  expect(await changedViaApi(client, head, candidate)).toEqual({
+    ok: true,
+    paths: ["docs/new.md", "src/app.ts"],
+  });
+});
+
+test("with mirrors off, a compare GitHub cuts off at 300 files is read from the two trees", async () => {
+  const many = Object.fromEntries(
+    Array.from({ length: 320 }, (_, index) => [`gen/${String(index).padStart(3, "0")}.txt`, "x\n"]),
+  );
+  const { calls, client, head, candidate } = sides({ "AGENTS.md": "# Main\n" }, many);
+  calls.length = 0;
+  const read = await changedViaApi(client, head, candidate);
+  expect(read).toEqual({ ok: true, paths: Object.keys(many).sort() });
+  expect(calls.filter((path) => path.includes("/git/trees/"))).toHaveLength(2);
+});
+
+test("with mirrors off, a failed compare leaves the changed paths unavailable", async () => {
+  const { client, head } = fixture();
+  const read = await changedViaApi(client, head, "f".repeat(40));
+  expect(read).toMatchObject({ ok: false });
+  expect(!read.ok && read.message).toStartWith("changed paths are unavailable");
+});
+
+test("a repository the GitHub reader does not locate keeps its local git diff", async () => {
+  const { work, calls, client, head, candidate } = sides(
+    { "AGENTS.md": "# Main\n" },
+    { "src/app.ts": "local\n" },
+  );
+  calls.length = 0;
+  useGitReader(apiReader(client));
+  try {
+    expect(await trustedChangedPaths(work, head, candidate)).toEqual({
+      ok: true,
+      paths: ["src/app.ts"],
+    });
+  } finally {
+    useGitReader(null);
+  }
+  expect(calls).toEqual([]);
 });

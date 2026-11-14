@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
@@ -171,3 +171,30 @@ export function* touchRunnerSeenSteps(q: Q, runnerId: string, at: number) {
 
 export const HEALTH_COMMAND_KINDS: readonly string[] = HEALTH_KINDS;
 export const LOGIN_CHECK_KINDS: readonly string[] = ["login_check"];
+
+const RUNNER_HEALTH_RESULTS_KEPT = 50;
+
+/**
+ * Deletes up to `limit` health results beyond each runner's latest 50 whose command expired
+ * before `cutoff` and no unfinished model probe waits on, and returns how many it deleted.
+ */
+export function* pruneRunnerHealthResultsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerHealthResult: h } = q.t;
+  const prunable = sql`
+    SELECT ranked.command_id FROM (
+      SELECT r.command_id, ROW_NUMBER() OVER (
+        PARTITION BY r.runner_id ORDER BY r.received_at DESC, r.command_id DESC) AS place
+      FROM runner_health_result r) ranked
+    JOIN runner_command c ON c.id=ranked.command_id
+    WHERE ranked.place>${RUNNER_HEALTH_RESULTS_KEPT} AND c.expires_at<${cutoff}
+      AND NOT EXISTS(SELECT 1 FROM agent_model_probe p
+        WHERE p.command_id=ranked.command_id AND p.finished_at IS NULL)
+    LIMIT ${limit}`;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(h)
+      .where(sql`${h.commandId} IN (${prunable})`)
+      .returning({ commandId: h.commandId }),
+  );
+  return deleted.length;
+}

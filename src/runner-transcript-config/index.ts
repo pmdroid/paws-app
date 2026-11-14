@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { S3Client } from "bun";
+import { randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
@@ -69,37 +70,37 @@ const s3Schema = z
   .strict();
 const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
 
+const fromEnvironment = () => Object.values(ENV).some((name) => process.env[name] !== undefined);
+const environmentConfig = () =>
+  Object.fromEntries(Object.entries(ENV).map(([key, name]) => [key, process.env[name]]));
+
 /** The transcript S3 bucket from `PAWS_S3_*` or the stored configuration, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
-  if (Object.values(ENV).some((name) => process.env[name] !== undefined)) {
-    try {
-      const config = Object.fromEntries(
-        Object.entries(ENV).map(([key, name]) => [key, process.env[name]]),
-      );
-      return s3From(null, JSON.stringify(config))!;
-    } catch {
-      throw new Error(FAILURE);
-    }
-  }
-  if (storedSecrets() === null) return withSecrets(home, false, (directory) => s3From(directory));
   try {
-    return s3From(null, readSecretFile(join(home, "secrets", FILE), false));
+    return s3From(currentText(home));
   } catch {
     throw new Error(FAILURE);
   }
 }
 
-function s3From(directory: string | null, text: string | null = null) {
-  let plain = text;
-  if (directory !== null) {
+function currentText(home: string): string | null {
+  return fromEnvironment() ? JSON.stringify(environmentConfig()) : storedText(home);
+}
+
+function storedText(home: string): string | null {
+  if (storedSecrets() !== null) return readSecretFile(join(home, "secrets", FILE), false);
+  return withSecrets(home, false, (directory) => {
     const stored = readProtected(directory, FILE, MAX_BYTES, true);
     if (stored === null) return null;
     const encrypted = stored.toString("utf8");
     if (!encrypted.startsWith("paws-envelope-v1\n")) throw new Error();
-    plain = process.env.PAWS_SECRET_KEY
+    return process.env.PAWS_SECRET_KEY
       ? openSecretAt(join(directory, FILE), encrypted)
       : decodeSecretEnvelope(FILE, encrypted, readProtected(directory, ".envelope-key", 32)!);
-  }
+  });
+}
+
+function s3From(plain: string | null) {
   if (plain === null) return null;
   const config = schema.parse(JSON.parse(plain));
   if ("kind" in config) return null;
@@ -111,6 +112,125 @@ function s3From(directory: string | null, text: string | null = null) {
   return { client, bucket: config.bucket };
 }
 
+export class RunnerStorageSettingsError extends Error {}
+
+export function runnerStorageSettings(home: string) {
+  const environment = fromEnvironment();
+  const text = environment ? null : storedText(home);
+  const parsed = text === null ? null : parseStorage(text);
+  const config: Partial<z.infer<typeof s3Schema>> | null = environment
+    ? environmentConfig()
+    : parsed === null || "kind" in parsed
+      ? null
+      : parsed;
+  return {
+    kind: config === null ? ("local" as const) : ("s3" as const),
+    bucket: config?.bucket ?? null,
+    endpoint: config?.endpoint ?? null,
+    region: config?.region ?? null,
+    accessKeyId: config?.accessKeyId ?? null,
+    hasSecretAccessKey: config?.secretAccessKey !== undefined,
+    hasSessionToken: config?.sessionToken !== undefined,
+    source: environment
+      ? ("environment" as const)
+      : text === null
+        ? ("default" as const)
+        : ("settings" as const),
+  };
+}
+
+const inputSchema = z.strictObject({
+  kind: z.enum(["local", "s3"]),
+  bucket: z.string().optional(),
+  endpoint: z.string().optional(),
+  region: z.string().optional(),
+  accessKeyId: z.string().optional(),
+  secretAccessKey: z.string().optional(),
+  sessionToken: z.string().nullable().optional(),
+});
+
+function submittedText(home: string, input: unknown): string {
+  const parsed = inputSchema.safeParse(input);
+  if (!parsed.success) throw invalid(parsed.error);
+  const { kind, secretAccessKey, sessionToken, ...fields } = parsed.data;
+  const previous = currentText(home);
+  const stored = previous === null ? {} : (JSON.parse(previous) as Record<string, unknown>);
+  const config =
+    kind === "local"
+      ? { kind }
+      : {
+          ...fields,
+          secretAccessKey: secretAccessKey ?? stored.secretAccessKey,
+          sessionToken: sessionToken === null ? undefined : (sessionToken ?? stored.sessionToken),
+        };
+  const result = (kind === "local" ? schema : s3Schema).safeParse(config);
+  if (!result.success) throw invalid(result.error);
+  const text = JSON.stringify(result.data);
+  try {
+    s3From(text);
+  } catch {
+    throw new RunnerStorageSettingsError("The session token is not valid for S3.");
+  }
+  return text;
+}
+
+function invalid(error: z.ZodError) {
+  const fields = [...new Set(error.issues.map((issue) => issue.path.join(".") || "body"))];
+  return new RunnerStorageSettingsError(`Invalid storage settings: ${fields.join(", ")}.`);
+}
+
+export async function saveRunnerStorageSettings(home: string, input: unknown): Promise<boolean> {
+  if (fromEnvironment())
+    throw new RunnerStorageSettingsError(
+      "Storage is set by PAWS_S3_* environment variables on this host.",
+    );
+  const text = submittedText(home, input);
+  if (text !== storedText(home)) await saveStorage(home, text);
+  return startedWith !== undefined && storageKey(text) !== startedWith;
+}
+
+let startedWith: string | undefined;
+
+function storageKey(text: string | null): string {
+  return text === null || "kind" in parseStorage(text) ? "local" : text;
+}
+
+async function saveStorage(home: string, text: string): Promise<void> {
+  if (storedSecrets() === null) configureRunnerTranscriptStorage(home, text);
+  else await saveSecret(join(home, "secrets", FILE), JSON.stringify(parseStorage(text)));
+}
+
+export async function checkRunnerStorageSettings(
+  home: string,
+  input: unknown,
+  objects: (s3: {
+    client: S3Client;
+    bucket: string;
+  }) => RunFileObjects = createS3RunnerTranscriptObjects,
+): Promise<void> {
+  const text = input === undefined ? currentText(home) : submittedText(home, input);
+  let s3: ReturnType<typeof s3From>;
+  try {
+    s3 = s3From(text);
+  } catch {
+    throw new RunnerStorageSettingsError(FAILURE);
+  }
+  if (s3 === null)
+    throw new RunnerStorageSettingsError("Storage is local; there is no bucket to check.");
+  const store = objects(s3);
+  const key = `paws-storage-check/${randomUUID()}`;
+  const bytes = new TextEncoder().encode("paws storage check");
+  await store.write(key, bytes);
+  let read: Uint8Array;
+  try {
+    read = await store.read(key);
+  } finally {
+    await store.delete(key);
+  }
+  if (!Buffer.from(read).equals(Buffer.from(bytes)))
+    throw new Error("The test object read back differently from what was written.");
+}
+
 /**
  * Transcript chunks: `objects` reads the local chunk when one exists and the S3 bucket otherwise,
  * and writes to the bucket when one is configured. `stores` lists each store on its own.
@@ -118,6 +238,7 @@ function s3From(directory: string | null, text: string | null = null) {
 export function loadRunnerTranscriptStores(home: string) {
   const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
   const s3 = loadRunnerTranscriptS3(home);
+  startedWith ??= storageKey(currentText(home));
   if (s3 === null) return { objects: local, stores: [local] };
   const remote = createS3RunnerTranscriptObjects(s3);
   return { objects: withLocalRunnerTranscriptFallback(local, remote), stores: [local, remote] };
@@ -189,9 +310,7 @@ export async function runRunnerTranscriptStorageCli(args: string[], home: string
       if (size > MAX_BYTES) throw new Error();
       chunks.push(bytes);
     }
-    const text = Buffer.concat(chunks).toString("utf8");
-    if (storedSecrets() === null) configureRunnerTranscriptStorage(home, text);
-    else await saveSecret(join(home, "secrets", FILE), JSON.stringify(parseStorage(text)));
+    await saveStorage(home, Buffer.concat(chunks).toString("utf8"));
     console.log("Runner transcript storage configured.");
     return 0;
   } catch {

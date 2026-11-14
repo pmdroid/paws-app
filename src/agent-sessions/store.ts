@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   agentSessionSnapshotSteps,
   deleteAgentSessionChunksSteps,
@@ -6,7 +5,6 @@ import {
   discardedAgentSessionChunksSteps,
   insertAgentSessionSnapshotSteps,
   sealAgentSessionSnapshotSteps,
-  storeOf,
   type Db,
   type Q,
   type Steps,
@@ -58,7 +56,7 @@ function refused(): never {
 }
 
 export function createAgentSessions(options: {
-  db: Database | Db;
+  db: Db;
   work: RunnerWork;
   objects: RunFileObjects;
   /** The 32-byte key from `loadAgentSessionKey`. */
@@ -68,9 +66,9 @@ export function createAgentSessions(options: {
   maxBytes?: number;
 }) {
   const { db, work, objects } = options;
-  const store = storeOf(db);
+  const store = db;
   const files = createRunFileChunks({
-    store: storeOf(db),
+    store: db,
     kind: "agent_session",
     objects,
     key: options.key,

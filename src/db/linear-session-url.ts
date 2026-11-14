@@ -1,13 +1,7 @@
-import { and, asc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
 function sessionUrl(q: Q, payload: SQL): { url: SQL<string | null>; present: SQL } {
-  if (q.dialect === "sqlite") {
-    const url = sql<string | null>`CASE WHEN json_valid(${payload}) THEN
-      COALESCE(json_extract(${payload}, '$.agentSession.url'), json_extract(${payload}, '$.agentSession.issue.url'))
-      ELSE NULL END`;
-    return { url, present: sql`typeof(${url}) = 'text' AND length(${url}) > 0` };
-  }
   const json = sql`COALESCE(NULLIF(${payload}->'agentSession'->'url', 'null'::jsonb),
     NULLIF(${payload}->'agentSession'->'issue'->'url', 'null'::jsonb))`;
   const url = sql<string | null>`(${json} #>> '{}')`;
@@ -18,12 +12,8 @@ export function* hasTableSteps(q: Q, name: string) {
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })
-      .from(q.dialect === "sqlite" ? sql`sqlite_master` : sql`information_schema.tables`)
-      .where(
-        q.dialect === "sqlite"
-          ? sql`type = 'table' AND name = ${name}`
-          : sql`table_schema = current_schema() AND table_name = ${name}`,
-      ),
+      .from(sql`information_schema.tables`)
+      .where(sql`table_schema = current_schema() AND table_name = ${name}`),
   );
   return row !== undefined;
 }
@@ -62,4 +52,41 @@ export async function getLinearConversationSource(
   sessionId: string,
 ): Promise<string | null> {
   return store.run((q) => getLinearConversationSourceSteps(q, sessionId));
+}
+
+export function* getLinearConversationSourcesSteps(q: Q, sessionIds: readonly string[]) {
+  const { inboxEvent, linearTurn } = q.t;
+  const sources = new Map<string, string | null>();
+  if (yield* hasTableSteps(q, "inbox_event")) {
+    const { url, present } = sessionUrl(q, sql`${inboxEvent.payload}`);
+    const rows = yield* q.all(
+      q.orm
+        .select({ sessionId: inboxEvent.sessionId, url })
+        .from(inboxEvent)
+        .where(
+          and(
+            inArray(inboxEvent.sessionId, [...sessionIds]),
+            eq(inboxEvent.action, "created"),
+            present,
+          ),
+        )
+        .orderBy(asc(inboxEvent.receivedAt)),
+    );
+    for (const row of rows)
+      if (row.sessionId !== null && !sources.has(row.sessionId))
+        sources.set(row.sessionId, row.url);
+  }
+  const missing = sessionIds.filter((id) => !sources.has(id));
+  if (missing.length > 0 && (yield* hasTableSteps(q, "linear_turn"))) {
+    const { url, present } = sessionUrl(q, sql`${linearTurn.payload}`);
+    const rows = yield* q.all(
+      q.orm
+        .select({ sessionId: linearTurn.sessionId, url })
+        .from(linearTurn)
+        .where(and(inArray(linearTurn.sessionId, missing), present))
+        .orderBy(asc(linearTurn.ordinal)),
+    );
+    for (const row of rows) if (!sources.has(row.sessionId)) sources.set(row.sessionId, row.url);
+  }
+  return sources;
 }

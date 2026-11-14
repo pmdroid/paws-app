@@ -15,7 +15,7 @@ async function setup() {
     id: string,
     endedDaysAgo: number,
     events: number,
-    options: { status?: string; workEnded?: boolean } = {},
+    options: { status?: string; workEnded?: boolean; types?: string[] } = {},
   ) =>
     seed(
       db,
@@ -51,7 +51,7 @@ async function setup() {
               payload: "sealed",
               receivedAt: 0,
               keyId: "key",
-              type: "progress",
+              type: options.types?.[chunk * 1000 + index] ?? "progress",
             })),
           ),
       ),
@@ -78,12 +78,19 @@ async function setup() {
         .set({ type: "question" })
         .where(and(eq(q.t.runnerEvent.runId, runId), eq(q.t.runnerEvent.sequence, 2))),
     );
-  const count = async (runId: string) =>
+  const types = async (runId: string) =>
     (
       await db.run((q) =>
-        q.all(q.orm.select().from(q.t.runnerEvent).where(eq(q.t.runnerEvent.runId, runId))),
+        q.all(
+          q.orm
+            .select({ type: q.t.runnerEvent.type })
+            .from(q.t.runnerEvent)
+            .where(eq(q.t.runnerEvent.runId, runId))
+            .orderBy(q.t.runnerEvent.sequence),
+        ),
       )
-    ).length;
+    ).map((row) => row.type);
+  const count = async (runId: string) => (await types(runId)).length;
   const runs = async () => (await db.run((q) => q.all(q.orm.select().from(q.t.run)))).length;
   return {
     db,
@@ -92,6 +99,7 @@ async function setup() {
     item,
     ask,
     count,
+    types,
     runs,
   };
 }
@@ -146,5 +154,35 @@ test("the prune deletes at most 5,000 events per transaction", async () => {
   ).toEqual({ deleted: 12_001 });
   expect(batches).toEqual([5_000, 5_000, 2_001]);
   expect(await count("big")).toBe(0);
+  await close();
+});
+
+test("the prune deletes activity events of runs that ended over a day ago and keeps the rest", async () => {
+  const { db, close, run, item, ask, types } = await setup();
+  const HOUR = DAY / 24;
+  const mixed = ["activity", "closeout", "activity", "progress", "activity"];
+  await run("day-old", 25 / 24, 5, { types: mixed });
+  await run("fresh", 23 / 24, 5, { types: mixed });
+  await run("asked", 2, 5, { types: mixed });
+  await ask("asked");
+  await run("current", 2, 5, { types: mixed });
+  await item("open", "running", "current");
+  await run("open-work", 2, 5, { types: mixed, workEnded: false });
+
+  expect(await pruneRunnerEvents({ store: db, now: NOW })).toEqual({ deleted: 3 });
+  expect(await types("day-old")).toEqual(["closeout", "progress"]);
+  expect(await types("fresh")).toEqual(mixed);
+  expect(await types("asked")).toEqual([
+    "activity",
+    "question",
+    "activity",
+    "progress",
+    "activity",
+  ]);
+  expect(await types("current")).toEqual(mixed);
+  expect(await types("open-work")).toEqual(mixed);
+
+  expect(await pruneRunnerEvents({ store: db, now: NOW + 2 * HOUR })).toEqual({ deleted: 3 });
+  expect(await types("fresh")).toEqual(["closeout", "progress"]);
   await close();
 });

@@ -158,7 +158,7 @@ export function* itemParentTaskKeySteps(q: Q, itemId: string) {
   const { workItem } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item", q.dialect))}` })
+      .select({ taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item"))}` })
       .from(workItem)
       .where(eq(workItem.id, itemId)),
   );
@@ -170,7 +170,7 @@ export function* itemDelegationIssueIdSteps(q: Q, itemId: string) {
   const row = yield* q.one(
     q.orm
       .select({
-        issueId: sql<string | null>`${sql.raw(delegationIssueIdSql("work_item", q.dialect))}`,
+        issueId: sql<string | null>`${sql.raw(delegationIssueIdSql("work_item"))}`,
       })
       .from(workItem)
       .where(eq(workItem.id, itemId)),
@@ -219,7 +219,7 @@ export function* delegationParentTaskKeySteps(q: Q, delegationId: string) {
   const { workItem } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item", q.dialect))}` })
+      .select({ taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item"))}` })
       .from(workItem)
       .where(eq(workItem.delegationId, delegationId))
       .orderBy(asc(workItem.createdAt), asc(workItem.position), asc(workItem.id))

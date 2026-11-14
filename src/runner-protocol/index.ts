@@ -195,6 +195,7 @@ export {
   TOOLCHAIN_PREFLIGHT_RUNNER_VERSION,
   CONTROL_PLANE_LEVEL_RUNNER_VERSION,
   CONVERSATION_TOOLS_RUNNER_VERSION,
+  AGENT_CREDENTIAL_RUNNER_VERSION,
 } from "./versions";
 export {
   CONTROL_PLANE_PROTOCOL_LEVEL,
@@ -230,6 +231,21 @@ export {
   type RunnerAccount,
   type RunnerAccountCapability,
 } from "./accounts";
+
+export {
+  RUNNER_AGENT_CREDENTIAL_FILES,
+  RunnerAgentCredentialFilesSchema,
+  RunnerAgentCredentialReceiptSchema,
+  RunnerAgentCredentialUploadSchema,
+  agentCredentialContext,
+  agentCredentialReturnContext,
+  agentCredentialDigest,
+  openForRunner,
+  sealForRunner,
+  type RunnerAgentCredential,
+  type RunnerAgentCredentialFiles,
+  type RunnerAgentCredentialStore,
+} from "./agent-credentials";
 
 export { RunnerTerminationSchema, type RunnerTermination } from "./teardown";
 

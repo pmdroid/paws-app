@@ -1,9 +1,9 @@
 import { and, eq, inArray, isNull, lt, lte, ne, notExists, or, sql, type SQL } from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { type Db, type Q } from "./db";
-import type { inboxEvent } from "./schema";
+import type { inboxEvent } from "./schema-pg";
 
-export type ClaimedInboxRow = typeof inboxEvent.$inferSelect;
+export type ClaimedInboxRow = Omit<typeof inboxEvent.$inferSelect, "payload"> & { payload: string };
 
 type InboxColumns = Record<
   "handled" | "action" | "signal" | "lockedUntil" | "sessionId" | "issueId",
@@ -31,7 +31,7 @@ function claimed(
   if (row === undefined) return null;
   return {
     ...row,
-    payload: q.dialect === "sqlite" ? (row.payload as string) : JSON.stringify(row.payload),
+    payload: JSON.stringify(row.payload),
   };
 }
 

@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import {
   correctDecisionMemorySteps,
   insertDecisionMemorySteps,
-  replaceDecisionSearchSteps,
   retireDecisionMemorySteps,
   searchDecisionRowsSteps,
   type Db,
@@ -61,7 +60,6 @@ function save(db: Db, [id, statement, tags]: (typeof FIXTURE)[number], now = 1) 
       userId: "ada",
       now,
     });
-    yield* replaceDecisionSearchSteps(q, { id, statement: text.statement, tags: text.tags });
   });
 }
 
@@ -112,7 +110,6 @@ forEachDialect((connect) => {
         now: 2,
         globs: '["**"]',
       });
-      yield* replaceDecisionSearchSteps(q, { ...change, id: "d07" });
     });
     expect(await search(db, '"secrets"')).toEqual([]);
     expect(await search(db, '"auth"')).toEqual(["d07"]);

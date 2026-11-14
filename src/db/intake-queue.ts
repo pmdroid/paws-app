@@ -13,9 +13,7 @@ export type IntakeQueueEntry = {
 };
 
 function jsonText(q: Q, json: SQL, path: readonly string[]): SQL {
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${json}, ${`$.${path.join(".")}`})`
-    : sql`(${json} #>> ${`{${path.join(",")}}`})`;
+  return sql`(${json} #>> ${`{${path.join(",")}}`})`;
 }
 
 export function* listIntakeQueueSteps(q: Q) {

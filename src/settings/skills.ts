@@ -1,4 +1,11 @@
 import { isWorkspaceAdmin } from "../workspace";
+import {
+  loadConfigFile,
+  parseProjectSkillRoots,
+  readProjectSkillRoots,
+  writeProjectSkills,
+  type ProjectSkills,
+} from "../config";
 import { journalCaught } from "../journal";
 import {
   listSkillsSteps,
@@ -33,6 +40,7 @@ export const SKILL_SETTINGS_PATH = "/api/settings/skills";
 
 export type SkillSettingsOptions = {
   store: Db;
+  configPath?: string;
   /** `~/.paws/skills`. */
   root: string;
   resolver: SkillResolver;
@@ -69,6 +77,9 @@ export async function handleSkillSettingsRequest(
       ...(options.updates ? { updates: await options.updates.available(skills) } : {}),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
+      ...(options.configPath
+        ? { projectRoots: readProjectSkillRoots(loadConfigFile(options.configPath)) }
+        : {}),
       ...(notice ? { notice } : {}),
       ...(found ? { found } : {}),
     });
@@ -77,9 +88,30 @@ export async function handleSkillSettingsRequest(
     await options.updates?.check(await store.run(listSkillsSteps));
     return await listing();
   }
-  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  const configPath = request.method === "PUT" ? options.configPath : undefined;
+  if (request.method !== "POST" && configPath === undefined)
+    return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
+  if (configPath !== undefined) {
+    let projects: ProjectSkills[];
+    try {
+      const body = await readJson(request);
+      projects = parseProjectSkillRoots(isRecord(body) ? body.projectRoots : undefined);
+    } catch (error) {
+      journalCaught(error, "skills.handleSkillSettingsRequest.projectRoots", null);
+      return json(
+        { error: error instanceof Error ? error.message : "Invalid project skill roots" },
+        400,
+      );
+    }
+    await writeProjectSkills(configPath, projects);
+    await options.audit(
+      "settings.skill.project_roots",
+      `Set project skill roots: ${projects.map(({ repo, root }) => `${repo} ${root}`).join(", ") || "none"}`,
+    );
+    return await listing("Saved project skill roots.");
+  }
   const registry = {
     store: options.store,
     root: options.root,

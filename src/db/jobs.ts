@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   and,
   desc,
@@ -8,8 +7,10 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   ne,
+  notExists,
   or,
   sql as drizzleSql,
   type SQL,
@@ -25,7 +26,7 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
-import { type Db, type Q } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { journal } from "./journal";
 import { jsonField, jsonText } from "./json-text";
 
@@ -78,15 +79,12 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
-/** The text at `key` of a JSON value: `json_extract` on SQLite, `->>` on Postgres. */
-function jsonTextSql(dialect: Q["dialect"], json: string, key: string): string {
-  return dialect === "sqlite" ? `json_extract(${json}, '$.${key}')` : `(${json}->>'${key}')`;
+function jsonTextSql(json: string, key: string): string {
+  return `(${json}->>'${key}')`;
 }
 
 export function jsonItemId(q: Q, json: SQL): SQL<string | null> {
-  return q.dialect === "sqlite"
-    ? drizzleSql`json_extract(${json},'$.itemId')`
-    : drizzleSql`(${json}->>'itemId')`;
+  return drizzleSql`(${json}->>'itemId')`;
 }
 
 function jobItemId(q: Q): SQL<string | null> {
@@ -95,12 +93,11 @@ function jobItemId(q: Q): SQL<string | null> {
 
 /** The JSON text bound as a parameter, cast to jsonb on Postgres. */
 function jsonParam(q: Q, text: string): SQL {
-  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::text::jsonb`;
+  return drizzleSql`${text}::text::jsonb`;
 }
 
-/** A payload as the column stores it: JSON text on SQLite, jsonb on Postgres. */
 function payloadValue(q: Q, payload: unknown): string {
-  return (q.dialect === "sqlite" ? JSON.stringify(payload) : payload) as string;
+  return payload as string;
 }
 
 export function itemVersionOf(q: Q, payload: SQL): SQL<number | null> {
@@ -139,7 +136,7 @@ function* updateLeasedSteps(
   return rows.length;
 }
 
-type JobReadySource = Database | Db;
+type JobReadySource = Db;
 
 const jobReadyListeners = new Set<(db: JobReadySource) => void>();
 
@@ -186,10 +183,10 @@ function executionSql(alias: string): string {
  */
 function claimWhere(q: Q, now: number, queues?: readonly string[], mergeParallel = 1): SQL {
   const raw = drizzleSql.raw;
-  const itemId = `COALESCE(${jsonTextSql(q.dialect, "candidate.payload", "itemId")}, '')`;
-  const heldItemId = `COALESCE(${jsonTextSql(q.dialect, "held.payload", "itemId")},'')`;
+  const itemId = `COALESCE(${jsonTextSql("candidate.payload", "itemId")}, '')`;
+  const heldItemId = `COALESCE(${jsonTextSql("held.payload", "itemId")},'')`;
   const needsReservation = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
-  AND (${jsonTextSql(q.dialect, "candidate.payload", "capacityWait")} IS NULL OR EXISTS
+  AND (${jsonTextSql("candidate.payload", "capacityWait")} IS NULL OR EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued'))) OR
   (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued')))`;
@@ -243,20 +240,6 @@ export async function actionableDue(
   return store.run((q) => actionableDueSteps(q, now));
 }
 
-function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
-  if (q.dialect === "sqlite") return yield* insertJobRowSteps(q, input, skipDuplicateKey);
-  return yield* q.transaction(function* (t) {
-    const id = yield* insertJobRowSteps(t, input, skipDuplicateKey);
-    if (id === undefined) return id;
-    const { job, jobActivation } = t.t;
-    const activation = (yield* t.one(
-      t.orm.insert(jobActivation).values({ jobId: id }).returning({ id: jobActivation.id }),
-    ))!;
-    yield* t.exec(t.orm.update(job).set({ activationId: activation.id }).where(eq(job.id, id)));
-    return id;
-  });
-}
-
 function* insertJobRowSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
   const { job } = q.t;
   const now = input.now ?? Date.now();
@@ -281,7 +264,7 @@ function* insertJobRowSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
 }
 
 export function* enqueueJobSteps(q: Q, input: NewJob) {
-  const id = yield* insertJobSteps(q, input, false);
+  const id = yield* insertJobRowSteps(q, input, false);
   if (id === undefined) {
     throw new Error("enqueueJob did not return an id");
   }
@@ -297,15 +280,16 @@ export async function enqueueJob(store: Db, job: NewJob): Promise<number> {
 
 /**
  * Return the open row for this key when one exists. A finished key cannot be
- * inserted again (`job_key` is unique for the life of the table), so the
- * existing id is returned and the caller keeps the original row. `inserted` says
- * whether this call added the row.
+ * inserted again while its row is kept (`job_key` is unique; a done or cancelled
+ * one-off job is pruned a week after it finishes), so the existing id is returned
+ * and the caller keeps the original row. `inserted` says whether this call added
+ * the row.
  */
 export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
   if (job.jobKey === undefined) return { id: yield* enqueueJobSteps(q, job), inserted: true };
   const existing = yield* findByKeySteps(q, job.jobKey);
   if (existing) return { id: existing.id, inserted: false };
-  const id = yield* insertJobSteps(q, job, true);
+  const id = yield* insertJobRowSteps(q, job, true);
   if (id !== undefined) return { id, inserted: true };
   const saved = yield* findByKeySteps(q, job.jobKey);
   if (!saved) throw new Error("enqueueJobOnce found no job for its key");
@@ -328,7 +312,7 @@ export function* reenqueueJobSteps(
   input: NewJob & { jobKey: string },
   payloadFor?: (previous: Job | null) => unknown,
 ) {
-  const { job, jobActivation } = q.t;
+  const { job } = q.t;
   const previous = yield* findByKeySteps(q, input.jobKey);
   if (previous && previous.queue !== input.queue)
     throw new Error("Recurring job key belongs to a different queue");
@@ -341,9 +325,6 @@ export function* reenqueueJobSteps(
       pending: true,
       armed: true,
     };
-  const activation = (yield* q.one(
-    q.orm.insert(jobActivation).values({ jobId: previous.id }).returning({ id: jobActivation.id }),
-  ))!;
   const now = input.now ?? Date.now();
   const next = payload ?? {};
   yield* q.exec(
@@ -355,7 +336,7 @@ export function* reenqueueJobSteps(
         attempts: 0,
         runAt: input.runAt ?? now,
         itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(next))),
-        activationId: activation.id,
+        activationId: drizzleSql`nextval('job_activation_seq')`,
         priority: input.priority ?? 5,
         maxAttempts: input.maxAttempts ?? 10,
         recurringEveryMs: input.recurringEveryMs ?? null,
@@ -678,10 +659,7 @@ export function* parkLeasedJobSteps(
   input: { runAt: number; payload: unknown; attempts: number; now: number },
 ) {
   const { runAt } = q.t.job;
-  const earlier =
-    q.dialect === "sqlite"
-      ? drizzleSql`MIN(${runAt}, ${input.runAt})`
-      : drizzleSql`LEAST(${runAt}, ${input.runAt})`;
+  const earlier = drizzleSql`LEAST(${runAt}, ${input.runAt})`;
   return (
     (yield* updateLeasedSteps(
       q,
@@ -824,7 +802,7 @@ function mapJob(q: Q, row: JobRow): Job {
     activationId: row.activationId,
     queue: row.queue,
     jobKey: row.jobKey,
-    payload: q.dialect === "sqlite" ? (JSON.parse(row.payload as string) as unknown) : row.payload,
+    payload: row.payload,
     priority: row.priority,
     runAt: row.runAt,
     status: row.status as JobStatus,
@@ -1142,4 +1120,35 @@ export async function openMergeJobs(
   store: Db,
 ): Promise<{ id: number; activationId: number; payload: string }[]> {
   return store.run((q) => openMergeJobsSteps(q));
+}
+
+export function* pruneFinishedJobsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { job, schedulerAdmission: admission, closeoutRetryWindow: retry } = q.t;
+  const prunable = q.orm
+    .select({ id: job.id })
+    .from(job)
+    .where(
+      and(
+        inArray(job.status, ["done", "cancelled"]),
+        isNull(job.recurringEveryMs),
+        lt(job.finishedAt, cutoff),
+        notExists(
+          q.orm
+            .select({ one: drizzleSql`1` })
+            .from(admission)
+            .where(eq(admission.jobId, job.id)),
+        ),
+        notExists(
+          q.orm
+            .select({ one: drizzleSql`1` })
+            .from(retry)
+            .where(eq(retry.jobId, job.id)),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(job).where(inArray(job.id, prunable)).returning({ id: job.id }),
+  );
+  return deleted.length;
 }

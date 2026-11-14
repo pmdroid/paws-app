@@ -15,14 +15,11 @@ import {
   startUsagePause,
   usagePause,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
   workspaceSessionIds,
-  sqliteDb,
   type Db,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
@@ -45,19 +42,6 @@ type ExecutionControlsFixtureOptions = {
   interruptItem?: (id: string) => Promise<void>;
   onMemberRevoked?: () => Promise<void>;
 };
-
-export async function createExecutionControlsFixture(
-  root: string,
-  options: ExecutionControlsFixtureOptions = {},
-) {
-  mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "controls.sqlite"));
-  migrate(db);
-  return {
-    db,
-    ...(await executionControlsFixture(sqliteDb(db), root, options, async () => db.close())),
-  };
-}
 
 export async function createExecutionControlsFixturePg(
   root: string,

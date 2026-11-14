@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
@@ -141,7 +141,7 @@ export function* nextQueuedQuestionRowSteps(q: Q, sessionId: string): Steps<Ques
           isNull(question.cancelledAt),
         ),
       )
-      .orderBy(asc(question.createdAt), q.dialect === "sqlite" ? sql`rowid` : asc(question.id))
+      .orderBy(asc(question.createdAt), asc(question.id))
       .limit(1),
   );
   return row ?? null;

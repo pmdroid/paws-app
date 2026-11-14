@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -14,11 +14,9 @@ import {
   getRetroDispatch,
   legacyAgentAccountId,
   listRetroAttempts,
-  listRetroDispatches,
   listRetroItems,
   readRetroArtifact,
   recordAccountObservation,
-  retroSlotsHeld,
   retroWatermarks,
   runnerOccupancy,
   openPawsStore,
@@ -31,6 +29,17 @@ import { addRunnerPg as addRunner, trustedKeys, worldPg } from "./dispatch.fixtu
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START, fixturePattern } from "./result.fixtures";
 import { seed } from "../../test/dialects";
 import { copyMigratedPglite, tempStore } from "../../test/pglite";
+
+const listRetroDispatches = (db: Db, retroId: string) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.retroDispatch)
+        .where(eq(q.t.retroDispatch.retroId, retroId))
+        .orderBy(asc(q.t.retroDispatch.attempt)),
+    ),
+  );
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const EXECUTION_ID = "01JAAAAAAAAAAAAAAAAAAAAAAA";
@@ -687,7 +696,7 @@ describe("recovery", () => {
     expect(await getRetroDispatch(db, dispatch!.commandId)).toMatchObject({
       releaseReason: "not_started",
     });
-    expect(await retroSlotsHeld(db, "R1")).toBe(0);
+    expect((await runnerOccupancy(db, "R1", clock.now)).occupied).toBe(0);
     expect(await dispatcher.commands("R1")).toEqual([]);
     for (let round = 1; round <= 3; round += 1) {
       clock.now += retroRetryDelayMs(round) - 1;

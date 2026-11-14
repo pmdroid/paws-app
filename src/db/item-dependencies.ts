@@ -62,11 +62,11 @@ export type ManagedBlockerItem = {
 };
 
 function jsonText(q: Q, value: unknown): string {
-  return q.dialect === "sqlite" ? (value as string) : JSON.stringify(value);
+  return JSON.stringify(value);
 }
 
 function jsonValue(q: Q, text: string): string {
-  return q.dialect === "sqlite" ? text : (JSON.parse(text) as string);
+  return JSON.parse(text) as string;
 }
 
 export function* itemSpecificationPresentSteps(q: Q, itemId: string) {
@@ -117,7 +117,7 @@ export function* readDependencyScopeSteps(
         cancelRequested: sql<number>`i.cancel_requested`.mapWith(Number),
         mode: sql<TaskMode | null>`t.mode`,
         brief: sql<unknown>`i.brief`,
-        delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i", q.dialect))}`,
+        delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i"))}`,
         sessionId: sql<string>`s.session_id`,
         organizationId: sql<string>`s.organization_id`,
         clientId: sql<string>`s.oauth_client_id`,

@@ -4,7 +4,7 @@ import {
   keepTaskLinearReadSteps,
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
-  saveCandidatePathsSteps,
+  readSessionDone,
   saveCandidateRiskSteps,
 } from "../db";
 import {
@@ -49,6 +49,7 @@ import {
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
+  applyRunnerCloseoutStepSteps,
   jobStatusByKey,
   restart,
   reviewerAlertedSinceSteps,
@@ -63,7 +64,6 @@ import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
   saveCheckpointSteps,
-  recordReviewRoundsSteps,
   jobVersionCurrentSteps,
   refreshVerificationJobVersionSteps,
 } from "../db";
@@ -90,6 +90,7 @@ import {
   hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
+import { finishOpenedSessions } from "./session-done";
 import { createHash, randomUUID } from "node:crypto";
 import { askSteps, restartSteps, awaitQuestionSteps } from "./operations";
 import {
@@ -148,6 +149,7 @@ import {
   providerFor,
   worktreePath,
   mirrorPath,
+  branchName,
   candidateRef,
   runDir,
   runAgent,
@@ -157,6 +159,7 @@ import {
   adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
+  ensureMirrorCommit,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -167,6 +170,7 @@ import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   highRiskPaths,
   agentReadAllowed,
+  githubMirrorsOn,
   loadConfigFile,
   mergeLaneKey,
   parallelFiles,
@@ -197,6 +201,7 @@ import {
   trustedOriginMain,
   trustedRootFilesAt,
   trustedKnownMain,
+  trustedChangedPaths,
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
@@ -231,6 +236,8 @@ import {
 import {
   hydrateCloseoutEvidence,
   publishCloseoutEvidence,
+  storeCloseoutOutput,
+  withCloseoutOutput,
   type EvidenceObjects,
   type EvidenceStorage,
 } from "../evidence";
@@ -318,6 +325,8 @@ import {
   itemContinuedSteps,
   latestRestartEventSteps,
   listAgentCloseoutSteps,
+  type AgentCloseoutEvent,
+  type AgentCloseoutProgress,
   listArtifactsSteps,
   listRunnerSetupHoldsSteps,
   openRunnerRepositoryQuestionsSteps,
@@ -401,7 +410,6 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
-  saveOpenFindingsSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -434,6 +442,7 @@ import {
   branchContains,
   hasOpenPullOnPrefix,
   readOpenPullHead,
+  readBranchTip,
   readBranchWork,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
@@ -444,6 +453,7 @@ import {
   type PullRequestMember,
   type GitHubTokenProvider,
   type PullMergeable,
+  type PullCi,
 } from "../github";
 import {
   asksForFreshStart,
@@ -682,7 +692,7 @@ import {
   type MainPolicyError,
 } from "./policy-outage";
 import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
-import { changedPaths, classifyPathsRisk } from "./candidate-risk";
+import { classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivitySteps,
@@ -776,6 +786,7 @@ export type OrchestratorOptions = {
     objects?: EvidenceObjects;
   } | null;
   closeoutEvidenceObjects?: EvidenceObjects;
+  closeoutLogs?: EvidenceStorage;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -792,6 +803,7 @@ export type OrchestratorOptions = {
     access: "read" | "write",
   ) => Promise<string>;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
+  githubMirrors?: boolean;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   pullRequestMember?: (item: WorkItemRecord) => Promise<PullRequestMember | null>;
   launch?: AgentLaunch;
@@ -1006,7 +1018,6 @@ export class Orchestrator {
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
@@ -2130,6 +2141,7 @@ export class Orchestrator {
         return;
       }
       let waiting: MergeWait | undefined;
+      if (ownerId !== null) await this.finishOpenedSessions(ownerId);
       try {
         await this.mergeAttempt(job, context, (wait) => {
           waiting = wait;
@@ -3970,6 +3982,7 @@ export class Orchestrator {
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
+        ...(this.storedCandidates() ? { storedCandidate: true } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -4111,7 +4124,7 @@ export class Orchestrator {
         head,
         this.candidateFor(run.id),
         turnPasses(
-          await this.store.run((q) => listAgentCloseoutSteps(q, [run.id])),
+          await this.agentCloseoutWithOutput(run.id),
           await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
         ),
       );
@@ -4317,7 +4330,6 @@ export class Orchestrator {
         ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
         : before;
       const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
-      await this.recordReviewRounds(item, verdict.owner.runId);
       if ((await this.closeoutStopped(item.id)) !== null) return;
       const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
@@ -4538,8 +4550,13 @@ export class Orchestrator {
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         } else if (
-          owned !== priorRunId ||
-          !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned)))
+          !(
+            this.shuttingDown &&
+            current.state === "verifying" &&
+            (await this.store.run((q) => runnerHoldsRunWorkSteps(q, owned, this.now())))
+          ) &&
+          (owned !== priorRunId ||
+            !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned))))
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         }
@@ -4564,6 +4581,15 @@ export class Orchestrator {
         ? {
             path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
             ref: candidateRef(itemPathId(item)),
+            ...(this.storedCandidates()
+              ? {
+                  head: async () => {
+                    const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
+                    if (!recorded) throw new Error(`${item.id} has no recorded candidate commit`);
+                    return recorded.sha;
+                  },
+                }
+              : {}),
           }
         : undefined;
     const policy = await this.commitPolicy(item);
@@ -4706,7 +4732,12 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
-    const recorded = createDbCloseoutProgress(this.store, item.id, () => this.now());
+    const recorded = createDbCloseoutProgress(
+      this.store,
+      item.id,
+      () => this.now(),
+      this.options.closeoutLogs,
+    );
     const publishing = this.closeoutEvidence()?.objects?.()
       ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
       : null;
@@ -4847,6 +4878,7 @@ export class Orchestrator {
           worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          closeoutProgress: this.runnerCloseoutHook(item, head),
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
@@ -4860,13 +4892,15 @@ export class Orchestrator {
         });
         await assertCurrent();
         const { ref } = await this.itemHead(item);
-        const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
+        const stored = this.storedCandidates();
+        const at = stored ? ref : (await git(["-C", worktree, "rev-parse", ref])).trim();
         if (at !== head) {
-          await git(
-            ref === "HEAD"
-              ? ["-C", worktree, "reset", "--hard", head]
-              : ["-C", worktree, "update-ref", ref, head, at],
-          );
+          if (!stored)
+            await git(
+              ref === "HEAD"
+                ? ["-C", worktree, "reset", "--hard", head]
+                : ["-C", worktree, "update-ref", ref, head, at],
+            );
           if (ref !== "HEAD")
             await this.store.run((q) =>
               recordItemCandidateSteps(q, {
@@ -5510,25 +5544,6 @@ export class Orchestrator {
     await this.flush();
   }
 
-  /** Records on the verifying run how many review rounds the item has needed so far. */
-  private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
-    if (runId === null) return;
-    await this.pullCloseoutEvidence(item);
-    try {
-      const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
-      if (rounds.length > 0)
-        await this.store.run((q) => recordReviewRoundsSteps(q, runId, rounds.length));
-    } catch (caught) {
-      journalCaught(
-        caught,
-        "orchestrator.recordReviewRounds",
-        item.id,
-        undefined,
-        this.options.journal,
-      );
-    }
-  }
-
   /**
    * Review attempts ran out: ask on the item page whether to rethink, keep going
    * or stop. Returns false when Paws has no link a person can open, so the
@@ -5894,6 +5909,8 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
+        mirrorsOff: () =>
+          !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {
@@ -6193,7 +6210,7 @@ export class Orchestrator {
       accepted: true,
       evidence,
       worktree,
-      ...(ref === "HEAD" ? {} : { ref }),
+      ...(ref === "HEAD" ? {} : this.storedCandidates() ? { candidate: ref } : { ref }),
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
       owner: repository.owner,
@@ -6242,6 +6259,7 @@ export class Orchestrator {
         pullNumber: published.pull.number,
         pullUrl: published.pull.url ?? null,
         openedAt: this.now(),
+        published: { head: published.head, line: openLine },
       }),
     );
     await this.store.run((q) =>
@@ -6260,14 +6278,6 @@ export class Orchestrator {
         this.now(),
       ),
     );
-    await this.store.run((q) =>
-      saveOpenFindingsSteps(q, {
-        itemId: item.id,
-        head: published.head,
-        line: openLine,
-        now: this.now(),
-      }),
-    );
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(
         item.id,
@@ -6280,9 +6290,10 @@ export class Orchestrator {
       ? await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionKey))
       : 0;
     const runs = await this.store.run((q) => listRunsSteps(q, item.id));
+    const sessionDone = (await readSessionDone(this.store)).sessionDone;
     await this.post(
       item,
-      "response",
+      sessionDone === "pull_request" ? "response" : "thought",
       await pullRequestReadyResponse({
         itemId: item.id,
         head: published.head,
@@ -6295,7 +6306,7 @@ export class Orchestrator {
           (await this.riskDisplay(item.id, published.head))?.detail ?? "Manual approval required",
         journal: this.options.journal,
       }),
-      `pull-request-ready:${item.id}:${generation}`,
+      `${sessionDone === "pull_request" ? "pull-request-ready" : "pull-request-opened"}:${item.id}:${generation}`,
       {},
       "ordered",
     );
@@ -6374,11 +6385,10 @@ export class Orchestrator {
       candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
-    const changed = await changedPaths(run, base, head);
-    // Every changed path, so the scheduler can hold work that changes the same hot files.
-    await this.store.run((q) =>
-      saveCandidatePathsSteps(q, { itemId: item.id, head, paths: changed, recordedAt: this.now() }),
-    );
+    const listed = await trustedChangedPaths(worktree, base, head);
+    if (!listed.ok) throw new Error(listed.message);
+    const changed = listed.paths;
+    const recordedAt = this.now();
     const risk = await classifyPathsRisk({
       git: run,
       base,
@@ -6389,7 +6399,15 @@ export class Orchestrator {
       ),
     });
     await this.store.run((q) =>
-      saveCandidateRiskSteps(q, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() }),
+      saveCandidateRiskSteps(q, {
+        itemId: item.id,
+        head,
+        base,
+        ...risk,
+        changedPaths: changed,
+        recordedAt,
+        classifiedAt: this.now(),
+      }),
     );
     return risk;
   }
@@ -6497,20 +6515,7 @@ export class Orchestrator {
       ciFixAttempts: (item) => this.fixRoundLimit(item),
       feedbackWait: () => this.feedbackWait(),
       feedbackNoticed: feedbackNoticeSteps,
-      readPullCi: async (item, pull) => {
-        const repository = await this.repositoryForItem(item);
-        const github = repository ? this.githubForRepository(repository) : null;
-        if (!repository || !github)
-          return { state: "unknown", message: "GitHub App is not configured." };
-        return readPullCi({
-          client: github.client,
-          owner: repository.owner,
-          repo: repository.repo,
-          prNumber: pull.number,
-          head: pull.head,
-          ...this.gitHubCredentials(github),
-        });
-      },
+      readPullCi: (item, pull) => this.readItemPullCi(item, pull),
       readPull: async (item, pullNumber) =>
         this.readItemPull(item, pullNumber, await this.signalForItem(item.id)),
       restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
@@ -7785,7 +7790,10 @@ export class Orchestrator {
       ...(await this.options.scheduling?.()),
       ...(merge ? { parallelFiles: (repository: string) => parallelFiles(merge, repository) } : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
-      onWaits: (waits) => this.noteWaits(waits),
+      onWaits: async (waits) => {
+        await this.noteWaits(waits);
+        await this.finishOpenedSessions();
+      },
       ...(itemRunners
         ? {
             itemRunners: (q: Q, itemId: string) =>
@@ -8325,8 +8333,50 @@ export class Orchestrator {
     return {
       record: async (progress) => {
         if (await this.stopped(item.id)) return;
+        const stored = await this.storedAgentCloseout(item.id, progress);
         await this.store.transaction((q) =>
-          recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
+          recordAgentCloseoutSteps(q, runId, item.id, stored, this.now()),
+        );
+      },
+    };
+  }
+
+  private async agentCloseoutWithOutput(runId: string): Promise<AgentCloseoutEvent[]> {
+    const events = await this.store.run((q) => listAgentCloseoutSteps(q, [runId]));
+    const logs = this.options.closeoutLogs;
+    if (!logs) return events;
+    return Promise.all(
+      events.map(async (event) =>
+        event.progress.type === "finished" && event.progress.output
+          ? { ...event, progress: await withCloseoutOutput(this.store, logs, event.progress) }
+          : event,
+      ),
+    );
+  }
+
+  private async storedAgentCloseout(
+    itemId: string,
+    progress: AgentCloseoutProgress,
+  ): Promise<AgentCloseoutProgress> {
+    const logs = this.options.closeoutLogs;
+    if (!logs || progress.type !== "finished" || (!progress.stdout && !progress.stderr))
+      return progress;
+    try {
+      const location = { itemId, headCommit: progress.head, checkId: progress.id };
+      const output = await storeCloseoutOutput(this.store, logs, location, progress, this.now());
+      return { ...progress, stdout: "", stderr: "", output };
+    } catch (error) {
+      journalCaught(error, "orchestrator.storedAgentCloseout", itemId);
+      return progress;
+    }
+  }
+
+  private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
+    return {
+      record: async (progress) => {
+        if (progress.type === "report" || progress.head !== head) return;
+        await this.store.transaction((q) =>
+          applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );
       },
     };
@@ -8589,7 +8639,8 @@ export class Orchestrator {
       (kind === "thought" ||
         kind === "action" ||
         (yield* this.hasPublishedPullRequestSteps(q, sessionId))) &&
-      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
+      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key)) &&
+      !(kind === "thought" && key.startsWith("pull-request-opened:"))
     )
       return;
     return yield* enqueueOutboxOnceSteps(q, {
@@ -8601,6 +8652,44 @@ export class Orchestrator {
       payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
+  }
+
+  private async readItemPullCi(
+    item: WorkItemRecord,
+    pull: { number: number; head: string },
+  ): Promise<PullCi> {
+    const repository = await this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github)
+      return { state: "unknown", message: "GitHub App is not configured." };
+    return readPullCi({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pull.number,
+      head: pull.head,
+      ...this.gitHubCredentials(github),
+    });
+  }
+
+  private async finishOpenedSessions(itemId?: string): Promise<void> {
+    await finishOpenedSessions(
+      this.store,
+      {
+        now: () => this.now(),
+        readPullCi: (item, pull) => this.readItemPullCi(item, pull),
+        readPull: (item, pullNumber) => this.readItemPull(item, pullNumber, undefined, 1),
+      },
+      itemId,
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.finishOpenedSessions",
+        itemId ?? null,
+        undefined,
+        this.options.journal,
+      ),
+    );
   }
 
   private *canReportProgressSteps(q: Q, itemId: string): Steps<boolean> {
@@ -8626,8 +8715,12 @@ export class Orchestrator {
 
   /** The item opened a pull request in some generation of its session. A new turn starts a new generation. */
   private async hasOpenedPullRequest(itemId: string): Promise<boolean> {
-    const prefix = `pull-request-ready:${itemId}:`;
-    return await this.store.run((q) => linearOutboxKeyedSteps(q, prefix));
+    return await this.store.run(function* (q) {
+      return (
+        (yield* linearOutboxKeyedSteps(q, `pull-request-ready:${itemId}:`)) ||
+        (yield* linearOutboxKeyedSteps(q, `pull-request-opened:${itemId}:`))
+      );
+    });
   }
 
   private *announceMergedSteps(q: Q, item: WorkItemRecord): Steps<void> {
@@ -10616,11 +10709,12 @@ export class Orchestrator {
     const originalProfiles = JSON.stringify(profiles);
     const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
-    await ensureBareMirror({
-      ...repository,
-      pawsRoot: this.options.pawsRoot,
-      networkGit: await this.repositoryGit(item, repository, signal, "write"),
-    });
+    if (!this.storedCandidates())
+      await ensureBareMirror({
+        ...repository,
+        pawsRoot: this.options.pawsRoot,
+        networkGit: await this.repositoryGit(item, repository, signal, "write"),
+      });
     const startRef = worktreeStartRef(item);
     const placement = {
       ...repository,
@@ -10885,18 +10979,37 @@ export class Orchestrator {
    * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
    * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
    */
-  private itemHead(item: WorkItemRecord) {
-    return this.store.run((q) => this.itemHeadSteps(q, item));
+  private async itemHead(item: WorkItemRecord) {
+    const head = await this.store.run((q) => this.itemHeadSteps(q, item));
+    if (head.ref === "HEAD" || !this.storedCandidates()) return head;
+    const repository = await this.repositoryForItem(item);
+    if (!repository) return head;
+    const signal = (await this.signalForItem(item.id)) ?? AbortSignal.timeout(120_000);
+    await ensureMirrorCommit({
+      ...repository,
+      pawsRoot: this.options.pawsRoot,
+      sha: head.ref,
+      networkGit: await this.repositoryGit(item, repository, signal, "read"),
+      signal,
+    });
+    return head;
   }
 
   private *itemHeadSteps(q: Q, item: WorkItemRecord): Steps<{ repo: string; ref: string }> {
     const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    return this.options.remoteExecution && repository
-      ? {
-          repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
-          ref: candidateRef(itemPathId(item)),
-        }
-      : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+    if (!this.options.remoteExecution || !repository)
+      return { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+    const stored = this.storedCandidates()
+      ? (yield* getItemCandidateSteps(q, item.id))?.sha
+      : undefined;
+    return {
+      repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+      ref: stored ?? candidateRef(itemPathId(item)),
+    };
+  }
+
+  private storedCandidates(): boolean {
+    return Boolean(this.options.remoteExecution) && this.options.githubMirrors === false;
   }
 
   private async ensureRecordedCandidate(
@@ -10904,6 +11017,10 @@ export class Orchestrator {
     placement: Parameters<typeof ensureCandidateRef>[0] & { remoteUrl: string },
     signal: AbortSignal,
   ): Promise<string> {
+    if (this.storedCandidates()) {
+      await this.recordBranchTipCandidate(item, placement, signal);
+      return mirrorPath(placement.pawsRoot, placement.owner, placement.repo);
+    }
     await this.restoreCandidate(item, signal);
     const candidate = await ensureCandidateRef(placement);
     if (!(await this.store.run((q) => getItemCandidateSteps(q, item.id))))
@@ -10918,7 +11035,46 @@ export class Orchestrator {
     return candidate.mirrorPath;
   }
 
+  private async recordBranchTipCandidate(
+    item: WorkItemRecord,
+    placement: RepositoryBinding & { itemId: string; startRef?: string },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (await this.store.run((q) => getItemCandidateSteps(q, item.id))) return;
+    const github = this.githubForRepository(placement);
+    if (!github)
+      throw new Error(`Paws has no GitHub access to ${placement.owner}/${placement.repo}`);
+    const tip = (branch: string) =>
+      readBranchTip({
+        client: github.client,
+        owner: placement.owner,
+        repo: placement.repo,
+        branch,
+        ...this.gitHubCredentials(github),
+        signal,
+      });
+    const continued = placement.startRef?.replace(/^origin\//, "");
+    const head =
+      (await tip(branchName(placement.itemId))) ??
+      (continued === undefined ? await tip("main") : await tip(continued));
+    if (!head)
+      throw new Error(
+        continued === undefined
+          ? `${placement.owner}/${placement.repo} has no main to start the candidate from`
+          : `${placement.owner}/${placement.repo} has no ${continued} to start the candidate from`,
+      );
+    await this.store.run((q) =>
+      recordItemCandidateSteps(q, {
+        itemId: item.id,
+        sha: head,
+        branch: item.branchName,
+        recordedAt: this.now(),
+      }),
+    );
+  }
+
   private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+    if (this.storedCandidates()) return;
     const repository = await this.repositoryForItem(item);
     const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
     if (!this.options.remoteExecution || !repository || !recorded) return;
@@ -10938,7 +11094,7 @@ export class Orchestrator {
 
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
     const repository = await this.repositoryForItem(item);
-    if (this.options.remoteExecution && repository)
+    if (this.options.remoteExecution && repository && !this.storedCandidates())
       await adoptLegacyCandidate({
         ...repository,
         itemId: itemPathId(item),

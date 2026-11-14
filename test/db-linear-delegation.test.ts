@@ -43,12 +43,21 @@ forEachDialect((open) => {
 
   test("a task delegation keeps its app user and first human actor", () =>
     withDb(async (db) => {
-      const input = { itemId: "item", issueId: "issue", teamId: "team", appUserId: "app" };
+      const input = {
+        itemId: "item",
+        issueId: "issue",
+        teamId: "team",
+        appUserId: "app",
+      };
       await db.run((q) => insertWorkItemSteps(q, "item"));
       expect(await db.run((q) => getLinearTaskDelegationSteps(q, "item", "issue"))).toBeNull();
       await db.run((q) => requireLinearTaskDelegationSteps(q, input));
       await db.run((q) =>
-        requireLinearTaskDelegationSteps(q, { ...input, teamId: "moved", humanActorId: "human" }),
+        requireLinearTaskDelegationSteps(q, {
+          ...input,
+          teamId: "moved",
+          humanActorId: "human",
+        }),
       );
       await db.run((q) => requireLinearTaskDelegationSteps(q, input));
       expect(await db.run((q) => getLinearTaskDelegationSteps(q, "item", "issue"))).toEqual({
@@ -57,7 +66,12 @@ forEachDialect((open) => {
         teamId: "team",
       });
       await expect(
-        db.run((q) => requireLinearTaskDelegationSteps(q, { ...input, humanActorId: "other" })),
+        db.run((q) =>
+          requireLinearTaskDelegationSteps(q, {
+            ...input,
+            humanActorId: "other",
+          }),
+        ),
       ).rejects.toThrow("Linear delegation ownership changed.");
       await expect(
         db.run((q) => requireLinearTaskDelegationSteps(q, { ...input, teamId: " " })),
@@ -76,7 +90,12 @@ forEachDialect((open) => {
           ["item-2", "issue-2", "blocked"],
           ["item-3", "issue-3", "open"],
         ] as const)
-          yield* requireLinearTaskDelegationSteps(q, { itemId, issueId, teamId, appUserId: "app" });
+          yield* requireLinearTaskDelegationSteps(q, {
+            itemId,
+            issueId,
+            teamId,
+            appUserId: "app",
+          });
         for (const [teamId, allowed] of [
           ["blocked", 0],
           ["open", 1],
@@ -92,10 +111,17 @@ forEachDialect((open) => {
             }),
           );
       });
-      const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
+      const scope = {
+        organizationId: "org",
+        oauthClientId: "client",
+        appUserId: "app",
+      };
       expect(
         await db.run((q) =>
-          linearSessionsForDelegatedTeamsSteps(q, { ...scope, teamIds: ["blocked", "open"] }),
+          linearSessionsForDelegatedTeamsSteps(q, {
+            ...scope,
+            teamIds: ["blocked", "open"],
+          }),
         ),
       ).toEqual(["s1", "s2"]);
       expect(
@@ -124,10 +150,7 @@ forEachDialect((open) => {
             .where(eq(q.t.workItem.id, "item-1")),
         );
         yield* q.exec(
-          q.orm
-            .update(q.t.workItem)
-            .set({ brief: q.dialect === "postgres" ? brief : JSON.stringify(brief) })
-            .where(eq(q.t.workItem.id, "item-2")),
+          q.orm.update(q.t.workItem).set({ brief: brief }).where(eq(q.t.workItem.id, "item-2")),
         );
         yield* q.exec(
           q.orm
@@ -136,7 +159,12 @@ forEachDialect((open) => {
             .where(eq(q.t.workItem.id, "item-3")),
         );
       });
-      const input = { organizationId: "org", appUserId: "app", issueId: "epic", createdAtMs: 0 };
+      const input = {
+        organizationId: "org",
+        appUserId: "app",
+        issueId: "epic",
+        createdAtMs: 0,
+      };
       expect(await db.run((q) => linearSessionsForUndelegatedIssueSteps(q, input))).toEqual([
         "by-epic",
         "by-item",
@@ -144,7 +172,10 @@ forEachDialect((open) => {
       ]);
       expect(
         await db.run((q) =>
-          linearSessionsForUndelegatedIssueSteps(q, { ...input, appUserId: "x" }),
+          linearSessionsForUndelegatedIssueSteps(q, {
+            ...input,
+            appUserId: "x",
+          }),
         ),
       ).toEqual([]);
     }));

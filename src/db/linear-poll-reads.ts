@@ -88,7 +88,7 @@ export function* openStopTargetsSteps(
   const ids: string[] = [];
   const open = notInArray(w.state, DONE_STATES);
   if (linearIssueId !== null && sessionId === null) {
-    const parent = sql.raw(parentIssueIdSql("work_item", q.dialect));
+    const parent = sql.raw(parentIssueIdSql("work_item"));
     const rows = yield* q.all(
       q.orm
         .select({ id: w.id })

@@ -72,10 +72,15 @@ case "$1" in
           systemctl disable --now -- "$unit" || true
         fi
       done
+      if [ -e {root}/etc/systemd/user/paws-agent-docker.service ]; then
+        systemctl --user --machine=paws-agent@ stop -- paws-agent-docker.service || true
+        systemctl --global disable -- paws-agent-docker.service || true
+        loginctl disable-linger paws-agent || true
+      fi
     fi
     rm -rf -- {root}/opt/paws-runner
     rm -f -- {" ".join(paths)} {root}/var/lib/paws-runner-install/debian-services.json
-    rm -f -- {root}/etc/systemd/system/paws-docker.service {root}/etc/systemd/system/paws-agent-docker.service
+    rm -f -- {root}/etc/systemd/system/paws-docker.service {root}/etc/systemd/system/paws-agent-docker.service {root}/etc/systemd/user/paws-agent-docker.service {root}/etc/tmpfiles.d/paws-agent-docker.conf {root}/etc/systemd/system/user@.service.d/delegate.conf
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload || true
     fi

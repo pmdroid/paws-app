@@ -148,13 +148,12 @@ export type ImprovementDecisionResult =
 type ImprovementRow = typeof pgSchema.improvement.$inferSelect;
 type DeliveryRow = typeof pgSchema.improvementDelivery.$inferSelect;
 
-/** SQLite stores JSON as text, Postgres as `jsonb`. */
 function jsonIn(q: Q, value: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+  return value;
 }
 
 function jsonOut<T>(q: Q, stored: unknown): T {
-  return (q.dialect === "sqlite" ? JSON.parse(stored as string) : stored) as T;
+  return stored as T;
 }
 
 function improvementFromRow(row: ImprovementRow): Improvement {
@@ -838,12 +837,8 @@ export function* acceptedImprovementsForFindingsSteps(
 ) {
   if (findingIds.length === 0) return [];
   const { improvement, improvementSource: source } = q.t;
-  const ids = q.dialect === "sqlite" ? JSON.stringify(findingIds) : `{${findingIds.join(",")}}`;
-  const findings =
-    q.dialect === "sqlite"
-      ? sql`SELECT 1 FROM json_each(${ids}) AS finding
-          WHERE instr(${source.sourceKey}, '#' || finding.value || ':') > 0`
-      : sql`SELECT 1 FROM unnest(${ids}::bigint[]) AS finding(value)
+  const ids = `{${findingIds.join(",")}}`;
+  const findings = sql`SELECT 1 FROM unnest(${ids}::bigint[]) AS finding(value)
           WHERE strpos(${source.sourceKey}, '#' || finding.value || ':') > 0`;
   const rows = yield* q.all(
     q.orm

@@ -12,7 +12,14 @@ beforeEach(() => {
 });
 afterEach(() => restore());
 
-function fixture(options: { fail?: boolean; revokeFails?: boolean; stored?: string[] } = {}) {
+function fixture(
+  options: {
+    fail?: boolean;
+    revokeFails?: boolean;
+    stored?: string[];
+    mintWait?: () => Promise<void>;
+  } = {},
+) {
   const stored = { tokens: [...(options.stored ?? [])] };
   let clock = 1_800_000_000_000;
   const minted: MintTokenInput[] = [];
@@ -20,6 +27,7 @@ function fixture(options: { fail?: boolean; revokeFails?: boolean; stored?: stri
   const github: GitHubApp = {
     async mintInstallationToken(input) {
       minted.push(input);
+      await options.mintWait?.();
       if (options.fail) throw new Error("installation token request failed with status 422");
       return {
         token: `ghs_${String(minted.length).padStart(36, "0")}`,
@@ -138,4 +146,24 @@ test("live tokens are kept where a restarted Paws revokes them", async () => {
   expect(lines.at(-1)).toBe("agent-read revoked 1 tokens left from before a restart");
   await f.tokens.close("C1");
   expect(f.stored.tokens).toEqual([]);
+});
+
+test("closing a turn waits for its pending mint and revokes the late token", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const f = fixture({
+    mintWait: () => {
+      started.resolve();
+      return release.promise;
+    },
+  });
+  const opened = f.open();
+  await started.promise;
+  const closing = f.tokens.close("C1");
+  release.resolve();
+  expect(await opened).toBe(false);
+  await closing;
+  expect(f.revoked).toHaveLength(1);
+  expect(await f.tokens.credential("C1")).toBeNull();
+  expect(await f.open()).toBe(false);
 });

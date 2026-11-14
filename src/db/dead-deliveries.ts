@@ -31,9 +31,7 @@ export type DeadDelivery = {
 export type DeadDeliveryRef = { kind: "outbox" | "job"; id: number };
 
 function jsonField(q: Q, column: AnyColumn, key: string): SQL<string | null> {
-  return q.dialect === "sqlite"
-    ? sql`json_extract(${column}, ${`$.${key}`})`
-    : sql`(${column}->>${key})`;
+  return sql`(${column}->>${key})`;
 }
 
 /** A job is current while the item still has the version the job was captured at. */
@@ -43,8 +41,8 @@ function jobCurrent(q: Q): SQL {
     (SELECT ${workItem.version} FROM ${workItem} WHERE ${workItem.id} = ${jsonItemId(q, sql`${job.payload}`)}))`;
 }
 
-function outboxItem(q: Q): SQL<string | null> {
-  return sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}`;
+function outboxItem(): SQL<string | null> {
+  return sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox"))}`;
 }
 
 /** Dead outbox rows and dead jobs of one work item, oldest first. */
@@ -64,7 +62,7 @@ export function* listDeadDeliveriesSteps(q: Q, itemId: string) {
         createdAt: outbox.createdAt,
       })
       .from(outbox)
-      .where(and(eq(outbox.status, "dead"), sql`${outboxItem(q)} = ${itemId}`))
+      .where(and(eq(outbox.status, "dead"), sql`${outboxItem()} = ${itemId}`))
       .orderBy(outbox.id),
   )).map((row): DeadDelivery => ({
     kind: "outbox",
@@ -110,7 +108,7 @@ export function* deadDeliveryItemIdSteps(q: Q, ref: DeadDeliveryRef) {
     ref.kind === "outbox"
       ? yield* q.one(
           q.orm
-            .select({ itemId: outboxItem(q) })
+            .select({ itemId: outboxItem() })
             .from(outbox)
             .where(and(eq(outbox.id, ref.id), eq(outbox.status, "dead"))),
         )
@@ -169,7 +167,7 @@ export function* retryDeadDeliverySteps(
               and(
                 eq(outbox.id, ref.id),
                 eq(outbox.status, "dead"),
-                sql`${outboxItem(q)} = ${itemId}`,
+                sql`${outboxItem()} = ${itemId}`,
               ),
             )
             .returning({ id: outbox.id }),
@@ -316,8 +314,7 @@ export function* redeliverQuestionSteps(q: Q, questionId: string, now: number) {
     op: last.op,
     orderingKey: last.orderingKey,
     idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
-    payload:
-      q.dialect === "sqlite" ? (JSON.parse(last.payload as string) as unknown) : last.payload,
+    payload: last.payload,
     priority: last.priority,
     delivery: last.deliveryKind as OutboxDelivery,
     generation: last.deliveryGeneration,
@@ -380,10 +377,7 @@ export function* recordQuestionReaskSteps(q: Q, jobId: number, questionId: strin
     q.orm
       .update(job)
       .set({
-        payload:
-          q.dialect === "sqlite"
-            ? sql`json_set(${job.payload}, '$.reaskedAs', ${questionId})`
-            : sql`jsonb_set(${job.payload}, '{reaskedAs}', to_jsonb(${questionId}::text))`,
+        payload: sql`jsonb_set(${job.payload}, '{reaskedAs}', to_jsonb(${questionId}::text))`,
       })
       .where(eq(job.id, jobId)),
   );

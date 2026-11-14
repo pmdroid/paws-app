@@ -1,4 +1,4 @@
-import { asc, eq, sql } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
@@ -56,7 +56,7 @@ export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<Closeo
       .from(recovery)
       .innerJoin(asked, eq(asked.id, recovery.questionId))
       .where(eq(recovery.itemId, itemId))
-      .orderBy(asc(asked.createdAt), q.dialect === "sqlite" ? sql`question.rowid` : asc(asked.id)),
+      .orderBy(asc(asked.createdAt), asc(asked.id)),
   );
   return rows.map((row) => ({
     ...row,

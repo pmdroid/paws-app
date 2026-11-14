@@ -57,7 +57,7 @@ export function* pendingAnswerHandoffsSteps(
           notInArray(question.kind, [...excludedKinds]),
         ),
       )
-      .orderBy(asc(question.answeredAt), q.dialect === "sqlite" ? sql`rowid` : asc(question.id)),
+      .orderBy(asc(question.answeredAt), asc(question.id)),
   );
 }
 

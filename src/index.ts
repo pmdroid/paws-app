@@ -60,6 +60,9 @@ import {
   migrateCloseoutEvidence,
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
+  closeoutLogStorage,
+  uploadLocalCloseoutLogs,
+  removeEvidenceFile,
   type EvidenceObjects,
 } from "./evidence";
 import {
@@ -82,6 +85,8 @@ import {
   startupSettings,
   resolveAgentProfiles,
   loadEnv,
+  githubMirrorsOn,
+  useActiveGitHubMirrors,
   loadConfigFile,
   resolveLinearCommentAgents,
   resolveTimeLimits,
@@ -93,6 +98,7 @@ import {
   describeOverriddenSections,
   journalRetiredAgentProjects,
   journalRetiredProjectSettings,
+  copyCapsToTimeLimits,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -205,6 +211,9 @@ import {
   revokeInstallationToken,
   githubHttpsUrl,
   createGitHubGitReader,
+  branchContains,
+  readRef,
+  readCommit,
   useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
@@ -354,7 +363,10 @@ import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands"
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneCloseoutLogs,
+  pruneLoopQueues,
   pruneRunnerEvents,
+  pruneRunnerTables,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
   RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -386,6 +398,7 @@ import {
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
+  type GitHubCommits,
   remoteCommandsGoneSteps,
 } from "./runner-backend";
 
@@ -589,6 +602,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    const copiedCaps = await copyCapsToTimeLimits(
+      paths.configFile,
+      loadConfigFile(paths.configFile),
+    );
+    if (copiedCaps !== null) journal(copiedCaps);
     journalRetiredAgentProjects(paths.configFile, journal);
     journalRetiredProjectSettings(paths.configFile, journal);
   } catch (error) {
@@ -610,8 +628,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  useActiveGitHubMirrors(startupMirrors);
   useGitReader(
-    loadConfigFile(paths.configFile).githubMirrors === false
+    !startupMirrors
       ? createGitHubGitReader({
           locate: (path) => {
             const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");
@@ -781,7 +801,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     db: store,
     store,
     signal: abort.signal,
-    countItemRequest: async (itemId, caller) => await countLinearRequest(store, itemId, caller),
+    countItemRequest: async (itemId) => await countLinearRequest(store, itemId),
     budget: linearBudgetStore(store, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: async () => !(await linearRevoked()),
@@ -1043,6 +1063,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   void uploadLocalEvidence(store, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
+  const closeoutLogs = closeoutLogStorage(paths.home, evidenceObjects);
+  void uploadLocalCloseoutLogs(store, closeoutLogs).catch((error: unknown) =>
+    journalCaught(error, "index.startPaws.uploadLocalCloseoutLogs", null),
+  );
   const closeoutEvidence = {
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,
@@ -1102,6 +1126,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           runnerFiles: runnerFileObjects(),
           eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
+          secretsDir: paths.secretsDir,
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),
@@ -1207,7 +1232,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ store });
-  const accountManagement = createAccountManagement();
+  const accountManagement = createAccountManagement({ store });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,
@@ -1215,6 +1240,29 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
+  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
+    const read = () => {
+      const binding = githubBinding(
+        authProvider(
+          runtime,
+          { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
+          "read",
+          resolveApp,
+        ),
+      );
+      if (!binding)
+        throw new Error(
+          `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
+        );
+      return { ...binding, ...repository };
+    };
+    return {
+      ref: (ref, signal) => readRef({ ...read(), ref, signal }),
+      contains: async (tip, sha, signal) =>
+        (await branchContains({ ...read(), branch: tip, sha, signal })).contains,
+      commit: (sha, signal) => readCommit({ ...read(), sha, signal }),
+    };
+  };
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -1225,6 +1273,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
+            ...(loadConfigFile(paths.configFile).githubMirrors === false
+              ? { storedCandidates: githubCommits }
+              : {}),
             placement,
             instanceId: instance.id,
           }),
@@ -1462,6 +1513,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
+        configPath: paths.configFile,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
@@ -1657,7 +1709,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         remoteExecution,
@@ -1940,6 +1992,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         files: linear?.files,
         secretsDir: paths.secretsDir,
         closeoutEvidenceObjects: evidenceObjects,
+        closeoutLogs,
         evidence: runtime.publicUrl
           ? {
               publicUrl: runtime.publicUrl,
@@ -1982,6 +2035,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
+        githubMirrors: loadConfigFile(paths.configFile).githubMirrors !== false,
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
           limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),
@@ -2087,7 +2141,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
-          groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
+          groupingTime: () => loadConfigFile(paths.configFile).findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
@@ -2171,14 +2225,29 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
-      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
-          ({ deleted }) => {
-            if (!deleted) return;
-            journal(`runner events pruned: ${deleted} events deleted`);
-          },
-        ),
-      );
+      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, async (_job, context) => {
+        const signal = AbortSignal.any([context.signal, abort.signal]);
+        const { deleted } = await pruneRunnerEvents({ store, signal });
+        if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+        const logs = await pruneCloseoutLogs({
+          store,
+          signal,
+          remove: (key) => removeEvidenceFile(store, closeoutLogs, key),
+        });
+        if (logs) journal(`Closeout logs pruned: ${logs} outputs deleted`);
+        for (const [label, prune] of [
+          ["loop queues", pruneLoopQueues],
+          ["runner tables", pruneRunnerTables],
+        ] as const) {
+          const pruned = Object.entries(await prune({ store, signal })).filter(
+            ([, rows]) => rows > 0,
+          );
+          if (pruned.length)
+            journal(
+              `${label} pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+            );
+        }
+      });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
@@ -55,7 +55,6 @@ export async function insertRunnerHelper(store: Db, row: NewRunnerHelper): Promi
   await store.run((q) => insertRunnerHelperSteps(q, row));
 }
 
-/** Helpers the runner has not acknowledged, oldest first on SQLite and by id on Postgres. */
 export function* unacknowledgedRunnerHelpersSteps(
   q: Q,
   runnerId: string,
@@ -74,7 +73,7 @@ export function* unacknowledgedRunnerHelpersSteps(
           gt(helper.expiresAt, at),
         ),
       )
-      .orderBy(q.dialect === "sqlite" ? sql`rowid` : asc(helper.id)),
+      .orderBy(asc(helper.id)),
   );
   return rows.map((row) => row.id);
 }
@@ -101,7 +100,6 @@ export async function acknowledgeRunnerHelper(store: Db, id: string, at: number)
   await store.run((q) => acknowledgeRunnerHelperSteps(q, id, at));
 }
 
-/** Whether the stored result is this payload: JSON equality on Postgres, text on SQLite. */
 export function* runnerHelperResultMatchesSteps(q: Q, id: string, payload: string): Steps<boolean> {
   const { runnerHelper: helper } = q.t;
   const row = yield* q.one(
@@ -147,4 +145,18 @@ export function* endRunnerHelperSteps(q: Q, id: string, at: number) {
       .set({ endedAt: sql`COALESCE(${helper.endedAt}, ${at})` })
       .where(eq(helper.id, id)),
   );
+}
+
+/** Deletes up to `limit` helpers that ended and expired before `cutoff`; returns how many. */
+export function* pruneEndedRunnerHelpersSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerHelper: h } = q.t;
+  const prunable = q.orm
+    .select({ id: h.id })
+    .from(h)
+    .where(and(lt(h.endedAt, cutoff), lt(h.expiresAt, cutoff)))
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(h).where(inArray(h.id, prunable)).returning({ id: h.id }),
+  );
+  return deleted.length;
 }

@@ -6,7 +6,6 @@ import {
   releaseRunnerReservation,
   reserveRunnerSlot,
   runnerReservationHolder,
-  schema,
   reserveRunnerSlotSteps,
   unassignedRunnerReservations,
   unassignedRunnerReservationsSteps,
@@ -20,8 +19,7 @@ afterEach(async () => {
 });
 
 async function withoutForeignKeys(db: Db): Promise<void> {
-  if (db.dialect === "sqlite") await db.sync((orm) => orm.run(sql`PRAGMA foreign_keys = OFF`));
-  else await db.orm.execute(sql`SET session_replication_role = replica`);
+  await db.orm.execute(sql`SET session_replication_role = replica`);
 }
 
 async function assign(db: Db, runId: string, runnerId: string): Promise<void> {
@@ -34,9 +32,7 @@ async function assign(db: Db, runId: string, runnerId: string): Promise<void> {
     commandId: `command-${runId}`,
     leaseUntil: Number.MAX_SAFE_INTEGER,
   };
-  if (db.dialect === "sqlite")
-    await db.sync((orm) => orm.insert(schema.runnerWork).values(row).run());
-  else await db.orm.insert(pgSchema.runnerWork).values(row);
+  await db.orm.insert(pgSchema.runnerWork).values(row);
 }
 
 forEachDialect((connect) => {
@@ -107,7 +103,12 @@ forEachDialect((connect) => {
     const now = 1_800_000_000_000;
     for (const runId of ["run-1", "run-2", "run-3"])
       await db.run((q) =>
-        reserveRunnerSlotSteps(q, { runId, runnerId: "acme-box", instanceId: "acme-a", now }),
+        reserveRunnerSlotSteps(q, {
+          runId,
+          runnerId: "acme-box",
+          instanceId: "acme-a",
+          now,
+        }),
       );
     await assign(db, "run-1", "acme-box");
     await assign(db, "run-2", "acme-other");

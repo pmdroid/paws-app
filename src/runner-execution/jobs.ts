@@ -22,5 +22,6 @@ export const RunnerJobSchema = z.strictObject({
     RunnerRetroCommandSchema.transform((command): RunnerRetroCommand => command),
     WorkCommandSchema,
   ]),
+  credentials: z.strictObject({ certificate: z.string().min(1).max(16_384) }).optional(),
 });
 export type RunnerJob = z.infer<typeof RunnerJobSchema>;

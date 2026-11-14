@@ -38,7 +38,7 @@ const SYNC_CALLBACKS = new Set([
 const TEST_CALLBACKS = new Set(["test", "it", "beforeAll", "beforeEach", "afterAll", "afterEach"]);
 const TRANSACTION_CALLS = new Set(["transaction", "immediate"]);
 const DB_TYPES = new Set(["Db", "SqliteDb", "PgDb"]);
-const LEFT_ALONE = new Set(["migrate", "appliedMigrations", "legacyMigrate", "sqliteDb"]);
+const LEFT_ALONE = new Set(["migrate", "appliedMigrations", "sqliteDb"]);
 const RUNNERS = new Set(["settled", "sqliteDb", "run", "transaction", "runSteps", "sync"]);
 
 export const manipulationSettings = {

@@ -62,11 +62,7 @@ import {
 } from "../src/linear";
 import { createEvidenceStore } from "../src/evidence";
 import { findOpenQuestion, getQuestion } from "../src/questions";
-import {
-  handleStatusRequest,
-  parseIssueDetailResponse,
-  parseIssueListResponse,
-} from "../src/dashboard";
+import { handleStatusRequest, parseIssueDetailResponse } from "../src/dashboard";
 import {
   attachOrchestrator,
   itemPathId,
@@ -3454,14 +3450,13 @@ async function runGitHubQueue(
       if ((await tickWithRestarts(jobs, orchestrator, db)) !== null) continue;
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
-        const response = await handleStatusRequest(new Request("http://localhost/api/issues"), {
-          store: db,
-        });
-        const parsed = parseIssueListResponse(await response!.json());
-        if (!parsed.ok) throw new Error("Invalid issue list");
-        dashboard.push(
-          parsed.response.issues.find((entry) => entry.id === "ENG-95")?.githubQueue?.line ?? null,
+        const response = await handleStatusRequest(
+          new Request("http://localhost/api/issues/ENG-95"),
+          { store: db },
         );
+        const parsed = parseIssueDetailResponse(await response!.json());
+        if (!parsed.ok) throw new Error("Invalid issue detail");
+        dashboard.push(parsed.response.issue.githubQueue?.line ?? null);
         // The pull request waits in GitHub's queue: act as GitHub, then let the parked merge job
         // read it again now instead of after its poll interval.
         onQueued(queue, pull, rounds, queue.enqueued.length);

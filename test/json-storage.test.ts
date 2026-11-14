@@ -6,7 +6,7 @@ import { forEachDialect, type DialectDb } from "./dialects";
 
 function jsonType(db: Db, id: number): Promise<string> {
   return db.run(function* (q) {
-    const type = q.dialect === "sqlite" ? sql`json_type` : sql`jsonb_typeof`;
+    const type = sql`jsonb_typeof`;
     const rows = yield* q.all(
       q.orm
         .select({ type: sql<string>`${type}(${q.t.job.payload})` })
@@ -25,7 +25,11 @@ forEachDialect((open) => {
   afterEach(() => handle.close());
 
   test("a jsonb column stores an object as an object", async () => {
-    const id = await enqueueJob(handle.db, { queue: "q", payload: { a: 1 }, now: 0 });
+    const id = await enqueueJob(handle.db, {
+      queue: "q",
+      payload: { a: 1 },
+      now: 0,
+    });
     expect(await jsonType(handle.db, id)).toBe("object");
     expect((await getJob(handle.db, id))?.payload).toEqual({ a: 1 });
   });

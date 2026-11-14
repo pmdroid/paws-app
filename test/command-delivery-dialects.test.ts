@@ -29,8 +29,9 @@ async function owned(db: Db) {
     startedAt: 0,
     heartbeatAt,
   });
-  const run = (id: string) => ({
+  const run = (id: string, ownerInstance: string) => ({
     id,
+    ownerInstance,
     itemId: "item",
     kind: "agent",
     agent: "codex",
@@ -44,14 +45,10 @@ async function owned(db: Db) {
       q.orm
         .insert(q.t.instance)
         .values([instance("self", 100_000), instance("peer", 100_000), instance("gone", 0)]),
-    (q) => q.orm.insert(q.t.run).values([run("r1"), run("r2"), run("r3"), run("r4")]),
     (q) =>
-      q.orm.insert(q.t.runOwner).values([
-        { runId: "r1", ownerInstance: "self" },
-        { runId: "r2", ownerInstance: "peer" },
-        { runId: "r3", ownerInstance: "peer" },
-        { runId: "r4", ownerInstance: "gone" },
-      ]),
+      q.orm
+        .insert(q.t.run)
+        .values([run("r1", "self"), run("r2", "peer"), run("r3", "peer"), run("r4", "gone")]),
   );
 }
 

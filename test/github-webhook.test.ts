@@ -3,9 +3,9 @@ import { createHmac } from "node:crypto";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { checkGitHubSignature, handleGitHubWebhook } from "../src/github";
-import { listGitHubDeliveries } from "../src/db";
 import { startPaws } from "../src/index";
 import { migratedHome } from "./helpers";
+import { githubDeliveryRows } from "./dialects";
 
 const secret = "synthetic-github-webhook-secret";
 function request(payload: string, change: Record<string, string> = {}): Request {
@@ -86,11 +86,11 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
       });
     };
     expect((await send()).status).toBe(200);
-    expect(await listGitHubDeliveries(paws.store)).toHaveLength(1);
+    expect(await githubDeliveryRows(paws.store)).toHaveLength(1);
     await paws.stop();
     paws = await startPaws(env);
     expect((await send()).status).toBe(200);
-    expect(await listGitHubDeliveries(paws.store)).toMatchObject([
+    expect(await githubDeliveryRows(paws.store)).toMatchObject([
       { deliveryId: "delivery-1", event: "ping", payload },
     ]);
     await paws.stop();

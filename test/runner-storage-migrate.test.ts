@@ -3,14 +3,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentSessionObjectKey, createLocalAgentSessionObjects } from "../src/agent-sessions";
-import { sqliteDb } from "../src/db";
 import { createFakeRunFileObjects } from "../src/run-files";
 import { migrateRunnerStorage } from "../src/runner-transcript-config";
 import {
   createLocalRunnerTranscriptObjects,
   runnerTranscriptObjectKey,
 } from "../src/runner-transcripts";
-import { legacyTempDb, tempHome } from "./helpers";
+import { withoutForeignKeys } from "./dialects";
+import { tempHome } from "./helpers";
+import { sqlRun, tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const chunks = [randomBytes(64), randomBytes(32)].map((bytes, index) => ({
@@ -22,25 +23,40 @@ const row = { workspaceId: "w", commandId: "c", executionId: "e", runId: "run", 
 const transcriptKeys = chunks.map((chunk) => runnerTranscriptObjectKey({ ...row, ...chunk }));
 const sessionKeys = chunks.map((chunk) => agentSessionObjectKey({ ...row, ...chunk }));
 const homes: string[] = [];
-afterEach(() => homes.splice(0).forEach((home) => rmSync(home, { recursive: true })));
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  homes.splice(0).forEach((home) => rmSync(home, { recursive: true }));
+  for (const close of stores.splice(0)) await close();
+});
 
 async function fixture() {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
+  stores.push(close);
   const home = tempHome();
   homes.push(home);
-  db.exec("PRAGMA foreign_keys=OFF");
-  db.run(`INSERT INTO runner_transcript(run_id,generation,command_id,workspace_id,execution_id)
-    VALUES('run',1,'c','w','e')`);
-  db.run(`INSERT INTO agent_session_snapshot(run_id,generation,item_id,workspace_id,runner_id,
-    created_at) VALUES('run',1,'item','w','runner',1)`);
-  db.run(`INSERT INTO runner_transcript_chunk(run_id,generation,offset,size_bytes,sha256)
-    VALUES('run',1,1048576,1,'${"0".repeat(64)}')`);
+  await withoutForeignKeys(db);
+  await sqlRun(
+    db,
+    `INSERT INTO runner_transcript(run_id,generation,command_id,workspace_id,execution_id)
+    VALUES('run',1,'c','w','e')`,
+  );
+  await sqlRun(
+    db,
+    `INSERT INTO agent_session_snapshot(run_id,generation,item_id,workspace_id,runner_id,
+    created_at) VALUES('run',1,'item','w','runner',1)`,
+  );
+  await sqlRun(
+    db,
+    `INSERT INTO runner_transcript_chunk(run_id,generation,"offset",size_bytes,sha256)
+    VALUES('run',1,1048576,1,'${"0".repeat(64)}')`,
+  );
   const transcripts = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
   const sessions = createLocalAgentSessionObjects(join(home, "agent-sessions"));
   for (const [index, chunk] of chunks.entries()) {
     for (const table of ["runner_transcript_chunk", "agent_session_snapshot_chunk"])
-      db.run(
-        `INSERT INTO ${table}(run_id,generation,offset,size_bytes,sha256,key_id)
+      await sqlRun(
+        db,
+        `INSERT INTO ${table}(run_id,generation,"offset",size_bytes,sha256,key_id)
         VALUES('run',1,?,?,?,?)`,
         [chunk.offset, chunk.bytes.length, chunk.sha256, "k".repeat(64)],
       );
@@ -48,7 +64,7 @@ async function fixture() {
     await sessions.write(sessionKeys[index]!, chunk.bytes);
   }
   const files = (folder: string) => readdirSync(join(home, folder));
-  return { home, store: sqliteDb(db), files };
+  return { home, store: db, files };
 }
 
 test("migrate copies every sealed chunk of both kinds once and a rerun copies nothing", async () => {

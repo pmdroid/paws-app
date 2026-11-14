@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import type { riskFix } from "./schema-pg";
@@ -49,11 +49,6 @@ export function* deleteRiskFixSteps(q: Q, itemId: string, head: string) {
   );
 }
 
-/** Forgets the comparison for a head, as when Paws can no longer read the fix. */
-export async function deleteRiskFix(store: Db, itemId: string, head: string): Promise<void> {
-  await store.run((q) => deleteRiskFixSteps(q, itemId, head));
-}
-
 type Row = typeof riskFix.$inferSelect;
 
 export function* getRiskFixSteps(q: Q, itemId: string, head: string) {
@@ -83,6 +78,20 @@ export function* latestRiskFixSteps(q: Q, itemId: string) {
       .limit(1),
   );
   return row ? fromRow(q, row) : null;
+}
+
+export function* latestRiskFixesSteps(q: Q, itemIds: readonly string[]) {
+  const { riskFix } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(riskFix)
+      .where(inArray(riskFix.itemId, [...itemIds]))
+      .orderBy(desc(riskFix.recordedAt), desc(riskFix.headSha)),
+  );
+  const latest = new Map<string, RiskFix>();
+  for (const row of rows) if (!latest.has(row.itemId)) latest.set(row.itemId, fromRow(q, row));
+  return latest;
 }
 
 /** The most recently recorded fix of the item. */

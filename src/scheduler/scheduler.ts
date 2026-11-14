@@ -284,7 +284,12 @@ function* taskSlots(
   q: Q,
   now: number,
   excludeRunId = "",
-): Steps<{ total: number; busy: number; open: Map<string, number> } | null> {
+): Steps<{
+  total: number;
+  busy: number;
+  open: Map<string, number>;
+  fix: Map<string, number>;
+} | null> {
   const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   const reservations = yield* unassignedRunnerReservationsSteps(q, now, "");
@@ -307,6 +312,7 @@ function* taskSlots(
         runner.capacity - Math.min(runner.used, runner.capacity),
       ]),
     ),
+    fix: new Map(runners.map((runner) => [runner.id, runner.fixSlots])),
   };
 }
 
@@ -637,10 +643,32 @@ async function admit(
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
       const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
-      const free = verdicts.runners.filter(
-        (runner) => runner.rejection === null && open(runner.id) > 0,
-      );
+      const free = [];
+      for (const runner of verdicts.runners)
+        if (
+          runner.rejection === null &&
+          open(runner.id) - (yield* fixSlotsKept(itemId, runner.id)) > 0
+        )
+          free.push(runner);
       return free[0]?.id ?? null;
+    }
+    function* fixSlotsKept(itemId: string, runnerId: string): Steps<number> {
+      const kept = slots?.fix.get(runnerId) ?? 0;
+      if (!kept || byId.get(itemId)?.mergeAt !== null) return 0;
+      for (const pin of pins)
+        if (
+          byId.get(pin.itemId)!.mergeAt !== null &&
+          !reservedSlots.has(pin.jobId) &&
+          pin.runnerIds.includes(runnerId)
+        )
+          return kept;
+      for (const item of candidates) {
+        if (item.mergeAt === null || held.some((entry) => entry.itemId === item.id)) continue;
+        const verdicts = yield* verdictsFor(item.id);
+        if (verdicts?.runners.some((runner) => runner.id === runnerId && runner.rejection === null))
+          return kept;
+      }
+      return 0;
     }
     const choices = new Map<string, string>();
     function* takeSlot(itemId: string): Steps<boolean> {

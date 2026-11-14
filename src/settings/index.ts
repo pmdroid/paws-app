@@ -24,3 +24,11 @@ export {
   handleLinearCommentSettingsRequest,
 } from "./linear-comments";
 export type { LinearCommentSettingsOptions } from "./linear-comments";
+export { GITHUB_ACCESS_SETTINGS_PATH, handleGitHubAccessSettingsRequest } from "./github-access";
+export type { GitHubAccessSettingsOptions } from "./github-access";
+export { CLOSEOUT_SETTINGS_PATH, handleCloseoutSettingsRequest } from "./closeout";
+export type { CloseoutSettingsOptions } from "./closeout";
+export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
+export type { StorageSettingsOptions } from "./storage";
+export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
+export type { MemberVmSettingsOptions } from "./member-vm";

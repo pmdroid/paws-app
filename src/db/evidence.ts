@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { type Q, type Db } from "./db";
-import { closeoutEvidenceObject, evidenceObject } from "./schema";
+import { closeoutEvidenceObject, evidenceObject } from "./schema-pg";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -40,14 +40,18 @@ export function* getEvidenceSteps(q: Q, id: string) {
 }
 
 export function* listEvidenceSteps(q: Q, itemId: string) {
+  return (yield* listEvidenceForItemsSteps(q, [itemId])).get(itemId) ?? [];
+}
+
+export function* listEvidenceForItemsSteps(q: Q, itemIds: readonly string[]) {
   const rows = yield* q.all(
     q.orm
       .select()
       .from(q.t.evidence)
-      .where(eq(q.t.evidence.itemId, itemId))
+      .where(inArray(q.t.evidence.itemId, [...itemIds]))
       .orderBy(q.t.evidence.createdAt, q.t.evidence.id),
   );
-  return rows as StoredEvidence[];
+  return Map.groupBy(rows as StoredEvidence[], (row) => row.itemId);
 }
 
 export async function getEvidence(store: Db, id: string): Promise<StoredEvidence | null> {

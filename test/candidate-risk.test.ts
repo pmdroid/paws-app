@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getCandidateRisk, latestCandidateRisk, saveCandidateRisk } from "../src/db";
+import { getCandidateRisk, latestCandidateRisk, saveCandidateRiskSteps } from "../src/db";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
 
@@ -36,23 +36,27 @@ async function seeded() {
 describe("candidate risk", () => {
   test("stores the tier and matched paths for each candidate head", async () => {
     const db = await seeded();
-    await saveCandidateRisk(db, {
-      itemId: "item",
-      head: "aaa",
-      base: "base",
-      tier: "high",
-      paths: ["src/auth/session.ts"],
-      matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
-      classifiedAt: 10,
-    });
-    await saveCandidateRisk(db, {
-      itemId: "item",
-      head: "bbb",
-      base: "base",
-      tier: "normal",
-      paths: [],
-      classifiedAt: 20,
-    });
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: "item",
+        head: "aaa",
+        base: "base",
+        tier: "high",
+        paths: ["src/auth/session.ts"],
+        matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
+        classifiedAt: 10,
+      }),
+    );
+    await db.run((q) =>
+      saveCandidateRiskSteps(q, {
+        itemId: "item",
+        head: "bbb",
+        base: "base",
+        tier: "normal",
+        paths: [],
+        classifiedAt: 20,
+      }),
+    );
     expect(await getCandidateRisk(db, "item", "aaa")).toEqual({
       itemId: "item",
       head: "aaa",

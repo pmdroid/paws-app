@@ -192,13 +192,6 @@ export function* deleteAgentSessionChunksSteps(q: Q, chunks: readonly ChunkKey[]
     );
 }
 
-export async function deleteAgentSessionChunks(
-  store: Db,
-  chunks: readonly ChunkKey[],
-): Promise<void> {
-  await store.transaction((q) => deleteAgentSessionChunksSteps(q, chunks));
-}
-
 export type AgentSessionSeal = {
   runId: string;
   generation: number;

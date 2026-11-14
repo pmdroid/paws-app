@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseIssueListResponse } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
+import { fullStatusFixture, issueResource } from "../../test/fixtures";
 import { runSetupSection } from "./render";
 import { runnerDetailMarkup, runnerRowMarkup, runnerSkillsMarkup, type Runner } from "./runners";
 import { renderSkillSettings, skillRolloutMarkup, type SkillListing } from "./skills";
@@ -266,31 +267,10 @@ describe("run page skills and hooks", () => {
     expect(empty).toContain("No hooks.");
   });
 
-  test("the issue list carries the setup to the run page", () => {
-    const parsed = parseIssueListResponse({
-      source: "live",
-      generatedAt: "2026-10-22T10:00:00.000Z",
-      project: { name: "Paws", team: "PAS", repo: "pmdroid/paws-app", workspace: "kyku" },
-      issues: [],
-      runs: [
-        {
-          id: "run-1",
-          itemId: "PAS-450",
-          state: "running",
-          agent: "Claude",
-          reviewer: "Codex",
-          startedAt: "2026-10-22T09:00:00.000Z",
-          attempt: 0,
-          summary: "",
-          activity: [],
-          links: [],
-          setup,
-        },
-      ],
-      verdicts: [],
-      agentCloseout: [],
-      mergedTimes: null,
-    });
+  test("the issue detail carries the setup to the run page", () => {
+    const detail = issueResource(fullStatusFixture(), "ENG-102");
+    detail.runs[0]!.setup = setup;
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok && parsed.response.runs[0]?.setup).toEqual(setup);
   });
 

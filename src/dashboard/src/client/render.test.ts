@@ -767,3 +767,35 @@ function activitySection(html: string): string {
   if (start < 0) throw new Error("missing item activity");
   return html.slice(start, html.indexOf("</section>", start));
 }
+
+test("CI failure without an external URL links to its complete stored log", () => {
+  const snapshot = fullStatusFixture();
+  const item = snapshot.items[0]!;
+  snapshot.ciRounds = [
+    {
+      itemId: item.id,
+      runId: null,
+      round: 1,
+      head: "a".repeat(40),
+      next: "asked",
+      fix: null,
+      fixLimit: 3,
+      recordedAt: snapshot.generatedAt,
+      checks: [
+        {
+          name: "test",
+          state: "failed",
+          url: null,
+          startedAt: null,
+          completedAt: null,
+          logTail: "summary",
+          logSource: "actions",
+          logPath: "/api/issues/ENG-100/attempts/1/checks/1/log?ci=1&full=1",
+        },
+      ],
+    },
+  ];
+  const html = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+  expect(html).toContain('href="/api/issues/ENG-100/attempts/1/checks/1/log?ci=1&amp;full=1"');
+  expect(html).toContain("Stored log");
+});

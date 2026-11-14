@@ -24,9 +24,11 @@ async function roundTrip(store: Db, name: string) {
 describe("openPawsStore", () => {
   test("without a url opens PGlite in pglite/, migrated, and keeps its rows across opens", async () => {
     const paths = pawsPaths(tempHome());
-    const first = await openPawsStore({ url: null, pgliteDir: paths.pgliteDir });
+    const first = await openPawsStore({
+      url: null,
+      pgliteDir: paths.pgliteDir,
+    });
     try {
-      expect(first.store.dialect).toBe("postgres");
       expect(await roundTrip(first.store, "kept")).toBe(42);
     } finally {
       await first.close();
@@ -34,7 +36,10 @@ describe("openPawsStore", () => {
     expect(paths.pgliteDir).toBe(join(paths.home, "pglite"));
     expect(existsSync(join(paths.pgliteDir, "PG_VERSION"))).toBe(true);
     expect(existsSync(paths.db)).toBe(false);
-    const second = await openPawsStore({ url: null, pgliteDir: paths.pgliteDir });
+    const second = await openPawsStore({
+      url: null,
+      pgliteDir: paths.pgliteDir,
+    });
     try {
       expect(await second.store.run((q) => syncCursorSteps(q, "kept"))).toBe(42);
     } finally {
@@ -62,7 +67,10 @@ describe("openPawsStore", () => {
 
   test("with a url it can't reach it rejects", async () => {
     await expect(
-      openPawsStore({ url: "postgres://paws@127.0.0.1:1/paws", pgliteDir: tempHome() }),
+      openPawsStore({
+        url: "postgres://paws@127.0.0.1:1/paws",
+        pgliteDir: tempHome(),
+      }),
     ).rejects.toThrow();
   });
 });

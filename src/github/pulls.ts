@@ -3,6 +3,7 @@ import type { GitHubCredentialInput } from "./auth/types";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact } from "./git";
+import { moveBranchToCandidate } from "./publication";
 import { pushDenial, pushWithLease } from "./push";
 import {
   GitCommandError,
@@ -18,6 +19,8 @@ export async function pushBranch(
     worktree: string;
     /** The ref that names the candidate in `worktree`; `HEAD` when unset. */
     ref?: string;
+    candidate?: string;
+    client?: GitHubClient;
     issue: string;
     branchKey?: string;
     owner: string;
@@ -30,6 +33,20 @@ export async function pushBranch(
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
+  if (input.candidate !== undefined) {
+    if (!input.client) throw new Error("push failed: publishing a stored candidate needs GitHub");
+    await moveBranchToCandidate({
+      client: input.client,
+      owner: input.owner,
+      repo: input.repo,
+      branch,
+      sha: input.candidate,
+      token,
+    }).catch((error: unknown) => {
+      throw new Error(`push failed: ${gitFailureReason(token, error)}`, { cause: error });
+    });
+    return { branch, head: input.candidate };
+  }
   const ref = input.ref ?? "HEAD";
   const head = await git(input.worktree, ["rev-parse", ref], gitExec);
   try {
@@ -224,6 +241,7 @@ export async function publishAccepted(
     evidence: string;
     worktree: string;
     ref?: string;
+    candidate?: string;
     issue: string;
     branchKey?: string;
     owner: string;

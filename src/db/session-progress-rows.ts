@@ -122,10 +122,7 @@ export function* sessionLinkQueuedSteps(
   url: string,
 ): Steps<boolean> {
   const o = q.t.outbox;
-  const first =
-    q.dialect === "sqlite"
-      ? sql`json_extract(${o.payload}, '$.addedExternalUrls[0].url')`
-      : sql`(${o.payload} -> 'addedExternalUrls' -> 0 ->> 'url')`;
+  const first = sql`(${o.payload} -> 'addedExternalUrls' -> 0 ->> 'url')`;
   const row = yield* q.one(
     q.orm
       .select({ id: o.id })

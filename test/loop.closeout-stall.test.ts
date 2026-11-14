@@ -9,7 +9,7 @@ import { expect, test } from "bun:test";
 import { and, eq, isNull } from "drizzle-orm";
 import { runAgent } from "../src/acp";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
-import { JOB_KIND, type Clock } from "../src/core";
+import { JOB_KIND, PawsShutdown, type Clock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -20,6 +20,8 @@ import {
   listCloseoutRecoveries,
   listJobs,
   listWorkItems,
+  prepareShutdown,
+  recoverOnStartup,
   syncSteps,
   type Db,
   type Q,
@@ -360,6 +362,84 @@ test("a check run whose lease lapsed keeps its claim, and a reverify waiting on 
     await f.close();
   }
 }, 90_000);
+
+for (const lapsed of [false, true])
+  test(`a re-check run on the runner ${lapsed ? "whose lease expired is lost and checks again" : "is taken over after a Paws restart"}`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    let release!: () => void;
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = (await listWorkItems(f.db))[0]!;
+      f.gate.held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id, reason: "closeout_fault", recheckHead: true },
+        now: Date.now(),
+      });
+      const checking = f.tickReverify();
+      while (f.gate.runs.length < 2) await Bun.sleep(10);
+      const runId = (await getWorkItem(f.db, item.id))!.currentRunId!;
+      expect((await getRun(f.db, runId))?.kind).toBe("recheck");
+      await setRunnerWork(f.db, item.currentRunId!, {
+        runId,
+        endedAt: null,
+        leaseUntil: Date.now() + 60_000,
+      });
+
+      f.throwFromRun(new PawsShutdown());
+      const stopping = f.orchestrator.shutdown();
+      release();
+      await stopping;
+      await checking;
+      f.throwFromRun(null);
+      expect(await runnerWorkOpen(f.db, runId)).toBe(true);
+      await setItem(f.db, item.id, {
+        checkpoint: { ...(await checkpointOf(f.db, item.id)), phase: "verifying" },
+      });
+      const later = lapsed ? Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS : Date.now();
+      await prepareShutdown(f.db, later);
+      expect((await getRun(f.db, runId))?.status).toBe(lapsed ? "lost" : "active");
+      await f.restart();
+      await recoverOnStartup(f.db, later);
+      expect(await getWorkItem(f.db, item.id)).toMatchObject({ state: "verifying" });
+
+      if (!lapsed) await deliverRunnerResult(f.db, runId);
+      const verify = f.gate.run;
+      f.gate.run = async (input) => {
+        if (!lapsed) await setRunnerWork(f.db, runId, { endedAt: Date.now() });
+        return verify(input);
+      };
+      for (let round = 0; round < 5; round++) {
+        for (const job of await listJobs(f.db))
+          if (job.queue === JOB_KIND.reverify && job.status === "pending")
+            await setJob(f.db, job.id, { runAt: 0 });
+        await f.tickReverify();
+        if ((await getWorkItem(f.db, item.id))?.state === "merge_queue") break;
+      }
+      const current = (await getWorkItem(f.db, item.id))!;
+      expect(current.state).toBe("merge_queue");
+      expect(current.currentRunId === runId).toBe(!lapsed);
+      const rechecks = await f.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: q.t.run.id })
+            .from(q.t.run)
+            .where(and(eq(q.t.run.itemId, item.id), eq(q.t.run.kind, "recheck"))),
+        ),
+      );
+      expect(rechecks).toHaveLength(lapsed ? 2 : 1);
+      expect(f.gate.runs).toHaveLength(3);
+    } finally {
+      release?.();
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
 
 for (const hold of ["sibling", "live-decide"] as const)
   test(`a ${hold} hold preserves a decide request without spending attempts`, async () => {

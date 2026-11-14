@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  getItemPullRequestSteps,
   getOpenFindingsLineSteps,
   getPublishedHeadSteps,
-  saveOpenFindingsSteps,
+  recordItemPullRequestSteps,
   withOpenFindingsSteps,
   type Db,
 } from "../src/db";
@@ -19,17 +20,37 @@ forEachDialect((open) => {
     }
   }
 
+  const pull = { itemId: "A", pullNumber: 7, pullUrl: null, openedAt: 1 };
+
   test("each publication replaces the open-findings line", () =>
     withDb(async (db) => {
       expect(await db.run((q) => getPublishedHeadSteps(q, "A"))).toBeNull();
       expect(await db.run((q) => withOpenFindingsSteps(q, "A", "done"))).toBe("done");
       await db.run((q) =>
-        saveOpenFindingsSteps(q, { itemId: "A", head: "h1", line: "1 open", now: 1 }),
+        recordItemPullRequestSteps(q, { ...pull, published: { head: "h1", line: "1 open" } }),
       );
       expect(await db.run((q) => getPublishedHeadSteps(q, "A"))).toBe("h1");
       expect(await db.run((q) => withOpenFindingsSteps(q, "A", "done"))).toBe("done\n\n1 open");
-      await db.run((q) => saveOpenFindingsSteps(q, { itemId: "A", head: "h2", line: "", now: 2 }));
+      await db.run((q) =>
+        recordItemPullRequestSteps(q, { ...pull, published: { head: "h2", line: "" } }),
+      );
       expect(await db.run((q) => getPublishedHeadSteps(q, "A"))).toBe("h2");
       expect(await db.run((q) => getOpenFindingsLineSteps(q, "A"))).toBeNull();
+    }));
+
+  test("recording the pull request without a publication keeps the published head", () =>
+    withDb(async (db) => {
+      await db.run((q) => recordItemPullRequestSteps(q, pull));
+      expect(await db.run((q) => getPublishedHeadSteps(q, "A"))).toBeNull();
+      await db.run((q) =>
+        recordItemPullRequestSteps(q, { ...pull, published: { head: "h1", line: "1 open" } }),
+      );
+      await db.run((q) => recordItemPullRequestSteps(q, { ...pull, pullUrl: "u" }));
+      expect(await db.run((q) => getPublishedHeadSteps(q, "A"))).toBe("h1");
+      expect(await db.run((q) => getOpenFindingsLineSteps(q, "A"))).toBe("1 open");
+      expect(await db.run((q) => getItemPullRequestSteps(q, "A"))).toEqual({
+        ...pull,
+        pullUrl: "u",
+      });
     }));
 });

@@ -3,13 +3,11 @@ import { eq, sql } from "drizzle-orm";
 import { isMergeWork, JOB_KIND } from "../src/core";
 import {
   cancelOpenJobs,
-  countCiFixes,
   countRebaseReturns,
   enqueueJob,
   insertQueuedItem,
   listRebaseReturns,
   mergeLaneSql,
-  recordCiRound,
   recordRebaseReturn,
   type Db,
 } from "../src/db";
@@ -149,41 +147,6 @@ test("a rebase return keeps the main commit, files and time it conflicted on", a
       { jobId: second, reason: "linear", base: null, files: null, recordedAt: null },
     ]);
     expect(await listRebaseReturns(db, "item", second)).toHaveLength(1);
-  } finally {
-    await close();
-  }
-});
-
-test("CI fixes are counted from the CI rounds recorded after the latest user turn", async () => {
-  const { db, close } = await tempStore();
-  try {
-    await insertMergeQueueItem(db, "item");
-    const round = async (head: string, fix: number | null, recordedAt: number) =>
-      await recordCiRound(db, {
-        itemId: "item",
-        head,
-        runId: null,
-        next: fix === null ? "asked" : "agent",
-        fix,
-        fixLimit: 3,
-        checks: [],
-        recordedAt,
-      });
-    await round("h1", 1, 10);
-    await round("h2", 2, 20);
-    expect(await countCiFixes(db, "item", 0)).toBe(2);
-    await round("h2", 3, 30);
-    expect(await countCiFixes(db, "item", 0)).toBe(3);
-    const turn = await enqueueJob(db, {
-      queue: JOB_KIND.resume,
-      jobKey: "linear-turn:item:40",
-      payload: { itemId: "item" },
-      now: 40,
-    });
-    expect(await countCiFixes(db, "item", turn)).toBe(0);
-    await round("h3", 1, 50);
-    await round("h4", null, 60);
-    expect(await countCiFixes(db, "item", turn)).toBe(1);
   } finally {
     await close();
   }

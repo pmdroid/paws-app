@@ -123,10 +123,8 @@ export async function setOpenQuestionBody(
 
 export function* nudgeJobRunAtSteps(q: Q, jobId: number, now: number) {
   const job = q.t.job;
-  const later =
-    q.dialect === "sqlite" ? sql`MAX(${job.runAt}, ${now})` : sql`GREATEST(${job.runAt}, ${now})`;
-  const sooner =
-    q.dialect === "sqlite" ? sql`MIN(${job.runAt}, ${now})` : sql`LEAST(${job.runAt}, ${now})`;
+  const later = sql`GREATEST(${job.runAt}, ${now})`;
+  const sooner = sql`LEAST(${job.runAt}, ${now})`;
   yield* q.exec(
     q.orm
       .update(job)
