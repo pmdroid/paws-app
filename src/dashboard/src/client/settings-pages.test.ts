@@ -77,7 +77,7 @@ test("settings shows one tab bar of thirteen pages in order, marking the current
 test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
   setSettingsAdmin(false);
   for (const page of SETTINGS_PAGES.filter(
-    (entry) => !["agent-accounts", "repositories", "linear"].includes(entry.id),
+    (entry) => !["agent-accounts", "repositories", "linear", "merging"].includes(entry.id),
   )) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
@@ -85,6 +85,7 @@ test("a member opening an admin settings page gets Your account, and Integration
       page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
     expect(navLinks(doc)).toEqual([
       "Agent accounts",
+      "Merging",
       "Repositories",
       "Linear",
       "Integrations",
@@ -97,7 +98,7 @@ test("a member opening an admin settings page gets Your account, and Integration
   }
   const route = { view: "settings", page: "merging" } as const;
   expect(render({ route, phase: "ready", error: null, engineUrl: ENGINE }).title).toBe(
-    "Paws status · Your account",
+    "Paws status · Merging",
   );
 });
 
@@ -189,6 +190,7 @@ test("settings list the admin pages only once the session says admin", async () 
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual([
       "Agent accounts",
+      "Merging",
       "Repositories",
       "Linear",
       "Integrations",
@@ -200,7 +202,7 @@ test("settings list the admin pages only once the session says admin", async () 
     expect(navLinks(window.document)).toEqual(
       role === "admin"
         ? SETTINGS_PAGES.map((page) => page.name)
-        : ["Agent accounts", "Repositories", "Linear", "Integrations", "Your account"],
+        : ["Agent accounts", "Merging", "Repositories", "Linear", "Integrations", "Your account"],
     );
   }
 });

@@ -1,3 +1,4 @@
+import { setSettingsAdmin } from "./settings-pages";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { AgentSettings } from "../agent-settings";
@@ -26,6 +27,7 @@ let stored: number | undefined;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  setSettingsAdmin(true);
   window = new Window({ url: "http://127.0.0.1:8787/settings/merging" });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
