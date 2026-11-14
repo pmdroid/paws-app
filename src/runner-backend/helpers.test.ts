@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,14 +12,12 @@ import {
   recordRunnerAccountCapability,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
   usagePause,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../db";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
@@ -32,41 +31,39 @@ import {
   UsageLimitPause,
 } from "./failover";
 import { createRunnerPlacement, quotaSignal, type RunnerPlacement } from "../runner-placement";
+import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
 });
 
 async function fixture(
-  placement?: (
-    db: Awaited<ReturnType<typeof openDatabase>>,
-    now: () => number,
-  ) => RunnerPlacement | Promise<RunnerPlacement>,
+  placement?: (db: Db, now: () => number) => RunnerPlacement | Promise<RunnerPlacement>,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-helper-backend-"));
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close: closeDb } = await tempStore();
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run(
+  await sqlRun(
+    db,
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'Fixture','active',?,?)",
     ["runner", workspace.id, userId, now, now],
   );
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -75,14 +72,14 @@ async function fixture(
     observedAtMs: now,
   });
   const helpers = createRunnerHelpers({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
   });
   const journaled: string[] = [];
   const backend = createRemoteSessionAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     helpers,
     now: () => now,
     pollIntervalMs: 1,
@@ -100,17 +97,19 @@ async function fixture(
     readOnly: true,
     checkpoint: false,
   };
+  const dispatchedIds: string[] = [];
   async function current() {
-    const row = db
-      .query<{ id: string }, []>("SELECT id FROM runner_helper ORDER BY rowid DESC")
-      .get();
-    if (!row) throw new Error("Expected dispatched helper");
-    return (await helpers.current(row.id)).command;
+    for (const { id } of await sqlRows<{ id: string }>(db, "SELECT id FROM runner_helper"))
+      if (!dispatchedIds.includes(id)) dispatchedIds.push(id);
+    const latest = dispatchedIds.at(-1);
+    if (!latest) throw new Error("Expected dispatched helper");
+    return (await helpers.current(latest)).command;
   }
   /** Waits for the backend to read the store and dispatch its helper. */
   async function dispatched() {
     for (let tick = 0; tick < 100; tick++) {
-      if (db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()) break;
+      if ((await sqlRows(db, "SELECT 1 FROM runner_helper WHERE ended_at IS NULL"))[0] ?? null)
+        break;
       await Bun.sleep(0);
     }
     return current();
@@ -129,8 +128,8 @@ async function fixture(
       text,
     });
   }
-  cleanup.push(() => {
-    db.close();
+  cleanup.push(async () => {
+    await closeDb();
     rmSync(root, { recursive: true, force: true });
   });
   return {
@@ -168,7 +167,10 @@ test.each(["classify", "select_repository"] as const)(
     await f.dispatched();
     expect((await f.current()).purpose).toBe(purpose);
     expect((await f.current()).prompt).toBe(f.input.prompt);
-    expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(0);
+    expect(
+      ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM work_item"))[0] ?? null)!
+        .n,
+    ).toBe(0);
     await f.reply();
     const result = await pending;
     expect(text).toBe('{"mode":"answer"}');
@@ -176,7 +178,12 @@ test.each(["classify", "select_repository"] as const)(
       { kind: "response", body: text },
     ]);
     expect(
-      f.db.query<{ ended: number }, []>("SELECT ended_at AS ended FROM runner_helper").get()!.ended,
+      ((
+        await sqlRows<{ ended: number }>(
+          f.db,
+          "SELECT ended_at::float8 AS ended FROM runner_helper",
+        )
+      )[0] ?? null)!.ended,
     ).toBeGreaterThan(0);
   },
 );
@@ -185,12 +192,15 @@ test("session replacement fences a pending helper and releases its canonical ass
   const f = await fixture();
   const pending = f.backend.forSession("session", "classify")(f.input);
   await f.dispatched();
-  await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
+  await advanceLinearSessionGeneration(f.db, "session");
   await expect(pending).rejects.toThrow(/authority changed/);
   expect(
-    f.db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper WHERE ended_at IS NULL")
-      .get()!.n,
+    ((
+      await sqlRows<{ n: number }>(
+        f.db,
+        "SELECT COUNT(*)::int AS n FROM runner_helper WHERE ended_at IS NULL",
+      )
+    )[0] ?? null)!.n,
   ).toBe(0);
 });
 
@@ -217,7 +227,7 @@ test("a replacement during the event callback cannot return stale classification
     ...f.input,
     async onEvent() {
       events++;
-      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
+      await advanceLinearSessionGeneration(f.db, "session");
     },
   });
   await f.dispatched();
@@ -228,26 +238,30 @@ test("a replacement during the event callback cannot return stale classification
 
 test("no active runner fails closed and a deadline cannot retain capacity", async () => {
   const f = await fixture();
-  f.db.run("UPDATE runner SET status='paused'");
+  await sqlRun(f.db, "UPDATE runner SET status='paused'");
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
   );
-  f.db.run("UPDATE runner SET status='active'");
+  await sqlRun(f.db, "UPDATE runner SET status='active'");
   const pending = f.backend.forSession("session", "classify")(f.input);
   await f.helpers.acknowledge("runner", (await f.dispatched()).id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
   expect(
-    f.db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper WHERE ended_at IS NULL")
-      .get()!.n,
+    ((
+      await sqlRows<{ n: number }>(
+        f.db,
+        "SELECT COUNT(*)::int AS n FROM runner_helper WHERE ended_at IS NULL",
+      )
+    )[0] ?? null)!.n,
   ).toBe(0);
 });
 
 async function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
   await insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
-  const { run } = await beginImplementRun(sqliteDb(f.db), "busy", Date.now());
-  f.db.run(
+  const { run } = await beginImplementRun(f.db, "busy", Date.now());
+  await sqlRun(
+    f.db,
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,'busy',? FROM runner WHERE id='runner'",
     [run.id, Date.now() + 3_600_000],
   );
@@ -264,12 +278,13 @@ test("a helper waits while task work fills the runner and starts once a slot fre
   );
   await Bun.sleep(30);
   expect(settled).toBe(false);
-  f.db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id='busy'", [
-    Date.now(),
-    Date.now(),
-  ]);
+  await sqlRun(
+    f.db,
+    "UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id='busy'",
+    [Date.now(), Date.now()],
+  );
   for (let attempt = 0; attempt < 200; attempt++) {
-    if (settled || f.db.query("SELECT 1 FROM runner_helper").get()) break;
+    if (settled || ((await sqlRows(f.db, "SELECT 1 FROM runner_helper"))[0] ?? null)) break;
     await Bun.sleep(2);
   }
   expect((await f.current()).runnerId).toBe("runner");
@@ -284,7 +299,7 @@ test("a helper still blocked by task work at its deadline reports the runner slo
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   // The runner stays online for the whole wait; only its slots are taken.
-  f.db.run("UPDATE runner SET last_seen_at=last_seen_at+60000");
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=last_seen_at+60000");
   f.advance(60_000);
   await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
 });
@@ -383,7 +398,10 @@ test("session helpers reject executable-work and file/tool contracts before disp
     await expect(
       f.backend.forSession("session", "classify")({ ...f.input, ...override }),
     ).rejects.toThrow(/read-only prompt/);
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n,
+  ).toBe(0);
 });
 
 test("Placement selects a real helper host and records admission and outcome atomically", async () => {
@@ -394,29 +412,33 @@ test("Placement selects a real helper host and records admission and outcome ato
       expect(input.purpose).toBe("helper");
       expect(input.profile).toEqual({ agent: "codex", model: null });
       calls.push("candidates");
-      const runner = db
-        .query<{ workspaceId: string; userId: string }, []>(
-          "SELECT workspace_id AS workspaceId,owner_user_id AS userId FROM runner LIMIT 1",
+      const runner = ((
+        await sqlRows<{ workspaceId: string; userId: string }>(
+          db,
+          'SELECT workspace_id AS "workspaceId",owner_user_id AS "userId" FROM runner LIMIT 1',
         )
-        .get()!;
-      db.run(
+      )[0] ?? null)!;
+      await sqlRun(
+        db,
         "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('selected',?,?,'Selected','active',?,?)",
         [runner.workspaceId, runner.userId, now(), now()],
       );
       return [{ id: "selected", workspaceId: runner.workspaceId }];
     },
-    startedSteps: (_q, input) =>
-      syncSteps(() => {
-        expect(db.inTransaction).toBe(true);
-        expect(input.runnerId).toBe("selected");
-        expect(
-          db.query("SELECT 1 FROM runner_helper WHERE id=?").get(input.commandId),
-        ).not.toBeNull();
-        calls.push("started");
-      }),
+    startedSteps: function* (q, input) {
+      expect(input.runnerId).toBe("selected");
+      expect(
+        yield* q.one(
+          q.orm
+            .select({ id: q.t.runnerHelper.id })
+            .from(q.t.runnerHelper)
+            .where(eq(q.t.runnerHelper.id, input.commandId)),
+        ),
+      ).toBeDefined();
+      calls.push("started");
+    },
     finishedSteps: (_q, input) =>
       syncSteps(() => {
-        expect(db.inTransaction).toBe(true);
         expect(input.result?.agentExited).toBe(true);
         calls.push("finished");
         return { retryable: false };
@@ -437,7 +459,8 @@ test("Rejected placement admission rolls back the signed helper command", async 
       return [
         {
           id: "runner",
-          workspaceId: db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id,
+          workspaceId: ((await sqlRows<{ id: string }>(db, "SELECT id FROM workspace"))[0] ?? null)!
+            .id,
         },
       ];
     },
@@ -453,7 +476,10 @@ test("Rejected placement admission rolls back the signed helper command", async 
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
   );
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n,
+  ).toBe(0);
 });
 
 test("An empty placement decision cannot fall back to another paired host", async () => {
@@ -473,21 +499,26 @@ test("An empty placement decision cannot fall back to another paired host", asyn
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
   );
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n,
+  ).toBe(0);
 });
 
 test("Three real helper assignments fail over after expired authentication and observed quota", async () => {
   const attempts: string[] = [];
   const f = await fixture((db, now) => ({
     async candidates(request) {
-      const owner = db
-        .query<{ workspaceId: string; userId: string }, []>(
-          "SELECT workspace_id AS workspaceId,owner_user_id AS userId FROM runner LIMIT 1",
+      const owner = ((
+        await sqlRows<{ workspaceId: string; userId: string }>(
+          db,
+          'SELECT workspace_id AS "workspaceId",owner_user_id AS "userId" FROM runner LIMIT 1',
         )
-        .get()!;
+      )[0] ?? null)!;
       for (const id of ["second", "third"])
-        db.run(
-          "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+        await sqlRun(
+          db,
+          "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?) ON CONFLICT DO NOTHING",
           [id, owner.workspaceId, owner.userId, id, now(), now()],
         );
       return ["runner", "second", "third"]
@@ -496,7 +527,6 @@ test("Three real helper assignments fail over after expired authentication and o
     },
     startedSteps: (_q, request) =>
       syncSteps(() => {
-        expect(db.inTransaction).toBe(true);
         attempts.push(request.runnerId);
       }),
     finishedSteps: (_q, observation) =>
@@ -537,9 +567,13 @@ test("Three real helper assignments fail over after expired authentication and o
   expect(second.id).not.toBe(first.id);
   expect(second.prompt).toContain("fresh agent session");
   expect(
-    f.db
-      .query<{ ended: number }, [string]>("SELECT ended_at AS ended FROM runner_helper WHERE id=?")
-      .get(first.id)!.ended,
+    ((
+      await sqlRows<{ ended: number }>(
+        f.db,
+        "SELECT ended_at::float8 AS ended FROM runner_helper WHERE id=?",
+        [first.id],
+      )
+    )[0] ?? null)!.ended,
   ).toBeGreaterThan(0);
   await submit(second, false, "You've hit your session limit. Retry-After: 120");
   const third = await waitAttempt(3);
@@ -549,13 +583,17 @@ test("Three real helper assignments fail over after expired authentication and o
   expect(result.stopReason).toBe("end_turn");
   expect(attempts).toEqual(["runner", "second", "third"]);
   expect(
-    f.db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM runner_helper WHERE ended_at IS NOT NULL",
+    ((
+      await sqlRows<{ n: number }>(
+        f.db,
+        "SELECT COUNT(*)::int AS n FROM runner_helper WHERE ended_at IS NOT NULL",
       )
-      .get()!.n,
+    )[0] ?? null)!.n,
   ).toBe(3);
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(0);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM work_item"))[0] ?? null)!
+      .n,
+  ).toBe(0);
 });
 
 test("Human continuation time does not exhaust the remote execution retry budget", async () => {
@@ -617,29 +655,33 @@ test("A remote run without a timeout gets the item's awake budget, not 45 minute
 
 test("a helper waits for the runner's busy helper slot instead of failing", async () => {
   const f = await fixture();
-  const helperCount = () =>
-    f.db.query<{ n: number }, []>("SELECT count(*) AS n FROM runner_helper").get()!.n;
+  const helperCount = async () =>
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n;
   const first = f.backend.forSession("session", "classify")(f.input);
-  while (helperCount() < 1) await Bun.sleep(1);
+  while ((await helperCount()) < 1) await Bun.sleep(1);
   const second = f.backend.forSession("session", "select_repository")(f.input);
   await Bun.sleep(20);
-  expect(helperCount()).toBe(1);
+  expect(await helperCount()).toBe(1);
   await f.reply();
   await first;
-  while (helperCount() < 2) await Bun.sleep(1);
+  while ((await helperCount()) < 2) await Bun.sleep(1);
   await f.reply();
   expect((await second).stopReason).toBe("end_turn");
 });
 
 function coolingRunner(rejection = "agent quota cooldown") {
-  return (db: Awaited<ReturnType<typeof openDatabase>>, now: () => number): RunnerPlacement => ({
+  return (db: Db, now: () => number): RunnerPlacement => ({
     async candidates(request) {
       const cooldown =
-        db
-          .query<{ until: number }, []>(
-            "SELECT cooldown_until AS until FROM runner_agent_policy WHERE runner_id='runner' AND agent='codex'",
-          )
-          .get()?.until ?? 0;
+        (
+          (
+            await sqlRows<{ until: number }>(
+              db,
+              "SELECT cooldown_until::float8 AS until FROM runner_agent_policy WHERE runner_id='runner' AND agent='codex'",
+            )
+          )[0] ?? null
+        )?.until ?? 0;
       if (cooldown > now() || rejection !== "agent quota cooldown") {
         request.onRejected?.("runner", rejection);
         return [];
@@ -654,8 +696,9 @@ function coolingRunner(rejection = "agent quota cooldown") {
   });
 }
 
-function coolDown(f: Awaited<ReturnType<typeof fixture>>, until: number) {
-  f.db.run(
+async function coolDown(f: Awaited<ReturnType<typeof fixture>>, until: number) {
+  await sqlRun(
+    f.db,
     "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,cooldown_until) VALUES('runner','codex','exhausted',?)",
     [until],
   );
@@ -664,7 +707,7 @@ function coolDown(f: Awaited<ReturnType<typeof fixture>>, until: number) {
 test("a runner only in its quota cooldown pauses the helper until the reset", async () => {
   const f = await fixture(coolingRunner());
   const resetsAt = Date.now() + 30 * 60_000;
-  coolDown(f, resetsAt);
+  await coolDown(f, resetsAt);
   const pause = await f.backend
     .forSession(
       "session",
@@ -678,24 +721,24 @@ test("a runner only in its quota cooldown pauses the helper until the reset", as
     resetsAt,
     resumeAt: resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
   });
-  expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
+  expect((await sqlRows(f.db, "SELECT 1 FROM runner_helper"))[0] ?? null).toBeNull();
 });
 
 test("a session item waits in a usage pause and places the helper once the cooldown passes", async () => {
   const f = await fixture(coolingRunner());
   const resetsAt = Date.now() + 30 * 60_000;
-  coolDown(f, resetsAt);
+  await coolDown(f, resetsAt);
   await insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(f.db), "item", Date.now());
+  const { run } = await beginImplementRun(f.db, "item", Date.now());
   let settled = false;
   const pending = f.backend.forSession("session", "classify")(f.input);
   void pending.then(
     () => (settled = true),
     () => (settled = true),
   );
-  for (let attempt = 0; attempt < 500 && !(await usagePause(sqliteDb(f.db), run.id)); attempt++)
+  for (let attempt = 0; attempt < 500 && !(await usagePause(f.db, run.id)); attempt++)
     await Bun.sleep(1);
-  expect(await usagePause(sqliteDb(f.db), run.id)).toMatchObject({
+  expect(await usagePause(f.db, run.id)).toMatchObject({
     itemId: "item",
     agent: "codex",
     runnerId: "runner",
@@ -706,22 +749,22 @@ test("a session item waits in a usage pause and places the helper once the coold
   f.advance(31 * 60_000 + USAGE_LIMIT_RESUME_SLACK_MS);
   for (
     let attempt = 0;
-    attempt < 500 && !f.db.query("SELECT 1 FROM runner_helper").get();
+    attempt < 500 && !((await sqlRows(f.db, "SELECT 1 FROM runner_helper"))[0] ?? null);
     attempt++
   )
     await Bun.sleep(1);
   expect((await f.current()).runnerId).toBe("runner");
-  expect(await usagePause(sqliteDb(f.db), run.id)).toBeNull();
+  expect(await usagePause(f.db, run.id)).toBeNull();
   await f.reply();
   expect((await pending).stopReason).toBe("end_turn");
-  expect(f.db.query<{ state: string }, []>("SELECT state FROM work_item").get()!.state).toBe(
-    "running",
-  );
+  expect(
+    ((await sqlRows<{ state: string }>(f.db, "SELECT state FROM work_item"))[0] ?? null)!.state,
+  ).toBe("running");
 });
 
 test("a helper with no runner in a cooldown keeps the unavailable-runner error", async () => {
   const f = await fixture(coolingRunner("offline"));
-  coolDown(f, Date.now() + 30 * 60_000);
+  await coolDown(f, Date.now() + 30 * 60_000);
   const error = await f.backend
     .forSession(
       "session",
@@ -740,17 +783,20 @@ test("a helper whose named account hits its quota retries with the next account 
     async candidates(request) {
       requests.push(request.excludeRunnerIds);
       if (bindings.length === 0) {
-        const workspace = db
-          .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
-          .get()!.id;
+        const workspace = ((
+          await sqlRows<{ id: string }>(
+            db,
+            "SELECT workspace_id AS id FROM runner WHERE id='runner'",
+          )
+        )[0] ?? null)!.id;
         for (const label of ["A", "B"]) {
-          const account = await createAgentAccount(sqliteDb(db), {
+          const account = await createAgentAccount(db, {
             workspaceId: workspace,
             agent: "codex",
             label,
             now: Date.now(),
           });
-          const binding = await bindAgentAccount(sqliteDb(db), {
+          const binding = await bindAgentAccount(db, {
             workspaceId: workspace,
             accountId: account.id,
             runnerId: "runner",
@@ -758,12 +804,13 @@ test("a helper whose named account hits its quota retries with the next account 
           });
           bindings.push({ accountId: account.id, bindingId: binding.id });
         }
-        db.run(
+        await sqlRun(
+          db,
           "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
           [Date.now()],
         );
         await recordRunnerAccountCapability(
-          sqliteDb(db),
+          db,
           "runner",
           {
             protocol: 1,
@@ -772,9 +819,9 @@ test("a helper whose named account hits its quota retries with the next account 
           Date.now(),
         );
       }
-      const runnerWorkspace = db
-        .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
-        .get()!.id;
+      const runnerWorkspace = ((
+        await sqlRows<{ id: string }>(db, "SELECT workspace_id AS id FROM runner WHERE id='runner'")
+      )[0] ?? null)!.id;
       return bindings
         .filter(({ bindingId }) => bindingId !== exhausted)
         .map((account) => ({
@@ -793,9 +840,10 @@ test("a helper whose named account hits its quota retries with the next account 
       }),
   }));
   const pending = f.backend.forSession("session", "classify")(f.input);
-  const helperCount = () =>
-    f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n;
-  for (let attempt = 0; attempt < 1000 && helperCount() < 1; attempt++) await Bun.sleep(1);
+  const helperCount = async () =>
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n;
+  for (let attempt = 0; attempt < 1000 && (await helperCount()) < 1; attempt++) await Bun.sleep(1);
   const first = await f.current();
   expect(first.account?.bindingId).toBe(bindings[0]!.bindingId);
   await f.helpers.submit(first.runnerId, {
@@ -811,7 +859,7 @@ test("a helper whose named account hits its quota retries with the next account 
     errorMessage: "You've hit your session limit. Retry-After: 120",
     account: first.account!,
   });
-  for (let attempt = 0; attempt < 1000 && helperCount() < 2; attempt++) await Bun.sleep(1);
+  for (let attempt = 0; attempt < 1000 && (await helperCount()) < 2; attempt++) await Bun.sleep(1);
   const second = await f.current();
   expect(second.runnerId).toBe("runner");
   expect(second.account?.bindingId).toBe(bindings[1]!.bindingId);
@@ -831,14 +879,15 @@ test("a helper whose named account hits its quota retries with the next account 
   expect((await pending).stopReason).toBe("end_turn");
 });
 
-function secondRunner(f: Awaited<ReturnType<typeof fixture>>) {
-  f.db.run(
+async function secondRunner(f: Awaited<ReturnType<typeof fixture>>) {
+  await sqlRun(
+    f.db,
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'second',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
   );
 }
 
 async function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
-  await recordLinearInstallation(sqliteDb(f.db), {
+  await recordLinearInstallation(f.db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -862,18 +911,18 @@ const helperResult = (commandId: string) => ({
 
 test("twelve resuming items keep one unacknowledged helper per runner and none fails", async () => {
   const f = await fixture();
-  secondRunner(f);
+  await secondRunner(f);
   const sessions = Array.from({ length: 12 }, (_, index) => `session-${index}`);
   for (const session of sessions) await linearSession(f, session);
-  const openHelpers = () =>
-    f.db
-      .query<{ id: string; runnerId: string; acked: number | null }, [number]>(
-        "SELECT id,runner_id AS runnerId,acknowledged_at AS acked FROM runner_helper WHERE ended_at IS NULL AND result IS NULL AND expires_at>?",
-      )
-      .all(f.advance(0));
-  const unacknowledgedPerRunner = () => {
+  const openHelpers = async () =>
+    await sqlRows<{ id: string; runnerId: string; acked: number | null }>(
+      f.db,
+      'SELECT id,runner_id AS "runnerId",acknowledged_at::float8 AS acked FROM runner_helper WHERE ended_at IS NULL AND result IS NULL AND expires_at>?',
+      [f.advance(0)],
+    );
+  const unacknowledgedPerRunner = async () => {
     const counts = new Map<string, number>();
-    for (const { runnerId, acked } of openHelpers())
+    for (const { runnerId, acked } of await openHelpers())
       if (acked === null) counts.set(runnerId, (counts.get(runnerId) ?? 0) + 1);
     return Math.max(0, ...counts.values());
   };
@@ -894,16 +943,16 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   const all = Promise.all(sessions.map(resume));
   const progress = { done: false };
   void all.finally(() => (progress.done = true)).catch(() => undefined);
-  while (new Set(openHelpers().map((row) => row.runnerId)).size < 2) await Bun.sleep(1);
+  while (new Set((await openHelpers()).map((row) => row.runnerId)).size < 2) await Bun.sleep(1);
   await Bun.sleep(20);
-  expect(openHelpers()).toHaveLength(2);
-  expect(unacknowledgedPerRunner()).toBe(1);
+  expect(await openHelpers()).toHaveLength(2);
+  expect(await unacknowledgedPerRunner()).toBe(1);
 
-  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   let peak = 0;
   while (!progress.done) {
-    peak = Math.max(peak, unacknowledgedPerRunner());
-    for (const { id, runnerId } of openHelpers()) {
+    peak = Math.max(peak, await unacknowledgedPerRunner());
+    for (const { id, runnerId } of await openHelpers()) {
       await f.helpers.acknowledge(runnerId, id);
       await f.helpers.submit(runnerId, helperResult(id));
     }
@@ -914,9 +963,12 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   expect(lanesBusy).toBeGreaterThan(0);
   expect(peak).toBeLessThanOrEqual(1);
   expect(
-    f.db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper WHERE result IS NOT NULL")
-      .get()!.n,
+    ((
+      await sqlRows<{ n: number }>(
+        f.db,
+        "SELECT COUNT(*)::int AS n FROM runner_helper WHERE result IS NOT NULL",
+      )
+    )[0] ?? null)!.n,
   ).toBe(12);
 });
 
@@ -924,7 +976,7 @@ test("a helper the runner never picked up waits for the lane, one it ran and fai
   const f = await fixture();
   const unpicked = f.backend.forSession("session", "classify")(f.input);
   await f.dispatched();
-  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   await expect(unpicked).rejects.toBeInstanceOf(RunnerSlotsBusyError);
   const ran = f.backend.forSession("session", "classify")(f.input);
   await f.helpers.acknowledge("runner", (await f.dispatched()).id);
@@ -945,7 +997,10 @@ test("a retry reuses the item's open helper instead of sending a second", async 
   });
   const retry = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n,
+  ).toBe(1);
   await f.helpers.submit("runner", helperResult(out.command.id));
   expect((await retry).stopReason).toBe("end_turn");
   await expect(f.helpers.current(out.command.id)).rejects.toThrow(/unavailable/);
@@ -961,27 +1016,28 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
     startedSteps: () => syncSteps(() => {}),
     finishedSteps: () => syncSteps(() => ({ retryable: true })),
   }));
-  const workspace = f.db
-    .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
-    .get()!.id;
-  const account = await createAgentAccount(sqliteDb(f.db), {
+  const workspace = ((
+    await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner WHERE id='runner'")
+  )[0] ?? null)!.id;
+  const account = await createAgentAccount(f.db, {
     workspaceId: workspace,
     agent: "codex",
     label: "A",
     now: Date.now(),
   });
-  const binding = await bindAgentAccount(sqliteDb(f.db), {
+  const binding = await bindAgentAccount(f.db, {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: "runner",
     now: Date.now(),
   });
-  f.db.run(
+  await sqlRun(
+    f.db,
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
     [Date.now()],
   );
   await recordRunnerAccountCapability(
-    sqliteDb(f.db),
+    f.db,
     "runner",
     { protocol: 1, bindings: [{ bindingId: binding.id, agent: "codex" }] },
     Date.now(),
@@ -1014,7 +1070,10 @@ test("a second attempt on one helper keeps it open until the last attempt finish
   const command = await f.dispatched();
   const second = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
-  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
+  expect(
+    ((await sqlRows<{ n: number }>(f.db, "SELECT COUNT(*)::int AS n FROM runner_helper"))[0] ??
+      null)!.n,
+  ).toBe(1);
   await f.helpers.submit("runner", helperResult(command.id));
   expect((await first).stopReason).toBe("end_turn");
   expect((await second).stopReason).toBe("end_turn");
@@ -1045,10 +1104,10 @@ test("held-back helpers journal one line per runner at most every five minutes",
   await holdOnce();
   expect(f.journaled).toHaveLength(1);
   expect(f.journaled[0]).toContain("runner runner");
-  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   await holdOnce();
   expect(f.journaled).toHaveLength(1);
-  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(5 * 60_000)]);
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=?", [f.advance(5 * 60_000)]);
   await holdOnce();
   expect(f.journaled).toHaveLength(2);
 });
@@ -1063,22 +1122,25 @@ test("a sign-in goes first: no new helper goes out while one waits", async () =>
       profile: { agent: "codex", model: null },
       prompt: "work",
     });
-  const owner = f.db
-    .query<{ workspace: string; user: string }, []>(
+  const owner = ((
+    await sqlRows<{ workspace: string; user: string }>(
+      f.db,
       "SELECT workspace_id AS workspace,owner_user_id AS user FROM runner WHERE id='runner'",
     )
-    .get()!;
+  )[0] ?? null)!;
   const expires = f.advance(0) + 300_000;
-  f.db.run(
+  await sqlRun(
+    f.db,
     "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('sign-in','runner','login','{}',?)",
     [expires],
   );
-  f.db.run(
+  await sqlRun(
+    f.db,
     "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at) VALUES('sign-in','runner',?,?,'codex','waiting',?,?)",
     [owner.workspace, owner.user, expires, f.advance(0)],
   );
   await expect(dispatch()).rejects.toThrow(/busy/);
-  f.db.run("UPDATE runner_login SET state='cancelled' WHERE id='sign-in'");
+  await sqlRun(f.db, "UPDATE runner_login SET state='cancelled' WHERE id='sign-in'");
   expect((await dispatch()).command.purpose).toBe("classify");
 });
 
@@ -1087,20 +1149,21 @@ const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries
 /** The answer task's own placement over two runners: agentbox and goldbox, two slots each. */
 async function answerTask() {
   const f = await fixture(async (db, now) => {
-    db.run("UPDATE linear_session SET issue_id='issue',creator_id='owner'");
-    db.run(
+    await sqlRun(db, "UPDATE linear_session SET issue_id='issue',creator_id='owner'");
+    await sqlRun(
+      db,
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
     );
-    db.run("UPDATE runner SET name='agentbox' WHERE id='runner'");
-    for (const runnerId of ["runner", "goldbox"])
-      await recordRunnerCapacity(sqliteDb(db), runnerId, 2, 2, 2);
-    return createRunnerPlacement({ store: sqliteDb(db), now });
+    await sqlRun(db, "UPDATE runner SET name='agentbox' WHERE id='runner'");
+    for (const runnerId of ["runner", "goldbox"]) await recordRunnerCapacity(db, runnerId, 2, 2, 2);
+    return createRunnerPlacement({ store: db, now });
   });
   const fill = async (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
       await insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
-      const { run } = await beginImplementRun(sqliteDb(f.db), id, Date.now());
-      f.db.run(
+      const { run } = await beginImplementRun(f.db, id, Date.now());
+      await sqlRun(
+        f.db,
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id=?",
         [run.id, id, Date.now() + 3_600_000, runnerId],
       );
@@ -1112,7 +1175,9 @@ async function answerTask() {
 test("an answer task's helper goes to the idle runner while the other runner is full", async () => {
   const f = await answerTask();
   await f.fill("goldbox");
-  expect(f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()).toBeNull();
+  expect(
+    (await sqlRows(f.db, "SELECT 1 FROM runner_helper WHERE ended_at IS NULL"))[0] ?? null,
+  ).toBeNull();
   const pending = f.backend.forSession("session", "classify")(f.input);
   expect((await f.dispatched()).runnerId).toBe("runner");
   await f.reply();
@@ -1130,19 +1195,20 @@ test("capacity-only rejections wait in the helper lane instead of failing", asyn
     )(f.input)
     .catch((error: unknown) => error);
   await Bun.sleep(20);
-  f.db.run("UPDATE runner SET last_seen_at=last_seen_at+60000");
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=last_seen_at+60000");
   f.advance(60_000);
   const error = await pending;
   expect(error).toBeInstanceOf(RunnerSlotsBusyError);
   expect((error as Error).message).toBe(HELPER_LANE_BUSY);
-  expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
+  expect((await sqlRows(f.db, "SELECT 1 FROM runner_helper"))[0] ?? null).toBeNull();
 });
 
 test("a helper no runner can take names each runner's reason", async () => {
   const f = await fixture((db) => ({
     async candidates(input) {
-      db.run(
-        "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+      await sqlRun(
+        db,
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner' ON CONFLICT DO NOTHING",
       );
       input.onRejected?.("runner", "agent-not-signed-in");
       input.onRejected?.("goldbox", "agent quota cooldown");
@@ -1176,7 +1242,8 @@ test("a dispatch the runner refuses is named in the failure", async () => {
       return [
         {
           id: "runner",
-          workspaceId: db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id,
+          workspaceId: ((await sqlRows<{ id: string }>(db, "SELECT id FROM workspace"))[0] ?? null)!
+            .id,
         },
       ];
     },

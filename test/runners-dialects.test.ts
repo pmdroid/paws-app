@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
 import { createRunnerControl } from "../src/runner-control";
-import { tempDb } from "./helpers";
 import { eq } from "drizzle-orm";
 import {
   createRunnerEnrollmentSteps,
@@ -528,7 +527,6 @@ forEachDialect((connect) => {
     await db.run((q) => insertRunnerSteps(q, "box"));
     await db.transaction(insertEnrollmentSteps);
     await db.transaction((q) => enrollSteps(q));
-    const sqlite = tempDb();
     let release!: () => void;
     const issued = new Promise<void>((resolve) => {
       release = resolve;
@@ -549,22 +547,18 @@ forEachDialect((connect) => {
         },
       },
     });
-    try {
-      const peer = { fingerprint: "first", serial: "serial-first", notAfter: NOW + 100 };
-      const results = await Promise.allSettled([
-        control.renew(peer, "successor-a"),
-        control.renew(peer, "successor-b"),
-      ]);
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-      const rejected = results.find((result) => result.status === "rejected");
-      expect(rejected?.reason.message).toBe("Runner certificate has been superseded.");
-      const successors = await db.run(function* (q) {
-        return yield* q.all(q.orm.select().from(q.t.runnerCertificate));
-      });
-      expect(successors).toHaveLength(2);
-    } finally {
-      sqlite.close();
-    }
+    const peer = { fingerprint: "first", serial: "serial-first", notAfter: NOW + 100 };
+    const results = await Promise.allSettled([
+      control.renew(peer, "successor-a"),
+      control.renew(peer, "successor-b"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.reason.message).toBe("Runner certificate has been superseded.");
+    const successors = await db.run(function* (q) {
+      return yield* q.all(q.orm.select().from(q.t.runnerCertificate));
+    });
+    expect(successors).toHaveLength(2);
   });
 
   test("a certificate identifies its runner until it is renewed, expired or its owner leaves", async () => {
