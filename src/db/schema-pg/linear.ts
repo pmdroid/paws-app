@@ -43,6 +43,7 @@ export const linearSession = pgTable("linear_session", {
   oauthClientId: text("oauth_client_id"),
   teamId: text("team_id"),
   installationObservedAt: bigint("installation_observed_at", { mode: "number" }),
+  activitiesListedGeneration: bigint("activities_listed_generation", { mode: "number" }),
 });
 
 export const linearTurn = pgTable(
@@ -269,11 +270,6 @@ export const linearRequestReservation = pgTable(
   },
   (table) => [index("linear_request_reservation_workspace").on(table.workspace, table.expiresAt)],
 );
-
-export const linearActivityListing = pgTable("linear_activity_listing", {
-  sessionId: text("session_id").primaryKey(),
-  generation: bigint({ mode: "number" }).notNull(),
-});
 
 export const linearItemRequest = pgTable("linear_item_request", {
   itemId: text("item_id").primaryKey(),

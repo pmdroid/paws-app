@@ -238,7 +238,7 @@ describe("overview resource", () => {
       /FROM "?ci_round\b/i,
       /FROM "?agent_closeout_event\b/i,
       /FROM "?closeout_round\b/i,
-      /FROM "?run_agent_setup\b/i,
+      /"setup_recorded_at"/,
       /FROM "?visual_review_mark\b/i,
       /FROM "?work_item_merge_settings\b/i,
     ];
@@ -247,6 +247,7 @@ describe("overview resource", () => {
     expect(detail.some((sql) => wholeStep.test(sql))).toBe(true);
     expect(detail.some((sql) => /FROM "?agent_closeout_event\b/i.test(sql))).toBe(true);
     expect(detail.some((sql) => /FROM "?work_item_merge_settings\b/i.test(sql))).toBe(true);
+    expect(detail.some((sql) => /"setup_recorded_at"/.test(sql))).toBe(true);
     expect(overview.length).toBeLessThan(detail.length);
     expect(body).not.toContain("check output that only the issue page reads");
   });

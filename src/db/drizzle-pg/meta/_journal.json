@@ -159,8 +159,36 @@
     {
       "idx": 22,
       "version": "7",
-      "when": 1794647996099,
-      "tag": "0022_single_row_tables_into_setting",
+      "when": 1794646313303,
+      "tag": "0022_open_findings_and_activity_listing_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794646313929,
+      "tag": "0023_backfill_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794646322077,
+      "tag": "0024_drop_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794670342492,
+      "tag": "0025_fold_run_owner_and_agent_setup",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794678589547,
+      "tag": "0026_single_row_tables_into_setting",
       "breakpoints": true
     }
   ]

@@ -403,7 +403,6 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
-  saveOpenFindingsSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -5881,7 +5880,7 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
-        changedFilesFromGitHub: () =>
+        mirrorsOff: () =>
           !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
@@ -6231,6 +6230,7 @@ export class Orchestrator {
         pullNumber: published.pull.number,
         pullUrl: published.pull.url ?? null,
         openedAt: this.now(),
+        published: { head: published.head, line: openLine },
       }),
     );
     await this.store.run((q) =>
@@ -6248,14 +6248,6 @@ export class Orchestrator {
         },
         this.now(),
       ),
-    );
-    await this.store.run((q) =>
-      saveOpenFindingsSteps(q, {
-        itemId: item.id,
-        head: published.head,
-        line: openLine,
-        now: this.now(),
-      }),
     );
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(

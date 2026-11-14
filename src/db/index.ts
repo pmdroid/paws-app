@@ -30,7 +30,6 @@ export * from "./repositories";
 export * from "./repository-catalog";
 export * from "./pull-request-drafts";
 export * from "./candidate-risk";
-export * from "./open-findings";
 export * from "./review-findings";
 export * from "./risk-fix";
 export * from "./push-outage";

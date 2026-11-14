@@ -3,7 +3,15 @@ import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getTableName } from "drizzle-orm";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { PG_MIGRATIONS_FOLDER, pgSchema } from "../src/db";
+import {
+  PG_MIGRATIONS_FOLDER,
+  getOpenFindingsLineSteps,
+  getPublishedHeadSteps,
+  linearActivitiesListedAtSteps,
+  pgSchema,
+  postgresDb,
+  withOpenFindingsSteps,
+} from "../src/db";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -158,6 +166,125 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+
+  test("folding open_findings and linear_activity_listing keeps every published head, line and listed generation", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("open_findings_and_activity_listing_columns"),
+    });
+    try {
+      for (const id of ["A", "B", "C"])
+        await pg.$client.query(
+          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd', 'i-${id}', 'PAS-${id}', 't', 'queued', 'paws/${id}', 0, 0)`,
+        );
+      await pg.$client.exec(
+        "INSERT INTO item_pull_request (item_id, pull_number, pull_url, opened_at) VALUES ('A', 1, 'u', 1), ('B', 2, NULL, 2), ('C', 3, NULL, 3)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO open_findings (item_id, head_sha, line, recorded_at) VALUES ('A', 'h1', '1 finding still open.', 1), ('B', 'h2', '', 2)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO linear_session (session_id, created_at) VALUES ('s1', 1), ('s2', 1); INSERT INTO linear_activity_listing (session_id, generation) VALUES ('s1', 4)",
+      );
+      const db = postgresDb(pg);
+      const read = () =>
+        db.run(function* (q) {
+          const items = [];
+          for (const id of ["A", "B", "C"])
+            items.push([
+              yield* getPublishedHeadSteps(q, id),
+              yield* getOpenFindingsLineSteps(q, id),
+              yield* withOpenFindingsSteps(q, id, "Done."),
+            ]);
+          return {
+            items,
+            listed: [
+              yield* linearActivitiesListedAtSteps(q, "s1"),
+              yield* linearActivitiesListedAtSteps(q, "s2"),
+            ],
+          };
+        });
+      const before = await pg.$client.query(
+        "SELECT p.item_id, f.head_sha, f.line FROM item_pull_request p LEFT JOIN open_findings f ON f.item_id = p.item_id ORDER BY p.item_id",
+      );
+      const listedBefore = await pg.$client.query(
+        "SELECT s.session_id, l.generation::int AS generation FROM linear_session s LEFT JOIN linear_activity_listing l ON l.session_id = s.session_id ORDER BY s.session_id",
+      );
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const after = await pg.$client.query(
+        "SELECT item_id, published_head AS head_sha, open_findings_line AS line FROM item_pull_request ORDER BY item_id",
+      );
+      expect(after.rows).toEqual(before.rows);
+      const listedAfter = await pg.$client.query(
+        "SELECT session_id, activities_listed_generation::int AS generation FROM linear_session ORDER BY session_id",
+      );
+      expect(listedAfter.rows).toEqual(listedBefore.rows);
+      expect(await read()).toEqual({
+        items: [
+          ["h1", "1 finding still open.", "Done.\n\n1 finding still open."],
+          ["h2", null, "Done."],
+          [null, null, "Done."],
+        ],
+        listed: [4, null],
+      });
+      for (const table of ["open_findings", "linear_activity_listing"]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
+  test("folding run_owner and run_agent_setup keeps each run's owner and each runner work's setup", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("fold_run_owner_and_agent_setup"),
+    });
+    try {
+      await pg.$client.exec(`
+        SET session_replication_role = replica;
+        INSERT INTO run (id, item_id, kind, agent, status, created_at, updated_at) VALUES
+          ('owned', 'item', 'implement', 'codex', 'active', 0, 0),
+          ('free', 'item', 'implement', 'codex', 'active', 0, 0);
+        INSERT INTO run_owner (run_id, owner_instance) VALUES ('owned', 'acme');
+        INSERT INTO runner_work (run_id, runner_id, workspace_id, generation, runner_fence, command_id, lease_until) VALUES
+          ('owned', 'box', 'ws', 1, 0, 'c1', 10),
+          ('free', 'box', 'ws', 1, 0, 'c2', 10);
+        INSERT INTO run_agent_setup (run_id, runner_id, skills, hooks, recorded_at) VALUES
+          ('owned', 'box', '[{"name":"lint","version":"a","status":"installed"}]', '[{"name":"fmt","event":"stop"}]', 7);
+      `);
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const runs = await pg.$client.query(
+        "SELECT id, owner_instance AS owner FROM run ORDER BY id",
+      );
+      expect(runs.rows).toEqual([
+        { id: "free", owner: null },
+        { id: "owned", owner: "acme" },
+      ]);
+      const work = await pg.$client.query(
+        "SELECT run_id, runner_id, skills, hooks, setup_recorded_at::int AS at FROM runner_work ORDER BY run_id",
+      );
+      expect(work.rows).toEqual([
+        { run_id: "free", runner_id: "box", skills: null, hooks: null, at: null },
+        {
+          run_id: "owned",
+          runner_id: "box",
+          skills: '[{"name":"lint","version":"a","status":"installed"}]',
+          hooks: '[{"name":"fmt","event":"stop"}]',
+          at: 7,
+        },
+      ]);
+      for (const table of ["run_owner", "run_agent_setup"]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
+
   test("the single-row tables move into setting and workspace with the same values", async () => {
     const pg = await pgliteDb({
       migrationsFolder: migrationsBefore("single_row_tables_into_setting"),

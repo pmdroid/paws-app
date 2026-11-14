@@ -1,5 +1,5 @@
 {
-  "id": "eb1c893c-1552-42d4-bf79-ad90bdef342d",
+  "id": "f44892e6-4fff-4091-bdee-a3e8e8aa8075",
   "prevId": "7ae7659a-38ea-4dfb-a74c-ea6fa4b59cef",
   "version": "7",
   "dialect": "postgresql",
@@ -791,6 +791,47 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.linear_outbox_backoff": {
+      "name": "linear_outbox_backoff",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "byDefault",
+            "name": "linear_outbox_backoff_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "not_before": {
+          "name": "not_before",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "linear_outbox_backoff_check_1": {
+          "name": "linear_outbox_backoff_check_1",
+          "value": "id=1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.linear_request_budget": {
       "name": "linear_request_budget",
       "schema": "",
@@ -960,6 +1001,12 @@
         },
         "installation_observed_at": {
           "name": "installation_observed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activities_listed_generation": {
+          "name": "activities_listed_generation",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -4137,6 +4184,47 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.agent_catalog_refresh": {
+      "name": "agent_catalog_refresh",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "byDefault",
+            "name": "agent_catalog_refresh_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "agent_catalog_refresh_check_1": {
+          "name": "agent_catalog_refresh_check_1",
+          "value": "id = 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.agent_closeout_event": {
       "name": "agent_closeout_event",
       "schema": "",
@@ -7233,6 +7321,18 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "published_head": {
+          "name": "published_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "open_findings_line": {
+          "name": "open_findings_line",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -10662,6 +10762,35 @@
           "value": "status IN ('running','completed','failed')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.finding_grouping_off": {
+      "name": "finding_grouping_off",
+      "schema": "",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "finding_grouping_off_workspace_id_workspace_id_fk": {
+          "name": "finding_grouping_off_workspace_id_workspace_id_fk",
+          "tableFrom": "finding_grouping_off",
+          "tableTo": "workspace",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.fix_record": {
@@ -18479,13 +18608,6 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
-        },
-        "finding_grouping_off": {
-          "name": "finding_grouping_off",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         }
       },
       "indexes": {},

@@ -54,9 +54,9 @@ export function* insertRunSteps(q: Q, input: RunInput): Steps<StoredRun> {
       freshSession: input.freshSession === true ? 1 : 0,
       createdAt: input.now,
       updatedAt: input.now,
+      ownerInstance: input.ownerInstance ?? null,
     }),
   );
-  if (input.ownerInstance != null) yield* claimRunSteps(q, id, input.ownerInstance);
   const stored = yield* getRunSteps(q, id);
   if (stored === null) throw new Error("insertRun did not store a row");
   return stored;
@@ -93,12 +93,9 @@ export async function listRuns(store: Db, itemId?: string): Promise<StoredRun[]>
 }
 
 export function* runOwnerSteps(q: Q, runId: string): Steps<string | null> {
-  const { runOwner: runOwnerTable } = q.t;
+  const { run: runTable } = q.t;
   const row = yield* q.one(
-    q.orm
-      .select({ owner: runOwnerTable.ownerInstance })
-      .from(runOwnerTable)
-      .where(eq(runOwnerTable.runId, runId)),
+    q.orm.select({ owner: runTable.ownerInstance }).from(runTable).where(eq(runTable.id, runId)),
   );
   return row?.owner ?? null;
 }
@@ -108,13 +105,8 @@ export async function runOwner(store: Db, runId: string): Promise<string | null>
 }
 
 export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Steps<void> {
-  const { runOwner: runOwnerTable } = q.t;
-  yield* q.exec(
-    q.orm
-      .insert(runOwnerTable)
-      .values({ runId, ownerInstance })
-      .onConflictDoUpdate({ target: runOwnerTable.runId, set: { ownerInstance } }),
-  );
+  const { run: runTable } = q.t;
+  yield* q.exec(q.orm.update(runTable).set({ ownerInstance }).where(eq(runTable.id, runId)));
 }
 
 export async function claimRun(store: Db, runId: string, ownerInstance: string): Promise<void> {
