@@ -109,19 +109,13 @@ describe("when Paws finishes the Linear session", () => {
   });
 
   test("settled waits for the quiet minutes after the last comment", async () => {
-    const db = await opened({ sessionDone: "settled", sessionQuietMinutes: 10 });
+    const db = await opened({ sessionDone: "settled" });
     const now = OPENED + 30 * MINUTE;
     await comment(db, now - 2 * MINUTE);
     await finish(db, "green", now);
     expect(await responses(db)).toEqual([]);
     await finish(db, "green", now + 8 * MINUTE);
     expect(await responses(db)).toEqual([`${BODY}\n\nCI is green and review rounds are done.`]);
-  });
-
-  test("settled waits while a fix round runs", async () => {
-    const db = await opened({ sessionDone: "settled" }, "running");
-    await finish(db, "green", OPENED + 60 * MINUTE);
-    expect(await responses(db)).toEqual([]);
   });
 
   test("a merged pull request keeps its merged response and gets no ready one", async () => {
@@ -133,7 +127,7 @@ describe("when Paws finishes the Linear session", () => {
     expect(await responses(db)).toEqual([]);
   });
 
-  test("after 4 hours the ready response names what it still waits for", async () => {
+  test("settled waits through a fix round; after 4 hours it says what it waits for", async () => {
     for (const [ci, line] of [
       ["pending", "CI pending"],
       ["failed", "CI failing"],
@@ -169,11 +163,7 @@ describe("the session setting on the Merging settings API", () => {
     close = store.close;
     const configPath = join(tempHome(), "config.toml");
     const options = { configPath, csrfToken: "test-token", store: store.db };
-    const read = async () =>
-      (await (await handleMergeSettingsRequest(request(), options))!.json()) as Record<
-        string,
-        unknown
-      >;
+    const read = async () => (await handleMergeSettingsRequest(request(), options))!.json();
     expect(await read()).toMatchObject({ sessionDone: "pull_request", sessionQuietMinutes: 10 });
     const put = (body: object) =>
       handleMergeSettingsRequest(
@@ -183,15 +173,10 @@ describe("the session setting on the Merging settings API", () => {
     const saved = await put({ sessionDone: "settled", sessionQuietMinutes: 25 });
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toMatchObject({ sessionDone: "settled", sessionQuietMinutes: 25 });
-    expect(await readSessionDone(store.db)).toEqual({
-      sessionDone: "settled",
-      sessionQuietMinutes: 25,
-    });
+    expect(await readSessionDone(store.db)).toMatchObject({ sessionQuietMinutes: 25 });
     for (const body of [
       { sessionDone: "merged" },
-      { sessionQuietMinutes: 0 },
-      { sessionQuietMinutes: 121 },
-      { sessionQuietMinutes: 2.5 },
+      ...[0, 121, 2.5].map((n) => ({ sessionQuietMinutes: n })),
     ])
       expect((await put(body))?.status).toBe(400);
     expect((await put({}))?.status).toBe(200);

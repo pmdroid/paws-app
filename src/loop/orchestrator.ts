@@ -447,6 +447,7 @@ import {
   type PullRequestMember,
   type GitHubTokenProvider,
   type PullMergeable,
+  type PullCi,
 } from "../github";
 import {
   asksForFreshStart,
@@ -6506,20 +6507,7 @@ export class Orchestrator {
       ciFixAttempts: (item) => this.fixRoundLimit(item),
       feedbackWait: () => this.feedbackWait(),
       feedbackNoticed: feedbackNoticeSteps,
-      readPullCi: async (item, pull) => {
-        const repository = await this.repositoryForItem(item);
-        const github = repository ? this.githubForRepository(repository) : null;
-        if (!repository || !github)
-          return { state: "unknown", message: "GitHub App is not configured." };
-        return readPullCi({
-          client: github.client,
-          owner: repository.owner,
-          repo: repository.repo,
-          prNumber: pull.number,
-          head: pull.head,
-          ...this.gitHubCredentials(github),
-        });
-      },
+      readPullCi: (item, pull) => this.readItemPullCi(item, pull),
       readPull: async (item, pullNumber) =>
         this.readItemPull(item, pullNumber, await this.signalForItem(item.id)),
       restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
@@ -8616,26 +8604,28 @@ export class Orchestrator {
     });
   }
 
+  private async readItemPullCi(
+    item: WorkItemRecord,
+    pull: { number: number; head: string },
+  ): Promise<PullCi> {
+    const repository = await this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github)
+      return { state: "unknown", message: "GitHub App is not configured." };
+    return readPullCi({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pull.number,
+      head: pull.head,
+      ...this.gitHubCredentials(github),
+    });
+  }
+
   private async finishOpenedSessions(itemId?: string): Promise<void> {
     await finishOpenedSessions(
       this.store,
-      {
-        now: () => this.now(),
-        readPullCi: async (item, pull) => {
-          const repository = await this.repositoryForItem(item);
-          const github = repository ? this.githubForRepository(repository) : null;
-          if (!repository || !github)
-            return { state: "unknown", message: "GitHub App is not configured." };
-          return readPullCi({
-            client: github.client,
-            owner: repository.owner,
-            repo: repository.repo,
-            prNumber: pull.number,
-            head: pull.head,
-            ...this.gitHubCredentials(github),
-          });
-        },
-      },
+      { now: () => this.now(), readPullCi: (item, pull) => this.readItemPullCi(item, pull) },
       itemId,
     ).catch((error: unknown) =>
       journalCaught(

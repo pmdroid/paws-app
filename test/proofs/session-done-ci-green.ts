@@ -48,10 +48,13 @@ export default {
         responses[1]!.startsWith("Merged #"),
       responses,
     );
-    const openedAt = proof.linear.progress.findIndex((update) => update.body.includes("Opened "));
-    const leaked = proof.linear.progress
-      .slice(openedAt + 1)
-      .filter((update) => update.kind === "action" || update.kind === "thought");
-    proof.expect("no progress after the pull request opens", leaked.length === 0, leaked);
+    const after = proof.linear.progress.slice(
+      proof.linear.progress.findIndex((update) => update.body.includes("Opened ")) + 1,
+    );
+    proof.expect(
+      "no progress after the pull request opens",
+      after.every((update) => update.kind === "response"),
+      after,
+    );
   },
 } satisfies Proof;

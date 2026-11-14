@@ -26,30 +26,18 @@ export function parseSessionDone(
   return { sessionDone: done as SessionDone, sessionQuietMinutes: quiet };
 }
 
-function storedSessionDone(stored: string | null): SessionDoneSettings {
-  if (stored === null) return DEFAULT_SESSION_DONE;
+export async function readSessionDone(store: Db): Promise<SessionDoneSettings> {
+  const stored = await store.run((q) => readSettingSteps(q, SESSION_DONE_KEY));
   try {
-    return parseSessionDone(JSON.parse(stored) as Record<string, unknown>);
+    return stored === null ? DEFAULT_SESSION_DONE : parseSessionDone(JSON.parse(stored));
   } catch {
     return DEFAULT_SESSION_DONE;
   }
 }
 
-export function* readSessionDoneSteps(q: Q) {
-  return storedSessionDone(yield* readSettingSteps(q, SESSION_DONE_KEY));
-}
-
-export async function readSessionDone(store: Db): Promise<SessionDoneSettings> {
-  return store.run((q) => readSessionDoneSteps(q));
-}
-
-export async function saveSessionDone(
-  store: Db,
-  settings: SessionDoneSettings,
-  now = Date.now(),
-): Promise<void> {
+export async function saveSessionDone(store: Db, settings: SessionDoneSettings): Promise<void> {
   await store.transaction((q) =>
-    updateSettingSteps(q, SESSION_DONE_KEY, () => JSON.stringify(settings), now),
+    updateSettingSteps(q, SESSION_DONE_KEY, () => JSON.stringify(settings)),
   );
 }
 
@@ -83,19 +71,9 @@ export function* openedSessionsSteps(q: Q) {
         ),
       ),
   );
-  return rows.flatMap((row): OpenedSession[] => {
-    const { body } = parsedJson<{ body?: unknown }>(q, row.payload);
-    return row.sessionId !== null && typeof body === "string"
-      ? [
-          {
-            itemId: row.itemId,
-            sessionId: row.sessionId,
-            generation: row.generation,
-            body,
-            openedAt: row.openedAt,
-          },
-        ]
-      : [];
+  return rows.flatMap(({ payload, sessionId, ...row }): OpenedSession[] => {
+    const { body } = parsedJson<{ body?: unknown }>(q, payload);
+    return sessionId !== null && typeof body === "string" ? [{ ...row, sessionId, body }] : [];
   });
 }
 
