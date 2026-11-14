@@ -1178,7 +1178,10 @@ export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation
           eq(outbox.target, "linear"),
           eq(outbox.orderingKey, sessionId),
           eq(outbox.deliveryGeneration, generation),
-          ilike(outbox.idempotencyKey, "pull-request-ready:%"),
+          or(
+            ilike(outbox.idempotencyKey, "pull-request-ready:%"),
+            ilike(outbox.idempotencyKey, "pull-request-opened:%"),
+          ),
           ne(outbox.status, "dropped"),
         ),
       )
@@ -1301,6 +1304,7 @@ export function* sessionPullRequestOpenSteps(
           lte(outbox.deliveryGeneration, generation),
           or(
             prefixed(outbox.idempotencyKey, "pull-request-ready:%"),
+            prefixed(outbox.idempotencyKey, "pull-request-opened:%"),
             prefixed(outbox.idempotencyKey, "merged:%"),
             prefixed(outbox.idempotencyKey, "closed:%"),
           ),
@@ -1311,7 +1315,7 @@ export function* sessionPullRequestOpenSteps(
       .orderBy(desc(outbox.id))
       .limit(1),
   );
-  return row?.key.startsWith("pull-request-ready:") ?? false;
+  return /^pull-request-(ready|opened):/.test(row?.key ?? "");
 }
 
 export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {

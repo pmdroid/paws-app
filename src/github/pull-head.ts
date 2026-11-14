@@ -151,3 +151,44 @@ export async function readBranchWork(
     throw new Error(`Could not compare ${input.branch} with main`);
   return { pull, commits: ahead };
 }
+
+export async function readBranchTip(input: HeadRead & { branch: string }): Promise<string | null> {
+  return readRef({ ...input, ref: `refs/heads/${input.branch}` });
+}
+
+export async function readRef(input: HeadRead & { ref: string }): Promise<string | null> {
+  input.signal?.throwIfAborted();
+  if (!input.ref.startsWith("refs/")) throw new Error(`${input.ref} is not a full ref name`);
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/git/ref/${input.ref.slice("refs/".length)}`),
+    token,
+    signal: input.signal,
+  });
+  if (read.status === 404) return null;
+  const object = (read.body as { object?: { sha?: unknown; type?: unknown } } | null)?.object;
+  if (read.status !== 200 || object?.type !== "commit" || typeof object.sha !== "string")
+    throw new Error(`Could not read ${input.ref}`);
+  return object.sha.toLowerCase();
+}
+
+export async function readCommit(
+  input: HeadRead & { sha: string },
+): Promise<{ subject: string; parents: string[] }> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/git/commits/${encodeURIComponent(input.sha)}`),
+    token,
+    signal: input.signal,
+  });
+  const body = read.body as { message?: unknown; parents?: { sha?: unknown }[] } | null;
+  if (read.status !== 200 || typeof body?.message !== "string" || !Array.isArray(body.parents))
+    throw new Error(`Could not read commit ${input.sha.slice(0, 7)}`);
+  return {
+    subject: body.message.split("\n")[0]!.trim(),
+    parents: body.parents.map((parent) => String(parent.sha).toLowerCase()),
+  };
+}

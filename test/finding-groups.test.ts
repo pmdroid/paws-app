@@ -267,8 +267,9 @@ test("scheduler honors HH:MM UTC and manual grouping can run before that time", 
     let now = epoch - 60000;
     const jobs = new JobLoop(f.db, { now: () => now, mono: () => now });
     const calls: string[] = [];
+    let groupingTime = "06:30";
     await registerFindingGrouping(jobs, {
-      groupingTime: "06:00",
+      groupingTime: () => groupingTime,
       workspaces: async () => ["ws"],
       run: async (id) => {
         calls.push(id);
@@ -278,6 +279,10 @@ test("scheduler honors HH:MM UTC and manual grouping can run before that time", 
     await jobs.tick(["findings.group.tick"]);
     expect(await jobs.tick(["findings.group"])).toBeNull();
     now = epoch;
+    await jobs.tick(["findings.group.tick"]);
+    expect(await jobs.tick(["findings.group"])).toBeNull();
+    groupingTime = "06:00";
+    now = epoch + 60000;
     await jobs.tick(["findings.group.tick"]);
     await jobs.tick(["findings.group"]);
     expect(calls).toEqual(["ws"]);

@@ -13,7 +13,7 @@ import {
 import { handleSlackWebhook } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -647,7 +647,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store,
       csrfToken,
       workspaceId,
-      groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
+      ...(configPath === undefined ? {} : { configPath }),
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
@@ -792,6 +792,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(highRiskFile ? { highRiskFile } : {}),
         ...(secrets.store
           ? {
+              store: secrets.store,
               hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())),
               overlapHolds: () => secrets.store!.run((q) => overlapHoldsSteps(q)),
             }

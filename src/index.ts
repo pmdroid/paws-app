@@ -207,6 +207,9 @@ import {
   revokeInstallationToken,
   githubHttpsUrl,
   createGitHubGitReader,
+  branchContains,
+  readRef,
+  readCommit,
   useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
@@ -390,6 +393,7 @@ import {
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
+  type GitHubCommits,
   remoteCommandsGoneSteps,
 } from "./runner-backend";
 
@@ -1227,6 +1231,29 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
+  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
+    const read = () => {
+      const binding = githubBinding(
+        authProvider(
+          runtime,
+          { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
+          "read",
+          resolveApp,
+        ),
+      );
+      if (!binding)
+        throw new Error(
+          `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
+        );
+      return { ...binding, ...repository };
+    };
+    return {
+      ref: (ref, signal) => readRef({ ...read(), ref, signal }),
+      contains: async (tip, sha, signal) =>
+        (await branchContains({ ...read(), branch: tip, sha, signal })).contains,
+      commit: (sha, signal) => readCommit({ ...read(), sha, signal }),
+    };
+  };
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -1237,6 +1264,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
+            ...(loadConfigFile(paths.configFile).githubMirrors === false
+              ? { storedCandidates: githubCommits }
+              : {}),
             placement,
             instanceId: instance.id,
           }),
@@ -1995,6 +2025,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
+        githubMirrors: loadConfigFile(paths.configFile).githubMirrors !== false,
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
           limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),
@@ -2100,7 +2131,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
-          groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
+          groupingTime: () => loadConfigFile(paths.configFile).findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),

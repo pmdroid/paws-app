@@ -1343,6 +1343,7 @@ function decisionRepo(input: DecisionSource): string {
 }
 
 function currentHead(input: DecisionSource): Promise<string> {
+  if (input.mirror?.head) return input.mirror.head();
   return input.mirror ? readRef(input.mirror.path, input.mirror.ref) : readHead(input.worktree);
 }
 
