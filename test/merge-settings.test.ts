@@ -322,6 +322,8 @@ describe("Merging settings API", () => {
       noProject: "own",
       parallel: 1,
       parallelFiles: [],
+      repositories: {},
+      projects: {},
       sessionDone: "pull_request",
       sessionQuietMinutes: 10,
     });
@@ -441,7 +443,7 @@ describe("Merging settings API", () => {
       default: unknown;
     };
     expect(stored.default).toEqual({ order: "queue", mainMoved: "closeout" });
-    expect(Object.keys(stored)).not.toContainEqual("projects");
+    expect(stored).toMatchObject({ projects: {} });
     expect(Object.keys(stored)).not.toContainEqual("rules");
     const body = { default: { order: "queue", mainMoved: "ci" } };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
@@ -879,4 +881,28 @@ test("a failed display notification does not undo a settings write or its audit"
   expect(response?.status).toBe(200);
   expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(true);
   expect(audits).toContainEqual(["settings.merging", "Automatic high-risk approval: on"]);
+});
+
+test("repository and project settings reject invalid values and member writes", async () => {
+  const { options } = fixture();
+  const base = { default: { order: "queue", mainMoved: "ci" } };
+  expect(
+    (await handleMergeSettingsRequest(request("PUT", base), { ...options, role: "member" }))
+      ?.status,
+  ).toBe(403);
+  for (const fields of [
+    { repositories: { invalid: {} } },
+    { repositories: { "acme/web": { packages: ["../outside"] } } },
+    { repositories: { "acme/web": { reviewApps: ["bad/app"] } } },
+    { repositories: { "acme/web": { suggestedFindings: true } } },
+    { projects: { project: { lane: "invalid" } } },
+    { projects: { "bad/id": { lane: "project" } } },
+  ]) {
+    const response = await handleMergeSettingsRequest(
+      request("PUT", { ...base, ...fields }),
+      options,
+    );
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toMatchObject({ error: expect.any(String) });
+  }
 });

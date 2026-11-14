@@ -57,7 +57,14 @@ export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MergeLane = (typeof MERGE_LANES)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
 export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
-export type MergePolicy = { default: MergeChoice };
+export type MergePolicy = {
+  default: MergeChoice;
+  repositories?: Record<
+    string,
+    { packages?: string[]; reviewApps?: string[]; suggestedFindings?: SuggestedFindingsMode }
+  >;
+  projects?: Record<string, { lane?: MergeLane }>;
+};
 /**
  * Per repository. `ignoreCommentBots` replaces `DEFAULT_IGNORED_COMMENT_BOTS` for the repository:
  * bot logins whose pull request comments only report status and never restart the item.
@@ -163,9 +170,6 @@ const parallelFilesSchema = z
   .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
-const policySchema = z.strictObject({
-  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
-});
 const tomlSchema = z.object({
   merge: z
     .object({
@@ -199,6 +203,24 @@ const tomlSchema = z.object({
         .optional(),
       rules: z.array(z.unknown()).optional(),
     })
+    .optional(),
+});
+
+const repositorySchema = tomlSchema.shape.merge.unwrap().shape.repositories.unwrap().valueType;
+const policySchema = z.strictObject({
+  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
+  repositories: z
+    .record(
+      z.string().regex(REPOSITORY, "must be owner/repo"),
+      z.strictObject({
+        packages: repositorySchema.shape.packages.removeDefault().optional(),
+        reviewApps: repositorySchema.shape.review_apps,
+        suggestedFindings: repositorySchema.shape.suggested_findings,
+      }),
+    )
+    .optional(),
+  projects: z
+    .record(projectId, z.strictObject({ lane: z.enum(MERGE_LANES).optional() }))
     .optional(),
 });
 
@@ -586,7 +608,7 @@ export function parseMergePolicy(value: unknown): MergePolicy {
       `merge${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
     );
   }
-  return { default: result.data.default };
+  return result.data;
 }
 
 /** Agent settings carry only `ciFixAttempts`. A missing key keeps the stored value. */
@@ -709,6 +731,36 @@ export function writeMergePolicy(
   ignored?: Record<string, IgnoredComments>,
   parallel?: Record<string, string[]>,
 ): Promise<void> {
+  if (policy.projects !== undefined) {
+    current = {
+      ...current,
+      projectLanes: Object.fromEntries(
+        Object.entries(policy.projects).flatMap(([id, value]) =>
+          value.lane === undefined ? [] : [[id, value.lane]],
+        ),
+      ),
+    };
+  }
+  if (policy.repositories !== undefined) {
+    const repositories: MergeRepositories = Object.fromEntries(
+      Object.entries(current.repositories ?? {}).map(([name, value]) => {
+        const {
+          packages: _packages,
+          reviewApps: _apps,
+          suggestedFindings: _findings,
+          ...rest
+        } = value;
+        return [name, { ...rest, packages: [] }];
+      }),
+    );
+    for (const [name, value] of Object.entries(policy.repositories)) {
+      const key =
+        Object.keys(repositories).find((entry) => entry.toLowerCase() === name.toLowerCase()) ??
+        name;
+      repositories[key] = { ...repositories[key], packages: [], ...value };
+    }
+    current = { ...current, repositories };
+  }
   const withPaths =
     riskPaths === undefined
       ? current.repositories

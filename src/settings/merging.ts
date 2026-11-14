@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import {
   DEFAULT_COMMENT_WAIT,
@@ -37,6 +38,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 
 export type MergeSettingsOptions = {
   trustedOrigin?: string;
+  role?: string;
   /** Invalidate cached risk policy inputs after a settings write. */
   changed?: () => void;
   configPath: string;
@@ -138,6 +140,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       default: policy.default,
+      ...repositorySettingsView(policy),
       ...session,
       autoApproveHighRisk: policy.autoApproveHighRisk,
       lanes: policy.lanes,
@@ -160,6 +163,8 @@ export async function handleMergeSettingsRequest(
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
+  if (options.role !== undefined && !isWorkspaceAdmin(options.role))
+    return json({ error: "Only workspace admins can change merging settings." }, 403);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
   let body: unknown;
@@ -408,6 +413,7 @@ export async function handleMergeSettingsRequest(
       await options.audit?.("settings.merging", change);
   return json({
     default: policy.default,
+    ...repositorySettingsView(after),
     ...sessionAfter,
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
     lanes: after?.lanes ?? lanes,
@@ -653,4 +659,24 @@ export function mergeChanges(before: MergePolicy | null, after: MergePolicy): st
     changes.push(`Workspace default ${title}: ${name(old)} → ${name(next)}`);
   }
   return changes;
+}
+
+function repositorySettingsView(settings: MergeSettings | null) {
+  return {
+    repositories: Object.fromEntries(
+      Object.entries(settings?.repositories ?? {}).map(([name, value]) => [
+        name,
+        {
+          packages: value.packages,
+          ...(value.reviewApps === undefined ? {} : { reviewApps: value.reviewApps }),
+          ...(value.suggestedFindings === undefined
+            ? {}
+            : { suggestedFindings: value.suggestedFindings }),
+        },
+      ]),
+    ),
+    projects: Object.fromEntries(
+      Object.entries(settings?.projectLanes ?? {}).map(([id, lane]) => [id, { lane }]),
+    ),
+  };
 }

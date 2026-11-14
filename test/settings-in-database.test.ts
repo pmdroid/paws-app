@@ -39,6 +39,7 @@ import {
 } from "../src/acp";
 import {
   handleAgentSettingsRequest,
+  handleMergeSettingsRequest,
   handleSkillSettingsRequest,
   handleTimeLimitSettingsRequest,
 } from "../src/settings";
@@ -516,4 +517,66 @@ test("a cleared or never-set command path stays unset when config.toml sets one 
   expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
   appendFileSync(b.configPath, '\n[agents.opencode]\npath = "/opt/opencode"\n');
   expect(loadConfigFile(b.configPath).agents.opencode?.path ?? null).toBe(null);
+});
+
+test("merging repository settings and project lanes round-trip in Postgres without restarting", async () => {
+  const a = await instance(await shared(), "ACME");
+  const initial = `${BOOTSTRAP}
+[merge.repositories."acme/web"]
+packages = ["old/*"]
+review_apps = ["old-review"]
+suggested_findings = "off"
+high_risk_paths = ["infra/**"]
+[merge.projects.project]
+lane = "project"
+`;
+  writeFileSync(a.configPath, initial);
+  const options = { configPath: a.configPath, csrfToken: "csrf", role: "admin" };
+  const get = async () =>
+    (await handleMergeSettingsRequest(
+      new Request("http://localhost/api/settings/merging"),
+      options,
+    ))!.json();
+  expect(await get()).toMatchObject({
+    repositories: { "acme/web": { packages: ["old/*"] } },
+    projects: { project: { lane: "project" } },
+  });
+  const body = {
+    default: { order: "queue", mainMoved: "ci" },
+    repositories: {
+      "acme/web": {
+        packages: ["apps/*"],
+        reviewApps: ["acme-review"],
+        suggestedFindings: "own_turn",
+      },
+    },
+    projects: { project: { lane: "repository" } },
+  };
+  const put = (value: unknown) =>
+    handleMergeSettingsRequest(
+      new Request("http://localhost/api/settings/merging", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-paws-csrf": "csrf" },
+        body: JSON.stringify(value),
+      }),
+      options,
+    );
+  const response = await put(body);
+  expect(response?.status).toBe(200);
+  expect(await response!.json()).toMatchObject(body);
+  expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain('review_apps = ["acme-review"]');
+  expect(readFileSync(a.configPath, "utf8")).toBe(initial);
+  writeFileSync(a.configPath, initial.replace("old/*", "changed/*"));
+  expect(await get()).toMatchObject(body);
+  expect(readMergeSettings(loadConfigFile(a.configPath))).toMatchObject({
+    repositories: { "acme/web": { ...body.repositories["acme/web"], highRiskPaths: ["infra/**"] } },
+    projectLanes: { project: "repository" },
+  });
+  expect((await put({ default: body.default }))?.status).toBe(200);
+  expect(await get()).toMatchObject(body);
+  expect((await put({ default: body.default, repositories: {}, projects: {} }))?.status).toBe(200);
+  expect(await get()).toMatchObject({
+    repositories: { "acme/web": { packages: [] } },
+    projects: {},
+  });
 });
