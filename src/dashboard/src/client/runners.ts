@@ -617,15 +617,22 @@ export function runnerCodingAgentsMarkup(agents: readonly RunnerCodingAgent[]): 
     .join('<span aria-hidden="true">·</span>')}</p>`;
 }
 
+type AccountSummary = {
+  agent: string;
+  credential: unknown;
+  extraUsage: boolean;
+  usage: { limits: AgentLimit[] } | null;
+};
+type RunnerListView = { now: number; serverVersion: string | null; accounts?: AccountSummary[] };
 type RowTag = [tone: string, text: string];
 
 /** The Status and Agents cells of a runner's row, as tone and text. */
 function runnerRowTags(
   runner: Runner,
-  view: { now: number; serverVersion: string | null },
+  view: RunnerListView,
 ): { status: RowTag[]; agents: RowTag[] } {
   const live = runner.status !== "revoked";
-  const agents = runner.agents ?? [];
+  const agents = (runner.codingAgents ?? []).filter((entry) => entry.current);
   const status: RowTag[] = [
     availability(runner, view.now),
     ...(runner.status === "paused" || runner.status === "draining"
@@ -645,22 +652,41 @@ function runnerRowTags(
       : []),
     ...(live ? (runner.hostWarnings ?? []) : []).map((line): RowTag => ["warn", line]),
   ];
-  const label = (entry: AgentSignIn) => AGENT_LABELS[entry.agent] ?? entry.agent;
   return {
     status,
     agents: live
-      ? [
-          ...agents
-            .filter((entry) => entry.status === "signed_in")
-            .map((entry): RowTag => ["", label(entry)]),
-          ...agents
-            .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
-            .map((entry): RowTag =>
-              entry.status === "signed_out"
-                ? ["bad", `${label(entry)} signed out`]
-                : ["warn", `${label(entry)} usage limit`],
+      ? agents.map((entry): RowTag => {
+          const name = AGENT_LABELS[entry.agent] ?? entry.agent;
+          if (!view.accounts) return ["", `${name} accounts unavailable`];
+          const central = view.accounts.filter((account) => account.agent === entry.agent);
+          const local = runner.agents?.find((agent) => agent.agent === entry.agent);
+          const usableLocal = !central.length && local && SIGNED_IN.has(local.status);
+          const signedIn = central.filter((account) => account.credential);
+          if (!signedIn.length && !usableLocal) return ["bad", `${name} needs sign-in`];
+          const localReset = usableLocal
+            ? local.status === "usage_limit" && !local.extraUsage
+              ? (local.resetsAt ?? Infinity)
+              : 0
+            : Infinity;
+          const resets = signedIn.map(({ extraUsage, usage }) =>
+            Math.max(
+              0,
+              ...(extraUsage ? [] : (usage?.limits ?? []))
+                .filter(
+                  (limit) =>
+                    limit.usedPercent >= 100 &&
+                    (limit.resetsAt === null || limit.resetsAt > view.now),
+                )
+                .map((limit) => limit.resetsAt ?? Infinity),
             ),
-        ]
+          );
+          const until = Math.min(localReset, ...resets);
+          if (!until) return ["", `${name} signed in`];
+          return [
+            "warn",
+            `${name} quota cooldown${Number.isFinite(until) ? ` until ${new Date(until).toLocaleString()}` : " · reset time unknown"}`,
+          ];
+        })
       : [],
   };
 }
@@ -687,10 +713,7 @@ function slotGaugeMarkup(runner: Runner): string {
   return `<span class="flex items-center gap-2 whitespace-nowrap" title="${esc(runnerSlotsLabel(runner.running ?? [], slots))}"><span class="flex gap-0.5" aria-hidden="true">${bar}</span><span class="mono">${slots.used}/${slots.total}</span></span>`;
 }
 
-export function runnerRowMarkup(
-  runner: Runner,
-  view: { now: number; serverVersion: string | null },
-): string {
+export function runnerRowMarkup(runner: Runner, view: RunnerListView): string {
   const id = esc(runner.id);
   const { status, agents } = runnerRowTags(runner, view);
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
@@ -704,21 +727,17 @@ export function runnerRowMarkup(
     .filter(Boolean)
     .map(esc)
     .join(" · ");
-  const signedIn = agents.some(([tone]) => tone === "");
   const agentCell =
     runner.status === "revoked"
       ? ""
-      : `${tagsMarkup(agents)}${signedIn ? "" : '<span class="muted">No agent signed in</span>'}`;
+      : `<a class="flex flex-wrap gap-1.5" href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">${tagsMarkup(agents) || '<span class="muted">No agents reported</span>'}</a>`;
   const cell = (body: string) =>
     `<td><div class="flex min-w-36 flex-wrap items-center gap-1.5 [overflow-wrap:normal]">${body}</div></td>`;
   return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div></div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
 }
 
 /** Online, slots in use and runners that need attention, from the loaded list alone. */
-export function runnerTilesMarkup(
-  runners: readonly Runner[],
-  view: { now: number; serverVersion: string | null },
-): string {
+export function runnerTilesMarkup(runners: readonly Runner[], view: RunnerListView): string {
   const online = runners.filter((runner) => runnerOnline(runner, view.now)).length;
   const used = runners.reduce((sum, runner) => sum + (runner.slots?.used ?? 0), 0);
   const total = runners.reduce((sum, runner) => sum + (runner.slots?.total ?? 0), 0);
@@ -732,10 +751,7 @@ export function runnerTilesMarkup(
 }
 
 /** The runner table: one row per runner with status, slots, agents and version. */
-export function runnerTableMarkup(
-  runners: readonly Runner[],
-  view: { now: number; serverVersion: string | null },
-): string {
+export function runnerTableMarkup(runners: readonly Runner[], view: RunnerListView): string {
   const head = ["Runner", "Status", "Slots", "Agents", "Version"]
     .map((name) => `<th scope="col"><span class="whitespace-nowrap">${name}</span></th>`)
     .join("");
@@ -1246,7 +1262,7 @@ export function runnerAgentsMarkup(
   return `<table class="runner-agents" aria-label="Agents on ${name}"><thead><tr><th scope="col">Agent</th><th scope="col">Sign-in</th><th scope="col">Usage</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows.join("")}</tbody></table><p class="muted">Keep running on extra usage: when a usage window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage.</p>`;
 }
 
-function statusLine(runner: Runner, view: { now: number; serverVersion: string | null }): string {
+function statusLine(runner: Runner, view: RunnerListView): string {
   const [tone, state] = availability(runner, view.now);
   const stale =
     runner.metrics !== null &&
@@ -1437,6 +1453,7 @@ export function createRunners() {
   let runners: Runner[] = [];
   let serverVersion: string | null = null;
   let agentCatalog: AgentCatalogEntry[] = [];
+  let accounts: AccountSummary[] | undefined;
   let policies = new Map<string, HostPolicy>();
   let session: Session | null = null;
   let setupRequired = false;
@@ -1558,7 +1575,7 @@ export function createRunners() {
         reset();
         return;
       }
-      const [identity, activity, hosts] = await Promise.all([
+      const [identity, activity, hosts, accountListing] = await Promise.all([
         api<Session>("/api/auth/session"),
         target === null
           ? { usage: [] }
@@ -1576,8 +1593,13 @@ export function createRunners() {
               ),
             ),
         ),
+        api<{ accounts: AccountSummary[] }>("/api/runners/agent-accounts").catch((caught) => {
+          journalCaught(caught, "runners.load.accounts", null);
+          return undefined;
+        }),
       ]);
       if (current !== generation) return;
+      accounts = accountListing?.accounts;
       if (identity.role === "admin")
         workspaceRepositories = await api<{ repositories: { repository: string }[] }>(
           "/api/workspaces/repositories",
@@ -1719,7 +1741,7 @@ export function createRunners() {
           )
           .join("")
       : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });

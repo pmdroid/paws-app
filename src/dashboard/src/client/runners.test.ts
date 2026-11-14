@@ -52,6 +52,7 @@ const runner: Runner = {
   os: { id: "ubuntu", version: "24.04" },
   version: "1.2.0",
   idle: true,
+  codingAgents: [{ agent: "claude", current: "1", pending: null, reportedAt: now }],
   agents: [
     { agent: "claude", status: "signed_in", checkedAt: now - 1_000 },
     { agent: "codex", status: "unknown", checkedAt: null },
@@ -116,7 +117,11 @@ describe("fix slots setting", () => {
 });
 
 describe("runner list rows", () => {
-  const row = { now, serverVersion: "1.2.0" };
+  const row = {
+    now,
+    serverVersion: "1.2.0",
+    accounts: [{ agent: "claude", credential: {}, extraUsage: false, usage: null }],
+  };
 
   test("a runner that refuses waiting work for its host config shows the warning", () => {
     const line = "goldbox can't take pmdroid/paws-app (not in its allowed repositories)";
@@ -131,11 +136,12 @@ describe("runner list rows", () => {
     expect(html).toContain('data-focus="open:01JRUNNER0000000000000000A">build-box</a>');
     expect(html).toContain('<span class="tag ok">Idle</span>');
     expect(html).toContain("Seen just now · ubuntu 24.04");
-    expect(html).toContain('<span class="tag">Claude</span>');
+    expect(html).toContain('<span class="tag">Claude signed in</span>');
     expect(html).toContain('<span class="mono">1.2.0</span>');
     expect(html).not.toContain("Update available");
     expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("<dl");
+    expect(runnerRowMarkup(runner, { ...row, accounts: [] })).toContain("Claude signed in");
   });
 
   test("a row flags offline hosts, paused status, signed-out agents and old versions", () => {
@@ -145,15 +151,16 @@ describe("runner list rows", () => {
         status: "paused",
         version: "1.1.0",
         metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 },
+        codingAgents: [{ agent: "codex", current: "1", pending: null, reportedAt: now }],
         agents: [{ agent: "codex", status: "signed_out", checkedAt: now }],
       },
       row,
     );
     expect(html).toContain('<span class="tag bad">Offline</span>');
     expect(html).toContain('<span class="tag paused">Paused</span>');
-    expect(html).toContain('<span class="tag bad">Codex signed out</span>');
+    expect(html).toContain('<span class="tag bad">Codex needs sign-in</span>');
     expect(html).toContain("Update available");
-    expect(html).toContain("No agent signed in");
+    expect(html).toContain('href="/settings/agent-accounts"');
   });
 
   test("three runners render three table rows and tiles from the loaded list", () => {
@@ -273,7 +280,11 @@ describe("what a runner is running now", () => {
     phase: "closeout",
     startedAt: now - 75 * 60_000,
   };
-  const row = { now, serverVersion: "1.2.0" };
+  const row = {
+    now,
+    serverVersion: "1.2.0",
+    accounts: [{ agent: "claude", credential: {}, extraUsage: false, usage: null }],
+  };
 
   test("an idle runner shows nothing running", () => {
     expect(runnerRunningMarkup([], now)).toBe('<p class="muted">Nothing running</p>');
