@@ -54,7 +54,6 @@ export const agentCloseoutEvent = pgTable(
       columns: [table.runId, table.sequence],
       name: "agent_closeout_event_run_id_sequence_pk",
     }),
-    index("agent_closeout_event_item").on(table.itemId, table.runId),
     check("agent_closeout_event_check_1", sql`sequence > 0`),
     check("agent_closeout_event_check_2", sql`type IN ('report', 'started', 'finished')`),
     check(
