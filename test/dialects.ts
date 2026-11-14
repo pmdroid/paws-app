@@ -41,10 +41,6 @@ export function seed(db: Db, ...inserts: ((q: Q) => PromiseLike<unknown>)[]): Pr
   });
 }
 
-/**
- * Every path the candidate `head` changes. A head without a stored tier gets a normal one
- * classified at `recordedAt`; a classified head keeps its tier and only takes the paths.
- */
 export function saveChangedPaths(
   db: Db,
   input: { itemId: string; head: string; paths: readonly string[]; recordedAt: number },

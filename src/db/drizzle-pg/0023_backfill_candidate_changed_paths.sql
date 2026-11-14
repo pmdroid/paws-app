@@ -1,0 +1,1 @@
+UPDATE "candidate_risk" SET "changed_paths" = "candidate_paths"."paths" FROM "candidate_paths" WHERE "candidate_paths"."item_id" = "candidate_risk"."item_id" AND "candidate_paths"."head_sha" = "candidate_risk"."head_sha";

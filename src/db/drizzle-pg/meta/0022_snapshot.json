@@ -1,5 +1,5 @@
 {
-  "id": "a747df4d-3908-4170-9380-53b74c69a983",
+  "id": "62c2ca3d-cf40-491b-b329-499677166eb4",
   "prevId": "7ae7659a-38ea-4dfb-a74c-ea6fa4b59cef",
   "version": "7",
   "dialect": "postgresql",
@@ -9161,6 +9161,80 @@
           "value": "repository_context IN (0,1)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.candidate_paths": {
+      "name": "candidate_paths",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "paths": {
+          "name": "paths",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "candidate_paths_item": {
+          "name": "candidate_paths_item",
+          "columns": [
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "candidate_paths_item_id_work_item_id_fk": {
+          "name": "candidate_paths_item_id_work_item_id_fk",
+          "tableFrom": "candidate_paths",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "candidate_paths_item_id_head_sha_pk": {
+          "name": "candidate_paths_item_id_head_sha_pk",
+          "columns": ["item_id", "head_sha"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.candidate_risk": {

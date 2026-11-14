@@ -17,11 +17,6 @@ export type CandidateRisk = RiskClassification & {
   matches?: RiskMatch[];
 };
 
-/**
- * Records the head's tier with every path it changes since its base, which the scheduler and hot
- * files read. A repeat of the head replaces it; one saved without changed paths keeps the stored
- * ones.
- */
 export function* saveCandidateRiskSteps(
   q: Q,
   risk: CandidateRisk & { changedPaths?: readonly string[] },
