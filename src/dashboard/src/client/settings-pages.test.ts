@@ -35,7 +35,7 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("settings shows one tab bar of ten pages in order, marking the current one", () => {
+test("settings shows one tab bar of eleven pages in order, marking the current one", () => {
   const doc = new Window().document;
   doc.body.innerHTML = renderSettingsPage("merging");
   const navs = doc.querySelectorAll("nav");
@@ -46,6 +46,7 @@ test("settings shows one tab bar of ten pages in order, marking the current one"
     "Agents",
     "Agent accounts",
     "Merging",
+    "Storage",
     "Queue and limits",
     "Agent instructions",
     "Integrations",

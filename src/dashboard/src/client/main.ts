@@ -1,3 +1,4 @@
+import { createStorageSettings } from "./storage-settings";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
@@ -81,6 +82,7 @@ const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
+const storageSettings = createStorageSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
 const agentAccountSettings = createAgentAccountSettings();
@@ -473,6 +475,8 @@ function paint(): void {
   if (accountsRoot) agentAccountSettings.mount(accountsRoot, currentEngine());
   const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
+  const storageRoot = document.querySelector<HTMLElement>("#storage-settings");
+  if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
