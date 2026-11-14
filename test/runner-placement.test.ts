@@ -1129,6 +1129,73 @@ test("a moved run whose restoring runner is busy goes to another runner at once"
   }
 });
 
+test("two items admitted to the same runner at once both start there", async () => {
+  const placed = await placeItem();
+  try {
+    const { db } = placed;
+    const sibling = await insertQueuedItem(db, {
+      id: "sibling",
+      now: placed.now(),
+      sessionKey: "sibling-session",
+    });
+    await recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "app-client",
+      appUserId: "app",
+      sessionId: "sibling-session",
+      teamId: "team",
+      observedAtMs: placed.now(),
+    });
+    await bindLinearSessionTask(db, "sibling-session", sibling.delegationId, {
+      actorId: "owner",
+    });
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ ownerUserId: placed.owner })
+          .where(eq(q.t.workItem.id, sibling.id)),
+      (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "own", capacity: 2 }),
+    );
+    const profile = { agent: "codex" as const, model: "implementation-model" };
+    for (const itemId of ["item", "sibling"])
+      expect(
+        (
+          await placed.placement.candidates({
+            itemId,
+            profile,
+            role: "implementer",
+            purpose: "work",
+          })
+        ).map((row) => row.id),
+      ).toContain("own");
+    for (const itemId of ["item", "sibling"])
+      await db.transaction((q) =>
+        placed.placement.startedSteps(q, {
+          commandId: `command-${itemId}`,
+          runnerId: "own",
+          itemId,
+          profile,
+          role: "implementer",
+          purpose: "work",
+          startedAt: placed.now(),
+        }),
+      );
+    const started = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ itemId: q.t.runnerExecutionUsage.itemId })
+          .from(q.t.runnerExecutionUsage)
+          .where(eq(q.t.runnerExecutionUsage.runnerId, "own")),
+      ),
+    );
+    expect(started.map((row) => row.itemId).toSorted()).toEqual(["item", "sibling"]);
+  } finally {
+    await placed.close();
+  }
+});
+
 test("new runs, runs on their online pin and reviews rank as before a session restore", async () => {
   const placed = await movingRun();
   try {
