@@ -23,6 +23,7 @@ test("a candidate stored in the database merges at its head with no mirror", asy
 test("a runner rebase records the new head in the database", async () => {
   const h = (harness = await mergeHarness({
     storedCandidates: true,
+    mirror: true,
     settings: { mainMoved: "ci" },
   }));
   const item = await h.addItem("ENG-1");
@@ -43,4 +44,22 @@ test("a runner rebase records the new head in the database", async () => {
   h.state.ci = () => undefined;
   expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
   expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([pushed]);
+});
+
+test("the control-plane rebase of a stored candidate records the pushed head in the database", async () => {
+  const h = (harness = await mergeHarness({
+    storedCandidates: true,
+    mirror: true,
+    settings: { mainMoved: "ci" },
+  }));
+  const item = await h.addItem("ENG-1");
+  const main = await h.moveMain("side.txt", "side\n");
+  h.state.runnerRebase = async () => ({ outcome: "failed", reason: "no eligible runner" });
+  h.state.ci = pendingCi;
+  const step = await h.pass("ENG-1");
+  const head = await h.remoteHead("ENG-1");
+  expect(head).not.toBe(item.accepted);
+  expect(step).toMatchObject({ kind: "wait", reason: "ci", base: main, head });
+  expect((await getItemCandidate(sqliteDb(h.db), "ENG-1"))?.sha).toBe(head);
+  expect(await h.git(h.mirror!, "for-each-ref", "refs/paws/candidates")).toBe("");
 });

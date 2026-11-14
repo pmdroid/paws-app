@@ -154,7 +154,14 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
   };
   /** The candidate import: the mirror takes the head the item's runner made. */
   const adopt = async (item: { id: string; worktree: string }) => {
-    if (mirror) await git(mirror, "fetch", "-q", item.worktree, `+HEAD:${candidate(item.id)}`);
+    if (mirror)
+      await git(
+        mirror,
+        "fetch",
+        "-q",
+        item.worktree,
+        `+HEAD:${options.storedCandidates ? `refs/paws/imports/${item.id}` : candidate(item.id)}`,
+      );
     if (options.storedCandidates)
       await recordItemCandidate(store, {
         itemId: item.id,
@@ -586,7 +593,13 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
           head: current.checkpoint?.wipCommit ?? item.accepted,
           signal: state.publication.signal,
           worktree: mirror ?? item.worktree,
-          ...(mirror ? { ref: candidate(id) } : {}),
+          ...(mirror
+            ? {
+                ref: options.storedCandidates
+                  ? (await getItemCandidate(store, id))!.sha
+                  : candidate(id),
+              }
+            : {}),
           branchKey: id,
           summary: "Closeout accepted.",
           commit: { title: `${id} change` },
