@@ -155,15 +155,6 @@ export const agentVersion = pgTable(
   ],
 );
 
-export const agentCatalogRefresh = pgTable(
-  "agent_catalog_refresh",
-  {
-    id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-    completedAt: bigint("completed_at", { mode: "number" }).notNull(),
-  },
-  () => [check("agent_catalog_refresh_check_1", sql`id = 1`)],
-);
-
 export const agentSessionSnapshot = pgTable(
   "agent_session_snapshot",
   {

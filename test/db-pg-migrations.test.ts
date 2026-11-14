@@ -158,4 +158,41 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+  test("the single-row tables move into setting and workspace with the same values", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("single_row_tables_into_setting"),
+    });
+    try {
+      await pg.$client.exec(
+        "INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES ('on', 'org-on', 'On', 1), ('off', 'org-off', 'Off', 2); INSERT INTO finding_grouping_off (workspace_id) VALUES ('off'); INSERT INTO agent_catalog_refresh (id, completed_at) VALUES (1, 1700000000123); INSERT INTO linear_outbox_backoff (id, not_before) VALUES (1, 1700000005000)",
+      );
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const workspaces = await pg.$client.query(
+        "SELECT id, finding_grouping_off AS off FROM workspace ORDER BY id",
+      );
+      expect(workspaces.rows).toEqual([
+        { id: "off", off: 1 },
+        { id: "on", off: 0 },
+      ]);
+      const settings = await pg.$client.query(
+        "SELECT key, value FROM setting WHERE key IN ('agent_catalog_refreshed_at', 'linear_outbox_not_before') ORDER BY key",
+      );
+      expect(settings.rows).toEqual([
+        { key: "agent_catalog_refreshed_at", value: "1700000000123" },
+        { key: "linear_outbox_not_before", value: "1700000005000" },
+      ]);
+      for (const table of [
+        "agent_catalog_refresh",
+        "linear_outbox_backoff",
+        "finding_grouping_off",
+      ]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
 });

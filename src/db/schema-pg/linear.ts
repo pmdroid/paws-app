@@ -252,15 +252,6 @@ export const linearIssueContext = pgTable(
   ],
 );
 
-export const linearOutboxBackoff = pgTable(
-  "linear_outbox_backoff",
-  {
-    id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
-    notBefore: bigint("not_before", { mode: "number" }).notNull(),
-  },
-  () => [check("linear_outbox_backoff_check_1", sql`id=1`)],
-);
-
 export const linearRequestBudget = pgTable("linear_request_budget", {
   workspace: text().primaryKey(),
   windowStart: bigint("window_start", { mode: "number" }).notNull(),
