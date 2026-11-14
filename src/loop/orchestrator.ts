@@ -4539,8 +4539,13 @@ export class Orchestrator {
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         } else if (
-          owned !== priorRunId ||
-          !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned)))
+          !(
+            this.shuttingDown &&
+            current.state === "verifying" &&
+            (await this.store.run((q) => runnerHoldsRunWorkSteps(q, owned, this.now())))
+          ) &&
+          (owned !== priorRunId ||
+            !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned))))
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         }
