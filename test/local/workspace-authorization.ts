@@ -466,6 +466,38 @@ export async function probeWorkspaceAuthorization(
         memberStatuses.every((status) => status === 403),
       { adminStatuses, memberStatuses },
     );
+    const mergingBody = JSON.stringify({
+      default: { order: "queue", mainMoved: "ci" },
+      repositories: {
+        "fixture/allowed": {
+          packages: ["apps/*"],
+          reviewApps: ["review-app"],
+          suggestedFindings: "own_turn",
+        },
+      },
+      projects: { project: { lane: "repository" } },
+    });
+    const saveMerging = (session: typeof owner) =>
+      fetch(`${origin}/api/settings/merging`, {
+        method: "PUT",
+        headers: {
+          ...headers(session),
+          "content-type": "application/json",
+          "x-paws-csrf": session.session.csrfToken,
+        },
+        body: mergingBody,
+      });
+    const memberMerging = await saveMerging(member);
+    const adminMerging = await saveMerging(admin);
+    const mergingRead = await fetch(`${origin}/api/settings/merging`, { headers: headers(admin) });
+    observe(
+      "only an authenticated workspace admin can save merging repository and project settings",
+      memberMerging.status === 403 &&
+        adminMerging.status === 200 &&
+        JSON.stringify((await mergingRead.json()).repositories) ===
+          JSON.stringify(JSON.parse(mergingBody).repositories),
+      { member: memberMerging.status, admin: adminMerging.status },
+    );
     const memberRead = await fetch(`${origin}/api/workspaces/repositories`, {
       headers: headers(member),
     });

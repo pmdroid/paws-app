@@ -782,6 +782,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(principal === undefined ? {} : { role: principal.role }),
         ...(secrets.riskSettingsChanged ? { changed: secrets.riskSettingsChanged } : {}),
         ...(path === MERGE_SETTINGS_PATH && secrets.store
           ? {

@@ -459,6 +459,8 @@ describe("Merging settings API", () => {
       noProject: "own",
       parallel: 1,
       parallelFiles: [],
+      projects: {},
+      repositories: { "acme/platform": { packages: ["apps/*"] } },
       sessionDone: "pull_request",
       sessionQuietMinutes: 10,
     });
