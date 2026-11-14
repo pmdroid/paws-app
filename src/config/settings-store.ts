@@ -134,7 +134,8 @@ function isSettingsSection(section: string): boolean {
     within("closeout.projects") ||
     within("brief") ||
     within("skills") ||
-    name === "github_access"
+    name === "github_access" ||
+    name === "member_vm"
   );
 }
 

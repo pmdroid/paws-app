@@ -2,7 +2,7 @@
 
 Paws reads two kinds of configuration:
 
-- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[agents.grok]`, `[agents.opencode]`, `[merge…]`, `[queue]`, `[time_limits…]`, `[closeout.projects…]`, `[brief…]`, `[skills.projects…]` and `[github_access]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
+- `~/.paws/config.toml`, the Paws server's settings. Setup writes it; you can edit it by hand while Paws is stopped. The Settings page saves to the database's `setting` table instead, so a save reaches every other Paws process sharing the database within 5 seconds. While that table is empty, `config.toml` supplies every setting. After the first save, the database holds the sections the Settings page owns (`[agents]`, `[agents.defaults…]`, `[agents.grok]`, `[agents.opencode]`, `[merge…]`, `[queue]`, `[time_limits…]`, `[closeout.projects…]`, `[brief…]`, `[skills.projects…]`, `[github_access]` and `[member_vm]`), and Paws ignores those sections in `config.toml`; every other section still comes from the file. When `config.toml` still has one of those sections, Paws journals it at startup and `bun run paws doctor` notes it as `settings-overrides`, naming each ignored section; change it on the Settings page instead. An unknown section or key, or a value Paws no longer accepts, stops Paws at startup with the line number and what to change.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
@@ -148,6 +148,10 @@ Settings › Queue and limits › Queue sets both.
 ## Project skill roots
 
 The folder of [local skills](local-skills.md) for each repository is a Settings value. `GET /api/settings/skills` returns it as `projectRoots`, `{ "projects": { "owner/repo": { "root": "/absolute/path" } } }`, from the database once saved and from `config.toml`'s `[skills.projects."owner/repo"] root` until then. `PUT /api/settings/skills` with `{ "projectRoots": { "projects": … } }` replaces the whole list; only workspace admins may call it. Each `root` must be an absolute path to an existing directory on the Paws host, or the request gets 400 with the reason. A save applies to the next implementation turn without a restart.
+
+## Member VM size
+
+The size Create VM asks exe.dev for: `cpu`, `memory_gb`, `disk_gb` (whole numbers), `image` (such as `"ubuntu:24.04"`) and `pool` (an exe.dev pool name). A missing value sends no flag, so exe.dev uses its default. `GET /api/settings/member-vm` returns it as `{ "cpu", "memoryGb", "diskGb", "image", "pool" }`, and `PUT` with the same fields saves it to the database; only workspace admins can save, and an invalid value gets HTTP 400 with the reason. Each new VM reads the saved size when it is created; existing VMs keep theirs. `paws install` still writes a `[member_vm]` table to `config.toml`, which Paws uses until the first save.
 
 ## Closeout `retry`
 

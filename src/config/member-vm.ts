@@ -1,3 +1,5 @@
+import { updateConfigText } from "./settings-store";
+
 /**
  * `[member_vm]`: the size Create VM asks exe.dev for. The keys follow `ssh exe.dev help new`:
  * `--cpu`, `--memory`, `--disk`, `--image` and `--pool`. A missing key sends no flag, so exe.dev
@@ -99,4 +101,40 @@ export function renderMemberVmSettings(size: MemberVmSize | undefined): string {
     ...(size?.pool === undefined ? [] : [`pool = "${size.pool}"`]),
   ];
   return lines.length ? `\n[member_vm]\n${lines.join("\n")}\n` : "";
+}
+
+export function parseMemberVmSettings(value: unknown): MemberVmSize {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("member_vm must be an object");
+  const field = (key: string) => key.replace(/_(\w)/, (_, letter: string) => letter.toUpperCase());
+  const fields = MEMBER_VM_KEYS.map(field);
+  const unknown = Object.keys(value).find((name) => !(fields as string[]).includes(name));
+  if (unknown !== undefined)
+    throw new Error(`member_vm has an unknown field: ${unknown} (use ${fields.join(", ")})`);
+  const size: Record<string, number | string> = {};
+  for (const key of MEMBER_VM_KEYS) {
+    const raw = (value as Record<string, unknown>)[field(key)];
+    if (raw !== undefined && raw !== null)
+      size[field(key)] = checkMemberVmValue(key, raw as string | number | boolean | string[]);
+  }
+  return size as MemberVmSize;
+}
+
+export function setMemberVmText(current: string, size: MemberVmSize): string {
+  let section = "";
+  const retained = current
+    .split(/\r?\n/)
+    .filter((line) => {
+      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+      if (heading?.[1]) section = heading[1].toLowerCase();
+      return section !== "member_vm";
+    })
+    .join("\n")
+    .trimEnd();
+  const table = renderMemberVmSettings(size);
+  return retained === "" ? table.trimStart() : `${retained}\n${table}`;
+}
+
+export function writeMemberVmSize(path: string, size: MemberVmSize): Promise<void> {
+  return updateConfigText(path, (text) => setMemberVmText(text, size));
 }
