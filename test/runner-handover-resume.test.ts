@@ -981,20 +981,17 @@ async function twoRunningOnA(notices: string[] = []) {
 }
 
 /** A takes both handover commands, in whichever order Paws sent them, and hands both over. */
-async function handOverBoth(turns: { onA: RunCommand }[], landOn?: string) {
+async function handOverBoth(turns: { onA: RunCommand }[]) {
   const handovers = [await context.next(context.runners.a), await context.next(context.runners.a)];
   const wips: string[] = [];
-  const landed: RunCommand[] = [];
-  for (const { onA } of turns) {
+  for (const { onA } of turns)
     wips.push(
       await context.handOver(
         onA,
         handovers.find((command) => command && "runId" in command && command.runId === onA.runId),
       ),
     );
-    if (landOn) landed.push((await context.next(landOn)) as RunCommand);
-  }
-  return { wips, landed };
+  return wips;
 }
 
 test("Move running work on a draining runner moves both sessions to the second runner, and A is drained", async () => {
@@ -1019,7 +1016,9 @@ test("Move running work on a draining runner moves both sessions to the second r
     moving: 0,
   });
 
-  const { wips, landed } = await handOverBoth(turns, runners.b);
+  const wips = await handOverBoth(turns);
+  const landed = [await context.next(runners.b), await context.next(runners.b)] as RunCommand[];
+  expect(landed.map((command) => command?.type)).toEqual(["run", "run"]);
   await moves.settled();
   const runIds = turns.map(({ onA }) => onA.runId).sort();
   expect(landed.map((command) => command.runId).sort()).toEqual(runIds);

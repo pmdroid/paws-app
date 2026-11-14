@@ -4,7 +4,5 @@
 
 # Two concurrent confirmations both succeed on a server; on PGlite one is refused.
 test/decision-memory.test.ts # concurrent suggestion confirmation accepts twice
-# Moving a draining runner's sessions sends B two run commands for one run on a server.
-test/runner-handover-resume.test.ts # draining move lands one run twice; question replays fail
 # A failed preparation's reservation is released after the next recovering item asks for the slot.
 test/recovering-slot-reservation.test.ts # next item waits for a free slot before the release lands
