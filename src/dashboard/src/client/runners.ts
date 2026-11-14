@@ -1590,8 +1590,8 @@ export function createRunners() {
               ),
             ),
         ),
-        api<{ accounts: AccountSummary[] }>("/api/runners/agent-accounts").catch((error) => {
-          journalCaught(error, "runners.load.accounts", null);
+        api<{ accounts: AccountSummary[] }>("/api/runners/agent-accounts").catch((caught) => {
+          journalCaught(caught, "runners.load.accounts", null);
           return undefined;
         }),
       ]);
