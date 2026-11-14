@@ -24,6 +24,8 @@ import {
   recordRunnerAccountCapability,
   bindAgentAccount,
   createAgentAccount,
+  listAgentBindings,
+  setAgentAccountEnabled,
   syncWorkspaceMember,
   type Db,
   type PgDb,
@@ -169,7 +171,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     await exec(
       sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',${ready})`,
     );
-    if (ready) {
+    if (ready || (delegatorRunner === "unsigned" && name === "member-vm")) {
       const account = await createAgentAccount(db, {
         workspaceId: workspace.id,
         agent: "claude",
@@ -182,6 +184,13 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         runnerId,
         now,
       });
+      if (!ready)
+        await setAgentAccountEnabled(db, {
+          workspaceId: workspace.id,
+          accountId: account.id,
+          enabled: false,
+          now,
+        });
       await exec(
         sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},'0.1.82',${now})`,
       );
@@ -605,7 +614,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
   }
 }, 60_000);
 
-test("binding an account resumes the held item in the same run and session, without reading Linear", async () => {
+test("re-enabling an account resumes the held item in the same run and session, without reading Linear", async () => {
   const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
@@ -617,16 +626,13 @@ test("binding an account resumes the held item in the same run and session, with
     const runner = (
       await rows(db, sql`SELECT workspace_id FROM runner WHERE id=${fixture.memberRunner!}`)
     )[0]!;
-    const account = await createAgentAccount(db, {
+    const binding = (await listAgentBindings(db, String(runner.workspace_id))).find(
+      (b) => b.runnerId === fixture.memberRunner,
+    )!;
+    await setAgentAccountEnabled(db, {
       workspaceId: String(runner.workspace_id),
-      agent: "claude",
-      label: "Added",
-      now: Date.now(),
-    });
-    await bindAgentAccount(db, {
-      workspaceId: String(runner.workspace_id),
-      accountId: account.id,
-      runnerId: fixture.memberRunner!,
+      accountId: binding.accountId,
+      enabled: true,
       now: Date.now(),
     });
     const deadline = Date.now() + 20_000;

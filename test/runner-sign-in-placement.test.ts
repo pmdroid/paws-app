@@ -203,7 +203,10 @@ test("healthy bindings work without local sign-in; expired and full accounts are
       recordedAt: f.now,
     }),
   );
-  expect((await f.place()).placed).toEqual([]);
+  expect((await f.place()).rejected).toContainEqual({
+    runnerId: "acme-2",
+    reason: "account at its concurrency limit",
+  });
   await expect(start(admission, "blocked")).rejects.toThrow("concurrency");
 });
 

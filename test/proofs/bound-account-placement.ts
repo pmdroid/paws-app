@@ -6,11 +6,19 @@ import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
 
 export default {
-  covers: ["src/runner-placement/**"],
-  summary:
-    "Work uses a healthy bound account without runner-local sign-in and waits when that account expires.",
+  covers: ["src/runner-placement/**", "src/db/agent-accounts.ts"],
+  summary: "Bound accounts place work and recover from temporary health failures.",
   agent: () => [],
   async run(proof) {
+    const resumed = Bun.spawnSync(
+      [process.execPath, "test", "test/runner-setup-hold.test.ts", "-t", "re-enabling an account"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    proof.expect(
+      "re-enabled account resumes held work",
+      resumed.exitCode === 0,
+      resumed.stderr.toString(),
+    );
     const db = proof.store;
     const { pair, queue, workspace } = await workspaceWithRunners(db);
     const runnerId = await pair("bound", 1, [REPOSITORY]);
@@ -25,19 +33,14 @@ export default {
       purpose: "work" as const,
       profile: { agent: "claude" as const },
     };
-    proof.expect(
-      "healthy binding places work without local sign-in",
-      (await placement.candidates(request)).some((r) => r.id === runnerId),
-    );
     const binding = (await listAgentBindings(db, workspace.id)).find(
       (b) => b.runnerId === runnerId && !b.legacy,
     )!;
     let observedAt = NOW;
     for (const state of ["exhausted", "restricted"] as const) {
-      const until = NOW + 60_000;
       await recordAccountObservation(db, {
         bindingId: binding.id,
-        ...(state === "exhausted" ? { state, resetsAt: until } : { state }),
+        ...(state === "exhausted" ? { state, resetsAt: NOW + 60_000 } : { state }),
         source: "result",
         sourceId: state,
         observedAt: ++observedAt,
@@ -68,21 +71,5 @@ export default {
         (await placement.candidates(request)).length === 1,
       );
     }
-    await recordAccountObservation(db, {
-      bindingId: binding.id,
-      state: "auth_required",
-      source: "result",
-      sourceId: "expired",
-      observedAt: NOW,
-      now: NOW,
-    });
-    proof.expect(
-      "expired bound account blocks placement",
-      (await placement.candidates(request)).length === 0,
-    );
-    proof.expect(
-      "expired account needs setup",
-      (await placement.setupNeed!(request))?.reason === "agent-not-signed-in",
-    );
   },
 } satisfies Proof;

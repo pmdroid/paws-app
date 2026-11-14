@@ -419,6 +419,10 @@ export function* setAgentAccountEnabledSteps(
       .set({ enabled: input.enabled ? 1 : 0, updatedAt: input.now })
       .where(eq(agentAccount.id, row.id)),
   );
+  if (input.enabled && !row.enabled)
+    for (const accountBinding of yield* listAgentBindingsSteps(q, input.workspaceId, row.id))
+      if (accountBinding.removedAt === null)
+        yield* enqueueRunnerSetupChecksSteps(q, input.now, { runnerId: accountBinding.runnerId });
   return (yield* accountRowSteps(q, row.id))!;
 }
 

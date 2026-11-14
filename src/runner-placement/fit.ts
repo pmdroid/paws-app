@@ -65,7 +65,7 @@ export function* signInFitSteps(
     refusal = {
       reason:
         readiness.reason === "busy"
-          ? "agent account at its concurrency limit"
+          ? "account at its concurrency limit"
           : BINDING_REASON_TEXT[readiness.reason],
       ...(readiness.until !== null ? { until: readiness.until } : {}),
     };
