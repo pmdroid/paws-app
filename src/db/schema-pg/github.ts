@@ -18,6 +18,8 @@ export const githubDelivery = pgTable(
   {
     deliveryId: text("delivery_id").primaryKey(),
     event: text().notNull(),
+    repository: text(),
+    pullNumber: integer("pull_number"),
     receivedAt: bigint("received_at", { mode: "number" }).notNull(),
   },
   (table) => [index("github_delivery_received").on(table.receivedAt)],

@@ -16,8 +16,20 @@ forEachDialect((open) => {
       expect(await record("a", "push", 14 * DAY_MS)).toBe(true);
       expect(await record("a", "push", 14 * DAY_MS + 1)).toBe(false);
       expect(await githubDeliveryRows(db)).toEqual([
-        { deliveryId: "a", event: "push", receivedAt: 14 * DAY_MS },
-        { deliveryId: "b", event: "pull_request", receivedAt: 14 * DAY_MS },
+        {
+          deliveryId: "a",
+          event: "push",
+          receivedAt: 14 * DAY_MS,
+          repository: null,
+          pullNumber: null,
+        },
+        {
+          deliveryId: "b",
+          event: "pull_request",
+          receivedAt: 14 * DAY_MS,
+          repository: null,
+          pullNumber: null,
+        },
       ]);
       await record("c", "check_run", 14 * DAY_MS + 5);
       expect(await db.run(latestGitHubDeliverySteps)).toEqual({
