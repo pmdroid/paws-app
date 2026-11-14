@@ -18,7 +18,6 @@ export function* recordGitHubDeliverySteps(
       .values({
         deliveryId: input.deliveryId,
         event: input.event,
-        payload: input.payload,
         receivedAt: now,
       })
       .onConflictDoNothing({ target: githubDelivery.deliveryId })

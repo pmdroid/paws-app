@@ -5,7 +5,7 @@ import { tempStore } from "../../test/pglite";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-test("a GitHub delivery keeps its id, event, time and payload", async () => {
+test("a GitHub delivery keeps its id, event and time, and a repeated id is not recorded again", async () => {
   const db = (await tempStore()).db;
   expect(
     await recordGitHubDelivery(
@@ -18,11 +18,11 @@ test("a GitHub delivery keeps its id, event, time and payload", async () => {
     await recordGitHubDelivery(db, { deliveryId: "d-1", event: "check_run", payload: "{}" }, 2_000),
   ).toBe(false);
   expect(await githubDeliveryRows(db)).toEqual([
-    { deliveryId: "d-1", event: "check_run", payload: "x".repeat(20_000), receivedAt: 1_000 },
+    { deliveryId: "d-1", event: "check_run", receivedAt: 1_000 },
   ]);
 });
 
-test("GitHub deliveries and their payloads older than three days are deleted", async () => {
+test("GitHub deliveries older than three days are deleted", async () => {
   const db = (await tempStore()).db;
   const now = 10 * DAY;
   await recordGitHubDelivery(
