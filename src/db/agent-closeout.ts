@@ -1,6 +1,10 @@
 import { asc, eq, inArray, max } from "drizzle-orm";
 import { journalCaught } from "../journal";
-import { CLOSEOUT_OUTPUT_CAP_BYTES, pointerOf, type CloseoutOutputPointer } from "./closeout-progress";
+import {
+  CLOSEOUT_OUTPUT_CAP_BYTES,
+  pointerOf,
+  type CloseoutOutputPointer,
+} from "./closeout-progress";
 import { type Q, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 

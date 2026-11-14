@@ -1,4 +1,16 @@
-import { and, eq, inArray, isNotNull, isNull, lt, max, ne, notInArray, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  max,
+  ne,
+  notInArray,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type { Db, Q, Steps } from "./db";
 import { readSetting, updateSetting } from "./settings";
 import type { CloseoutOutputPointer } from "./closeout-progress";
@@ -19,7 +31,13 @@ export type StoredCloseoutOutput = {
 export type ExpiredCloseoutOutput = { ref: CloseoutOutputRef; key: string | null };
 
 const ENDED = ["merged", "cancelled", "completed"];
-const NO_OUTPUT = { stdout: "", stderr: "", outputKey: null, outputBytes: null, outputSha256: null };
+const NO_OUTPUT = {
+  stdout: "",
+  stderr: "",
+  outputKey: null,
+  outputBytes: null,
+  outputSha256: null,
+};
 
 function* stepOutputsSteps(q: Q, where: SQL | undefined, limit: number) {
   const { closeoutProgress: p, closeoutStep: s } = q.t;
@@ -59,10 +77,7 @@ function unfinishedNot(q: Q) {
   return notInArray(q.t.closeoutStep.state, ["pending", "running"]);
 }
 
-export function* unmovedCloseoutOutputsSteps(
-  q: Q,
-  limit: number,
-): Steps<StoredCloseoutOutput[]> {
+export function* unmovedCloseoutOutputsSteps(q: Q, limit: number): Steps<StoredCloseoutOutput[]> {
   const steps = yield* stepOutputsSteps(q, unfinishedNot(q), limit);
   const { agentCloseoutEvent: e } = q.t;
   const events = yield* q.all(

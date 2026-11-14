@@ -184,3 +184,22 @@ test("members, a missing CSRF token and invalid values are refused", async () =>
   expect((await call(send("GET"))).body.source).toBe("default");
   expect(audits).toEqual([]);
 });
+
+forEachDialect((connect) => {
+  test("Closeout log retention defaults to 14 days and saves without touching storage", async () => {
+    const { db: store, close } = await connect();
+    cleanup.push(close);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    const saved = await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store });
+    expect(saved).toMatchObject({ status: 200, body: { closeoutLogRetentionDays: 0 } });
+    expect((await call(send("GET"), { store })).body).toMatchObject({
+      source: "default",
+      closeoutLogRetentionDays: 0,
+    });
+    for (const days of [-1, 1.5, "7", 3651])
+      expect((await call(send("PUT", { closeoutLogRetentionDays: days }), { store })).status).toBe(
+        400,
+      );
+    expect(audits).toEqual(["settings.storage: Set Closeout log retention: keep forever"]);
+  });
+});
