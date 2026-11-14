@@ -1,6 +1,6 @@
 # Enroll a remote Linux runner
 
-Enrollment connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
+Enrollment connects a Linux host to your Paws workspace. The runner daemon runs as the non-root `paws-runner` user, and the coding agents (Claude, Codex, Grok, OpenCode) and everything they start run as `paws-agent`, which can't read the runner's identity keys. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
 To have Paws make and enroll an exe.dev VM for you, including on a Paws reachable only on Tailscale, see [Create a runner VM on exe.dev](create-vm.md).
 
