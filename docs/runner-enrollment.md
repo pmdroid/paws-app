@@ -64,6 +64,8 @@ Runner work never uses the root Docker daemon at `/var/run/docker.sock`. When yo
 | `"paws-agent"` (default) | `paws-agent-docker.service` | `paws-agent`  | `/run/paws-agent-docker/docker.sock` | `/var/lib/paws-agent-docker`  |
 | `"runner"`               | `paws-docker.service`       | `paws-runner` | `/run/paws-docker/docker.sock`       | `/var/lib/paws-runner-docker` |
 
+`paws-agent-docker.service` is a user unit in `/etc/systemd/user` (with `ConditionUser=paws-agent`) that `paws-agent`'s own systemd user manager, `user@<uid>.service`, runs. Rootless Docker gets cgroups only through the systemd cgroup driver, which talks to that manager, so the daemon runs with `native.cgroupdriver=systemd` and its containers get memory, CPU and pids limits; kind needs them. `paws-docker.service` is still a system unit with the cgroupfs driver, so its containers get no limits.
+
 Only the account a daemon runs as can reach its socket: the socket's directory is mode 0700. `paws-agent` never gets access to `paws-runner`'s daemon, whose containers could mount the runner's identity keys and spool. Package configuration reads `agentUser` from `/etc/paws-runner/config.json` and sets up only that account's daemon; when the value changed, it stops and removes the other account's unit. Its report (`docker.agentJobs` in the install output) names the daemon that serves agent jobs and whether its account reached it, and it fails with `not-isolated` when the other account can open the socket too. While the daemon runs, the runner gives each worker the `DOCKER_HOST` of its own account's socket; the agent and the Closeout checks inherit it. After changing `agentUser`, run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner` to move Docker to the new account. An agent only ever gets a `DOCKER_HOST` that names a local `unix://` socket. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
 
 ```sh
@@ -71,19 +73,21 @@ curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
 curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
 ```
 
-With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns`. The package never installs Docker Engine itself.
+With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session`. The package never installs Docker Engine itself.
 
-Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the three packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
+Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
 
 On a grant, package configuration:
 
-1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`. If any is missing, it names the package, sets nothing up and finishes the install.
+1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`, and for `paws-agent`'s daemon also `dbus-user-session`, which gives its user manager the D-Bus the systemd cgroup driver talks to. If any is missing, it names the package, sets nothing up and finishes the install.
 2. Adds a 65536-id range for the account to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
 3. Creates the data directory (owned by the account, mode 0700) for images and containers.
-4. Writes the daemon's unit in `/etc/systemd/system`, which runs the `dockerd-rootless.sh` launcher the package ships.
-5. Enables and starts the daemon, and reports whether its account can reach it and the other account can't.
+4. Writes the daemon's unit, which runs the `dockerd-rootless.sh` launcher the package ships: `paws-docker.service` in `/etc/systemd/system`, or `paws-agent-docker.service` in `/etc/systemd/user`. For the user unit it also writes `/etc/systemd/system/user@.service.d/delegate.conf` (`Delegate=cpu cpuset io memory pids`) and `/etc/tmpfiles.d/paws-agent-docker.conf`, which keeps `/run/paws-agent-docker` owned by `paws-agent`, mode 0700, and runs `loginctl enable-linger paws-agent` so the user manager starts at boot.
+5. Enables and starts the daemon, and reports whether its account can reach it and the other account can't. It reports `no-cgroups` when the daemon answers with `CgroupDriver: none`.
 
-`deny`, or a host without Docker Engine, stops both daemons and removes their units. The data directories and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes both data directories and the `paws-runner` and `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
+An upgrade from a release that ran `paws-agent-docker.service` as a system unit stops, disables and removes that unit, then starts the user unit on the same data directory, so images and volumes stay.
+
+`deny`, or a host without Docker Engine, stops both daemons, removes their units and turns off linger for `paws-agent`. The data directories and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes both data directories and the `paws-runner` and `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
 
 An earlier release added `paws-runner` to the `docker` group instead. An upgrade removes that membership when the install state in `/var/lib/paws-runner-install/docker-group.json` records that Paws added it. A membership Paws did not record adding stays, and the install prints a warning.
 
@@ -92,13 +96,15 @@ To check the daemon with the default `agentUser`:
 ```sh
 D="sudo -u paws-agent env DOCKER_HOST=unix:///run/paws-agent-docker/docker.sock docker"
 $D info --format '{{.SecurityOptions}}'                       # includes name=rootless
+$D info --format '{{.CgroupDriver}}'                           # systemd
+sudo python3 -I -B /usr/lib/paws-runner-package/install.py docker-check  # reachable, and no-cgroups when CgroupDriver is none
 $D run --rm alpine echo ok
 $D run --rm -v /var/lib/paws-agent:/w alpine ls /w             # a checkout's parent is readable
 $D run -d --rm alpine sleep 20; ps -eo user,cmd | grep '[s]leep 20'  # host user is paws-agent
 sudo -u paws-agent docker -H unix:///run/paws-docker/docker.sock ps          # permission denied
 sudo -u paws-runner docker -H unix:///run/paws-agent-docker/docker.sock ps   # permission denied
 sudo -u paws-agent docker -H unix:///var/run/docker.sock ps    # permission denied
-journalctl -u paws-agent-docker.service                        # when it does not start
+sudo journalctl _SYSTEMD_USER_UNIT=paws-agent-docker.service   # when it does not start
 ```
 
 With `"agentUser": "runner"`, use `sudo -u paws-runner`, `/run/paws-docker/docker.sock` and `paws-docker.service` instead.
