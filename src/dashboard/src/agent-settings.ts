@@ -18,6 +18,8 @@ export type AgentSettings = {
   };
   presets?: Record<string, AgentPreset>;
   revision?: string;
+  grok?: { path: string | null; allowApiKey: boolean };
+  opencode?: { path: string | null };
   /** CI fix attempts. Missing means 3. Settings → Merging owns the other merge choices. */
   merge?: { ciFixAttempts?: number };
   /** How long a task may wait for a runner slot. Missing means 24 hours. Null cap means no cap. */

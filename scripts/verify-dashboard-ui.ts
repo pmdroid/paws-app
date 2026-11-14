@@ -380,6 +380,32 @@ try {
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
+    await expect(admin.getByLabel("Grok binary path")).toHaveValue("");
+    await admin.getByLabel("Grok binary path").fill("/opt/grok");
+    await admin.getByLabel("OpenCode binary path").fill("/opt/opencode");
+    await admin.getByLabel("Let Grok use XAI_API_KEY").check();
+    await admin.route("**/api/settings/agents", async (route) => {
+      const body = route.request().postDataJSON();
+      expect(body.grok).toEqual({ path: "/opt/grok", allowApiKey: true });
+      expect(body.opencode).toEqual({ path: "/opt/opencode" });
+      await route.fulfill({ status: 400, json: { error: "grok.path must be an absolute path" } });
+    });
+    await admin.getByRole("button", { name: "Save settings", exact: true }).click();
+    await expect(
+      admin.getByRole("alert").filter({ hasText: "grok.path must be an absolute path" }),
+    ).toBeVisible();
+    await expect(admin.getByLabel("Grok binary path")).toHaveValue("/opt/grok");
+    await admin.route("**/api/settings/agents", async (route) =>
+      route.fulfill({ json: route.request().postDataJSON() }),
+    );
+    await admin.getByRole("button", { name: "Save settings", exact: true }).click();
+    await expect(
+      admin.getByText("Agent settings saved. New work will use these profiles."),
+    ).toBeVisible();
+    await expect(admin.getByLabel("Grok binary path")).toHaveValue("/opt/grok");
+    await expect(admin.getByLabel("OpenCode binary path")).toHaveValue("/opt/opencode");
+    await expect(admin.getByLabel("Let Grok use XAI_API_KEY")).toBeChecked();
+    await admin.screenshot({ path: join(out, `agent-commands-${width}.png`), fullPage: true });
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
     await page.route("**/api/runners", (route) =>
@@ -491,6 +517,67 @@ try {
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
     ] as const)
       await visit(admin, width, name, path, heading);
+    await admin.route("**/api/settings/skills", (route) =>
+      route.fulfill({
+        json: {
+          skills: [],
+          agents: ["claude", "codex", "grok"],
+          limitBytes: 20000000,
+          projectRoots: { projects: { "acme/app": { root: "/srv/app/skills" } } },
+        },
+      }),
+    );
+    await admin.reload();
+    await visit(
+      admin,
+      width,
+      "repository-skill-roots",
+      "/dashboard/settings/brief",
+      "Agent instructions",
+    );
+    await expect(admin.locator('[name="root-repo"]')).toHaveValue("acme/app");
+    await expect(admin.locator('[name="root-path"]')).toHaveValue("/srv/app/skills");
+    await admin.getByRole("button", { name: "Add repository", exact: true }).click();
+    await admin.locator('[name="root-repo"]').nth(1).fill("acme/other");
+    await admin.locator('[name="root-path"]').nth(1).fill("/srv/other/skills");
+    const projectRoots = {
+      projects: {
+        "acme/app": { root: "/srv/app/skills" },
+        "acme/other": { root: "/srv/other/skills" },
+      },
+    };
+    await admin.route("**/api/settings/skills", async (route) => {
+      expect(route.request().method()).toBe("PUT");
+      expect(route.request().postDataJSON()).toEqual({ projectRoots });
+      await route.fulfill({
+        status: 400,
+        json: { error: "acme/other root is not a directory on the Paws host" },
+      });
+    });
+    await admin.getByRole("button", { name: "Save skill roots", exact: true }).click();
+    await expect(
+      admin.getByRole("alert").filter({ hasText: "not a directory on the Paws host" }),
+    ).toBeVisible();
+    await expect(admin.locator('[name="root-path"]').nth(1)).toHaveValue("/srv/other/skills");
+    await admin.route("**/api/settings/skills", (route) =>
+      route.fulfill({
+        json: {
+          skills: [],
+          agents: ["claude", "codex", "grok"],
+          limitBytes: 20000000,
+          projectRoots,
+          notice: "Saved project skill roots.",
+        },
+      }),
+    );
+    await admin.getByRole("button", { name: "Save skill roots", exact: true }).click();
+    await expect(admin.getByText("Saved project skill roots.")).toBeVisible();
+    await expect(admin.locator('[name="root-repo"]')).toHaveCount(2);
+    await admin.screenshot({
+      path: join(out, `repository-skill-roots-${width}.png`),
+      fullPage: true,
+    });
+    await admin.unroute("**/api/settings/skills");
     await page.route("**/api/settings/merging", (route) => route.fulfill({ json: merging }));
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Merging");
     await expect(page.locator(".settings-nav a")).toHaveText([
