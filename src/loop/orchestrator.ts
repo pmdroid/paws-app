@@ -49,6 +49,7 @@ import {
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
+  applyRunnerCloseoutStepSteps,
   jobStatusByKey,
   restart,
   reviewerAlertedSinceSteps,
@@ -4851,6 +4852,7 @@ export class Orchestrator {
           worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          closeoutProgress: this.runnerCloseoutHook(item, head),
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
@@ -8316,6 +8318,17 @@ export class Orchestrator {
         if (await this.stopped(item.id)) return;
         await this.store.transaction((q) =>
           recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
+        );
+      },
+    };
+  }
+
+  private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
+    return {
+      record: async (progress) => {
+        if (progress.type === "report" || progress.head !== head) return;
+        await this.store.transaction((q) =>
+          applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );
       },
     };

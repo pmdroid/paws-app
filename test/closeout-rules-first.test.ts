@@ -15,6 +15,7 @@ import {
   getLinkAsk,
   getRun,
   getWorkItem,
+  listCloseoutProgress,
   listWorkItems,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -169,6 +170,159 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     await rm(root, { recursive: true, force: true });
   }
 }, 90_000);
+
+test("closeout_step follows the runner's check progress before the checks run ends", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paws-remote-steps-"));
+  const bare = await originWithChecks(root);
+  const pawsRoot = path.join(root, "paws");
+  const home = path.join(root, "home");
+  await mkdir(pawsRoot, { recursive: true });
+  await mkdir(home, { recursive: true });
+  const { db, close } = await tempStore();
+  const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
+  const jobs = new JobLoop(db, clock);
+  const outbox = new OutboxDispatcher(db, clock);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "issue",
+      identifier: "ENG-8",
+      title: "Settings screen",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const midRun: Array<Record<string, string>> = [];
+  const repository = { owner: "pmdroid", repo: "paws-demo" };
+  const runner = cloneRunnerPg(
+    repository,
+    async (options: RunAgentOptions): Promise<RunAgentResult> => {
+      if (options.checkpoint !== false) return runAgent(options);
+      let reported = Promise.resolve();
+      const session = createCloseoutSession(options.worktreePath, {
+        policy: async () => workspacePolicyFiles(options.worktreePath),
+        onProgress: (event) => {
+          reported = reported.then(async () => {
+            await options.closeoutProgress?.record(event);
+            if (event.type === "started" && event.id === "test") {
+              const steps = (await listCloseoutProgress(db)).at(-1)?.steps ?? [];
+              midRun.push(Object.fromEntries(steps.map((step) => [step.id, step.state])));
+            }
+          });
+        },
+      });
+      const listed = JSON.parse(await session.report()) as { pending: string[] };
+      for (const id of listed.pending) await session.run(id);
+      await reported;
+      return {
+        role: "implementer",
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+        closeoutReport: await session.report({ probes: true }),
+      };
+    },
+    db,
+  );
+  const launch: AgentLaunch = (input) => {
+    const scriptPath = path.join(root, `script-${crypto.randomUUID()}.json`);
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        steps: [
+          {
+            type: "fs_write",
+            path: path.join(runnerCheckout(pawsRoot, input.itemId), "feature.txt"),
+            content: "new\n",
+          },
+          { type: "end", stopReason: "end_turn" },
+        ],
+      }),
+    );
+    return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+  };
+  const github = createFakeGitHub();
+  const orchestrator = attachOrchestrator({
+    store: db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    clock,
+    pawsRoot,
+    home,
+    tracker,
+    publicUrl: "https://paws.example",
+    repositories: [{ ...repository, remoteUrl: bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: privateKey as string,
+      client: githubClient(bare, github),
+    }),
+    launch,
+    remoteExecution: { agentForItem: () => runner, agentForSession: () => runAgent },
+  });
+  const flush = async () => {
+    for (let round = 0; round < 20; round++) {
+      const claimed = await outbox.tick();
+      await outbox.idle();
+      if (claimed.length === 0) return;
+    }
+  };
+  try {
+    await orchestrator.onLinearEvent(created());
+    const turn = jobs.tick();
+    await attachRunnerLease(db);
+    await turn;
+    await flush();
+
+    expect(midRun).toEqual([{ install: "passed", test: "running" }]);
+    const item = (await listWorkItems(db))[0]!;
+    expect((await getWorkItem(db, item.id))?.state).toBe("merge_queue");
+    const steps = (await listCloseoutProgress(db)).at(-1)?.steps ?? [];
+    expect(Object.fromEntries(steps.map((step) => [step.id, step.state]))).toEqual({
+      install: "passed",
+      test: "passed",
+    });
+  } finally {
+    await orchestrator.shutdown();
+    await close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 90_000);
+
+async function originWithChecks(root: string): Promise<string> {
+  const bare = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  await exec("git", ["init", "--bare", "-b", "main", bare]);
+  await exec("git", ["clone", bare, seed]);
+  await exec("git", ["-C", seed, "config", "user.email", "paws-test@example.com"]);
+  await exec("git", ["-C", seed, "config", "user.name", "Paws Test"]);
+  await exec("git", ["-C", seed, "config", "commit.gpgsign", "false"]);
+  await mkdir(path.join(seed, ".agents"), { recursive: true });
+  const pass = JSON.stringify([process.execPath, "-e", "process.exit(0)"]);
+  await writeFile(
+    path.join(seed, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      ...["install", "test"].flatMap((id) => [
+        `  - id: ${id}`,
+        "    kind: command",
+        "    gate: beforePR",
+        `    exec: ${pass}`,
+        "    timeoutSeconds: 30",
+      ]),
+      "",
+    ].join("\n"),
+  );
+  await writeFile(path.join(seed, "README.md"), "paws demo\n");
+  await exec("git", ["-C", seed, "add", "."]);
+  await exec("git", ["-C", seed, "commit", "-m", "init"]);
+  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+  return bare;
+}
 
 async function originWithPolicy(root: string, checkMark: string): Promise<string> {
   const bare = path.join(root, "origin.git");
