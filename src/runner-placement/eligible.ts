@@ -1,5 +1,7 @@
+import { bindingReadinessSteps } from "./account-health";
 import { isWorkspaceAdmin } from "../workspace";
 import {
+  listAgentBindingsSteps,
   delegatedLinearUserIdSteps,
   delegationLeadUserIdsSteps,
   eligibleRunnerRowsSteps,
@@ -27,20 +29,6 @@ import type {
 /** A runner that has not sent a heartbeat for this long is offline. */
 export const RUNNER_ONLINE_MS = 60_000;
 
-/**
- * Every unrevoked runner in the workspace, with whether the person who owns the work may run it
- * there and the one reason why.
- * A runner is eligible when the work's owner owns it (`own`), or when it is shared and owned by
- * a lead of a Linear project in the delegation (`lead-shared`), and its owner is an active
- * member who is an admin or in the issue's team, and it is online and active,
- * and for anything but `prepare` its agent sign-in has not expired and for `work` the agent is
- * signed in and ready.
- *
- * An ineligible runner reports the first failing check, in this order: who may use it
- * (`not-yours`, `not-shared`, `no-project-lead`), then its owner (`owner-inactive`,
- * `owner-not-in-team`), then the runner (`offline`, `paused`), then the agent (`auth-expired`,
- * `agent-not-signed-in`).
- */
 export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<EligibleRunner[]> {
   const at = input.now ?? Date.now();
   const rows = yield* eligibleRunnerRowsSteps(
@@ -68,8 +56,18 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         return "owner-not-in-team";
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS) return "offline";
       if (status !== "active") return "paused";
-      if (input.purpose !== "prepare" && runner.authExpired === 1) return "auth-expired";
-      if (input.purpose === "work" && runner.ready !== 1) return "agent-not-signed-in";
+      if (input.purpose !== "prepare") {
+        let expired = false;
+        let healthy = false;
+        for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId)) {
+          if (binding.runnerId !== runner.id || binding.agent !== input.agent || binding.legacy)
+            continue;
+          const readiness = yield* bindingReadinessSteps(q, { bindingId: binding.id, now: at });
+          if (readiness.ready || readiness.reason === "busy") healthy = true;
+          else if (readiness.reason === "auth-required") expired = true;
+        }
+        if (!healthy) return expired ? "auth-expired" : "agent-not-signed-in";
+      }
       return own ? "own" : "lead-shared";
     }
   }

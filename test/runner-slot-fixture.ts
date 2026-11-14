@@ -1,4 +1,6 @@
 import {
+  bindAgentAccount,
+  createAgentAccount,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
@@ -58,6 +60,18 @@ export async function workspaceWithRunners(db: Db) {
       (q) =>
         q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude", ready: 1 }),
     );
+    const account = await createAgentAccount(db, {
+      workspaceId: workspace.id,
+      agent: "claude",
+      label: name,
+      now: NOW,
+    });
+    await bindAgentAccount(db, {
+      workspaceId: workspace.id,
+      accountId: account.id,
+      runnerId: id,
+      now: NOW,
+    });
     await recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
     await recordRunnerRepositories(db, id, repositories, NOW);
     return id;

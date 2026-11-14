@@ -20,7 +20,9 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
-  setRunnerAgentSignedInSteps,
+  recordRunnerAccountCapability,
+  bindAgentAccount,
+  createAgentAccount,
   syncWorkspaceMember,
   type Db,
   type PgDb,
@@ -166,6 +168,29 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     await exec(
       sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',${ready})`,
     );
+    if (ready) {
+      const account = await createAgentAccount(db, {
+        workspaceId: workspace.id,
+        agent: "claude",
+        label: name,
+        now,
+      });
+      const binding = await bindAgentAccount(db, {
+        workspaceId: workspace.id,
+        accountId: account.id,
+        runnerId,
+        now,
+      });
+      await exec(
+        sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},'0.1.82',${now})`,
+      );
+      await recordRunnerAccountCapability(
+        db,
+        runnerId,
+        { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
+        now,
+      );
+    }
     return runnerId;
   };
   const work = createRunnerWork({
@@ -470,7 +495,7 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
       agent: "claude",
     });
     expect(await fixture.thoughts()).toEqual([
-      `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
+      `Your runner member-vm needs a healthy bound Claude account. Add or bind an account in Settings › Agent accounts; I'll start right after.`,
     ]);
   } finally {
     await fixture.close();
@@ -490,7 +515,7 @@ test("a reviewer preflight on a runner whose reviewer agent is signed out holds 
     });
     expect(await rows(db, sql`SELECT 1 FROM question WHERE item_id=${itemId}`)).toEqual([]);
     expect(await fixture.thoughts()).toEqual([
-      `Your runner member-vm needs Codex signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
+      `Your runner member-vm needs a healthy bound Codex account. Add or bind an account in Settings › Agent accounts; I'll start right after.`,
     ]);
   } finally {
     await fixture.close();
@@ -577,7 +602,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
   }
 }, 60_000);
 
-test("signing the agent in resumes the held item in the same run and session, without reading Linear", async () => {
+test("binding an account resumes the held item in the same run and session, without reading Linear", async () => {
   const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
@@ -586,9 +611,21 @@ test("signing the agent in resumes the held item in the same run and session, wi
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
 
-    await db.transaction((q) =>
-      setRunnerAgentSignedInSteps(q, fixture.memberRunner!, "claude", true, Date.now()),
-    );
+    const runner = (
+      await rows(db, sql`SELECT workspace_id FROM runner WHERE id=${fixture.memberRunner!}`)
+    )[0]!;
+    const account = await createAgentAccount(db, {
+      workspaceId: String(runner.workspace_id),
+      agent: "claude",
+      label: "Added",
+      now: Date.now(),
+    });
+    await bindAgentAccount(db, {
+      workspaceId: String(runner.workspace_id),
+      accountId: account.id,
+      runnerId: fixture.memberRunner!,
+      now: Date.now(),
+    });
     const deadline = Date.now() + 20_000;
     const active = async () =>
       (await rows(db, sql`SELECT 1 FROM run WHERE id=${hold.runId!} AND status='active'`)).length >
@@ -604,7 +641,7 @@ test("signing the agent in resumes the held item in the same run and session, wi
       await rows(db, sql`SELECT CAST(count(*) AS integer) AS n FROM run WHERE item_id=${itemId}`),
     ).toEqual([{ n: 1 }]);
     expect((await fixture.thoughts()).slice(0, 2)).toEqual([
-      `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
+      `Your runner member-vm needs a healthy bound Claude account. Add or bind an account in Settings › Agent accounts; I'll start right after.`,
       "Starting ENG-1 on member-vm.",
     ]);
     expect((await fixture.thoughts()).filter((body) => body?.startsWith("Starting "))).toHaveLength(

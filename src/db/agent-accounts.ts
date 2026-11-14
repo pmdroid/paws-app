@@ -1,3 +1,4 @@
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import {
   aliasedTable,
   type AnyColumn,
@@ -518,6 +519,7 @@ export function* bindAgentAccountSteps(
       createdAt: input.now,
     }),
   );
+  yield* enqueueRunnerSetupChecksSteps(q, input.now, { runnerId: input.runnerId });
   return (yield* bindingRowSteps(q, id))!;
 }
 
