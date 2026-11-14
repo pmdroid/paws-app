@@ -322,6 +322,8 @@ describe("Merging settings API", () => {
       noProject: "own",
       parallel: 1,
       parallelFiles: [],
+      sessionDone: "pull_request",
+      sessionQuietMinutes: 10,
     });
   });
 
@@ -455,6 +457,8 @@ describe("Merging settings API", () => {
       noProject: "own",
       parallel: 1,
       parallelFiles: [],
+      sessionDone: "pull_request",
+      sessionQuietMinutes: 10,
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");

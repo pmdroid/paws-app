@@ -792,6 +792,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(highRiskFile ? { highRiskFile } : {}),
         ...(secrets.store
           ? {
+              store: secrets.store,
               hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())),
               overlapHolds: () => secrets.store!.run((q) => overlapHoldsSteps(q)),
             }
