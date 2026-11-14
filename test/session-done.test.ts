@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { parseConfigToml } from "../src/config";
@@ -11,6 +12,8 @@ import {
   type SessionDoneSettings,
 } from "../src/db";
 import type { PullCi } from "../src/github";
+import { createFakeTracker } from "../src/linear";
+import { deliverLinearOutbox } from "../src/loop";
 import { finishOpenedSessions } from "../src/loop/session-done";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
@@ -66,14 +69,25 @@ async function opened(settings: Partial<SessionDoneSettings>, state = "merge_que
   return db;
 }
 
-function finish(db: Db, ci: PullCi["state"], now: number) {
+function finish(
+  db: Db,
+  ci: PullCi["state"],
+  now: number,
+  options: { checks?: string[]; open?: boolean | null } = {},
+) {
   const reads: string[] = [];
   return finishOpenedSessions(db, {
     now: () => now,
     readPullCi: async (_, pull) => {
       reads.push(pull.head);
-      return { state: ci, message: "" } as PullCi;
+      const checks = (options.checks ?? ["SUCCESS"]).map((conclusion, index) => ({
+        name: `check-${index}`,
+        conclusion,
+        url: null,
+      }));
+      return { state: ci, message: "", checks, failedChecks: [] } as PullCi;
     },
+    pullOpen: async () => (options.open === undefined ? true : options.open),
   }).then(() => reads);
 }
 
@@ -186,10 +200,58 @@ describe("when Paws finishes the Linear session", () => {
     expect(await responses(db)).toHaveLength(1);
   });
 
-  test("unknown CI, as on a pull request closed on GitHub, posts nothing even past 4 hours", async () => {
+  test("unknown CI posts nothing on a pull request closed on GitHub, and waits out the cap otherwise", async () => {
     const db = await opened({ sessionDone: "ci_green" });
-    await finish(db, "unknown", OPENED + 5 * 60 * MINUTE);
+    await finish(db, "unknown", OPENED + 5 * 60 * MINUTE, { open: false });
     expect(await responses(db)).toEqual([]);
+    await finish(db, "unknown", OPENED + MINUTE, { open: null });
+    expect(await responses(db)).toEqual([]);
+    await finish(db, "unknown", OPENED + 5 * 60 * MINUTE, { open: null });
+    expect(await responses(db)).toEqual([`${BODY}\n\nStill waiting: CI pending.`]);
+  });
+
+  test("an optional check that is failing or running keeps green CI from finishing the session", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await finish(db, "green", OPENED + MINUTE, { checks: ["SUCCESS", "IN_PROGRESS"] });
+    await finish(db, "green", OPENED + 2 * MINUTE, { checks: ["SUCCESS", "FAILURE"] });
+    expect(await responses(db)).toEqual([]);
+    await finish(db, "green", OPENED + 4 * 60 * MINUTE, { checks: ["SUCCESS", "FAILURE"] });
+    expect(await responses(db)).toEqual([`${BODY}\n\nStill waiting: CI failing.`]);
+  });
+
+  test("an item that moved on while CI was read gets no response from that read", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await finishOpenedSessions(db, {
+      now: () => OPENED + MINUTE,
+      readPullCi: async () => {
+        await db.run(function* (q) {
+          yield* q.exec(
+            q.orm.update(q.t.workItem).set({ state: "running", version: sql`version + 1` }),
+          );
+        });
+        return { state: "green", checks: [] } as PullCi;
+      },
+      pullOpen: async () => true,
+    });
+    expect(await responses(db)).toEqual([]);
+  });
+
+  test("a response notice while the session waits is delivered as a thought", async () => {
+    const db = await opened({ sessionDone: "settled" });
+    await enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session",
+      delivery: "ordered",
+      idempotencyKey: "merge-review:item:0:required:head-1",
+      payload: { sessionId: "session", itemId: "item", kind: "response", body: "Needs approval." },
+    });
+    const tracker = createFakeTracker();
+    const row = (await listOutbox(db, "session")).find((stored) =>
+      stored.idempotencyKey.startsWith("merge-review:"),
+    )!;
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+    expect(tracker.progress.map((update) => update.kind)).toEqual(["thought"]);
   });
 
   test("switching to pull_request finishes a session that was waiting", async () => {

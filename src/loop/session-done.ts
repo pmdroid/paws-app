@@ -16,6 +16,17 @@ import type { PullCi } from "../github";
 
 export const SESSION_DONE_CAP_MS = 4 * 60 * 60_000;
 
+const GREEN_CHECKS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
+const FAILED_CHECKS = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
+
+function reportedCi(read: PullCi | null): PullCi["state"] {
+  if (read === null || read.state === "unknown") return "pending";
+  if (read.state !== "green") return read.state;
+  const conclusions = read.checks.map((check) => check.conclusion.toUpperCase());
+  if (conclusions.some((conclusion) => FAILED_CHECKS.has(conclusion))) return "failed";
+  return conclusions.every((conclusion) => GREEN_CHECKS.has(conclusion)) ? "green" : "pending";
+}
+
 const FIX_ROUND_STATES = new Set(["queued", "running", "verifying", "recovering"]);
 
 export type SessionDoneFacts = {
@@ -50,6 +61,7 @@ export function sessionDoneLine(
 export type SessionDoneDeps = {
   now(): number;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
+  pullOpen(item: WorkItemRecord, pullNumber: number): Promise<boolean | null>;
 };
 
 export async function finishOpenedSessions(
@@ -90,7 +102,6 @@ async function finishOpenedSession(
     settings.sessionDone !== "pull_request" && pull && item.acceptedHead
       ? await deps.readPullCi(item, { number: pull.pullNumber, head: item.acceptedHead })
       : null;
-  if (read?.state === "unknown" && !read.moved) return;
   const lastCommentAt = pull
     ? await store.run((q) =>
         lastPullActivityAtSteps(
@@ -102,17 +113,21 @@ async function finishOpenedSession(
       )
     : null;
   const line = sessionDoneLine(settings, {
-    ci: read?.state ?? "pending",
+    ci: reportedCi(read),
     fixRound: FIX_ROUND_STATES.has(item.state),
     lastCommentAt,
     openedAt: session.openedAt,
     now,
   });
   if (line === null) return;
+  if (read?.state === "unknown" && pull && (await deps.pullOpen(item, pull.pullNumber)) === false)
+    return;
   await store.transaction(function* (q) {
     const current = yield* getWorkItemSteps(q, item.id);
     if (
       !current ||
+      current.version !== item.version ||
+      current.acceptedHead !== item.acceptedHead ||
       ["merged", "cancelled", "completed"].includes(current.state) ||
       (yield* sessionHasFinalResponseSteps(q, session.sessionId, session.generation))
     )

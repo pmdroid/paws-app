@@ -1,6 +1,7 @@
 import { and, eq, gte, inArray, like, max, ne, notInArray } from "drizzle-orm";
 import { type Db, type Q } from "./db";
 import { jsonField, parsedJson } from "./json-text";
+import { sessionHasFinalResponseSteps } from "./outbox";
 import { getWorkItemRepositorySteps } from "./repositories";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 
@@ -140,4 +141,24 @@ export function* lastPullActivityAtSteps(q: Q, itemId: string, pullNumber: numbe
     }),
   ].flatMap((at) => (at == null ? [] : [Number(at)]));
   return times.length ? Math.max(...times) : null;
+}
+
+export function* sessionAwaitsFinishSteps(q: Q, sessionId: string, generation: number) {
+  const { outbox } = q.t;
+  const opened = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, sessionId),
+          eq(outbox.deliveryGeneration, generation),
+          like(outbox.idempotencyKey, "pull-request-opened:%"),
+          ne(outbox.status, "dropped"),
+        ),
+      )
+      .limit(1),
+  );
+  return opened !== undefined && !(yield* sessionHasFinalResponseSteps(q, sessionId, generation));
 }

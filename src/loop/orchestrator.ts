@@ -8625,7 +8625,12 @@ export class Orchestrator {
   private async finishOpenedSessions(itemId?: string): Promise<void> {
     await finishOpenedSessions(
       this.store,
-      { now: () => this.now(), readPullCi: (item, pull) => this.readItemPullCi(item, pull) },
+      {
+        now: () => this.now(),
+        readPullCi: (item, pull) => this.readItemPullCi(item, pull),
+        pullOpen: async (item, pullNumber) =>
+          (await this.readItemPull(item, pullNumber, undefined, 1))?.open ?? null,
+      },
       itemId,
     ).catch((error: unknown) =>
       journalCaught(

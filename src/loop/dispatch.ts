@@ -24,6 +24,7 @@ import {
   recordPlanFiledSteps,
   setEvidenceAssetUrlSteps,
   listOutboxSteps,
+  sessionAwaitsFinishSteps,
   type Db,
   type Q,
   type Steps,
@@ -142,7 +143,19 @@ export async function deliverLinearOutbox(
       ))
     )
       return;
-    return postActivity(message, payload, tracker, options);
+    const held =
+      store &&
+      payload.kind === "response" &&
+      !FINAL_RESPONSE.test(message.idempotencyKey) &&
+      (await store.run((q) =>
+        sessionAwaitsFinishSteps(q, orderingKey ?? "", message.generation ?? 0),
+      ));
+    return postActivity(
+      message,
+      held ? { ...payload, kind: "thought" } : payload,
+      tracker,
+      options,
+    );
   }
   if (message.op === "linear.evidence") {
     if (!store) throw new Error("Evidence delivery needs the database");
@@ -172,6 +185,8 @@ export async function deliverLinearOutbox(
   }
   throw new Error(`unknown linear outbox op ${message.op}`);
 }
+
+const FINAL_RESPONSE = /^(pull-request-ready:|merged:|closed:|command:stop:)/;
 
 async function startSubIssues(
   filed: readonly FiledSubIssue[],
