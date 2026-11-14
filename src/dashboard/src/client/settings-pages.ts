@@ -52,17 +52,18 @@ export const SETTINGS_PAGES = [
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 let settingsAdmin = false;
+const MEMBER_PAGES: readonly SettingsPage[] = ["integrations", "account"];
 
 export function setSettingsAdmin(admin: boolean): void {
   settingsAdmin = admin;
 }
 
 export function shownSettingsPage(page: SettingsPage = "agents"): SettingsPage {
-  return settingsAdmin ? page : "account";
+  return settingsAdmin || MEMBER_PAGES.includes(page) ? page : "account";
 }
 
 function settingsNav(page: SettingsPage): string {
-  const links = SETTINGS_PAGES.filter((entry) => settingsAdmin || entry.id === "account")
+  const links = SETTINGS_PAGES.filter((entry) => settingsAdmin || MEMBER_PAGES.includes(entry.id))
     .map(
       (entry) =>
         `<li class="settings-item"><a href="${routeHref({ view: "settings", page: entry.id })}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
