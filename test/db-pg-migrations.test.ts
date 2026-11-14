@@ -322,4 +322,43 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+  test("delivery metadata survives dropping payload, including issue comments and malformed bodies", async () => {
+    const pg = await pgliteDb({ migrationsFolder: migrationsBefore("github_delivery_metadata") });
+    try {
+      const bodies = [
+        { repository: { full_name: "Acme/App" }, pull_request: { number: 7 } },
+        { repository: { full_name: "Acme/App" }, issue: { number: 8 } },
+        { repository: { full_name: "Other/App" }, pull_request: { number: 7 } },
+        { repository: { full_name: "Acme/App" }, issue: { number: "7" } },
+      ];
+      for (const [i, body] of [
+        ...bodies.map((body) => JSON.stringify(body)),
+        "invalid",
+        "null",
+      ].entries())
+        await pg.$client.query("INSERT INTO github_delivery VALUES ($1, 'issue_comment', $2, $3)", [
+          String(i),
+          body,
+          i + 100,
+        ]);
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+      const rows = await pg
+        .select()
+        .from(pgSchema.githubDelivery)
+        .orderBy(pgSchema.githubDelivery.deliveryId);
+      expect(
+        rows.map(({ repository, pullNumber, receivedAt }) => [repository, pullNumber, receivedAt]),
+      ).toEqual([
+        ["acme/app", 7, 100],
+        ["acme/app", 8, 101],
+        ["other/app", 7, 102],
+        ["acme/app", null, 103],
+        [null, null, 104],
+        [null, null, 105],
+      ]);
+      expect(Object.keys(rows[0]!)).not.toContain("payload");
+    } finally {
+      await pg.$client.close();
+    }
+  });
 });

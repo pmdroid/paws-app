@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, like, max, ne, notInArray } from "drizzle-orm";
+import { and, eq, gte, inArray, like, max, ne, notInArray, sql } from "drizzle-orm";
 import { type Db, type Q } from "./db";
 import { jsonField, parsedJson } from "./json-text";
 import { sessionHasFinalResponseSteps } from "./outbox";
@@ -88,22 +88,6 @@ const PULL_ACTIVITY_EVENTS = [
   "pull_request_review_comment",
 ];
 
-function deliveryPull(payload: string): { repository: unknown; number: unknown } {
-  try {
-    const body = JSON.parse(payload) as {
-      repository?: { full_name?: unknown };
-      pull_request?: { number?: unknown };
-      issue?: { number?: unknown };
-    };
-    return {
-      repository: body.repository?.full_name,
-      number: body.pull_request?.number ?? body.issue?.number,
-    };
-  } catch {
-    return { repository: null, number: null };
-  }
-}
-
 export function* lastPullActivityAtSteps(q: Q, itemId: string, pullNumber: number, since: number) {
   const { githubDelivery, pullComment, pullReview } = q.t;
   const comment = yield* q.one(
@@ -122,27 +106,20 @@ export function* lastPullActivityAtSteps(q: Q, itemId: string, pullNumber: numbe
   const name = repository ? `${repository.owner}/${repository.repo}`.toLowerCase() : null;
   const deliveries = yield* q.all(
     q.orm
-      .select({ payload: githubDelivery.payload, at: githubDelivery.receivedAt })
+      .select({ at: max(githubDelivery.receivedAt) })
       .from(githubDelivery)
       .where(
         and(
+          name === null ? sql`false` : eq(githubDelivery.repository, name),
+          eq(githubDelivery.pullNumber, pullNumber),
           gte(githubDelivery.receivedAt, since),
           inArray(githubDelivery.event, PULL_ACTIVITY_EVENTS),
         ),
       ),
   );
-  const times = [
-    comment?.at,
-    review?.at,
-    ...deliveries.flatMap((row) => {
-      const pull = deliveryPull(row.payload);
-      return typeof pull.repository === "string" &&
-        pull.repository.toLowerCase() === name &&
-        pull.number === pullNumber
-        ? [row.at]
-        : [];
-    }),
-  ].flatMap((at) => (at == null ? [] : [Number(at)]));
+  const times = [comment?.at, review?.at, ...deliveries.map((row) => row.at)].flatMap((at) =>
+    at == null ? [] : [Number(at)],
+  );
   return times.length ? Math.max(...times) : null;
 }
 

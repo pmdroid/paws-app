@@ -1,1 +1,0 @@
-ALTER TABLE "github_delivery" DROP COLUMN "payload";

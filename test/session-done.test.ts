@@ -175,12 +175,8 @@ describe("when Paws finishes the Linear session", () => {
         q.orm.insert(q.t.githubDelivery).values({
           deliveryId: "approval",
           event: "pull_request_review",
-          payload: JSON.stringify({
-            action: "submitted",
-            repository: { full_name: "Acme/App" },
-            pull_request: { number: 7 },
-            review: { state: "approved" },
-          }),
+          repository: "acme/app",
+          pullNumber: 7,
           receivedAt: now - MINUTE,
         }),
       );
