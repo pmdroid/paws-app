@@ -208,6 +208,7 @@ test("failOn filters keys and clean independence failures spend no budget", asyn
         ).ok,
       ).toBe(true);
       expect((await decision(fx.input())).items[0]?.state).toBe("failed");
+      fx.next();
     }
     expect((await fx.review([finding("src/last.ts")], candidate)).ok).toBe(true);
     const exhausted = await decision(fx.input());
@@ -222,8 +223,10 @@ test("failOn filters keys and clean independence failures spend no budget", asyn
 test("distinct keys exhaust at the total cap and concurrent clean intake cannot escape", async () => {
   const fx = fixture(4);
   try {
-    for (let round = 0; round < 3; round += 1)
+    for (let round = 0; round < 3; round += 1) {
       expect((await fx.review([finding(`src/${round}.ts`)])).ok).toBe(true);
+      fx.next();
+    }
     const failing = fx.review([finding("src/last.ts")]);
     const cleanIntake = addReview({
       ...fx.input(),
@@ -247,26 +250,23 @@ test("distinct keys exhaust at the total cap and concurrent clean intake cannot 
 });
 
 test("candidate budgets do not follow commits while legacy reviews still exhaust globally", async () => {
-  for (const scope of ["candidate", "task"]) {
-    const fx = fixture("absent", scope);
-    try {
-      for (let round = 0; round < 3; round += 1)
-        expect((await fx.review([finding(`src/${round}.ts`)])).ok).toBe(true);
-      expect((await decision(fx.input())).items[0]?.state).toBe("exhausted");
-      fx.next();
-      expect((await decision(fx.input())).items[0]?.state).toBe(
-        scope === "task" ? "exhausted" : "stale",
-      );
-    } finally {
-      fx.close();
+  const legacy = fixture("absent", "task");
+  try {
+    for (let round = 0; round < 3; round += 1) {
+      expect((await legacy.review([finding(`src/${round}.ts`)])).ok).toBe(true);
+      legacy.next();
     }
+    expect((await decision(legacy.input())).items[0]?.state).toBe("exhausted");
+  } finally {
+    legacy.close();
   }
   const fx = fixture(3, "candidate");
   try {
     for (let round = 0; round < 3; round += 1)
       expect((await fx.review([finding("src/a.ts")])).ok).toBe(true);
-    expect((await decision(fx.input())).items[0]?.state).toBe("exhausted");
+    expect((await decision(fx.input())).items[0]?.state).toBe("failed");
     fx.next();
+    expect((await decision(fx.input())).items[0]?.state).toBe("stale");
     expect((await fx.review([])).ok).toBe(true);
     expect((await decision(fx.input())).decision).toBe("accepted");
   } finally {
@@ -290,8 +290,9 @@ test("commands and setup retain the ordinary limit with progress-aware reviews",
       for (let round = 0; round < 3; round += 1) {
         const result = await run({ ...fx.input(), pawsHome: join(fx.root, "paws") });
         expect(result.items.find((item) => item.id === "fail")?.state).toBe(
-          kind === "setup" || round === 2 ? "exhausted" : "failed",
+          (kind === "setup" && round > 0) || round === 2 ? "exhausted" : "failed",
         );
+        fx.next();
       }
       const before = readFileSync(join(fx.repo, ".agents/closeout.yaml"), "utf8");
       expect((await run({ ...fx.input(), pawsHome: join(fx.root, "paws") })).decision).toBe(
@@ -313,6 +314,7 @@ test("policies without retry default to three failed review attempts", async () 
       expect((await decision(fx.input())).items[0]?.state).toBe(
         round === 2 ? "exhausted" : "failed",
       );
+      fx.next();
     }
     expect((await fx.review([])).ok).toBe(false);
     expect((await decision(fx.input())).decision).toBe("blocked");
@@ -328,6 +330,7 @@ test("exhausted reviews prevent further setup and command execution", async () =
   try {
     for (let round = 0; round < 3; round += 1) {
       expect((await fx.review([finding("src/repeat.ts")])).ok).toBe(true);
+      fx.next();
     }
     let executed = false;
     const observed = await run({

@@ -585,13 +585,24 @@ describe("closeout command runner", () => {
       `require("node:fs").writeFileSync(process.argv[2], "ran\\n");`,
     );
     const setupArgv = [process.execPath, "-e", "process.exit(1)"];
-    fx.store.records.push(failedRecord(fx, "js", setupArgv, 1));
-    fx.store.records.push(failedRecord(fx, "js", setupArgv, 2));
+    const task = { task: "QM-31" };
     try {
-      const result = await run(fx, {
-        setup: [setupStep("js", setupArgv)],
-        items: [command("typecheck", [process.execPath, script, marker])],
-        retry: { maxFailedAttemptsPerItem: 1, scope: "candidate" },
+      const result = await runCloseoutCommands({
+        repo: fx.repo,
+        policy: policy({
+          setup: [setupStep("js", setupArgv)],
+          items: [command("typecheck", [process.execPath, script, marker])],
+          retry: { maxFailedAttemptsPerItem: 1, scope: "task" },
+        }),
+        base: fx.base,
+        head: fx.head,
+        candidate: { session: "s", model: "m", provider: "p", ...task },
+        evidence: memoryStore([
+          failedRecord(fx, "js", setupArgv, 1, task),
+          failedRecord(fx, "js", setupArgv, 1, { ...task, head: "b".repeat(40) }),
+        ]),
+        evidenceDir: fx.evidenceDir,
+        home: fx.home,
       });
       expect(result.dispositions[0]?.state).toBe("exhausted");
       expect(result.dispositions[1]).toEqual({
