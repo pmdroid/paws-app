@@ -146,7 +146,12 @@ export function* lastPullActivityAtSteps(q: Q, itemId: string, pullNumber: numbe
   return times.length ? Math.max(...times) : null;
 }
 
-export function* sessionAwaitsFinishSteps(q: Q, sessionId: string, generation: number) {
+export function* sessionAwaitsFinishSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+  rowId: number,
+) {
   const { outbox } = q.t;
   const opened = yield* q.one(
     q.orm
@@ -163,5 +168,7 @@ export function* sessionAwaitsFinishSteps(q: Q, sessionId: string, generation: n
       )
       .limit(1),
   );
-  return opened !== undefined && !(yield* sessionHasFinalResponseSteps(q, sessionId, generation));
+  return (
+    opened !== undefined && !(yield* sessionHasFinalResponseSteps(q, sessionId, generation, rowId))
+  );
 }

@@ -243,6 +243,15 @@ describe("when Paws finishes the Linear session", () => {
     expect(await responses(db)).toEqual([`${BODY}\n\nCI is green.`]);
   });
 
+  test("a pull request head without Closeout acceptance never counts as green", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await db.run(function* (q) {
+      yield* q.exec(q.orm.update(q.t.workItem).set({ acceptedHead: null }));
+    });
+    expect(await finish(db, "green", OPENED + MINUTE, { head: "head-2" })).toEqual([]);
+    expect(await responses(db)).toEqual([]);
+  });
+
   test("an optional check that is failing or running keeps green CI from finishing the session", async () => {
     const db = await opened({ sessionDone: "ci_green" });
     await finish(db, "green", OPENED + MINUTE, { checks: ["SUCCESS", "IN_PROGRESS"] });
@@ -283,6 +292,14 @@ describe("when Paws finishes the Linear session", () => {
     const row = (await listOutbox(db, "session")).find((stored) =>
       stored.idempotencyKey.startsWith("merge-review:"),
     )!;
+    await enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session",
+      delivery: "ordered",
+      idempotencyKey: "merged:item:0",
+      payload: { sessionId: "session", itemId: "item", kind: "response", body: "Merged." },
+    });
     await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     expect(tracker.progress.map((update) => update.kind)).toEqual(["thought"]);
   });

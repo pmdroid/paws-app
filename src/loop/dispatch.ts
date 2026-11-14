@@ -148,7 +148,7 @@ export async function deliverLinearOutbox(
       payload.kind === "response" &&
       !FINAL_RESPONSE.test(message.idempotencyKey) &&
       (await store.run((q) =>
-        sessionAwaitsFinishSteps(q, orderingKey ?? "", message.generation ?? 0),
+        sessionAwaitsFinishSteps(q, orderingKey ?? "", message.generation ?? 0, message.id),
       ));
     return postActivity(
       message,

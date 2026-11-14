@@ -109,7 +109,8 @@ async function finishOpenedSession(
     remote && item.acceptedHead && remote.head !== item.acceptedHead
       ? await store.run((q) => carriedAcceptForSteps(q, item.id, remote.head))
       : null;
-  const head = remote && carried === item.acceptedHead ? remote.head : item.acceptedHead;
+  const head =
+    remote && item.acceptedHead && carried === item.acceptedHead ? remote.head : item.acceptedHead;
   const read: PullCi | null =
     deferred && head ? await deps.readPullCi(item, { number: pull.pullNumber, head }) : null;
   const lastCommentAt = pull
