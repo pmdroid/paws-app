@@ -286,6 +286,22 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
   });
 });
 
+test("members read the workspace repositories but cannot change them", async () => {
+  await fixtureTest(async (f) => {
+    const read = await fetch(`${f.origin}/api/workspaces/repositories`, {
+      headers: f.headers("member"),
+    });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ repositories: expect.any(Array) });
+    const write = await fetch(`${f.origin}/api/workspaces/repositories`, {
+      method: "PUT",
+      headers: f.headers("member"),
+      body: JSON.stringify({ repositories: [] }),
+    });
+    expect(write.status).toBe(403);
+  });
+});
+
 test("a failed Stop rolls back the whole revocation", async () => {
   await fixtureTest(async (f) => {
     await setCreator(f.db, "session-controlled", "member");

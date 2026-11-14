@@ -2,6 +2,7 @@ import {
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   consumeWorkspaceBootstrapSteps,
+  countWorkspaceRepositoriesSteps,
   deleteWorkspaceSessionSteps,
   getWorkspaceSteps,
   githubAttribution,
@@ -563,11 +564,15 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (administration !== null) return administration;
     if (path === "/api/auth/session" && request.method === "GET") {
       const member = await memberOf(access.principal.workspaceId, access.principal.userId);
+      const repositories = await store.run((q) =>
+        countWorkspaceRepositoriesSteps(q, access.principal.workspaceId),
+      );
       return json({
         ...access.principal,
         user: member ? { name: member.name, email: member.email } : null,
         csrfToken: access.session.csrfToken,
         workspaces: await userWorkspaces(access.principal.userId),
+        setup: { repositories, complete: repositories > 0 },
       });
     }
     if (path === "/api/workspaces" && request.method === "GET")

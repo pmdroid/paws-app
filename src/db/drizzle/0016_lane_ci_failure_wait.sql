@@ -1,1 +1,0 @@
-ALTER TABLE `pull_ci_failure` ADD `lane_first_failure_at` integer;

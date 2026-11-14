@@ -90,9 +90,9 @@ async function rerunOnce(input: CiRerunInput): Promise<CiRerunResult> {
     runs.push(...parsed.data.check_runs);
     if (parsed.data.check_runs.length < 100) break;
   }
-  if (runs.some((run) => run.status !== "completed"))
+  if (runs.some((run) => run.app?.slug === "github-actions" && run.status !== "completed"))
     return {
-      answer: `CI is still running on ${head.slice(0, 7)}. Wait until every check finished before calling rerun_ci.`,
+      answer: `CI is still running on ${head.slice(0, 7)}. Wait until every GitHub Actions check finished before calling rerun_ci.`,
     };
   const runIds = [
     ...new Set(

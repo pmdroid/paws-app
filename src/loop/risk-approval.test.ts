@@ -23,7 +23,7 @@ import {
   listJobs,
   listWorkItemEventRows,
   listOutbox,
-  saveCandidateRisk,
+  saveCandidateRiskSteps,
   getCandidateRisk,
   saveCandidatePaths,
   getCandidatePaths,
@@ -208,14 +208,16 @@ function deleteStep(db: Db, stepId: string) {
 }
 
 async function classify(db: Db, head: string, base: string) {
-  await saveCandidateRisk(db, {
-    itemId: "ENG-106",
-    head,
-    base,
-    tier: "high",
-    paths: ["session.ts"],
-    classifiedAt: NOW,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: "ENG-106",
+      head,
+      base,
+      tier: "high",
+      paths: ["session.ts"],
+      classifiedAt: NOW,
+    }),
+  );
 }
 
 async function asked(head = heads.s) {
@@ -287,14 +289,16 @@ async function fixAccepted(db: Db, head: string, base: string) {
     baseSha: base,
     wipCommit: head,
   });
-  await saveCandidateRisk(db, {
-    itemId: "ENG-106",
-    head,
-    base,
-    tier: "high",
-    paths: ["session.ts"],
-    classifiedAt: NOW + 400,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: "ENG-106",
+      head,
+      base,
+      tier: "high",
+      paths: ["session.ts"],
+      classifiedAt: NOW + 400,
+    }),
+  );
 }
 
 async function activities(db: Db) {
@@ -341,14 +345,16 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
   const { db } = await held();
-  await saveCandidateRisk(db, {
-    itemId: "ENG-106",
-    head: heads.s,
-    base: heads.base,
-    tier: "normal",
-    paths: [],
-    classifiedAt: NOW,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: "ENG-106",
+      head: heads.s,
+      base: heads.base,
+      tier: "normal",
+      paths: [],
+      classifiedAt: NOW,
+    }),
+  );
   expect(await approval(db, heads.s)).toBe("not_required");
   await classify(db, heads.s, heads.base);
   const local = (publicUrl: string | null) =>
@@ -898,14 +904,16 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
   expect(await f.read({ policyDigest: "new-policy" })).toBe("missing");
   expect(await f.read({ policyDigest: null })).toBe("missing");
   expect(await f.read({ policyPaths: null })).toBe("missing");
-  await saveCandidateRisk(f.db, {
-    itemId: f.itemId,
-    head: heads.s,
-    base: heads.newMain,
-    tier: "high",
-    paths: ["session.ts"],
-    classifiedAt: NOW,
-  });
+  await f.db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: f.itemId,
+      head: heads.s,
+      base: heads.newMain,
+      tier: "high",
+      paths: ["session.ts"],
+      classifiedAt: NOW,
+    }),
+  );
   expect(await f.read()).toBe("missing");
   await classify(f.db, heads.s, heads.base);
   await f.progress.begin(f.identity);

@@ -121,7 +121,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
     expect(isTerminalWorkItemState((await getWorkItem(restored, item.id))!.state)).toBe(true);
     const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
-    expect(dashboard.runs[0]?.state).toBe("done");
+    expect((await createLiveStatusProvider(restored).issue(item.id))?.runs[0]?.state).toBe("done");
     expect((await listOutbox(restored, "session"))[0]?.payload).toEqual({
       sessionId: "session",
       kind: "response",

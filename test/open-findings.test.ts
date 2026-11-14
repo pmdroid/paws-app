@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyLinearCommand, insertQueuedItem, listOutbox, saveOpenFindings } from "../src/db";
+import { applyLinearCommand, insertQueuedItem, listOutbox, recordItemPullRequest } from "../src/db";
 import {
   inertMarkdown,
   openFindingsLine,
@@ -103,11 +103,12 @@ test("the stopped and closed responses carry the open findings of the last publi
       ["closed", "Closed: the issue was canceled in Linear."],
     ] as const) {
       await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
-      await saveOpenFindings(db, {
+      await recordItemPullRequest(db, {
         itemId: id,
-        head: "a".repeat(40),
-        line: "1 finding still open.",
-        now: 2,
+        pullNumber: 1,
+        pullUrl: null,
+        openedAt: 2,
+        published: { head: "a".repeat(40), line: "1 finding still open." },
       });
       expect(
         (

@@ -49,6 +49,7 @@ import {
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
+  applyRunnerCloseoutStepSteps,
   jobStatusByKey,
   restart,
   reviewerAlertedSinceSteps,
@@ -63,7 +64,6 @@ import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
   saveCheckpointSteps,
-  recordReviewRoundsSteps,
   jobVersionCurrentSteps,
   refreshVerificationJobVersionSteps,
 } from "../db";
@@ -169,8 +169,10 @@ import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   highRiskPaths,
   agentReadAllowed,
+  githubMirrorsOn,
   loadConfigFile,
   mergeLaneKey,
+  parallelFiles,
   readMergeSettings,
   repositoryPackages,
   reviewApps,
@@ -198,6 +200,7 @@ import {
   trustedOriginMain,
   trustedRootFilesAt,
   trustedKnownMain,
+  trustedChangedPaths,
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
@@ -402,7 +405,6 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
-  saveOpenFindingsSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -684,7 +686,7 @@ import {
   type MainPolicyError,
 } from "./policy-outage";
 import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
-import { changedPaths, classifyPathsRisk } from "./candidate-risk";
+import { classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivitySteps,
@@ -1009,7 +1011,6 @@ export class Orchestrator {
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
@@ -4321,7 +4322,6 @@ export class Orchestrator {
         ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
         : before;
       const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
-      await this.recordReviewRounds(item, verdict.owner.runId);
       if ((await this.closeoutStopped(item.id)) !== null) return;
       const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
@@ -4542,8 +4542,13 @@ export class Orchestrator {
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         } else if (
-          owned !== priorRunId ||
-          !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned)))
+          !(
+            this.shuttingDown &&
+            current.state === "verifying" &&
+            (await this.store.run((q) => runnerHoldsRunWorkSteps(q, owned, this.now())))
+          ) &&
+          (owned !== priorRunId ||
+            !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned))))
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         }
@@ -4860,6 +4865,7 @@ export class Orchestrator {
           worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          closeoutProgress: this.runnerCloseoutHook(item, head),
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
@@ -5525,25 +5531,6 @@ export class Orchestrator {
     await this.flush();
   }
 
-  /** Records on the verifying run how many review rounds the item has needed so far. */
-  private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
-    if (runId === null) return;
-    await this.pullCloseoutEvidence(item);
-    try {
-      const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
-      if (rounds.length > 0)
-        await this.store.run((q) => recordReviewRoundsSteps(q, runId, rounds.length));
-    } catch (caught) {
-      journalCaught(
-        caught,
-        "orchestrator.recordReviewRounds",
-        item.id,
-        undefined,
-        this.options.journal,
-      );
-    }
-  }
-
   /**
    * Review attempts ran out: ask on the item page whether to rethink, keep going
    * or stop. Returns false when Paws has no link a person can open, so the
@@ -5909,6 +5896,8 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
+        mirrorsOff: () =>
+          !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {
@@ -6257,6 +6246,7 @@ export class Orchestrator {
         pullNumber: published.pull.number,
         pullUrl: published.pull.url ?? null,
         openedAt: this.now(),
+        published: { head: published.head, line: openLine },
       }),
     );
     await this.store.run((q) =>
@@ -6274,14 +6264,6 @@ export class Orchestrator {
         },
         this.now(),
       ),
-    );
-    await this.store.run((q) =>
-      saveOpenFindingsSteps(q, {
-        itemId: item.id,
-        head: published.head,
-        line: openLine,
-        now: this.now(),
-      }),
     );
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(
@@ -6389,7 +6371,9 @@ export class Orchestrator {
       candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
-    const changed = await changedPaths(run, base, head);
+    const listed = await trustedChangedPaths(worktree, base, head);
+    if (!listed.ok) throw new Error(listed.message);
+    const changed = listed.paths;
     // Every changed path, so the scheduler can hold work that changes the same hot files.
     await this.store.run((q) =>
       saveCandidatePathsSteps(q, { itemId: item.id, head, paths: changed, recordedAt: this.now() }),
@@ -7775,10 +7759,12 @@ export class Orchestrator {
   private async dispatch(): Promise<void> {
     const { ownerHasRunner, itemRunners } = this.options;
     let config: ReturnType<typeof loadConfigFile> | null = null;
+    let merge: MergeSettings | null = null;
     try {
       await this.reconcileAgentSettings();
-      if (ownerHasRunner || this.options.itemRunners)
-        config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      const loaded = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      merge = readMergeSettings(loaded);
+      if (ownerHasRunner || this.options.itemRunners) config = loaded;
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
@@ -7796,6 +7782,7 @@ export class Orchestrator {
       handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
       sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
       ...(await this.options.scheduling?.()),
+      ...(merge ? { parallelFiles: (repository: string) => parallelFiles(merge, repository) } : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
       ...(itemRunners
@@ -8339,6 +8326,17 @@ export class Orchestrator {
         if (await this.stopped(item.id)) return;
         await this.store.transaction((q) =>
           recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
+        );
+      },
+    };
+  }
+
+  private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
+    return {
+      record: async (progress) => {
+        if (progress.type === "report" || progress.head !== head) return;
+        await this.store.transaction((q) =>
+          applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );
       },
     };

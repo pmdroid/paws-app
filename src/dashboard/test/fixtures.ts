@@ -1,8 +1,7 @@
 // Test data for dashboard rendering. Never imported by production code.
 import {
-  agentCloseoutSummary,
+  issueListItem,
   parseOverviewResponse,
-  verdictSummary,
   type OverviewResponse,
   type QuestionCard,
   type QuestionDetailResponse,
@@ -557,17 +556,13 @@ export function issueResource(full: FullStatus, id: string): IssueDetailResponse
   };
 }
 
-/** What `GET /api/issues` carries of `full`: one Closeout summary per item and run. */
+/** What `GET /api/issues` carries of `full`: one row per item. */
 export function issueList(full: FullStatus): IssueListResponse {
   return structuredClone({
     source: full.source,
     generatedAt: full.generatedAt,
     project: full.project,
-    issues: full.items,
-    runs: full.runs,
-    verdicts: full.verdicts.map(verdictSummary),
-    agentCloseout: (full.agentCloseout ?? []).map(agentCloseoutSummary),
-    mergedTimes: full.mergedTimes ?? null,
+    issues: full.items.map(issueListItem),
   });
 }
 

@@ -40,6 +40,7 @@ import {
 } from "../src/workspace";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
+import { requestTracker } from "./wait-for";
 
 const ORIGIN = "https://paws.test";
 const CSRF = "csrf-token";
@@ -52,15 +53,15 @@ const windows: Window[] = [];
 
 const stores: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  await settle();
   for (const window of windows.splice(0)) await window.happyDOM.close();
   for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Lets the page script's awaited requests finish. */
-async function settle() {
-  for (let index = 0; index < 20; index++) await new Promise((resolve) => setTimeout(resolve, 0));
-}
+const network = requestTracker();
+
+const settle = () => network.idle();
 
 /**
  * Loads `html` into a DOM and runs its inline script with `fetch` and fake timers, as a browser
@@ -219,7 +220,8 @@ async function fixture({
     });
   const requests: string[] = [];
   /** The page's origin: the onboarding page itself, and the existing runner routes behind CSRF. */
-  const fetch = async (input: string, init: RequestInit = {}) => {
+  const fetch = (input: string, init: RequestInit = {}) => network.track(() => answer(input, init));
+  const answer = async (input: string, init: RequestInit) => {
     const url = new URL(input, ORIGIN);
     const method = init.method ?? "GET";
     requests.push(`${method} ${url.pathname}`);

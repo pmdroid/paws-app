@@ -19,11 +19,17 @@ const PROVIDER = "src/dashboard/src/live/provider.ts";
 
 const exec = (db: Db, query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
 
-async function item(db: Db, id: string, paths: readonly string[] | null, now = 1): Promise<void> {
+async function item(
+  db: Db,
+  id: string,
+  paths: readonly string[] | null,
+  now = 1,
+  owner = "owner",
+): Promise<void> {
   await insertQueuedItem(db, { id, now });
   await exec(
     db,
-    sql`INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(${id},'owner','repo','https://github.com/owner/repo.git')`,
+    sql`INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(${id},${owner},'repo',${`https://github.com/${owner}/repo.git`})`,
   );
   if (paths)
     await saveCandidatePaths(db, {
@@ -39,14 +45,16 @@ async function conflicted(
   db: Db,
   files: readonly string[] | null,
   at = NOW - 60_000,
+  owner = "owner",
 ): Promise<void> {
-  await item(db, "earlier", null);
-  await exec(db, sql`UPDATE work_item SET state='merged' WHERE id='earlier'`);
+  const earlier = owner === "owner" ? "earlier" : `earlier-${owner}`;
+  await item(db, earlier, null, 1, owner);
+  await exec(db, sql`UPDATE work_item SET state='merged' WHERE id=${earlier}`);
   const returns = await db.run((q) => q.all(q.orm.select().from(q.t.rebaseReturn)));
   await recordRebaseReturn(db, {
-    itemId: "earlier",
+    itemId: earlier,
     jobId: 9000 + returns.length,
-    candidate: "head-earlier",
+    candidate: `head-${earlier}`,
     reason: "merge",
     files,
     recordedAt: at,
@@ -82,6 +90,29 @@ test("two items that change a hot file do not run together; the second starts af
     await setState(db, "first", "merged");
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["second"]);
     expect(await listItemHolds(db)).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
+test("a hot file in the repository's parallel files holds nothing there, but still holds another repository", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await conflicted(db, [PROVIDER]);
+    await conflicted(db, [PROVIDER], NOW - 60_000, "other");
+    await item(db, "first", [PROVIDER]);
+    await item(db, "second", [PROVIDER], 2);
+    await item(db, "third", [PROVIDER], 3, "other");
+    await item(db, "fourth", [PROVIDER], 4, "other");
+    const parallelFiles = (repository: string) => (repository === "owner/repo" ? [PROVIDER] : []);
+    expect(await workspaceDispatch(db, { now: NOW, parallelFiles })).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["fourth", "overlap"],
+    ]);
   } finally {
     await close();
   }

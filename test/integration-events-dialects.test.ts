@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
-import {
-  latestGitHubDeliverySteps,
-  listGitHubDeliveriesSteps,
-  recordGitHubDeliverySteps,
-} from "../src/db";
-import { forEachDialect } from "./dialects";
+import { latestGitHubDeliverySteps, recordGitHubDeliverySteps } from "../src/db";
+import { forEachDialect, githubDeliveryRows } from "./dialects";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -19,7 +15,7 @@ forEachDialect((open) => {
       expect(await record("b", "pull_request", 3 * DAY_MS)).toBe(true);
       expect(await record("a", "push", 3 * DAY_MS)).toBe(true);
       expect(await record("a", "push", 3 * DAY_MS + 1)).toBe(false);
-      expect(await db.run(listGitHubDeliveriesSteps)).toEqual([
+      expect(await githubDeliveryRows(db)).toEqual([
         { deliveryId: "a", event: "push", payload: "{}", receivedAt: 3 * DAY_MS },
         { deliveryId: "b", event: "pull_request", payload: "{}", receivedAt: 3 * DAY_MS },
       ]);

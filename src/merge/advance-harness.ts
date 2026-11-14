@@ -1,5 +1,4 @@
 import { askSteps as rawAsk } from "../questions";
-import type { Database } from "bun:sqlite";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,8 +16,6 @@ import {
   insertQueuedItem,
   markCloseoutAcceptedSteps,
   markRunSteps,
-  migrate,
-  openDatabase,
   recordCiRerunSteps,
   getItemCandidate,
   recordItemCandidate,
@@ -28,7 +25,6 @@ import {
   type PullFeedbackWait,
   type Db,
   type TaskMergeSettings,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import {
@@ -106,6 +102,8 @@ export function pendingCi(): CheckNodes {
   return [{ name: "ci", conclusion: null, detailsUrl: null }];
 }
 
+type GraphqlBody = { query: string; variables: Record<string, unknown> };
+
 type HarnessOptions = {
   settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
   queue?: FakeMergeQueue;
@@ -115,13 +113,8 @@ type HarnessOptions = {
    */
   mirror?: boolean;
   storedCandidates?: boolean;
+  githubMirrors?: boolean;
 };
-
-export async function mergeHarness(options: HarnessOptions = {}) {
-  const db: Database = openDatabase(":memory:");
-  migrate(db);
-  return { ...(await harness(sqliteDb(db), options, async () => db.close())), db };
-}
 
 export async function mergeHarnessPg(
   open: { db: Db; close(): Promise<void> },
@@ -252,6 +245,9 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
           signal: AbortSignal,
         ) => Promise<RunnerRebase>)
       | null,
+    /** GitHub's answer to `updatePullRequestBranch`, which rebases the branch onto main by default. */
+    updateBranch: null as ((id: string) => Promise<GitHubResponse | null>) | null,
+    branchUpdates: [] as { id: string; expectedHead: string }[],
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
@@ -265,6 +261,8 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
       if (queued) return queued;
       if (req.path.endsWith("/actions/jobs/77/logs")) return { status: 200, body: `${LOG_TAIL}\n` };
       if (req.path === "/graphql") {
+        const update = await updateBranch(req.body as GraphqlBody);
+        if (update) return update;
         const variables = (req.body as { variables: { number: number; head?: string } }).variables;
         if (variables.head === undefined)
           return {
@@ -350,6 +348,36 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
       return { status: 404, body: {} };
     },
   };
+
+  async function updateBranch(body: GraphqlBody): Promise<GitHubResponse | null> {
+    const { query, variables } = body;
+    const id = String(variables.id ?? "").replace(/^PR_/, "");
+    if (query.startsWith("query PullRequestBranch")) {
+      const pull = [...items.values()].find((item) => item.pull === variables.number);
+      if (!pull) return { status: 200, body: { data: { repository: { pullRequest: null } } } };
+      const headRefOid = await git(bare, "rev-parse", `refs/heads/paws/${pull.id}`);
+      return {
+        status: 200,
+        body: { data: { repository: { pullRequest: { id: `PR_${pull.id}`, headRefOid } } } },
+      };
+    }
+    if (!query.startsWith("mutation UpdatePullRequestBranch")) return null;
+    const expectedHead = String(variables.expectedHead);
+    state.branchUpdates.push({ id, expectedHead });
+    const answer = await state.updateBranch?.(id);
+    if (answer) return answer;
+    const clone = path.join(root, `github-update-${state.branchUpdates.length}`);
+    await exec("git", ["clone", "-q", bare, clone]);
+    await identity(clone);
+    await git(clone, "checkout", "-q", expectedHead);
+    await git(clone, "rebase", "-q", "origin/main");
+    await git(clone, "push", "-qf", "origin", `HEAD:refs/heads/paws/${id}`);
+    const headRefOid = await git(clone, "rev-parse", "HEAD");
+    return {
+      status: 200,
+      body: { data: { updatePullRequestBranch: { pullRequest: { headRefOid } } } },
+    };
+  }
 
   function readPull(prNumber: number) {
     return readPullMergeable({
@@ -625,6 +653,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
       },
       mergeResultPolicy: (_, worktree, heads) => state.mergeResultPolicy(worktree, heads),
       packages: () => state.packages,
+      mirrorsOff: () => options.githubMirrors === false,
       assertReady: async () => {},
       riskApproval: async (_, published) => state.risk(published.head),
       askRiskApproval: async (_, published) => {
@@ -738,7 +767,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
   };
 }
 
-export type MergeHarness = Awaited<ReturnType<typeof mergeHarness>>;
+export type MergeHarness = Awaited<ReturnType<typeof mergeHarnessPg>>;
 export type MergeHarnessPg = Awaited<ReturnType<typeof mergeHarnessPg>>;
 
 const ask: typeof rawAsk = function* (q, asker, ...args) {

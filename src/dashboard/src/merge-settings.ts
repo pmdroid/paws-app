@@ -2,9 +2,14 @@
 export type MergeOrder = "queue" | "ci-green" | "github-queue";
 export type MainMoved = "overlap" | "green" | "ci" | "closeout";
 export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
+export type MergeLaneSplit = "project" | "person";
+export type MergeNoProject = "own" | "lane";
 export type MergeSettings = {
   autoApproveHighRisk?: boolean;
   default: MergeChoice;
+  lanes?: MergeLaneSplit[];
+  noProject?: MergeNoProject;
+  parallel?: number;
   /** Replaces every repository's high-risk globs; a repository left out has none. */
   highRiskPaths?: { repository: string; paths: string[] }[];
   /**
@@ -14,6 +19,8 @@ export type MergeSettings = {
    */
   commentWait?: CommentWait;
   ignoredComments?: IgnoredComments[];
+  /** Conflict-prone files Paws does not hold work for, per repository. Replaces every list. */
+  parallelFiles?: { repository: string; paths: string[] }[];
 };
 export type IgnoredComments = {
   repository: string;
@@ -46,6 +53,8 @@ export type HotFile = {
   items: string[];
   /** Current overlap holds on the file: `held` waits for `holder` to merge. */
   holds?: { held: string; holder: string }[];
+  /** False when the file is in the repository's `parallel_files`. */
+  held?: boolean;
 };
 export type MergeSettingsView = Omit<MergeSettings, "highRiskPaths"> & {
   /** Missing from an engine that does not list them; the page then leaves them alone. */
@@ -61,4 +70,10 @@ export type MergeSettingsView = Omit<MergeSettings, "highRiskPaths"> & {
   riskGate?: { on: boolean; reason?: string };
   /** Read-only. Missing from an engine that does not track them. */
   hotFiles?: HotFile[];
+};
+export type LaneItem = {
+  id: string;
+  repository: string | null;
+  project: string | null;
+  owner: string | null;
 };

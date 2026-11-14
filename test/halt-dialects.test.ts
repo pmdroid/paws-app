@@ -42,9 +42,13 @@ async function haltable(db: Db, kept = 0) {
         expiresAt: 100,
       }),
     (q) =>
-      q.orm
-        .insert(q.t.mergeQueueEntry)
-        .values({ itemId: "item", repository: "acme/app", readyAt: 0, lane: "main", kept }),
+      q.orm.insert(q.t.mergeQueueEntry).values({
+        itemId: "item",
+        repository: "acme/app",
+        readyAt: 0,
+        lane: "main",
+        kept,
+      }),
   );
   const job = await db.run((q) =>
     enqueueJobSteps(q, { queue: "work", payload: { itemId: "item" }, now: 0 }),
@@ -55,7 +59,7 @@ async function haltable(db: Db, kept = 0) {
       jobId: job,
       projectKey: "p",
       repositoryKey: "r",
-      paths: (q.dialect === "sqlite" ? "[]" : []) as string[],
+      paths: [] as string[],
       hot: 0,
       createdAt: 0,
     }),

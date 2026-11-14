@@ -76,6 +76,7 @@ export {
   fetchUpstreamMain,
   readPullFacts,
   rebaseOntoMain,
+  updateBranchOnGitHub,
   squashPull,
 } from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";

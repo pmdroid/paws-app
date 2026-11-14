@@ -29,15 +29,7 @@ Set these on the Paws server:
 
 Paws can also read these from `~/.paws/secrets/github-app.json` and `github-app.pem`. Both files are envelope-encrypted, mode `0600`, inside the mode `0700` secrets directory. Environment variables override the saved files.
 
-`config.toml` needs no GitHub credential. `github.auth` is optional, and the only accepted value is `app`:
-
-```toml
-[github]
-auth = "app"
-repo = "owner/name"
-```
-
-A config that still sets `auth = "oauth"` or `auth = "gh"`, or a `GITHUB_AUTH` with either value, stops Paws at startup with a message that points here. Remove the line or set it to `app`. `oauth_client_id` is no longer read. Delete it from `config.toml`.
+`config.toml` needs no GitHub credential. Paws ignores a leftover `[github] auth` key, and `oauth_client_id` is no longer read.
 
 ## Integrations
 
@@ -47,6 +39,10 @@ Start Paws, sign in with Linear as a workspace admin, and open **Settings > Inte
 2. If the App needs repository access, choose **Choose repositories on GitHub**, select the repositories on GitHub, then return to Paws and refresh the list.
 3. Check the Linear teams that can use each repository. A repository can match several teams.
 4. Choose **Save repository access**.
+
+Installing the App on an organization is done on GitHub by an organization owner. Once it is installed, a Paws admin connects GitHub, first time or later, without being a GitHub organization admin: the picker lists every repository on the installation that their GitHub account can read. Setup checks that the account can read each chosen repository, that the App is installed and not suspended on the repository and that GitHub issues the App a token for it. A refused save names the cause, such as `Your GitHub account can't read acme/widgets.`
+
+Once the workspace maps a repository, a Paws admin changes repositories without signing in to GitHub. The picker then lists the App installation's repositories, except archived and disabled ones, from a list Paws keeps in memory: it reads it on the first request after a start, again every 10 minutes, and right away when an `installation` or `installation_repositories` webhook arrives. A save checks that each repository is in that list, that the App is installed and not suspended on it, and that GitHub issues the App a token for it, such as `The GitHub App is not installed on acme/widgets, or the installation is suspended.` for one that isn't.
 
 Paws keeps App credentials and temporary authorization tokens on the server. Workspace access links back to this picker.
 

@@ -73,7 +73,7 @@ export async function githubRepositoryChoices(
           .filter(
             (entry) =>
               record(entry.permissions) &&
-              entry.permissions.admin === true &&
+              entry.permissions.pull === true &&
               entry.archived !== true &&
               entry.disabled !== true,
           )

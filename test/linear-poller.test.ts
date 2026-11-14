@@ -37,6 +37,7 @@ import {
 import { tempHome } from "./helpers";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
+import { waitFor as waitForCondition } from "./wait-for";
 
 const NOW = 1_700_000_000_000;
 const TEAM = "team_1";
@@ -624,10 +625,9 @@ describe("linear intake poll", () => {
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
-    await waitFor(() => seen.length === 2);
+    await waitFor(async () => seen.length === 2 && (await store.getCursor("linear")) === NOW);
     expect(polls).toBe(1);
     expect(seen.sort()).toEqual(["iss_delegate", "iss_label"]);
-    expect(await store.getCursor("linear")).toBe(NOW);
     await poller.stop();
     await poller.settled;
     await close();
@@ -777,10 +777,9 @@ describe("linear intake poll", () => {
     expect(linearBudget(client)?.complexity).toBe(80);
     clock = NOW + 60_000;
     gate.release?.();
-    await waitFor(() => seen.length === 1);
+    await waitFor(async () => seen.length === 1 && (await store.getCursor("linear")) === NOW);
     expect(seen).toEqual(["iss_later"]);
     expect(poller.budget()).toMatchObject({ complexity: 12, requestsRemaining: 1490 });
-    expect(await store.getCursor("linear")).toBe(NOW);
     await poller.stop();
     await poller.settled;
     await close();
@@ -1224,6 +1223,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
     },
   });
   const running = await linear.start();
+  await running.catchUp();
   const event: AcceptedLinearEvent = {
     dedupeKey: "accepted",
     deliveryId: null,
@@ -1248,11 +1248,15 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
     const stopping = running.stop().then(() => {
       stopped = true;
     });
-    await Bun.sleep(5);
+    const refusal = () =>
+      Promise.resolve(linear.webhook.onEvent!({ ...event, dedupeKey: "new" })).then(
+        () => "",
+        (error: unknown) => String(error),
+      );
+    await waitForCondition(async () => (await refusal()).includes("shutting down"), {
+      what: "new Linear events to be refused",
+    });
     expect(stopped).toBe(false);
-    await expect(
-      Promise.resolve(linear.webhook.onEvent!({ ...event, dedupeKey: "new" })),
-    ).rejects.toThrow("shutting down");
     release.resolve();
     expect(await accepted).toMatchObject({ name: "AbortError" });
     await stopping;

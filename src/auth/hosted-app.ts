@@ -25,6 +25,25 @@ export const newGitHubOAuthSecret = () => ({
 });
 export const hash = (value: string) => createHash("sha256").update(value).digest("base64url");
 
+type GitHubSetupRefusal = "installation" | "read" | "token";
+
+export class GitHubSetupRefusedError extends Error {
+  constructor(
+    readonly reason: GitHubSetupRefusal,
+    readonly subject: string,
+  ) {
+    super(refusalMessage(reason, subject));
+    this.name = "GitHubSetupRefusedError";
+  }
+}
+
+function refusalMessage(reason: GitHubSetupRefusal, subject: string): string {
+  if (reason === "installation")
+    return `The GitHub App is not installed on ${subject}, or the installation is suspended.`;
+  if (reason === "read") return `Your GitHub account can't read ${subject}.`;
+  return `GitHub refused the App for ${subject}.`;
+}
+
 export async function verifyHostedGitHubApp(input: {
   app: ActiveGitHubApp;
   installationId: string;
@@ -92,7 +111,7 @@ export async function verifyHostedGitHubRepositories(input: {
   app: ActiveGitHubApp;
   installationId: string;
   repositories: string[];
-  user: { login: string; id: number; token: string };
+  user?: { login: string; id: number; token: string };
   signal: AbortSignal;
   fetch?: typeof fetch;
 }): Promise<void> {
@@ -121,45 +140,30 @@ export async function verifyHostedGitHubRepositories(input: {
       String(installation.body.id) !== input.installationId ||
       installation.body.suspended_at != null
     )
-      throw new Error("GitHub installation does not match workspace intent.");
-    const access = await client.request({
-      method: "GET",
-      path: `/repos/${repository}`,
-      token: input.user.token,
-    });
-    if (
-      access.status !== 200 ||
-      !record(access.body) ||
-      !record(access.body.permissions) ||
-      access.body.permissions.admin !== true ||
-      !record(access.body.owner)
-    )
-      throw new Error("GitHub repository administration required.");
-    const owner = access.body.owner;
-    if (owner.type === "Organization") {
-      const membership = await client.request({
-        method: "GET",
-        path: `/user/memberships/orgs/${repository.split("/")[0]}`,
-        token: input.user.token,
-      });
-      if (
-        membership.status !== 200 ||
-        !record(membership.body) ||
-        membership.body.state !== "active" ||
-        membership.body.role !== "admin"
-      )
-        throw new Error("GitHub organization installation authority required.");
-    } else if (owner.type !== "User" || owner.id !== input.user.id)
-      throw new Error("GitHub installation owner required.");
+      throw new GitHubSetupRefusedError("installation", repository);
     const [ownerName, repo] = repository.split("/") as [string, string];
-    await mintInstallationToken({
-      client,
-      appId: input.app.appId,
-      privateKeyPem: input.app.privateKeyPem,
-      installationId: input.installationId,
-      owner: ownerName,
-      repo,
-    });
+    const access =
+      input.user &&
+      (await client.request({
+        method: "GET",
+        path: `/repos/${repository}`,
+        token: input.user.token,
+      }));
+    if (access && (access.status !== 200 || !record(access.body)))
+      throw new GitHubSetupRefusedError("read", repository);
+    try {
+      await mintInstallationToken({
+        client,
+        appId: input.app.appId,
+        privateKeyPem: input.app.privateKeyPem,
+        installationId: input.installationId,
+        owner: ownerName,
+        repo,
+      });
+    } catch (caught) {
+      if (input.signal.aborted) throw caught;
+      throw new GitHubSetupRefusedError("token", repository);
+    }
   }
 }
 function record(value: unknown): value is Record<string, unknown> {

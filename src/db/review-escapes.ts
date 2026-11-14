@@ -47,13 +47,12 @@ type Row = Q["t"]["reviewEscape"]["$inferSelect"];
 
 const COMMENT_CHARS = 500;
 
-/** A JSON value as the dialect stores it: text on SQLite, jsonb on Postgres. */
 function stored(q: Q, value: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+  return value;
 }
 
 function parsed<T>(q: Q, value: unknown): T {
-  return (q.dialect === "sqlite" ? JSON.parse(value as string) : value) as T;
+  return value as T;
 }
 
 type ReviewEscapeCandidate = {

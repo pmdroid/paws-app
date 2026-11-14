@@ -917,7 +917,7 @@ describe("closeout gate", () => {
     }
   });
 
-  test("concurrent review exhaustion retains the decision for operator escalation", async () => {
+  test("concurrent failed reviews of one finding on one head count once", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("review")]).replace(
         "  scope: task",
@@ -973,10 +973,8 @@ describe("closeout gate", () => {
           },
         },
       });
-      expect(result.outcome).toBe("exhausted");
-      expect(result.decision?.decision).toBe("blocked");
-      expect(result.decision?.items[0]).toMatchObject({ id: "review", state: "exhausted" });
-      expect(result.decision?.items[0]?.message).toContain("src/a.ts failed in 3 of 3");
+      expect(result.decision?.decision).toBe("accepted");
+      expect(result.decision?.items[0]).toMatchObject({ id: "review", state: "passed" });
     } finally {
       await repo.cleanup();
     }

@@ -1,12 +1,16 @@
 import { journalCaught } from "../journal";
+import { MERGE_QUEUE_API_PATH, parseMergeQueueResponse } from "../contract";
 import { renderMarkup } from "./theme";
 import type {
   CommentWait,
   HighRiskRepository,
   HotFile,
   IgnoredComments,
+  LaneItem,
   MainMoved,
   MergeChoice,
+  MergeLaneSplit,
+  MergeNoProject,
   MergeOrder,
   MergeSettings,
   MergeSettingsView,
@@ -52,7 +56,59 @@ type View = {
   saved: boolean;
   denied?: boolean;
   ciFix?: { attempts: number; stored: number } | { error: string };
+  queue?: LaneItem[];
 };
+
+const LANE_SPLITS: Record<MergeLaneSplit, string> = {
+  project: "Linear project",
+  person: "Person who delegated the issue",
+};
+const NO_PROJECT: Record<MergeNoProject, string> = {
+  own: "Each issue merges on its own",
+  lane: "One lane, like a project",
+};
+const PARALLEL = [1, 3, 5];
+
+export function laneNames(
+  items: readonly LaneItem[],
+  lanes: readonly MergeLaneSplit[],
+  noProject: MergeNoProject,
+): string[] {
+  const repositories = new Set(items.map((item) => item.repository));
+  const names = items.map((item) => {
+    const parts =
+      repositories.size > 1 ? [item.repository?.split("/").pop() ?? "No repository"] : [];
+    if (item.project === null && noProject === "own") return [...parts, item.id].join(" · ");
+    if (lanes.includes("project")) parts.push(item.project ?? "No project");
+    if (lanes.includes("person")) parts.push(item.owner ?? "No owner");
+    return (parts.length ? parts : [item.repository ?? "No repository"]).join(" · ");
+  });
+  return [...new Set(names)];
+}
+
+function lanePreview(data: MergeSettingsView, queue: readonly LaneItem[] | undefined): string {
+  if (!queue) return "";
+  const names = laneNames(queue, data.lanes ?? [], data.noProject ?? "own");
+  return names.length
+    ? `Lanes now: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}`
+    : "No pull request is in the merge queue now.";
+}
+
+function lanesSection(data: MergeSettingsView, queue: readonly LaneItem[] | undefined): string {
+  const lanes = data.lanes ?? [];
+  const noProject = data.noProject ?? "own";
+  const check = (name: string, label: string, on: boolean, extra = "", type = "checkbox") =>
+    `<label class="flex min-w-0 items-start gap-2"><input type="${type}" name="${name}"${on ? " checked" : ""}${extra}><span class="min-w-0 break-words">${esc(label)}</span></label>`;
+  const splits = `<fieldset class="settings-field min-w-0"><legend>Give each lane its own</legend>${check("lane-repository", "Repository", true, " disabled")}${(Object.entries(LANE_SPLITS) as [MergeLaneSplit, string][]).map(([split, label]) => check(`lane-${split}`, label, lanes.includes(split))).join("")}<small class="sub break-words" id="merge-lanes-preview">${esc(lanePreview(data, queue))}</small></fieldset>`;
+  const radios =
+    data.noProject === undefined
+      ? ""
+      : `<fieldset class="settings-field min-w-0"><legend>Issues without a project</legend>${(Object.entries(NO_PROJECT) as [MergeNoProject, string][]).map(([value, label]) => check("lane-no-project", label, value === noProject, ` value="${value}"`, "radio")).join("")}</fieldset>`;
+  const parallel = data.parallel ?? 1;
+  const counts = [...new Set([...PARALLEL, parallel])].sort((a, b) => a - b);
+  const batch = `<div class="settings-field min-w-0"><label for="merge-parallel">Merges at once in a lane</label><select id="merge-parallel" name="merge-parallel" aria-describedby="merge-parallel-help"${data.parallel === undefined ? " disabled" : ""}>${counts.map((count) => `<option value="${count}"${count === parallel ? " selected" : ""}>${count}</option>`).join("")}</select><small class="sub" id="merge-parallel-help">${data.parallel === undefined ? "This Paws merges one pull request of a lane at a time." : "Green pull requests that change none of the same files merge together."}</small>${check("merge-batch-check", "Check main after a batch", true, ' disabled aria-describedby="merge-batch-check-help"')}<small class="sub" id="merge-batch-check-help">When main's CI fails after a batch, the lane merges one at a time until main is green again.</small></div>`;
+  return `<section class="settings-section" id="merge-lanes"><div class="settings-label"><h2>Merge lanes</h2><p class="sub">Pull requests in one lane merge in order. Lanes don't wait for each other.</p></div><div class="col min-w-0">${splits}${radios}${batch}</div></section>`;
+}
 
 export function ciFixProblem(attempts: number): string | null {
   return Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
@@ -200,13 +256,14 @@ export function renderMergeSettings(view: View): string {
   return `${intro}${data.githubQueueError ? `<p class="settings-message" role="status">${esc(data.githubQueueError)}</p>` : ""}<form id="merge-settings-form"><div id="merge-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
       <section class="settings-section"><div class="settings-label"><h2>Merging</h2><p class="sub">Used by every project.</p></div><div class="col">${choiceFields("default", data.default, repos)}</div></section>
+      ${data.lanes ? lanesSection(data, view.queue) : ""}
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${checksSection(view.ciFix)}
       ${riskGateSection(data.riskGate)}
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.ignoredComments ? ignoredSection(data.ignoredComments, view) : ""}
-      ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
+      ${data.hotFiles ? hotFileSection(data.hotFiles, data.parallelFiles !== undefined) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
@@ -217,21 +274,29 @@ function issueLink(id: string): string {
   return `<a class="lin-id" href="${esc(routeHref({ view: "issues", id }))}">${esc(id)}</a>`;
 }
 
-function hotFileRow(file: HotFile): string {
-  const holds = (file.holds ?? [])
-    .map((hold) => `<p>Holding ${issueLink(hold.held)} until ${issueLink(hold.holder)} merges</p>`)
-    .join("");
-  return `<li class="hot-file"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${holds}</li>`;
+const MIGRATION_META = /^src\/db\/drizzle[^/]*\/meta\/[^/]+$/;
+
+function hotFileRow(file: HotFile, editable: boolean): string {
+  const held = file.held !== false;
+  const holds = held
+    ? (file.holds ?? [])
+        .map(
+          (hold) => `<p>Holding ${issueLink(hold.held)} until ${issueLink(hold.holder)} merges</p>`,
+        )
+        .join("")
+    : "";
+  const toggle = `<label><input type="checkbox" name="hot-hold" data-repository="${esc(file.repository)}" data-path="${esc(file.path)}"${held ? " checked" : ""}${editable ? "" : " disabled"}> Hold work that changes this file</label>${held ? "" : '<span class="sub">Not held</span>'}${MIGRATION_META.test(file.path) ? '<p class="sub">Migrations made side by side need a manual rebase</p>' : ""}`;
+  return `<li class="hot-file${held ? "" : " opacity-60"}"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${toggle}${holds}</li>`;
 }
 
-function hotFileSection(files: readonly HotFile[]): string {
+function hotFileSection(files: readonly HotFile[], editable: boolean): string {
   const sorted = [...files].sort(
     (left, right) =>
       Number(Boolean(right.holds?.length)) - Number(Boolean(left.holds?.length)) ||
       right.conflicts - left.conflicts,
   );
   const rows = (list: readonly HotFile[]) =>
-    `<ul class="risk-file">${list.map(hotFileRow).join("")}</ul>`;
+    `<ul class="risk-file">${list.map((file) => hotFileRow(file, editable)).join("")}</ul>`;
   const rest = sorted.slice(HOT_FILES_SHOWN);
   const body = sorted.length
     ? `${rows(sorted.slice(0, HOT_FILES_SHOWN))}${rest.length ? `<details><summary>Show all ${sorted.length}</summary>${rows(rest)}</details>` : ""}`
@@ -292,6 +357,9 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       ? {}
       : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
+    ...(data.lanes ? { lanes: data.lanes } : {}),
+    ...(data.noProject ? { noProject: data.noProject } : {}),
+    ...(data.parallel === undefined ? {} : { parallel: data.parallel }),
     ...(data.commentWait ? { commentWait: data.commentWait } : {}),
     ...(data.highRiskRepositories
       ? {
@@ -302,7 +370,24 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
         }
       : {}),
     ...(data.ignoredComments ? { ignoredComments: data.ignoredComments } : {}),
+    ...(data.parallelFiles ? { parallelFiles: data.parallelFiles } : {}),
   };
+}
+
+function parallelToggle(
+  lists: readonly { repository: string; paths: string[] }[],
+  repository: string,
+  path: string,
+  parallel: boolean,
+): { repository: string; paths: string[] }[] {
+  const key = repository.toLowerCase();
+  const current = lists.find((entry) => entry.repository.toLowerCase() === key);
+  const rest = (current?.paths ?? []).filter((entry) => entry !== path);
+  const paths = parallel ? [...rest, path] : rest;
+  return [
+    ...lists.filter((entry) => entry.repository.toLowerCase() !== key),
+    ...(paths.length ? [{ repository: current?.repository ?? repository, paths }] : []),
+  ];
 }
 
 export async function mergeSettingsRequest(
@@ -331,6 +416,30 @@ export async function mergeSettingsRequest(
       typeof data.field === "string" ? { field: data.field } : {},
     );
   return data as MergeSettingsView;
+}
+
+export async function mergeQueueItems(
+  engine: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LaneItem[] | null> {
+  try {
+    const response = await fetchImpl(new URL(MERGE_QUEUE_API_PATH, engine), {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const parsed = parseMergeQueueResponse(await response.json());
+    if (!parsed.ok) return null;
+    const { entries, issues } = parsed.response;
+    const issue = (id: string) => issues.find((candidate) => candidate.id === id);
+    return entries.map(({ itemId: id, repository }) => ({
+      ...{ id, repository, project: issue(id)?.project?.name ?? null },
+      owner: issue(id)?.owner ?? null,
+    }));
+  } catch (error) {
+    journalCaught(error, "merge-settings.mergeQueueItems", null);
+    return null;
+  }
 }
 
 export function createMergeSettings(invalidate: () => void): {
@@ -365,6 +474,18 @@ export function createMergeSettings(invalidate: () => void): {
     });
     const data = view.data;
     data.default = read("default", data.default);
+    if (data.lanes)
+      data.lanes = (Object.keys(LANE_SPLITS) as MergeLaneSplit[]).filter(
+        (split) => form.querySelector<HTMLInputElement>(`[name="lane-${split}"]`)?.checked,
+      );
+    if (data.noProject)
+      data.noProject = form.querySelector<HTMLInputElement>(
+        '[name="lane-no-project"][value="lane"]',
+      )?.checked
+        ? "lane"
+        : "own";
+    if (data.parallel !== undefined)
+      data.parallel = Number(value("merge-parallel") ?? data.parallel);
     if (data.autoApproveHighRisk !== undefined)
       data.autoApproveHighRisk =
         root!.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]')?.checked ?? false;
@@ -392,6 +513,15 @@ export function createMergeSettings(invalidate: () => void): {
       }
       return next;
     });
+    for (const box of form.querySelectorAll<HTMLInputElement>('[name="hot-hold"]')) {
+      const { repository = "", path = "" } = box.dataset;
+      data.parallelFiles = parallelToggle(data.parallelFiles ?? [], repository, path, !box.checked);
+      data.hotFiles = data.hotFiles?.map((file) =>
+        file.repository === repository && file.path === path
+          ? { ...file, held: box.checked }
+          : file,
+      );
+    }
     if (view.ciFix && "attempts" in view.ciFix) {
       const text = value("merge-ci-fix-attempts")?.trim();
       if (text !== undefined) view.ciFix.attempts = text === "" ? NaN : Number(text);
@@ -442,6 +572,13 @@ export function createMergeSettings(invalidate: () => void): {
         ]);
         if (started !== generation) return;
         view = { data, busy: view.busy, error: null, saved: false, ciFix };
+        if (data.lanes)
+          void mergeQueueItems(engine!).then((queue) => {
+            if (started !== generation || !queue) return;
+            view.queue = queue;
+            const preview = root?.querySelector("#merge-lanes-preview");
+            if (preview && view.data) preview.textContent = lanePreview(view.data, queue);
+          });
       } catch (error) {
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;

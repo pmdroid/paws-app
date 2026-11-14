@@ -70,8 +70,8 @@ forEachDialect((open) => {
               base: "base",
               head: "head",
               policyDigest: "digest",
-              failedChecks: q.dialect === "sqlite" ? '["test"]' : ["test"],
-              retryBaseline: q.dialect === "sqlite" ? '["evidence"]' : ["evidence"],
+              failedChecks: ["test"],
+              retryBaseline: ["evidence"],
               summary: "Failed",
             }),
           );
@@ -82,7 +82,10 @@ forEachDialect((open) => {
         ["earlier", "retry", "lead"],
         ["later", null, null],
       ]);
-      expect(listed[0]).toMatchObject({ failedChecks: ["test"], retryBaseline: ["evidence"] });
+      expect(listed[0]).toMatchObject({
+        failedChecks: ["test"],
+        retryBaseline: ["evidence"],
+      });
       expect(await db.run((q) => listCloseoutRecoveriesSteps(q, "none"))).toEqual([]);
     } finally {
       await close();

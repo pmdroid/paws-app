@@ -14,4 +14,5 @@ export {
   verifyHostedGitHubApp,
   authorizeHostedGitHubUser,
   verifyHostedGitHubRepositories,
+  GitHubSetupRefusedError,
 } from "./hosted-app";

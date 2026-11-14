@@ -34,6 +34,7 @@ import {
   hash,
   newGitHubOAuthSecret,
   verifyHostedGitHubApp,
+  GitHubSetupRefusedError,
   type ActiveGitHubApp,
 } from "../auth";
 import { dashboardUrl } from "../dashboard-links";
@@ -506,7 +507,12 @@ export function createHostedGitHubConnect(options: {
       await store.run((q) => failGithubOAuthSteps(q, pending.state_hash, false));
       await audit("github.connect.failed");
       return Response.json(
-        { error: "GitHub connection could not be verified. Start again." },
+        {
+          error:
+            caughtError7 instanceof GitHubSetupRefusedError
+              ? caughtError7.message
+              : "GitHub connection could not be verified. Start again.",
+        },
         { status: 409 },
       );
     }

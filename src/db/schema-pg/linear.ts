@@ -43,6 +43,7 @@ export const linearSession = pgTable("linear_session", {
   oauthClientId: text("oauth_client_id"),
   teamId: text("team_id"),
   installationObservedAt: bigint("installation_observed_at", { mode: "number" }),
+  activitiesListedGeneration: bigint("activities_listed_generation", { mode: "number" }),
 });
 
 export const linearTurn = pgTable(
@@ -93,25 +94,6 @@ export const linearArtifact = pgTable(
   (table) => [
     unique().on(table.itemId, table.path, table.displayName, table.mimeType, table.sha256),
     check("linear_artifact_check_1", sql`state IN ('pending', 'uploaded', 'failed')`),
-  ],
-);
-
-export const linearInput = pgTable(
-  "linear_input",
-  {
-    sessionId: text("session_id").notNull(),
-    turnId: text("turn_id").notNull(),
-    assetId: text("asset_id").notNull(),
-    assetUrl: text("asset_url").notNull(),
-    mimeType: text("mime_type").notNull(),
-    size: bigint({ mode: "number" }).notNull(),
-    sha256: text().notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.sessionId, table.turnId, table.assetId],
-      name: "linear_input_session_id_turn_id_asset_id_pk",
-    }),
   ],
 );
 
@@ -298,30 +280,10 @@ export const linearRequestReservation = pgTable(
   (table) => [index("linear_request_reservation_workspace").on(table.workspace, table.expiresAt)],
 );
 
-export const linearActivityListing = pgTable("linear_activity_listing", {
-  sessionId: text("session_id").primaryKey(),
-  generation: bigint({ mode: "number" }).notNull(),
-});
-
 export const linearItemRequest = pgTable("linear_item_request", {
   itemId: text("item_id").primaryKey(),
   requests: bigint({ mode: "number" }).notNull(),
 });
-
-export const linearItemCallerRequest = pgTable(
-  "linear_item_caller_request",
-  {
-    itemId: text("item_id").notNull(),
-    caller: text().notNull(),
-    requests: bigint({ mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.itemId, table.caller],
-      name: "linear_item_caller_request_item_id_caller_pk",
-    }),
-  ],
-);
 
 export const linearComment = pgTable(
   "linear_comment",

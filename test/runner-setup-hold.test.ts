@@ -20,9 +20,9 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
+  setRunnerAgentSignedInSteps,
   syncWorkspaceMember,
   type Db,
-  sqliteDb,
   type PgDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
@@ -38,7 +38,6 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { tempDb } from "./helpers";
 import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
@@ -57,20 +56,9 @@ afterAll(() => {
 
 type Rows = Record<string, unknown>[];
 const rows = async (db: Db, query: SQL): Promise<Rows> => {
-  if (db.dialect === "sqlite") return db.sync((orm) => orm.all<Rows[number]>(query));
   const result = (await (db as PgDb).orm.execute(query)) as Rows | { rows: Rows };
   return Array.isArray(result) ? result : result.rows;
 };
-
-/**
- * Postgres has no counterpart yet to the SQLite triggers that end a hold when its item leaves
- * `queued` (`runner_setup_hold_ends`) or check holds when an agent signs in
- * (`runner_setup_check_agent_added`), so the tests that rely on them stay on SQLite.
- */
-async function sqliteStore() {
-  const database = tempDb();
-  return { db: sqliteDb(database), close: async () => database.close() };
-}
 
 type DelegatorRunner = "none" | "unsigned" | "busy" | "offline" | "reviewer-signed-out";
 
@@ -78,10 +66,7 @@ type DelegatorRunner = "none" | "unsigned" | "busy" | "offline" | "reviewer-sign
  * A workspace where the owner's runner is online and free, and a member delegates ENG-1. The
  * member has no runner, a runner whose agent is not signed in, or a signed-in runner that is busy.
  */
-async function delegate(
-  delegatorRunner: DelegatorRunner,
-  open: () => Promise<{ db: Db; close(): Promise<void> }> = tempStore,
-) {
+async function delegate(delegatorRunner: DelegatorRunner) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-setup-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -116,7 +101,7 @@ async function delegate(
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const { db, close } = await open();
+  const { db, close } = await tempStore();
   const exec = (query: SQL) => rows(db, query);
   const now = Date.now();
   const ownerId = await putWorkspaceUser(db, {
@@ -562,7 +547,7 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
 }, 60_000);
 
 test("Stop ends the hold", async () => {
-  const fixture = await delegate("none", sqliteStore);
+  const fixture = await delegate("none");
   try {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(db, itemId)).not.toBeNull();
@@ -576,7 +561,7 @@ test("Stop ends the hold", async () => {
 }, 60_000);
 
 test("undelegation cancels a held item and ends its hold", async () => {
-  const fixture = await delegate("none", sqliteStore);
+  const fixture = await delegate("none");
   try {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(db, itemId)).not.toBeNull();
@@ -593,7 +578,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
 }, 60_000);
 
 test("signing the agent in resumes the held item in the same run and session, without reading Linear", async () => {
-  const fixture = await delegate("unsigned", sqliteStore);
+  const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
     const hold = (await getRunnerSetupHold(db, itemId))!;
@@ -601,9 +586,8 @@ test("signing the agent in resumes the held item in the same run and session, wi
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
 
-    await rows(
-      db,
-      sql`UPDATE runner_agent_policy SET ready=1 WHERE runner_id=${fixture.memberRunner}`,
+    await db.transaction((q) =>
+      setRunnerAgentSignedInSteps(q, fixture.memberRunner!, "claude", true, Date.now()),
     );
     const deadline = Date.now() + 20_000;
     const active = async () =>

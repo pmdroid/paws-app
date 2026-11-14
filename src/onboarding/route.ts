@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { saveSecret } from "../credentials";
 import {
   consumeBrowserInstallation,
@@ -11,7 +10,6 @@ import {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceOrganizationIds,
-  storeOf,
   type Db,
 } from "../db";
 import {
@@ -45,7 +43,7 @@ const INSTALL_COOKIE = "__Host-paws-install";
 const CALLBACK = "/auth/linear/install/callback";
 
 export function createBrowserOnboarding(options: {
-  db: Database | Db;
+  db: Db;
   home: string;
   origin: string;
   clientId: string | null;
@@ -73,7 +71,7 @@ export function createBrowserOnboarding(options: {
     return workspaces[0]!;
   }
   async function installationOrganization(): Promise<string | null> {
-    return organizationFor(await workspaceOrganizationIds(storeOf(db), 2));
+    return organizationFor(await workspaceOrganizationIds(db, 2));
   }
   let installing = false;
   return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
@@ -117,7 +115,7 @@ export function createBrowserOnboarding(options: {
           { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
           { status: 503, headers: { "cache-control": "no-store" } },
         );
-      return beginWorkspaceOAuth(storeOf(db), {
+      return beginWorkspaceOAuth(db, {
         clientId: options.clientId!,
         origin,
         now: now(),
@@ -126,7 +124,7 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname === "/auth/linear/callback") {
       try {
-        const { identity } = await completeWorkspaceOAuth(storeOf(db), request, {
+        const { identity } = await completeWorkspaceOAuth(db, request, {
           clientId: options.clientId!,
           origin,
           now: now(),
@@ -137,13 +135,13 @@ export function createBrowserOnboarding(options: {
           return retry("workspace-mismatch");
         const state = workspaceSecret();
         const browser = workspaceSecret();
-        await saveBrowserInstallation(storeOf(db), {
+        await saveBrowserInstallation(db, {
           stateHash: workspaceTokenHash(state),
           browserHash: workspaceTokenHash(browser),
           identity: JSON.stringify({
             identity,
             reconnect: options.reconnect
-              ? (await createLinearReconnect({ fetch: fetchImpl, now })(storeOf(db), home)).snapshot
+              ? (await createLinearReconnect({ fetch: fetchImpl, now })(db, home)).snapshot
               : null,
           }),
           expiresAt: now() + 600_000,
@@ -171,7 +169,7 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname !== CALLBACK)
       return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
-    const stored = await readStoredToken(storeOf(db), secretsDir);
+    const stored = await readStoredToken(db, secretsDir);
     if (installing || (stored !== null && !options.reconnect)) return retry("already-connected");
     installing = true;
     try {
@@ -180,7 +178,7 @@ export function createBrowserOnboarding(options: {
       if (![state, browser].every((value) => /^[A-Za-z0-9_-]{43}$/.test(value)))
         return retry("failed");
       const saved = await consumeBrowserInstallation(
-        storeOf(db),
+        db,
         workspaceTokenHash(state),
         workspaceTokenHash(browser),
         now(),
@@ -240,22 +238,22 @@ export function createBrowserOnboarding(options: {
       );
       if (reconnect) {
         const restored = await (
-          await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(storeOf(db), home)
+          await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(db, home)
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
-      } else if (!(await writeStoredToken(storeOf(db), secretsDir, token, true)))
+      } else if (!(await writeStoredToken(db, secretsDir, token, true)))
         return retry("already-connected");
       const timestamp = now();
-      const userId = await putWorkspaceUser(storeOf(db), {
+      const userId = await putWorkspaceUser(db, {
         id: workspaceId(),
         linearUserId: identity.userId,
         name: identity.name,
         email: identity.email,
       });
-      let workspace = await workspaceForOrganization(storeOf(db), organization.id);
+      let workspace = await workspaceForOrganization(db, organization.id);
       if (workspace === null) {
-        const grant = await issueWorkspaceBootstrap(storeOf(db), organization.id, timestamp);
-        workspace = await consumeWorkspaceBootstrap(storeOf(db), {
+        const grant = await issueWorkspaceBootstrap(db, organization.id, timestamp);
+        workspace = await consumeWorkspaceBootstrap(db, {
           id: workspaceId(),
           organizationId: organization.id,
           name: organization.name,
@@ -264,7 +262,7 @@ export function createBrowserOnboarding(options: {
           now: timestamp,
         });
       }
-      await syncWorkspaceMember(storeOf(db), {
+      await syncWorkspaceMember(db, {
         workspaceId: workspace.id,
         userId,
         active: true,
@@ -272,7 +270,7 @@ export function createBrowserOnboarding(options: {
         teamIds: member.teamIds,
         now: timestamp + 1,
       });
-      const session = await issueWorkspaceSession(storeOf(db), {
+      const session = await issueWorkspaceSession(db, {
         workspaceId: workspace.id,
         userId,
         now: timestamp + 1,

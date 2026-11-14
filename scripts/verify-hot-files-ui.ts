@@ -25,7 +25,10 @@ held.held = {
   files: ["src/dashboard/src/live/provider.ts"],
 };
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-hot-files-")), "config.toml");
-writeFileSync(configPath, `[merge]\norder = "queue"\nmain_moved = "ci"\n`);
+writeFileSync(
+  configPath,
+  `[merge]\norder = "queue"\nmain_moved = "ci"\n\n[merge.repositories."acme/platform"]\npackages = []\nparallel_files = ["src/dashboard/src/server/handler.ts"]\n`,
+);
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -57,7 +60,13 @@ const server = Bun.serve({
             conflicts: 3,
             items: ["PAS-763"],
           },
-          ...Array.from({ length: 9 }, (_, index) => ({
+          {
+            repository: "acme/platform",
+            path: "src/db/drizzle-pg/meta/_journal.json",
+            conflicts: 2,
+            items: ["PAS-771"],
+          },
+          ...Array.from({ length: 8 }, (_, index) => ({
             repository: "acme/platform",
             path: `packages/very-long-package-name-${index}/src/deeply/nested/directory/structure/with/a/long-file-name.ts`,
             conflicts: 1,
@@ -100,7 +109,18 @@ try {
     );
     await expect(section.getByText("Show all 12")).toBeVisible();
     await section.getByText("Show all 12").click();
-    await expect(section.locator("textarea, input, select")).toHaveCount(0);
+    await expect(section.locator("textarea, select")).toHaveCount(0);
+    await expect(section.locator('input[name="hot-hold"]')).toHaveCount(12);
+    const handler = section.locator("li", { hasText: "src/dashboard/src/server/handler.ts" });
+    await expect(handler).toContainText("Not held");
+    await expect(handler.locator("input")).not.toBeChecked();
+    const journal = section.locator("li", { hasText: "src/db/drizzle-pg/meta/_journal.json" });
+    await expect(journal).toContainText("Migrations made side by side need a manual rebase");
+    await expect(journal.locator("input")).toBeChecked();
+    await journal.locator("input").uncheck();
+    await expect(
+      section.locator("li", { hasText: "src/db/drizzle-pg/meta/_journal.json" }),
+    ).toContainText("Not held");
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);

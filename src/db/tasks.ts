@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { TaskMode } from "../core";
 import { type Q, type Db, type Steps } from "./db";
-import { workItemTask } from "./schema";
+import { workItemTask } from "./schema-pg";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { markRunSteps } from "./runs";
@@ -25,6 +25,17 @@ function* taskColumnSteps<K extends "mode" | "generation" | "repositoryContext">
 
 export function* getTaskModeSteps(q: Q, itemId: string) {
   return ((yield* taskColumnSteps(q, itemId, "mode")) as TaskMode | undefined) ?? null;
+}
+
+export function* getTaskModesSteps(q: Q, itemIds: readonly string[]) {
+  const { workItemTask: task } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: task.itemId, mode: task.mode })
+      .from(task)
+      .where(inArray(task.itemId, [...itemIds])),
+  );
+  return new Map(rows.map((row) => [row.itemId, row.mode as TaskMode]));
 }
 
 export async function getTaskMode(store: Db, itemId: string): Promise<TaskMode | null> {

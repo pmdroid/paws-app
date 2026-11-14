@@ -9,6 +9,7 @@ import {
   mergeLaneKey,
   parseCommentWait,
   parseConfigToml,
+  parallelFiles,
   readMergeSettings,
   highRiskPaths,
   repositoryPackages,
@@ -319,6 +320,8 @@ describe("Merging settings API", () => {
       ignoredComments: [],
       lanes: ["project", "person"],
       noProject: "own",
+      parallel: 1,
+      parallelFiles: [],
     });
   });
 
@@ -377,9 +380,53 @@ describe("Merging settings API", () => {
       ],
     }))!.json()) as { hotFiles?: unknown };
     expect(body.hotFiles).toEqual([
-      { ...file, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
-      { ...file, path: "src/b.ts" },
+      { ...file, held: true, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
+      { ...file, held: true, path: "src/b.ts" },
     ]);
+  });
+
+  test("a conflict-prone file toggled off writes parallel_files, reads back not held, and toggles on again", async () => {
+    const { options, audits } = fixture();
+    const file = {
+      repository: "acme/platform",
+      path: "src/index.ts",
+      conflicts: 3,
+      items: ["PAS-1"],
+    };
+    const withFiles = { ...options, hotFiles: async () => [file] };
+    const put = (paths: string[]) =>
+      handleMergeSettingsRequest(
+        request("PUT", {
+          default: { order: "queue", mainMoved: "ci" },
+          parallelFiles: [{ repository: "acme/platform", paths }],
+        }),
+        withFiles,
+      );
+    expect((await put(["src/index.ts"]))?.status).toBe(200);
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      '[merge.repositories."acme/platform"]\npackages = []\nparallel_files = ["src/index.ts"]',
+    );
+    expect(
+      parallelFiles(readMergeSettings(loadConfigFile(options.configPath)), "Acme/Platform"),
+    ).toEqual(["src/index.ts"]);
+    const read = (await (await handleMergeSettingsRequest(request(), withFiles))!.json()) as {
+      parallelFiles: unknown;
+      hotFiles: unknown;
+    };
+    expect(read.parallelFiles).toEqual([{ repository: "acme/platform", paths: ["src/index.ts"] }]);
+    expect(read.hotFiles).toEqual([{ ...file, held: false }]);
+    const expired = (await (await handleMergeSettingsRequest(request(), {
+      ...options,
+      hotFiles: async () => [],
+    }))!.json()) as { hotFiles: unknown };
+    expect(expired.hotFiles).toEqual([{ ...file, conflicts: 0, items: [], held: false }]);
+    expect((await put([]))?.status).toBe(200);
+    expect(readFileSync(options.configPath, "utf8")).not.toContain("parallel_files");
+    expect(audits.map(([, text]) => text)).toEqual([
+      "Conflict-prone files not held: none → acme/platform src/index.ts",
+      "Conflict-prone files not held: acme/platform src/index.ts → none",
+    ]);
+    expect((await put(["src/*.ts"]))?.status).toBe(400);
   });
 
   test("PUT saves to config.toml, keeps other settings and audits each change", async () => {
@@ -406,6 +453,8 @@ describe("Merging settings API", () => {
       ignoredComments: [],
       lanes: ["project", "person"],
       noProject: "own",
+      parallel: 1,
+      parallelFiles: [],
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
@@ -460,6 +509,25 @@ describe("Merging settings API", () => {
     for (const bad of [{ lanes: ["team"] }, { noProject: "none" }]) {
       const refused = await handleMergeSettingsRequest(
         request("PUT", { ...body, ...bad }),
+        options,
+      );
+      expect(refused?.status).toBe(400);
+    }
+  });
+
+  test("PUT saves merges at once in a lane, audits it, and refuses one outside 1 to 5", async () => {
+    const { options, audits } = fixture();
+    const body = { default: { order: "queue", mainMoved: "ci" }, parallel: 3 };
+    const saved = await handleMergeSettingsRequest(request("PUT", body), options);
+    expect(saved?.status).toBe(200);
+    expect(await saved!.json()).toMatchObject({ parallel: 3 });
+    expect(readFileSync(options.configPath, "utf8")).toContain("parallel = 3");
+    expect(audits).toContainEqual(["settings.merging", "Merges at once in a lane: 1 → 3"]);
+    const read = await handleMergeSettingsRequest(request(), options);
+    expect(await read!.json()).toMatchObject({ parallel: 3 });
+    for (const parallel of [0, 6, 2.5, "3"]) {
+      const refused = await handleMergeSettingsRequest(
+        request("PUT", { ...body, parallel }),
         options,
       );
       expect(refused?.status).toBe(400);

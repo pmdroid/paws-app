@@ -130,16 +130,17 @@ async function snapshotOf(db: Db): Promise<Status> {
   }
   const pages = [...details.values()];
   const items = pages.flatMap((page) => [page.issue, ...page.earlierSessions]);
+  const runs = pages.flatMap((page) => page.runs);
   expect(
     statusIntegrity({
       items,
-      runs: list.runs,
+      runs,
       questions: [],
-      verdicts: list.verdicts,
+      verdicts: pages.flatMap((page) => page.verdicts),
       mergeQueue: [],
     }),
   ).toEqual([]);
-  return { items, runs: list.runs, dead: pages.flatMap((page) => page.dead), details };
+  return { items, runs, dead: pages.flatMap((page) => page.dead), details };
 }
 
 function issuePage(snapshot: Status, id = "PAS-367"): string {

@@ -6,12 +6,9 @@ import {
   JobLoop,
   OutboxDispatcher,
   ensureLinearSession,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
-  sqliteDb,
   type Db,
 } from "../../src/db";
 import {
@@ -27,15 +24,6 @@ import { tempStore } from "../pglite";
 type ParentFixtureOptions = { authorizeEvents?: boolean; startSessions?: boolean };
 
 /** A workspace, a fake Linear tracker and an orchestrator that adopts delegated parents. */
-export async function createParentFixture(
-  filename = ":memory:",
-  options: ParentFixtureOptions = {},
-) {
-  const db = openDatabase(filename);
-  migrate(db);
-  return { db, ...(await parentFixture(sqliteDb(db), options, async () => db.close())) };
-}
-
 export async function createParentFixturePg(options: ParentFixtureOptions = {}) {
   const { db, close } = await tempStore();
   return { db, ...(await parentFixture(db, options, close)) };

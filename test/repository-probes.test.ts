@@ -64,8 +64,7 @@ function probe(name: string, at: { repo: string; base: string; head: string }, e
   return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}` };
 }
 
-const LEGACY = "src/db/migrations/20261026T2044_runner_command_handover.ts";
-const JOURNAL = "src/db/drizzle/meta/_journal.json";
+const JOURNAL = "src/db/drizzle-pg/meta/_journal.json";
 const entry = (idx: number, when: number, tag: string) => ({
   idx,
   version: "6",
@@ -74,20 +73,18 @@ const entry = (idx: number, when: number, tag: string) => ({
   breakpoints: true,
 });
 const journal = (...entries: ReturnType<typeof entry>[]) =>
-  `${JSON.stringify({ version: "7", dialect: "sqlite", entries }, null, 2)}\n`;
+  `${JSON.stringify({ version: "7", dialect: "postgresql", entries }, null, 2)}\n`;
 const BASELINE = entry(0, 1000, "0000_baseline");
 const PROBE = entry(1, 2000, "0001_probe");
 const DB = {
-  "src/db/migrations.ts": "export const frozenMigrations = [];\n",
-  [LEGACY]: "export const migration = {};\n",
-  "src/db/drizzle/0000_baseline.sql": "CREATE TABLE a (id TEXT) STRICT;\n",
-  "src/db/drizzle/meta/0000_snapshot.json": "{}\n",
+  "src/db/drizzle-pg/0000_baseline.sql": "CREATE TABLE a (id TEXT) STRICT;\n",
+  "src/db/drizzle-pg/meta/0000_snapshot.json": "{}\n",
   [JOURNAL]: journal(BASELINE),
   "src/db/items.ts": "export const items = 1;\n",
 };
 const appended = {
-  "src/db/drizzle/0001_probe.sql": "ALTER TABLE a ADD COLUMN b TEXT;\n",
-  "src/db/drizzle/meta/0001_snapshot.json": "{}\n",
+  "src/db/drizzle-pg/0001_probe.sql": "ALTER TABLE a ADD COLUMN b TEXT;\n",
+  "src/db/drizzle-pg/meta/0001_snapshot.json": "{}\n",
   [JOURNAL]: journal(BASELINE, PROBE),
 };
 
@@ -100,24 +97,16 @@ test("a new drizzle-kit migration appended to the journal passes", () => {
   expect(ran.exitCode).toBe(0);
 });
 
-test("deleting the legacy migrations passes", () => {
-  const ran = probe(
-    "migrations-append-only",
-    candidate(DB, { "src/db/migrations.ts": null, [LEGACY]: null }),
-  );
-  expect(ran.exitCode).toBe(0);
-});
-
 test.each([
   [
     "editing the baseline",
-    { "src/db/drizzle/0000_baseline.sql": "CREATE TABLE a (id TEXT);\n" },
-    "src/db/drizzle/0000_baseline.sql is a shipped drizzle-kit migration and was edited",
+    { "src/db/drizzle-pg/0000_baseline.sql": "CREATE TABLE a (id TEXT);\n" },
+    "src/db/drizzle-pg/0000_baseline.sql is a shipped drizzle-kit migration and was edited",
   ],
   [
     "deleting a shipped snapshot",
-    { "src/db/drizzle/meta/0000_snapshot.json": null },
-    "src/db/drizzle/meta/0000_snapshot.json is a shipped drizzle-kit migration and was deleted",
+    { "src/db/drizzle-pg/meta/0000_snapshot.json": null },
+    "src/db/drizzle-pg/meta/0000_snapshot.json is a shipped drizzle-kit migration and was deleted",
   ],
   [
     "changing a shipped journal entry",
@@ -132,22 +121,12 @@ test.each([
   [
     "a journal entry without its SQL file",
     { [JOURNAL]: journal(BASELINE, PROBE) },
-    "entry 0001_probe has no new src/db/drizzle/0001_probe.sql",
+    "entry 0001_probe has no new src/db/drizzle-pg/0001_probe.sql",
   ],
   [
     "a SQL file without a journal entry",
-    { "src/db/drizzle/0001_probe.sql": "SELECT 1;\n" },
-    "src/db/drizzle/0001_probe.sql has no new entry",
-  ],
-  [
-    "a new legacy migration file",
-    { "src/db/migrations/20261107T0300_pull_comment.ts": "export const migration = {};\n" },
-    "src/db/migrations/20261107T0300_pull_comment.ts is a legacy migration path",
-  ],
-  [
-    "editing the frozen legacy list",
-    { "src/db/migrations.ts": "export const frozenMigrations = [1];\n" },
-    "src/db/migrations.ts is a legacy migration path",
+    { "src/db/drizzle-pg/0001_probe.sql": "SELECT 1;\n" },
+    "src/db/drizzle-pg/0001_probe.sql has no new entry",
   ],
 ])("%s fails migrations-append-only", (_name, change, message) => {
   const ran = probe("migrations-append-only", candidate(DB, change));

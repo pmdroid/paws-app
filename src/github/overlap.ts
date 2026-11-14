@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { z } from "zod";
 import { repoApiPath } from "./client";
+import { compareChangedPaths, type RepositoryGet } from "./compare";
 import { git, gitEnv } from "./git";
 import { UPSTREAM_MAIN_REF, type GitExec, type GitHubClient } from "./types";
 
@@ -24,6 +25,19 @@ export async function mainOverlap(
       .filter((file) => file !== "");
   const [onMain, inPull] = await Promise.all([changed(UPSTREAM_MAIN_REF), changed(head)]);
   return { base, shared: overlappingPaths(inPull, onMain, packages) };
+}
+
+export async function comparedOverlap(
+  get: RepositoryGet,
+  main: string,
+  head: string,
+  packages: readonly string[],
+): Promise<MainOverlap> {
+  const [inPull, onMain] = await Promise.all([
+    compareChangedPaths(get, main, head),
+    compareChangedPaths(get, head, main),
+  ]);
+  return { base: inPull.mergeBase, shared: overlappingPaths(inPull.paths, onMain.paths, packages) };
 }
 
 export function overlappingPaths(

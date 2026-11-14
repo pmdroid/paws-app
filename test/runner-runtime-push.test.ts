@@ -102,6 +102,7 @@ async function fixture(
   const posted: RunnerResult[] = [];
   const pushes: number[] = [];
   const fetches: number[] = [];
+  let pushed = () => {};
   const runtime = await openRunnerRuntime({
     root,
     spool,
@@ -119,6 +120,7 @@ async function fixture(
         git(["fetch", "-q", join(root, "origin.git"), "+refs/heads/*:refs/heads/*"], input.dest!);
       } else if (input.operation === "push") {
         pushes.push(clock);
+        pushed();
         const refused = typeof rejection === "string" ? rejection : rejection();
         if (refused !== null) throw new Error(refused);
         const target = input.refspec!.split(":")[1]!;
@@ -229,6 +231,13 @@ async function fixture(
     remoteBranch: (branch: string) =>
       git(["rev-parse", `refs/heads/${branch}`], join(root, "origin.git")),
     remoteGit: (args: string[]) => git(args, join(root, "origin.git")),
+    async untilPushes(count: number) {
+      while (pushes.length < count)
+        await Promise.race([
+          new Promise<void>((resolve) => (pushed = resolve)),
+          tick().then(() => Bun.sleep(1)),
+        ]);
+    },
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -418,8 +427,11 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
   async () => {
     const f = await fixture(DENIED_TO_APP, { file: "other.txt", content: "moved\n" });
     try {
+      await f.untilPushes(1);
+      expect(f.pushes).toEqual([0]);
       await f.run(10);
-      expect(f.pushes.length).toBeGreaterThan(1);
+      await f.untilPushes(2);
+      expect(f.pushes[1]).toBeGreaterThan(0);
       expect(f.fetches).toEqual([]);
       expect(f.posted).toEqual([]);
       expect(f.remoteBranch("paws/fixture")).toBe(f.movedSha!);

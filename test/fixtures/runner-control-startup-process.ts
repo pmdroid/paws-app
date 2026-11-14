@@ -21,6 +21,7 @@ import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
 import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
+import { readSecretFile } from "../../src/credentials";
 import { createFakeGitHub } from "../../src/github";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import {
@@ -212,11 +213,14 @@ if (enabled || mode === "pending") {
         .digest("hex"),
     );
   const before = hashes();
-  assert.equal((await initialize()).exit, 1);
+  const keyId = first.output.trim().split(" ").at(-1);
+  const second = await initialize();
+  assert.equal(second.exit, 0, second.error);
+  assert.equal(second.output.trim(), `Runner authority already initialized. Command key: ${keyId}`);
   assert.deepEqual(hashes(), before);
   observe(
     "normal CLI initializes protected runner identities and preserves them on repeated init",
-    { firstExit: 0, duplicateExit: 1, identitiesUnchanged: true },
+    { firstExit: 0, duplicateExit: 0, identitiesUnchanged: true },
   );
 }
 const pending = Promise.withResolvers<void>();
@@ -236,6 +240,10 @@ if (mode === "remote") {
   );
   assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   rmSync(config);
+}
+if (mode === "missing") {
+  mkdirSync(join(root, "secrets", "runner-identity", "inputs"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, "secrets", "runner-identity", "agent-read-tokens.json"), "{}");
 }
 await migratedHome(root);
 const paws = await startPaws(source, {
@@ -324,13 +332,17 @@ async function closed(port: number) {
 }
 try {
   if (mode === "missing") {
-    await assert.rejects(paws.ready, /authority|identity|invalid/);
-    assert.equal((await call(browserPort, "/api/runners")).status, 503);
-    assert(await closed(runnerPort));
-    observe("missing initialized runner identity keeps normal startup and APIs unready", {
-      readyRejected: true,
-      apiStatus: 503,
-      runnerListenerClosed: true,
+    await paws.ready;
+    const identity = join(root, "secrets", "runner-identity");
+    for (const name of ["runner-authority.json", "runner-command-key.pem"])
+      assert(existsSync(join(identity, name)), name);
+    assert(existsSync(join(identity, "inputs")));
+    assert.equal(readSecretFile(join(identity, "agent-read-tokens.json")), "{}");
+    assert(!(await closed(runnerPort)));
+    observe("normal startup creates a missing runner identity beside existing runner files", {
+      ready: true,
+      runnerListenerOpen: true,
+      existingFilesKept: true,
     });
   } else if (mode === "pending") {
     assert.equal((await call(browserPort, "/api/runners")).status, 503);

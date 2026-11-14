@@ -3,7 +3,6 @@ import type { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { orm, type Orm } from "./orm";
-import * as sqliteSchema from "./schema";
 import * as pgSchema from "./schema-pg";
 
 export type PgOrm = PgDatabase<PgQueryResultHKT, typeof pgSchema>;
@@ -17,7 +16,6 @@ export type Steps<T> = Generator<Step, T, unknown>;
 type Body<T> = (q: Q) => Steps<T>;
 
 export type Q = {
-  readonly dialect: "sqlite" | "postgres";
   readonly orm: PgOrm;
   readonly t: typeof pgSchema;
   all<R>(query: PromiseLike<R[]>): Steps<R[]>;
@@ -32,23 +30,20 @@ type Runs = {
 };
 
 export type SqliteDb = Runs & {
-  readonly dialect: "sqlite";
   readonly orm: Orm;
   sync<T>(fn: (orm: Orm) => T): Promise<T>;
 };
 
-export type PgDb = Runs & {
-  readonly dialect: "postgres";
+export type Db = Runs & {
   readonly orm: PgOrm;
 };
 
-export type Db = SqliteDb | PgDb;
+export type PgDb = Db;
 
-function queries(dialect: Q["dialect"], handle: unknown, t: unknown): Q {
+function queries(handle: unknown): Q {
   return {
-    dialect,
     orm: handle as PgOrm,
-    t: t as typeof pgSchema,
+    t: pgSchema,
     *all<R>(query: PromiseLike<R[]>) {
       return (yield { kind: "all", query }) as R[];
     },
@@ -84,15 +79,11 @@ export function sqliteDb(database: Database): SqliteDb {
   return db;
 }
 
-export function storeOf(source: Database | Db): Db {
-  return "dialect" in source ? source : sqliteDb(source);
-}
-
 type SqliteQuery = { all(): unknown[]; run(): unknown };
 
 function openSqliteDb(database: Database): SqliteDb {
   const handle = orm(database);
-  const q = queries("sqlite", handle, sqliteSchema);
+  const q = queries(handle);
   const exec = (...statements: string[]) =>
     statements.forEach((statement) => handle.run(sql.raw(statement)));
   const within = <T>(begin: string, commit: string, rollback: string[], body: Body<T>): T => {
@@ -137,7 +128,6 @@ function openSqliteDb(database: Database): SqliteDb {
     return next.value;
   }
   return {
-    dialect: "sqlite",
     orm: handle,
     sync: (fn) => settle(() => measureHostOperation(() => fn(handle))),
     run: (body) => settle(() => measureHostOperation(() => drive(body(q)))),
@@ -153,7 +143,7 @@ function openSqliteDb(database: Database): SqliteDb {
 }
 
 async function drivePg<T>(pg: PgOrm, body: Body<T>): Promise<T> {
-  const steps = body(queries("postgres", pg, pgSchema));
+  const steps = body(queries(pg));
   const perform = async (step: Step): Promise<unknown> => {
     if (step.kind === "transaction") return pg.transaction((tx) => drivePg(tx, step.body));
     const rows = await (step.query as PromiseLike<unknown>);
@@ -176,7 +166,6 @@ async function drivePg<T>(pg: PgOrm, body: Body<T>): Promise<T> {
 
 export function postgresDb(pg: PgOrm): PgDb {
   return {
-    dialect: "postgres",
     orm: pg,
     run: (body) => drivePg(pg, body),
     transaction: (body) => pg.transaction((tx) => drivePg(tx, body)),

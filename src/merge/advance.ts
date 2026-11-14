@@ -36,6 +36,7 @@ import {
   rebaseOntoMain,
   squashPull,
   SquashServerError,
+  updateBranchOnGitHub,
   type GitExec,
   type GitHubBinding,
   type PullFacts,
@@ -132,6 +133,7 @@ export type MergeCapabilities = OrderCapabilities & {
   ): MergeResultPolicyError | undefined | Promise<MergeResultPolicyError | undefined>;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
+  mirrorsOff?(): boolean;
   assertReady(item: WorkItemRecord): Promise<void>;
   /** Whether head S needs, and has, a person's risk approval in Paws. */
   riskApproval(item: WorkItemRecord, published: MergePublication): Promise<RiskApproval>;
@@ -153,8 +155,9 @@ export type MergeCapabilities = OrderCapabilities & {
 };
 
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
+const FAILED_CI_RERUN = "failed CI job on a head Closeout accepted";
 
-async function rerunCancelledCi(
+async function rerunFailedCiOnce(
   store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
@@ -163,18 +166,18 @@ async function rerunCancelledCi(
 ): Promise<MergeStep | null> {
   if (turn.kind !== "blocked" || turn.block !== "ci_failed") return null;
   const { readiness, head, base } = turn.pull;
-  if (
-    !caps.rerunCi ||
-    readiness.onlyCancelled !== true ||
-    (await store.run((q) => hasCiRerunSteps(q, item.id, head)))
-  )
-    return null;
-  await caps.rerunCi(item, pullNumber, CANCELLED_CI_RERUN).catch((error: unknown) => {
-    journalCaught(error, "advance.rerunCancelledCi", item.id);
-  });
+  if (!caps.rerunCi || (await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
+  const cancelled = readiness.onlyCancelled === true;
+  await caps
+    .rerunCi(item, pullNumber, cancelled ? CANCELLED_CI_RERUN : FAILED_CI_RERUN)
+    .catch((error: unknown) => {
+      journalCaught(error, "advance.rerunFailedCiOnce", item.id);
+    });
   if (await caps.stopped()) return { kind: "obsolete" };
   if (!(await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
-  const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
+  const message = cancelled
+    ? `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`
+    : `Re-ran failed CI jobs on ${head.slice(0, 7)} once before sending it back to the agent.`;
   await store.run((q) => caps.voice.status(q, item, message, `${item.id}:ci-rerun:${head}`));
   await caps.voice.flush();
   return { kind: "wait", reason: "ci", message, base, head };
@@ -291,6 +294,7 @@ export async function advanceMerge(
           overlap: {
             packages: caps.packages(`${repository.owner}/${repository.repo}`),
             anyFiles: mergeSettings.mainMoved === "green",
+            ...(caps.mirrorsOff?.() ? { fromGitHub: true } : {}),
           },
         }
       : {}),
@@ -308,7 +312,10 @@ export async function advanceMerge(
       });
     },
     rebase: async (facts) => {
-      const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
+      const rebased =
+        mergeSettings.mainMoved === "ci" && caps.mirrorsOff?.()
+          ? await updateOnGitHub(item, caps, lane, facts, published.signal)
+          : await rebaseOnRunner(item, caps, lane, facts, published.signal);
       if (rebased.rebased)
         await store.run((q) =>
           recordItemCandidateSteps(q, {
@@ -361,7 +368,7 @@ export async function advanceMerge(
     const late = await reviewHold(store, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
-  const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);
+  const rerun = await rerunFailedCiOnce(store, item, caps, turn, pull.number);
   if (rerun) return rerun;
   const ciFixLimit = await caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
@@ -685,6 +692,29 @@ async function returnForPolicy(
     return { kind: "asked" };
   }
   return { kind: "failed", reason: "merge", message };
+}
+
+async function updateOnGitHub(
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  lane: SerialMergeInput,
+  pull: PullFacts,
+  signal: AbortSignal,
+): Promise<RebaseResult> {
+  const updated = await updateBranchOnGitHub(
+    lane,
+    { head: pull.head, base: pull.base },
+    signal,
+  ).catch((error: unknown) => {
+    if (signal.aborted) throw error;
+    return { refused: error instanceof Error ? error.message : String(error) };
+  });
+  signal.throwIfAborted();
+  if (!("refused" in updated)) return updated;
+  journal(
+    `item ${item.linearIdentifier} rebases without GitHub's update-branch: ${updated.refused}`,
+  );
+  return rebaseOnRunner(item, caps, lane, pull, signal);
 }
 
 async function rebaseOnRunner(

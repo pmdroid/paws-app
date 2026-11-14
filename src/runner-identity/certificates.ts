@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
 
 export type RunnerCertificate = {
   pem: string;
@@ -33,7 +33,8 @@ extendedKeyUsage=clientAuth
 
 export async function initializeRunnerAuthority(root: string): Promise<RunnerAuthority> {
   privateDirectory(root);
-  if (existsSync(join(root, AUTHORITY_FILE))) throw new Error("Runner authority already exists");
+  if (secretFileExists(join(root, AUTHORITY_FILE)))
+    throw new Error("Runner authority already exists");
   await scratch(root, async (dir) => {
     await openssl(dir, [
       "req",
@@ -59,7 +60,7 @@ export async function initializeRunnerAuthority(root: string): Promise<RunnerAut
       "-addext",
       "keyUsage=critical,keyCertSign,cRLSign",
     ]);
-    writeSecretFile(
+    await saveSecret(
       join(root, AUTHORITY_FILE),
       JSON.stringify({
         key: readFileSync(join(dir, "key.pem"), "utf8"),

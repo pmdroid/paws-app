@@ -82,6 +82,8 @@ import {
   startupSettings,
   resolveAgentProfiles,
   loadEnv,
+  githubMirrorsOn,
+  useActiveGitHubMirrors,
   loadConfigFile,
   resolveTimeLimits,
   loadRunnerControl,
@@ -92,6 +94,7 @@ import {
   describeOverriddenSections,
   journalRetiredAgentProjects,
   journalRetiredProjectSettings,
+  copyCapsToTimeLimits,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -345,7 +348,7 @@ import {
   type WorkspacePrincipal,
 } from "./workspace";
 import {
-  initializeRunnerCoordinator,
+  ensureRunnerCoordinator,
   openRunnerCoordinator,
   type RunnerCoordinator,
   type RunnerRepositoryAccessOptions,
@@ -356,7 +359,9 @@ import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands"
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneLoopQueues,
   pruneRunnerEvents,
+  pruneRunnerTables,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
   RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -511,6 +516,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       throw error;
     },
   );
+  if (runnerConfig !== null) {
+    const ensured = await ensureRunnerCoordinator(runnerConfig.root).catch(
+      async (error: unknown) => {
+        await database.close().catch(() => undefined);
+        throw error;
+      },
+    );
+    if (ensured.created)
+      journal(`Runner authority initialized. Command key: ${ensured.signingKeys[0].keyId}`);
+  }
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
@@ -582,6 +597,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    const copiedCaps = await copyCapsToTimeLimits(
+      paths.configFile,
+      loadConfigFile(paths.configFile),
+    );
+    if (copiedCaps !== null) journal(copiedCaps);
     journalRetiredAgentProjects(paths.configFile, journal);
     journalRetiredProjectSettings(paths.configFile, journal);
   } catch (error) {
@@ -603,8 +623,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  useActiveGitHubMirrors(startupMirrors);
   useGitReader(
-    loadConfigFile(paths.configFile).githubMirrors === false
+    !startupMirrors
       ? createGitHubGitReader({
           locate: (path) => {
             const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");
@@ -774,7 +796,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     db: store,
     store,
     signal: abort.signal,
-    countItemRequest: async (itemId, caller) => await countLinearRequest(store, itemId, caller),
+    countItemRequest: async (itemId) => await countLinearRequest(store, itemId),
     budget: linearBudgetStore(store, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: async () => !(await linearRevoked()),
@@ -1095,6 +1117,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           runnerFiles: runnerFileObjects(),
           eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
+          secretsDir: paths.secretsDir,
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),
@@ -1200,7 +1223,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ store });
-  const accountManagement = createAccountManagement();
+  const accountManagement = createAccountManagement({ store });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,
@@ -1481,6 +1504,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
+        configPath: paths.configFile,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
@@ -1676,7 +1700,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         remoteExecution,
@@ -2191,14 +2215,23 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
-      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
-          ({ deleted }) => {
-            if (!deleted) return;
-            journal(`runner events pruned: ${deleted} events deleted`);
-          },
-        ),
-      );
+      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, async (_job, context) => {
+        const signal = AbortSignal.any([context.signal, abort.signal]);
+        const { deleted } = await pruneRunnerEvents({ store, signal });
+        if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+        for (const [label, prune] of [
+          ["loop queues", pruneLoopQueues],
+          ["runner tables", pruneRunnerTables],
+        ] as const) {
+          const pruned = Object.entries(await prune({ store, signal })).filter(
+            ([, rows]) => rows > 0,
+          );
+          if (pruned.length)
+            journal(
+              `${label} pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+            );
+        }
+      });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,
@@ -2970,8 +3003,12 @@ if (import.meta.main) {
       if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
       const paths = pawsPaths(loadEnv(process.env).home);
       ensureLayout(paths);
-      const keys = await initializeRunnerCoordinator(join(paths.secretsDir, "runner-identity"));
-      console.log(`Runner authority initialized. Command key: ${keys[0].keyId}`);
+      const ensured = await withSecretStore(process.env, () =>
+        ensureRunnerCoordinator(join(paths.secretsDir, "runner-identity")),
+      );
+      console.log(
+        `Runner authority ${ensured.created ? "initialized" : "already initialized"}. Command key: ${ensured.signingKeys[0].keyId}`,
+      );
       process.exit(0);
     } catch (caughtError2) {
       journalCaught(caughtError2, "Runner authority initialization failed.", null);

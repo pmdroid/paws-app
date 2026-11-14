@@ -195,6 +195,8 @@ export class RemotePreparationTimeout extends Error {
   }
 }
 
+const FENCED = Symbol("fenced");
+
 const DEFAULT_POLL_INTERVAL_MS = 250;
 /** Above the longest silent tool call seen; a run this quiet must be confirmed by its runner. */
 const DEFAULT_SILENT_RUN_MS = 20 * 60_000;
@@ -1911,6 +1913,19 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           };
+          const unlessFenced = async <T>(read: () => Promise<T>): Promise<T | typeof FENCED> => {
+            try {
+              return await read();
+            } catch (error) {
+              if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
+              const fenced = await work.currentAsync(assigned.runId, assigned.generation).then(
+                () => false,
+                (caught: unknown) => caught instanceof RunnerWorkFencedError,
+              );
+              if (!fenced) throw error;
+              return FENCED;
+            }
+          };
           while (now() < deadline) {
             signal.throwIfAborted();
             try {
@@ -1965,7 +1980,11 @@ export function createRemoteAgentRunner(options: {
               );
             }
             if (questionError) throw questionError;
-            complete = await results.read(assigned.runId, assigned.generation, assigned.id);
+            const read = await unlessFenced(() =>
+              results.read(assigned.runId, assigned.generation, assigned.id),
+            );
+            if (read === FENCED) continue;
+            complete = read;
             if (complete && !disposition)
               disposition = await store.transaction(function* (q) {
                 return (
@@ -1992,7 +2011,10 @@ export function createRemoteAgentRunner(options: {
                 false,
                 failedBinding(selected.account, complete),
               );
-            const pendingEvents = await results.events(assigned.runId, assigned.generation, cursor);
+            const pendingEvents = await unlessFenced(() =>
+              results.events(assigned.runId, assigned.generation, cursor),
+            );
+            if (pendingEvents === FENCED) continue;
             for (const row of pendingEvents) {
               const event = scrub(row.event);
               const origin = {
@@ -2345,7 +2367,12 @@ export function createRemoteAgentRunner(options: {
             if (pendingEvents.length) heardAt = now();
             if (complete && pendingEvents.length < 64) break;
             if (pendingEvents.length === 64) continue;
-            if (!complete && (await results.read(assigned.runId, assigned.generation, assigned.id)))
+            if (
+              !complete &&
+              (await unlessFenced(() =>
+                results.read(assigned.runId, assigned.generation, assigned.id),
+              ))
+            )
               continue;
             // A long silence is checked against the runner. A question waits on a person, so its
             // wait is not silence. A runner that still names the command in its heartbeat keeps a

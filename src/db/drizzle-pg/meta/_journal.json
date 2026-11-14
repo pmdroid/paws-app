@@ -134,6 +134,55 @@
       "when": 1794599480345,
       "tag": "0018_github_blob",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794605337783,
+      "tag": "0019_runner_setup_hold_ends",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794625131434,
+      "tag": "0020_runner_fix_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794637259494,
+      "tag": "0021_drop_dead_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794646313303,
+      "tag": "0022_open_findings_and_activity_listing_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794646313929,
+      "tag": "0023_backfill_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794646322077,
+      "tag": "0024_drop_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794670342492,
+      "tag": "0025_fold_run_owner_and_agent_setup",
+      "breakpoints": true
     }
   ]
 }

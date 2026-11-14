@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { HookEvent } from "../core";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
@@ -172,20 +172,53 @@ export function* recordRunnerSkillsSteps(
   reportedAt: number,
 ) {
   const { agentSkill, runner, runnerSkill } = q.t;
-  yield* q.exec(q.orm.delete(runnerSkill).where(eq(runnerSkill.runnerId, runnerId)));
-  for (const skill of skills)
-    yield* q.exec(
-      q.orm.insert(runnerSkill).values({
-        runnerId,
+  const stored = new Map(
+    (yield* q.all(
+      q.orm
+        .select({
+          name: runnerSkill.name,
+          version: runnerSkill.version,
+          sha256: runnerSkill.sha256,
+          status: runnerSkill.status,
+          error: runnerSkill.error,
+          waiting: runnerSkill.waiting,
+        })
+        .from(runnerSkill)
+        .where(eq(runnerSkill.runnerId, runnerId)),
+    )).map((row) => [row.name, row]),
+  );
+  const reported = new Map(
+    skills.map((skill) => [
+      skill.name,
+      {
         name: skill.name,
         version: skill.version,
         sha256: skill.sha256,
         status: skill.status,
         error: skill.status === "refused" ? (skill.error ?? null) : null,
         waiting: skill.status === "pending" ? (skill.waiting ?? null) : null,
-        reportedAt,
-      }),
+      },
+    ]),
+  );
+  const gone = [...stored.keys()].filter((name) => !reported.has(name));
+  if (gone.length > 0)
+    yield* q.exec(
+      q.orm
+        .delete(runnerSkill)
+        .where(and(eq(runnerSkill.runnerId, runnerId), inArray(runnerSkill.name, gone))),
     );
+  for (const [name, values] of reported) {
+    const before = stored.get(name);
+    if (!before)
+      yield* q.exec(q.orm.insert(runnerSkill).values({ runnerId, ...values, reportedAt }));
+    else if (!Bun.deepEquals(before, values))
+      yield* q.exec(
+        q.orm
+          .update(runnerSkill)
+          .set({ ...values, reportedAt })
+          .where(and(eq(runnerSkill.runnerId, runnerId), eq(runnerSkill.name, name))),
+      );
+  }
   // A removed skill's tombstone goes once no live runner still has it.
   yield* q.exec(
     q.orm
@@ -372,7 +405,7 @@ type AgentSetupInput = {
 };
 
 export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
-  const setup = q.t.runAgentSetup;
+  const work = q.t.runnerWork;
   const pins = new Map(
     (yield* listSkillsSteps(q))
       .filter(
@@ -387,26 +420,15 @@ export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
       version: row.version,
       status: row.status as "installed" | "pending",
     }));
-  // `skills` and `hooks` are text columns on both dialects.
   yield* q.exec(
     q.orm
-      .insert(setup)
-      .values({
-        runId: input.runId,
-        runnerId: input.runnerId,
+      .update(work)
+      .set({
         skills: JSON.stringify(skills),
         hooks: JSON.stringify(input.hooks),
-        recordedAt: input.at,
+        setupRecordedAt: input.at,
       })
-      .onConflictDoUpdate({
-        target: setup.runId,
-        set: {
-          runnerId: sql`excluded.runner_id`,
-          skills: sql`excluded.skills`,
-          hooks: sql`excluded.hooks`,
-          recordedAt: sql`excluded.recorded_at`,
-        },
-      }),
+      .where(and(eq(work.runId, input.runId), eq(work.runnerId, input.runnerId))),
   );
 }
 
@@ -415,26 +437,43 @@ export async function recordRunAgentSetup(store: Db, input: AgentSetupInput): Pr
 }
 
 export function* runAgentSetupSteps(q: Q, runId: string): Steps<RunAgentSetup | null> {
-  const setup = q.t.runAgentSetup;
-  const row = yield* q.one(
+  return (yield* runAgentSetupsSteps(q, [runId])).get(runId) ?? null;
+}
+
+export function* runAgentSetupsSteps(
+  q: Q,
+  runIds: readonly string[],
+): Steps<Map<string, RunAgentSetup>> {
+  const work = q.t.runnerWork;
+  const rows = yield* q.all(
     q.orm
       .select({
-        runnerId: setup.runnerId,
-        skills: setup.skills,
-        hooks: setup.hooks,
-        recordedAt: setup.recordedAt,
+        runId: work.runId,
+        runnerId: work.runnerId,
+        skills: work.skills,
+        hooks: work.hooks,
+        recordedAt: work.setupRecordedAt,
       })
-      .from(setup)
-      .where(eq(setup.runId, runId)),
+      .from(work)
+      .where(inArray(work.runId, [...runIds])),
   );
-  return row
-    ? {
-        runnerId: row.runnerId,
-        skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
-        hooks: JSON.parse(row.hooks) as RunHook[],
-        recordedAt: row.recordedAt,
-      }
-    : null;
+  return new Map(
+    rows.flatMap((row) =>
+      row.skills === null || row.hooks === null || row.recordedAt === null
+        ? []
+        : [
+            [
+              row.runId,
+              {
+                runnerId: row.runnerId,
+                skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
+                hooks: JSON.parse(row.hooks) as RunHook[],
+                recordedAt: row.recordedAt,
+              },
+            ] as const,
+          ],
+    ),
+  );
 }
 
 export async function runAgentSetup(store: Db, runId: string): Promise<RunAgentSetup | null> {

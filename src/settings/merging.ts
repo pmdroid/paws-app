@@ -4,12 +4,14 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
   loadConfigFile,
+  MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   parseCommentWait,
   parseHighRiskPathSettings,
   parseIgnoredCommentSettings,
   parseMergeLanes,
   parseMergePolicy,
+  parseParallelFileSettings,
   readMergeSettings,
   storedMerge,
   writeMergePolicy,
@@ -67,6 +69,7 @@ export type HotFileView = {
   conflicts: number;
   items: string[];
   holds?: OverlapHold[];
+  held?: boolean;
 };
 
 /** `paths` is null when the commit has no `.paws/high-risk-paths`. */
@@ -122,6 +125,7 @@ export async function handleMergeSettingsRequest(
       autoApproveHighRisk: policy.autoApproveHighRisk,
       lanes: policy.lanes,
       noProject: policy.noProject,
+      parallel: policy.parallel,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -132,7 +136,10 @@ export async function handleMergeSettingsRequest(
       ignoredComments: ignoredCommentsView(policy, options),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
-      ...(options.hotFiles ? await hotFileView(options.hotFiles, options.overlapHolds) : {}),
+      parallelFiles: parallelFilesView(policy),
+      ...(options.hotFiles
+        ? await hotFileView(options.hotFiles, options.overlapHolds, parallelFilesView(policy))
+        : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -151,9 +158,28 @@ export async function handleMergeSettingsRequest(
   let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
   let ignoredComments: Record<string, IgnoredComments> | undefined;
+  let parallelFiles: Record<string, string[]> | undefined;
   let lanes: MergeLaneSplit[] | undefined;
   let noProject: MergeNoProject | undefined;
+  let parallel: number | undefined;
   try {
+    if (isRecord(body) && "parallelFiles" in body) {
+      const { parallelFiles: files, ...rest } = body;
+      parallelFiles = parseParallelFileSettings(files);
+      body = rest;
+    }
+    if (isRecord(body) && "parallel" in body) {
+      const { parallel: count, ...rest } = body;
+      if (
+        typeof count !== "number" ||
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > MAX_MERGE_PARALLEL
+      )
+        throw new Error(`parallel must be a whole number from 1 to ${MAX_MERGE_PARALLEL}`);
+      parallel = count;
+      body = rest;
+    }
     if (isRecord(body) && "lanes" in body) {
       const { lanes: splits, ...rest } = body;
       lanes = parseMergeLanes(splits);
@@ -251,10 +277,12 @@ export async function handleMergeSettingsRequest(
         ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
         ...(lanes === undefined ? {} : { lanes }),
         ...(noProject === undefined ? {} : { noProject }),
+        ...(parallel === undefined ? {} : { parallel }),
       },
       highRiskPaths,
       commentWait,
       ignoredComments,
+      parallelFiles,
     );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
@@ -276,6 +304,11 @@ export async function handleMergeSettingsRequest(
     await options.audit?.(
       "settings.merging",
       `Issues without a project merge: ${before?.noProject ?? "own"} → ${noProject}`,
+    );
+  if (parallel !== undefined && parallel !== (before?.parallel ?? 1))
+    await options.audit?.(
+      "settings.merging",
+      `Merges at once in a lane: ${before?.parallel ?? 1} → ${parallel}`,
     );
   if (
     autoApproveHighRisk !== undefined &&
@@ -312,6 +345,14 @@ export async function handleMergeSettingsRequest(
     journalCaught(caughtError, "merging.handleMergeSettingsRequest.readSaved", null);
   }
   const ignoredAfter = after ? ignoredCommentsView(after, options) : [];
+  const parallelAfter = parallelFilesView(after);
+  const listed = (entries: typeof parallelAfter) =>
+    entries.map((entry) => `${entry.repository} ${entry.paths.join(", ")}`).join("; ") || "none";
+  if (parallelFiles !== undefined && listed(parallelFilesView(before)) !== listed(parallelAfter))
+    await options.audit?.(
+      "settings.merging",
+      `Conflict-prone files not held: ${listed(parallelFilesView(before))} → ${listed(parallelAfter)}`,
+    );
   if (ignoredComments !== undefined)
     for (const change of ignoredCommentChanges(
       before ? ignoredCommentsView(before, options) : [],
@@ -323,13 +364,23 @@ export async function handleMergeSettingsRequest(
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
     lanes: after?.lanes ?? lanes,
     noProject: after?.noProject ?? noProject,
+    parallel: after?.parallel ?? parallel,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),
     highRiskRepositories: await highRiskRepositoriesView(saved, options),
     ignoredComments: ignoredAfter,
+    parallelFiles: parallelAfter,
   });
+}
+
+function parallelFilesView(
+  settings: MergeSettings | null,
+): { repository: string; paths: string[] }[] {
+  return Object.entries(settings?.repositories ?? {})
+    .filter(([, value]) => value.parallelFiles?.length)
+    .map(([repository, value]) => ({ repository, paths: value.parallelFiles! }));
 }
 
 function pathsByRepository(
@@ -498,7 +549,8 @@ async function upToDateRuleView(
 
 async function hotFileView(
   read: () => Promise<HotFileView[]>,
-  readHolds?: () => Promise<OverlapHoldView[]>,
+  readHolds: (() => Promise<OverlapHoldView[]>) | undefined,
+  parallel: readonly { repository: string; paths: string[] }[],
 ): Promise<{ hotFiles?: HotFileView[] }> {
   let files: HotFileView[];
   try {
@@ -507,12 +559,25 @@ async function hotFileView(
     journalCaught(caughtError, "merging.hotFileView.read", null);
     return {};
   }
+  const listed = new Set(files.map((file) => `${file.repository.toLowerCase()}\0${file.path}`));
+  for (const entry of parallel)
+    for (const path of entry.paths)
+      if (!listed.has(`${entry.repository.toLowerCase()}\0${path}`))
+        files.push({ repository: entry.repository, path, conflicts: 0, items: [] });
   const holds = await (readHolds?.() ?? Promise.resolve([])).catch((caughtError) => {
     journalCaught(caughtError, "merging.hotFileView.readHolds", null);
     return [];
   });
   return {
-    hotFiles: files.map((file) => {
+    hotFiles: files.map((source) => {
+      const file = {
+        ...source,
+        held: !parallel.some(
+          (entry) =>
+            entry.repository.toLowerCase() === source.repository.toLowerCase() &&
+            entry.paths.includes(source.path),
+        ),
+      };
       const named = holds
         .filter(
           (hold) =>

@@ -92,6 +92,8 @@ export type SchedulerOptions = {
   itemRunners?: (q: Q, itemId: string) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
+  /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
+  parallelFiles?: (repository: string) => readonly string[];
   log?: (line: string) => void;
 };
 
@@ -127,9 +129,15 @@ type Overlap = { blocker: string; files: string[]; start?: true };
  * keeps its merge-queue place, such as one sent back for a conflict, is held only by an item
  * ahead of it in that queue: anything behind it, or not queued yet, merges after it.
  */
-function* overlapGate(q: Q, now: number, waiters: readonly Item[]) {
+function* overlapGate(
+  q: Q,
+  now: number,
+  waiters: readonly Item[],
+  parallelFiles?: SchedulerOptions["parallelFiles"],
+) {
   const hot = new Map<string, Set<string>>();
   for (const file of yield* hotFilesSteps(q, now)) {
+    if (parallelFiles?.(file.repository).includes(file.path)) continue;
     const key = file.repository.toLowerCase();
     hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
   }
@@ -276,7 +284,12 @@ function* taskSlots(
   q: Q,
   now: number,
   excludeRunId = "",
-): Steps<{ total: number; busy: number; open: Map<string, number> } | null> {
+): Steps<{
+  total: number;
+  busy: number;
+  open: Map<string, number>;
+  fix: Map<string, number>;
+} | null> {
   const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   const reservations = yield* unassignedRunnerReservationsSteps(q, now, "");
@@ -299,6 +312,7 @@ function* taskSlots(
         runner.capacity - Math.min(runner.used, runner.capacity),
       ]),
     ),
+    fix: new Map(runners.map((runner) => [runner.id, runner.fixSlots])),
   };
 }
 
@@ -629,10 +643,32 @@ async function admit(
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
       const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
-      const free = verdicts.runners.filter(
-        (runner) => runner.rejection === null && open(runner.id) > 0,
-      );
+      const free = [];
+      for (const runner of verdicts.runners)
+        if (
+          runner.rejection === null &&
+          open(runner.id) - (yield* fixSlotsKept(itemId, runner.id)) > 0
+        )
+          free.push(runner);
       return free[0]?.id ?? null;
+    }
+    function* fixSlotsKept(itemId: string, runnerId: string): Steps<number> {
+      const kept = slots?.fix.get(runnerId) ?? 0;
+      if (!kept || byId.get(itemId)?.mergeAt !== null) return 0;
+      for (const pin of pins)
+        if (
+          byId.get(pin.itemId)!.mergeAt !== null &&
+          !reservedSlots.has(pin.jobId) &&
+          pin.runnerIds.includes(runnerId)
+        )
+          return kept;
+      for (const item of candidates) {
+        if (item.mergeAt === null || held.some((entry) => entry.itemId === item.id)) continue;
+        const verdicts = yield* verdictsFor(item.id);
+        if (verdicts?.runners.some((runner) => runner.id === runnerId && runner.rejection === null))
+          return kept;
+      }
+      return 0;
     }
     const choices = new Map<string, string>();
     function* takeSlot(itemId: string): Steps<boolean> {
@@ -722,7 +758,7 @@ async function admit(
       )
         waiters.push(item);
     }
-    const overlapping = yield* overlapGate(q, now, waiters);
+    const overlapping = yield* overlapGate(q, now, waiters, options.parallelFiles);
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||

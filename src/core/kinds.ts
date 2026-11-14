@@ -22,7 +22,7 @@ export const JOB_KIND = {
   linkAskReminder: "linear.link_ask_reminder",
   /** Written when a redelivered elicitation dies too; the loop re-asks through ask(). */
   reaskQuestion: "question.reask",
-  /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
+  /** One pending job per hold owner, queued by runner writes that may give a held owner a runner. */
   runnerSetupCheck: "runner_setup.check",
   runnerRepositoryCheck: "runner_repository.check",
   schedulerTick: "scheduler.tick",

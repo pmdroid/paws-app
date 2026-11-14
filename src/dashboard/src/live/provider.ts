@@ -30,37 +30,60 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AgentCloseoutEvent,
+  CiRerun,
+  ItemActivityFacts,
   Job,
+  Q,
+  StoredLinearTurn,
+  UsagePause,
   StoredRun,
   ItemHold,
   OpenQuestionRecord,
   OutboxRow,
   MergeQueuePosition,
   QueuePosition,
+  TaskMergeSettings,
   VisualReviewRecord,
   WorkItemEventRow,
   WorkItemFact,
   WorkItemRecord,
 } from "../../../db";
 import {
-  blockerCheckedAtSteps,
+  blockerCheckedAtForItemsSteps,
+  getLinearConversationSourcesSteps,
+  getTaskModesSteps,
+  itemActivityFactsForItemsSteps,
+  latestCandidateRisksSteps,
+  latestRiskFixesSteps,
+  linearConversationUrl,
+  listBlockedConversationsSteps,
+  listCiRerunsForItemsSteps,
+  listConfirmedMergeShasSteps,
+  listEvidenceForItemsSteps,
+  listLinearTurnsForItemsSteps,
+  listTaskBlockersForIssuesSteps,
+  listVisualReviewMarksForQuestionsSteps,
+  listVisualReviewsForItemsSteps,
+  listWorkItemEventRowsForItemsSteps,
+  runAgentSetupsSteps,
+  runnerWorkActiveForRunsSteps,
+  runRunnerNamesSteps,
+  usagePausesSteps,
   describeLinearWebhookWarning,
   getCandidateRiskSteps,
   getCloseoutRecoverySteps,
   getConfirmedRemoteMergeSteps,
   latestCandidatePathsSteps,
-  getConversationSteps,
   getEvidenceSteps,
   getLinkAskSteps,
   getRiskFixSteps,
   getRunSteps,
-  getTaskMergeSettingsSteps,
+  listTaskMergeSettingsSteps,
   getTaskModeSteps,
-  getWorkItemRepositorySteps,
+  listWorkItemRepositoriesSteps,
+  listConfirmedRemoteMergesSteps,
   getWorkItemSteps,
-  itemActivityFactsSteps,
   latestCandidateRiskSteps,
-  latestRiskFixSteps,
   LINEAR_WEBHOOK_FIX,
   linearConversationUrlAsync,
   linearRequestsByItemSteps,
@@ -77,7 +100,6 @@ import {
   listItemHoldsSteps,
   listJobsSteps,
   listLastWorkItemEventTimesSteps,
-  listLinearTurnsForItemSteps,
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listOutboxSteps,
@@ -85,21 +107,15 @@ import {
   listPushOutagesSteps,
   listQueuePositions,
   listRunsSteps,
-  listTaskBlockersSteps,
-  listVisualReviewMarksSteps,
-  listVisualReviewsSteps,
+  listTaskBlocksSteps,
   listWorkItemEventRowsSteps,
   listWorkItemFactsSteps,
   listWorkItemsByStatesSteps,
   openQuestionKindSteps,
   resolveDashboardAliasSteps,
-  runAgentSetupSteps,
   runnerCapacityWait,
-  runnerWorkActiveSteps,
-  runRunnerNameSteps,
   sessionRepositoriesAllowedSteps,
   type Db,
-  usagePauseSteps,
   type CloseoutProgressRecord,
   type CloseoutProgressState,
   type CloseoutRound,
@@ -114,9 +130,8 @@ import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
-  agentCloseoutSummary,
   isBlockerSatisfied,
-  verdictSummary,
+  issueListItem,
   type StatusDeadDelivery,
   type ActivityKind,
   type CheckKind,
@@ -323,21 +338,13 @@ type IssueScope = {
 /** One issue's sessions with `blocks` and the Risk card, before `toIssueDetail` names them. */
 type ItemDetail = IssueScope & { id: string; blocks: string[]; risk: StatusItemRisk | null };
 
-/**
- * The issue list: one Closeout summary per item and each run's latest agent Closeout state.
- * Attempts, check output and findings are only in the issue detail.
- */
 async function readIssueList(store: Db, options: LiveStatusOptions): Promise<IssueListResponse> {
   const { scope } = await readIssueScope(store, options);
   return {
     source: scope.source,
     generatedAt: scope.generatedAt,
     project: scope.project,
-    issues: scope.items,
-    runs: scope.runs,
-    verdicts: scope.verdicts.map(verdictSummary),
-    agentCloseout: scope.agentCloseout.map(agentCloseoutSummary),
-    mergedTimes: scope.mergedTimes ?? null,
+    issues: scope.items.map(issueListItem),
   };
 }
 
@@ -757,10 +764,6 @@ export function emptyIssueList(
     generatedAt: now.toISOString(),
     project: projectOf([], project),
     issues: [],
-    runs: [],
-    verdicts: [],
-    agentCloseout: [],
-    mergedTimes: null,
   };
 }
 
@@ -1009,30 +1012,42 @@ async function readIssueScope(
   const storedRuns = new Map<string, StoredRun[]>();
   for (const run of await store.run((q) => listRunsSteps(q)))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
+  const reads = await store.run((q) => itemReadsSteps(q, records, itemsByIssue, now.getTime()));
   const items: StatusItem[] = [];
   for (const record of records) {
-    const item = await toItem(
-      store,
+    const item = toItem(
+      reads,
       record,
       rows,
       runs,
       options.project?.repo,
-      itemsByIssue,
       facts,
       queue,
       merging,
       jobs,
       storedRuns.get(record.id)?.length ?? 0,
     );
-    const held = await heldOf(record, holds, store);
-    const session = await sessionAttempt(store, record, visible, itemsByIssue, storedRuns, facts);
-    const history = await historyOf(store, record, facts, now.getTime());
-    const doing = await doingFor(store, record, {
-      hold: holds.get(record.id),
-      question: asked.get(record.id) ?? null,
-      lastChange: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? now.getTime(),
-      now: now.getTime(),
-    });
+    const held = heldOf(record, holds, reads.checkedAt);
+    const session = sessionAttempt(reads, record, visible, itemsByIssue, storedRuns, facts);
+    const history = historyFrom(
+      record,
+      facts,
+      now.getTime(),
+      reads.events.get(record.id) ?? [],
+      reads.reruns.get(record.id) ?? [],
+    );
+    const active = record.currentRunId === null ? undefined : reads.active.get(record.currentRunId);
+    const doing = doingFrom(
+      record,
+      {
+        hold: holds.get(record.id),
+        question: asked.get(record.id) ?? null,
+        lastChange: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? now.getTime(),
+        now: now.getTime(),
+      },
+      reads.activity.get(record.id)!,
+      record.state === "running" && active !== undefined ? (active ? "agent" : "preparing") : null,
+    );
     items.push({
       ...item,
       linearRequests: linearRequests.get(record.id) ?? 0,
@@ -1049,6 +1064,7 @@ async function readIssueScope(
     ? { mergeQueue: [] }
     : await mergeQueueFor(store, {
         records: visible,
+        listed: records,
         items,
         jobs,
         queues,
@@ -1108,15 +1124,7 @@ async function readIssueScope(
         ),
       );
   }
-  const blocks: string[] = [];
-  if (only !== undefined)
-    for (const record of visible)
-      if (
-        publicId(record) !== only &&
-        (await blockersFor(store, record, itemsByIssue)).includes(only) &&
-        !blocks.includes(publicId(record))
-      )
-        blocks.push(publicId(record));
+  const blocks = only === undefined ? [] : await blockedBy(store, only, visible, itemsByIssue);
   const current = records[0]!;
   return {
     scope,
@@ -1155,14 +1163,14 @@ async function deadFor(
  * The item's Linear session and, for an attempt a newer session on the same issue replaced,
  * when it ended. The issue page shows that attempt as an earlier section.
  */
-async function sessionAttempt(
-  store: Db,
+function sessionAttempt(
+  reads: ItemReads,
   record: WorkItemRecord,
   records: readonly WorkItemRecord[],
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
   storedRuns: ReadonlyMap<string, readonly StoredRun[]>,
   facts: ReadonlyMap<string, WorkItemFact>,
-): Promise<Pick<StatusItem, "session" | "endedAt">> {
+): Pick<StatusItem, "session" | "endedAt"> {
   const sessionId = record.sessionKey;
   const session =
     sessionId === null
@@ -1170,7 +1178,7 @@ async function sessionAttempt(
       : {
           session: {
             id: sessionId,
-            url: await linearConversationUrlAsync(store, sessionId, publicId(record)),
+            url: linearConversationUrl(reads.sources.get(sessionId) ?? null, publicId(record)),
             shared: [
               ...new Set(
                 records
@@ -1301,19 +1309,58 @@ const NO_CONTROL_STATES: readonly WorkItemRecord["state"][] = [
   "failed",
 ];
 
-async function toItem(
-  store: Db,
+type ItemReads = ReturnType<typeof itemReadsSteps> extends Generator<unknown, infer T> ? T : never;
+
+function* itemReadsSteps(
+  q: Q,
+  records: readonly WorkItemRecord[],
+  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
+  now: number,
+) {
+  const ids = records.map((record) => record.id);
+  const reviews = yield* listVisualReviewsForItemsSteps(q, ids);
+  const questions = [...reviews.values()].flat().map((review) => review.questionId);
+  const edges = yield* listTaskBlockersForIssuesSteps(
+    q,
+    records.map((record) => record.linearIssueId),
+  );
+  const blockers = [...edges.values()].flat().flatMap((issue) => itemsByIssue.get(issue)?.id ?? []);
+  const running = records.flatMap((record) => record.currentRunId ?? []);
+  return {
+    reviews,
+    evidence: yield* listEvidenceForItemsSteps(q, [...reviews.keys()]),
+    marks: yield* listVisualReviewMarksForQuestionsSteps(q, questions),
+    fixes: yield* latestRiskFixesSteps(q, ids),
+    risks: yield* latestCandidateRisksSteps(q, ids),
+    blocked: new Set((yield* listBlockedConversationsSteps(q)).map((row) => row.itemId)),
+    checkedAt: yield* blockerCheckedAtForItemsSteps(q, ids),
+    sources: yield* getLinearConversationSourcesSteps(
+      q,
+      records.flatMap((record) => record.sessionKey ?? []),
+    ),
+    edges,
+    items: itemsByIssue,
+    modes: yield* getTaskModesSteps(q, blockers),
+    merges: yield* listConfirmedMergeShasSteps(q, blockers),
+    events: yield* listWorkItemEventRowsForItemsSteps(q, ids, HISTORY_LIMIT),
+    reruns: yield* listCiRerunsForItemsSteps(q, ids),
+    activity: yield* itemActivityFactsForItemsSteps(q, records, now),
+    active: yield* runnerWorkActiveForRunsSteps(q, running),
+  };
+}
+
+function toItem(
+  reads: ItemReads,
   record: WorkItemRecord,
   rows: readonly OutboxRow[],
   runs: readonly StatusRun[],
   repo: string | undefined,
-  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
   facts: ReadonlyMap<string, WorkItemFact>,
   queue: ReadonlyMap<string, QueuePosition>,
   merging: ReadonlyMap<string, StatusMergeQueue>,
   jobs: readonly Job[],
   attempts: number,
-): Promise<StatusItem> {
+): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
@@ -1324,12 +1371,10 @@ async function toItem(
       : undefined;
   const githubQueue =
     record.state === "merge_queue" ? githubQueueOf(mergeJob(record.id, jobs)) : undefined;
-  const blockers = await blockersFor(store, record, itemsByIssue);
-  const noControls =
-    NO_CONTROL_STATES.includes(record.state) &&
-    !(await store.run((q) => getConversationSteps(q, record.id))).blocked;
-  const visualReviews = await visualReviewsOf(store, record);
-  const riskCarryOver = await riskCarryOverOf(store, record);
+  const blockers = blockersFrom(reads, record);
+  const noControls = NO_CONTROL_STATES.includes(record.state) && !reads.blocked.has(record.id);
+  const visualReviews = visualReviewsOf(reads, record);
+  const riskCarryOver = riskCarryOverOf(reads, record);
   return {
     id,
     title: textOr(record.title, id),
@@ -1387,14 +1432,13 @@ export function queueOf(
  * The approval a fix kept: the item's latest classified head carried over a person's approval of
  * an earlier head because the fix changed no high-risk path.
  */
-async function riskCarryOverOf(
-  store: Db,
+function riskCarryOverOf(
+  reads: ItemReads,
   record: WorkItemRecord,
-): Promise<{ riskCarryOver?: StatusRiskCarryOver }> {
-  const fix = await store.run((q) => latestRiskFixSteps(q, record.id));
-  if (fix === null || fix.paths.length > 0) return {};
-  if ((await store.run((q) => latestCandidateRiskSteps(q, record.id)))?.head !== fix.head)
-    return {};
+): { riskCarryOver?: StatusRiskCarryOver } {
+  const fix = reads.fixes.get(record.id);
+  if (fix === undefined || fix.paths.length > 0) return {};
+  if (reads.risks.get(record.id)?.head !== fix.head) return {};
   return {
     riskCarryOver: {
       head: fix.head,
@@ -1408,7 +1452,7 @@ async function riskCarryOverOf(
 /** The newest state changes the timeline shows. `stateTimes` reads every one. */
 const TIMELINE_LIMIT = 200;
 /** Enough rows for any item's whole history, so its state times start at its creation. */
-const HISTORY_LIMIT = 100_000;
+export const HISTORY_LIMIT = 100_000;
 
 /**
  * The item's state changes from `work_item_event` with its agent's CI re-runs, oldest first,
@@ -1422,10 +1466,20 @@ export async function historyOf(
   now: number,
 ): Promise<{ timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes }> {
   const rows = await store.run((q) => listWorkItemEventRowsSteps(q, record.id, HISTORY_LIMIT));
+  const reruns = await store.run((q) => listCiRerunsSteps(q, record.id));
+  return historyFrom(record, facts, now, rows, reruns);
+}
+
+export function historyFrom(
+  record: WorkItemRecord,
+  facts: ReadonlyMap<string, WorkItemFact>,
+  now: number,
+  rows: readonly WorkItemEventRow[],
+  reruns: readonly CiRerun[],
+): { timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes } {
   const created = facts.get(record.id)?.createdAt;
   const stateTimes =
     created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
-  const reruns = await store.run((q) => listCiRerunsSteps(q, record.id));
   if (rows.length === 0 && reruns.length === 0) return stateTimes;
   const events: StatusItemEvent[] = [];
   const pending = [...reruns];
@@ -1484,26 +1538,32 @@ export async function mergedTimesFor(
 ): Promise<{ mergedTimes?: StatusMergedTimes }> {
   const since = now - STATUS_RECENT_MS;
   const changed = await store.run(listLastWorkItemEventTimesSteps);
+  const recent = visible.filter((record) => (changed.get(record.id) ?? 0) >= since);
+  const history = await store.run((q) =>
+    listWorkItemEventRowsForItemsSteps(
+      q,
+      recent.flatMap((record) => (record.state === "merged" ? record.id : [])),
+      HISTORY_LIMIT,
+    ),
+  );
   const merged: StateTotals[] = [];
   for (const record of visible) {
     const created = facts.get(record.id)?.createdAt;
     const last = changed.get(record.id);
     if (record.state !== "merged" || created === undefined || last === undefined || last < since)
       continue;
-    const rows = await store.run((q) => listWorkItemEventRowsSteps(q, record.id, HISTORY_LIMIT));
-    merged.push(totalsOf(record, created, rows, now));
+    merged.push(totalsOf(record, created, history.get(record.id) ?? [], now));
   }
   const times = mergedTimes(merged, since);
   return times === null ? {} : { mergedTimes: times };
 }
 
-export async function doingFor(
-  store: Db,
+export function doingFrom(
   record: WorkItemRecord,
   input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
-): Promise<Pick<StatusItem, "doing" | "activeMs">> {
-  const facts = await store.run((q) => itemActivityFactsSteps(q, record, input.now));
-  const phase = record.state === "running" ? await runnerPhase(store, record.currentRunId) : null;
+  facts: ItemActivityFacts,
+  phase: DoingPhase | null,
+): Pick<StatusItem, "doing" | "activeMs"> {
   const doing = doingOf({ ...input, state: record.state, facts, phase });
   const activeMs = Math.max(0, Math.round(record.awakeMs));
   return doing === undefined ? { activeMs } : { doing, activeMs };
@@ -1517,32 +1577,18 @@ function stageTimesOf(record: WorkItemRecord): StatusStageTimes {
   };
 }
 
-/**
- * Runner work is preparing (checkout, mise installs) until its current generation reports an
- * `activity` event. Reads only the plain `type` column; a run without runner work has no phase.
- */
-async function runnerPhase(store: Db, runId: string | null): Promise<DoingPhase | null> {
-  if (runId === null) return null;
-  const active = await store.run((q) => runnerWorkActiveSteps(q, runId));
-  if (active === null) return null;
-  return active ? "agent" : "preparing";
-}
-
 export function questionLine(body: string): string {
   const line = body.trim().split("\n", 1)[0]!.trim();
   return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
-export async function heldOf(
+export function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
-  store?: Db,
-): Promise<{ held?: StatusHeld }> {
+  checked?: ReadonlyMap<string, number>,
+): { held?: StatusHeld } {
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
-  const checkedAt =
-    hold?.reason === "blocked" && store
-      ? await store.run((q) => blockerCheckedAtSteps(q, record.id))
-      : null;
+  const checkedAt = hold?.reason === "blocked" ? (checked?.get(record.id) ?? null) : null;
   return hold
     ? {
         held: {
@@ -1555,25 +1601,23 @@ export async function heldOf(
     : {};
 }
 
-async function visualReviewsOf(
-  store: Db,
+function visualReviewsOf(
+  reads: ItemReads,
   record: WorkItemRecord,
-): Promise<{ visualReviews?: StatusVisualReview[] }> {
-  const reviews = await store.run((q) => listVisualReviewsSteps(q, record.id));
+): { visualReviews?: StatusVisualReview[] } {
+  const reviews = reads.reviews.get(record.id) ?? [];
   if (reviews.length === 0) return {};
   const commits = new Map(
-    (await store.run((q) => listEvidenceSteps(q, record.id))).map((row) => [
-      row.id,
-      row.headCommit,
-    ]),
+    (reads.evidence.get(record.id) ?? []).map((row) => [row.id, row.headCommit]),
   );
   const rounds = visualReviewRounds(reviews);
   const visualReviews: StatusVisualReview[] = [];
   for (const [index, review] of reviews.entries()) {
     const round = rounds[index]!;
-    const marks = (await store.run((q) => listVisualReviewMarksSteps(q, review.questionId))).map(
-      (mark) => ({ id: mark.id, evidenceId: mark.evidenceId }),
-    );
+    const marks = (reads.marks.get(review.questionId) ?? []).map((mark) => ({
+      id: mark.id,
+      evidenceId: mark.evidenceId,
+    }));
     visualReviews.push({
       questionId: review.questionId,
       checkId: review.checkId,
@@ -1645,26 +1689,39 @@ async function runsFor(
     if (byItem.has(stored.itemId))
       attempts.set(stored.itemId, [...(attempts.get(stored.itemId) ?? []), stored]);
   const activityRows = indexActivityRows(rows);
+  const currents = new Map(
+    [...attempts].map(([itemId, stored]) => [
+      itemId,
+      stored.find((run) => run.id === byItem.get(itemId)!.currentRunId) ?? stored.at(-1)!,
+    ]),
+  );
+  const ids = [...currents.values()].map((run) => run.id);
+  const reads = await store.run(function* (q) {
+    return {
+      turns: yield* listLinearTurnsForItemsSteps(q, [...attempts.keys()]),
+      pauses: yield* usagePausesSteps(q, ids),
+      setups: yield* runAgentSetupsSteps(q, ids),
+      runners: yield* runRunnerNamesSteps(q, ids),
+    };
+  });
   const runs: StatusRun[] = [];
   for (const [itemId, stored] of attempts) {
     const record = byItem.get(itemId)!;
     const first = stored[0]!;
-    const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
-    const activity = await activityFor(
-      store,
+    const current = currents.get(itemId)!;
+    const activity = activityFor(
+      reads.turns.get(itemId) ?? [],
       record,
       stored,
       activityRows.for(record, stored),
       generatedAt,
     );
     const recent = activity.at(-1);
-    const pause =
-      record.currentRunId === current.id
-        ? await runUsagePause(store, current.id, generatedAt)
-        : null;
-    const setup = await store.run((q) => runAgentSetupSteps(q, current.id));
+    const paused = record.currentRunId === current.id ? reads.pauses.get(current.id) : undefined;
+    const pause = paused === undefined ? null : usagePauseOf(paused, generatedAt);
+    const setup = reads.setups.get(current.id) ?? null;
     const reviewer = runReviewer(pawsHome, current.id);
-    const runner = await store.run((q) => runRunnerNameSteps(q, current.id));
+    const runner = reads.runners.get(current.id) ?? null;
     runs.push({
       id: first.id,
       attempts: stored.map((run) => run.id),
@@ -1698,15 +1755,8 @@ async function runsFor(
   return runs;
 }
 
-export async function runUsagePause(
-  store: Db,
-  runId: string,
-  generatedAt: string,
-): Promise<StatusUsagePause | null> {
-  const pause = await store.run((q) => usagePauseSteps(q, runId));
-  return pause === null
-    ? null
-    : { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
+export function usagePauseOf(pause: UsagePause, generatedAt: string): StatusUsagePause {
+  return { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
 }
 
 function runReviewer(pawsHome: string | undefined, runId: string): string {
@@ -1725,19 +1775,49 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
   }
 }
 
-export async function blockersFor(
+async function blockedBy(
   store: Db,
-  record: WorkItemRecord,
+  only: string,
+  visible: readonly WorkItemRecord[],
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
 ): Promise<string[]> {
+  const blocked = new Set<string>();
+  const satisfied = new Map<string, boolean>();
+  for (const edge of await store.run((q) => listTaskBlocksSteps(q))) {
+    const blocker = itemsByIssue.get(edge.blocker);
+    if (blocker === undefined || publicId(blocker) !== only) continue;
+    if (!satisfied.has(blocker.id))
+      satisfied.set(blocker.id, await blockerSatisfied(store, blocker));
+    if (!satisfied.get(blocker.id)) blocked.add(edge.blocked);
+  }
+  const blocks: string[] = [];
+  for (const record of visible)
+    if (
+      publicId(record) !== only &&
+      blocked.has(record.linearIssueId) &&
+      !blocks.includes(publicId(record))
+    )
+      blocks.push(publicId(record));
+  return blocks;
+}
+
+async function blockerSatisfied(store: Db, blocker: WorkItemRecord): Promise<boolean> {
+  const mode = await store.run((q) => getTaskModeSteps(q, blocker.id));
+  const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, blocker.id));
+  return isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null });
+}
+
+export function blockersFrom(
+  reads: Pick<ItemReads, "edges" | "items" | "modes" | "merges">,
+  record: WorkItemRecord,
+): string[] {
   const ids: string[] = [];
-  for (const issueId of await store.run((q) => listTaskBlockersSteps(q, record.linearIssueId))) {
-    const blocker = itemsByIssue.get(issueId);
+  for (const issueId of reads.edges.get(record.linearIssueId) ?? []) {
+    const blocker = reads.items.get(issueId);
     if (blocker === undefined) continue;
-    const mode = await store.run((q) => getTaskModeSteps(q, blocker.id));
-    const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, blocker.id));
-    if (isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null }))
-      continue;
+    const mode = reads.modes.get(blocker.id) ?? null;
+    const mergeSha = reads.merges.get(blocker.id) ?? null;
+    if (isBlockerSatisfied({ state: blocker.state, mode, mergeSha })) continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
   }
@@ -2353,6 +2433,7 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
 
 type MergeQueueInput = {
   records: readonly WorkItemRecord[];
+  listed?: readonly WorkItemRecord[];
   items: readonly Pick<StatusItem, "id" | "pr">[];
   jobs: readonly Job[];
   queues: readonly MergeQueuePosition[];
@@ -2375,8 +2456,19 @@ async function mergeQueueFor(
   const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));
   // The repository Paws bound the item to names it. `config.repo` only names items from before
   // repository binding, and an item with none of these is under "Repository not known".
-  const repositoryOf = async (record: WorkItemRecord): Promise<string | null> => {
-    const bound = await store.run((q) => getWorkItemRepositorySteps(q, record.id));
+  const ids = (input.listed ?? records).map((record) => record.id);
+  const reads = ids.length
+    ? await store.run(function* (q) {
+        return {
+          bound: yield* listWorkItemRepositoriesSteps(q, ids),
+          kept: yield* listTaskMergeSettingsSteps(q, ids),
+          merges: yield* listConfirmedRemoteMergesSteps(q, ids),
+        };
+      })
+    : { bound: new Map(), kept: new Map(), merges: new Map() };
+  const settingsOf = (itemId: string) => mergeSettings(reads.kept.get(itemId));
+  const repositoryOf = (record: WorkItemRecord): string | null => {
+    const bound = reads.bound.get(record.id);
     return (
       (bound ? `${bound.owner}/${bound.repo}` : null) ??
       places.get(record.id)?.repository ??
@@ -2387,7 +2479,7 @@ async function mergeQueueFor(
   };
   const paths = await store.run(latestCandidatePathsSteps);
   const waiting: StatusMergeEntry[] = [];
-  for (const record of records) {
+  for (const record of input.listed ?? records) {
     if (record.state !== "merge_queue" && !(record.state === "verifying" && places.has(record.id)))
       continue;
     const job = mergeJob(record.id, jobs);
@@ -2402,7 +2494,7 @@ async function mergeQueueFor(
     const ahead = place?.nextItemId
       ? records.find((candidate) => candidate.id === place.nextItemId)
       : undefined;
-    const repository = await repositoryOf(record);
+    const repository = repositoryOf(record);
     const enqueued = place
       ? iso(place.readyAt, generatedAt)
       : enqueuedAt(record.id, jobs, generatedAt);
@@ -2426,7 +2518,7 @@ async function mergeQueueFor(
       acceptedAt: accepted,
       waitingFor: reason,
       detail,
-      settings: await mergeSettings(store, record.id),
+      settings: settingsOf(record.id),
       steps: mergeSteps(job),
       ...(reason === "ahead" && ahead
         ? {
@@ -2449,9 +2541,9 @@ async function mergeQueueFor(
   );
   const since = input.now - DAY_MS;
   const history: StatusMergeOutcome[] = [];
-  for (const record of records) {
+  for (const record of input.listed ?? records) {
     if (record.state === "merged" || record.state === "completed") {
-      const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, record.id));
+      const merge = reads.merges.get(record.id);
       if (!merge || merge.confirmedAt < since) continue;
       history.push({
         itemId: publicId(record),
@@ -2459,21 +2551,21 @@ async function mergeQueueFor(
         outcome: "merged",
         reason: null,
         at: iso(merge.confirmedAt, generatedAt),
-        settings: await mergeSettings(store, record.id),
+        settings: settingsOf(record.id),
       });
       continue;
     }
     if (!BACK_WITH_AGENT_STATES.has(record.state) || places.has(record.id)) continue;
     const back = backWithAgent(record.id, jobs);
     if (!back || back.at < since) continue;
-    const repository = await repositoryOf(record);
+    const repository = repositoryOf(record);
     history.push({
       itemId: publicId(record),
       repository,
       outcome: "back_with_agent",
       reason: back.reason,
       at: iso(back.at, generatedAt),
-      settings: await mergeSettings(store, record.id),
+      settings: settingsOf(record.id),
     });
   }
   history.sort((left, right) => right.at.localeCompare(left.at));
@@ -2503,8 +2595,7 @@ function pullRepository(url: string | undefined): string | null {
 }
 
 /** The settings the task resolved when its merge started. The workspace default until then. */
-async function mergeSettings(store: Db, itemId: string): Promise<StatusMergeSettings> {
-  const kept = await store.run((q) => getTaskMergeSettingsSteps(q, itemId));
+function mergeSettings(kept: TaskMergeSettings | undefined): StatusMergeSettings {
   if (!kept) return { order: "queue", mainMoved: "ci", rule: null };
   const sources = isRecord(kept.resolved.sources) ? kept.resolved.sources : {};
   const rule = isRecord(kept.resolved.rule) ? readString(kept.resolved.rule, "label") : null;
@@ -2657,13 +2748,13 @@ function indexActivityRows(rows: readonly OutboxRow[]) {
   };
 }
 
-async function activityFor(
-  store: Db,
+function activityFor(
+  turns: readonly StoredLinearTurn[],
   record: WorkItemRecord,
   stored: readonly StoredRun[],
   rows: readonly OutboxRow[],
   generatedAt: string,
-): Promise<StatusActivity[]> {
+): StatusActivity[] {
   const lines: Array<{ at: number; line: StatusActivity }> = [];
   for (const row of rows) {
     if (!stored.some((run) => concerns(row, record, run.id))) continue;
@@ -2674,7 +2765,7 @@ async function activityFor(
     );
     lines.push({ at: row.createdAt, line: { at: iso(row.createdAt), kind, text: body } });
   }
-  for (const turn of await store.run((q) => listLinearTurnsForItemSteps(q, record.id)))
+  for (const turn of turns)
     lines.push({
       at: turn.createdAtMs,
       line: {

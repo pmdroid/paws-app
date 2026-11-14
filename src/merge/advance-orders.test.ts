@@ -653,13 +653,31 @@ describe("advanceMerge on cancelled CI jobs", () => {
     );
   });
 
-  test("a cancelled shard beside a real test failure goes back to the agent with no re-run", async () => {
+  test("a real test failure is re-run once on the accepted head, then goes back to the agent", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    h.state.ci = () => cancelledShard("CANCELLED", "FAILURE");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await listCiReruns(h.db, "ENG-1")).toMatchObject([
+      { head: item.accepted, runIds: [900], reason: "failed CI job on a head Closeout accepted" },
+    ]);
+    expect(h.bodies("status")).toContain(
+      `Re-ran failed CI jobs on ${item.accepted.slice(0, 7)} once before sending it back to the agent.`,
+    );
+    expect(await resumes(h)).toEqual([]);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.state.ciReruns).toHaveLength(1);
+    expect((await resumes(h)).map((resume) => resume.reason)).toEqual(["ci"]);
+  });
+
+  test("a flaky failure that passes on the re-run merges with no agent turn", async () => {
     const h = await start();
     await h.addItem("ENG-1");
-    h.state.ci = () => cancelledShard("CANCELLED", "FAILURE");
-    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(h.state.ciReruns).toEqual([]);
-    expect(await listCiReruns(h.db, "ENG-1")).toEqual([]);
+    h.state.ci = () => cancelledShard("SUCCESS", "FAILURE");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    h.state.ci = () => undefined;
+    expect(await passUntilMerged(h, "ENG-1")).toEqual({ kind: "merged" });
+    expect(await resumes(h)).toEqual([]);
   });
 
   test("a head already re-run is not re-run again", async () => {
