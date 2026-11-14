@@ -240,19 +240,6 @@ export async function actionableDue(
   return store.run((q) => actionableDueSteps(q, now));
 }
 
-function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
-  return yield* q.transaction(function* (t) {
-    const id = yield* insertJobRowSteps(t, input, skipDuplicateKey);
-    if (id === undefined) return id;
-    const { job, jobActivation } = t.t;
-    const activation = (yield* t.one(
-      t.orm.insert(jobActivation).values({ jobId: id }).returning({ id: jobActivation.id }),
-    ))!;
-    yield* t.exec(t.orm.update(job).set({ activationId: activation.id }).where(eq(job.id, id)));
-    return id;
-  });
-}
-
 function* insertJobRowSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
   const { job } = q.t;
   const now = input.now ?? Date.now();
@@ -277,7 +264,7 @@ function* insertJobRowSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
 }
 
 export function* enqueueJobSteps(q: Q, input: NewJob) {
-  const id = yield* insertJobSteps(q, input, false);
+  const id = yield* insertJobRowSteps(q, input, false);
   if (id === undefined) {
     throw new Error("enqueueJob did not return an id");
   }
@@ -302,7 +289,7 @@ export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
   if (job.jobKey === undefined) return { id: yield* enqueueJobSteps(q, job), inserted: true };
   const existing = yield* findByKeySteps(q, job.jobKey);
   if (existing) return { id: existing.id, inserted: false };
-  const id = yield* insertJobSteps(q, job, true);
+  const id = yield* insertJobRowSteps(q, job, true);
   if (id !== undefined) return { id, inserted: true };
   const saved = yield* findByKeySteps(q, job.jobKey);
   if (!saved) throw new Error("enqueueJobOnce found no job for its key");
@@ -325,7 +312,7 @@ export function* reenqueueJobSteps(
   input: NewJob & { jobKey: string },
   payloadFor?: (previous: Job | null) => unknown,
 ) {
-  const { job, jobActivation } = q.t;
+  const { job } = q.t;
   const previous = yield* findByKeySteps(q, input.jobKey);
   if (previous && previous.queue !== input.queue)
     throw new Error("Recurring job key belongs to a different queue");
@@ -338,9 +325,6 @@ export function* reenqueueJobSteps(
       pending: true,
       armed: true,
     };
-  const activation = (yield* q.one(
-    q.orm.insert(jobActivation).values({ jobId: previous.id }).returning({ id: jobActivation.id }),
-  ))!;
   const now = input.now ?? Date.now();
   const next = payload ?? {};
   yield* q.exec(
@@ -352,7 +336,7 @@ export function* reenqueueJobSteps(
         attempts: 0,
         runAt: input.runAt ?? now,
         itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(next))),
-        activationId: activation.id,
+        activationId: drizzleSql`nextval('job_activation_seq')`,
         priority: input.priority ?? 5,
         maxAttempts: input.maxAttempts ?? 10,
         recurringEveryMs: input.recurringEveryMs ?? null,

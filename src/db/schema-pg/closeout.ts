@@ -288,17 +288,6 @@ export const closeoutBypassCheck = pgTable(
   ],
 );
 
-export const runReviewRounds = pgTable(
-  "run_review_rounds",
-  {
-    runId: text("run_id")
-      .primaryKey()
-      .references(() => run.id),
-    rounds: bigint({ mode: "number" }).notNull(),
-  },
-  () => [check("run_review_rounds_check_1", sql`rounds >= 0`)],
-);
-
 export const reviewEscape = pgTable(
   "review_escape",
   {

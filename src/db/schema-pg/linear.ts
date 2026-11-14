@@ -96,25 +96,6 @@ export const linearArtifact = pgTable(
   ],
 );
 
-export const linearInput = pgTable(
-  "linear_input",
-  {
-    sessionId: text("session_id").notNull(),
-    turnId: text("turn_id").notNull(),
-    assetId: text("asset_id").notNull(),
-    assetUrl: text("asset_url").notNull(),
-    mimeType: text("mime_type").notNull(),
-    size: bigint({ mode: "number" }).notNull(),
-    sha256: text().notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.sessionId, table.turnId, table.assetId],
-      name: "linear_input_session_id_turn_id_asset_id_pk",
-    }),
-  ],
-);
-
 export const linearConversation = pgTable(
   "linear_conversation",
   {
@@ -307,21 +288,6 @@ export const linearItemRequest = pgTable("linear_item_request", {
   itemId: text("item_id").primaryKey(),
   requests: bigint({ mode: "number" }).notNull(),
 });
-
-export const linearItemCallerRequest = pgTable(
-  "linear_item_caller_request",
-  {
-    itemId: text("item_id").notNull(),
-    caller: text().notNull(),
-    requests: bigint({ mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.itemId, table.caller],
-      name: "linear_item_caller_request_item_id_caller_pk",
-    }),
-  ],
-);
 
 export const linearComment = pgTable(
   "linear_comment",
