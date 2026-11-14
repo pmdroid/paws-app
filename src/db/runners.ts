@@ -257,13 +257,21 @@ export function* recordRunnerHostStatusSteps(
     miseVersion: sample.miseVersion ?? null,
     strayProcesses: sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
     agentUser: sample.agentUser ?? null,
-    reportedAt,
   };
+  const {
+    runnerId: _runnerId,
+    reportedAt: _reportedAt,
+    ...stored
+  } = getTableColumns(runnerHostStatus);
+  const before = yield* q.one(
+    q.orm.select(stored).from(runnerHostStatus).where(eq(runnerHostStatus.runnerId, runnerId)),
+  );
+  if (before && Bun.deepEquals(before, values)) return;
   yield* q.exec(
     q.orm
       .insert(runnerHostStatus)
-      .values({ runnerId, ...values })
-      .onConflictDoUpdate({ target: runnerHostStatus.runnerId, set: values }),
+      .values({ runnerId, ...values, reportedAt })
+      .onConflictDoUpdate({ target: runnerHostStatus.runnerId, set: { ...values, reportedAt } }),
   );
 }
 
@@ -418,6 +426,7 @@ export function* listRunnerOverviewSteps(
         strayProcesses: host.strayProcesses,
         agentUser: sql<RunnerAgentUser | null>`${host.agentUser}`,
         reportedAt: host.reportedAt,
+        lastSeenAt: runner.lastSeenAt,
         busy: flag(
           or(
             exists(
@@ -482,7 +491,7 @@ export function* listRunnerOverviewSteps(
                 row.strayProcesses === null
                   ? null
                   : (JSON.parse(row.strayProcesses) as RunnerStrayProcess[]),
-              reportedAt: row.reportedAt,
+              reportedAt: Math.max(row.reportedAt, row.lastSeenAt ?? 0),
             },
       os:
         row.osId === null && row.osVersion === null

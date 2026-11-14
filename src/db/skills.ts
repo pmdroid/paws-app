@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { HookEvent } from "../core";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
@@ -172,20 +172,53 @@ export function* recordRunnerSkillsSteps(
   reportedAt: number,
 ) {
   const { agentSkill, runner, runnerSkill } = q.t;
-  yield* q.exec(q.orm.delete(runnerSkill).where(eq(runnerSkill.runnerId, runnerId)));
-  for (const skill of skills)
-    yield* q.exec(
-      q.orm.insert(runnerSkill).values({
-        runnerId,
+  const stored = new Map(
+    (yield* q.all(
+      q.orm
+        .select({
+          name: runnerSkill.name,
+          version: runnerSkill.version,
+          sha256: runnerSkill.sha256,
+          status: runnerSkill.status,
+          error: runnerSkill.error,
+          waiting: runnerSkill.waiting,
+        })
+        .from(runnerSkill)
+        .where(eq(runnerSkill.runnerId, runnerId)),
+    )).map((row) => [row.name, row]),
+  );
+  const reported = new Map(
+    skills.map((skill) => [
+      skill.name,
+      {
         name: skill.name,
         version: skill.version,
         sha256: skill.sha256,
         status: skill.status,
         error: skill.status === "refused" ? (skill.error ?? null) : null,
         waiting: skill.status === "pending" ? (skill.waiting ?? null) : null,
-        reportedAt,
-      }),
+      },
+    ]),
+  );
+  const gone = [...stored.keys()].filter((name) => !reported.has(name));
+  if (gone.length > 0)
+    yield* q.exec(
+      q.orm
+        .delete(runnerSkill)
+        .where(and(eq(runnerSkill.runnerId, runnerId), inArray(runnerSkill.name, gone))),
     );
+  for (const [name, values] of reported) {
+    const before = stored.get(name);
+    if (!before)
+      yield* q.exec(q.orm.insert(runnerSkill).values({ runnerId, ...values, reportedAt }));
+    else if (!Bun.deepEquals(before, values))
+      yield* q.exec(
+        q.orm
+          .update(runnerSkill)
+          .set({ ...values, reportedAt })
+          .where(and(eq(runnerSkill.runnerId, runnerId), eq(runnerSkill.name, name))),
+      );
+  }
   // A removed skill's tombstone goes once no live runner still has it.
   yield* q.exec(
     q.orm
