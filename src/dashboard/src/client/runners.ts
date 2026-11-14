@@ -117,6 +117,7 @@ export type RunningSession = {
 export type HostPolicy = {
   ownerUserId: string;
   sharing?: number;
+  fixSlots?: number;
 };
 type Session = { userId: string; role: string };
 export type Usage = {
@@ -1034,6 +1035,22 @@ export function runnerConcurrencyMarkup(
   return `<form class="row" data-runner-concurrency="${id}"><input class="concurrency-input" name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Slots, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
 }
 
+export function runnerFixSlotsMarkup(
+  runner: Runner,
+  policy: HostPolicy | null,
+  state: { edits: boolean; busy: boolean; draft?: string },
+): string {
+  if (policy === null || runner.status === "revoked") return "";
+  const value = String(policy.fixSlots ?? 1);
+  const most = runner.slots?.total;
+  const help =
+    '<p class="muted">Held back only while a pull request sent back from the merge queue waits for a slot. 0 turns it off.</p>';
+  if (!state.edits) return `${esc(value)}${help}`;
+  const id = esc(runner.id);
+  const disabled = state.busy ? " disabled" : "";
+  return `<form class="row" data-runner-fix-slots="${id}"><input class="concurrency-input" name="fixSlots" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Slots kept for merge-queue fixes${most === undefined ? "" : `, from 0 to ${most}`}" value="${esc(state.draft ?? value)}" data-focus="fix-slots:${id}"${disabled}><button class="btn" type="submit" data-focus="fix-slots:${id}:save"${disabled}>Save</button></form>${help}`;
+}
+
 export function runnerRepositoriesMarkup(
   runner: Runner,
   state: {
@@ -1266,6 +1283,7 @@ export function runnerDetailMarkup(
     busy: boolean;
     open?: ReadonlySet<string>;
     concurrencyDraft?: string;
+    fixSlotsDraft?: string;
     repositoryDraft?: readonly string[] | null;
     workspaceRepositories?: readonly string[];
   },
@@ -1380,6 +1398,11 @@ export function runnerDetailMarkup(
     busy: view.busy,
     ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
   });
+  const fixSlots = runnerFixSlotsMarkup(runner, view.policy, {
+    edits: owns || manages,
+    busy: view.busy,
+    ...(view.fixSlotsDraft === undefined ? {} : { draft: view.fixSlotsDraft }),
+  });
   const repositories = runnerRepositoriesMarkup(runner, {
     manages,
     busy: view.busy,
@@ -1392,6 +1415,9 @@ export function runnerDetailMarkup(
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this runner with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The runner owner controls its sharing settings.</p>'}`;
   const settings = [
     concurrency ? `<div class="runner-setting"><h3>Slots</h3><div>${concurrency}</div></div>` : "",
+    fixSlots
+      ? `<div class="runner-setting"><h3>Slots kept for merge-queue fixes</h3><div>${fixSlots}</div></div>`
+      : "",
     repositories
       ? `<div class="runner-setting"><h3>Repositories</h3><div>${repositories}</div></div>`
       : "",
@@ -1438,6 +1464,7 @@ export function createRunners() {
   let painted = "";
   let pendingFocus: string | null = null;
   const concurrencyDrafts = new Map<string, string>();
+  const fixSlotsDrafts = new Map<string, string>();
   const repositoryDrafts = new Map<string, string[] | null>();
   let workspaceRepositories: string[] = [];
   let stopPolling: (() => void) | null = null;
@@ -1711,6 +1738,7 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
+      ...(fixSlotsDrafts.has(runner.id) ? { fixSlotsDraft: fixSlotsDrafts.get(runner.id)! } : {}),
       ...(repositoryDrafts.has(runner.id)
         ? { repositoryDraft: repositoryDrafts.get(runner.id)! }
         : {}),
@@ -2033,6 +2061,21 @@ export function createRunners() {
           concurrencyDrafts.delete(runnerId);
           feedback = "Slots saved. The runner applies it to new work at its next heartbeat.";
         });
+      });
+    }
+    for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-fix-slots]")) {
+      const runnerId = form.dataset.runnerFixSlots!;
+      const input = form.querySelector<HTMLInputElement>('input[name="fixSlots"]')!;
+      input.addEventListener("input", () => fixSlotsDrafts.set(runnerId, input.value));
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void change(async () => {
+          await api(`/api/runners/${encodeURIComponent(runnerId)}/fix-slots`, {
+            fixSlots: Number(input.value),
+          });
+          fixSlotsDrafts.delete(runnerId);
+          feedback = "Runner settings saved.";
+        }, false);
       });
     }
     for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-repositories]")) {

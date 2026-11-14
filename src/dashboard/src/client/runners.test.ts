@@ -90,6 +90,31 @@ const view = {
   busy: false,
 };
 
+describe("fix slots setting", () => {
+  const fixRunner = { ...runner, slots: { used: 0, total: 3 } };
+  test("the owner or an admin edits the saved value; others read it", () => {
+    const owner = runnerDetailMarkup(fixRunner, {
+      ...view,
+      role: "member",
+      policy: { ownerUserId: "owner", fixSlots: 2 },
+    });
+    expect(owner).toContain("<h3>Slots kept for merge-queue fixes</h3>");
+    expect(owner).toContain('aria-label="Slots kept for merge-queue fixes, from 0 to 3" value="2"');
+    expect(owner).toContain("0 turns it off.");
+    const admin = runnerDetailMarkup(fixRunner, { ...view, userId: "someone" });
+    expect(admin).toContain('data-runner-fix-slots="01JRUNNER0000000000000000A"');
+    expect(admin).toContain('value="1"');
+    const member = runnerDetailMarkup(fixRunner, {
+      ...view,
+      userId: "someone",
+      role: "member",
+      policy: { ownerUserId: "owner", fixSlots: 0 },
+    });
+    expect(member).not.toContain("data-runner-fix-slots");
+    expect(member).toContain("<h3>Slots kept for merge-queue fixes</h3><div>0<p");
+  });
+});
+
 describe("runner list rows", () => {
   const row = { now, serverVersion: "1.2.0" };
 
