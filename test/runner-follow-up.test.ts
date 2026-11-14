@@ -42,7 +42,7 @@ test("a follow-up interrupts the running turn and continues in the same workspac
       await new Promise<void>((resolve) =>
         options.signal!.addEventListener("abort", () => resolve(), { once: true }),
       );
-      return { ...finished(false), stopReason: "error", interrupted: true, errorMessage: "Error." };
+      return { ...finished(true), stopReason: "error", interrupted: true, errorMessage: "Error." };
     },
   );
   expect(result.stopReason).toBe("end_turn");
@@ -102,7 +102,7 @@ for (const emptyDelivery of [true, false])
           await Bun.sleep(10);
           expect(options.signal?.aborted).toBe(false);
         } else if (calls === 1) {
-          return { ...finished(false), stopReason: "error", interrupted: true };
+          return { ...finished(true), stopReason: "error", interrupted: true };
         }
         expect(options.prompt).toContain("Continue the repair");
         return finished(false);
