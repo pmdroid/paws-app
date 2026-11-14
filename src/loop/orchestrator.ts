@@ -5754,7 +5754,13 @@ export class Orchestrator {
     if (
       item.currentRunId !== null &&
       (yield* getRunSteps(q, item.currentRunId))?.status === "active" &&
-      (yield* runnerHoldsRunWorkSteps(q, item.currentRunId, this.now(), item.cancelRequested)) &&
+      (yield* runnerHoldsRunWorkSteps(
+        q,
+        item.currentRunId,
+        this.now(),
+        item.cancelRequested,
+        this.now() - 2 * 60_000,
+      )) &&
       !(yield* runnerWorkHasResultSteps(q, item.currentRunId))
     )
       return "runner";
