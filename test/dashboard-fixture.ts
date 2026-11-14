@@ -134,6 +134,7 @@ export async function startDashboardFixture(
       wipCommit: head,
     });
   }
+  const clock = Date.now();
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
@@ -161,6 +162,7 @@ export async function startDashboardFixture(
     db,
     workspaceAccess: access,
     evidenceDir,
+    dashboardNow: () => new Date(clock),
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
         store: db,

@@ -170,6 +170,8 @@ export type ServerOptions = {
   store?: Db;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Clock the dashboard resources read their time-derived fields from. Defaults to the system clock. */
+  dashboardNow?: () => Date;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
   healthDisk?: HealthOptions["disk"];
@@ -268,6 +270,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          ...(options.dashboardNow ? { dashboardNow: options.dashboardNow } : {}),
           riskApproval: options.riskApproval,
           riskSettingsChanged: options.riskSettingsChanged,
           webhooks,
@@ -348,6 +351,7 @@ type Secrets = {
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => Promise<LinearUsage>) | undefined;
+  dashboardNow?: ServerOptions["dashboardNow"];
   riskApproval?: ServerOptions["riskApproval"];
   riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
@@ -739,6 +743,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const status = await handleStatusRequest(request, {
     csrfToken,
     resourceCache: dashboardResources,
+    ...(secrets.dashboardNow ? { now: secrets.dashboardNow } : {}),
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact
