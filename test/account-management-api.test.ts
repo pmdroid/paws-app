@@ -54,6 +54,11 @@ test("the Runners page's sign-in and health routes pass through to runner contro
 });
 
 const NOW = 1_800_000_000_000;
+type Answer = {
+  id: string;
+  canManage: boolean;
+  accounts: Record<string, unknown>[];
+};
 
 forEachDialect((connect) => {
   test("admins add, order, sign out and toggle extra usage on workspace agent accounts", async () => {
@@ -84,7 +89,10 @@ forEachDialect((connect) => {
               : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
           }),
           who,
-        ).then(async (response) => ({ status: response!.status, body: await response!.json() }));
+        ).then(async (response) => ({
+          status: response!.status,
+          body: (await response!.json()) as Answer,
+        }));
       const work = (await send("POST", "", { agent: "claude", label: "Work" })).body;
       const home = (await send("POST", "", { agent: "claude", label: "Home" })).body;
       expect((await send("POST", "", { agent: "claude", label: "work" })).status).toBe(409);
@@ -152,7 +160,7 @@ forEachDialect((connect) => {
         },
       ]);
       expect((await send("DELETE", `/${home.id}/credential`)).status).toBe(200);
-      expect((await send("GET", "")).body.accounts[0].credential).toBeNull();
+      expect((await send("GET", "")).body.accounts[0]?.credential).toBeNull();
       const member = { ...principal, role: "member" as const };
       expect((await send("GET", "", undefined, member)).body.canManage).toBe(false);
       for (const [method, path, body] of [
