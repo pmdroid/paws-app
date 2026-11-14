@@ -109,7 +109,13 @@ export type AgentCredentialWrite = "written" | "not_holder" | "stale_version";
 
 export function* writeAgentCredentialCiphertextSteps(
   q: Q,
-  input: { accountId: string; runnerId: string; version: number; ciphertext: string; now: number },
+  input: {
+    accountId: string;
+    runnerId: string | null;
+    version: number;
+    ciphertext: string;
+    now: number;
+  },
 ): Steps<AgentCredentialWrite> {
   const { agentAccount, agentAccountCredential: c } = q.t;
   const account = yield* q.one(

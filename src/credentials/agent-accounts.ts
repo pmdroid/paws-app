@@ -29,7 +29,7 @@ export function* readAgentCredentialSteps(
 export function* writeAgentCredentialSteps(
   q: Q,
   secretsDir: string,
-  input: { accountId: string; runnerId: string; version: number; blob: string; now: number },
+  input: { accountId: string; runnerId: string | null; version: number; blob: string; now: number },
 ): Steps<AgentCredentialWrite> {
   const { blob, ...write } = input;
   return yield* writeAgentCredentialCiphertextSteps(q, {
