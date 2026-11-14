@@ -21,7 +21,7 @@ describe("issue resource contract", () => {
     expect(parseIssueDetailResponse(detail).ok).toBe(false);
   });
 
-  test("the list carries one Closeout summary per item and no events", () => {
+  test("the list carries one row per item and no runs, Closeout or events", () => {
     const full = fullStatusFixture();
     const parsed = parseIssueListResponse(
       JSON.parse(
@@ -29,26 +29,21 @@ describe("issue resource contract", () => {
       ),
     );
     if (!parsed.ok) throw new Error(parsed.error);
-    expect("events" in parsed.response).toBe(false);
-    const verdict = parsed.response.verdicts.find((entry) => entry.itemId === "ENG-100")!;
-    expect(Object.keys(verdict).sort()).toEqual(["checks", "decision", "headSha", "itemId"]);
-    expect(verdict.decision).toBe("exhausted");
-    for (const check of verdict.checks) expect(Object.keys(check)).toEqual(["id", "kind", "state"]);
-    const agent = parsed.response.agentCloseout[0]!;
-    expect(Object.keys(agent).sort()).toEqual([
-      "blocked",
-      "decision",
-      "headSha",
-      "itemId",
-      "runId",
-      "updatedAt",
+    expect(Object.keys(parsed.response).sort()).toEqual([
+      "generatedAt",
+      "issues",
+      "project",
+      "source",
     ]);
-    expect(agent.decision).toBe(full.agentCloseout![0]!.attempts.at(-1)!.decision);
+    for (const row of parsed.response.issues)
+      expect(Object.keys(row).every((key) => !["timeline", "pr", "runId"].includes(key))).toBe(
+        true,
+      );
   });
 
-  test("the list rejects a summary check without a known state", () => {
+  test("the list rejects a row without a known state", () => {
     const list = issueList(fullStatusFixture());
-    (list.verdicts[0]!.checks[0] as { state: string }).state = "green";
+    (list.issues[0] as { state: string }).state = "green";
     expect(parseIssueListResponse(list).ok).toBe(false);
   });
 

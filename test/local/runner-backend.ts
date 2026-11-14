@@ -29,6 +29,7 @@ import {
   type Q,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
+import { issueRecords } from "../../src/dashboard/test/issue-records";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
 import { initializeRunnerAuthority, createRunnerKey } from "../../src/runner-identity";
@@ -703,7 +704,7 @@ export async function probeRunnerBackend(
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
     ]);
     const status = createLiveStatusProvider(db);
-    const listed = (await status.issues()).agentCloseout.find(
+    const listed = (await issueRecords(status)).agentCloseout.find(
       (entry) => entry.runId === first.run.id,
     );
     assert.ok(listed);

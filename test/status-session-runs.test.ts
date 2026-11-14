@@ -13,7 +13,7 @@ import {
 import { eq } from "drizzle-orm";
 import { handleStatusRequest } from "../src/dashboard";
 import { render } from "../src/dashboard/src/client/render";
-import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
+import { parseIssueDetailResponse } from "../src/dashboard/src/contract";
 import { parseRoute } from "../src/dashboard/src/client/route";
 
 import { seed } from "./dialects";
@@ -69,11 +69,11 @@ test("one Linear session shows as one run with every attempt in its timeline", a
         now: at,
       });
 
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
       store: db,
       env: {},
     });
-    const parsed = parseIssueListResponse(await response?.json());
+    const parsed = parseIssueDetailResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const runs = parsed.response.runs.filter((run) => run.itemId === "ENG-7");
@@ -92,7 +92,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     expect(texts.indexOf("Review found one issue.")).toBeLessThan(
       texts.indexOf("Fixed the issue."),
     );
-    expect(parsed.response.issues.find((entry) => entry.id === "ENG-7")?.runId).toBe(first.id);
+    expect(parsed.response.issue.runId).toBe(first.id);
 
     const alias = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
@@ -164,11 +164,11 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     });
     await applyLinearTurns(db, "ses_8", ["reply-1"], item.id);
 
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-8"), {
       store: db,
       env: {},
     });
-    const parsed = parseIssueListResponse(await response?.json());
+    const parsed = parseIssueDetailResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const lines = parsed.response.runs.find((entry) => entry.itemId === "ENG-8")!.activity;
@@ -198,11 +198,11 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
       now: NOW + 2_000,
     });
     await setCurrentRun(db, item.id, recheck.id);
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-8"), {
       store: db,
       env: {},
     });
-    const parsed = parseIssueListResponse(await response?.json());
+    const parsed = parseIssueDetailResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const session = parsed.response.runs.find((run) => run.itemId === "ENG-8")!;
