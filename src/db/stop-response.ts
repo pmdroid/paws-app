@@ -2,7 +2,7 @@ import { and, desc, eq, ilike, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
-import type { itemBranchState, itemPullRequest } from "./schema";
+import type { itemBranchState, itemPullRequest } from "./schema-pg";
 
 export type ItemBranchState = typeof itemBranchState.$inferSelect;
 

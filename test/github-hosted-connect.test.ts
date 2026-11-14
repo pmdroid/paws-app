@@ -57,7 +57,6 @@ const demote = (db: Db, userId: string) =>
   );
 // No Drizzle builder creates a trigger, so this one statement is raw SQL through the Db.
 const refuseActivation = async (db: Db) => {
-  if (db.dialect !== "postgres") throw new Error("This fixture runs on Postgres.");
   await db.orm.execute(
     sql.raw(
       "CREATE FUNCTION refuse_activation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic rollback'; END $$",
@@ -191,13 +190,25 @@ async function fixture() {
               private: true,
               permissions: { admin: true, pull: true },
             },
-            { id: 2, full_name: "other/private", permissions: { admin: false } },
-            { id: 3, full_name: "acme/gadgets", permissions: { admin: false, pull: true } },
+            {
+              id: 2,
+              full_name: "other/private",
+              permissions: { admin: false },
+            },
+            {
+              id: 3,
+              full_name: "acme/gadgets",
+              permissions: { admin: false, pull: true },
+            },
           ],
         });
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
       if (url.pathname === "/app")
-        return Response.json({ id: 99, client_id: "Iv1.fake", slug: "fixture-paws" });
+        return Response.json({
+          id: 99,
+          client_id: "Iv1.fake",
+          slug: "fixture-paws",
+        });
       if (/^\/repos\/acme\/[^/]+\/installation$/.test(url.pathname)) {
         await beforeInstallation?.();
         return Response.json(
@@ -254,7 +265,10 @@ async function fixture() {
   function request(role: string, url: string, init: RequestInit = {}) {
     return new Request(url, {
       ...init,
-      headers: { cookie: `${WORKSPACE_COOKIE}=${sessions[role]!.token}`, ...init.headers },
+      headers: {
+        cookie: `${WORKSPACE_COOKIE}=${sessions[role]!.token}`,
+        ...init.headers,
+      },
     });
   }
   async function begin(role = "owner") {
@@ -513,7 +527,9 @@ test("GitHub setup discovers the approved installation and exposes status withou
     });
     f.setInstallationStatus(404);
     const removed = await f.handler()(automaticRequest(f, "GET"));
-    expect(await removed?.json()).toMatchObject({ status: "needs_installation" });
+    expect(await removed?.json()).toMatchObject({
+      status: "needs_installation",
+    });
   } finally {
     await f.close();
   }
@@ -541,11 +557,17 @@ test("GitHub status checks repositories concurrently and serves a minute-long ca
     });
     const cache = createGitHubStatusCache();
     const status = async () => (await f.handler(cache)(automaticRequest(f, "GET")))!.json();
-    expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
+    expect(await status()).toMatchObject({
+      status: "connected",
+      repositoryCount: 10,
+    });
     expect(f.maxTokensInFlight).toBe(limit);
     let calls = f.calls.length;
     f.advance(59_000);
-    expect(await status()).toMatchObject({ status: "connected", repositoryCount: 10 });
+    expect(await status()).toMatchObject({
+      status: "connected",
+      repositoryCount: 10,
+    });
     const anonymous = new Request("https://paws.example/api/workspaces/github-connect");
     expect((await f.handler(cache)(anonymous))?.status).toBe(403);
     expect(f.calls.length).toBe(calls);
@@ -590,7 +612,10 @@ test("an administrator signed in hours ago can still manage the connection", asy
     f.advance(6 * 60 * 60_000);
     const response = await f.handler()(automaticRequest(f, "GET"));
     expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({ canManage: true, requiresSignIn: false });
+    expect(await response?.json()).toMatchObject({
+      canManage: true,
+      requiresSignIn: false,
+    });
     expect((await f.handler()(automaticRequest(f)))?.status).toBe(200);
     const member = await f.handler()(automaticRequest(f, "POST", "member"));
     expect(await member?.json()).toMatchObject({ code: "admin_required" });
@@ -729,7 +754,9 @@ for (const permissions of [
       expect(body.missingPermissions.length).toBeGreaterThan(0);
       const denied = await saveSetup(f);
       expect(denied?.status).toBe(409);
-      expect(await denied!.json()).toMatchObject({ code: "github_permissions_required" });
+      expect(await denied!.json()).toMatchObject({
+        code: "github_permissions_required",
+      });
       expect(await repositoryCount(f.db)).toBe(0);
       expect(await connectionCount(f.db)).toBe(0);
       expect(f.calls.some((call) => call.path.endsWith("/access_tokens"))).toBe(false);
@@ -763,7 +790,10 @@ test("GitHub sign-in precedes repository approval and activates selected matches
     });
     expect(JSON.stringify(body)).not.toContain("scripted-user-token");
     expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
-    const stored = readdirSync(f.pgliteDir, { recursive: true, encoding: "utf8" })
+    const stored = readdirSync(f.pgliteDir, {
+      recursive: true,
+      encoding: "utf8",
+    })
       .map((name) => join(f.pgliteDir, name))
       .filter((path) => statSync(path).isFile());
     expect(stored.length).toBeGreaterThan(0);
@@ -867,7 +897,9 @@ test("repository choices read every user-accessible page and reject duplicate pa
       f.request("owner", "https://paws.example/api/workspaces/github-setup"),
     );
     expect(response?.status).toBe(200);
-    const data = (await response!.json()) as { repositories: { repository: string }[] };
+    const data = (await response!.json()) as {
+      repositories: { repository: string }[];
+    };
     expect(data.repositories.length).toBe(101);
     expect(data.repositories[100]?.repository).toBe("acme/widget100");
     f.setCatalogPages("duplicate");

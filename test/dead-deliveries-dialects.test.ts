@@ -94,7 +94,11 @@ async function deadItem(db: Db) {
 const jobRow = (q: Q, id: number) =>
   q.one(
     q.orm
-      .select({ status: q.t.job.status, attempts: q.t.job.attempts, payload: q.t.job.payload })
+      .select({
+        status: q.t.job.status,
+        attempts: q.t.job.attempts,
+        payload: q.t.job.payload,
+      })
       .from(q.t.job)
       .where(eq(q.t.job.id, id)),
   );
@@ -181,11 +185,18 @@ forEachDialect((connect) => {
     const row = await db.run((q) =>
       q.one(q.orm.select().from(q.t.outbox).where(eq(q.t.outbox.id, 1))),
     );
-    expect(row).toMatchObject({ status: "pending", maxAttempts: 10, notBefore: 9_000 });
+    expect(row).toMatchObject({
+      status: "pending",
+      maxAttempts: 10,
+      notBefore: 9_000,
+    });
 
     expect(await retry({ kind: "job", id: 2 })).toBe(false);
     expect(await retry({ kind: "job", id: 1 })).toBe(true);
-    expect(await db.run((q) => jobRow(q, 1))).toMatchObject({ status: "pending", attempts: 0 });
+    expect(await db.run((q) => jobRow(q, 1))).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
   });
 
   test("dead elicitations of a question drop with a note, and a re-ask is recorded on its job", async () => {
@@ -208,7 +219,7 @@ forEachDialect((connect) => {
 
     await db.run((q) => recordQuestionReaskSteps(q, 1, "q-2"));
     const payload = (await db.run((q) => jobRow(q, 1)))?.payload;
-    expect(db.dialect === "sqlite" ? JSON.parse(payload as string) : payload).toEqual({
+    expect(payload).toEqual({
       itemId: "item-1",
       reaskedAs: "q-2",
     });
@@ -252,7 +263,10 @@ forEachDialect((connect) => {
           .orderBy(q.t.outbox.id),
       ),
     );
-    const elicitation = json(db, { questionId: "q-1", body: "Which repository?" });
+    const elicitation = json(db, {
+      questionId: "q-1",
+      body: "Which repository?",
+    });
     expect(rows).toEqual([
       {
         id: 1,

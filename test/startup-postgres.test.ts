@@ -9,13 +9,17 @@ import { tempHome } from "./helpers";
 import { pgliteServer } from "./pglite";
 
 const start = (home: string, extra: Record<string, string> = {}) =>
-  startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1", ...extra });
+  startPaws({
+    PAWS_HOME: home,
+    PAWS_PORT: "0",
+    PAWS_HOST: "127.0.0.1",
+    ...extra,
+  });
 
 test("without [database] url Paws starts on PGlite in pglite/ and keeps its rows across restarts", async () => {
   const home = tempHome();
   const first = await start(home);
   try {
-    expect(first.store.dialect).toBe("postgres");
     await insertQueuedItem(first.store, { id: "kept", now: 1 });
   } finally {
     await first.stop();

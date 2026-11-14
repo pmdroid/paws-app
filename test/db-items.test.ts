@@ -32,7 +32,7 @@ import {
 import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
 
 function json(q: Q, value: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+  return value;
 }
 
 function parsed(value: unknown): unknown {
@@ -99,7 +99,10 @@ forEachDialect((open) => {
             .values({ itemId: "b", previousItemId: "a", branch: "paws/a" }),
         );
       });
-      const checkpoint = { phase: "implementing", head: "abc" } as unknown as Checkpoint;
+      const checkpoint = {
+        phase: "implementing",
+        head: "abc",
+      } as unknown as Checkpoint;
       await db.run((q) => saveCheckpointSteps(q, "a", checkpoint));
       const a = await db.run((q) => getWorkItemSteps(q, "a"));
       expect(a).toMatchObject({
@@ -168,7 +171,14 @@ forEachDialect((open) => {
         yield* q.exec(
           q.orm
             .update(q.t.workItem)
-            .set({ awakeMs: 5, agentMs: 4, implementMs: 3, fixMs: 2, closeoutMs: 1, waitingMs: 6 })
+            .set({
+              awakeMs: 5,
+              agentMs: 4,
+              implementMs: 3,
+              fixMs: 2,
+              closeoutMs: 1,
+              waitingMs: 6,
+            })
             .where(eq(q.t.workItem.id, "a")),
         );
       });
@@ -240,12 +250,25 @@ forEachDialect((open) => {
   test("held handoffs are listed oldest first and marked carried", async () => {
     const { db, close } = await open();
     try {
-      const held = { queue: JOB_KIND.resume, status: "cancelled", lastError: "time_limit" };
-      const first = await insertJob(db, { ...held, payload: { itemId: "a", handoff: "first" } });
+      const held = {
+        queue: JOB_KIND.resume,
+        status: "cancelled",
+        lastError: "time_limit",
+      };
+      const first = await insertJob(db, {
+        ...held,
+        payload: { itemId: "a", handoff: "first" },
+      });
       await insertJob(db, { ...held, payload: { itemId: "a", handoff: "  " } });
       await insertJob(db, { ...held, payload: { itemId: "a" } });
-      await insertJob(db, { ...held, payload: { itemId: "b", handoff: "other" } });
-      const second = await insertJob(db, { ...held, payload: { itemId: "a", handoff: "second" } });
+      await insertJob(db, {
+        ...held,
+        payload: { itemId: "b", handoff: "other" },
+      });
+      const second = await insertJob(db, {
+        ...held,
+        payload: { itemId: "a", handoff: "second" },
+      });
       const handoffs = await db.run((q) => heldHandoffsSteps(q, "a"));
       expect(handoffs).toEqual([
         { jobId: first, handoff: "first" },
@@ -262,13 +285,22 @@ forEachDialect((open) => {
   test("cancelling an item's advancing jobs leaves other queues and items", async () => {
     const { db, close } = await open();
     try {
-      const start = await insertJob(db, { queue: JOB_KIND.start, payload: { itemId: "a" } });
+      const start = await insertJob(db, {
+        queue: JOB_KIND.start,
+        payload: { itemId: "a" },
+      });
       const merge = await insertJob(db, {
         queue: `${JOB_KIND.merge}.ci`,
         payload: { itemId: "a" },
       });
-      const ask = await insertJob(db, { queue: "item.ask", payload: { itemId: "a" } });
-      const other = await insertJob(db, { queue: JOB_KIND.start, payload: { itemId: "b" } });
+      const ask = await insertJob(db, {
+        queue: "item.ask",
+        payload: { itemId: "a" },
+      });
+      const other = await insertJob(db, {
+        queue: JOB_KIND.start,
+        payload: { itemId: "b" },
+      });
       await db.run((q) => cancelAdvancingJobsSteps(q, "a", "merged", 9));
       expect(await jobRow(db, start)).toMatchObject({
         status: "cancelled",
@@ -288,15 +320,30 @@ forEachDialect((open) => {
     try {
       await insertWorkItem(db, "a");
       await insertWorkItem(db, "b");
-      const fault = { closeoutFaults: { head: "h", reasons: ["r"] }, reviewerFault: "codex" };
+      const fault = {
+        closeoutFaults: { head: "h", reasons: ["r"] },
+        reviewerFault: "codex",
+      };
       const held = await insertJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: "b", ...fault, keep: 1 },
       });
-      await insertJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "a", ...fault } });
-      await insertJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "b", ...fault } });
-      await insertJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "missing", ...fault } });
-      await insertJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "a" } });
+      await insertJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "a", ...fault },
+      });
+      await insertJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "b", ...fault },
+      });
+      await insertJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "missing", ...fault },
+      });
+      await insertJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "a" },
+      });
       const holds = await db.run((q) => reviewerFaultHoldsSteps(q, "codex"));
       expect(holds.map((item) => item.id)).toEqual(["b", "a"]);
       expect(await db.run((q) => reviewerFaultHoldsSteps(q, "claude"))).toEqual([]);

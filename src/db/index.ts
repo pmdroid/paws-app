@@ -25,14 +25,7 @@ export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
-export {
-  appliedMigrations,
-  MIGRATIONS_FOLDER,
-  PG_MIGRATIONS_FOLDER,
-  migrate,
-  migrationTags,
-  setAsideSqliteDatabase,
-} from "./migrate";
+export { PG_MIGRATIONS_FOLDER, migrationTags, setAsideSqliteDatabase } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
 export * from "./pull-request-drafts";
@@ -73,9 +66,7 @@ export {
   syncSteps,
   type Steps,
 } from "./db";
-export * as schema from "./schema";
 export * as pgSchema from "./schema-pg";
-export { rawSchema } from "./schema/raw";
 export * from "./journal";
 export * from "./outbox";
 export * from "./dead-deliveries";
