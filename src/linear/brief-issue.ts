@@ -7,6 +7,7 @@ import { isRecord, readString } from "./read";
 export type BriefIssueRead = {
   issue: IssueBrief;
   parent: IssueBrief | null;
+  creatorId?: string | null;
   projectOverview: string;
 };
 
@@ -16,6 +17,7 @@ const QUERY = `query BriefPreview($id: String!) {
     identifier
     title
     description
+    creator { id }
     project { name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } }
     parent { id identifier title description }
   }
@@ -45,7 +47,12 @@ export function briefIssueFromQuery(data: unknown): BriefIssueRead | null {
     if (parent === null)
       throw new Error("Linear parent issue was missing id, identifier, or title");
   }
-  return { issue: brief, parent, projectOverview: projectOverview(issue["project"]) };
+  return {
+    issue: brief,
+    parent,
+    creatorId: isRecord(issue["creator"]) ? readString(issue["creator"], "id") : null,
+    projectOverview: projectOverview(issue["project"]),
+  };
 }
 
 function issueBrief(record: Record<string, unknown>): IssueBrief | null {

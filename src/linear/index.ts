@@ -217,3 +217,5 @@ export {
   type ImprovementLinearIssue,
   type ImprovementLinearResult,
 } from "./improvement-issues";
+
+export { followUpSessionOwner } from "./session-owner";

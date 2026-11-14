@@ -32,6 +32,7 @@ import {
   type Db,
 } from "../db";
 import {
+  followUpSessionOwner,
   linearItem,
   linearReadRetry,
   LinearIntakeRefusedError,
@@ -275,10 +276,19 @@ export function createWorkspaceAssignments(options: {
     )
       return refused("Linear returned a different issue for this session.");
     if (session.appUserId !== installation.appUserId) return refused(ELSEWHERE);
-    const creatorId =
+    let creatorId =
       session.creatorId && session.creatorId !== session.appUserId
         ? session.creatorId
         : stored?.creatorId;
+    if (!creatorId || creatorId === session.appUserId)
+      creatorId = await followUpSessionOwner(
+        store,
+        options.tracker,
+        event.issueId,
+        installation.organizationId,
+        session.appUserId,
+        { signal },
+      );
     if (!creatorId || creatorId === session.appUserId)
       return session.creatorId === session.appUserId || creatorId === session.appUserId
         ? { outcome: "refused", reason: UNKNOWN_CREATOR, quiet: true }

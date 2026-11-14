@@ -1,3 +1,6 @@
+import { eq } from "drizzle-orm";
+import { followUpSessionOwner } from "../../src/linear";
+import { getLinearSession, listWorkItems } from "../../src/db";
 import { join } from "node:path";
 import { ACME, type Proof } from "./harness";
 
@@ -35,6 +38,32 @@ export default {
     await proof.waitFor("both sub-issues are started", async () => sessions.length >= 2, 150_000);
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
     const filed = proof.linear.subIssues.get(ACME.issueId) ?? [];
+    const [parent] = await listWorkItems(proof.store);
+    await proof.store.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workItem)
+          .set({ delegatedBy: "acme-user" })
+          .where(eq(q.t.workItem.id, parent!.id)),
+      ),
+    );
+    const session = await getLinearSession(proof.store, parent!.sessionKey!);
+    for (const child of filed) {
+      proof.linear.briefParents.set(child.id, ACME.issueId);
+      proof.linear.briefCreators.set(child.id, "app");
+      const actor = await followUpSessionOwner(
+        proof.store,
+        proof.linear,
+        child.id,
+        session!.organizationId!,
+        "app",
+      );
+      proof.expect(
+        "the Paws-created follow-up inherits its parent's delegator",
+        actor === "acme-user",
+        { actor },
+      );
+    }
     const state = await proof.itemState();
     proof.expect("the item merged", state === "merged", { state });
     proof.expect(

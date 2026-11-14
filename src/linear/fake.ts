@@ -102,6 +102,7 @@ export type FakeTracker = LinearSessionAdapter &
     epics: Map<string, EpicSnapshot>;
     /** Child issue id to parent issue id, for one brief preview read. */
     briefParents: Map<string, string>;
+    briefCreators: Map<string, string>;
     /** Identifiers passed to `readBriefIssue`, in order. */
     briefReads: string[];
     readBriefIssue(
@@ -212,6 +213,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     },
     epics: byId,
     briefParents,
+    briefCreators: new Map<string, string>(),
     briefReads,
     async readBriefIssue(identifier, options) {
       options?.signal?.throwIfAborted();
@@ -222,6 +224,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       const parent = parentId === undefined ? undefined : findBriefIssue(byId, parentId);
       const overview = projectOverviews.get(found.linearIssueId);
       return {
+        creatorId: this.briefCreators.get(found.linearIssueId) ?? null,
         issue: briefIssueFromSnapshot(found),
         parent: parent === undefined ? null : briefIssueFromSnapshot(parent),
         projectOverview: projectOverviewText(overview),

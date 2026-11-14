@@ -806,6 +806,71 @@ test("a session with no creator posts that Paws did not start the work", async (
   }
 });
 
+test("a Paws-created follow-up inherits the merged parent's owner", async () => {
+  const f = await fixture();
+  try {
+    await linkMember(f);
+    await f.orchestrator.onLinearEvent(f.event);
+    const [parent] = await listWorkItems(f.db);
+    await write(f.db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, parent!.id)),
+    );
+    const [child] = await f.tracker.createSubIssues({
+      key: "remaining",
+      parentIssueId: "issue",
+      repository: "acme/widgets",
+      drafts: [
+        {
+          title: "Follow-up",
+          description: "Finish remaining work",
+          acceptanceCriteria: ["Work is done"],
+          blockedBy: [],
+        },
+      ],
+    });
+    f.tracker.briefParents.set(child!.id, "issue");
+    f.tracker.briefCreators.set(child!.id, "app");
+    f.session.id = "follow-session";
+    f.session.creatorId = null;
+    f.session.issue = {
+      id: child!.id,
+      identifier: child!.identifier,
+      title: "Follow-up",
+      description: "Finish",
+    };
+    f.ownership.id = child!.id;
+    await recordLinearInstallation(f.db, {
+      sessionId: f.session.id,
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      teamId: "team",
+      observedAtMs: f.clock.now(),
+    });
+    const event = {
+      ...f.event,
+      sessionId: f.session.id,
+      issueId: child!.id,
+      dedupeKey: "follow-created",
+      payload: "{}",
+    };
+    f.tracker.briefCreators.set(child!.id, "someone-else");
+    expect(await f.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
+    f.tracker.briefCreators.set(child!.id, "app");
+    await acknowledgeNewSession(f.tracker, event, (value) => f.orchestrator.onLinearEvent(value));
+    expect(await listWorkItems(f.db)).toHaveLength(2);
+    const owners = await rows(f.db, (q) =>
+      q.orm.select({ owner: q.t.workItem.ownerUserId }).from(q.t.workItem),
+    );
+    expect(owners.map((row) => row.owner)).toEqual(["member", "member"]);
+    expect(
+      f.tracker.progress.some((update) => update.body.includes("did not start this work")),
+    ).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
 test("a session Paws started for a follow-up acts for the stored delegator", async () => {
   const f = await fixture();
   try {
