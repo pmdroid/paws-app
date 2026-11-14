@@ -63,6 +63,8 @@ export {
   writeAgentSettings,
 } from "./agents";
 export type { AgentLabelProblem, AgentProfile, AgentProfiles, AgentSettings } from "./agents";
+export { parseAgentCommands, readAgentCommands } from "./agent-commands";
+export type { AgentCommands } from "./agent-commands";
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
