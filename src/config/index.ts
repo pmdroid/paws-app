@@ -40,7 +40,13 @@ export {
   readGitHubAccessSettings,
   writeGitHubAccess,
 } from "./github-access";
-export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
+export {
+  checkMemberVmValue,
+  isMemberVmPool,
+  parseMemberVmSettings,
+  renderMemberVmSettings,
+  writeMemberVmSize,
+} from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";

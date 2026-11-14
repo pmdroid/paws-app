@@ -58,6 +58,7 @@ import {
   handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
+  handleMemberVmSettingsRequest,
   handleTimeLimitSettingsRequest,
   handleGitHubAccessSettingsRequest,
   GITHUB_ACCESS_SETTINGS_PATH,
@@ -66,6 +67,7 @@ import {
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
+  MEMBER_VM_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
@@ -715,6 +717,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleMemberVmSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
   }
   if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;

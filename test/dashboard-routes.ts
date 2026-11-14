@@ -231,6 +231,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "closeout",
     "findings",
     "hooks",
+    "member-vm",
     "merging",
     "skills",
     "time-limits",

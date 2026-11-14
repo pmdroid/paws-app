@@ -25,3 +25,5 @@ export { CLOSEOUT_SETTINGS_PATH, handleCloseoutSettingsRequest } from "./closeou
 export type { CloseoutSettingsOptions } from "./closeout";
 export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
 export type { StorageSettingsOptions } from "./storage";
+export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
+export type { MemberVmSettingsOptions } from "./member-vm";
