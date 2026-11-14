@@ -42,7 +42,7 @@ test("a follow-up interrupts the running turn and continues in the same workspac
       await new Promise<void>((resolve) =>
         options.signal!.addEventListener("abort", () => resolve(), { once: true }),
       );
-      return finished(true);
+      return { ...finished(false), stopReason: "error", interrupted: true, errorMessage: "Error." };
     },
   );
   expect(result.stopReason).toBe("end_turn");
@@ -76,3 +76,38 @@ test("without a follow-up the run finishes with its first turn", async () => {
   expect(result.stopReason).toBe("end_turn");
   expect(calls).toBe(1);
 });
+
+for (const emptyDelivery of [true, false])
+  test(`follow-up handling continues safely with empty delivery: ${emptyDelivery}`, async () => {
+    let calls = 0;
+    let deliveries = 0;
+    const result = await runWithFollowUps(
+      {
+        role: "implementer",
+        itemId: "item",
+        runId: "run",
+        prompt: "Continue the repair",
+        worktreePath: "/work/tree",
+        pawsRoot: "/nonexistent-follow-up",
+      },
+      async (_sequence, signal) => {
+        if (emptyDelivery && deliveries++ === 0) return "  ";
+        return new Promise<string>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+      async (options) => {
+        calls++;
+        if (emptyDelivery) {
+          await Bun.sleep(10);
+          expect(options.signal?.aborted).toBe(false);
+        } else if (calls === 1) {
+          return { ...finished(false), stopReason: "error", interrupted: true };
+        }
+        expect(options.prompt).toContain("Continue the repair");
+        return finished(false);
+      },
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(calls).toBe(emptyDelivery ? 1 : 2);
+  });
