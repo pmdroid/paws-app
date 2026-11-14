@@ -66,7 +66,7 @@ A page polls its own resource every 5 seconds while the tab is visible, stops wh
 
 ## Logs and media
 
-No list or page resource carries check `stdout` or `stderr`. `GET /api/issues/<id>/attempts/<n>/checks/<check id>/log` returns the last 64 KB of each stream with `truncated`; `full=1` returns all of it and `run=<run id>` reads the check from that run's agent Closeout. The issue page asks for a log only when its row is open.
+`GET /api/issues` carries one row per issue with only the fields the Issues page shows (`IssueListItem` in `src/dashboard/src/contract.ts`); runs, Closeout, timelines and pull requests are in `GET /api/issues/<id>`. No list or page resource carries check `stdout` or `stderr`. `GET /api/issues/<id>/attempts/<n>/checks/<check id>/log` returns the last 64 KB of each stream with `truncated`; `full=1` returns all of it and `run=<run id>` reads the check from that run's agent Closeout. The issue page asks for a log only when its row is open.
 
 `GET /api/evidence/<id>` streams the file with `Range`, `HEAD` and a download name; images load as the page shows them, and video.js loads as its own chunk the first time a video plays. `GET /api/runs/transcript?run=<id>` returns a run's full agent transcript for the transcript page.
 
