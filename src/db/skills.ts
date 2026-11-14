@@ -448,26 +448,37 @@ export async function recordRunAgentSetup(store: Db, input: AgentSetupInput): Pr
 }
 
 export function* runAgentSetupSteps(q: Q, runId: string): Steps<RunAgentSetup | null> {
+  return (yield* runAgentSetupsSteps(q, [runId])).get(runId) ?? null;
+}
+
+export function* runAgentSetupsSteps(
+  q: Q,
+  runIds: readonly string[],
+): Steps<Map<string, RunAgentSetup>> {
   const setup = q.t.runAgentSetup;
-  const row = yield* q.one(
+  const rows = yield* q.all(
     q.orm
       .select({
+        runId: setup.runId,
         runnerId: setup.runnerId,
         skills: setup.skills,
         hooks: setup.hooks,
         recordedAt: setup.recordedAt,
       })
       .from(setup)
-      .where(eq(setup.runId, runId)),
+      .where(inArray(setup.runId, [...runIds])),
   );
-  return row
-    ? {
+  return new Map(
+    rows.map((row) => [
+      row.runId,
+      {
         runnerId: row.runnerId,
         skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
         hooks: JSON.parse(row.hooks) as RunHook[],
         recordedAt: row.recordedAt,
-      }
-    : null;
+      },
+    ]),
+  );
 }
 
 export async function runAgentSetup(store: Db, runId: string): Promise<RunAgentSetup | null> {
