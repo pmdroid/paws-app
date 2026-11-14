@@ -173,6 +173,43 @@ try {
       else expect([name, loads > 1]).toEqual([name, true]);
     }
     const admin = await open(width, f.adminCookie);
+    let merging = {
+      default: { order: "queue", mainMoved: "overlap" },
+      sessionDone: "pull_request",
+      sessionQuietMinutes: 10,
+    };
+    await admin.route("**/api/settings/merging", async (route) => {
+      if (route.request().method() === "PUT")
+        merging = { ...merging, ...route.request().postDataJSON() };
+      await route.fulfill({ json: merging });
+    });
+    await visit(admin, width, "settings-merging", "/dashboard/settings/merging", "Merging");
+    await admin.locator('[name="session-done"][value="settled"]').check();
+    const quiet = admin.locator('[name="session-quiet"]');
+    await expect(quiet).toHaveValue("10");
+    for (const value of ["0", "121", "1.5", ""]) {
+      await quiet.fill(value);
+      expect(await quiet.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(false);
+    }
+    await quiet.fill("17");
+    const savedSession = admin.waitForRequest(
+      (request) => request.method() === "PUT" && request.url().endsWith("/api/settings/merging"),
+    );
+    await admin.locator('#merge-settings-form button[type="submit"]').click();
+    expect((await savedSession).postDataJSON()).toMatchObject({
+      sessionDone: "settled",
+      sessionQuietMinutes: 17,
+    });
+    await expect(admin.getByText("Merging settings saved.", { exact: false })).toBeVisible();
+    await admin.reload();
+    await expect(admin.locator('[name="session-done"][value="settled"]')).toBeChecked();
+    await expect(admin.locator('[name="session-quiet"]')).toHaveValue("17");
+    await admin.locator("#merge-session").scrollIntoViewIfNeeded();
+    await admin.screenshot({
+      path: join(out, `settings-merging-settled-${width}.png`),
+      fullPage: true,
+    });
+
     await admin.route("**/api/settings/agents", (route) =>
       route.fulfill({
         json: {
