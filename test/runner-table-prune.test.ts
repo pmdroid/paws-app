@@ -29,7 +29,11 @@ const NOTHING = {
   runner_helper: 0,
 };
 
-function keys<T>(db: Db, read: (q: Q) => PromiseLike<T[]>, key: (row: T) => string | number) {
+function keys<T, K extends string | number>(
+  db: Db,
+  read: (q: Q) => PromiseLike<T[]>,
+  key: (row: T) => K,
+) {
   return db.run((q) => q.all(read(q))).then((rows) => rows.map(key).sort());
 }
 
