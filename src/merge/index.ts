@@ -37,8 +37,6 @@ export { RETRY_MERGE, retriesMerge } from "./merge-denied";
 export {
   askMergeHelp,
   postMergeConflictSteps,
-  ciFixes,
-  latestUserTurn,
   rebaseBudgetForSteps,
   rebaseReturns,
   returnToAgent,
