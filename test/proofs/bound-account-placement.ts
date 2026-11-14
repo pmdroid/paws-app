@@ -32,6 +32,42 @@ export default {
     const binding = (await listAgentBindings(db, workspace.id)).find(
       (b) => b.runnerId === runnerId && !b.legacy,
     )!;
+    let observedAt = NOW;
+    for (const state of ["exhausted", "restricted"] as const) {
+      const until = NOW + 60_000;
+      await recordAccountObservation(db, {
+        bindingId: binding.id,
+        ...(state === "exhausted" ? { state, resetsAt: until } : { state }),
+        source: "result",
+        sourceId: state,
+        observedAt: ++observedAt,
+        now: NOW,
+      });
+      const refused: number[] = [];
+      await placement.candidates({
+        ...request,
+        onRejected: (_id, _reason, retry) => {
+          if (retry) refused.push(retry);
+        },
+      });
+      proof.expect(
+        state + " keeps retry time without setup",
+        refused.length > 0 && (await placement.setupNeed!(request)) === null,
+      );
+      await recordAccountObservation(db, {
+        bindingId: binding.id,
+        state: "ok",
+        clears: ["quota", "provider"],
+        source: "sign_in",
+        sourceId: state + "-clear",
+        observedAt: ++observedAt,
+        now: NOW,
+      });
+      proof.expect(
+        state + " recovers automatically",
+        (await placement.candidates(request)).length === 1,
+      );
+    }
     await recordAccountObservation(db, {
       bindingId: binding.id,
       state: "auth_required",

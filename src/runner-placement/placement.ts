@@ -317,7 +317,13 @@ export function createRunnerPlacement(options: {
         quotaState: runner?.quotaState ?? "ok",
       },
       workspaceId,
-      { agent, model: input.profile?.model, purpose: input.purpose, at: now() },
+      {
+        agent,
+        model: input.profile?.model,
+        purpose: input.purpose,
+        at: now(),
+        exceptCommandId: input.commandId,
+      },
     );
     if ("reason" in fit)
       throw new PlacementRaceError(`default sign-in: ${fit.reason} before assignment`);

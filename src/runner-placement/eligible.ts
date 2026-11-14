@@ -63,7 +63,13 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
           if (binding.runnerId !== runner.id || binding.agent !== input.agent || binding.legacy)
             continue;
           const readiness = yield* bindingReadinessSteps(q, { bindingId: binding.id, now: at });
-          if (readiness.ready || readiness.reason === "busy") healthy = true;
+          if (
+            readiness.ready ||
+            ["busy", "exhausted", "provider-restricted", "unsupported-model"].includes(
+              readiness.reason,
+            )
+          )
+            healthy = true;
           else if (readiness.reason === "auth-required") expired = true;
         }
         if (!healthy) return expired ? "auth-expired" : "agent-not-signed-in";

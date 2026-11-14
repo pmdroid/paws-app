@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   bindAgentAccount,
   bindLinearSessionTask,
@@ -9,6 +9,7 @@ import {
   recordAccountObservation,
   putWorkspaceUser,
   recordLinearInstallation,
+  type Db,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -23,6 +24,20 @@ const open: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of open.splice(0)) await close();
 });
+
+function setPolicy(db: Db, runnerId: string, set: Record<string, unknown>) {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set(set)
+      .where(
+        and(
+          eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+          eq(q.t.runnerAgentPolicy.agent, "claude"),
+        ),
+      ),
+  );
+}
 
 async function acme() {
   const { db, close } = await tempStore();
@@ -91,7 +106,7 @@ async function acme() {
   return { db, now, workspaceId: workspace.id, item, placement, place };
 }
 
-test("two bound runners with one expired account: the implementer goes to the other", async () => {
+test("healthy bindings work without local sign-in; expired and full accounts are refused", async () => {
   const f = await acme();
   const account = await createAgentAccount(f.db, {
     workspaceId: f.workspaceId,
@@ -117,6 +132,15 @@ test("two bound runners with one expired account: the implementer goes to the ot
     observedAt: f.now,
     now: f.now,
   });
+  await seed(f.db, (q) => q.orm.update(q.t.agentAccount).set({ concurrency: 1 }));
+  const admission = createRunnerPlacement({ store: f.db, now: () => f.now });
+  const request = {
+    itemId: f.item.id,
+    profile: { agent: "claude" as const, model: "opus" },
+    role: "implementer" as const,
+    purpose: "work" as const,
+  };
+  await seed(f.db, (q) => q.orm.delete(q.t.runnerAgentPolicy));
   const { placed, rejected } = await f.place();
   expect(placed).toEqual([
     {
@@ -139,18 +163,20 @@ test("two bound runners with one expired account: the implementer goes to the ot
       expiresAt: f.now + 3_600_000,
     }),
   );
-  await f.db.transaction((q) =>
-    f.placement.startedSteps(q, {
-      commandId: "cmd",
-      runnerId: "acme-2",
-      itemId: f.item.id,
-      profile: { agent: "claude", model: "opus" },
-      account: placed[0]!.account!,
-      role: "implementer",
-      purpose: "work",
-      startedAt: f.now,
-    }),
-  );
+  const start = (placement = f.placement, commandId = "cmd") =>
+    f.db.transaction((q) =>
+      placement.startedSteps(q, {
+        commandId,
+        runnerId: "acme-2",
+        itemId: f.item.id,
+        profile: { agent: "claude", model: "opus" },
+        account: placed[0]!.account!,
+        role: "implementer",
+        purpose: "work",
+        startedAt: f.now,
+      }),
+    );
+  await start();
   expect(
     await f.db.run((q) =>
       q.all(
@@ -164,45 +190,26 @@ test("two bound runners with one expired account: the implementer goes to the ot
       ),
     ),
   ).toEqual([{ runnerId: "acme-2", revision: null, fallback: null }]);
-});
-
-test("a healthy bound account places work without any runner-local sign-in", async () => {
-  const f = await acme();
-  const account = await createAgentAccount(f.db, {
-    workspaceId: f.workspaceId,
-    agent: "claude",
-    label: "Team",
-    now: f.now,
-  });
-  const binding = await bindAgentAccount(f.db, {
-    workspaceId: f.workspaceId,
-    accountId: account.id,
-    runnerId: "acme-1",
-    now: f.now,
-  });
-  await seed(f.db, (q) => q.orm.delete(q.t.runnerAgentPolicy));
-  expect((await f.place()).placed).toEqual([
-    {
-      id: "acme-1",
+  await admission.candidates(request);
+  await seed(f.db, (q) =>
+    q.orm.insert(q.t.runnerCommandAccount).values({
+      commandId: "cmd",
       workspaceId: f.workspaceId,
-      account: { accountId: account.id, bindingId: binding.id, named: true },
-    },
-  ]);
-  await recordAccountObservation(f.db, {
-    bindingId: binding.id,
-    state: "auth_required",
-    source: "result",
-    sourceId: "expired",
-    observedAt: f.now,
-    now: f.now,
-  });
-  const expired = await f.place();
-  expect(expired.placed).toEqual([]);
-  expect(expired.rejected).toContainEqual({ runnerId: "acme-1", reason: "auth-expired" });
+      runnerId: "acme-2",
+      agent: "claude",
+      accountId: account.id,
+      bindingId: bindings[1]!.id,
+      named: 1,
+      recordedAt: f.now,
+    }),
+  );
+  expect((await f.place()).placed).toEqual([]);
+  await expect(start(admission, "blocked")).rejects.toThrow("concurrency");
 });
 
 test("runner-local sign-in alone requires adding or binding an account", async () => {
   const f = await acme();
+  await setPolicy(f.db, "acme-1", { ready: 1 });
   const result = await f.place();
   expect(result.placed).toEqual([]);
   expect(result.rejected).toEqual([

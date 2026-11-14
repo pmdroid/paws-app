@@ -24,6 +24,7 @@ type SignInInput = {
   model: string | null | undefined;
   purpose: PlacementPurpose;
   at: number;
+  exceptCommandId?: string;
 };
 
 export function* repositoryRejectionSteps(
@@ -53,14 +54,19 @@ export function* signInFitSteps(
       bindingId: binding.id,
       model: input.model,
       now: input.at,
+      runnerCapacity: false,
+      exceptCommandId: input.exceptCommandId,
     });
-    if (readiness.ready || readiness.reason === "busy")
+    if (readiness.ready)
       return {
         account: { accountId: binding.accountId, bindingId: binding.id, named: true },
-        low: readiness.ready && readiness.low,
+        low: readiness.low,
       };
     refusal = {
-      reason: BINDING_REASON_TEXT[readiness.reason],
+      reason:
+        readiness.reason === "busy"
+          ? "agent account at its concurrency limit"
+          : BINDING_REASON_TEXT[readiness.reason],
       ...(readiness.until !== null ? { until: readiness.until } : {}),
     };
   }

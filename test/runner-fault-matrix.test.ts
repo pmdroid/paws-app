@@ -14,7 +14,6 @@ import {
   OutboxDispatcher,
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
-  getRunnerSetupHold,
   getWorkItem,
   listJobs,
   listRuns,
@@ -258,12 +257,19 @@ test("a temporary agent API error is retried and the task reaches Closeout", asy
   expect(result.retries, result.detail).toEqual([1]);
 }, 60_000);
 
-test("preparation waits for a healthy bound account after quota exhaustion", async () => {
+test("a usage limit while the implementer is prepared posts one thought naming the agent and the reset time", async () => {
   const result = await runRemoteFault("preparation-usage-limit");
-  expect(result.state, result.detail).toBe("queued");
+  expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
   expect(result.faultedAttempts, result.detail).toBe(1);
-  expect(result.thoughts.join("\n")).toContain("Settings › Agent accounts");
+  expect(
+    result.thoughts.filter((body) => body.includes("usage limit reached")),
+    result.detail,
+  ).toEqual([
+    expect.stringMatching(
+      /^Paused: Claude usage limit reached; resumes at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
+    ),
+  ]);
 }, 60_000);
 
 async function runRemoteFault(fault: Fault) {
@@ -916,7 +922,6 @@ async function runRemoteFault(fault: Fault) {
         (await getWorkItem(db, item.id))?.state ?? "",
       )
     ) {
-      if (fault === "preparation-usage-limit" && (await getRunnerSetupHold(db, item.id))) break;
       const ran = await jobs.tick();
       await recover();
       if (ran === null) {
