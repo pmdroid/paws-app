@@ -322,4 +322,55 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+
+  test("merging candidate_paths into candidate_risk keeps classified and unclassified heads with their recording times", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("merge_candidate_paths_into_candidate_risk"),
+    });
+    try {
+      for (const id of ["ENG-1", "ENG-2"])
+        await pg.$client.query(
+          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd-${id}', 'i-${id}', '${id}', '${id}', 'queued', 'paws/${id}', 0, 0)`,
+        );
+      await pg.$client.exec(`
+        INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, classified_at, matches) VALUES
+          ('ENG-1', 'h1', 'b', 'high', '["a.ts"]', 100, '[]'),
+          ('ENG-1', 'h2', 'b', 'normal', '[]', 20, NULL),
+          ('ENG-2', 'h1', 'b', 'normal', '[]', 5, NULL);
+        INSERT INTO candidate_paths (item_id, head_sha, paths, recorded_at) VALUES
+          ('ENG-1', 'h1', '["a.ts", "b.ts"]', 10),
+          ('ENG-1', 'h2', '["c.ts"]', 20),
+          ('ENG-1', 'h3', '["d.ts"]', 30);
+      `);
+      const before = await pg.$client.query(
+        "SELECT COALESCE(r.item_id, p.item_id) AS item_id, COALESCE(r.head_sha, p.head_sha) AS head_sha, r.tier, r.paths, r.matches, p.paths AS changed, p.recorded_at FROM candidate_risk r FULL OUTER JOIN candidate_paths p USING (item_id, head_sha) ORDER BY item_id, head_sha",
+      );
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const after = await pg.$client.query(
+        "SELECT item_id, head_sha, tier, paths, matches, changed_paths AS changed, recorded_at FROM candidate_risk ORDER BY item_id, head_sha",
+      );
+      expect(after.rows).toEqual(before.rows);
+      expect(after.rows.map((row) => (row as { changed: unknown }).changed)).toEqual([
+        ["a.ts", "b.ts"],
+        ["c.ts"],
+        ["d.ts"],
+        null,
+      ]);
+      const gone = await pg.$client.query("SELECT to_regclass('candidate_paths') AS name");
+      expect(gone.rows).toEqual([{ name: null }]);
+      const index = await pg.$client.query(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'candidate_risk_item'",
+      );
+      expect(index.rows).toEqual([
+        {
+          indexdef:
+            "CREATE INDEX candidate_risk_item ON public.candidate_risk USING btree (item_id, recorded_at)",
+        },
+      ]);
+    } finally {
+      await pg.$client.close();
+    }
+  });
 });

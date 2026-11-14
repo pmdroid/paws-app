@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { RiskClassification, RiskMatch, RiskTier } from "../core";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
@@ -17,7 +17,10 @@ export type CandidateRisk = RiskClassification & {
   matches?: RiskMatch[];
 };
 
-export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
+export function* saveCandidateRiskSteps(
+  q: Q,
+  risk: CandidateRisk & { changedPaths?: readonly string[]; recordedAt?: number },
+) {
   const { candidateRisk } = q.t;
   const values = {
     baseSha: risk.base,
@@ -25,6 +28,12 @@ export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
     paths: jsonValue(q, risk.paths),
     matches: risk.matches === undefined ? null : jsonValue(q, risk.matches),
     classifiedAt: risk.classifiedAt,
+    ...(risk.changedPaths === undefined
+      ? {}
+      : {
+          changedPaths: jsonValue(q, [...new Set(risk.changedPaths)].sort()),
+          recordedAt: risk.recordedAt ?? risk.classifiedAt,
+        }),
   };
   yield* q.exec(
     q.orm
@@ -42,7 +51,13 @@ export function* getCandidateRiskSteps(q: Q, itemId: string, head: string) {
     q.orm
       .select()
       .from(candidateRisk)
-      .where(and(eq(candidateRisk.itemId, itemId), eq(candidateRisk.headSha, head))),
+      .where(
+        and(
+          eq(candidateRisk.itemId, itemId),
+          eq(candidateRisk.headSha, head),
+          isNotNull(candidateRisk.tier),
+        ),
+      ),
   );
   return row ? fromRow(q, row) : null;
 }
@@ -62,7 +77,7 @@ export function* latestCandidateRiskSteps(q: Q, itemId: string) {
     q.orm
       .select()
       .from(candidateRisk)
-      .where(eq(candidateRisk.itemId, itemId))
+      .where(and(eq(candidateRisk.itemId, itemId), isNotNull(candidateRisk.tier)))
       .orderBy(desc(candidateRisk.classifiedAt), desc(candidateRisk.headSha))
       .limit(1),
   );
@@ -75,7 +90,7 @@ export function* latestCandidateRisksSteps(q: Q, itemIds: readonly string[]) {
     q.orm
       .select()
       .from(candidateRisk)
-      .where(inArray(candidateRisk.itemId, [...itemIds]))
+      .where(and(inArray(candidateRisk.itemId, [...itemIds]), isNotNull(candidateRisk.tier)))
       .orderBy(desc(candidateRisk.classifiedAt), desc(candidateRisk.headSha)),
   );
   const latest = new Map<string, CandidateRisk>();
@@ -92,6 +107,8 @@ export async function latestCandidateRisk(
 }
 
 function fromRow(q: Q, row: Row): CandidateRisk {
+  if (row.baseSha === null || row.tier === null || row.paths === null || row.classifiedAt === null)
+    throw new Error("Incomplete stored candidate classification");
   return {
     itemId: row.itemId,
     head: row.headSha,

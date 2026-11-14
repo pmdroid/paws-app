@@ -1,0 +1,1 @@
+INSERT INTO "candidate_risk" ("item_id", "head_sha", "changed_paths", "recorded_at") SELECT "item_id", "head_sha", "paths", "recorded_at" FROM "candidate_paths" ON CONFLICT ("item_id", "head_sha") DO UPDATE SET "changed_paths" = excluded."changed_paths", "recorded_at" = excluded."recorded_at";

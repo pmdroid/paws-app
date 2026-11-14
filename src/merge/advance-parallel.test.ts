@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readSetting, saveCandidatePaths } from "../db";
+import { readSetting } from "../db";
 import { setJournalSink } from "../journal";
 import { failingTest, mergeHarnessPg, pendingCi, type MergeHarnessPg } from "./advance-harness";
+import { saveChangedPaths } from "../../test/dialects";
 import { tempStore } from "../../test/pglite";
 
 let harness: MergeHarnessPg | undefined;
@@ -28,7 +29,7 @@ async function lane(h: MergeHarnessPg, files: Record<string, string[]>) {
   h.state.ci = pendingCi;
   for (const [id, paths] of Object.entries(files)) {
     const item = await h.addItem(id);
-    await saveCandidatePaths(h.db, {
+    await saveChangedPaths(h.db, {
       itemId: id,
       head: item.accepted,
       paths,
