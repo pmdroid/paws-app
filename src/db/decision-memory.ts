@@ -337,7 +337,19 @@ export async function acceptDecisionSuggestion(
   await store.run((q) => acceptDecisionSuggestionSteps(q, id, acceptedBy, now));
 }
 
+/**
+ * Accepts an open suggestion once. The update only matches while `accepted_at` is null, so of
+ * two concurrent transactions the second waits on the row lock, re-checks the condition after
+ * the first commits and matches nothing. Returns whether this call accepted it.
+ */
 export function* acceptDecisionSuggestionSteps(q: Q, id: string, acceptedBy: string, now: number) {
   const { decisionSuggestion: s } = q.t;
-  yield* q.exec(q.orm.update(s).set({ acceptedBy, acceptedAt: now }).where(eq(s.id, id)));
+  const rows = yield* q.all(
+    q.orm
+      .update(s)
+      .set({ acceptedBy, acceptedAt: now })
+      .where(and(eq(s.id, id), isNull(s.acceptedAt)))
+      .returning({ id: s.id }),
+  );
+  return rows.length > 0;
 }
