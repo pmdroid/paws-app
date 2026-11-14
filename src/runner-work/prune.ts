@@ -1,6 +1,7 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
   clearCloseoutOutputSteps,
+  legacyCloseoutOutputsSteps,
   closeoutLogRetentionDays,
   expiredCloseoutOutputsSteps,
   pruneFinishedAgentModelProbesSteps,
@@ -19,6 +20,9 @@ import {
   type Q,
   type Steps,
 } from "../db";
+
+import { moveCloseoutOutput, type EvidenceStorage } from "../evidence";
+import { journalCaught } from "../journal";
 
 export const RUNNER_EVENT_PRUNE_JOB = "runner-events.prune";
 export const RUNNER_EVENT_PRUNE_EVERY_MS = 3_600_000;
@@ -123,11 +127,23 @@ export async function pruneRunnerTables(options: PruneOptions) {
 }
 
 export async function pruneCloseoutLogs(
-  options: PruneOptions & { remove: (key: string) => Promise<void> },
+  options: PruneOptions & { storage: EvidenceStorage; remove: (key: string) => Promise<void> },
 ): Promise<number> {
   const days = await closeoutLogRetentionDays(options.store);
+  const now = options.now ?? Date.now();
+  const cutoff = now - days * DAY;
+  const legacy = await options.store.run((q) => legacyCloseoutOutputsSteps(q, 200));
+  for (const row of legacy) {
+    options.signal?.throwIfAborted();
+    try {
+      if (days !== 0 && row.at < cutoff)
+        await options.store.transaction((q) => clearCloseoutOutputSteps(q, row.ref));
+      else await moveCloseoutOutput(options.store, options.storage, row, now);
+    } catch (error) {
+      journalCaught(error, "pruneCloseoutLogs.move", row.itemId);
+    }
+  }
   if (days === 0) return 0;
-  const cutoff = (options.now ?? Date.now()) - days * DAY;
   let deleted = 0;
   for (;;) {
     options.signal?.throwIfAborted();

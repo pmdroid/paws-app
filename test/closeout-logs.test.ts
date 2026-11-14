@@ -182,11 +182,11 @@ test("retention deletes the output of items that ended more than the setting's d
   const keys = async () => (await stepRows(db)).map((row) => row.key);
 
   await saveCloseoutLogRetentionDays(db, 0, NOW);
-  expect(await pruneCloseoutLogs({ store: db, now: NOW + 365 * DAY, remove })).toBe(0);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW + 365 * DAY, remove })).toBe(0);
   expect((await keys()).filter((key) => key !== null)).toHaveLength(3);
 
   await saveCloseoutLogRetentionDays(db, 14, NOW);
-  expect(await pruneCloseoutLogs({ store: db, now: NOW, remove })).toBe(1);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW, remove })).toBe(1);
   expect(objects.objects.size).toBe(2);
   const rows = await db.run((q) =>
     q.all(
@@ -197,7 +197,7 @@ test("retention deletes the output of items that ended more than the setting's d
     ),
   );
   expect(rows.filter((row) => row.key === null).map((row) => row.itemId)).toEqual(["old"]);
-  expect(await pruneCloseoutLogs({ store: db, now: NOW, remove })).toBe(0);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW, remove })).toBe(0);
 });
 
 test("retention preserves both pointers after failed deletion and retries", async () => {
@@ -210,13 +210,13 @@ test("retention preserves both pointers after failed deletion and retries", asyn
   objects.delete = async () => {
     throw new Error("S3 unavailable");
   };
-  await expect(pruneCloseoutLogs({ store: db, now: NOW, remove })).rejects.toThrow(
+  await expect(pruneCloseoutLogs({ store: db, storage, now: NOW, remove })).rejects.toThrow(
     "S3 unavailable",
   );
   expect((await stepRows(db))[0]!.key).toBe(key);
   expect(await getEvidenceObject(db, key)).toEqual(metadata);
   objects.delete = deleting;
-  expect(await pruneCloseoutLogs({ store: db, now: NOW, remove })).toBe(1);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW, remove })).toBe(1);
   expect(await getEvidenceObject(db, key)).toBeNull();
   expect((await stepRows(db))[0]!.key).toBeNull();
   expect(objects.objects.size).toBe(0);
@@ -280,4 +280,116 @@ test("local step and agent logs upload when object storage is enabled", async ()
       },
     }),
   ).toMatchObject({ stdout: "old out" });
+});
+
+async function legacyRows(db: Db, count: number, at = NOW) {
+  await insertWorkItem(db, "legacy");
+  const progress = createDbCloseoutProgress(db, "legacy", () => at);
+  for (let i = 0; i < count; i++) {
+    const id = String(i);
+    await progress.step(identity("legacy"), { ...step("running"), id });
+    await progress.output(identity("legacy"), id, "stdout", `out ${i}`, false);
+    await progress.output(identity("legacy"), id, "stderr", `err ${i}`, false);
+    await progress.step(identity("legacy"), { ...step("failed"), id });
+  }
+}
+
+async function legacyEvent(db: Db, at = NOW) {
+  await recordAgentCloseout(
+    db,
+    "run",
+    "legacy",
+    {
+      type: "finished",
+      head: HEAD,
+      id: "unit",
+      kind: "command",
+      command: "bun test",
+      attempt: 1,
+      maxAttempts: null,
+      state: "failed",
+      exitCode: 1,
+      timedOut: false,
+      durationMs: 1,
+      stdout: "agent out",
+      stderr: "agent err",
+      truncated: false,
+    },
+    at,
+  );
+}
+
+test("maintenance moves three legacy outputs across both tables and hydrates them", async () => {
+  const { db, storage, objects } = await setup();
+  await legacyRows(db, 2);
+  await legacyEvent(db);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect(objects.writes).toHaveLength(3);
+  const rows = await db.run((q) => q.all(q.orm.select().from(q.t.closeoutStep)));
+  for (const row of rows) {
+    expect(row).toMatchObject({ stdout: "", stderr: "" });
+    expect(
+      await withCloseoutOutput(db, storage, {
+        ...row,
+        output: { key: row.outputKey!, bytes: row.outputBytes!, sha256: row.outputSha256! },
+      }),
+    ).toMatchObject({ stdout: `out ${row.stepId}`, stderr: `err ${row.stepId}` });
+  }
+  const event = (await listAgentCloseout(db, ["run"]))[0]!;
+  expect(event.progress).toMatchObject({ stdout: "", stderr: "" });
+  if (event.progress.type !== "finished") throw new Error("Expected finished event");
+  expect(await withCloseoutOutput(db, storage, event.progress)).toMatchObject({
+    stdout: "agent out",
+    stderr: "agent err",
+  });
+});
+
+test("expired legacy output is cleared without storing it", async () => {
+  const { db, storage, objects } = await setup();
+  await legacyRows(db, 1, NOW - 15 * DAY);
+  await legacyEvent(db, NOW - 15 * DAY);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect(objects.writes).toHaveLength(0);
+  expect(await stepRows(db)).toEqual([{ stdout: "", stderr: "", key: null }]);
+  expect((await listAgentCloseout(db, ["run"]))[0]!.progress).toMatchObject({
+    stdout: "",
+    stderr: "",
+  });
+});
+
+test("failed legacy moves preserve columns, continue the batch and retry next run", async () => {
+  const { db, storage, objects } = await setup();
+  await legacyRows(db, 3);
+  const write = objects.write;
+  let failed = false;
+  objects.write = async (...args) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("storage unavailable");
+    }
+    return write(...args);
+  };
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect((await stepRows(db)).filter((row) => row.key === null)).toEqual([
+    { stdout: "out 0", stderr: "err 0", key: null },
+  ]);
+  objects.write = write;
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect(
+    (await stepRows(db)).every((row) => row.key !== null && row.stdout === "" && row.stderr === ""),
+  ).toBe(true);
+});
+
+test("maintenance processes only the oldest 200 legacy rows across both tables", async () => {
+  const { db, storage, objects } = await setup();
+  await legacyRows(db, 200);
+  await legacyEvent(db, NOW - DAY);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect(objects.writes).toHaveLength(200);
+  expect((await stepRows(db)).filter((row) => row.key === null)).toHaveLength(1);
+  expect((await listAgentCloseout(db, ["run"]))[0]!.progress).toMatchObject({
+    stdout: "",
+    stderr: "",
+    output: { key: expect.any(String) },
+  });
 });

@@ -2230,6 +2230,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
         const logs = await pruneCloseoutLogs({
           store,
+          storage: closeoutLogs,
           signal,
           remove: (key) => removeEvidenceFile(store, closeoutLogs, key),
         });

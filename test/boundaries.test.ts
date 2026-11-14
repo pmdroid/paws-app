@@ -289,6 +289,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "agent-sessions",
   ],
   "runner-work": [
+    "evidence",
     "journal",
     "credentials",
     "db",
