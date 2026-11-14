@@ -262,44 +262,40 @@ export function createAgentReadTokens(options: {
       expiresAt: Math.min(credential.expiresAt, checkedAt + MAX_TOKEN_TTL_MS),
     };
   }
-  return {
+  const api = {
     async open(input: {
       commandId: string;
       itemId: string;
       runId: string;
       repository: string | null;
     }): Promise<boolean> {
-      if (closed.has(input.commandId)) return false;
-      if (leases.has(input.commandId)) return true;
-      return remember(opening, input.commandId, async () => {
-        const lease = { ...input, repository: input.repository ?? "none" };
-        try {
-          if (!input.repository) throw new Error("the item has no repository");
-          const installationId = await options.installationForRepository(input.repository);
-          if (!installationId) throw new Error("no GitHub App installation covers the repository");
-          const current = await mint(input.repository, installationId);
-          if (closed.has(input.commandId)) {
-            await options.revoke(current.token);
-            return false;
-          }
-          leases.set(input.commandId, {
-            ...lease,
-            repository: input.repository,
-            installationId,
-            current,
-            minted: [current.token],
-            refreshes: 0,
-          });
-          await save();
-          journal(`${label(lease)} minted expires=${new Date(current.expiresAt).toISOString()}`);
-          return true;
-        } catch (error) {
-          journal(
-            `${label(lease)} mint failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+      const lease = { ...input, repository: input.repository ?? "none" };
+      try {
+        if (!input.repository) throw new Error("the item has no repository");
+        const installationId = await options.installationForRepository(input.repository);
+        if (!installationId) throw new Error("no GitHub App installation covers the repository");
+        const current = await mint(input.repository, installationId);
+        if (closed.has(input.commandId)) {
+          await options.revoke(current.token);
           return false;
         }
-      }).finally(() => opening.delete(input.commandId));
+        leases.set(input.commandId, {
+          ...lease,
+          repository: input.repository,
+          installationId,
+          current,
+          minted: [current.token],
+          refreshes: 0,
+        });
+        await save();
+        journal(`${label(lease)} minted expires=${new Date(current.expiresAt).toISOString()}`);
+        return true;
+      } catch (error) {
+        journal(
+          `${label(lease)} mint failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return false;
+      }
     },
     async credential(commandId: string): Promise<{ token: string; expiresAt: number } | null> {
       const lease = leases.get(commandId);
@@ -367,6 +363,16 @@ export function createAgentReadTokens(options: {
       else journal(`${label(lease)} revoked refreshes=${lease.refreshes}`);
     },
   };
+  return {
+    ...api,
+    async open(input: Parameters<typeof api.open>[0]) {
+      if (closed.has(input.commandId)) return false;
+      if (leases.has(input.commandId)) return true;
+      return remember(opening, input.commandId, () => api.open(input)).finally(() =>
+        opening.delete(input.commandId),
+      );
+    },
+  };
 }
 
 export function createAgentReadAccess(options: { work: RunnerWork; agentRead: AgentReadTokens }) {
@@ -397,12 +403,19 @@ export function createAgentReadAccess(options: { work: RunnerWork; agentRead: Ag
         credential = await options.agentRead.credential(command.id);
       }
       if (!credential) return unavailable();
-      await options.work.authorizeAsync({
-        runnerId,
-        runId: command.runId,
-        generation: input.generation,
-        token: received.token,
-      });
+      try {
+        await options.work.authorizeAsync({
+          runnerId,
+          runId: command.runId,
+          generation: input.generation,
+          token: received.token,
+        });
+      } catch (error) {
+        await options.work
+          .currentAsync(command.runId, command.generation)
+          .catch(() => options.agentRead.close(command.id));
+        throw error;
+      }
       return Response.json(credential, { headers: { "cache-control": "no-store" } });
     } catch (error) {
       journalCaught(error, "runner-repository-access.createAgentReadAccess", null);

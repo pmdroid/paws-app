@@ -390,7 +390,13 @@ describe("agent session snapshots", () => {
         generation: 1,
       })
     ).token;
-    // The earlier grant was replaced, so it is stale.
+    expect(await collect(sessions.read({ ...access, generation: 1 }, 1))).toEqual(snapshot);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerWorkGrant)
+        .set({ expiresAt: Date.now() - 1 })
+        .where(eq(q.t.runnerWorkGrant.tokenHash, workspaceTokenHash(access.token))),
+    );
     await expect(sessions.read({ ...access, generation: 1 }, 1)).rejects.toThrow();
     expect(await collect(sessions.read({ ...access, token: fresh, generation: 1 }, 1))).toEqual(
       snapshot,

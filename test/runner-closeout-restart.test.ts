@@ -825,6 +825,18 @@ test("a new control-plane process rebuilds read access using a persisted overlap
             if (!(await response.json()).token) throw new Error("missing credential");
           }
           if (github.minted.length !== 1) throw new Error("read lease minted more than once");
+          const revoked = [];
+          const mint = github.mintInstallationToken;
+          github.mintInstallationToken = async (input) => {
+            const token = await mint(input);
+            await work.finish(process.env.PROBE_RUN, Number(process.env.PROBE_GENERATION));
+            return token;
+          };
+          const racing = createAgentReadTokens({ github,
+            installationForRepository: async () => "7", revoke: async (token) => { revoked.push(token); } });
+          const fenced = await createAgentReadAccess({ work, agentRead: racing })(request(), process.env.PROBE_RUNNER);
+          if (fenced?.status !== 409 || revoked.length !== 1) throw new Error("fenced mint was not revoked");
+
         } finally { await store.close(); }
       `,
         ],
