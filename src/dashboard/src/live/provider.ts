@@ -308,6 +308,8 @@ export interface CheckLogRequest {
 }
 
 export interface CheckOutput {
+  findings?: string;
+  detail?: string;
   stdout: string;
   stderr: string;
 }
@@ -711,13 +713,22 @@ async function readCheckLog(
     .find((entry) => entry.number === request.attempt)
     ?.checks.find((entry) => entry.id === request.checkId);
   if (!check) return null;
-  return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+  return {
+    stdout: check.stdout ?? "",
+    stderr: check.stderr ?? "",
+    ...(check.findings != null ? { findings: check.findings } : {}),
+    ...(check.detail != null ? { detail: check.detail } : {}),
+  };
 }
 
 /** The scope without check `stdout` and `stderr`, which the issue page loads per check. */
 function withoutOutputs(scope: IssueScope): IssueScope {
   return {
     ...scope,
+    ciRounds: scope.ciRounds.map((round) => ({
+      ...round,
+      checks: round.checks.map((check) => ({ ...check, logTail: summarizeEntry(check.logTail) })),
+    })),
     verdicts: scope.verdicts.map((verdict) => ({
       ...verdict,
       checks: verdict.checks.map(withoutOutput),
@@ -736,7 +747,16 @@ function attemptWithoutOutput(attempt: StatusCloseoutAttempt): StatusCloseoutAtt
 
 function withoutOutput(check: StatusCheck): StatusCheck {
   const { stdout: _stdout, stderr: _stderr, ...rest } = check;
-  return rest;
+  return {
+    ...rest,
+    findings: summarizeEntry(check.findings),
+    detail: summarizeEntry(check.detail),
+  };
+}
+
+function summarizeEntry<T extends string | null | undefined>(value: T): T | string {
+  if (value == null || new TextEncoder().encode(value).length <= 4096) return value;
+  return `${value.slice(0, 512)}… (open the check log for full text)`;
 }
 
 export function emptyMergeQueue(

@@ -821,6 +821,8 @@ async function loadLog(
     next = {
       status: "loaded",
       checkState,
+      findings: log.findings,
+      detail: log.detail,
       stdout: log.stdout,
       stderr: log.stderr,
       truncated: log.truncated,

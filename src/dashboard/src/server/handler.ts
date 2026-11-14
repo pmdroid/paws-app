@@ -628,6 +628,8 @@ async function issueCheckLogResponse(
     generatedAt: new Date().toISOString(),
     stdout,
     stderr,
+    ...(output.findings !== undefined ? { findings: output.findings } : {}),
+    ...(output.detail !== undefined ? { detail: output.detail } : {}),
     truncated,
     fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
   } satisfies IssueCheckLogResponse);

@@ -801,6 +801,8 @@ export interface IssueDetailResponse {
  * Each stream is its last `CHECK_LOG_TAIL_BYTES` unless the path carries `full=1`.
  */
 export interface IssueCheckLogResponse {
+  findings?: string;
+  detail?: string;
   generatedAt: string;
   stdout: string;
   stderr: string;
@@ -918,6 +920,8 @@ export function parseIssueCheckLogResponse(input: unknown): IssueCheckLogParseRe
       const body = object(input, path);
       return {
         generatedAt: dateString(body, "generatedAt", path),
+        ...(body.findings !== undefined ? { findings: string(body, "findings", path) } : {}),
+        ...(body.detail !== undefined ? { detail: string(body, "detail", path) } : {}),
         stdout: string(body, "stdout", path),
         stderr: string(body, "stderr", path),
         truncated: boolean(body, "truncated", path),

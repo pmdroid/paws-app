@@ -40,6 +40,8 @@ export type CheckLogView =
   | { status: "error"; checkState: string; error: string }
   | {
       status: "loaded";
+      findings?: string;
+      detail?: string;
       checkState: string;
       stdout: string;
       stderr: string;
@@ -291,6 +293,8 @@ export function checkBody(
       ? artifactLink(verdict, attempt, check, "log", "Full log", engineUrl)
       : "";
   const log = view.logs?.[key];
+  if (log?.status === "loaded" && log.detail !== undefined)
+    check = { ...check, detail: log.detail };
   const streams = logStreams(check, log);
   const download =
     fullLog ||
@@ -313,8 +317,9 @@ export function checkBody(
     log?.status === "error"
       ? `<p class="muted" role="alert">Could not load the log: ${esc(log.error)}</p>`
       : "";
-  const findings = check.findings
-    ? `<div class="stream"><span>Findings</span><pre class="out ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}" tabindex="0" data-log="${logKey(verdict.itemId, attempt.number, check.id, "findings")}">${esc(check.findings)}</pre></div>`
+  const findingText = log?.status === "loaded" ? (log.findings ?? check.findings) : check.findings;
+  const findings = findingText
+    ? `<div class="stream"><span>Findings</span><pre class="out ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}" tabindex="0" data-log="${logKey(verdict.itemId, attempt.number, check.id, "findings")}">${esc(findingText)}</pre></div>`
     : "";
   const selectedStream = view.stream?.[key] ?? (streams.stdout ? "stdout" : "stderr");
   const tabs = (["stdout", "stderr"] as const)
