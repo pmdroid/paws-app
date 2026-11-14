@@ -84,12 +84,15 @@ export async function sameGitHubCandidatePatch(
   const [left, right] = await Promise.all([read(before), read(after)]);
   if (left === null || left !== right) return false;
   const [beforeTree, afterTree] = await Promise.all([readTree(get, before), readTree(get, after)]);
-  const modes = (tree: typeof beforeTree) => new Map(tree.map((entry) => [entry.path, entry.mode]));
-  const oldModes = modes(beforeTree);
-  const newModes = modes(afterTree);
+  const objects = (tree: typeof beforeTree) =>
+    new Map(tree.map((entry) => [entry.path, `${entry.mode}:${entry.object}`]));
+  const oldObjects = objects(beforeTree);
+  const newObjects = objects(afterTree);
   for (const file of left.split("\n").filter(Boolean)) {
-    const [path] = JSON.parse(file) as [string];
-    if (oldModes.get(path) !== newModes.get(path)) return false;
+    const [path, , status] = JSON.parse(file) as [string, unknown, string];
+    const oldObject = oldObjects.get(path);
+    const newObject = newObjects.get(path);
+    if (oldObject !== newObject || (status !== "removed" && oldObject === undefined)) return false;
   }
   return true;
 }

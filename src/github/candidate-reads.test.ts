@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import {
   readGitHubCandidateRange,
@@ -53,7 +54,7 @@ test("API attribution fails closed on incomplete commit pagination", async () =>
   ).rejects.toThrow("incomplete candidate range");
 });
 
-test("API patch comparison carries approval across hunk offsets and rejects changed edits", async () => {
+test("API patch comparison allows offset changes only when changed file contents match", async () => {
   const files = (patch: string) => ({
     files: [{ filename: "widgets", status: "modified", patch }],
   });
@@ -61,7 +62,7 @@ test("API patch comparison carries approval across hunk offsets and rejects chan
     files("@@ -1,3 +1,3 @@\n shelf\n-old\n+new\n end"),
     files("@@ -3,3 +3,3 @@\n shelf\n-old\n+new\n end"),
     { tree: [{ type: "blob", path: "widgets", mode: "100644", sha: before }] },
-    { tree: [{ type: "blob", path: "widgets", mode: "100644", sha: after }] },
+    { tree: [{ type: "blob", path: "widgets", mode: "100644", sha: before }] },
   ]);
   expect(await sameGitHubCandidatePatch(same.repository, before, after, base)).toBe(true);
   const changed = fixture([files("-old\n+new"), files("-old\n+different")]);
@@ -93,4 +94,32 @@ test("stored candidate summaries come from compare without a mirror", async () =
   await expect(readGitHubCandidateRange(invalid.repository, before)).rejects.toThrow(
     "incomplete candidate range",
   );
+});
+
+test("identical repeated contexts cannot carry approval to a different occurrence", async () => {
+  const files = (line: number) => ({
+    files: [
+      {
+        filename: "widgets",
+        status: "modified",
+        patch: `@@ -${line},3 +${line},3 @@\n shelf\n-old\n+new\n end`,
+      },
+    ],
+  });
+  const block = "shelf\nold\nend\n";
+  const blob = (content: string) =>
+    createHash("sha1")
+      .update(`blob ${Buffer.byteLength(content)}\0${content}`)
+      .digest("hex");
+  const first = blob(block.replace("old", "new") + block);
+  const second = blob(block + block.replace("old", "new"));
+  expect(first).not.toBe(second);
+  const fake = fixture([
+    files(1),
+    files(8),
+    { tree: [{ type: "blob", path: "widgets", mode: "100644", sha: first }] },
+    { tree: [{ type: "blob", path: "widgets", mode: "100644", sha: second }] },
+  ]);
+  expect(await sameGitHubCandidatePatch(fake.repository, before, after, base)).toBe(false);
+  expect(fake.calls.filter((path) => path.includes("/git/trees/"))).toHaveLength(2);
 });
