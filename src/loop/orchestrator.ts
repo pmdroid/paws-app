@@ -158,6 +158,7 @@ import {
   adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
+  ensureMirrorCommit,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -10897,8 +10898,20 @@ export class Orchestrator {
    * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
    * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
    */
-  private itemHead(item: WorkItemRecord) {
-    return this.store.run((q) => this.itemHeadSteps(q, item));
+  private async itemHead(item: WorkItemRecord) {
+    const head = await this.store.run((q) => this.itemHeadSteps(q, item));
+    if (head.ref === "HEAD" || !this.storedCandidates()) return head;
+    const repository = await this.repositoryForItem(item);
+    if (!repository) return head;
+    const signal = (await this.signalForItem(item.id)) ?? AbortSignal.timeout(120_000);
+    await ensureMirrorCommit({
+      ...repository,
+      pawsRoot: this.options.pawsRoot,
+      sha: head.ref,
+      networkGit: await this.repositoryGit(item, repository, signal, "read"),
+      signal,
+    });
+    return head;
   }
 
   private *itemHeadSteps(q: Q, item: WorkItemRecord): Steps<{ repo: string; ref: string }> {

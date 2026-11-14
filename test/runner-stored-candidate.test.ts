@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { existsSync } from "node:fs";
 import { FakeClock } from "../src/core";
 import {
   JobLoop,
@@ -12,6 +11,7 @@ import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   getItemCandidate,
+  getWorkItem,
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -149,7 +149,11 @@ test("with mirrors off a runner run starts from the stored candidate and never c
   await work.heartbeat(runnerId, 8);
   const main = await git(["-C", source, "rev-parse", "HEAD"]);
   const refCalls: string[] = [];
-  const candidate = "c".repeat(40);
+  writeFileSync(join(source, "feature.txt"), "runner work\n");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Runner work"]);
+  const candidate = await git(["-C", source, "rev-parse", "HEAD"]);
+  await git(["-C", source, "push", "--quiet", origin, "HEAD:refs/heads/runner-work"]);
   let pushed = false;
   const githubCommits: GitHubCommits = {
     async ref(name) {
@@ -344,7 +348,12 @@ test("with mirrors off a runner run starts from the stored candidate and never c
     const recorded = async () => (await getItemCandidate(db, item!.id))?.sha;
     while (Date.now() < deadline && (await recorded()) !== candidate) await Bun.sleep(10);
     expect(await recorded(), detail).toBe(candidate);
-    expect(existsSync(join(root, "repos"))).toBe(false);
+    const checkpoint = async () => (await getWorkItem(db, item!.id))?.checkpoint;
+    while (Date.now() < deadline && (await checkpoint())?.wipCommit !== candidate)
+      await Bun.sleep(10);
+    expect(await checkpoint(), detail).toMatchObject({ baseSha: main, wipCommit: candidate });
+    const mirror = join(root, "repos", "acme", "fixture.git");
+    expect(await git(["--git-dir", mirror, "for-each-ref", "refs/paws/candidates"])).toBe("");
   } finally {
     controller.abort();
     await orchestrator.shutdown().catch(() => undefined);
