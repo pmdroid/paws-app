@@ -18,6 +18,7 @@ export {
 } from "./closeout";
 export {
   closeoutLogStorage,
+  uploadLocalCloseoutLogs,
   moveCloseoutOutput,
   storeCloseoutOutput,
   withCloseoutOutput,

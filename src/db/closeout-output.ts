@@ -172,3 +172,29 @@ export async function closeoutLogRetentionDays(store: Db): Promise<number> {
 export async function saveCloseoutLogRetentionDays(store: Db, days: number, now: number) {
   await updateSetting(store, CLOSEOUT_LOG_RETENTION_KEY, () => String(days), now);
 }
+
+export async function localCloseoutLogFiles(store: Db) {
+  return store.run(function* (q) {
+    const { closeoutStep: s, closeoutProgress: p, agentCloseoutEvent: e, evidenceObject: o } = q.t;
+    const steps = yield* q.all(
+      q.orm
+        .select({ id: s.outputKey, itemId: p.itemId, headCommit: p.head, checkId: s.stepId })
+        .from(s)
+        .innerJoin(p, eq(p.id, s.progressId))
+        .leftJoin(o, eq(o.id, s.outputKey))
+        .where(and(isNotNull(s.outputKey), isNull(o.id))),
+    );
+    const events = yield* q.all(
+      q.orm
+        .select({ id: e.outputKey, itemId: e.itemId, headCommit: e.head, checkId: e.checkId })
+        .from(e)
+        .leftJoin(o, eq(o.id, e.outputKey))
+        .where(and(isNotNull(e.outputKey), isNull(o.id))),
+    );
+    return [...steps, ...events].map((row) => ({
+      ...row,
+      id: row.id!,
+      checkId: row.checkId ?? "closeout",
+    }));
+  });
+}

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   pointCloseoutOutputSteps,
+  localCloseoutLogFiles,
   type CloseoutOutputPointer,
   type Db,
   type StoredCloseoutOutput,
@@ -11,6 +12,7 @@ import {
   openEvidenceFile,
   removeEvidenceFile,
   writeEvidenceFile,
+  uploadLocalEvidence,
   type EvidenceObjects,
   type EvidenceStorage,
 } from "./objects";
@@ -85,4 +87,8 @@ export async function moveCloseoutOutput(
   if (await store.transaction((q) => pointCloseoutOutputSteps(q, row, pointer))) return true;
   await removeEvidenceFile(store, storage, pointer.key);
   return false;
+}
+
+export function uploadLocalCloseoutLogs(store: Db, storage: EvidenceStorage) {
+  return uploadLocalEvidence(store, storage, Date.now, localCloseoutLogFiles);
 }

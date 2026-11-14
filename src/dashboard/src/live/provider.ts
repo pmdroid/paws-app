@@ -604,7 +604,7 @@ async function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): Promise<ItemDetail | null> {
-  const { scope, blocks, records, current } = await readIssueScope(store, options, id);
+  const { scope, blocks, records, current } = await readIssueScope(store, options, id, true);
   if (scope.items.length === 0 || current === null) return null;
   let risk: StatusItemRisk | null;
   try {

@@ -203,3 +203,26 @@ forEachDialect((connect) => {
     expect(audits).toEqual(["settings.storage: Set Closeout log retention: keep forever"]);
   });
 });
+
+forEachDialect((connect) => {
+  test("rejected combined storage updates preserve retention", async () => {
+    const { db: store, close } = await connect();
+    cleanup.push(close);
+    expect(
+      (
+        await call(send("PUT", { ...s3, bucket: "Bad Bucket", closeoutLogRetentionDays: 0 }), {
+          store,
+        })
+      ).status,
+    ).toBe(400);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    process.env.PAWS_S3_BUCKET = "env-bucket";
+    process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret";
+    expect(
+      (await call(send("PUT", { kind: "local", closeoutLogRetentionDays: 0 }), { store })).status,
+    ).toBe(409);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    expect(audits).toEqual([]);
+    expect((await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store })).status).toBe(200);
+  });
+});

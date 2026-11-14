@@ -61,6 +61,7 @@ import {
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
   closeoutLogStorage,
+  uploadLocalCloseoutLogs,
   removeEvidenceFile,
   type EvidenceObjects,
 } from "./evidence";
@@ -1058,6 +1059,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
   const closeoutLogs = closeoutLogStorage(paths.home, evidenceObjects);
+  void uploadLocalCloseoutLogs(store, closeoutLogs).catch((error: unknown) =>
+    journalCaught(error, "index.startPaws.uploadLocalCloseoutLogs", null),
+  );
   const closeoutEvidence = {
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,

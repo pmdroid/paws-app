@@ -7,6 +7,9 @@ import { handleStatusRequest } from "../src/dashboard";
 import {
   beginImplementRun,
   enterMergeQueue,
+  getEvidenceObject,
+  listAgentCloseout,
+  recordAgentCloseout,
   insertQueuedItem,
   saveCloseoutLogRetentionDays,
   type CloseoutStepWrite,
@@ -16,6 +19,8 @@ import {
   closeoutLogStorage,
   removeEvidenceFile,
   withCloseoutOutput,
+  uploadLocalCloseoutLogs,
+  storeCloseoutOutput,
   type EvidenceStorage,
 } from "../src/evidence";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
@@ -126,6 +131,18 @@ test("a new Closeout run's log reads back through the check-log route from the s
     stderr: "1 fail ✗\n",
     truncated: false,
   });
+  let hydrated = 0;
+  const detail = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-1"), {
+    store: db,
+    sessionIds: ["ses_1"],
+    closeoutOutput: async (record) => {
+      const output = await withCloseoutOutput(db, storage, record);
+      if (output.stderr === "1 fail ✗\n") hydrated++;
+      return output;
+    },
+  });
+  expect(detail?.status).toBe(200);
+  expect(hydrated).toBeGreaterThan(0);
 });
 
 async function endedItem(
@@ -181,4 +198,86 @@ test("retention deletes the output of items that ended more than the setting's d
   );
   expect(rows.filter((row) => row.key === null).map((row) => row.itemId)).toEqual(["old"]);
   expect(await pruneCloseoutLogs({ store: db, now: NOW, remove })).toBe(0);
+});
+
+test("retention preserves both pointers after failed deletion and retries", async () => {
+  const { db, objects, storage } = await setup();
+  await endedItem(db, storage, "old", "merged", NOW - 15 * DAY);
+  const key = (await stepRows(db))[0]!.key!;
+  const metadata = await getEvidenceObject(db, key);
+  const remove = (id: string) => removeEvidenceFile(db, storage, id);
+  const deleting = objects.delete;
+  objects.delete = async () => {
+    throw new Error("S3 unavailable");
+  };
+  await expect(pruneCloseoutLogs({ store: db, now: NOW, remove })).rejects.toThrow(
+    "S3 unavailable",
+  );
+  expect((await stepRows(db))[0]!.key).toBe(key);
+  expect(await getEvidenceObject(db, key)).toEqual(metadata);
+  objects.delete = deleting;
+  expect(await pruneCloseoutLogs({ store: db, now: NOW, remove })).toBe(1);
+  expect(await getEvidenceObject(db, key)).toBeNull();
+  expect((await stepRows(db))[0]!.key).toBeNull();
+  expect(objects.objects.size).toBe(0);
+});
+
+test("local step and agent logs upload when object storage is enabled", async () => {
+  const { db, objects, storage } = await setup();
+  const local = { root: storage.root };
+  await endedItem(db, local, "old", "merged", NOW - 15 * DAY);
+  const location = { itemId: "old", headCommit: HEAD, checkId: "unit" };
+  const output = await storeCloseoutOutput(
+    db,
+    local,
+    location,
+    { stdout: "agent output", stderr: "" },
+    NOW,
+  );
+  await recordAgentCloseout(
+    db,
+    "run",
+    "old",
+    {
+      type: "finished",
+      head: HEAD,
+      id: "unit",
+      kind: "command",
+      command: "bun test",
+      attempt: 1,
+      maxAttempts: null,
+      state: "failed",
+      exitCode: 1,
+      timedOut: false,
+      durationMs: 1,
+      stdout: "",
+      stderr: "",
+      truncated: false,
+      output,
+    },
+    NOW,
+  );
+  expect(await uploadLocalCloseoutLogs(db, storage)).toBe(2);
+  expect(await uploadLocalCloseoutLogs(db, storage)).toBe(0);
+  const event = (await listAgentCloseout(db, ["run"]))[0]!;
+  if (event.progress.type !== "finished") throw new Error("Expected finished event");
+  expect(await withCloseoutOutput(db, storage, event.progress)).toMatchObject({
+    stdout: "agent output",
+  });
+  const key = (await stepRows(db))[0]!.key!;
+  const metadata = await getEvidenceObject(db, key);
+  expect(metadata).not.toBeNull();
+  expect(objects.objects.size).toBe(2);
+  const stepPointer = await db.run((q) => q.one(q.orm.select().from(q.t.closeoutStep)));
+  expect(
+    await withCloseoutOutput(db, storage, {
+      stdout: "",
+      stderr: "",
+      output: {
+        key,
+        bytes: stepPointer!.outputBytes!,
+        sha256: stepPointer!.outputSha256!,
+      },
+    }),
+  ).toMatchObject({ stdout: "old out" });
 });

@@ -88,7 +88,9 @@ export async function removeEvidenceFile(
   const row = await getEvidenceObject(store, id);
   if (row) {
     const objects = storage.objects?.();
-    if (objects) await removeEvidenceChunks(objects, row.prefix, row.sizeBytes);
+    if (!objects) throw new Error("Evidence object storage is unavailable");
+    for (let n = 0; n * RUN_FILE_CHUNK_BYTES < row.sizeBytes; n++)
+      await objects.delete(`${row.prefix}/${n}`);
     await deleteEvidenceObject(store, id);
   }
   await rm(join(storage.root, id), { force: true });
@@ -159,11 +161,12 @@ export async function uploadLocalEvidence(
   store: Db,
   storage: EvidenceStorage,
   now: () => number = Date.now,
+  files: typeof localEvidenceFiles = localEvidenceFiles,
 ): Promise<number> {
   const objects = storage.objects?.();
   if (!objects) return 0;
   let uploaded = 0;
-  for (const file of await localEvidenceFiles(store)) {
+  for (const file of await files(store)) {
     const local = Bun.file(join(storage.root, file.id));
     if (!(await local.exists())) continue;
     const prefix = `${evidenceObjectPrefix(file, file.id)}/${randomUUID()}`;
