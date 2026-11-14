@@ -494,7 +494,7 @@ export async function probeWorkspaceAuthorization(
       "only an authenticated workspace admin can save merging repository and project settings",
       memberMerging.status === 403 &&
         adminMerging.status === 200 &&
-        JSON.stringify((await mergingRead.json()).repositories) ===
+        JSON.stringify(((await mergingRead.json()) as { repositories: unknown }).repositories) ===
           JSON.stringify(JSON.parse(mergingBody).repositories),
       { member: memberMerging.status, admin: adminMerging.status },
     );
