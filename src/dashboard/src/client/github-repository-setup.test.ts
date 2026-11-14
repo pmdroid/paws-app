@@ -44,7 +44,8 @@ async function mount(member = false) {
   settingsPageShown("integrations");
   for (
     let i = 0;
-    i < 20 && !root.querySelector("[data-badge] .pill, [data-login], [data-github-repositories] li");
+    i < 20 &&
+    !root.querySelector("[data-badge] .pill, [data-login], [data-github-repositories] li");
     i++
   )
     await new Promise((resolve) => setTimeout(resolve, 5));
