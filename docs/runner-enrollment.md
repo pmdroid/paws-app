@@ -73,13 +73,13 @@ curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
 curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
 ```
 
-With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns`. The package never installs Docker Engine itself.
+With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session`. The package never installs Docker Engine itself.
 
-Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the three packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
+Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
 
 On a grant, package configuration:
 
-1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`. If any is missing, it names the package, sets nothing up and finishes the install.
+1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`, and for `paws-agent`'s daemon also `dbus-user-session`, which gives its user manager the D-Bus the systemd cgroup driver talks to. If any is missing, it names the package, sets nothing up and finishes the install.
 2. Adds a 65536-id range for the account to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
 3. Creates the data directory (owned by the account, mode 0700) for images and containers.
 4. Writes the daemon's unit, which runs the `dockerd-rootless.sh` launcher the package ships: `paws-docker.service` in `/etc/systemd/system`, or `paws-agent-docker.service` in `/etc/systemd/user`. For the user unit it also writes `/etc/systemd/system/user@.service.d/delegate.conf` (`Delegate=cpu cpuset io memory pids`) and `/etc/tmpfiles.d/paws-agent-docker.conf`, which keeps `/run/paws-agent-docker` owned by `paws-agent`, mode 0700, and runs `loginctl enable-linger paws-agent` so the user manager starts at boot.
@@ -97,6 +97,7 @@ To check the daemon with the default `agentUser`:
 D="sudo -u paws-agent env DOCKER_HOST=unix:///run/paws-agent-docker/docker.sock docker"
 $D info --format '{{.SecurityOptions}}'                       # includes name=rootless
 $D info --format '{{.CgroupDriver}}'                           # systemd
+sudo python3 -I -B /usr/lib/paws-runner-package/install.py docker-check  # reachable, and no-cgroups when CgroupDriver is none
 $D run --rm alpine echo ok
 $D run --rm -v /var/lib/paws-agent:/w alpine ls /w             # a checkout's parent is readable
 $D run -d --rm alpine sleep 20; ps -eo user,cmd | grep '[s]leep 20'  # host user is paws-agent

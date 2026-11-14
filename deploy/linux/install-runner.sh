@@ -194,7 +194,7 @@ if [ -z "$docker_access" ] && [ -n "$docker_engine" ] && [ ! -e /etc/systemd/sys
   printf '%s\n' \
     "Docker Engine is installed on this host. Agent jobs can get rootless Docker: a separate Docker" \
     "daemon that runs as the account agents run as (paws-agent by default), not as root, without the docker group. It needs" \
-    "the rootlesskit, uidmap and slirp4netns packages, which this installer adds." > /dev/tty
+    "the rootlesskit, uidmap, slirp4netns and dbus-user-session packages, which this installer adds." > /dev/tty
   printf '%s' "Set up rootless Docker for agent jobs? [y/N] " > /dev/tty
   answer=""
   read -r answer < /dev/tty || answer=""
@@ -214,7 +214,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 # Package configuration can't install these itself: dpkg holds the lock while it runs.
 if [ "$docker_access" = grant ] && [ -n "$docker_engine" ]; then
-  apt-get install -y rootlesskit uidmap slirp4netns
+  apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session
 fi
 apt-get install -y "${workdir}/${name}"
 printf '%s\n' "Installed paws-runner ${version}"

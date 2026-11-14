@@ -1015,6 +1015,7 @@ WantedBy=default.target
         "systemd-tmpfiles --create {root}/etc/tmpfiles.d/paws-agent-docker.conf",
         "loginctl enable-linger paws-agent",
         "systemctl restart -- user@{uid}.service",
+        "systemctl --user --machine=paws-agent@ start -- dbus.socket",
         "systemctl --global enable -- paws-agent-docker.service",
         "systemctl --user --machine=paws-agent@ daemon-reload",
         "systemctl --user --machine=paws-agent@ restart -- paws-agent-docker.service",
@@ -1052,6 +1053,8 @@ WantedBy=default.target
         launcher.parent.mkdir(parents=True)
         shutil.copyfile(pathlib.Path(sys.argv[1]).with_name("dockerd-rootless.sh"), launcher)
         launcher.chmod(0o755)
+        (root / "usr/lib/systemd/user").mkdir(parents=True)
+        (root / "usr/lib/systemd/user/dbus.socket").write_text("[Socket]\n")
         self.probe = "ready"
         # Each (account, socket) probed. Only the account a daemon runs as reaches its socket, unless `shared`.
         self.probes = []
@@ -1108,6 +1111,7 @@ WantedBy=default.target
             mock.patch.object(installer, "AGENT_DOCKER_TMPFILES", self.path("/etc/tmpfiles.d/paws-agent-docker.conf")),
             mock.patch.object(installer, "USER_DELEGATE", self.path("/etc/systemd/system/user@.service.d/delegate.conf")),
             mock.patch.object(installer, "LOGINCTL", str(self.bin / "loginctl")),
+            mock.patch.object(installer, "DOCKER_USER_BUS", self.path("/usr/lib/systemd/user/dbus.socket")),
             mock.patch.object(installer, "TMPFILES", str(self.bin / "systemd-tmpfiles")),
             mock.patch.object(installer, "AGENT_DOCKER_DATA", self.path("/var/lib/paws-agent-docker")),
             mock.patch.object(installer, "DOCKER_PATH", str(self.bin)),
@@ -1245,7 +1249,29 @@ class DockerAccess(unittest.TestCase):
         again = self.configure(None, host)
         self.assertEqual((again["status"], again["changed"]), ("ready", False))
         commands = host.agent_commands()
-        self.assertEqual(host.commands(), [commands[1], commands[2], commands[3].replace("restart", "start"), commands[4], commands[6].replace("restart", "start")])
+        self.assertEqual(host.commands(), [commands[1], commands[2], commands[3].replace("restart", "start"), commands[4], commands[5], commands[7].replace("restart", "start")])
+
+    def test_paws_agent_docker_needs_dbus_user_session_and_keeps_the_old_daemon_without_it(self):
+        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "nobus", agent_user="paws-agent")
+        legacy = host.path("/etc/systemd/system/paws-agent-docker.service")
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(FakeDockerHost.UNIT)
+        host.path("/usr/lib/systemd/user/dbus.socket").unlink()
+        report = self.configure("grant", host)
+        self.assertEqual(report["status"], "missing-prerequisites")
+        self.assertIn("dbus-user-session", report["message"])
+        self.assertTrue(legacy.exists())
+        self.assertEqual(host.commands(), [])
+
+    def test_docker_check_reports_a_running_daemon_without_cgroups(self):
+        self.host.probe = "no-cgroups"
+        with contextlib.ExitStack() as stack:
+            for patch in self.host.patches():
+                stack.enter_context(patch)
+            report = self.installer.docker_check()
+        self.assertEqual((report["status"], report["agentJobs"]["user"], report["changed"]), ("no-cgroups", "paws-runner", False))
+        self.assertIn("CgroupDriver is none", report["message"])
+        self.assertEqual(self.host.commands(), [])
 
     def test_a_daemon_without_cgroups_is_reported_with_the_fix(self):
         self.host.probe = "no-cgroups"

@@ -245,6 +245,7 @@ AGENT_DOCKER_TMPFILES = pathlib.Path("/etc/tmpfiles.d/paws-agent-docker.conf")
 USER_DELEGATE = pathlib.Path("/etc/systemd/system/user@.service.d/delegate.conf")
 USER_DELEGATE_CONTENT = "[Service]\nDelegate=cpu cpuset io memory pids\n"
 LOGINCTL = "/usr/bin/loginctl"
+DOCKER_USER_BUS = pathlib.Path("/usr/lib/systemd/user/dbus.socket")
 TMPFILES = "/usr/bin/systemd-tmpfiles"
 # PAS-1024 recorded here that it added paws-runner to the docker group; only that membership is removed.
 DOCKER_GROUP_GRANT = STATE / "docker-group.json"
@@ -479,6 +480,7 @@ def start_user_docker(daemon, owner, content):
         ([TMPFILES, "--create", str(AGENT_DOCKER_TMPFILES)], 60),
         ([LOGINCTL, "enable-linger", account], 60),
         ([SYSTEMCTL, "restart" if delegate else "start", "--", f"user@{owner.pw_uid}.service"], 120),
+        (user_systemctl(daemon, "start", "--", "dbus.socket"), 60),
         ([SYSTEMCTL, "--global", "enable", "--", name], 60),
         *([(user_systemctl(daemon, "daemon-reload"), 60)] if unit else []),
         (user_systemctl(daemon, "restart" if unit or delegate else "start", "--", name), 120),
@@ -516,7 +518,7 @@ def rootless_docker(choice, agent_user=None):
         intro = "Docker access was declined" if choice == "deny" else "Agent jobs cannot use Docker"
         done = "removed the rootless Docker daemon for agent jobs; its images and data stay" if removed else "nothing changed"
         return docker_report("declined" if choice == "deny" else "opt-in-required", f"{intro}; {done}. To give agent jobs a rootless Docker daemon of their own: sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner", removed)
-    missing = sorted({package for command, package in DOCKER_PREREQUISITES if shutil.which(command, path=DOCKER_PATH) is None})
+    missing = sorted({package for command, package in DOCKER_PREREQUISITES if shutil.which(command, path=DOCKER_PATH) is None} | ({"dbus-user-session"} if daemon.get("manager") == "user" and not DOCKER_USER_BUS.exists() else set()))
     if missing:
         return docker_report("missing-prerequisites", f"Rootless Docker for agent jobs needs {', '.join(missing)}; nothing changed. Install them (sudo apt-get install {' '.join(missing)}), then reconfigure the runner.")
     try:
@@ -548,10 +550,25 @@ def rootless_docker(choice, agent_user=None):
     if probe == "ready":
         return docker_report("granted" if changed else "ready", ("Set up" if changed else "Kept") + f" a rootless Docker daemon for agent jobs ({unit.name}, running as {account} at {socket}); new agent jobs get DOCKER_HOST for it.", changed, daemon, True)
     if probe == "no-cgroups":
-        return docker_report("no-cgroups", f"{unit.name} answers at {socket}, but its CgroupDriver is none: containers get no memory, CPU or pids limits and kind cannot start. Rootless Docker gets cgroups only from {account}'s systemd user manager (linger, the systemd cgroup driver, and user@.service delegating cpu cpuset io memory pids); reconfigure the runner with sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner.", changed, daemon, True)
+        return docker_report("no-cgroups", no_cgroups_message(daemon), changed, daemon, True)
     if probe == "daemon-unavailable":
         return docker_report("daemon-unavailable", f"{unit.name} is enabled, but the daemon at {socket} did not answer. Check {logs}; agent jobs cannot use Docker until it does.", changed, daemon, False)
     return docker_report(probe, f"{unit.name} is enabled, but {account} could not use the daemon at {socket} ({probe}). Check {logs}.", changed, daemon, False)
+
+
+def no_cgroups_message(daemon):
+    return f"{daemon['unit'].name} answers at {docker_socket(daemon)}, but its CgroupDriver is none: containers get no memory, CPU or pids limits and kind cannot start. Rootless Docker gets cgroups only from {daemon['account']}'s systemd user manager (linger, dbus-user-session, the systemd cgroup driver, and user@.service delegating cpu cpuset io memory pids); reconfigure the runner with sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner."
+
+
+def docker_check():
+    """`install.py docker-check`: whether the account agents run as reaches its daemon now, and whether that daemon has cgroups. It changes nothing."""
+    daemon = docker_daemons()["runner" if configured_agent_user(RUNNER_CONFIG) == "runner" else "paws-agent"]
+    probe = docker_probe(daemon["account"], docker_socket(daemon), tries=1)
+    if probe == "no-cgroups":
+        return docker_report(probe, no_cgroups_message(daemon), daemon=daemon, reachable=True)
+    if probe == "ready":
+        return docker_report(probe, f"{daemon['account']} reaches {daemon['unit'].name} at {docker_socket(daemon)}, and its containers get cgroups.", daemon=daemon, reachable=True)
+    return docker_report(probe, f"{daemon['account']} could not use the daemon at {docker_socket(daemon)} ({probe}).", daemon=daemon, reachable=False)
 
 
 def docker_group_membership():
@@ -1549,6 +1566,9 @@ def process_agent_requests(bun, base=BASE, registry=DEFAULT_REGISTRY, requests=A
 
 
 def main():
+    if sys.argv[1:] == ["docker-check"]:
+        print(json.dumps(docker_check()))
+        return
     if sys.argv[1:] == ["agents"]:
         print(json.dumps({"agents": agents_from_current()}))
         return
