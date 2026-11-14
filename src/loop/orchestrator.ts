@@ -692,7 +692,7 @@ import {
   type MainPolicyError,
 } from "./policy-outage";
 import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
-import { classifyPathsRisk } from "./candidate-risk";
+import { classifyPathsRisk, gitHubRiskInputs } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivitySteps,
@@ -6400,7 +6400,24 @@ export class Orchestrator {
       (candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim());
-    const listed = await trustedChangedPaths(worktree, base, head);
+    const github = range ? this.githubForRepository(repository) : null;
+    if (range && !github) throw new Error("Candidate GitHub access is unavailable");
+    const api = github
+      ? await gitHubRiskInputs(
+          createGitHubGitReader({
+            locate: (path) =>
+              path === worktree
+                ? { ...repository, client: github.client, ...this.gitHubCredentials(github) }
+                : null,
+          }),
+          worktree,
+          base,
+          head,
+        )
+      : undefined;
+    const listed = api
+      ? { ok: true as const, paths: api.changed }
+      : await trustedChangedPaths(worktree, base, head);
     if (!listed.ok) throw new Error(listed.message);
     const changed = listed.paths;
     // Every changed path, so the scheduler can hold work that changes the same hot files.
@@ -6411,6 +6428,7 @@ export class Orchestrator {
       git: run,
       base,
       changed,
+      ...(api ? { fileGlobs: api.fileGlobs } : {}),
       settingsGlobs: highRiskPaths(
         readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         `${repository.owner}/${repository.repo}`,

@@ -12,6 +12,7 @@ export default {
     "src/config/paths.ts",
     "src/closeout-spec/facade.ts",
     "src/github/candidate-reads.ts",
+    "src/loop/candidate-risk.ts",
     "src/acp/worktree.ts",
     "src/acp/executor.ts",
   ],
@@ -23,6 +24,10 @@ export default {
     proof.expect(
       "PAWS_HOME/repos remains absent",
       !existsSync(join(process.env.PAWS_HOME!, "repos")),
+    );
+    proof.expect(
+      "Publication includes a known risk classification",
+      proof.github.opened[0]?.body.includes("Risk: normal") === true,
     );
     const accepted = /^Head: (\w+)$/m.exec(proof.github.opened[0]?.body ?? "")?.[1] ?? null;
     const updates = proof.github.branchUpdates;
