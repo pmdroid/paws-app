@@ -74,31 +74,27 @@ async function reviewed(db: Db, id: string, at: number) {
         .insert(q.t.visualReview)
         .values({ itemId, checkId, questionId, evidenceIds: [evidenceId], createdAt: at + 3 }),
     (q) =>
-      q.orm
-        .insert(q.t.visualReviewMark)
-        .values({
-          id: `mark-${id}`,
-          questionId,
-          evidenceId,
-          sizeBytes: 4,
-          sha256: "1".repeat(64),
-          createdAt: at + 4,
-        }),
+      q.orm.insert(q.t.visualReviewMark).values({
+        id: `mark-${id}`,
+        questionId,
+        evidenceId,
+        sizeBytes: 4,
+        sha256: "1".repeat(64),
+        createdAt: at + 4,
+      }),
     (q) =>
       q.orm
         .insert(q.t.ciRerun)
         .values({ itemId, headSha: HEAD, runIds: [7], reason: "flaky", at: at + 5 }),
     (q) =>
-      q.orm
-        .insert(q.t.candidateRisk)
-        .values({
-          itemId,
-          headSha: HEAD,
-          baseSha: "b".repeat(40),
-          tier: "normal",
-          paths: [],
-          classifiedAt: at + 6,
-        }),
+      q.orm.insert(q.t.candidateRisk).values({
+        itemId,
+        headSha: HEAD,
+        baseSha: "b".repeat(40),
+        tier: "normal",
+        paths: [],
+        classifiedAt: at + 6,
+      }),
     (q) =>
       q.orm.insert(q.t.riskFix).values({
         itemId,
