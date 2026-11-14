@@ -3,10 +3,10 @@ import { renderMarkup } from "./theme";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 
 export const TWO_ROLE_REQUIREMENT =
-  "To set up Paws you need to be an admin of your Linear workspace, and an admin of the GitHub organization (or the owner of the GitHub account) whose repositories Paws will work on. After setup, other people only need to sign in with Linear.";
+  "To set up Paws you need to be an admin of your Linear workspace. Paws's GitHub App must be installed on the GitHub organization or account whose repositories it will work on; installing it needs an owner of that organization. After setup, other people only need to sign in with Linear.";
 
 const GITHUB_REQUIREMENT =
-  "You need to be an admin of the GitHub organization (or the owner of the GitHub account) whose repositories Paws will work on.";
+  "Paws's GitHub App must be installed on the organization or account whose repositories it will work on. Installing it needs an owner of that organization; connecting it here needs only read access to those repositories.";
 
 const STEPS = [
   ["done", "Linear connected", "Paws takes work from issues you delegate to it in Linear."],
