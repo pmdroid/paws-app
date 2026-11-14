@@ -189,6 +189,7 @@ if command -v dockerd >/dev/null 2>&1; then
 fi
 if [ -z "$docker_access" ] && [ -n "$docker_engine" ] && [ ! -e /etc/systemd/system/paws-docker.service ] \
   && [ ! -e /etc/systemd/system/paws-agent-docker.service ] \
+  && [ ! -e /etc/systemd/user/paws-agent-docker.service ] \
   && ( : < /dev/tty ) 2>/dev/null; then
   printf '%s\n' \
     "Docker Engine is installed on this host. Agent jobs can get rootless Docker: a separate Docker" \

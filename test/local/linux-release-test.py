@@ -990,7 +990,35 @@ TasksMax=infinity
 [Install]
 WantedBy=multi-user.target
 """
-    AGENT_UNIT = UNIT.replace("runner work", "agent jobs as paws-agent").replace("paws-runner-docker", "paws-agent-docker").replace("=paws-runner", "=paws-agent").replace("paws-docker", "paws-agent-docker")
+    AGENT_UNIT = """[Unit]
+Description=Rootless Docker daemon for Paws agent jobs as paws-agent
+ConditionUser=paws-agent
+
+[Service]
+Type=simple
+Environment=HOME=/var/lib/paws-agent-docker
+Environment=PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+ExecStart=/usr/lib/paws-runner-package/dockerd-rootless.sh --data-root /var/lib/paws-agent-docker/data --exec-root /run/paws-agent-docker/exec --pidfile /run/paws-agent-docker/docker.pid --host unix:///run/paws-agent-docker/docker.sock --exec-opt native.cgroupdriver=systemd
+Delegate=yes
+KillMode=mixed
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=infinity
+LimitNPROC=infinity
+TasksMax=infinity
+
+[Install]
+WantedBy=default.target
+"""
+    AGENT_COMMANDS = [
+        "systemctl daemon-reload",
+        "systemd-tmpfiles --create {root}/etc/tmpfiles.d/paws-agent-docker.conf",
+        "loginctl enable-linger paws-agent",
+        "systemctl restart -- user@{uid}.service",
+        "systemctl --global enable -- paws-agent-docker.service",
+        "systemctl --user --machine=paws-agent@ daemon-reload",
+        "systemctl --user --machine=paws-agent@ restart -- paws-agent-docker.service",
+    ]
 
     def __init__(self, installer, root, members=(), agent_user="runner"):
         self.installer = installer
@@ -1009,6 +1037,8 @@ WantedBy=multi-user.target
             self.tool(name, "exit 0\n")
         log = shlex.quote(str(self.log))
         self.tool("systemctl", f'printf "systemctl %s\\n" "$*" >> {log}\n')
+        self.tool("loginctl", f'printf "loginctl %s\\n" "$*" >> {log}\n')
+        self.tool("systemd-tmpfiles", f'printf "systemd-tmpfiles %s\\n" "$*" >> {log}\n')
         self.tool("usermod", f'printf "usermod %s\\n" "$*" >> {log}\ncase "$1" in --add-subuids) file={shlex.quote(str(root / "etc/subuid"))} ;; --add-subgids) file={shlex.quote(str(root / "etc/subgid"))} ;; *) exit 2 ;; esac\nstart=${{2%-*}}; last=${{2#*-}}\nprintf "%s:%s:%s\\n" "$3" "$start" "$((last - start + 1))" >> "$file"\n')
         self.tool("gpasswd", f'printf "gpasswd %s\\n" "$*" >> {log}\ntest "$1 $2 $3" = "-d paws-runner docker" || exit 2\ngrep -vx paws-runner {shlex.quote(str(self.members))} > {shlex.quote(str(self.members))}.new || true\nmv {shlex.quote(str(self.members))}.new {shlex.quote(str(self.members))}\n')
         (root / "etc").mkdir()
@@ -1037,6 +1067,9 @@ WantedBy=multi-user.target
 
     def commands(self):
         return self.log.read_text().splitlines()
+
+    def agent_commands(self):
+        return [command.format(root=self.root, uid=self.accounts["paws-agent"].pw_uid) for command in self.AGENT_COMMANDS]
 
     def getpwnam(self, name):
         if name not in self.accounts:
@@ -1070,7 +1103,12 @@ WantedBy=multi-user.target
             mock.patch.object(installer, "write_atomic", self.write_atomic),
             mock.patch.object(installer, "docker_probe", self.docker_probe),
             mock.patch.object(installer, "RUNNER_CONFIG", self.path("/etc/paws-runner/config.json")),
-            mock.patch.object(installer, "AGENT_DOCKER_UNIT", self.path("/etc/systemd/system/paws-agent-docker.service")),
+            mock.patch.object(installer, "AGENT_DOCKER_UNIT", self.path("/etc/systemd/user/paws-agent-docker.service")),
+            mock.patch.object(installer, "LEGACY_AGENT_DOCKER_UNIT", self.path("/etc/systemd/system/paws-agent-docker.service")),
+            mock.patch.object(installer, "AGENT_DOCKER_TMPFILES", self.path("/etc/tmpfiles.d/paws-agent-docker.conf")),
+            mock.patch.object(installer, "USER_DELEGATE", self.path("/etc/systemd/system/user@.service.d/delegate.conf")),
+            mock.patch.object(installer, "LOGINCTL", str(self.bin / "loginctl")),
+            mock.patch.object(installer, "TMPFILES", str(self.bin / "systemd-tmpfiles")),
             mock.patch.object(installer, "AGENT_DOCKER_DATA", self.path("/var/lib/paws-agent-docker")),
             mock.patch.object(installer, "DOCKER_PATH", str(self.bin)),
             mock.patch.object(installer, "DOCKER_LAUNCHER", self.path("/usr/lib/paws-runner-package/dockerd-rootless.sh")),
@@ -1153,12 +1191,15 @@ class DockerAccess(unittest.TestCase):
         report = self.configure("grant", host)
         self.assertEqual((report["status"], report["changed"]), ("granted", True), report)
         self.assertEqual(report["agentJobs"], {"user": "paws-agent", "daemon": "paws-agent-docker.service", "socket": "/run/paws-agent-docker/docker.sock", "reachable": True})
-        self.assertEqual(host.path("/etc/systemd/system/paws-agent-docker.service").read_text(), FakeDockerHost.AGENT_UNIT)
+        self.assertEqual(host.path("/etc/systemd/user/paws-agent-docker.service").read_text(), FakeDockerHost.AGENT_UNIT)
+        self.assertEqual(host.path("/etc/systemd/system/user@.service.d/delegate.conf").read_text(), "[Service]\nDelegate=cpu cpuset io memory pids\n")
+        self.assertEqual(host.path("/etc/tmpfiles.d/paws-agent-docker.conf").read_text(), "d /run/paws-agent-docker 0700 paws-agent paws-agent -\n")
         self.assertFalse(host.path("/etc/systemd/system/paws-docker.service").exists())
+        self.assertFalse(host.path("/etc/systemd/system/paws-agent-docker.service").exists())
         self.assertTrue(host.path("/var/lib/paws-agent-docker").is_dir())
         self.assertFalse(host.path("/var/lib/paws-runner-docker").exists())
         self.assertEqual(host.path("/etc/subuid").read_text(), "paws-agent:100000:65536\n")
-        self.assertEqual(host.commands(), ["usermod --add-subuids 100000-165535 paws-agent", "usermod --add-subgids 100000-165535 paws-agent", "systemctl daemon-reload", "systemctl enable -- paws-agent-docker.service", "systemctl restart -- paws-agent-docker.service"])
+        self.assertEqual(host.commands(), ["usermod --add-subuids 100000-165535 paws-agent", "usermod --add-subgids 100000-165535 paws-agent", *host.agent_commands()])
         # paws-agent reaches its daemon; paws-runner is refused at its socket.
         self.assertEqual(host.probes, [("paws-agent", "/run/paws-agent-docker/docker.sock"), ("paws-runner", "/run/paws-agent-docker/docker.sock")])
 
@@ -1172,18 +1213,53 @@ class DockerAccess(unittest.TestCase):
         self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
         self.assertEqual(self.host.commands()[:2], ["systemctl disable --now -- paws-docker.service", "systemctl daemon-reload"])
         self.host.path("/etc/paws-runner/config.json").write_text(json.dumps({"agentUser": "runner"}))
+        self.host.log.write_text("")
         report = self.configure(None)
         self.assertEqual((report["status"], report["agentJobs"]["user"]), ("granted", "paws-runner"))
-        self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["paws-docker.service"])
+        self.assertEqual(self.host.commands()[:3], ["systemctl --user --machine=paws-agent@ stop -- paws-agent-docker.service", "systemctl --global disable -- paws-agent-docker.service", "loginctl disable-linger paws-agent"])
+        self.assertFalse(self.host.path("/etc/systemd/user/paws-agent-docker.service").exists())
+        self.assertFalse(self.host.path("/etc/tmpfiles.d/paws-agent-docker.conf").exists())
+        self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["paws-docker.service", "user@.service.d"])
         self.assertEqual(self.configure("deny")["status"], "declined")
-        self.assertEqual(list(self.host.path("/etc/systemd/system").iterdir()), [])
+        self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["user@.service.d"])
+
+    def test_an_upgrade_moves_paws_agent_docker_from_the_system_unit_to_its_user_manager_and_keeps_the_data(self):
+        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "upgrade", agent_user="paws-agent")
+        host.accounts["paws-agent"] = SimpleNamespace(pw_name="paws-agent", pw_uid=host.accounts["paws-runner"].pw_uid, pw_gid=host.accounts["paws-runner"].pw_gid)
+        legacy = host.path("/etc/systemd/system/paws-agent-docker.service")
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(FakeDockerHost.UNIT)
+        image = host.path("/var/lib/paws-agent-docker/data/image")
+        image.parent.mkdir(parents=True)
+        host.path("/var/lib/paws-agent-docker").chmod(0o700)
+        image.write_text("layers")
+        host.path("/etc/subuid").write_text("paws-agent:100000:65536\n")
+        host.path("/etc/subgid").write_text("paws-agent:100000:65536\n")
+        report = self.configure(None, host)
+        self.assertEqual((report["status"], report["changed"], report["agentJobs"]["daemon"]), ("granted", True, "paws-agent-docker.service"), report)
+        self.assertFalse(legacy.exists())
+        self.assertEqual(host.path("/etc/systemd/user/paws-agent-docker.service").read_text(), FakeDockerHost.AGENT_UNIT)
+        self.assertEqual(image.read_text(), "layers")
+        self.assertEqual(host.commands(), ["systemctl disable --now -- paws-agent-docker.service", "systemctl daemon-reload", *host.agent_commands()])
+        host.log.write_text("")
+        again = self.configure(None, host)
+        self.assertEqual((again["status"], again["changed"]), ("ready", False))
+        commands = host.agent_commands()
+        self.assertEqual(host.commands(), [commands[1], commands[2], commands[3].replace("restart", "start"), commands[4], commands[6].replace("restart", "start")])
+
+    def test_a_daemon_without_cgroups_is_reported_with_the_fix(self):
+        self.host.probe = "no-cgroups"
+        report = self.configure("grant")
+        self.assertEqual((report["status"], report["agentJobs"]["reachable"]), ("no-cgroups", True))
+        self.assertIn("CgroupDriver is none", report["message"])
+        self.assertIn("systemd user manager", report["message"])
 
     def test_each_daemon_socket_is_closed_to_the_other_account(self):
         units = self.installer.DOCKER_UNIT_CONTENTS
-        for name, user, runtime in (("runner", "paws-runner", "paws-docker"), ("paws-agent", "paws-agent", "paws-agent-docker")):
-            # systemd creates the runtime directory owned by User, mode 0700: no other account can enter it to open the socket.
-            for line in (f"User={user}", f"Group={user}", f"RuntimeDirectory={runtime}", "RuntimeDirectoryMode=0700", f"--host unix:///run/{runtime}/docker.sock "):
-                self.assertIn(line, units[name])
+        for line in ("User=paws-runner", "Group=paws-runner", "RuntimeDirectory=paws-docker", "RuntimeDirectoryMode=0700", "--host unix:///run/paws-docker/docker.sock "):
+            self.assertIn(line, units["runner"])
+        for line in ("ConditionUser=paws-agent", "--host unix:///run/paws-agent-docker/docker.sock "):
+            self.assertIn(line, units["paws-agent"])
         self.host.shared = True
         report = self.configure("grant")
         self.assertEqual(report["status"], "not-isolated")
@@ -1337,7 +1413,9 @@ class DockerAccess(unittest.TestCase):
             (root / "bin").mkdir(parents=True)
             (root / "bin/systemctl").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(log))}\n')
             (root / "bin/systemctl").chmod(0o755)
-            for name in ("etc/systemd/system/paws-docker.service", "etc/systemd/system/paws-agent-docker.service", "var/lib/paws-runner-docker/data/image", "var/lib/paws-agent-docker/data/image"):
+            (root / "bin/loginctl").write_text(f'#!/bin/sh\nprintf "loginctl %s\\n" "$*" >> {shlex.quote(str(log))}\n')
+            (root / "bin/loginctl").chmod(0o755)
+            for name in ("etc/systemd/system/paws-docker.service", "etc/systemd/system/paws-agent-docker.service", "etc/systemd/user/paws-agent-docker.service", "etc/systemd/system/user@.service.d/delegate.conf", "etc/tmpfiles.d/paws-agent-docker.conf", "var/lib/paws-runner-docker/data/image", "var/lib/paws-agent-docker/data/image"):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text("x")
             (root / "etc/subuid").write_text("pascal:100000:65536\npaws-runner:165536:65536\npaws-agent:262144:65536\n")
@@ -1353,6 +1431,10 @@ class DockerAccess(unittest.TestCase):
                 self.assertFalse((root / "etc/systemd/system" / unit).exists())
                 self.assertIn(f"disable --now -- {unit}", log.read_text().splitlines())
             self.assertIn("daemon-reload", log.read_text().splitlines())
+            for line in ("--user --machine=paws-agent@ stop -- paws-agent-docker.service", "--global disable -- paws-agent-docker.service", "loginctl disable-linger paws-agent"):
+                self.assertIn(line, log.read_text().splitlines())
+            for name in ("etc/systemd/user/paws-agent-docker.service", "etc/systemd/system/user@.service.d/delegate.conf", "etc/tmpfiles.d/paws-agent-docker.conf"):
+                self.assertFalse((root / name).exists())
             if action == "remove":
                 self.assertTrue((root / "var/lib/paws-runner-docker/data/image").exists())
                 self.assertTrue((root / "var/lib/paws-agent-docker/data/image").exists())
@@ -1380,17 +1462,18 @@ class DockerAccess(unittest.TestCase):
 
     def test_the_probe_tells_docker_engine_apart_from_other_answers(self):
         directory = pathlib.Path(self.temporary.name)
-        def probe(response):
+        def probe(*responses):
             path = directory / "daemon.sock"
             path.unlink(missing_ok=True)
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             server.bind(str(path))
             server.listen(1)
             def serve():
-                connection, _ = server.accept()
-                connection.recv(4096)
-                connection.sendall(response)
-                connection.close()
+                for response in responses:
+                    connection, _ = server.accept()
+                    connection.recv(4096)
+                    connection.sendall(response)
+                    connection.close()
             thread = threading.Thread(target=serve)
             thread.start()
             try:
@@ -1400,7 +1483,9 @@ class DockerAccess(unittest.TestCase):
                 server.close()
         engine = json.dumps({"Platform": {"Name": "Docker Engine - Community"}, "Components": [{"Name": "Engine", "Version": "29.1.3"}]}).encode()
         podman = json.dumps({"Components": [{"Name": "Podman Engine", "Version": "5.0.3"}]}).encode()
-        self.assertEqual(probe(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + engine), "ready")
+        info = lambda driver: b"HTTP/1.0 200 OK\r\n\r\n" + json.dumps({"CgroupDriver": driver}).encode()
+        self.assertEqual(probe(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + engine, info("systemd")), "ready")
+        self.assertEqual(probe(b"HTTP/1.0 200 OK\r\n\r\n" + engine, info("none")), "no-cgroups")
         self.assertEqual(probe(b"HTTP/1.0 200 OK\r\n\r\n" + podman), "alternative-runtime")
         self.assertEqual(probe(b"HTTP/1.0 500 Internal Server Error\r\n\r\n"), "daemon-unavailable")
         missing = subprocess.run([sys.executable, "-I", "-B", "-c", self.installer.DOCKER_PROBE, str(directory / "absent.sock")], capture_output=True, timeout=30)

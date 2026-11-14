@@ -68,7 +68,7 @@ const RUN_SCRIPT = [
   "tries=0",
   "until detail=$(runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker.sock info 2>&1 >/dev/null); do",
   "  tries=$((tries + 1))",
-  `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at /run/paws-agent-docker/docker.sock ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-agent-docker.service on the VM."`,
+  `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at /run/paws-agent-docker/docker.sock ($(printf '%s' "$detail" | tail -c 200)). Check journalctl _SYSTEMD_USER_UNIT=paws-agent-docker.service on the VM."`,
   "  sleep 1",
   "done",
   "mise=$(mktemp)",

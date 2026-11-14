@@ -154,8 +154,8 @@ const AUTHKEY_SECRET = "~/.paws/secrets/tailscale-authkey";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
 const RUNNER_SERVICE = "paws-runner.service";
 /**
- * The rootless Docker daemon `paws-agent-docker.service` runs for agent jobs as paws-agent, the
- * default agentUser, which the config this bootstrap writes keeps.
+ * The rootless Docker daemon `paws-agent-docker.service`, a user unit of paws-agent's systemd user
+ * manager, runs for agent jobs as paws-agent, the default agentUser, which the config this bootstrap writes keeps.
  */
 const AGENT_DOCKER_SOCKET = "/run/paws-agent-docker/docker.sock";
 /** Under the stage directory: why the last install failed, when the run script knows. */
@@ -904,7 +904,7 @@ function runScript(pinned: Pinned): string {
     "tries=0",
     `until detail=$(runuser -u paws-agent -- docker ${docker} info 2>&1 >/dev/null); do`,
     "  tries=$((tries + 1))",
-    `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at ${AGENT_DOCKER_SOCKET} ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-agent-docker.service on the VM."`,
+    `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at ${AGENT_DOCKER_SOCKET} ($(printf '%s' "$detail" | tail -c 200)). Check journalctl _SYSTEMD_USER_UNIT=paws-agent-docker.service on the VM."`,
     "  sleep 1",
     "done",
     "mise=$(mktemp)",
