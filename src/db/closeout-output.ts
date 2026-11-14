@@ -79,7 +79,7 @@ export function* legacyCloseoutOutputsSteps(q: Q, limit: number) {
       })
       .from(s)
       .innerJoin(p, eq(p.id, s.progressId))
-      .where(and(isNull(s.outputKey), or(ne(s.stdout, ""), ne(s.stderr, ""))))
+      .where(and(isNull(s.outputKey), or(ne(s.stdout, ""), ne(s.stderr, "")), unfinishedNot(q)))
       .orderBy(p.startedAt, s.progressId, s.stepId)
       .limit(limit),
   );
@@ -207,9 +207,28 @@ export function* expiredCloseoutOutputsSteps(
   ];
 }
 
-export function* clearCloseoutOutputSteps(q: Q, ref: CloseoutOutputRef) {
+export function* clearCloseoutOutputSteps(
+  q: Q,
+  ref: CloseoutOutputRef,
+  expected?: Pick<StoredCloseoutOutput, "stdout" | "stderr">,
+) {
   const table = ref.table === "closeout_step" ? q.t.closeoutStep : q.t.agentCloseoutEvent;
-  yield* q.exec(q.orm.update(table).set(NO_OUTPUT).where(refWhere(q, ref)));
+  yield* q.exec(
+    q.orm
+      .update(table)
+      .set(NO_OUTPUT)
+      .where(
+        and(
+          refWhere(q, ref),
+          expected &&
+            and(
+              isNull(table.outputKey),
+              eq(table.stdout, expected.stdout),
+              eq(table.stderr, expected.stderr),
+            ),
+        ),
+      ),
+  );
 }
 
 export const CLOSEOUT_LOG_RETENTION_KEY = "closeout.log_retention_days";

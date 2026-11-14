@@ -6,6 +6,9 @@ import { eq } from "drizzle-orm";
 import { handleStatusRequest } from "../src/dashboard";
 import {
   beginImplementRun,
+  legacyCloseoutOutputsSteps,
+  clearCloseoutOutputSteps,
+  pointCloseoutOutputSteps,
   enterMergeQueue,
   getEvidenceObject,
   listAgentCloseout,
@@ -392,4 +395,40 @@ test("maintenance processes only the oldest 200 legacy rows across both tables",
     stderr: "",
     output: { key: expect.any(String) },
   });
+});
+
+test("maintenance leaves running output appendable until the check finishes", async () => {
+  const { db, storage, objects } = await setup();
+  await insertWorkItem(db, "active");
+  const progress = createDbCloseoutProgress(db, "active", () => NOW);
+  await progress.step(identity("active"), step("running"));
+  await progress.output(identity("active"), "unit", "stdout", "first", false);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  await progress.output(identity("active"), "unit", "stdout", "second", false);
+  expect(await stepRows(db)).toEqual([{ stdout: "firstsecond", stderr: "", key: null }]);
+  expect(objects.writes).toHaveLength(0);
+  await progress.step(identity("active"), step("failed"));
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
+  expect(objects.writes).toHaveLength(1);
+});
+
+test("expired legacy clearing preserves changed columns and newly installed pointers", async () => {
+  const { db } = await setup();
+  await legacyRows(db, 1, NOW - 15 * DAY);
+  await legacyEvent(db, NOW - 15 * DAY);
+  const rows = await db.run((q) => legacyCloseoutOutputsSteps(q, 200));
+  for (const row of rows) {
+    const table = row.ref.table === "closeout_step" ? "closeoutStep" : "agentCloseoutEvent";
+    await db.run((q) => q.exec(q.orm.update(q.t[table]).set({ stdout: "new output" })));
+    await db.transaction((q) => clearCloseoutOutputSteps(q, row.ref, row));
+    const current = await db.run((q) => q.one(q.orm.select().from(q.t[table])));
+    expect(current!.stdout).toBe("new output");
+    const pointer = { key: "installed", bytes: 10, sha256: "hash" };
+    await db.transaction((q) =>
+      pointCloseoutOutputSteps(q, { ...row, stdout: "new output" }, pointer),
+    );
+    await db.transaction((q) => clearCloseoutOutputSteps(q, row.ref, { stdout: "", stderr: "" }));
+    const moved = await db.run((q) => q.one(q.orm.select().from(q.t[table])));
+    expect(moved!.outputKey).toBe("installed");
+  }
 });

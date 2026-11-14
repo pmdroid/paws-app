@@ -137,7 +137,7 @@ export async function pruneCloseoutLogs(
     options.signal?.throwIfAborted();
     try {
       if (days !== 0 && row.at < cutoff)
-        await options.store.transaction((q) => clearCloseoutOutputSteps(q, row.ref));
+        await options.store.transaction((q) => clearCloseoutOutputSteps(q, row.ref, row));
       else await moveCloseoutOutput(options.store, options.storage, row, now);
     } catch (error) {
       journalCaught(error, "pruneCloseoutLogs.move", row.itemId);
