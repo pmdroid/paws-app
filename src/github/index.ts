@@ -176,3 +176,5 @@ export {
   type GitHubGitReader,
   type GitHubGitRepository,
 } from "./git-reader";
+
+export { validateGitHubCandidateAttribution, sameGitHubCandidatePatch } from "./candidate-reads";

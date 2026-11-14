@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -227,4 +227,22 @@ test("a worktree waits for an in-flight mirror refresh before touching the mirro
   release.resolve();
   await refresh;
   expect((await worktree).branch).toBe(branchName("ENG-8"));
+});
+
+test("plain item clones reuse work and are removed without creating repos", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-clone-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const pawsRoot = join(root, "paws");
+  const options = { remoteUrl: source, owner: "acme", repo: "demo", itemId: "ENG-9", pawsRoot };
+  const created = await createWorktree(options);
+  await writeFile(join(created.path, "notes.txt"), "work in progress");
+  const reused = await createWorktree(options);
+  expect(await readFile(join(reused.path, "notes.txt"), "utf8")).toBe("work in progress");
+  expect((await stat(join(created.path, ".git"))).isDirectory()).toBe(true);
+  expect(await stat(join(pawsRoot, "repos")).catch(() => null)).toBeNull();
+  await removeWorktree(options);
+  expect(await stat(created.path).catch(() => null)).toBeNull();
+  expect(await readFile(join(source, "README.md"), "utf8")).toBe("hello\n");
 });

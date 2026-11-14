@@ -14,7 +14,7 @@ export async function executeItem({
   storedCandidate,
   ...options
 }: ExecuteItemOptions): Promise<ExecuteItemResult> {
-  const stored = storedCandidate === true && options.workspace !== undefined;
+  const stored = storedCandidate === true;
   const mirror = stored
     ? { path: mirrorPath(options.pawsRoot, options.owner, options.repo) }
     : await ensureBareMirror({
@@ -39,6 +39,7 @@ export async function executeItem({
   } else
     worktree = await createWorktree({
       ...placement,
+      ...(stored ? { remoteUrl: options.remoteUrl, networkGit: options.networkGit } : {}),
       ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
     });
   const run = await (options.promptRunner ?? runAgent)({

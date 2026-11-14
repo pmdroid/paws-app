@@ -160,7 +160,6 @@ import {
   adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
-  ensureMirrorCommit,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -439,6 +438,8 @@ import {
   branchContains,
   hasOpenPullOnPrefix,
   readOpenPullHead,
+  sameGitHubCandidatePatch,
+  validateGitHubCandidateAttribution,
   readBranchTip,
   readBranchWork,
   UPSTREAM_MAIN_REF,
@@ -3978,7 +3979,7 @@ export class Orchestrator {
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
-        ...(this.storedCandidates() ? { storedCandidate: true } : {}),
+        ...(this.mirrorsOff() ? { storedCandidate: true } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -4589,7 +4590,18 @@ export class Orchestrator {
           }
         : undefined;
     const policy = await this.commitPolicy(item);
-    if (policy)
+    if (policy && this.storedCandidates()) {
+      if (!repository) throw new Error("Candidate repository is unavailable");
+      const github = this.githubForRepository(repository);
+      if (!github) throw new Error("Candidate GitHub access is unavailable");
+      await validateGitHubCandidateAttribution(
+        { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+        base,
+        head,
+        policy,
+        await this.signalForItem(item.id),
+      );
+    } else if (policy)
       await validateCandidateAttribution(
         mirror?.path ?? worktree,
         base,
@@ -5900,8 +5912,7 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
-        mirrorsOff: () =>
-          !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        mirrorsOff: () => this.mirrorsOff(),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {
@@ -5922,7 +5933,7 @@ export class Orchestrator {
             policyPaths,
             journal: this.options.journal,
             samePatch: (approved, base) =>
-              samePatch(published.worktree, approved, published.head, base),
+              this.sameCandidatePatch(item, published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
           }).then(async (approval) => {
@@ -9866,7 +9877,8 @@ export class Orchestrator {
     const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
     if (pending) {
       const reviewed = pending.review.headCommit;
-      if (reviewed && (await samePatch(worktree, reviewed, head, base))) return true;
+      if (reviewed && (await this.sameCandidatePatch(item, worktree, reviewed, head, base)))
+        return true;
       await this.store.transaction((q) =>
         cancelVisualReviewQuestionSteps(q, pending.question.id, "head_moved", this.now()),
       );
@@ -10007,7 +10019,9 @@ export class Orchestrator {
     const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
     const reviewed = pending?.review.headCommit;
     if (pending?.question.kind !== "link" || !reviewed || reviewed === head) return [];
-    return (await samePatch(worktree, reviewed, head, base)) ? [pending.question.id] : [];
+    return (await this.sameCandidatePatch(item, worktree, reviewed, head, base))
+      ? [pending.question.id]
+      : [];
   }
 
   /** A decision made on the item page. `effects` are what an approval does per kind. */
@@ -10664,7 +10678,7 @@ export class Orchestrator {
     const originalProfiles = JSON.stringify(profiles);
     const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
-    if (!this.storedCandidates())
+    if (!this.mirrorsOff())
       await ensureBareMirror({
         ...repository,
         pawsRoot: this.options.pawsRoot,
@@ -10685,6 +10699,12 @@ export class Orchestrator {
         }
       : await createWorktree({
           ...placement,
+          ...(this.mirrorsOff()
+            ? {
+                remoteUrl: repository.remoteUrl,
+                networkGit: await this.repositoryGit(item, repository, signal, "write"),
+              }
+            : {}),
           checkoutExclusions: (await this.runCheckout(item)).agent,
         }).then((created) => ({ path: created.path, repo: created.path }));
     const required = await (this.options.reviewRequirements ?? reviewRequirements)(
@@ -10935,19 +10955,7 @@ export class Orchestrator {
    * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
    */
   private async itemHead(item: WorkItemRecord) {
-    const head = await this.store.run((q) => this.itemHeadSteps(q, item));
-    if (head.ref === "HEAD" || !this.storedCandidates()) return head;
-    const repository = await this.repositoryForItem(item);
-    if (!repository) return head;
-    const signal = (await this.signalForItem(item.id)) ?? AbortSignal.timeout(120_000);
-    await ensureMirrorCommit({
-      ...repository,
-      pawsRoot: this.options.pawsRoot,
-      sha: head.ref,
-      networkGit: await this.repositoryGit(item, repository, signal, "read"),
-      signal,
-    });
-    return head;
+    return this.store.run((q) => this.itemHeadSteps(q, item));
   }
 
   private *itemHeadSteps(q: Q, item: WorkItemRecord): Steps<{ repo: string; ref: string }> {
@@ -10963,8 +10971,34 @@ export class Orchestrator {
     };
   }
 
+  private async sameCandidatePatch(
+    item: WorkItemRecord,
+    worktree: string,
+    before: string,
+    after: string,
+    base: string,
+  ): Promise<boolean> {
+    if (!this.mirrorsOff()) return samePatch(worktree, before, after, base);
+    const repository = await this.repositoryForItem(item);
+    const github = repository && this.githubForRepository(repository);
+    if (!repository || !github) return false;
+    return sameGitHubCandidatePatch(
+      { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+      before,
+      after,
+      base,
+    );
+  }
+
+  private mirrorsOff(): boolean {
+    return !(
+      this.options.githubMirrors ??
+      githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+    );
+  }
+
   private storedCandidates(): boolean {
-    return Boolean(this.options.remoteExecution) && this.options.githubMirrors === false;
+    return Boolean(this.options.remoteExecution) && this.mirrorsOff();
   }
 
   private async ensureRecordedCandidate(

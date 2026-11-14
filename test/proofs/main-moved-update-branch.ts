@@ -1,14 +1,27 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import mainMoved from "./main-moved";
 import { type Proof } from "./harness";
 
 export default {
   ...mainMoved,
-  covers: ["src/merge/advance.ts", "src/github/merge.ts", "src/config/file.ts"],
+  covers: [
+    "src/merge/advance.ts",
+    "src/github/merge.ts",
+    "src/config/file.ts",
+    "src/config/paths.ts",
+    "src/acp/worktree.ts",
+    "src/acp/executor.ts",
+  ],
   summary:
     'With [github] mirrors = false and main_moved = "ci", main moves after Closeout accepts; GitHub rebases the pull request through update-branch, and the item merges the head GitHub made without Closeout running again.',
   config: "[github]\nmirrors = false\n",
   async run(proof) {
     await mainMoved.run(proof);
+    proof.expect(
+      "PAWS_HOME/repos remains absent",
+      !existsSync(join(process.env.PAWS_HOME!, "repos")),
+    );
     const accepted = /^Head: (\w+)$/m.exec(proof.github.opened[0]?.body ?? "")?.[1] ?? null;
     const updates = proof.github.branchUpdates;
     const merged = [...proof.github.merged.values()];
