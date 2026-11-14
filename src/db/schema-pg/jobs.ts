@@ -64,9 +64,5 @@ export const schedulerAdmission = pgTable(
     hot: integer().notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
   },
-  (table) => [
-    unique().on(table.jobId),
-    index("scheduler_project").on(table.projectKey),
-    check("scheduler_admission_check_2", sql`hot IN (0,1)`),
-  ],
+  (table) => [unique().on(table.jobId), check("scheduler_admission_check_2", sql`hot IN (0,1)`)],
 );

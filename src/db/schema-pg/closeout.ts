@@ -506,12 +506,6 @@ export const reviewReply = pgTable(
   ],
 );
 
-export const findingGroupingOff = pgTable("finding_grouping_off", {
-  workspaceId: text("workspace_id")
-    .primaryKey()
-    .references(() => workspace.id),
-});
-
 export const riskAutoContext = pgTable(
   "risk_auto_context",
   {

@@ -17,6 +17,8 @@ import {
   markCloseoutAcceptedSteps,
   markRunSteps,
   recordCiRerunSteps,
+  getItemCandidate,
+  recordItemCandidate,
   recordItemPullRequestSteps,
   saveCheckpointSteps,
   DEFAULT_PULL_FEEDBACK_WAIT,
@@ -110,6 +112,7 @@ type HarnessOptions = {
    * mirror, and an item's clone stands in for its runner.
    */
   mirror?: boolean;
+  storedCandidates?: boolean;
   githubMirrors?: boolean;
 };
 
@@ -136,11 +139,29 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
   await git(seed, "push", "-q", "origin", "HEAD:main");
   if (mirror) await exec("git", ["clone", "-q", "--bare", bare, mirror]);
   /** Where the lane reads an item's head: its clone's HEAD, or its candidate ref in the mirror. */
-  const laneHead = (item: HarnessItem) =>
-    mirror ? git(mirror, "rev-parse", candidate(item.id)) : git(item.worktree, "rev-parse", "HEAD");
+  const laneHead = async (item: HarnessItem) => {
+    if (options.storedCandidates) return (await getItemCandidate(store, item.id))!.sha;
+    return mirror
+      ? git(mirror, "rev-parse", candidate(item.id))
+      : git(item.worktree, "rev-parse", "HEAD");
+  };
   /** The candidate import: the mirror takes the head the item's runner made. */
   const adopt = async (item: { id: string; worktree: string }) => {
-    if (mirror) await git(mirror, "fetch", "-q", item.worktree, `+HEAD:${candidate(item.id)}`);
+    if (mirror)
+      await git(
+        mirror,
+        "fetch",
+        "-q",
+        item.worktree,
+        `+HEAD:${options.storedCandidates ? `refs/paws/imports/${item.id}` : candidate(item.id)}`,
+      );
+    if (options.storedCandidates)
+      await recordItemCandidate(store, {
+        itemId: item.id,
+        sha: await git(item.worktree, "rev-parse", "HEAD"),
+        branch: `paws/${item.id}`,
+        recordedAt: clock.now(),
+      });
   };
 
   const clock = new FakeClock(1_000_000);
@@ -600,7 +621,13 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
           head: current.checkpoint?.wipCommit ?? item.accepted,
           signal: state.publication.signal,
           worktree: mirror ?? item.worktree,
-          ...(mirror ? { ref: candidate(id) } : {}),
+          ...(mirror
+            ? {
+                ref: options.storedCandidates
+                  ? (await getItemCandidate(store, id))!.sha
+                  : candidate(id),
+              }
+            : {}),
           branchKey: id,
           summary: "Closeout accepted.",
           commit: { title: `${id} change` },

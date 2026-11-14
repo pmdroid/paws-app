@@ -8,6 +8,7 @@ import {
   listJobsSteps,
   listOutboxSteps,
   onJobReady,
+  readSetting,
   retryOutbox,
   retryOutboxSteps,
   type Db,
@@ -119,17 +120,21 @@ forEachDialect((open) => {
       notBefore: 5_100,
       error: "slow down",
     });
-    const backoff = await db.run(function* (q) {
-      return yield* q.all(q.orm.select().from(q.t.linearOutboxBackoff));
+    expect(await readSetting(db, "linear_outbox_not_before")).toBe("5100");
+    await enqueue(db, {
+      target: "linear",
+      op: "activity",
+      idempotencyKey: "b",
+      orderingKey: "other",
+      payload: { kind: "response", body: "later" },
     });
-    expect(backoff).toEqual([{ id: 1, notBefore: 5_100 }]);
+    expect(await db.run((q) => claimOutboxHeadsSteps(q, { now: 5_099, workerId: "w" }))).toEqual(
+      [],
+    );
 
     const again = await claimOne(db, 5_100);
     await db.transaction((q) => retryOutboxSteps(q, again, rateLimit(10), { now: 5_100 }));
-    const kept = await db.run(function* (q) {
-      return yield* q.all(q.orm.select().from(q.t.linearOutboxBackoff));
-    });
-    expect(kept).toEqual([{ id: 1, notBefore: 5_110 }]);
+    expect(await readSetting(db, "linear_outbox_not_before")).toBe("5110");
   });
 
   test("a dead elicitation is delivered once more in place of the dead row", async () => {

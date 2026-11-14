@@ -1,5 +1,5 @@
 {
-  "id": "fec66201-a157-42fc-a7c1-455c8d086b9a",
+  "id": "05394946-89db-45a0-83fe-9e435eb32417",
   "prevId": "9d49a6a8-3f8c-4592-aba2-85e6e06fbcff",
   "version": "7",
   "dialect": "postgresql",
@@ -4296,29 +4296,7 @@
           "notNull": false
         }
       },
-      "indexes": {
-        "agent_closeout_event_item": {
-          "name": "agent_closeout_event_item",
-          "columns": [
-            {
-              "expression": "item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "agent_closeout_event_run_id_sequence_pk": {
@@ -9126,8 +9104,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.candidate_risk": {
-      "name": "candidate_risk",
+    "public.candidate_paths": {
+      "name": "candidate_paths",
       "schema": "",
       "columns": {
         "item_id": {
@@ -9142,52 +9120,22 @@
           "primaryKey": false,
           "notNull": true
         },
-        "base_sha": {
-          "name": "base_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tier": {
-          "name": "tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "paths": {
           "name": "paths",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
-        },
-        "classified_at": {
-          "name": "classified_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "matches": {
-          "name": "matches",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "changed_paths": {
-          "name": "changed_paths",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "recorded_at": {
           "name": "recorded_at",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         }
       },
       "indexes": {
-        "candidate_risk_item": {
-          "name": "candidate_risk_item",
+        "candidate_paths_item": {
+          "name": "candidate_paths_item",
           "columns": [
             {
               "expression": "item_id",
@@ -9208,6 +9156,76 @@
           "with": {}
         }
       },
+      "foreignKeys": {
+        "candidate_paths_item_id_work_item_id_fk": {
+          "name": "candidate_paths_item_id_work_item_id_fk",
+          "tableFrom": "candidate_paths",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "candidate_paths_item_id_head_sha_pk": {
+          "name": "candidate_paths_item_id_head_sha_pk",
+          "columns": ["item_id", "head_sha"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.candidate_risk": {
+      "name": "candidate_risk",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tier": {
+          "name": "tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "paths": {
+          "name": "paths",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "classified_at": {
+          "name": "classified_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "matches": {
+          "name": "matches",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
       "foreignKeys": {
         "candidate_risk_item_id_work_item_id_fk": {
           "name": "candidate_risk_item_id_work_item_id_fk",
@@ -15795,23 +15813,7 @@
           "notNull": true
         }
       },
-      "indexes": {
-        "scheduler_project": {
-          "name": "scheduler_project",
-          "columns": [
-            {
-              "expression": "project_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "scheduler_admission_item_id_work_item_id_fk": {
           "name": "scheduler_admission_item_id_work_item_id_fk",
