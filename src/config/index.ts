@@ -31,7 +31,13 @@ export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./me
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";
-export { databaseUrlOf, LINEAR_WORKSPACE_REQUIRED, loadRuntime, startupSettings } from "./runtime";
+export {
+  databaseUrlOf,
+  LINEAR_WORKSPACE_REQUIRED,
+  loadRuntime,
+  maxAwakeMsFrom,
+  startupSettings,
+} from "./runtime";
 export { describeDatabaseUrl, redactDatabaseUrl } from "./database";
 export type { PawsRole, RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
@@ -94,6 +100,7 @@ export type {
 } from "./merge";
 
 export {
+  copyCapsToTimeLimits,
   MAX_TIME_LIMIT_MINUTES,
   parseTimeLimitSettings,
   readTimeLimitSettings,
