@@ -5,7 +5,13 @@ import {
   pruneHandledInboxEventsSteps,
   pruneLinearAccessEventsSteps,
   pruneRunnerEventsSteps,
+  pruneEndedRunnerCommandsSteps,
+  pruneEndedRunnerHelpersSteps,
+  pruneRunnerFollowUpsSteps,
+  pruneRunnerHealthResultsSteps,
+  pruneRunnerQuestionAnswersSteps,
   pruneSentOutboxSteps,
+  pruneSupersededRunnerResultsSteps,
   type Db,
   type Q,
   type Steps,
@@ -35,6 +41,26 @@ const LOOP_QUEUE_PRUNES: Record<LoopQueue, PruneSteps> = {
   inbox_event: pruneHandledInboxEventsSteps,
   linear_access_event: pruneLinearAccessEventsSteps,
   agent_model_probe: pruneFinishedAgentModelProbesSteps,
+};
+
+export const RUNNER_TABLE_RETENTION_MS = {
+  runner_question_answer: DAY,
+  runner_follow_up: DAY,
+  runner_result: 7 * DAY,
+  runner_health_result: 0,
+  runner_command: 7 * DAY,
+  runner_helper: 7 * DAY,
+} as const;
+
+type RunnerTable = keyof typeof RUNNER_TABLE_RETENTION_MS;
+
+const RUNNER_TABLE_PRUNES: Record<RunnerTable, PruneSteps> = {
+  runner_question_answer: pruneRunnerQuestionAnswersSteps,
+  runner_follow_up: pruneRunnerFollowUpsSteps,
+  runner_result: pruneSupersededRunnerResultsSteps,
+  runner_health_result: pruneRunnerHealthResultsSteps,
+  runner_command: pruneEndedRunnerCommandsSteps,
+  runner_helper: pruneEndedRunnerHelpersSteps,
 };
 
 type PruneOptions = {
@@ -77,6 +103,18 @@ export async function pruneLoopQueues(options: PruneOptions) {
       options,
       now - LOOP_QUEUE_RETENTION_MS[queue],
       LOOP_QUEUE_PRUNES[queue],
+    );
+  return deleted;
+}
+
+export async function pruneRunnerTables(options: PruneOptions) {
+  const now = options.now ?? Date.now();
+  const deleted = {} as Record<RunnerTable, number>;
+  for (const table of Object.keys(RUNNER_TABLE_PRUNES) as RunnerTable[])
+    deleted[table] = await drain(
+      options,
+      now - RUNNER_TABLE_RETENTION_MS[table],
+      RUNNER_TABLE_PRUNES[table],
     );
   return deleted;
 }

@@ -1214,3 +1214,35 @@ export function* runPlacementCommandSteps(q: Q, runId: string) {
 export async function runPlacementCommand(store: Db, runId: string) {
   return store.run((q) => runPlacementCommandSteps(q, runId));
 }
+
+/**
+ * Deletes up to `limit` acknowledged commands of work that ended before `cutoff`, and returns how
+ * many it deleted. It keeps the work's current command, the latest run command of each
+ * generation, a cancel while the work's teardown is unconfirmed, every command of a run with an
+ * unacknowledged one, and commands a result, transcript, health result, model probe or sign-in
+ * still names.
+ */
+export function* pruneEndedRunnerCommandsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerCommand: c } = q.t;
+  const prunable = sql`
+    SELECT o.ordinal FROM runner_command o
+    JOIN runner_work w ON w.run_id=o.run_id
+    WHERE o.acknowledged_at IS NOT NULL AND w.ended_at<${cutoff} AND o.id<>w.command_id
+      AND (o.kind<>'cancel' OR w.teardown_confirmed_at IS NOT NULL)
+      AND NOT EXISTS(SELECT 1 FROM runner_command u WHERE u.run_id=o.run_id AND u.acknowledged_at IS NULL)
+      AND (o.kind<>'run' OR EXISTS(SELECT 1 FROM runner_command n WHERE n.run_id=o.run_id
+        AND n.generation=o.generation AND n.kind='run' AND n.ordinal>o.ordinal))
+      AND NOT EXISTS(SELECT 1 FROM runner_result x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_transcript x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_health_result x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM agent_model_probe x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_login x WHERE x.id=o.id)
+    LIMIT ${limit}`;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(c)
+      .where(sql`${c.ordinal} IN (${prunable})`)
+      .returning({ ordinal: c.ordinal }),
+  );
+  return deleted.length;
+}

@@ -358,6 +358,7 @@ import {
   loadRunnerEventKey,
   pruneLoopQueues,
   pruneRunnerEvents,
+  pruneRunnerTables,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
   RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -2187,13 +2188,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         const signal = AbortSignal.any([context.signal, abort.signal]);
         const { deleted } = await pruneRunnerEvents({ store, signal });
         if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
-        const pruned = Object.entries(await pruneLoopQueues({ store, signal })).filter(
-          ([, rows]) => rows > 0,
-        );
-        if (pruned.length)
-          journal(
-            `loop queues pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+        for (const [label, prune] of [
+          ["loop queues", pruneLoopQueues],
+          ["runner tables", pruneRunnerTables],
+        ] as const) {
+          const pruned = Object.entries(await prune({ store, signal })).filter(
+            ([, rows]) => rows > 0,
           );
+          if (pruned.length)
+            journal(
+              `${label} pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+            );
+        }
       });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
