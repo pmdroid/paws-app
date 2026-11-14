@@ -47,12 +47,12 @@ export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearRe
 }
 
 export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {
-  const { linearActivityListing } = q.t;
+  const { linearSession } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ generation: linearActivityListing.generation })
-      .from(linearActivityListing)
-      .where(eq(linearActivityListing.sessionId, sessionId)),
+      .select({ generation: linearSession.activitiesListedGeneration })
+      .from(linearSession)
+      .where(eq(linearSession.sessionId, sessionId)),
   );
   return row?.generation ?? null;
 }
@@ -65,12 +65,12 @@ export async function linearActivitiesListedAt(
 }
 
 export function* markLinearActivitiesListedSteps(q: Q, sessionId: string, generation: number) {
-  const { linearActivityListing } = q.t;
+  const { linearSession } = q.t;
   yield* q.exec(
     q.orm
-      .insert(linearActivityListing)
-      .values({ sessionId, generation })
-      .onConflictDoUpdate({ target: linearActivityListing.sessionId, set: { generation } }),
+      .update(linearSession)
+      .set({ activitiesListedGeneration: generation })
+      .where(eq(linearSession.sessionId, sessionId)),
   );
 }
 

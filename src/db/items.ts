@@ -61,7 +61,7 @@ import { closeFixRecordsSteps, type FixOutcome } from "./fix-records";
 import { journal } from "./journal";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { getLinearSessionGenerationSteps } from "./linear-sessions";
-import { withOpenFindingsSteps } from "./open-findings";
+import { withOpenFindingsSteps } from "./stop-response";
 import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
 import {
   endMergeCallSteps,
@@ -346,6 +346,21 @@ export async function listWorkItemEventRows(
   limit = 200,
 ): Promise<WorkItemEventRow[]> {
   return store.run((q) => listWorkItemEventRowsSteps(q, itemId, limit));
+}
+
+export function* listWorkItemEventRowsForItemsSteps(q: Q, itemIds: readonly string[], limit = 200) {
+  const { workItemEvent } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(workItemEvent)
+      .where(inArray(workItemEvent.itemId, [...itemIds]))
+      .orderBy(asc(workItemEvent.id)),
+  );
+  const history = new Map<string, WorkItemEventRow[]>();
+  for (const [itemId, item] of Map.groupBy(rows as WorkItemEventRow[], (row) => row.itemId))
+    history.set(itemId, item.slice(-limit));
+  return history;
 }
 
 export function* configureWorkItemSteps(
@@ -1520,7 +1535,10 @@ function* commitFailureSteps(
             eq(outbox.target, "linear"),
             eq(outbox.orderingKey, sessionId),
             eq(outbox.deliveryGeneration, generation),
-            likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+            or(
+              likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+              likeText(q, outbox.idempotencyKey, "pull-request-opened:%"),
+            ),
             ne(outbox.status, "dropped"),
           ),
         )

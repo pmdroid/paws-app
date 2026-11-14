@@ -35,7 +35,7 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("settings shows one tab bar of nine pages in order, marking the current one", () => {
+test("settings shows one tab bar of ten pages in order, marking the current one", () => {
   const doc = new Window().document;
   doc.body.innerHTML = renderSettingsPage("merging");
   const navs = doc.querySelectorAll("nav");
@@ -44,6 +44,7 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   const links = [...navs[0]!.querySelectorAll("a")];
   expect(links.map((link) => link.textContent)).toEqual([
     "Agents",
+    "Agent accounts",
     "Merging",
     "Queue and limits",
     "Agent instructions",
@@ -66,19 +67,21 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   expect(doc.body.textContent).not.toMatch(/\badmin\b|\byou\b|When to touch this/);
   expect(doc.querySelector(".settings-when, h1")).toBeNull();
   expect(doc.querySelector(".settings-body > p.sub")?.textContent).toBe(
-    SETTINGS_PAGES[1]!.description,
+    SETTINGS_PAGES.find((page) => page.id === "merging")!.description,
   );
 });
 
-test("a member opening any settings page gets only Your account", () => {
+test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
   setSettingsAdmin(false);
-  for (const page of SETTINGS_PAGES) {
+  for (const page of SETTINGS_PAGES.filter((entry) => entry.id !== "agent-accounts")) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
-    expect(navLinks(doc)).toEqual(["Your account"]);
-    expect(doc.querySelector("a[aria-current]")?.textContent).toBe("Your account");
+    const shown =
+      page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
+    expect(navLinks(doc)).toEqual(["Agent accounts", "Integrations", "Your account"]);
+    expect(doc.querySelector("a[aria-current]")?.textContent).toBe(shown.name);
     expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
-      `<p class="sub">${SETTINGS_PAGES.find((entry) => entry.id === "account")!.description}</p>`,
+      `<p class="sub">${shown.description}</p>`,
     );
   }
   const route = { view: "settings", page: "merging" } as const;
@@ -173,12 +176,14 @@ test("settings list the admin pages only once the session says admin", async () 
       new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
     const loaded = initializeWorkspaceAccess(() => null);
     window.document.body.innerHTML = renderSettingsPage("merging");
-    expect(navLinks(window.document)).toEqual(["Your account"]);
+    expect(navLinks(window.document)).toEqual(["Agent accounts", "Integrations", "Your account"]);
     respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
     expect(await loaded).toBe(true);
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual(
-      role === "admin" ? SETTINGS_PAGES.map((page) => page.name) : ["Your account"],
+      role === "admin"
+        ? SETTINGS_PAGES.map((page) => page.name)
+        : ["Agent accounts", "Integrations", "Your account"],
     );
   }
 });

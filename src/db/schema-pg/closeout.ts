@@ -11,7 +11,7 @@ import {
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { question } from "./asks";
-import { run, workItem } from "./items";
+import { workItem } from "./items";
 import { workspace } from "./workspace";
 import { job } from "./jobs";
 
@@ -291,17 +291,6 @@ export const closeoutBypassCheck = pgTable(
   ],
 );
 
-export const runReviewRounds = pgTable(
-  "run_review_rounds",
-  {
-    runId: text("run_id")
-      .primaryKey()
-      .references(() => run.id),
-    rounds: bigint({ mode: "number" }).notNull(),
-  },
-  () => [check("run_review_rounds_check_1", sql`rounds >= 0`)],
-);
-
 export const reviewEscape = pgTable(
   "review_escape",
   {
@@ -348,15 +337,6 @@ export const riskFix = pgTable(
     primaryKey({ columns: [table.itemId, table.headSha], name: "risk_fix_item_id_head_sha_pk" }),
   ],
 );
-
-export const openFindings = pgTable("open_findings", {
-  itemId: text("item_id")
-    .primaryKey()
-    .references(() => workItem.id),
-  headSha: text("head_sha").notNull(),
-  line: text().notNull(),
-  recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
-});
 
 export const reviewFindingIssue = pgTable(
   "review_finding_issue",

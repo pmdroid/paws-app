@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  assignRunnerWorkSteps,
   getSkillSteps,
   listRunnerSkillsSteps,
   listSkillsSteps,
@@ -200,9 +201,18 @@ forEachDialect((connect) => {
 
     const hooks = [{ name: "fmt", event: "after_edit" as const }];
     const setup = (runnerId: string, at: number) =>
-      db.run((q) =>
-        recordRunAgentSetupSteps(q, { runId: "run", runnerId, agent: "claude", hooks, at }),
-      );
+      db.run(function* (q) {
+        yield* assignRunnerWorkSteps(q, {
+          runId: "run",
+          runnerId,
+          workspaceId: "acme",
+          generation: at,
+          runnerFence: 0,
+          commandId: `command-${at}`,
+          leaseUntil: at,
+        });
+        yield* recordRunAgentSetupSteps(q, { runId: "run", runnerId, agent: "claude", hooks, at });
+      });
     await setup("two", 20);
     await setup("one", 21);
     expect(await db.run((q) => runAgentSetupSteps(q, "run"))).toEqual({

@@ -35,6 +35,7 @@ const api = (
 
 export const SETTINGS_PAGE_IDS = [
   "agents",
+  "agent-accounts",
   "merging",
   "limits",
   "brief",

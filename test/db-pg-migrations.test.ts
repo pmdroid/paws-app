@@ -3,7 +3,15 @@ import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getTableName } from "drizzle-orm";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { PG_MIGRATIONS_FOLDER, pgSchema } from "../src/db";
+import {
+  PG_MIGRATIONS_FOLDER,
+  getOpenFindingsLineSteps,
+  getPublishedHeadSteps,
+  linearActivitiesListedAtSteps,
+  pgSchema,
+  postgresDb,
+  withOpenFindingsSteps,
+} from "../src/db";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -29,6 +37,18 @@ function drizzleKit(home: string) {
   return readdirSync(join(home, "drizzle-pg"))
     .filter((name) => name.endsWith(".sql"))
     .sort();
+}
+
+function migrationsBefore(tag: string): string {
+  const out = join(tempHome(), "migrations");
+  cpSync(PG_MIGRATIONS_FOLDER, out, { recursive: true });
+  const path = join(out, "meta/_journal.json");
+  const journal = JSON.parse(readFileSync(path, "utf8")) as { entries: { tag: string }[] };
+  const index = journal.entries.findIndex((entry) => entry.tag.endsWith(`_${tag}`));
+  expect(index).toBeGreaterThan(0);
+  journal.entries = journal.entries.slice(0, index);
+  writeFileSync(path, JSON.stringify(journal));
+  return out;
 }
 
 describe("Postgres drizzle-kit migrations", () => {
@@ -89,5 +109,179 @@ describe("Postgres drizzle-kit migrations", () => {
         .filter((name) => name.endsWith(".sql"))
         .sort(),
     );
+  });
+
+  test("dropping job_activation keeps each job's activation id and issues later ones above every earlier one", async () => {
+    const pg = await pgliteDb({ migrationsFolder: migrationsBefore("drop_dead_tables") });
+    try {
+      for (const id of [1, 2, 3])
+        await pg.$client.query(
+          `INSERT INTO job (id, queue, run_at, created_at) VALUES (${id}, 'work', 0, 0)`,
+        );
+      for (const [id, jobId] of [
+        [1, 1],
+        [2, 2],
+        [3, 2],
+        [4, 3],
+        [5, 1],
+      ])
+        await pg.$client
+          .query(`INSERT INTO job_activation (job_id) VALUES (${jobId}) RETURNING id`)
+          .then((result) => expect(result.rows).toEqual([{ id }]));
+      await pg.$client.exec(
+        "UPDATE job SET activation_id = CASE id WHEN 1 THEN 5 WHEN 2 THEN 3 ELSE 4 END; DELETE FROM job WHERE id = 1",
+      );
+      await pg.$client.exec(
+        "INSERT INTO paws_alive (id, at) VALUES (1, 10); INSERT INTO linear_input VALUES ('s', 't', 'a', 'u', 'image/png', 1, 'h'); INSERT INTO linear_item_caller_request VALUES ('i', 'outbox', 2)",
+      );
+      const before = await pg.$client.query(
+        "SELECT id::int AS id, activation_id::int AS activation FROM job ORDER BY id",
+      );
+      expect(before.rows).toEqual([
+        { id: 2, activation: 3 },
+        { id: 3, activation: 4 },
+      ]);
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const after = await pg.$client.query(
+        "SELECT id::int AS id, activation_id::int AS activation FROM job ORDER BY id",
+      );
+      expect(after.rows).toEqual(before.rows);
+      const added = await pg.$client.query(
+        "INSERT INTO job (queue, run_at, created_at) VALUES ('work', 0, 0) RETURNING activation_id::int AS activation",
+      );
+      expect(added.rows).toEqual([{ activation: 6 }]);
+      for (const table of [
+        "paws_alive",
+        "run_review_rounds",
+        "linear_item_caller_request",
+        "linear_input",
+        "job_activation",
+      ]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
+
+  test("folding open_findings and linear_activity_listing keeps every published head, line and listed generation", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("open_findings_and_activity_listing_columns"),
+    });
+    try {
+      for (const id of ["A", "B", "C"])
+        await pg.$client.query(
+          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd', 'i-${id}', 'PAS-${id}', 't', 'queued', 'paws/${id}', 0, 0)`,
+        );
+      await pg.$client.exec(
+        "INSERT INTO item_pull_request (item_id, pull_number, pull_url, opened_at) VALUES ('A', 1, 'u', 1), ('B', 2, NULL, 2), ('C', 3, NULL, 3)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO open_findings (item_id, head_sha, line, recorded_at) VALUES ('A', 'h1', '1 finding still open.', 1), ('B', 'h2', '', 2)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO linear_session (session_id, created_at) VALUES ('s1', 1), ('s2', 1); INSERT INTO linear_activity_listing (session_id, generation) VALUES ('s1', 4)",
+      );
+      const db = postgresDb(pg);
+      const read = () =>
+        db.run(function* (q) {
+          const items = [];
+          for (const id of ["A", "B", "C"])
+            items.push([
+              yield* getPublishedHeadSteps(q, id),
+              yield* getOpenFindingsLineSteps(q, id),
+              yield* withOpenFindingsSteps(q, id, "Done."),
+            ]);
+          return {
+            items,
+            listed: [
+              yield* linearActivitiesListedAtSteps(q, "s1"),
+              yield* linearActivitiesListedAtSteps(q, "s2"),
+            ],
+          };
+        });
+      const before = await pg.$client.query(
+        "SELECT p.item_id, f.head_sha, f.line FROM item_pull_request p LEFT JOIN open_findings f ON f.item_id = p.item_id ORDER BY p.item_id",
+      );
+      const listedBefore = await pg.$client.query(
+        "SELECT s.session_id, l.generation::int AS generation FROM linear_session s LEFT JOIN linear_activity_listing l ON l.session_id = s.session_id ORDER BY s.session_id",
+      );
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const after = await pg.$client.query(
+        "SELECT item_id, published_head AS head_sha, open_findings_line AS line FROM item_pull_request ORDER BY item_id",
+      );
+      expect(after.rows).toEqual(before.rows);
+      const listedAfter = await pg.$client.query(
+        "SELECT session_id, activities_listed_generation::int AS generation FROM linear_session ORDER BY session_id",
+      );
+      expect(listedAfter.rows).toEqual(listedBefore.rows);
+      expect(await read()).toEqual({
+        items: [
+          ["h1", "1 finding still open.", "Done.\n\n1 finding still open."],
+          ["h2", null, "Done."],
+          [null, null, "Done."],
+        ],
+        listed: [4, null],
+      });
+      for (const table of ["open_findings", "linear_activity_listing"]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
+  test("folding run_owner and run_agent_setup keeps each run's owner and each runner work's setup", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("fold_run_owner_and_agent_setup"),
+    });
+    try {
+      await pg.$client.exec(`
+        SET session_replication_role = replica;
+        INSERT INTO run (id, item_id, kind, agent, status, created_at, updated_at) VALUES
+          ('owned', 'item', 'implement', 'codex', 'active', 0, 0),
+          ('free', 'item', 'implement', 'codex', 'active', 0, 0);
+        INSERT INTO run_owner (run_id, owner_instance) VALUES ('owned', 'acme');
+        INSERT INTO runner_work (run_id, runner_id, workspace_id, generation, runner_fence, command_id, lease_until) VALUES
+          ('owned', 'box', 'ws', 1, 0, 'c1', 10),
+          ('free', 'box', 'ws', 1, 0, 'c2', 10);
+        INSERT INTO run_agent_setup (run_id, runner_id, skills, hooks, recorded_at) VALUES
+          ('owned', 'box', '[{"name":"lint","version":"a","status":"installed"}]', '[{"name":"fmt","event":"stop"}]', 7);
+      `);
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const runs = await pg.$client.query(
+        "SELECT id, owner_instance AS owner FROM run ORDER BY id",
+      );
+      expect(runs.rows).toEqual([
+        { id: "free", owner: null },
+        { id: "owned", owner: "acme" },
+      ]);
+      const work = await pg.$client.query(
+        "SELECT run_id, runner_id, skills, hooks, setup_recorded_at::int AS at FROM runner_work ORDER BY run_id",
+      );
+      expect(work.rows).toEqual([
+        { run_id: "free", runner_id: "box", skills: null, hooks: null, at: null },
+        {
+          run_id: "owned",
+          runner_id: "box",
+          skills: '[{"name":"lint","version":"a","status":"installed"}]',
+          hooks: '[{"name":"fmt","event":"stop"}]',
+          at: 7,
+        },
+      ]);
+      for (const table of ["run_owner", "run_agent_setup"]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
   });
 });

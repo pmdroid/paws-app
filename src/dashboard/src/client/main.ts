@@ -47,6 +47,7 @@ import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
 import { createQueueSettings } from "./queue-settings";
+import { createAgentAccountSettings } from "./agent-account-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
@@ -81,6 +82,7 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
+const agentAccountSettings = createAgentAccountSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
@@ -443,7 +445,9 @@ function paint(): void {
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
-      ["agents", "merging", "limits"].includes(shownSettingsPage(model.route.page));
+      ["agents", "agent-accounts", "merging", "limits"].includes(
+        shownSettingsPage(model.route.page),
+      );
   showWorkspaceSettingsPage(
     model.route.view === "settings" ? shownSettingsPage(model.route.page) : null,
   );
@@ -464,6 +468,8 @@ function paint(): void {
   if (mergeRoot) mergeSettings.mount(mergeRoot, currentEngine());
   const hooksRoot = document.querySelector<HTMLElement>("#hook-settings");
   if (hooksRoot) hookSettings.mount(hooksRoot, currentEngine());
+  const accountsRoot = document.querySelector<HTMLElement>("#agent-account-settings");
+  if (accountsRoot) agentAccountSettings.mount(accountsRoot, currentEngine());
   const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");

@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { type Db, type Q, type Steps } from "./db";
 import { jsonText } from "./json-text";
 import { getLinearConversationSourceSteps } from "./linear-session-url";
@@ -29,10 +29,18 @@ export type VisualReviewCarriedFile = {
 };
 
 export function* listVisualReviewsSteps(q: Q, itemId: string): Steps<VisualReviewRecord[]> {
+  return (yield* listVisualReviewsForItemsSteps(q, [itemId])).get(itemId) ?? [];
+}
+
+export function* listVisualReviewsForItemsSteps(
+  q: Q,
+  itemIds: readonly string[],
+): Steps<Map<string, VisualReviewRecord[]>> {
   const { visualReview, workspaceUser } = q.t;
   const rows = yield* q.all(
     q.orm
       .select({
+        itemId: visualReview.itemId,
         questionId: visualReview.questionId,
         checkId: visualReview.checkId,
         evidenceIds: jsonText(q, visualReview.evidenceIds),
@@ -46,18 +54,21 @@ export function* listVisualReviewsSteps(q: Q, itemId: string): Steps<VisualRevie
       })
       .from(visualReview)
       .leftJoin(workspaceUser, eq(workspaceUser.linearUserId, visualReview.answeredBy))
-      .where(and(eq(visualReview.itemId, itemId), eq(visualReview.kind, "review")))
+      .where(and(inArray(visualReview.itemId, [...itemIds]), eq(visualReview.kind, "review")))
       // Reviews created in the same millisecond keep question id order, the table's key.
       .orderBy(asc(visualReview.createdAt), asc(visualReview.questionId)),
   );
-  const reviews: VisualReviewRecord[] = [];
-  for (const row of rows)
-    reviews.push({
+  const reviews = new Map<string, VisualReviewRecord[]>();
+  for (const { itemId, ...row } of rows) {
+    const list = reviews.get(itemId) ?? [];
+    list.push({
       ...row,
       outcome: row.outcome as VisualReviewRecord["outcome"],
       evidenceIds: JSON.parse(row.evidenceIds) as string[],
       carried: yield* carriedFilesSteps(q, row.carried),
     });
+    reviews.set(itemId, list);
+  }
   return reviews;
 }
 
@@ -90,6 +101,10 @@ export async function linearConversationUrlAsync(
     sessionId === null
       ? null
       : await store.run((q) => getLinearConversationSourceSteps(q, sessionId));
+  return linearConversationUrl(source, identifier);
+}
+
+export function linearConversationUrl(source: string | null, identifier: string): string {
   if (source !== null) {
     try {
       const url = new URL(source);
@@ -134,16 +149,20 @@ export async function saveVisualReviewMarks(
 }
 
 export function* listVisualReviewMarksSteps(q: Q, questionId: string) {
+  return (yield* listVisualReviewMarksForQuestionsSteps(q, [questionId])).get(questionId) ?? [];
+}
+
+export function* listVisualReviewMarksForQuestionsSteps(q: Q, questionIds: readonly string[]) {
   const { visualReviewMark } = q.t;
   const marks: VisualReviewMark[] = yield* q.all(
     q.orm
       .select(markColumns(q))
       .from(visualReviewMark)
-      .where(eq(visualReviewMark.questionId, questionId))
+      .where(inArray(visualReviewMark.questionId, [...questionIds]))
       // Marks of the same millisecond keep id order: ids are ULIDs.
       .orderBy(asc(visualReviewMark.createdAt), asc(visualReviewMark.id)),
   );
-  return marks;
+  return Map.groupBy(marks, (mark) => mark.questionId);
 }
 
 export async function listVisualReviewMarks(

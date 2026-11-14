@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { RiskClassification, RiskMatch, RiskTier } from "../core";
 import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
@@ -67,6 +67,20 @@ export function* latestCandidateRiskSteps(q: Q, itemId: string) {
       .limit(1),
   );
   return row ? fromRow(q, row) : null;
+}
+
+export function* latestCandidateRisksSteps(q: Q, itemIds: readonly string[]) {
+  const { candidateRisk } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(candidateRisk)
+      .where(inArray(candidateRisk.itemId, [...itemIds]))
+      .orderBy(desc(candidateRisk.classifiedAt), desc(candidateRisk.headSha)),
+  );
+  const latest = new Map<string, CandidateRisk>();
+  for (const row of rows) if (!latest.has(row.itemId)) latest.set(row.itemId, fromRow(q, row));
+  return latest;
 }
 
 /** The most recently classified head of the item. */

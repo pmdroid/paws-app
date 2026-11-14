@@ -8,6 +8,11 @@ export const SETTINGS_PAGES = [
       "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent per runner on the Runners page.",
   },
   {
+    id: "agent-accounts",
+    name: "Agent accounts",
+    description: "The workspace's agent sign-ins, in the order runs try them.",
+  },
+  {
     id: "merging",
     name: "Merging",
     description: "Choose how accepted pull requests reach main.",
@@ -52,17 +57,18 @@ export const SETTINGS_PAGES = [
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 let settingsAdmin = false;
+const MEMBER_PAGES: readonly SettingsPage[] = ["agent-accounts", "integrations", "account"];
 
 export function setSettingsAdmin(admin: boolean): void {
   settingsAdmin = admin;
 }
 
 export function shownSettingsPage(page: SettingsPage = "agents"): SettingsPage {
-  return settingsAdmin ? page : "account";
+  return settingsAdmin || MEMBER_PAGES.includes(page) ? page : "account";
 }
 
 function settingsNav(page: SettingsPage): string {
-  const links = SETTINGS_PAGES.filter((entry) => settingsAdmin || entry.id === "account")
+  const links = SETTINGS_PAGES.filter((entry) => settingsAdmin || MEMBER_PAGES.includes(entry.id))
     .map(
       (entry) =>
         `<li class="settings-item"><a href="${routeHref({ view: "settings", page: entry.id })}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
@@ -74,5 +80,5 @@ function settingsNav(page: SettingsPage): string {
 export function renderSettingsPage(requested?: SettingsPage): string {
   const page = shownSettingsPage(requested);
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }
