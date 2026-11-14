@@ -139,10 +139,7 @@ async function fixture() {
   let catalogPages: boolean | "duplicate" = false;
   let catalogPermissions: unknown = INSTALLATION_PERMISSIONS;
   const github = {
-    orgRole: "admin",
     repoStatus: 200,
-    repoPermissions: { admin: true, pull: true } as Record<string, boolean>,
-    owner: { type: "Organization", id: 1 } as { type: string; id: number },
     suspended: false,
   };
   const provider = Bun.serve({
@@ -212,11 +209,9 @@ async function fixture() {
       }
       if (/^\/repos\/acme\/(widgets|gadgets)$/.test(url.pathname))
         return Response.json(
-          { permissions: github.repoPermissions, owner: github.owner },
+          { permissions: { admin: false, pull: true } },
           { status: github.repoStatus },
         );
-      if (url.pathname === "/user/memberships/orgs/acme")
-        return Response.json({ state: "active", role: github.orgRole });
       if (url.pathname === "/app/installations/22/access_tokens") {
         const name = (JSON.parse(body) as { repositories: string[] }).repositories[0];
         maxTokensInFlight = Math.max(maxTokensInFlight, ++tokensInFlight);
@@ -724,7 +719,10 @@ for (const permissions of [
       expect(body).toMatchObject({
         installationId: "22",
         installations: [{ id: "22", account: "acme" }],
-        repositories: [{ repository: "acme/widgets", private: true }],
+        repositories: [
+          { repository: "acme/widgets", private: true },
+          { repository: "acme/gadgets", private: false },
+        ],
       });
       expect(body.missingPermissions.length).toBeGreaterThan(0);
       const denied = await saveSetup(f);
@@ -757,7 +755,10 @@ test("GitHub sign-in precedes repository approval and activates selected matches
     expect(body).toMatchObject({
       signedIn: true,
       login: "installer",
-      repositories: [{ repository: "acme/widgets", private: true }],
+      repositories: [
+        { repository: "acme/widgets", private: true },
+        { repository: "acme/gadgets", private: false },
+      ],
       teams: [{ id: "team", name: "Engineering", key: "ENG" }],
       mappings: [],
     });
@@ -880,25 +881,24 @@ test("repository choices read every user-accessible page and reject duplicate pa
   }
 });
 
-const ORG_ADMIN_NEEDED =
-  "Connecting GitHub for the first time needs an admin of the acme GitHub organization. Ask one to connect GitHub; after that any Paws admin can add repositories.";
 const NOT_INSTALLED =
   "The GitHub App is not installed on acme/widgets, or the installation is suspended.";
 
-test("first setup refuses an org member with repository admin and accepts an org admin", async () => {
+test("first setup by an org member who can read saves and audits the mapping", async () => {
   const f = await fixture();
   try {
     await clearRepositories(f.db);
     await signInForRepositorySetup(f);
-    f.github.orgRole = "member";
-    const refused = await saveSetup(f);
-    expect(refused?.status).toBe(409);
-    expect(await refused!.json()).toEqual({ error: ORG_ADMIN_NEEDED });
-    expect(await repositoryCount(f.db)).toBe(0);
-    expect(await connectionCount(f.db)).toBe(0);
-    f.github.orgRole = "admin";
     expect((await saveSetup(f))?.status).toBe(200);
     expect(await repositoryCount(f.db)).toBe(1);
+    expect(
+      await rows(f.db, (q) =>
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.action, "github.connect.activated")),
+      ),
+    ).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -907,7 +907,6 @@ test("first setup refuses an org member with repository admin and accepts an org
 test("connect accepts an org member who can read and names a repository they can't", async () => {
   const f = await fixture();
   try {
-    f.github.orgRole = "member";
     f.github.repoStatus = 404;
     const flow = await f.begin("admin");
     const response = await f.handler()(f.request("admin", flow.callback.href));
@@ -924,28 +923,10 @@ test("connect accepts an org member who can read and names a repository they can
   }
 });
 
-test("first setup on a personal account needs its owner", async () => {
-  const f = await fixture();
-  try {
-    await clearRepositories(f.db);
-    await signInForRepositorySetup(f);
-    f.github.owner = { type: "User", id: 8 };
-    const refused = await saveSetup(f);
-    expect(await refused!.json()).toEqual({
-      error: "Connecting GitHub for the first time needs the owner of the acme GitHub account.",
-    });
-    expect(await repositoryCount(f.db)).toBe(0);
-  } finally {
-    await f.close();
-  }
-});
-
 test("after first setup an org member who can read a repository adds it", async () => {
   const f = await fixture();
   try {
     await signInForRepositorySetup(f);
-    f.github.orgRole = "member";
-    f.github.repoPermissions = { admin: false, pull: true };
     const catalog = await f.setup()(
       f.request("owner", "https://paws.example/api/workspaces/github-setup"),
     );
@@ -960,7 +941,6 @@ test("after first setup an org member who can read a repository adds it", async 
     ]);
     expect(saved?.status).toBe(200);
     expect(await repositoryCount(f.db)).toBe(2);
-    expect(f.calls.some((call) => call.path.startsWith("/user/memberships"))).toBe(false);
     expect(
       await rows(f.db, (q) =>
         q.orm
