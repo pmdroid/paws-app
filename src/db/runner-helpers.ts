@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
@@ -147,4 +147,18 @@ export function* endRunnerHelperSteps(q: Q, id: string, at: number) {
       .set({ endedAt: sql`COALESCE(${helper.endedAt}, ${at})` })
       .where(eq(helper.id, id)),
   );
+}
+
+/** Deletes up to `limit` helpers that ended and expired before `cutoff`; returns how many. */
+export function* pruneEndedRunnerHelpersSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerHelper: h } = q.t;
+  const prunable = q.orm
+    .select({ id: h.id })
+    .from(h)
+    .where(and(lt(h.endedAt, cutoff), lt(h.expiresAt, cutoff)))
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(h).where(inArray(h.id, prunable)).returning({ id: h.id }),
+  );
+  return deleted.length;
 }

@@ -19,6 +19,7 @@ export {
 export {
   pruneLoopQueues,
   pruneRunnerEvents,
+  pruneRunnerTables,
   RUNNER_EVENT_PRUNE_EVERY_MS,
   RUNNER_EVENT_PRUNE_JOB,
 } from "./prune";
