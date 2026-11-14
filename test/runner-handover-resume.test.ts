@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { PawsShutdown } from "../src/core";
 import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
@@ -40,6 +40,29 @@ import { tempStore } from "./pglite";
 
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 type Setup = Awaited<ReturnType<typeof setup>>;
+
+async function until<T>(check: () => T | Promise<T>, ms = 10_000): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = await check();
+    if (value || Date.now() >= deadline) return value;
+    await delay(1);
+  }
+}
+
+async function settleWithin(promises: Promise<unknown>[], what: string, ms = 10_000) {
+  const timer = new AbortController();
+  try {
+    await Promise.race([
+      Promise.allSettled(promises),
+      delay(ms, undefined, { signal: timer.signal }).then(() => {
+        throw new Error(`${what} did not finish within ${ms} ms`);
+      }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
 
 function setRunner(db: Db, id: string, values: Partial<Q["t"]["runner"]["$inferInsert"]>) {
   return db.run((q) => q.exec(q.orm.update(q.t.runner).set(values).where(eq(q.t.runner.id, id))));
@@ -238,9 +261,11 @@ async function setup() {
     },
   });
   const seen = new Set<string>();
+  const runCommands = new Map<string, RunCommand>();
   /** The next command for `runnerId`, or null once `attempts` polls found none. */
-  async function next(runnerId: string, attempts = 5000) {
-    for (let index = 0; index < attempts; index++) {
+  async function next(runnerId: string, attempts = Infinity) {
+    const deadline = Date.now() + 10_000;
+    for (let index = 0; index < attempts && Date.now() < deadline; index++) {
       for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
@@ -252,6 +277,11 @@ async function setup() {
         });
         if (verified.ok) {
           await work.acknowledge(runnerId, verified.command.id);
+          if (verified.command.type === "run")
+            runCommands.set(
+              `${verified.command.runId}:${verified.command.generation}`,
+              verified.command,
+            );
           return verified.command;
         }
       }
@@ -359,7 +389,7 @@ async function setup() {
     return wip;
   }
   // A handed-over run waits for a runner until it stops, so every test stops its runs.
-  const stops = new Map<AbortController, Promise<unknown>>();
+  const turns = new Set<{ stop: AbortController; running: Promise<unknown> }>();
   let sequence = 0;
   /**
    * Both runners active, online and signed in to Claude; only A is free until `start` places.
@@ -485,7 +515,7 @@ async function setup() {
         },
       })
       .catch((error: unknown) => error);
-    stops.set(stop, running);
+    turns.add({ stop, running });
     return { running, stop };
   }
   /**
@@ -516,9 +546,7 @@ async function setup() {
         },
       },
     ]);
-    if (question)
-      for (let index = 0; index < 5000 && !(await openedQuestion(db, record.runId)); index++)
-        await delay(1);
+    if (question) await until(() => openedQuestion(db, record.runId));
     const handing = backend.handOverItem(record.id);
     const wip = await handOver(onA);
     expect(await handing).toEqual({ status: "handed_over", wipCommit: wip });
@@ -552,9 +580,61 @@ async function setup() {
     handOverTurn,
     turn,
     async stopAll() {
-      for (const stop of stops.keys()) stop.abort();
-      await Promise.all(stops.values());
-      stops.clear();
+      const stopping = [...turns];
+      turns.clear();
+      for (const { stop } of stopping) stop.abort();
+      const routes = [...moveRoutes];
+      moveRoutes.clear();
+      for (const { stop } of routes) stop.abort();
+      const stopped = { done: false };
+      const settling = settleWithin(
+        [...stopping.map(({ running }) => running), ...routes.map(({ settled }) => settled())],
+        "Stopping the turns and moves",
+      ).finally(() => {
+        stopped.done = true;
+      });
+      try {
+        while (!stopped.done)
+          for (const runnerId of Object.values(runners)) {
+            const command = await next(runnerId, 1);
+            const key =
+              (command?.type === "cancel" || command?.type === "handover") &&
+              `${command.runId}:${command.generation}`;
+            const cancelled = key && runCommands.get(key);
+            if (key && cancelled) runCommands.delete(key);
+            if (cancelled)
+              await grant(cancelled, runnerId)
+                .then((token) =>
+                  results.submit({
+                    runnerId,
+                    runId: cancelled.runId,
+                    generation: cancelled.generation,
+                    token,
+                    result: {
+                      executionId: workspaceId(),
+                      commandId: cancelled.id,
+                      role: "implementer",
+                      stopReason: "cancelled",
+                      timedOut: false,
+                      cancelled: true,
+                      authRequired: false,
+                      agentExited: true,
+                    },
+                  }),
+                )
+                .catch(() => {});
+          }
+        await settling;
+      } finally {
+        await db.run((q) =>
+          q.exec(
+            q.orm
+              .update(q.t.runnerCommand)
+              .set({ acknowledgedAt: now })
+              .where(isNull(q.t.runnerCommand.acknowledgedAt)),
+          ),
+        );
+      }
     },
     async cleanup() {
       await close();
@@ -564,13 +644,17 @@ async function setup() {
 }
 
 let context: Setup;
+const moveRoutes = new Set<{ stop: AbortController; settled(): Promise<void> }>();
 beforeAll(async () => {
   context = await setup();
 });
 afterEach(() => context.stopAll());
 afterAll(async () => {
-  await context.stopAll();
-  await context.cleanup();
+  try {
+    await context.stopAll();
+  } finally {
+    await context.cleanup();
+  }
 });
 
 test("a handed-over session continues on the second runner from its WIP commit, with its conversation", async () => {
@@ -659,12 +743,7 @@ test("a run that stops while it waits for a runner ends with the stop, not a fai
   const { running, stop, notices } = await context.handOverTurn(() =>
     setRunner(db, runners.b, { status: "paused" }),
   );
-  for (
-    let index = 0;
-    index < 5000 && !notices.some((notice) => notice.startsWith("Waiting"));
-    index++
-  )
-    await delay(1);
+  await until(() => notices.some((notice) => notice.startsWith("Waiting")));
   expect(notices.filter((notice) => notice.startsWith("Waiting"))).toEqual([
     "Waiting to move this session from A: No other runner is online. Paws moves it as soon as a runner fits.\n",
   ]);
@@ -737,20 +816,16 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   await context.events(onA, runners.a, [
     { type: "question", text: "Which delimiter?", options: [] },
   ]);
-  for (
-    let index = 0;
-    index < 5000 &&
-    !(await db.run((q) =>
+  await until(() =>
+    db.run((q) =>
       q.one(
         q.orm
           .select({ runId: q.t.runnerWork.runId })
           .from(q.t.runnerWork)
           .where(and(eq(q.t.runnerWork.runId, onA.runId), gt(q.t.runnerWork.consumedSequence, 0))),
       ),
-    ));
-    index++
-  )
-    await delay(1);
+    ),
+  );
   await setWorkItem(db, record.id, { state: "awaiting_input" });
   stop.abort(new PawsShutdown());
   expect(await context.next(runners.a)).toMatchObject({ type: "checkpoint", runId: onA.runId });
@@ -766,12 +841,7 @@ test("after a restart the handed-over run still avoids the runner it left and wa
   const { record, onA, wip, notices, stop, running } = await context.handOverTurn(() =>
     setRunner(db, runners.b, { status: "paused" }),
   );
-  for (
-    let index = 0;
-    index < 5000 && !notices.some((notice) => notice.startsWith("Waiting"));
-    index++
-  )
-    await delay(1);
+  await until(() => notices.some((notice) => notice.startsWith("Waiting")));
   // Paws stops while the run waits; a new call knows nothing of the first one.
   stop.abort();
   await running;
@@ -779,7 +849,7 @@ test("after a restart the handed-over run still avoids the runner it left and wa
   const resumed = context.turn(record, again);
   // A is active and online, yet the run neither returns to it nor fails.
   expect(await context.next(runners.a, 300)).toBeNull();
-  for (let index = 0; index < 5000 && !again.length; index++) await delay(1);
+  await until(() => again.length > 0);
   expect(again.filter((notice) => notice.startsWith("Waiting"))).toEqual([
     "Waiting to move this session from A: No other runner is online. Paws moves it as soon as a runner fits.\n",
   ]);
@@ -829,11 +899,14 @@ async function finish(onA: RunCommand, running: Promise<unknown>) {
 
 /** The move route over the fixture's backend; every request here is its route. */
 function sessionMoves() {
+  const stop = new AbortController();
   const moves = createRunnerSessionMoves({
     store: context.db,
     handOver: (itemId, signal) => context.backend.handOverItem(itemId, signal),
     now: () => context.now,
+    signal: stop.signal,
   });
+  moveRoutes.add({ stop, settled: moves.settled });
   return {
     settled: moves.settled,
     async fetch(...args: Parameters<typeof moves.fetch>) {
@@ -884,8 +957,7 @@ test("with no eligible runner the card row says why, as Linear hears it", async 
   );
   await context.handOver(onA);
   await moves.settled();
-  for (let index = 0; index < 5000 && !notices.some((n) => n.startsWith("Waiting")); index++)
-    await delay(1);
+  await until(() => notices.some((n) => n.startsWith("Waiting")));
   expect(notices).toContain(
     "Waiting to move this session from A: Sign in to Claude on another runner. Paws moves it as soon as a runner fits.\n",
   );
@@ -1056,12 +1128,7 @@ test("with no eligible runner both sessions stay on the draining card with the r
   expect((await moves.fetch(moveAllRequest(runners.a), context.principal)).status).toBe(202);
   await handOverBoth(turns);
   await moves.settled();
-  for (
-    let index = 0;
-    index < 5000 && notices.filter((n) => n.startsWith("Waiting")).length < 2;
-    index++
-  )
-    await delay(1);
+  await until(() => notices.filter((n) => n.startsWith("Waiting")).length === 2);
   // Both stay listed with the reason, so the card counts two waiting instead of Drained.
   expect(
     (await card(runners.a))
@@ -1187,19 +1254,13 @@ test("replayed questions attach to the open answer without asking or cancelling 
   const command = (await context.next(runners.a)) as RunCommand;
   const event = { type: "question" as const, text: "Which delimiter?", options: [] };
   await context.events(command, runners.a, [event]);
-  for (let i = 0; i < 5000; i++) {
-    if (asks > 0) break;
-    await delay(1);
-  }
+  await until(() => asks > 0);
   // Replay while the first ask is still waiting on its answer.
   await context.events(command, runners.a, [event, event]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(1);
   await answerQuestion(db, record.runId, "Use commas.");
-  for (let i = 0; i < 1000; i++) {
-    if (await context.results.answered(command.runId, command.generation, 3)) break;
-    await delay(1);
-  }
+  await until(() => context.results.answered(command.runId, command.generation, 3));
   expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(await questionAnswers(db, record.runId)).toHaveLength(3);
   expect(
@@ -1287,10 +1348,7 @@ test("a replay attaches to a question already stored by an earlier attachment", 
   ]);
   expect(await context.next(runners.a, 50)).toBeNull();
   await answerQuestion(db, record.runId, "Use commas.");
-  for (let i = 0; i < 1000; i++) {
-    if (await context.results.answered(command.runId, command.generation, 2)) break;
-    await delay(1);
-  }
+  await until(() => context.results.answered(command.runId, command.generation, 2));
   expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(await questionAnswers(db, record.runId)).toHaveLength(2);
   expect(await context.next(runners.a, 50)).toBeNull();
@@ -1328,13 +1386,9 @@ for (const [owner, change] of [
       await context.events(command, runners.a, [
         { type: "question", text: "Which delimiter?", options: [] },
       ]);
-      // Nothing awaits before this `stale()`, so the backend has not read the event yet.
-      if (!whileAttached) await stale();
-      else {
-        expect(await context.next(runners.a, 50)).toBeNull();
-        await stale();
-        await answerQuestion(db, record.runId, "Too late.");
-      }
+      if (whileAttached) expect(await context.next(runners.a, 50)).toBeNull();
+      await stale();
+      await answerQuestion(db, record.runId, "Too late.");
       expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
       // The run's lease checks may refuse this turn before the question owner check does.
       expect(await turn.running).toBeInstanceOf(Error);
