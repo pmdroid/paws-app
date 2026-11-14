@@ -135,9 +135,14 @@ const configOptions = () => {
     ...(script.fast && (!script.fastModels || script.fastModels.includes(currentModel ?? ""))
       ? [
           script.fast === "boolean"
-            ? { id: "fast", type: "boolean", name: "Fast mode", currentValue: fastOn }
+            ? {
+                id: script.fastId ?? "fast",
+                type: "boolean",
+                name: "Fast mode",
+                currentValue: fastOn,
+              }
             : {
-                id: "fast",
+                id: script.fastId ?? "fast",
                 type: "select",
                 name: "Fast mode",
                 category: "model_config",
@@ -254,7 +259,7 @@ async function handle(message: {
   }
 
   if (message.method === "session/set_config_option") {
-    if (message.params?.configId === "fast") {
+    if (message.params?.configId === (script.fastId ?? "fast")) {
       state.fastSelection = message.params;
       persist();
       fastOn = message.params.value === true || message.params.value === "on";

@@ -144,7 +144,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     anonymous: 307,
   }),
 
-  api("GET", "/api/overview", "canonical", "PAS-903", { sample: "/api/overview", member: 200 }),
+  api("GET", "/api/overview", "canonical", "PAS-2030", { sample: "/api/overview", member: 200 }),
   api("GET", "/api/issues", "canonical", "PAS-859", { sample: "/api/issues", member: 200 }),
   api("GET", "/api/issues/:id", "canonical", "PAS-859", {
     via: "/api/issues",

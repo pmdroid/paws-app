@@ -375,7 +375,7 @@ function runnerStep(input: OnboardingPageInput): Step {
           title,
           state: "needed",
           label: "Ready (paused)",
-          detail: `${runner.name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
+          detail: `${runner.name} is paused. Turn it on so Paws can use your agent accounts.`,
           actions: [
             {
               href: runner.id ? `${RUNNERS_PAGE}/${encodeURIComponent(runner.id)}` : RUNNERS_PAGE,
@@ -463,35 +463,28 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
       state: "later",
       label: "After the runner",
       detail:
-        "Sign in to both on the runner, then turn it on. Claude writes the change; Codex reviews it.",
+        "Add Claude and Codex accounts in Settings. Claude writes the change; Codex reviews it.",
     });
   else if (missing.length === 0)
     steps.push({
       title: "Claude and Codex",
       state: "done",
       label: "Connected",
-      detail: `Both are signed in on ${runner.name}.`,
+      detail: `Both have healthy accounts bound to ${runner.name}.`,
     });
   else {
-    const note = expired.length > 0 ? ` The ${list(expired)} sign-in expired.` : "";
-    // Only the runner's owner can sign agents in on it.
+    const note = expired.length > 0 ? ` The ${list(expired)} account sign-in expired.` : "";
     steps.push({
       title: "Claude and Codex",
       state: "needed",
       label: expired.length > 0 ? "Sign-in expired" : "Needed",
-      ...(runner.sharedBy === undefined
-        ? {
-            detail: `Sign in to ${list(missing)} on ${runner.name}.${note}`,
-            actions: [
-              {
-                href: `${RUNNERS_PAGE}/${encodeURIComponent(runner.id)}`,
-                label: `Sign in on ${runner.name}`,
-              },
-            ],
-          }
-        : {
-            detail: `Ask ${runner.sharedBy} to sign in to ${list(missing)} on ${runner.name}.${note}`,
-          }),
+      detail: `Ask a workspace admin to add or reconnect ${list(missing)} in Settings › Agent accounts for ${runner.name}.${note}`,
+      actions: [
+        {
+          href: dashboardPath("/settings/agent-accounts"),
+          label: "Open Agent accounts",
+        },
+      ],
     });
   }
   steps.push(

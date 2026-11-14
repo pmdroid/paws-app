@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
+  recordAccountObservation,
+  setupFactsSteps,
   putWorkspaceUser,
   syncWorkspaceMember,
   type Db,
@@ -64,7 +66,7 @@ async function workspace() {
   };
 }
 
-function runner(
+async function runner(
   db: Db,
   id: string,
   input: {
@@ -75,7 +77,7 @@ function runner(
     agents?: Record<string, { ready: number; authExpired?: number }>;
   } = {},
 ) {
-  return seed(
+  await seed(
     db,
     (q) =>
       q.orm.insert(q.t.runner).values({
@@ -93,17 +95,46 @@ function runner(
           (q: Q) =>
             q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: input.sharing! }),
         ]),
-    ...Object.entries(input.agents ?? {}).map(
-      ([agent, policy]) =>
-        (q: Q) =>
-          q.orm.insert(q.t.runnerAgentPolicy).values({
-            runnerId: id,
-            agent,
-            ready: policy.ready,
-            authExpired: policy.authExpired ?? 0,
-          }),
-    ),
   );
+  for (const [agent, policy] of Object.entries(input.agents ?? {})) {
+    const accountId = `${id}-${agent}`;
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.agentAccount).values({
+          id: accountId,
+          workspaceId: "ws",
+          agent,
+          label: accountId,
+          legacy: 0,
+          enabled: 1,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      (q) =>
+        q.orm.insert(q.t.agentAccountBinding).values({
+          id: accountId,
+          workspaceId: "ws",
+          accountId,
+          agent,
+          runnerId: id,
+          legacy: 0,
+          quotaScope: "account",
+          createdAt: NOW,
+        }),
+    );
+    if (policy.ready || policy.authExpired)
+      await recordAccountObservation(db, {
+        bindingId: accountId,
+        source: "sign_in",
+        sourceId: accountId,
+        observedAt: NOW,
+        now: NOW,
+        ...(policy.authExpired
+          ? { state: "auth_required" as const }
+          : { state: "ok" as const, clears: ["auth"] as const }),
+      });
+  }
 }
 
 function vm(db: Db, step: string, failure: string | null = null) {
@@ -254,7 +285,7 @@ test("an offline or paused own runner says so", async () => {
   });
 });
 
-test("a ready runner reports each coding agent's sign-in, preferring the most connected", async () => {
+test("a ready runner reports account health without local sign-ins, preferring the most connected", async () => {
   const w = await workspace();
   await runner(w.db, "a", {
     agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } },
@@ -303,7 +334,10 @@ test("the page lists Linear, membership, runner, coding agents, then the optiona
   });
   expect(ready.slice(2).map((step) => [step.label, step.detail])).toEqual([
     ["Ready", "mia-paws will run this task."],
-    ["Sign-in expired", "Sign in to Codex on mia-paws. The Codex sign-in expired."],
+    [
+      "Sign-in expired",
+      "Ask a workspace admin to add or reconnect Codex in Settings › Agent accounts for mia-paws. The Codex account sign-in expired.",
+    ],
     ["Linked", "Commits will credit @mia-chen."],
   ]);
 });
@@ -391,4 +425,16 @@ test("the optional GitHub step offers a consent form that posts to this page, an
     // No credit form; the Add a host form never submits, so form-action stays 'none'.
     expect(await page.text()).not.toContain('<form method="post"');
   }
+});
+
+test("setup needs a healthy account binding on an enrolled runner", async () => {
+  const w = await workspace();
+  await runner(w.db, "empty");
+  expect((await w.db.run(setupFactsSteps)).agent).toBe(false);
+  await runner(w.db, "bound", { agents: { claude: { ready: 1 } } });
+  expect((await w.db.run(setupFactsSteps)).agent).toBe(true);
+  await seed(w.db, (q) =>
+    q.orm.update(q.t.runner).set({ revokedAt: NOW }).where(eq(q.t.runner.id, "bound")),
+  );
+  expect((await w.db.run(setupFactsSteps)).agent).toBe(false);
 });

@@ -31,10 +31,13 @@ const STEPS: readonly Step[] = [
     action: { label: "Add a runner", href: routeHref({ view: "runners", id: null }) },
   },
   {
-    title: "Sign in to an agent on that runner",
-    help: "On the Runners page, after the runner is enrolled.",
+    title: "Add an agent account",
+    help: "A Claude or Codex account Paws uses on your runners",
     done: (setup) => setup.agent,
-    action: { label: "Open Runners", href: routeHref({ view: "runners", id: null }) },
+    action: {
+      label: "Add an agent account",
+      href: routeHref({ view: "settings", page: "agent-accounts" }),
+    },
   },
   {
     title: "Delegate your first issue in Linear",

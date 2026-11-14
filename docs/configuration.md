@@ -56,10 +56,10 @@ The limits are global: every item uses the same `[time_limits]`. A missing `impl
 
 ### `[github_access]`
 
-Settings saves GitHub access through `/api/settings/github-access`: `GET` returns `agentRead`, `mirrors`, whether the section is saved, and the `[github] agent_read_off` list while it is not; an admin's `PUT` of `{ "agentRead": boolean, "mirrors": boolean }` saves it to the database. Until the first save, `[github] agent_read_off` and `mirrors` in `config.toml` supply both.
+Workspace administrators manage GitHub access in Settings. Before the first save, Paws reads `[github] agent_read_off` and `mirrors` from `config.toml`.
 
 - `agent_read` (default `true`): `false` gives no agent turn a read-only GitHub token, from the next turn on; see [the agent's token](runner-enrollment.md#the-agents-read-only-github-token). Before a save, `[github] agent_read_off` lists the repositories without one.
-- `mirrors` (default `true`): set `false` to use GitHub API reads instead of local repository mirrors. Restart Paws after changing it.
+- `mirrors` (default `true`): set `false` to use GitHub API reads instead of local repository mirrors. Restart Paws after changing it. Existing worktrees are converted to independent checkouts with their commits and uncommitted work preserved; keep the old mirror available until the conversion finishes.
 
 ### Linear comment agents
 

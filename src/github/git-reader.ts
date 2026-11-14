@@ -46,7 +46,7 @@ const NOT_LOADED = "not read from GitHub yet";
 const MAX_TREES = 32;
 
 export function createGitHubGitReader(options: {
-  locate(repo: string): GitHubGitRepository | null;
+  locate(repo: string): GitHubGitRepository | null | Promise<GitHubGitRepository | null>;
   blobs?: GitHubBlobCache;
   timeoutMs?: number;
 }): GitHubGitReader {
@@ -92,7 +92,7 @@ export function createGitHubGitReader(options: {
   });
   return {
     async fetchOriginMain(repo) {
-      const target = options.locate(repo);
+      const target = await options.locate(repo);
       if (!target) return { ok: false, stderr: `${repo} is not a GitHub repository Paws reads` };
       try {
         const body = await get(target, "/git/ref/heads/main");
@@ -131,7 +131,7 @@ export function createGitHubGitReader(options: {
     async fill(repo) {
       const pending = wanted.get(repo);
       wanted.delete(repo);
-      const target = options.locate(repo);
+      const target = await options.locate(repo);
       if (!pending || !target || (!pending.trees.size && !pending.blobs.size)) return false;
       try {
         for (const commit of pending.trees) {
@@ -147,7 +147,7 @@ export function createGitHubGitReader(options: {
     },
     mainCommit: (repo) => mains.get(repo),
     async changedPaths(repo, base, head) {
-      const target = options.locate(repo);
+      const target = await options.locate(repo);
       if (!target) return null;
       try {
         const compared = await compareChangedPaths(
@@ -162,7 +162,7 @@ export function createGitHubGitReader(options: {
       }
     },
     async mergeView(repo, main, head) {
-      const target = options.locate(repo);
+      const target = await options.locate(repo);
       if (!target) return { ok: false, stderr: `${repo} is not a GitHub repository Paws reads` };
       try {
         const compared = await get(target, `/compare/${main}...${head}?per_page=1`);

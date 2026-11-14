@@ -29,6 +29,7 @@ import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
   FAST_MODE_RUNNER_VERSION,
+  CODEX_FAST_MODE_RUNNER_VERSION,
   RunnerCommandSchema,
   RunnerHelperResultSchema,
   RUNNER_RESULT_BODY_LIMIT,
@@ -174,7 +175,9 @@ export function createRunnerHelpers(options: {
         fast !== undefined &&
         runnerReleaseAtLeast(
           yield* runnerHostVersionSteps(q, input.runnerId),
-          FAST_MODE_RUNNER_VERSION,
+          input.profile.agent === "codex"
+            ? CODEX_FAST_MODE_RUNNER_VERSION
+            : FAST_MODE_RUNNER_VERSION,
         )
           ? { ...profile, fast }
           : profile,
