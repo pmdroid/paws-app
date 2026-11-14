@@ -30,7 +30,7 @@ const HEAD = "c".repeat(40);
 const cleanup: (() => unknown)[] = [];
 
 afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
+  for (const undo of cleanup.splice(0).reverse()) await undo();
 });
 
 async function setup() {

@@ -190,8 +190,8 @@ forEachDialect((connect) => {
     const { db: store, close } = await connect();
     cleanup.push(close);
     expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
-    const saved = await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store });
-    expect(saved).toMatchObject({ status: 200, body: { closeoutLogRetentionDays: 0 } });
+    const put = await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store });
+    expect(put).toMatchObject({ status: 200, body: { closeoutLogRetentionDays: 0 } });
     expect((await call(send("GET"), { store })).body).toMatchObject({
       source: "default",
       closeoutLogRetentionDays: 0,
