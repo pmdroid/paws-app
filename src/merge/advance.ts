@@ -154,8 +154,9 @@ export type MergeCapabilities = OrderCapabilities & {
 };
 
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
+const FAILED_CI_RERUN = "failed CI job on a head Closeout accepted";
 
-async function rerunCancelledCi(
+async function rerunFailedCiOnce(
   store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
@@ -164,18 +165,18 @@ async function rerunCancelledCi(
 ): Promise<MergeStep | null> {
   if (turn.kind !== "blocked" || turn.block !== "ci_failed") return null;
   const { readiness, head, base } = turn.pull;
-  if (
-    !caps.rerunCi ||
-    readiness.onlyCancelled !== true ||
-    (await store.run((q) => hasCiRerunSteps(q, item.id, head)))
-  )
-    return null;
-  await caps.rerunCi(item, pullNumber, CANCELLED_CI_RERUN).catch((error: unknown) => {
-    journalCaught(error, "advance.rerunCancelledCi", item.id);
-  });
+  if (!caps.rerunCi || (await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
+  const cancelled = readiness.onlyCancelled === true;
+  await caps
+    .rerunCi(item, pullNumber, cancelled ? CANCELLED_CI_RERUN : FAILED_CI_RERUN)
+    .catch((error: unknown) => {
+      journalCaught(error, "advance.rerunFailedCiOnce", item.id);
+    });
   if (await caps.stopped()) return { kind: "obsolete" };
   if (!(await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
-  const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
+  const message = cancelled
+    ? `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`
+    : `Re-ran failed CI jobs on ${head.slice(0, 7)} once before sending it back to the agent.`;
   await store.run((q) => caps.voice.status(q, item, message, `${item.id}:ci-rerun:${head}`));
   await caps.voice.flush();
   return { kind: "wait", reason: "ci", message, base, head };
@@ -363,7 +364,7 @@ export async function advanceMerge(
     const late = await reviewHold(store, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
-  const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);
+  const rerun = await rerunFailedCiOnce(store, item, caps, turn, pull.number);
   if (rerun) return rerun;
   const ciFixLimit = await caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
