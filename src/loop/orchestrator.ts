@@ -403,7 +403,6 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
-  saveOpenFindingsSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -6231,6 +6230,7 @@ export class Orchestrator {
         pullNumber: published.pull.number,
         pullUrl: published.pull.url ?? null,
         openedAt: this.now(),
+        published: { head: published.head, line: openLine },
       }),
     );
     await this.store.run((q) =>
@@ -6248,14 +6248,6 @@ export class Orchestrator {
         },
         this.now(),
       ),
-    );
-    await this.store.run((q) =>
-      saveOpenFindingsSteps(q, {
-        itemId: item.id,
-        head: published.head,
-        line: openLine,
-        now: this.now(),
-      }),
     );
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(

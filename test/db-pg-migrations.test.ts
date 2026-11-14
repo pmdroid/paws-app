@@ -3,7 +3,15 @@ import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getTableName } from "drizzle-orm";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { PG_MIGRATIONS_FOLDER, pgSchema } from "../src/db";
+import {
+  PG_MIGRATIONS_FOLDER,
+  getOpenFindingsLineSteps,
+  getPublishedHeadSteps,
+  linearActivitiesListedAtSteps,
+  pgSchema,
+  postgresDb,
+  withOpenFindingsSteps,
+} from "../src/db";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -151,6 +159,76 @@ describe("Postgres drizzle-kit migrations", () => {
         "linear_input",
         "job_activation",
       ]) {
+        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
+        expect(gone.rows).toEqual([{ name: null }]);
+      }
+    } finally {
+      await pg.$client.close();
+    }
+  });
+
+  test("folding open_findings and linear_activity_listing keeps every published head, line and listed generation", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("open_findings_and_activity_listing_columns"),
+    });
+    try {
+      for (const id of ["A", "B", "C"])
+        await pg.$client.query(
+          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd', 'i-${id}', 'PAS-${id}', 't', 'queued', 'paws/${id}', 0, 0)`,
+        );
+      await pg.$client.exec(
+        "INSERT INTO item_pull_request (item_id, pull_number, pull_url, opened_at) VALUES ('A', 1, 'u', 1), ('B', 2, NULL, 2), ('C', 3, NULL, 3)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO open_findings (item_id, head_sha, line, recorded_at) VALUES ('A', 'h1', '1 finding still open.', 1), ('B', 'h2', '', 2)",
+      );
+      await pg.$client.exec(
+        "INSERT INTO linear_session (session_id, created_at) VALUES ('s1', 1), ('s2', 1); INSERT INTO linear_activity_listing (session_id, generation) VALUES ('s1', 4)",
+      );
+      const db = postgresDb(pg);
+      const read = () =>
+        db.run(function* (q) {
+          const items = [];
+          for (const id of ["A", "B", "C"])
+            items.push([
+              yield* getPublishedHeadSteps(q, id),
+              yield* getOpenFindingsLineSteps(q, id),
+              yield* withOpenFindingsSteps(q, id, "Done."),
+            ]);
+          return {
+            items,
+            listed: [
+              yield* linearActivitiesListedAtSteps(q, "s1"),
+              yield* linearActivitiesListedAtSteps(q, "s2"),
+            ],
+          };
+        });
+      const before = await pg.$client.query(
+        "SELECT p.item_id, f.head_sha, f.line FROM item_pull_request p LEFT JOIN open_findings f ON f.item_id = p.item_id ORDER BY p.item_id",
+      );
+      const listedBefore = await pg.$client.query(
+        "SELECT s.session_id, l.generation::int AS generation FROM linear_session s LEFT JOIN linear_activity_listing l ON l.session_id = s.session_id ORDER BY s.session_id",
+      );
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      const after = await pg.$client.query(
+        "SELECT item_id, published_head AS head_sha, open_findings_line AS line FROM item_pull_request ORDER BY item_id",
+      );
+      expect(after.rows).toEqual(before.rows);
+      const listedAfter = await pg.$client.query(
+        "SELECT session_id, activities_listed_generation::int AS generation FROM linear_session ORDER BY session_id",
+      );
+      expect(listedAfter.rows).toEqual(listedBefore.rows);
+      expect(await read()).toEqual({
+        items: [
+          ["h1", "1 finding still open.", "Done.\n\n1 finding still open."],
+          ["h2", null, "Done."],
+          [null, null, "Done."],
+        ],
+        listed: [4, null],
+      });
+      for (const table of ["open_findings", "linear_activity_listing"]) {
         const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
         expect(gone.rows).toEqual([{ name: null }]);
       }
