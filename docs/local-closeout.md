@@ -1,10 +1,6 @@
 # Local Closeout policy
 
-Keep the Closeout policy for a work repository on your machine. [How Closeout runs](closeout.md) explains the two Closeout passes and how retries work. Save its root with Settings › Closeout (`PUT /api/settings/closeout`, see [Local Closeout policy roots](configuration.md#local-closeout-policy-roots)):
-
-```json
-{ "projects": { "acme/widgets": { "policyRoot": "/home/me/.paws/projects/widgets" } } }
-```
+Keep the Closeout policy for a work repository on your machine. [Review checks and evidence](closeout.md) explains verification. Save the repository's policy folder in Settings > Closeout. See [Local Closeout policy roots](configuration.md#local-closeout-policy-roots).
 
 The project key is the GitHub `owner/repo`, matched without case sensitivity. `policyRoot` is an absolute directory on the Paws host. A save applies without restarting Paws. Before the first save, Paws reads `[closeout.projects."owner/repo"] policy_root` from `~/.paws/config.toml`, where a path relative to `PAWS_HOME` also works.
 
@@ -56,6 +52,4 @@ Write the review instructions in `SKILL.md` and supporting text in `references/r
 
 The local policy replaces the repository policy for that project. Paws blocks verification if the configured local policy is missing or invalid. Setup preserves this setting and validates the local policy without creating `.agents/closeout.yaml` in the work repository. Run `bun run paws doctor` to check the selected policy.
 
-The policy digest includes imported policies and every referenced skill file. Changing any of those files requires fresh evidence. The live review runs the agent's own review command, so the skill text is not sent to the reviewer. Decisions show the local policy path and a `local-policy` warning.
-
-Paired runners use the same selected policy. Paws sends its commands for execution in the runner’s candidate checkout, and the signed review request names the diff base for the agent's review command there. The policy and skills stay outside the repository.
+Changing the policy or its review instructions requires fresh verification. Review results identify the selected local policy. Paired runners use the same policy, with commands executed against the candidate checkout.

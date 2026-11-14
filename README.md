@@ -1,51 +1,47 @@
 # Paws
 
-Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, places the work on a paired Linux runner, checks it with Closeout, and merges a pull request.
+Paws picks up issues you delegate in Linear, runs coding agents on paired Linux runners, checks their work with Closeout, and opens or merges pull requests on GitHub.
 
-Linear is the issue tracker. GitHub hosts the repositories and pull requests. This repository is the local process.
+## Set up Paws
 
-## Setup
-
-Configure the server's HTTPS origin, certificate, Linear OAuth app credentials, and GitHub App credentials as described in [Workspace access](docs/workspace-access.md). Install Bun 1.4 or newer, then start Paws:
+Install Bun 1.4.4 or newer and Git, clone this repository, then install dependencies and build the dashboard:
 
 ```sh
 bun install
 bun run build:dashboard
+```
+
+Configure [workspace access](docs/workspace-access.md) and a [GitHub App](docs/github-app.md), then start Paws:
+
+```sh
 bun run paws
 ```
 
-Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the workspace with that person as its first admin, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.
+Open your configured HTTPS address. A Linear workspace administrator signs in and authorizes Paws. In Integrations, connect GitHub and choose repositories and their Linear teams. [Enroll a Linux runner](docs/runner-enrollment.md), or [create a runner VM](docs/create-vm.md), then sign in to its coding agents through Runners.
 
-Paws runs work only for a configured Linear workspace. `bun run paws doctor` reports `linear-workspace` as missing until `PAWS_PUBLIC_DASHBOARD=1` is set and a workspace admin has signed in.
+Run `bun run paws doctor` to check setup. Paws starts work after the Linear workspace is configured.
 
-### Upgrading
+## Delegate work
 
-Read [CHANGELOG.md](CHANGELOG.md) before upgrading; breaking changes come first in each entry. Every `config.toml` setting is in the [configuration reference](docs/configuration.md).
+Delegate an issue to the Paws app in Linear. Follow progress in the issue's agent session or the Paws dashboard. When Paws asks a question, reply in Linear or the dashboard. Delegate a parent issue to run its sub-issues in dependency order.
 
-Paws requires a configured Linear workspace. An existing install that runs from environment variables alone, without `PAWS_PUBLIC_DASHBOARD=1`, keeps serving the dashboard after the upgrade but starts no work and logs how to configure a workspace. Set up [Workspace access](docs/workspace-access.md), restart Paws, sign in as a Linear workspace admin, then run `bun run paws doctor` and check that `linear-workspace` is ok.
+- [Choose a repository](docs/repository-selection.md).
+- [Follow sessions and answer questions](docs/linear-agent-sessions.md).
+- [Review checks and evidence](docs/closeout.md).
+- [Review improvements](docs/improvement-review.md).
+- [Declare your repository's runtimes](docs/runtimes.md).
+- [Add local implementation skills](docs/local-skills.md).
+- [Set a local Closeout policy](docs/local-closeout.md).
 
-Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
+## Manage your installation
 
-To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. An edit to a blocking issue is noticed at once; Linear sends no webhook for an added or removed `blocks` relation, so Paws re-reads blocked items' relations about every minute, and the item page's **Check blockers now** reads them at once. A project is the Linear project the issue belongs to, and Paws has no project start of its own. To choose the repository for an issue, see [Repository selection](docs/repository-selection.md).
+- [Configuration reference](docs/configuration.md).
+- [Database setup](docs/postgres.md).
+- [Moving from an earlier SQLite installation](docs/database-reset.md).
+- [Security and runner access](docs/security-considerations.md).
+- [Release notes](CHANGELOG.md).
 
-| Path                          | What it is                                                                                                       |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `~/.paws/pglite/`             | The embedded Postgres (PGlite) database, unless `[database] url` names a server ([Database](docs/postgres.md))   |
-| `~/.paws/config.toml`         | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
-| `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, the envelope key and any GitHub App key. Mode `0700` |
-| `~/.paws/repos/`              | One bare mirror per repository; a runner-backed item's head is its `refs/paws/candidates/<item>` ref there       |
-| `~/.paws/worktrees/`          | One git worktree per item that runs locally; runner-backed items get none                                        |
-| `~/.paws/runs/`               | Transcripts and Closeout reports                                                                                 |
-| `~/.paws/runner-transcripts/` | Paired runner transcripts, stored locally by default                                                             |
-| `~/.paws/logs/`               | Process logs                                                                                                     |
-
-`GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. `instance` is this process's instance id, and `instances` lists the live instances on the database (`id`, `role`, `version`, `heartbeatAt`). Each Paws process registers an `instance` row at startup under a new ULID, heartbeats every 10 seconds and deletes the row at shutdown; a process with no heartbeat for 60 seconds counts as dead. Job claims record `<instance id>:<claim>` and outbox claims `outbox:<instance id>` as `locked_by`. `PAWS_ROLE` chooses what a process runs: `all` (default) does everything; `web` serves HTTP and webhooks and enqueues jobs but claims no jobs and delivers no outbox rows, so its `/health` reports `jobProgress` as not observed; `worker` claims jobs and delivers the outbox. Periodic work (Linear catch-up poll, repository catalog, agent catalog, skill update checks, membership backstop, runner model and sign-in refresh) runs as recurring jobs, so processes sharing the database run each once per interval. The catch-up job runs every minute and polls only when the next poll time stored in the database has passed. At startup, a process with no other live `worker` or `all` instance moves its startup refreshes' next run to now; the job loop still claims them under the lease. At startup a process deletes recurring jobs for queues it has no handler for only when no other live `worker` or `all` instance exists. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. `diskSpace` reads `statfs` on the temporary directory (`os.tmpdir()`) and `~/.paws`, reports free bytes for each as `tmpdir` and `pawsHome`, and fails when either has less than 1 GB or 5% of its volume free, whichever is larger. A git or filesystem error that names a full disk (`Out of diskspace`, `No space left on device`, `ENOSPC`) is a `HostDiskFullError`: the job retries with backoff, the dashboard's issue and merge-queue pages name the full disk, and the Linear session hears about it at most once an hour per item. Health failures and recovery are written to the journal. The response is not cached. `GET /dashboard` serves the dashboard, and old `/status` page links redirect there (run `bun run build:dashboard` first; otherwise the route tells you how). Each dashboard page reads its own resource from the local database (`/api/overview`, `/api/issues`, `/api/questions`, `/api/merge-queue`, `/api/evidence`; `source: "live"`). Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
-
-## Deploys
-
-A restart is safe while work is running; deploys need no idle wait. Runners keep working while Paws is down and retain their results until it returns. Paws reattaches to the same commands after startup, including in-flight Closeout reviews and answer tasks.
-
-Paws never changes its own checkout or restarts itself. To deploy a new commit, update the checkout Paws runs from and restart the service:
+Paws can restart while work is running. Runners retain their results until it returns. To deploy a new commit, update the installed checkout and restart the service:
 
 ```sh
 cd ~/.local/share/paws/app
@@ -55,28 +51,4 @@ bun run build:dashboard
 systemctl --user restart paws.service
 ```
 
-## Status dashboard
-
-Shared workspaces use [Linear sign-in and workspace access](docs/workspace-access.md) over HTTPS. Admins manage Paws roles and repository mappings in the dashboard.
-
-To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollment.md) for package installation, configuration, agent login and enrollment.
-
-The dashboard lives in [`src/dashboard`](src/dashboard/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
-
-The dashboard reads its page resources from the Paws process that serves it. Build it with `bun run build:dashboard`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/dashboard`. An empty database shows no items.
-
-## Checks
-
-```sh
-bun run lint          # oxlint
-bun run fmt           # oxfmt, writes
-bun run fmt:check     # oxfmt, check only
-bun run typecheck     # tsc --noEmit, plus the browser client
-bun run test          # bun test --parallel=4 --timeout=20000
-bun run build:dashboard  # static dashboard → src/dashboard/dist
-bun run links         # docs links, orphaned docs and dead source paths
-bun run knip          # unused files, dependencies and duplicate exports
-bun run check         # all of the above
-```
-
-Module boundaries, how to extend them, and which issue owns which directory are in `AGENTS.md`. What the crash and recovery suite covers, and what it does not, is in [Recovery invariants](docs/recovery-invariants.md).
+The dashboard shows issues, runs, questions, evidence, runners and settings. Use it to answer questions, manage access and follow pull requests through verification and merging.

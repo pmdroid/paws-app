@@ -1,60 +1,17 @@
-# Security considerations
+# Security and runner access
 
-Paws runs coding agents on input it doesn't control: Linear issues, repository files and third-party dependencies. Any of them can try to steer the agent. This page covers the GitHub settings that keep a steered agent away from the runner release key, and what giving runner work Docker access costs.
+Paws runs coding agents on issue descriptions, repository files and dependencies. Treat that work as untrusted when choosing a runner and granting repository access.
 
-## The runner release key
+## Repository access
 
-`PAWS_RUNNER_RELEASE_KEY` signs every runner release. The `runner release` workflow (`.github/workflows/runner-release.yml`) signs `manifest.json` with it, and `deploy/linux/install-runner.sh` installs a release only if its signature matches `deploy/linux/release.pub`. Anyone holding the key can publish a runner package that every enrolled runner installs.
+Use a [GitHub App](github-app.md) with access to the repositories Paws needs. Map repositories to the appropriate Linear teams in Integrations. Review workspace membership and roles through [Workspace access](workspace-access.md).
 
-The key lives only in the `runner-release` environment, never as a repository secret:
+Keep credentials in Paws' configured secret storage. Follow [Database setup](postgres.md#secrets) when using an external database, and keep its master key available after restarts.
 
-- A repository secret is readable by every workflow run in the repository, including runs triggered by a push to any branch.
-- An environment secret is readable only by jobs that name the environment, and only for the refs the environment allows.
+## Runner accounts and Docker
 
-The `build` job in `runner-release.yml` declares `environment: runner-release`. It runs on a published release, so its ref is the release tag.
+Use the separate `paws-agent` account described in [runner enrollment](runner-enrollment.md). Keep the runner's identity keys and personal credentials out of agent workspaces.
 
-### Set up the environment
+When enabling Docker for agent work, use the rootless daemon provided for the agent account. A container can access files that account can read or write. Consider the repositories and credentials available to the account before enabling it.
 
-1. Open **Settings > Environments > New environment** and name it `runner-release`.
-2. Under **Deployment branches and tags**, choose **Selected branches and tags** and add the tag rule `v*`. Add no branch rules.
-3. Optionally, add yourself under **Required reviewers**. Each release then waits for your approval before it can read the key.
-4. Add `PAWS_RUNNER_RELEASE_KEY` as an environment secret.
-5. Delete `PAWS_RUNNER_RELEASE_KEY` from **Settings > Secrets and variables > Actions > Repository secrets**.
-
-Check the result:
-
-```sh
-gh api repos/OWNER/REPO/actions/secrets --jq '.secrets[].name'
-gh api repos/OWNER/REPO/environments/runner-release --jq '.deployment_branch_policy'
-gh api repos/OWNER/REPO/environments/runner-release/deployment-branch-policies --jq '.branch_policies[] | "\(.type) \(.name)"'
-gh api repos/OWNER/REPO/environments/runner-release/secrets --jq '.secrets[].name'
-```
-
-The first command should not list `PAWS_RUNNER_RELEASE_KEY`. The second should show `custom_branch_policies: true`. The third should list only `tag v*`, and the fourth should list `PAWS_RUNNER_RELEASE_KEY`.
-
-## The GitHub App's Workflows permission
-
-The Paws GitHub App needs **Workflows: Read and write** to push changes under `.github/workflows/`. Without it, GitHub refuses the whole push (`refusing to allow a GitHub App to create or update workflow … without workflows permission`), and the task stops with a question in Linear.
-
-A workflow pushed to a branch runs straight away on `push` and `pull_request`, before anyone reviews or merges it. It can read every secret its job is allowed to read. So grant this permission only after the release key is in the `runner-release` environment and no longer a repository secret. A steered agent can then change CI on its branch, but its workflow runs can't reach the key.
-
-Follow the same rule for every secret added later: put it in an environment limited to the refs that need it, never in repository secrets.
-
-## Order
-
-1. Move `PAWS_RUNNER_RELEASE_KEY` into the `runner-release` environment and delete the repository secret.
-2. Merge the workflow change that sets `environment: runner-release` on the release job.
-3. Grant the GitHub App **Workflows: Read and write**, and accept the new permission on the installation under **Settings > Applications > Installed GitHub Apps**.
-
-## Docker access for runner work
-
-Runner work gets Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as the account agents run as: `paws-agent` by default, or `paws-runner` with `"agentUser": "runner"` ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is that account on the host, and other container users map to its subordinate ids. A steered agent can do in a container what a worker can already do as that account, with one difference: the daemon runs outside the worker's unit, so its sandboxing settings don't apply to containers. A container can bind-mount any path the account can read and write any path it owns. With `paws-runner`'s daemon that includes the runner's configuration and state, which is why `paws-agent` never gets access to it: `paws-agent` has its own daemon, and each daemon's socket is reachable only by its own account. The package never gives runner work the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
-
-Known limits of this setup:
-
-- With `"agentUser": "runner"`, containers get no CPU or memory limits. `paws-runner` has no systemd user session, so its daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`. `paws-agent`'s daemon runs under its lingering systemd user manager with the systemd cgroup driver, so its containers get limits.
-- `paws-agent` has a lingering systemd user manager, so an agent can start a user service that outlives its job, as it already can with a container.
-- Networking goes through slirp4netns, so containers can't bind host ports below 1024.
-- One daemon serves every agent job on the runner. Jobs can see and change each other's images, containers and volumes.
-
-An earlier release added `paws-runner` to the `docker` group on opt-in. An upgrade removes that membership only where the install state records that Paws added it; any other membership is left alone with a warning, because the install can't tell who added it. Identity checks on installs and upgrades accept that one membership and still reject any other supplemental group.
+Review runner access when a member leaves or a host is retired. Use the Runners page to manage enrolled hosts and their agent sign-ins.

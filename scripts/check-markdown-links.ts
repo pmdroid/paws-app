@@ -12,18 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const ROOT_DOCS = [
-  "README.md",
-  "AGENTS.md",
-  "CHANGELOG.md",
-  "DESIGN.md",
-  "GLOSSARY.md",
-  "PRODUCT.md",
-  "src/dashboard/README.md",
-];
+const ROOT_DOCS = ["README.md", "AGENTS.md", "CHANGELOG.md"];
 
 /** Docs that describe a separate demo repository, so their `src/...` paths are not ours. */
-const DEMO_DOCS = new Set(["docs/local-closeout.md", "docs/smoke-test.md"]);
+const DEMO_DOCS = new Set(["docs/local-closeout.md"]);
 
 const INLINE_LINK = /!?\[[^\]]*]\((<[^>]+>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
 const REF_LINK = /^\[[^\]]+]:\s*(<[^>]+>|\S+)/gm;

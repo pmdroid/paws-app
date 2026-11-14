@@ -85,12 +85,12 @@ const stages = [
             <p class="section-intro">You pick the work. Paws keeps it moving.<br />Same tools, a little less tab-juggling.</p>
             <div class="workflow-explorer">
               <div class="stage-controls" aria-label="Explore the workflow">{stages.map((stage, index) => <button type="button" data-stage={index} aria-pressed={index === 0} aria-controls="stage-description"><span class="step-number">{index + 1}</span>{stage.name}<svg aria-hidden="true"><use href="#arrow" /></svg></button>)}</div>
-              <div class="stage-description" id="stage-description" aria-live="polite" aria-atomic="true"><h3 id="stage-title">Start with an issue.</h3><p id="stage-copy">{stages[0]?.description}</p><a id="stage-link" href={`${repo}/blob/main/docs/linear-modes.md`}>Read the Linear guide <svg aria-hidden="true"><use href="#arrow" /></svg></a></div>
+              <div class="stage-description" id="stage-description" aria-live="polite" aria-atomic="true"><h3 id="stage-title">Start with an issue.</h3><p id="stage-copy">{stages[0]?.description}</p><a id="stage-link" href={`${repo}/blob/main/docs/linear-agent-sessions.md`}>Read the Linear guide <svg aria-hidden="true"><use href="#arrow" /></svg></a></div>
             </div>
             <noscript><ol class="no-script-stages">{stages.slice(1).map(stage => <li><h3>{stage.name}</h3><p>{stage.description}</p></li>)}</ol></noscript>
           </div>
         </section>
-        <section class="local-section" aria-labelledby="local-title"><div class="local-copy"><h2 id="local-title">Your machine.<br />Your agent.<br />Your call.</h2><p>Paws coordinates the coding tools you already use. Choose Claude Code, Codex, or Grok, keep the work local, and follow along in Linear and GitHub.</p><a href={`${repo}/blob/main/docs/smoke-test.md`}>Take a closer look <svg aria-hidden="true"><use href="#arrow" /></svg></a></div><div class="window setup-window"><div class="titlebar"><span>getting-started.txt</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="setup-content"><h3>Make yourself at home.</h3><p>Install Bun 1.4 or newer, clone the repo, then connect your tools.</p><pre><code>bun install
+        <section class="local-section" aria-labelledby="local-title"><div class="local-copy"><h2 id="local-title">Your machine.<br />Your agent.<br />Your call.</h2><p>Paws coordinates the coding tools you already use. Choose Claude Code, Codex, or Grok, keep the work local, and follow along in Linear and GitHub.</p><a href={`${repo}/blob/main/README.md`}>Take a closer look <svg aria-hidden="true"><use href="#arrow" /></svg></a></div><div class="window setup-window"><div class="titlebar"><span>getting-started.txt</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="setup-content"><h3>Make yourself at home.</h3><p>Install Bun 1.4 or newer, clone the repo, then connect your tools.</p><pre><code>bun install
 bun run paws setup
 bun run paws doctor
 bun run paws</code></pre><a class="button primary" href={setup}>Open the setup guide <svg aria-hidden="true"><use href="#arrow" /></svg></a><p class="setup-note">Linear + GitHub + your coding agent.</p></div></div></section>
@@ -99,7 +99,7 @@ bun run paws</code></pre><a class="button primary" href={setup}>Open the setup g
     </div>
     <script define:vars={{ stages, repo }}>
       const titles = ["Start with an issue.", "Your agent gets to work.", "Check. Fix. Check again.", "A pull request, not a loose end."];
-      const links = ["/blob/main/docs/linear-modes.md", "#setup", "/blob/main/docs/smoke-test.md", "/blob/main/docs/github-login.md"];
+      const links = ["/blob/main/docs/linear-agent-sessions.md", "#setup", "/blob/main/README.md", "/blob/main/docs/github-app.md"];
       const labels = ["Read the Linear guide", "Choose your coding agent", "Explore verification", "Read the GitHub guide"];
       const buttons = document.querySelectorAll("[data-stage]");
       buttons.forEach((button) => {
