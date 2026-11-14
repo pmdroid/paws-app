@@ -448,3 +448,23 @@ describe("Conflict-prone files", () => {
     expect(render([])).toContain("No merge conflicts in the last 7 days, so nothing is held back.");
   });
 });
+
+test("Linear session controls render saved choices and save only applicable minutes", () => {
+  for (const sessionDone of ["pull_request", "ci_green", "settled"] as const) {
+    const settings = { ...data(), sessionDone, sessionQuietMinutes: 17 };
+    const html = renderMergeSettings({ data: settings, busy: null, error: null, saved: false });
+    expect(html).toContain(`value="${sessionDone}" checked`);
+    expect(html.includes('name="session-quiet"')).toBe(sessionDone === "settled");
+    expect(mergeSettingsBody(settings)).toMatchObject({
+      sessionDone,
+      ...(sessionDone === "settled" ? { sessionQuietMinutes: 17 } : {}),
+    });
+    if (sessionDone !== "settled")
+      expect(mergeSettingsBody(settings)).not.toHaveProperty("sessionQuietMinutes");
+  }
+  const settings = { ...data(), sessionDone: "settled" as const };
+  expect(mergeSettingsBody(settings).sessionQuietMinutes).toBe(10);
+  expect(renderMergeSettings({ data: settings, busy: null, error: null, saved: false })).toContain(
+    'min="1" max="120" step="1" required value="10"',
+  );
+});

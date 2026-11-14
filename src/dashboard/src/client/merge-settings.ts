@@ -259,6 +259,7 @@ export function renderMergeSettings(view: View): string {
       ${data.lanes ? lanesSection(data, view.queue) : ""}
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${checksSection(view.ciFix)}
+      ${sessionSection(data)}
       ${riskGateSection(data.riskGate)}
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
@@ -335,6 +336,25 @@ function checksSection(ciFix: View["ciFix"]): string {
       <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p>${problem ? `<small class="err" id="merge-ci-fix-attempts-error" role="alert">${esc(problem)}</small>` : ""}</div></section>`;
 }
 
+function sessionSection(data: MergeSettingsView): string {
+  if (!data.sessionDone) return "";
+  const choices = {
+    pull_request: "When the pull request opens",
+    ci_green: "When CI is green",
+    settled: "When CI is green and the pull request has been quiet",
+  };
+  return `<section class="settings-section" id="merge-session"><div class="settings-label"><h2 id="merge-session-title">When Paws finishes the Linear session</h2></div><div class="col"><div class="col" role="radiogroup" aria-labelledby="merge-session-title" aria-describedby="merge-session-help">${Object.entries(
+    choices,
+  )
+    .map(
+      ([value, label]) =>
+        `<label><input type="radio" name="session-done" value="${value}"${data.sessionDone === value ? " checked" : ""}> ${label}</label>`,
+    )
+    .join(
+      "",
+    )}</div><p class="sub" id="merge-session-help">Linear notifies you when the session finishes. Paws keeps fixing review comments and CI either way.</p>${data.sessionDone === "settled" ? `<div class="settings-field"><label for="merge-session-quiet">Quiet for, minutes</label><input id="merge-session-quiet" name="session-quiet" type="number" inputmode="numeric" min="1" max="120" step="1" required value="${data.sessionQuietMinutes ?? 10}"></div>` : ""}</div></section>`;
+}
+
 function storedCiFix(settings: AgentSettings): number {
   return settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
 }
@@ -357,6 +377,10 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       ? {}
       : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
+    ...(data.sessionDone ? { sessionDone: data.sessionDone } : {}),
+    ...(data.sessionDone === "settled"
+      ? { sessionQuietMinutes: data.sessionQuietMinutes ?? 10 }
+      : {}),
     ...(data.lanes ? { lanes: data.lanes } : {}),
     ...(data.noProject ? { noProject: data.noProject } : {}),
     ...(data.parallel === undefined ? {} : { parallel: data.parallel }),
@@ -474,6 +498,13 @@ export function createMergeSettings(invalidate: () => void): {
     });
     const data = view.data;
     data.default = read("default", data.default);
+    if (data.sessionDone) {
+      data.sessionDone =
+        (form.querySelector<HTMLInputElement>('[name="session-done"]:checked')
+          ?.value as MergeSettingsView["sessionDone"]) ?? data.sessionDone;
+      const quiet = value("session-quiet");
+      if (quiet !== undefined) data.sessionQuietMinutes = quiet === "" ? NaN : Number(quiet);
+    }
     if (data.lanes)
       data.lanes = (Object.keys(LANE_SPLITS) as MergeLaneSplit[]).filter(
         (split) => form.querySelector<HTMLInputElement>(`[name="lane-${split}"]`)?.checked,
@@ -606,6 +637,16 @@ export function createMergeSettings(invalidate: () => void): {
       paint();
       return;
     }
+    if (
+      view.data.sessionDone === "settled" &&
+      (!Number.isInteger(view.data.sessionQuietMinutes ?? 10) ||
+        (view.data.sessionQuietMinutes ?? 10) < 1 ||
+        (view.data.sessionQuietMinutes ?? 10) > 120)
+    ) {
+      view.error = "Quiet for, minutes must be a whole number from 1 to 120.";
+      paint();
+      return;
+    }
     const started = generation;
     const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
@@ -644,7 +685,7 @@ export function createMergeSettings(invalidate: () => void): {
     const target = event.target as HTMLInputElement | HTMLSelectElement;
     // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
     // it, such as Save. Submit and the other buttons read it.
-    if (target.name === "merge-ci-fix-attempts") return;
+    if (target.name === "merge-ci-fix-attempts" || target.name === "session-quiet") return;
     if (/^(risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
     draft();
     paint();

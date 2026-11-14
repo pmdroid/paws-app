@@ -184,3 +184,45 @@ test("members, a missing CSRF token and invalid values are refused", async () =>
   expect((await call(send("GET"))).body.source).toBe("default");
   expect(audits).toEqual([]);
 });
+
+forEachDialect((connect) => {
+  test("Closeout log retention defaults to 14 days and saves without touching storage", async () => {
+    const { db: store, close } = await connect();
+    cleanup.push(close);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    const put = await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store });
+    expect(put).toMatchObject({ status: 200, body: { closeoutLogRetentionDays: 0 } });
+    expect((await call(send("GET"), { store })).body).toMatchObject({
+      source: "default",
+      closeoutLogRetentionDays: 0,
+    });
+    for (const days of [-1, 1.5, "7", 3651])
+      expect((await call(send("PUT", { closeoutLogRetentionDays: days }), { store })).status).toBe(
+        400,
+      );
+    expect(audits).toEqual(["settings.storage: Set Closeout log retention: keep forever"]);
+  });
+});
+
+forEachDialect((connect) => {
+  test("rejected combined storage updates preserve retention", async () => {
+    const { db: store, close } = await connect();
+    cleanup.push(close);
+    expect(
+      (
+        await call(send("PUT", { ...s3, bucket: "Bad Bucket", closeoutLogRetentionDays: 0 }), {
+          store,
+        })
+      ).status,
+    ).toBe(400);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    process.env.PAWS_S3_BUCKET = "env-bucket";
+    process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret";
+    expect(
+      (await call(send("PUT", { kind: "local", closeoutLogRetentionDays: 0 }), { store })).status,
+    ).toBe(409);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
+    expect(audits).toEqual([]);
+    expect((await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store })).status).toBe(200);
+  });
+});

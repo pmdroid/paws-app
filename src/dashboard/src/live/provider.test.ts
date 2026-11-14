@@ -38,6 +38,7 @@ import {
 import { seed } from "../../../../test/dialects";
 import { tempStore } from "../../../../test/pglite";
 import {
+  type IssueCheckLogResponse,
   parseIssueDetailResponse,
   parseIssueListResponse,
   parseMergeQueueResponse,
@@ -1781,6 +1782,55 @@ describe("live status provider", () => {
     ]);
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
+  });
+
+  test("summarized CI logs remain locally readable without an external URL", async () => {
+    const db = await database();
+    const now = 1_700_000_000_000;
+    await insertQueuedItem(db, { id: "ENG-7", title: "CI", now });
+    const logTail = "full CI failure\n".repeat(6000);
+    await recordCiRound(db, {
+      itemId: "ENG-7",
+      head: "a".repeat(40),
+      runId: null,
+      next: "asked",
+      fix: null,
+      fixLimit: 3,
+      recordedAt: now,
+      checks: [
+        {
+          name: "test",
+          state: "failed",
+          url: null,
+          startedAt: null,
+          completedAt: null,
+          logTail,
+          logSource: "actions",
+        },
+      ],
+    });
+    const provider = createLiveStatusProvider(db);
+    const detail = await provider.issue("ENG-7");
+    const check = detail!.ciRounds[0]!.checks[0]!;
+    expect(Buffer.byteLength(check.logTail!)).toBeLessThan(4096);
+    expect(check.url).toBeNull();
+    expect(check.logPath).toBe("/api/issues/ENG-7/attempts/1/checks/1/log?ci=1&full=1");
+    const response = await handleStatusRequest(new Request(`http://paws.test${check.logPath}`), {
+      provider,
+    });
+    expect(response!.status).toBe(200);
+    expect(((await response!.json()) as IssueCheckLogResponse).stdout).toBe(logTail);
+    const tail = await handleStatusRequest(
+      new Request("http://paws.test/api/issues/ENG-7/attempts/1/checks/1/log?ci=1"),
+      { provider },
+    );
+    const body = (await tail!.json()) as IssueCheckLogResponse;
+    expect(body.truncated).toBe(true);
+    expect(body.fullPath).toBe(check.logPath!);
+    const restricted = createLiveStatusProvider(db, { sessionIds: ["other"] });
+    expect(
+      await restricted.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "1", run: null, ci: true }),
+    ).toBeNull();
   });
 
   test("CI rounds carry every check on the head and the failing checks' log tails", async () => {

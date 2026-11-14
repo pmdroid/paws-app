@@ -619,6 +619,7 @@ export interface StatusCiCheck {
   completedAt: string | null;
   /** The end of a failing check's log: the GitHub Actions job log, otherwise its summary text. */
   logTail: string | null;
+  logPath?: string;
   logSource: CiLogSource | null;
 }
 
@@ -801,6 +802,8 @@ export interface IssueDetailResponse {
  * Each stream is its last `CHECK_LOG_TAIL_BYTES` unless the path carries `full=1`.
  */
 export interface IssueCheckLogResponse {
+  findings?: string;
+  detail?: string;
   generatedAt: string;
   stdout: string;
   stderr: string;
@@ -831,10 +834,11 @@ export function issueCheckLogPath(
   issueId: string,
   attempt: number,
   checkId: string,
-  options: { run?: string | null; full?: boolean } = {},
+  options: { run?: string | null; full?: boolean; ci?: boolean } = {},
 ): string {
   const query = new URLSearchParams();
   if (options.run) query.set("run", options.run);
+  if (options.ci) query.set("ci", "1");
   if (options.full) query.set("full", "1");
   const search = query.toString() ? `?${query.toString()}` : "";
   return `${issuePath(issueId)}/attempts/${attempt}/checks/${encodeURIComponent(checkId)}/log${search}`;
@@ -918,6 +922,8 @@ export function parseIssueCheckLogResponse(input: unknown): IssueCheckLogParseRe
       const body = object(input, path);
       return {
         generatedAt: dateString(body, "generatedAt", path),
+        ...(body.findings !== undefined ? { findings: string(body, "findings", path) } : {}),
+        ...(body.detail !== undefined ? { detail: string(body, "detail", path) } : {}),
         stdout: string(body, "stdout", path),
         stderr: string(body, "stderr", path),
         truncated: boolean(body, "truncated", path),
@@ -1669,6 +1675,7 @@ function readCiRound(input: unknown, path: string): StatusCiRound {
         startedAt: optionalText(check, "startedAt"),
         completedAt: optionalText(check, "completedAt"),
         logTail: optionalText(check, "logTail"),
+        ...(check.logPath !== undefined ? { logPath: text(check, "logPath", at) } : {}),
         logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
       };
     }),

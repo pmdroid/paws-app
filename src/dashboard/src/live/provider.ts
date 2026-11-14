@@ -1,3 +1,4 @@
+import { issueCheckLogPath } from "../contract";
 import { journalCaught } from "../journal";
 /**
  * Live dashboard resources: the issue list and detail, check logs, questions, the merge queue
@@ -120,6 +121,7 @@ import {
   type CloseoutProgressState,
   type CloseoutRound,
   type CloseoutStepRecord,
+  type CloseoutOutputPointer,
 } from "../../../db";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
@@ -234,7 +236,14 @@ export type LiveStatusOptions = {
   };
   env?: NodeJS.ProcessEnv;
   linearUsage?: () => Promise<LinearUsageView>;
+  closeoutOutput?: CloseoutOutputReader;
 };
+
+export type CloseoutOutputReader = <
+  T extends { stdout: string; stderr: string; output?: CloseoutOutputPointer | null },
+>(
+  record: T,
+) => Promise<T>;
 
 export type LinearUsageView = {
   budget: {
@@ -301,6 +310,7 @@ export function createLiveStatusProvider(
 
 /** One check of one Closeout attempt of a visible issue. `run` picks that run's agent Closeout. */
 export interface CheckLogRequest {
+  ci?: boolean;
   itemId: string;
   attempt: number;
   checkId: string;
@@ -308,6 +318,8 @@ export interface CheckLogRequest {
 }
 
 export interface CheckOutput {
+  findings?: string;
+  detail?: string;
   stdout: string;
   stderr: string;
 }
@@ -602,7 +614,7 @@ async function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): Promise<ItemDetail | null> {
-  const { scope, blocks, records, current } = await readIssueScope(store, options, id);
+  const { scope, blocks, records, current } = await readIssueScope(store, options, id, true);
   if (scope.items.length === 0 || current === null) return null;
   let risk: StatusItemRisk | null;
   try {
@@ -693,9 +705,17 @@ async function readCheckLog(
   request: CheckLogRequest,
   options: LiveStatusOptions,
 ): Promise<CheckOutput | null> {
-  const { scope } = await readIssueScope(store, options, request.itemId);
+  const { scope } = await readIssueScope(store, options, request.itemId, true);
 
   if (scope.items.length === 0) return null;
+  if (request.ci) {
+    const round = scope.ciRounds.find(
+      (entry) => entry.itemId === request.itemId && entry.round === request.attempt,
+    );
+    const index = /^[1-9]\d*$/.test(request.checkId) ? Number(request.checkId) - 1 : -1;
+    const check = round?.checks[index];
+    return check?.logTail == null ? null : { stdout: check.logTail, stderr: "" };
+  }
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
   let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
   if (request.run === null) {
@@ -711,13 +731,33 @@ async function readCheckLog(
     .find((entry) => entry.number === request.attempt)
     ?.checks.find((entry) => entry.id === request.checkId);
   if (!check) return null;
-  return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+  return {
+    stdout: check.stdout ?? "",
+    stderr: check.stderr ?? "",
+    ...(check.findings != null ? { findings: check.findings } : {}),
+    ...(check.detail != null ? { detail: check.detail } : {}),
+  };
 }
 
 /** The scope without check `stdout` and `stderr`, which the issue page loads per check. */
 function withoutOutputs(scope: IssueScope): IssueScope {
   return {
     ...scope,
+    ciRounds: scope.ciRounds.map((round) => ({
+      ...round,
+      checks: round.checks.map((check, index) => ({
+        ...check,
+        logTail: summarizeEntry(check.logTail),
+        ...(check.logTail != null
+          ? {
+              logPath: issueCheckLogPath(round.itemId, round.round, String(index + 1), {
+                ci: true,
+                full: true,
+              }),
+            }
+          : {}),
+      })),
+    })),
     verdicts: scope.verdicts.map((verdict) => ({
       ...verdict,
       checks: verdict.checks.map(withoutOutput),
@@ -736,7 +776,16 @@ function attemptWithoutOutput(attempt: StatusCloseoutAttempt): StatusCloseoutAtt
 
 function withoutOutput(check: StatusCheck): StatusCheck {
   const { stdout: _stdout, stderr: _stderr, ...rest } = check;
-  return rest;
+  return {
+    ...rest,
+    findings: summarizeEntry(check.findings),
+    detail: summarizeEntry(check.detail),
+  };
+}
+
+function summarizeEntry<T extends string | null | undefined>(value: T): T | string {
+  if (value == null || new TextEncoder().encode(value).length <= 4096) return value;
+  return `${value.slice(0, 512)}… (open the check log for full text)`;
 }
 
 export function emptyMergeQueue(
@@ -972,7 +1021,9 @@ async function readIssueScope(
   store: Db,
   options: LiveStatusOptions,
   only?: string,
+  outputs = false,
 ): Promise<ScopedIssues> {
+  const read = outputs ? options.closeoutOutput : undefined;
   // The list reads summaries only: no merge queue, questions, evidence, CI rounds or deliveries.
   const issuesOnly = only === undefined;
   const now = options.now?.() ?? new Date();
@@ -1058,7 +1109,11 @@ async function readIssueScope(
       stageTimes: stageTimesOf(record),
     });
   }
-  const progress = await store.run(listCloseoutProgressSteps);
+  const progress = await withStepOutputs(
+    await store.run(listCloseoutProgressSteps),
+    new Set(records.map((record) => record.id)),
+    read,
+  );
   const rounds = await store.run((q) => listCloseoutRoundsSteps(q));
   const merge: Pick<IssueScope, "mergeQueue" | "mergeHistory"> = issuesOnly
     ? { mergeQueue: [] }
@@ -1101,7 +1156,7 @@ async function readIssueScope(
       ? {}
       : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
     evidence: issuesOnly ? [] : await evidenceFor(store, records),
-    agentCloseout: await agentCloseoutFor(store, records, now.getTime(), env),
+    agentCloseout: await agentCloseoutFor(store, records, now.getTime(), env, read),
     ciRounds: issuesOnly ? [] : await ciRoundsFor(store, records, env),
     dead: issuesOnly ? [] : await deadFor(store, records),
     ...(only === undefined ? await mergedTimesFor(store, visible, facts, now.getTime()) : {}),
@@ -1198,11 +1253,25 @@ function sessionAttempt(
   return endedAt === undefined ? session : { ...session, endedAt: iso(endedAt) };
 }
 
+async function withStepOutputs(
+  progress: CloseoutProgressRecord[],
+  items: ReadonlySet<string>,
+  read: CloseoutOutputReader | undefined,
+): Promise<CloseoutProgressRecord[]> {
+  if (read === undefined) return progress;
+  return Promise.all(
+    progress.map(async (row) =>
+      items.has(row.itemId) ? { ...row, steps: await Promise.all(row.steps.map(read)) } : row,
+    ),
+  );
+}
+
 async function agentCloseoutFor(
   store: Db,
   records: readonly WorkItemRecord[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
+  read?: CloseoutOutputReader,
 ): Promise<StatusAgentCloseout[]> {
   const stored = new Map<string, StoredRun[]>();
   for (const run of await store.run((q) => listRunsSteps(q)))
@@ -1215,7 +1284,9 @@ async function agentCloseoutFor(
   });
   const byRun = new Map<string, AgentCloseoutEvent[]>();
   const runIds = shown.map(({ run }) => run.id);
-  for (const event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
+  for (let event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
+    if (read && event.progress.type === "finished" && event.progress.output)
+      event = { ...event, progress: await read(event.progress) };
     const events = byRun.get(event.runId) ?? [];
     events.push(event);
     byRun.set(event.runId, events);

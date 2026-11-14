@@ -40,7 +40,9 @@ import {
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
   closeoutEvidenceItemOf,
+  closeoutLogStorage,
   hydrateItemCloseoutEvidence,
+  withCloseoutOutput,
   type EvidenceObjects,
   type EvidenceStorage,
   type VisualReviewChanges,
@@ -700,6 +702,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (await handleStorageSettingsRequest(request, {
         home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
         csrfToken,
+        store,
         ...(principal === undefined ? {} : { role: principal.role }),
         audit: (action, subject) =>
           auditWorkspaceAccess(store, {
@@ -840,7 +843,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
           ...(secrets.riskApproval ? { riskApproval: secrets.riskApproval } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
-          ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
+          ...(secrets.closeoutHome
+            ? {
+                closeoutHome: secrets.closeoutHome,
+                closeoutOutput: (record) =>
+                  withCloseoutOutput(
+                    secrets.store!,
+                    closeoutLogStorage(secrets.closeoutHome!, secrets.evidenceObjects),
+                    record,
+                  ),
+              }
+            : {}),
           ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),
         }
       : {

@@ -5,6 +5,8 @@ export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
 export type MergeLaneSplit = "project" | "person";
 export type MergeNoProject = "own" | "lane";
 export type MergeSettings = {
+  sessionDone?: "pull_request" | "ci_green" | "settled";
+  sessionQuietMinutes?: number;
   autoApproveHighRisk?: boolean;
   default: MergeChoice;
   lanes?: MergeLaneSplit[];

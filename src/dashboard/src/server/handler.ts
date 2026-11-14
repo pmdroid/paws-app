@@ -98,6 +98,7 @@ export interface StatusServerOptions {
   startLinearSession?: StartLinearSession;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
+  closeoutOutput?: LiveStatusOptions["closeoutOutput"];
   /** Clock for the live resources' time-derived fields. Defaults to the system clock. */
   now?: LiveStatusOptions["now"];
   /** Where resource response sizes go. Defaults to the process's per-minute journal line. */
@@ -259,6 +260,7 @@ function liveProvider(options?: {
   closeoutHome?: string;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
+  closeoutOutput?: LiveStatusOptions["closeoutOutput"];
   now?: LiveStatusOptions["now"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
@@ -269,6 +271,7 @@ function liveProvider(options?: {
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
       ...(options.riskApproval ? { riskApproval: options.riskApproval } : {}),
+      ...(options.closeoutOutput ? { closeoutOutput: options.closeoutOutput } : {}),
       ...(options.now ? { now: options.now } : {}),
     });
   }
@@ -620,7 +623,7 @@ async function issueCheckLogResponse(
 ): Promise<Response> {
   const read = await readCheckLog(request, provider, segments);
   if (read === null) return json({ error: "Not found" }, 404);
-  const { id, attempt, checkId, run, output, full } = read;
+  const { id, attempt, checkId, run, output, full, ci } = read;
   const stdout = full ? output.stdout : tail(output.stdout);
   const stderr = full ? output.stderr : tail(output.stderr);
   const truncated = stdout !== output.stdout || stderr !== output.stderr;
@@ -628,8 +631,10 @@ async function issueCheckLogResponse(
     generatedAt: new Date().toISOString(),
     stdout,
     stderr,
+    ...(output.findings !== undefined ? { findings: output.findings } : {}),
+    ...(output.detail !== undefined ? { detail: output.detail } : {}),
     truncated,
-    fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
+    fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { run, full: true, ci }) : null,
   } satisfies IssueCheckLogResponse);
   if (!parsed.ok) return json({ error: parsed.error }, 500);
   return conditional(sizes, request, parsed.response);
@@ -645,6 +650,7 @@ async function readCheckLog(
   checkId: string;
   run: string | null;
   full: boolean;
+  ci: boolean;
   output: CheckOutput;
 } | null> {
   const [rawId, attempts, rawAttempt, checks, rawCheck, log] = segments;
@@ -665,9 +671,17 @@ async function readCheckLog(
     provider.checkLog === undefined
   )
     return null;
-  const output = await provider.checkLog({ itemId: id, attempt, checkId, run });
+  const ci = query.get("ci") === "1";
+  if (query.has("ci") && (!ci || run !== null)) return null;
+  const output = await provider.checkLog({
+    itemId: id,
+    attempt,
+    checkId,
+    run,
+    ...(ci ? { ci } : {}),
+  });
   if (output === null) return null;
-  return { id, attempt, checkId, run, full: query.get("full") === "1", output };
+  return { id, attempt, checkId, run, ci, full: query.get("full") === "1", output };
 }
 
 /** The last `CHECK_LOG_TAIL_BYTES` of `output`, starting on a whole UTF-8 character. */

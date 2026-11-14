@@ -103,13 +103,30 @@ export const linearConversation = pgTable(
     itemId: text("item_id")
       .primaryKey()
       .references(() => workItem.id),
-    entries: jsonb().notNull(),
     transcript: text(),
     transcriptOffset: bigint("transcript_offset", { mode: "number" }).default(0).notNull(),
     blocked: integer().default(0).notNull(),
     blockedAt: bigint("blocked_at", { mode: "number" }),
   },
   () => [check("linear_conversation_check_2", sql`blocked IN (0,1)`)],
+);
+
+export const linearConversationEntry = pgTable(
+  "linear_conversation_entry",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => linearConversation.itemId, { onDelete: "cascade" }),
+    position: integer().notNull(),
+    entry: jsonb().notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.itemId, table.position],
+      name: "linear_conversation_entry_item_id_position_pk",
+    }),
+  ],
 );
 
 export const linearStopReceipt = pgTable(

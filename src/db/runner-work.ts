@@ -1041,9 +1041,15 @@ export async function insertRunnerWorkGrant(store: Db, grant: WorkGrant): Promis
   await store.run((q) => insertRunnerWorkGrantSteps(q, grant));
 }
 
-export function* deleteRunnerWorkGrantsSteps(q: Q, runId: string): Steps<void> {
+export function* deleteRunnerWorkGrantsSteps(q: Q, runId: string, expiredAt?: number): Steps<void> {
   const { runnerWorkGrant: g } = q.t;
-  yield* q.exec(q.orm.delete(g).where(eq(g.runId, runId)));
+  yield* q.exec(
+    q.orm
+      .delete(g)
+      .where(
+        and(eq(g.runId, runId), expiredAt === undefined ? undefined : lte(g.expiresAt, expiredAt)),
+      ),
+  );
 }
 
 export async function deleteRunnerWorkGrants(store: Db, runId: string): Promise<void> {

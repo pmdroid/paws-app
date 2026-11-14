@@ -1,5 +1,5 @@
 {
-  "id": "fff8e1d6-715f-48bb-801a-48f0626a457d",
+  "id": "2ef6360e-8bb2-4257-9fff-09e18bf18891",
   "prevId": "698e4a63-7969-4415-a5e5-d3e63952a176",
   "version": "7",
   "dialect": "postgresql",
@@ -580,12 +580,6 @@
           "primaryKey": true,
           "notNull": true
         },
-        "entries": {
-          "name": "entries",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
         "transcript": {
           "name": "transcript",
           "type": "text",
@@ -634,6 +628,58 @@
           "value": "blocked IN (0,1)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.linear_conversation_entry": {
+      "name": "linear_conversation_entry",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entry": {
+          "name": "entry",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "linear_conversation_entry_item_id_linear_conversation_item_id_fk": {
+          "name": "linear_conversation_entry_item_id_linear_conversation_item_id_fk",
+          "tableFrom": "linear_conversation_entry",
+          "tableTo": "linear_conversation",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["item_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "linear_conversation_entry_item_id_position_pk": {
+          "name": "linear_conversation_entry_item_id_position_pk",
+          "columns": ["item_id", "position"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.linear_installation_permission": {
@@ -9022,8 +9068,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.candidate_risk": {
-      "name": "candidate_risk",
+    "public.candidate_paths": {
+      "name": "candidate_paths",
       "schema": "",
       "columns": {
         "item_id": {
@@ -9038,52 +9084,22 @@
           "primaryKey": false,
           "notNull": true
         },
-        "base_sha": {
-          "name": "base_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tier": {
-          "name": "tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "paths": {
           "name": "paths",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
-        },
-        "classified_at": {
-          "name": "classified_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "matches": {
-          "name": "matches",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "changed_paths": {
-          "name": "changed_paths",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "recorded_at": {
           "name": "recorded_at",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         }
       },
       "indexes": {
-        "candidate_risk_item": {
-          "name": "candidate_risk_item",
+        "candidate_paths_item": {
+          "name": "candidate_paths_item",
           "columns": [
             {
               "expression": "item_id",
@@ -9104,6 +9120,76 @@
           "with": {}
         }
       },
+      "foreignKeys": {
+        "candidate_paths_item_id_work_item_id_fk": {
+          "name": "candidate_paths_item_id_work_item_id_fk",
+          "tableFrom": "candidate_paths",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "candidate_paths_item_id_head_sha_pk": {
+          "name": "candidate_paths_item_id_head_sha_pk",
+          "columns": ["item_id", "head_sha"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.candidate_risk": {
+      "name": "candidate_risk",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tier": {
+          "name": "tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "paths": {
+          "name": "paths",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "classified_at": {
+          "name": "classified_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "matches": {
+          "name": "matches",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
       "foreignKeys": {
         "candidate_risk_item_id_work_item_id_fk": {
           "name": "candidate_risk_item_id_work_item_id_fk",
