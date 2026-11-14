@@ -356,6 +356,7 @@ import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands"
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneLoopQueues,
   pruneRunnerEvents,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
@@ -2182,14 +2183,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
-      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
-          ({ deleted }) => {
-            if (!deleted) return;
-            journal(`runner events pruned: ${deleted} events deleted`);
-          },
-        ),
-      );
+      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, async (_job, context) => {
+        const signal = AbortSignal.any([context.signal, abort.signal]);
+        const { deleted } = await pruneRunnerEvents({ store, signal });
+        if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+        const pruned = Object.entries(await pruneLoopQueues({ store, signal })).filter(
+          ([, rows]) => rows > 0,
+        );
+        if (pruned.length)
+          journal(
+            `loop queues pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+          );
+      });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,

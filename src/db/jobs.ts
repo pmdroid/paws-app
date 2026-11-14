@@ -8,8 +8,10 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   ne,
+  notExists,
   or,
   sql as drizzleSql,
   type SQL,
@@ -25,7 +27,7 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
-import { type Db, type Q } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { journal } from "./journal";
 import { jsonField, jsonText } from "./json-text";
 
@@ -297,9 +299,10 @@ export async function enqueueJob(store: Db, job: NewJob): Promise<number> {
 
 /**
  * Return the open row for this key when one exists. A finished key cannot be
- * inserted again (`job_key` is unique for the life of the table), so the
- * existing id is returned and the caller keeps the original row. `inserted` says
- * whether this call added the row.
+ * inserted again while its row is kept (`job_key` is unique; a done or cancelled
+ * one-off job is pruned a week after it finishes), so the existing id is returned
+ * and the caller keeps the original row. `inserted` says whether this call added
+ * the row.
  */
 export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
   if (job.jobKey === undefined) return { id: yield* enqueueJobSteps(q, job), inserted: true };
@@ -1142,4 +1145,35 @@ export async function openMergeJobs(
   store: Db,
 ): Promise<{ id: number; activationId: number; payload: string }[]> {
   return store.run((q) => openMergeJobsSteps(q));
+}
+
+export function* pruneFinishedJobsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { job, schedulerAdmission: admission, closeoutRetryWindow: retry } = q.t;
+  const prunable = q.orm
+    .select({ id: job.id })
+    .from(job)
+    .where(
+      and(
+        inArray(job.status, ["done", "cancelled"]),
+        isNull(job.recurringEveryMs),
+        lt(job.finishedAt, cutoff),
+        notExists(
+          q.orm
+            .select({ one: drizzleSql`1` })
+            .from(admission)
+            .where(eq(admission.jobId, job.id)),
+        ),
+        notExists(
+          q.orm
+            .select({ one: drizzleSql`1` })
+            .from(retry)
+            .where(eq(retry.jobId, job.id)),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(job).where(inArray(job.id, prunable)).returning({ id: job.id }),
+  );
+  return deleted.length;
 }

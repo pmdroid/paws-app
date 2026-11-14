@@ -1,5 +1,24 @@
 import { journalCaught, journalItemId } from "../journal";
-import { and, asc, desc, eq, gt, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  ilike,
+  inArray,
+  isNull,
+  like,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  notLike,
+  or,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -1348,4 +1367,49 @@ export async function dropQuestionElicitations(
   error: string,
 ): Promise<void> {
   await store.run((q) => dropQuestionElicitationsSteps(q, questionId, error));
+}
+
+const KEPT_SENT_OUTBOX_KEYS = [
+  "pull-request-ready:",
+  "merged:",
+  "closed:",
+  "parent-summary:",
+  "link-ask-reminder:",
+];
+
+export function* pruneSentOutboxSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { outbox } = q.t;
+  const newer = alias(outbox, "newer");
+  const prunable = q.orm
+    .select({ id: outbox.id })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.status, "sent"),
+        lt(outbox.sentAt, cutoff),
+        notInArray(outbox.deliveryKind, ["terminal", "stop"]),
+        ...KEPT_SENT_OUTBOX_KEYS.map((prefix) => notLike(outbox.idempotencyKey, `${prefix}%`)),
+        or(
+          isNull(outbox.orderingKey),
+          exists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(newer)
+              .where(
+                and(
+                  eq(newer.target, outbox.target),
+                  eq(newer.orderingKey, outbox.orderingKey),
+                  eq(newer.op, outbox.op),
+                  gt(newer.id, outbox.id),
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(outbox).where(inArray(outbox.id, prunable)).returning({ id: outbox.id }),
+  );
+  return deleted.length;
 }
