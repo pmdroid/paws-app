@@ -80,6 +80,7 @@ export * from "./runner-session-moves";
 export * from "./runners";
 export * from "./closeout-progress";
 export * from "./agent-closeout";
+export * from "./closeout-output";
 export * from "./closeout-recovery";
 export * from "./closeout-bypass";
 export * from "./closeout-rounds";

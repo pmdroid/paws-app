@@ -1,6 +1,10 @@
 import type { CloseoutProgress } from "../closeout";
+import { moveCloseoutOutput, removeEvidenceFile, type EvidenceStorage } from "../evidence";
+import { journalCaught } from "../journal";
 import {
   appendCloseoutOutputSteps,
+  closeoutProgressId,
+  finishedStepOutputSteps,
   ensureCloseoutProgressSteps,
   finishCloseoutProgressSteps,
   getWorkItemSteps,
@@ -13,6 +17,7 @@ export function createDbCloseoutProgress(
   store: Db,
   itemId: string,
   now: () => number = Date.now,
+  logs?: EvidenceStorage,
 ): CloseoutProgress {
   return {
     begin: (identity) =>
@@ -28,8 +33,21 @@ export function createDbCloseoutProgress(
           wipCommit: identity.head,
         });
       }),
-    step: (identity, step) =>
-      store.transaction((q) => upsertCloseoutStepSteps(q, itemId, identity, step, now())),
+    step: async (identity, step) => {
+      const dropped = await store.transaction((q) =>
+        upsertCloseoutStepSteps(q, itemId, identity, step, now()),
+      );
+      if (!logs) return;
+      try {
+        if (dropped !== null) await removeEvidenceFile(store, logs, dropped);
+        if (step.state === "pending" || step.state === "running") return;
+        const id = closeoutProgressId(itemId, identity);
+        const row = await store.run((q) => finishedStepOutputSteps(q, id, step.id));
+        if (row !== null) await moveCloseoutOutput(store, logs, row, now());
+      } catch (error) {
+        journalCaught(error, "closeout-progress.step.logs", itemId);
+      }
+    },
     output: (identity, stepId, stream, text, truncated) =>
       store.transaction((q) =>
         appendCloseoutOutputSteps(q, itemId, identity, stepId, stream, text, truncated, now()),

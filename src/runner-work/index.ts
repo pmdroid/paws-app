@@ -17,6 +17,7 @@ export {
   type StoredRunnerEvent,
 } from "./events";
 export {
+  pruneCloseoutLogs,
   pruneLoopQueues,
   pruneRunnerEvents,
   pruneRunnerTables,

@@ -1,3 +1,4 @@
+import { closeoutLogRetentionDays, saveCloseoutLogRetentionDays, type Db } from "../db";
 import { journalCaught } from "../journal";
 import {
   checkRunnerStorageSettings,
@@ -18,7 +19,11 @@ export type StorageSettingsOptions = {
   role?: string;
   audit: (action: string, subject: string) => Promise<void>;
   objects?: Parameters<typeof checkRunnerStorageSettings>[2];
+  store?: Db;
+  now?: () => number;
 };
+
+const MAX_RETENTION_DAYS = 3650;
 
 export async function handleStorageSettingsRequest(
   request: Request,
@@ -39,11 +44,13 @@ export async function handleStorageSettingsRequest(
     journalCaught(error, "storage.handleStorageSettingsRequest.read", null);
     return json({ error: "Storage settings could not be read" }, 503);
   }
-  if (method === "GET") return json(before);
+  const retention = async () =>
+    options.store
+      ? { closeoutLogRetentionDays: await closeoutLogRetentionDays(options.store) }
+      : {};
+  if (method === "GET") return json({ ...before, ...(await retention()) });
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
-  if (method === "PUT" && before.source === "environment")
-    return json({ error: "Storage is set by PAWS_S3_* environment variables on this host." }, 409);
   let body: unknown;
   try {
     body =
@@ -54,6 +61,29 @@ export async function handleStorageSettingsRequest(
     journalCaught(error, "storage.handleStorageSettingsRequest.body", null);
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
+  const { closeoutLogRetentionDays: days, ...storage } =
+    method === "PUT" && body !== null && typeof body === "object"
+      ? (body as Record<string, unknown>)
+      : { closeoutLogRetentionDays: undefined };
+  if (days !== undefined) {
+    if (!options.store) return json({ error: "Closeout log retention is not available" }, 404);
+    if (!Number.isInteger(days) || (days as number) < 0 || (days as number) > MAX_RETENTION_DAYS)
+      return json(
+        {
+          error: `closeoutLogRetentionDays must be a whole number from 0 to ${MAX_RETENTION_DAYS}.`,
+        },
+        400,
+      );
+    await saveCloseoutLogRetentionDays(options.store, days as number, (options.now ?? Date.now)());
+    await options.audit(
+      "settings.storage",
+      `Set Closeout log retention: ${days === 0 ? "keep forever" : `${days} days`}`,
+    );
+    if (Object.keys(storage).length === 0) return json({ ...before, ...(await retention()) });
+    body = storage;
+  }
+  if (method === "PUT" && before.source === "environment")
+    return json({ error: "Storage is set by PAWS_S3_* environment variables on this host." }, 409);
   let restartRequired: boolean;
   try {
     if (method === "POST") {
@@ -76,5 +106,5 @@ export async function handleStorageSettingsRequest(
       ? "Set storage: local"
       : `Set storage: S3 bucket ${after.bucket} at ${after.endpoint} (${after.region}), secret access key ${secret === undefined ? "kept" : "replaced"}`,
   );
-  return json({ ...after, restartRequired });
+  return json({ ...after, ...(await retention()), restartRequired });
 }

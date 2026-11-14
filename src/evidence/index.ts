@@ -16,3 +16,14 @@ export {
   publishCloseoutEvidence,
   uploadLocalCloseoutEvidence,
 } from "./closeout";
+export {
+  CLOSEOUT_LOG_MOVE_JOB,
+  closeoutLogStorage,
+  moveCloseoutOutput,
+  moveCloseoutOutputs,
+  readCloseoutOutput,
+  storeCloseoutOutput,
+  withCloseoutOutput,
+} from "./closeout-logs";
+export type { CloseoutOutput } from "./closeout-logs";
+export { removeEvidenceFile } from "./objects";

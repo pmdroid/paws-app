@@ -1,5 +1,8 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
+  clearCloseoutOutputSteps,
+  closeoutLogRetentionDays,
+  expiredCloseoutOutputsSteps,
   pruneFinishedAgentModelProbesSteps,
   pruneFinishedJobsSteps,
   pruneHandledInboxEventsSteps,
@@ -117,4 +120,24 @@ export async function pruneRunnerTables(options: PruneOptions) {
       RUNNER_TABLE_PRUNES[table],
     );
   return deleted;
+}
+
+export async function pruneCloseoutLogs(
+  options: PruneOptions & { remove: (key: string) => Promise<void> },
+): Promise<number> {
+  const days = await closeoutLogRetentionDays(options.store);
+  if (days === 0) return 0;
+  const cutoff = (options.now ?? Date.now()) - days * DAY;
+  let deleted = 0;
+  for (;;) {
+    options.signal?.throwIfAborted();
+    const expired = await options.store.run((q) => expiredCloseoutOutputsSteps(q, cutoff, 100));
+    if (expired.length === 0) return deleted;
+    for (const { key, ref } of expired) {
+      if (key !== null) await options.remove(key);
+      await options.store.transaction((q) => clearCloseoutOutputSteps(q, ref));
+    }
+    deleted += expired.length;
+    await yieldToLoop();
+  }
 }
