@@ -339,6 +339,9 @@ test("disabling mirrors detaches a linked worktree without losing commits or sta
   expect(await git(["-C", linked.path, "status", "--porcelain"])).toBe(status);
   expect(await git(["-C", linked.path, "show", ":README.md"])).toBe("staged change");
   expect(await readFile(join(linked.path, "README.md"), "utf8")).toBe("unstaged change");
+  await git(["-C", linked.path, "commit", "-m", "Keep staged modification"]);
+  expect(await git(["-C", linked.path, "show", "HEAD:README.md"])).toBe("staged change");
+  expect(await readFile(join(linked.path, "README.md"), "utf8")).toBe("unstaged change");
 });
 
 test("enabling mirrors preserves an existing independent item checkout", async () => {
@@ -438,6 +441,10 @@ for (const dependency of ["alternates", "commondir"] as const) {
       "staged blob outside commit history",
     );
     expect(await readFile(join(path, "notes.txt"), "utf8")).toBe("unfinished");
+    await git(["-C", path, "commit", "-m", "Keep staged content after mirror removal"]);
+    expect(await git(["-C", path, "show", "HEAD:index-only.txt"])).toBe(
+      "staged blob outside commit history",
+    );
   });
 }
 

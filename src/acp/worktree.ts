@@ -249,6 +249,13 @@ async function detachItemCheckout(path: string, remoteUrl: string): Promise<void
       await git(["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "index"])
     ).trim();
     await git(["clone", "--no-hardlinks", "--no-checkout", "--", path, staging]);
+    await git([
+      "-C",
+      path,
+      "pack-objects",
+      "--indexed-objects",
+      `${staging}/.git/objects/pack/paws-index`,
+    ]);
     await copyFile(index, `${staging}/.git/index`);
     const stash = await git(["-C", path, "rev-parse", "--verify", "refs/stash"]).then(
       (sha) => sha.trim(),
