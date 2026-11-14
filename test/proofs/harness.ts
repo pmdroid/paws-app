@@ -1,6 +1,6 @@
-import { createCloseoutGate, type CodexReviewer } from "../../src/closeout";
+import { createCloseoutGate, useGitReader, type CodexReviewer } from "../../src/closeout";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import {
@@ -14,18 +14,24 @@ import {
   type Db,
   type Q,
 } from "../../src/db";
-import { pawsPaths } from "../../src/config";
+import { ensureLayout, pawsPaths } from "../../src/config";
 import { count as countRows, inArray, eq, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
 import {
   createFakeGitHub,
+  createGitHubGitReader,
   fakeMergeReadiness,
   fakeRequiredChecks,
   type FakeGitHub,
   type GitHubClient,
 } from "../../src/github";
-import { attachOrchestrator, closeClosedIssueTasks, type AgentLaunch } from "../../src/loop";
+import {
+  attachOrchestrator,
+  closeClosedIssueTasks,
+  repositoryAtPath,
+  type AgentLaunch,
+} from "../../src/loop";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
 import { workspaceAdmission } from "../fake-workspace";
 
@@ -47,7 +53,7 @@ function guardLoopback(): string[] {
   return network;
 }
 
-async function git(...args: string[]) {
+async function gitOutput(...args: string[]) {
   const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
   const [exit, stdout, stderr] = await Promise.all([
     child.exited,
@@ -55,7 +61,11 @@ async function git(...args: string[]) {
     new Response(child.stderr).text(),
   ]);
   assert.equal(exit, 0, `git ${args.join(" ")}: ${stderr}`);
-  return stdout.trim();
+  return stdout;
+}
+
+async function git(...args: string[]) {
+  return (await gitOutput(...args)).trim();
 }
 
 const fakeAgent = resolve(import.meta.dir, "../../src/acp/testing/fake-agent.ts");
@@ -175,6 +185,64 @@ function fixtureGitHub(input: {
   const branchUpdates: { expected: string; rebased: string }[] = [];
   async function respond(request: GitHubRequest) {
     const { method, path } = request;
+    if (method === "GET" && path.endsWith("/git/ref/heads/main"))
+      return {
+        status: 200,
+        body: {
+          object: { type: "commit", sha: await git("-C", input.origin, "rev-parse", "main") },
+        },
+      };
+    const tree = /\/git\/trees\/([a-f0-9]{40})\?recursive=1$/.exec(path);
+    if (method === "GET" && tree) {
+      const entries = (await gitOutput("-C", input.origin, "ls-tree", "-r", "-t", "-z", tree[1]!))
+        .split("\0")
+        .filter(Boolean);
+      return {
+        status: 200,
+        body: {
+          truncated: false,
+          tree: entries.map((entry) => {
+            const [meta, entryPath] = entry.split("\t");
+            const [mode, type, sha] = meta!.split(" ");
+            return { mode, type, sha, path: entryPath };
+          }),
+        },
+      };
+    }
+    const blob = /\/git\/blobs\/([a-f0-9]{40})$/.exec(path);
+    if (method === "GET" && blob)
+      return {
+        status: 200,
+        body: {
+          encoding: "base64",
+          content: Buffer.from(
+            await gitOutput("-C", input.origin, "cat-file", "blob", blob[1]!),
+          ).toString("base64"),
+        },
+      };
+    const compare = /\/compare\/([a-f0-9]{40})\.\.\.([a-f0-9]{40})/.exec(path);
+    if (method === "GET" && compare) {
+      const repositoryPath = input.origin;
+      const base = await git("-C", repositoryPath, "merge-base", compare[1]!, compare[2]!);
+      const files = (
+        await gitOutput(
+          "-C",
+          repositoryPath,
+          "diff",
+          "--no-renames",
+          "--name-only",
+          "-z",
+          base,
+          compare[2]!,
+        )
+      )
+        .split("\0")
+        .filter(Boolean);
+      return {
+        status: 200,
+        body: { merge_base_commit: { sha: base }, files: files.map((filename) => ({ filename })) },
+      };
+    }
     if (path === "/graphql") {
       const update = await updateBranch(
         request.body as { query: string; variables: Record<string, unknown> },
@@ -337,6 +405,7 @@ export type Proof = {
   policy?: string;
   /** Appended to the scenario's `config.toml`. */
   config?: string;
+  forbidRepos?: boolean;
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
   member?: { login: string; token: string; refused?: number };
@@ -366,6 +435,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     join(pawsRoot, "config.toml"),
     `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`,
   );
+  const repos = join(pawsRoot, "repos");
+  const reposEvents: string[] = [];
+  const reposWatch = proof.forbidRepos
+    ? watch(pawsRoot, (_event, file) => {
+        if (file === "repos") reposEvents.push(String(file));
+      })
+    : undefined;
+  ensureLayout(pawsPaths(pawsRoot));
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents"), { recursive: true });
@@ -403,6 +480,21 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     pgliteDir: pawsPaths(pawsRoot).pgliteDir,
   });
   const db = database.store;
+  if (proof.forbidRepos)
+    useGitReader(
+      createGitHubGitReader({
+        locate: async (path) => {
+          const repository = await repositoryAtPath(db, pawsRoot, path);
+          return repository
+            ? {
+                ...repository,
+                client: github.client,
+                tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
+              }
+            : null;
+        },
+      }),
+    );
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const { launch, launches } = scriptedAgent(dir, pawsRoot, proof.agent);
@@ -427,6 +519,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
     }),
     launch,
+    githubMirrors: proof.forbidRepos ? false : undefined,
     ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
     ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
   });
@@ -579,7 +672,16 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
+    if (proof.forbidRepos) useGitReader(null);
   }
+  await Bun.sleep(50);
+  reposWatch?.close();
+  if (proof.forbidRepos)
+    context.expect(
+      "PAWS_HOME/repos was never created or changed from startup through shutdown",
+      reposEvents.length === 0 && !existsSync(repos),
+      { events: reposEvents, exists: existsSync(repos) },
+    );
   const result = {
     name,
     summary: proof.summary,

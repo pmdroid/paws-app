@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { assertDescendsFromAny } from "../core";
 import { git } from "./git";
@@ -169,32 +169,127 @@ export async function createWorktree(options: {
   /** The run's agent exclusions. Missing means nothing is left out. */
   checkoutExclusions?: readonly string[];
   cloneFrom?: string;
+  remoteUrl?: string;
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<Worktree> {
-  if (options.cloneFrom !== undefined) {
-    const path = worktreePath(options.pawsRoot, options.itemId);
-    return onMirror(path, () => cloneWorktree(options));
-  }
+  if (options.cloneFrom !== undefined)
+    return createItemCheckout({ ...options, remoteUrl: options.cloneFrom });
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   return onMirror(gitDir, () => addWorktree(gitDir, options));
 }
 
-async function cloneWorktree(options: Parameters<typeof createWorktree>[0]): Promise<Worktree> {
+/** An independent item checkout for installations that disable shared mirrors. */
+export async function createItemCheckout(options: {
+  remoteUrl: string;
+  itemId: string;
+  pawsRoot: string;
+  startRef?: string;
+  checkoutExclusions?: readonly string[];
+  networkGit?: (args: string[]) => Promise<string>;
+}): Promise<Worktree> {
   const path = worktreePath(options.pawsRoot, options.itemId);
-  const branch = branchName(options.itemId);
-  const fresh = !(await exists(path));
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  return onMirror(path, async () => {
+    const branch = branchName(options.itemId);
+    const startRef = options.startRef ?? "origin/main";
+    const fresh = !(await exists(path));
+    const fetch = options.networkGit ?? git;
+    try {
+      if (fresh) {
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        await fetch(["clone", "--no-checkout", "--", options.remoteUrl, path]);
+      }
+      const backup = `${path}/.git.paws-linked`;
+      if (!fresh && !(await exists(`${path}/.git`)) && (await exists(backup)))
+        await rename(backup, `${path}/.git`);
+      if (!fresh && (await checkoutSharesGitStorage(path)))
+        await detachItemCheckout(path, options.remoteUrl);
+      if (await exists(backup)) await rm(backup, { recursive: true });
+      await fetch([
+        "-C",
+        path,
+        "fetch",
+        "--no-tags",
+        "--prune",
+        "--",
+        options.remoteUrl,
+        TRACKING_REF,
+      ]);
+      if (/^[a-f0-9]{40}$/.test(startRef)) {
+        const present = await git(["-C", path, "cat-file", "-e", `${startRef}^{commit}`]).then(
+          () => true,
+          () => false,
+        );
+        if (!present)
+          await fetch(["-C", path, "fetch", "--no-tags", "--", options.remoteUrl, startRef]);
+      }
+      await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
+      if (fresh) await git(["-C", path, "checkout", "-b", branch, startRef]);
+    } catch (error) {
+      if (fresh) await rm(path, { recursive: true, force: true });
+      throw error;
+    }
+    return { path, branch, mirrorPath: path, itemId: options.itemId, startRef };
+  });
+}
+
+async function checkoutSharesGitStorage(path: string): Promise<boolean> {
+  const metadata = `${path}/.git`;
+  return (
+    !(await lstat(metadata)).isDirectory() ||
+    (await exists(`${metadata}/commondir`)) ||
+    (await exists(`${metadata}/objects/info/alternates`))
+  );
+}
+
+async function detachItemCheckout(path: string, remoteUrl: string): Promise<void> {
+  const staging = await mkdtemp(`${path}-detach-`);
+  const backup = `${path}/.git.paws-linked`;
   try {
-    if (fresh)
-      await (options.networkGit ?? git)(["clone", "--no-checkout", "--", options.cloneFrom!, path]);
-    const startRef = options.startRef ?? (await resolveStartRef(`${path}/.git`));
-    if (!startRef) throw new Error("Repository has no main or HEAD to start from");
-    if (fresh) await git(["-C", path, "checkout", "--no-track", "-b", branch, startRef]);
-    await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
-    return { path, branch, mirrorPath: `${path}/.git`, itemId: options.itemId, startRef };
-  } catch (error) {
-    if (fresh) await rm(path, { recursive: true, force: true });
-    throw error;
+    const index = (
+      await git(["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    ).trim();
+    await git(["clone", "--no-hardlinks", "--no-checkout", "--", path, staging]);
+    await copyFile(index, `${staging}/.git/index`);
+    const stash = await git(["-C", path, "rev-parse", "--verify", "refs/stash"]).then(
+      (sha) => sha.trim(),
+      () => null,
+    );
+    if (stash) {
+      const log = (
+        await git([
+          "-C",
+          path,
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-path",
+          "logs/refs/stash",
+        ])
+      ).trim();
+      const entries = (await git(["-C", path, "reflog", "show", "--format=%H", "refs/stash"]))
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const sha of new Set([stash, ...entries]))
+        await git(["-C", staging, "fetch", "--no-tags", "--", path, sha]);
+      await git(["-C", staging, "update-ref", "refs/stash", stash]);
+      if (await exists(log)) {
+        await mkdir(`${staging}/.git/logs/refs`, { recursive: true });
+        await copyFile(log, `${staging}/.git/logs/refs/stash`);
+      }
+    }
+    await git(["-C", staging, "repack", "-a", "-d"]);
+    await rm(`${staging}/.git/objects/info/alternates`, { force: true });
+    await git(["-C", staging, "remote", "set-url", "origin", remoteUrl]);
+    await rename(`${path}/.git`, backup);
+    try {
+      await rename(`${staging}/.git`, `${path}/.git`);
+    } catch (error) {
+      await rename(backup, `${path}/.git`);
+      throw error;
+    }
+    await rm(backup, { recursive: true });
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }
 
@@ -209,6 +304,14 @@ async function addWorktree(
   const branch = branchName(options.itemId);
   const patterns = exclusionPatterns(options.checkoutExclusions ?? []);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+
+  if ((await stat(`${path}/.git`).catch(() => null))?.isDirectory()) {
+    return createItemCheckout({
+      ...options,
+      remoteUrl:
+        options.remoteUrl ?? (await git(["-C", path, "remote", "get-url", "origin"])).trim(),
+    });
+  }
 
   if (await isRegisteredWorktree(gitDir, path)) {
     await checkoutPatterns(path, patterns);

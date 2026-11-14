@@ -9,7 +9,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -252,6 +252,7 @@ import {
   createLinearArtifactReader,
   createRepositoryGit,
   itemPathId,
+  repositoryAtPath,
   repositoryAnswer,
   LinearTaskAccess,
   authorizeLinearTask,
@@ -633,18 +634,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   useGitReader(
     !startupMirrors
       ? createGitHubGitReader({
-          locate: (path) => {
-            const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");
-            const repo = name?.endsWith(".git") ? name.slice(0, -4) : undefined;
-            if (!owner || !repo || rest.length) return null;
-            const binding = githubBinding(
-              authProvider(
-                runtime,
-                { owner, repo, remoteUrl: githubHttpsUrl(owner, repo) },
-                "read",
-                resolveApp,
-              ),
-            );
+          locate: async (path) => {
+            const repository = await repositoryAtPath(store, paths.home, path);
+            if (!repository) return null;
+            const { owner, repo } = repository;
+            const binding = githubBinding(authProvider(runtime, repository, "read", resolveApp));
             return binding ? { ...binding, owner, repo } : null;
           },
           blobs: githubBlobCache(store),

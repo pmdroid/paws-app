@@ -420,6 +420,7 @@ import {
 } from "../db";
 import {
   publishAccepted,
+  pushBranch,
   publishedPullRequestBody,
   storeEvidenceFiles,
   closeStoppedPull,
@@ -4085,6 +4086,56 @@ export class Orchestrator {
         ? await this.storedCandidateRange(finished, at.ref)
         : null;
       const head = range?.head ?? (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
+      const base =
+        range?.base ?? (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
+      if (!this.options.remoteExecution && this.mirrorsOff()) {
+        await this.assertPublicationReady(item, "publish", controller.signal, {
+          sha: head,
+          baseSha: base,
+        });
+        const configured = this.githubForRepository(repository);
+        if (!configured) throw new Error("GitHub App is not configured.");
+        const github = guardGitHubPublication({
+          github: configured,
+          repository,
+          signal: controller.signal,
+          ...(this.options.publicationGitExec ? { gitExec: this.options.publicationGitExec } : {}),
+          onCleanupFailure: () => this.blockConversation(item.id),
+          isCurrent: async () =>
+            !(await this.stopped(item.id)) &&
+            (live.sessionId === null ||
+              (await this.store.run((q) => getLinearSessionGenerationSteps(q, live.sessionId!))) ===
+                live.generation),
+          assert: async () => {
+            const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
+            if (!current || current.currentRunId !== run.id)
+              throw new Error("The candidate publication belongs to an obsolete run.");
+            await this.assertPublicationReady(current, "publish", controller.signal, {
+              sha: head,
+              baseSha: base,
+            });
+            await this.taskAccess()?.assert(current, controller.signal);
+            const access = this.authorization(current);
+            if (access && !(await access.ensure(current, "publication", controller.signal)))
+              throw new Error(
+                "The GitHub App installation must cover the repository before publication.",
+              );
+          },
+        });
+        await pushBranch({
+          worktree: at.repo,
+          ref: head,
+          issue: item.linearIdentifier,
+          branchKey: taskBranchKey(item),
+          owner: repository.owner,
+          repo: repository.repo,
+          remoteUrl: repository.remoteUrl,
+          client: github.client,
+          gitExec: github.gitExec,
+          ...this.gitHubCredentials(github),
+        });
+      }
+
       await recordAgentFindingDecisions(
         this.store,
         item.id,
@@ -4092,8 +4143,6 @@ export class Orchestrator {
         await this.fixCommit(at.repo, item.id, head),
         this.now(),
       );
-      const base =
-        range?.base ?? (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
       const checkpoint = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint;
       await this.store.run((q) =>
         saveCheckpointSteps(q, item.id, {
@@ -10789,6 +10838,8 @@ export class Orchestrator {
         }
       : await createWorktree({
           ...placement,
+          remoteUrl: repository.remoteUrl,
+          networkGit: await this.repositoryGit(item, repository, signal, "read"),
           ...(this.mirrorsOff()
             ? {
                 cloneFrom: repository.remoteUrl,
