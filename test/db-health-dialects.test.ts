@@ -65,8 +65,8 @@ forEachDialect((open) => {
         (q) => runner(q, "paused", "paused", 0),
         (q) =>
           q.orm.insert(q.t.githubDelivery).values([
-            { deliveryId: "a", event: "push", payload: "{}", receivedAt: 7 },
-            { deliveryId: "b", event: "push", payload: "{}", receivedAt: 9 },
+            { deliveryId: "a", event: "push", receivedAt: 7 },
+            { deliveryId: "b", event: "push", receivedAt: 9 },
           ]),
       );
       expect(await db.run((q) => expiredJobLeaseCountSteps(q, NOW))).toBe(2);
