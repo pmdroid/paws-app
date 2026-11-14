@@ -157,7 +157,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
   const signIn = async (id: string) => {
     const account = view.accounts?.find((entry) => entry.id === id);
     if (!account) return;
-    if (account.agent !== "claude") {
+    if (account.agent === "codex") {
       openAgentDeviceDialog(
         AGENTS[account.agent],
         account.label,
