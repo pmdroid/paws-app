@@ -658,27 +658,30 @@ function runnerRowTags(
       ? agents.map((entry): RowTag => {
           const name = AGENT_LABELS[entry.agent] ?? entry.agent;
           if (!view.accounts) return ["", `${name} accounts unavailable`];
-          const signedIn = view.accounts.filter(
-            (account) => account.agent === entry.agent && account.credential,
-          );
-          if (!signedIn.length) return ["bad", `${name} needs sign-in`];
-          const resets = signedIn.map((account) =>
-            account.extraUsage
-              ? []
-              : (account.usage?.limits ?? []).filter(
+          const central = view.accounts.filter((account) => account.agent === entry.agent);
+          const local = runner.agents?.find((agent) => agent.agent === entry.agent);
+          const usableLocal = !central.length && local && SIGNED_IN.has(local.status);
+          const signedIn = central.filter((account) => account.credential);
+          if (!signedIn.length && !usableLocal) return ["bad", `${name} needs sign-in`];
+          const localReset = usableLocal
+            ? local.status === "usage_limit" && !local.extraUsage
+              ? (local.resetsAt ?? Infinity)
+              : 0
+            : Infinity;
+          const resets = signedIn.map(({ extraUsage, usage }) =>
+            Math.max(
+              0,
+              ...(extraUsage ? [] : (usage?.limits ?? []))
+                .filter(
                   (limit) =>
                     limit.usedPercent >= 100 &&
                     (limit.resetsAt === null || limit.resetsAt > view.now),
-                ),
-          );
-          if (resets.some((limits) => !limits.length)) return ["", `${name} signed in`];
-          const until = Math.min(
-            ...resets.map((limits) =>
-              limits.some((limit) => limit.resetsAt === null)
-                ? Infinity
-                : Math.max(...limits.map((limit) => limit.resetsAt!)),
+                )
+                .map((limit) => limit.resetsAt ?? Infinity),
             ),
           );
+          const until = Math.min(localReset, ...resets);
+          if (!until) return ["", `${name} signed in`];
           return [
             "warn",
             `${name} quota cooldown${Number.isFinite(until) ? ` until ${new Date(until).toLocaleString()}` : " · reset time unknown"}`,

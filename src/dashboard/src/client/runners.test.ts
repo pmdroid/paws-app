@@ -141,6 +141,7 @@ describe("runner list rows", () => {
     expect(html).not.toContain("Update available");
     expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("<dl");
+    expect(runnerRowMarkup(runner, { ...row, accounts: [] })).toContain("Claude signed in");
   });
 
   test("a row flags offline hosts, paused status, signed-out agents and old versions", () => {
@@ -151,7 +152,7 @@ describe("runner list rows", () => {
         version: "1.1.0",
         metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 },
         codingAgents: [{ agent: "codex", current: "1", pending: null, reportedAt: now }],
-        agents: [{ agent: "codex", status: "signed_in", checkedAt: now }],
+        agents: [{ agent: "codex", status: "signed_out", checkedAt: now }],
       },
       row,
     );

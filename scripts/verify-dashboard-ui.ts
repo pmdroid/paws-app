@@ -229,7 +229,6 @@ try {
             {
               id: "agent-summary-runner",
               name: "build-box",
-              status: "active",
               codingAgents: ["claude", "codex", "grok"].map((agent) => ({
                 agent,
                 current: "1",
