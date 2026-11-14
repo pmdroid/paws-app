@@ -50,7 +50,7 @@ Who may delegate an issue to Paws is decided when the delegation arrives, with t
 
 ## A first delegation
 
-A Linear member who has never signed in to Paws can delegate an issue anyway. Paws holds the delegation instead of refusing it, and the same Linear session carries the person through setup. What the session shows is in [Linear agent sessions](linear-agent-sessions.md#a-first-delegation).
+A Linear member who has never signed in to Paws can delegate an issue anyway. Paws holds the delegation instead of refusing it, and the same Linear session carries the person through setup. What the session shows is in [Linear agent sessions](linear-agent-sessions.md).
 
 1. The delegator presses **Sign in to Paws** in the session. It opens `/onboard/<link id>`, which starts Linear sign-in.
 2. After sign-in, Paws creates the membership as in [Admission](#admission), releases the hold, and redirects to `/onboard/<link id>`, now the onboarding page.

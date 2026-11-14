@@ -59,7 +59,7 @@ curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
 
 With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session`. The package never installs Docker Engine itself.
 
-Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
+Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#runner-accounts-and-docker) before granting it.
 
 On a grant, package configuration:
 
