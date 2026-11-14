@@ -95,16 +95,31 @@ export function openAgentAccounts(
   agent: string,
   onClose: () => void,
   binding?: string,
+  accountName?: string,
 ): void {
   if (!(agent in NAMES)) return;
   const name = NAMES[agent as Agent];
+  const title =
+    binding && accountName
+      ? `Sign in to ${name} for ${esc(accountName)}`
+      : `Sign in to ${name} on ${esc(runner.name)}`;
+  const context = binding
+    ? `<p class="muted">Paws runs the sign-in on ${esc(runner.name)}; the account is saved for all your runners.</p>`
+    : "";
   const host = document.createElement("div");
   document.body.append(host);
   renderMarkup(
     host,
-    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in to ${name} on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh</button></div></dialog>`,
+    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">${title}</h2><button class="btn" type="button" data-account-close>Close</button></div>${context}<p data-account-progress class="settings-message" role="status" hidden></p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh</button></div></dialog>`,
   );
   const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
+  const progress = dialog.querySelector<HTMLElement>("[data-account-progress]")!;
+  let awaitingSession: string | undefined;
+  function clearProgress() {
+    awaitingSession = undefined;
+    progress.textContent = "";
+    progress.hidden = true;
+  }
   const feedback = dialog.querySelector<HTMLElement>("[data-account-feedback]")!;
   const list = dialog.querySelector<HTMLElement>("[data-account-list]")!;
   const refresh = dialog.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
@@ -228,6 +243,8 @@ export function openAgentAccounts(
       ]);
       if (!dialog.isConnected || current !== generation) return;
       account = dialogAccount(result, agent, binding);
+      if (awaitingSession !== undefined && JSON.stringify(account?.session) !== awaitingSession)
+        clearProgress();
       runnerStatus = listed.runners
         .find((entry) => !binding && entry.id === runner.id)
         ?.agents?.find((entry) => entry.agent === agent)?.status;
@@ -249,6 +266,14 @@ export function openAgentAccounts(
     busy = true;
     controls();
     feedback.textContent = "";
+    awaitingSession = JSON.stringify(account.session);
+    progress.textContent =
+      action === "cancel"
+        ? "Cancelling…"
+        : action === "start"
+          ? `Starting ${name} sign-in…`
+          : `Sending your reply to ${name}…`;
+    progress.hidden = false;
     const current = ++generation;
     try {
       const login = await request<Login>(
@@ -258,10 +283,12 @@ export function openAgentAccounts(
         action === "input" ? input : action === "start" ? {} : undefined,
       );
       if (current !== generation) return;
+      if (JSON.stringify(login) !== awaitingSession) clearProgress();
       account.session = login;
       account.connected = login.state === "connected";
       paint();
     } catch (error) {
+      clearProgress();
       journalCaught(error, "agent-accounts.act.request", null);
       feedback.textContent = error instanceof Error ? error.message : "Refresh to try again.";
     } finally {

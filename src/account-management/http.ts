@@ -17,8 +17,7 @@ const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
   /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential))?$/;
 
-export const AGENT_ACCOUNTS_RETIRED =
-  "Agent accounts were replaced by per-runner sign-in on the Runners page";
+export const AGENT_ACCOUNTS_RETIRED = "This route was replaced by /api/runners/agent-accounts.";
 
 const agent = z.enum(RUNNER_CODING_AGENTS);
 const Create = z.strictObject({ agent, label: z.string().trim().min(1).max(80) });

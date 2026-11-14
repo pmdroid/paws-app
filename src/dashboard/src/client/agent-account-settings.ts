@@ -163,6 +163,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
       target.agent,
       () => void run("Loading agent accounts…"),
       target.bindingId,
+      view.accounts?.find((account) => account.id === id)?.label,
     );
   };
   const click = (event: Event) => {
