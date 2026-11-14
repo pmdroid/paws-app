@@ -30,7 +30,7 @@ If Linear revokes the app authorization, the dashboard offers **Reconnect Linear
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
-Paws has two workspace roles: `admin` and `member`. Admins assign roles on **Settings › Members** and map repositories to verified Linear teams in **Settings › Integrations**. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
+Paws has two workspace roles: `admin` and `member`. Admins assign roles on **Settings › Members** and map repositories to verified Linear teams in **Settings › Integrations**. Members see the mapped repositories there read-only. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
 
 ## Members page
 

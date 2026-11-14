@@ -70,15 +70,17 @@ test("settings shows one tab bar of nine pages in order, marking the current one
   );
 });
 
-test("a member opening any settings page gets only Your account", () => {
+test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
   setSettingsAdmin(false);
   for (const page of SETTINGS_PAGES) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
-    expect(navLinks(doc)).toEqual(["Your account"]);
-    expect(doc.querySelector("a[aria-current]")?.textContent).toBe("Your account");
+    const shown =
+      page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
+    expect(navLinks(doc)).toEqual(["Integrations", "Your account"]);
+    expect(doc.querySelector("a[aria-current]")?.textContent).toBe(shown.name);
     expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
-      `<p class="sub">${SETTINGS_PAGES.find((entry) => entry.id === "account")!.description}</p>`,
+      `<p class="sub">${shown.description}</p>`,
     );
   }
   const route = { view: "settings", page: "merging" } as const;
@@ -173,12 +175,12 @@ test("settings list the admin pages only once the session says admin", async () 
       new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
     const loaded = initializeWorkspaceAccess(() => null);
     window.document.body.innerHTML = renderSettingsPage("merging");
-    expect(navLinks(window.document)).toEqual(["Your account"]);
+    expect(navLinks(window.document)).toEqual(["Integrations", "Your account"]);
     respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
     expect(await loaded).toBe(true);
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual(
-      role === "admin" ? SETTINGS_PAGES.map((page) => page.name) : ["Your account"],
+      role === "admin" ? SETTINGS_PAGES.map((page) => page.name) : ["Integrations", "Your account"],
     );
   }
 });
