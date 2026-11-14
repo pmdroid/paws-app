@@ -19,8 +19,12 @@ function data(): MergeSettingsView {
 }
 
 describe("Settings → Merging", () => {
-  test("is a settings page after Agents", () => {
-    expect(SETTINGS_PAGES.map((page) => page.id).slice(0, 2)).toEqual(["agents", "merging"]);
+  test("is a settings page after Agents and Agent accounts", () => {
+    expect(SETTINGS_PAGES.map((page) => page.id).slice(0, 3)).toEqual([
+      "agents",
+      "agent-accounts",
+      "merging",
+    ]);
     expect(parseRoute("/settings/merging")).toEqual({ view: "settings", page: "merging" });
   });
 
