@@ -81,8 +81,7 @@ async function follow(page: Page, from: string, expected: string, text?: string)
   });
 }
 
-const REFUSAL =
-  "Connecting GitHub for the first time needs an admin of the acme GitHub organization. Ask one to connect GitHub; after that any Paws admin can add repositories.";
+const REFUSAL = "Your GitHub account can't read acme/widgets.";
 try {
   for (const [name, cookie, text, width] of (
     [
