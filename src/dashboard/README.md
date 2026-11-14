@@ -27,6 +27,20 @@ Each page loads one resource shaped for what it renders. [Dashboard API](../../d
 
 The status snapshot API is gone: `GET /api/status`, its `slices` query, `/api/status/items/<id>` and its log route answer 404 like any unknown path. Old `/status` page links still redirect (see [Local](#local)).
 
+### Settings controls
+
+Settings › Repositories loads GitHub agent read access and local mirrors from `/api/settings/github-access`, and per-repository Closeout policy roots from `/api/settings/closeout`. Settings › Linear loads comment agent IDs from `/api/settings/linear-comments`. Admins save through the same routes with `PUT`; members see the values without editable controls. The forms display server validation errors, and a mirrors change displays the returned restart requirement.
+
+#### Left for later
+
+PAS-1964 is split at a page boundary under its 800-line exception. This part ships only the Repositories and Linear pages. The following requested controls are explicitly deferred to follow-up PRs; their server routes do not yet have these controls on the existing pages:
+
+- **Merging:** per-repository `packages`, `reviewApps` and `suggestedFindings`, and per-project `lane`, in a Repositories and projects section.
+- **Agents and Agent instructions:** Grok binary path and `allowApiKey`, OpenCode binary path, and per-repository skill `projectRoots`.
+- **Findings and Runners:** editable daily grouping time and admin controls for member VM size.
+
+Each follow-up includes loading saved values, saving through the existing route, displaying server 400 messages, read-only member values and browser screenshots. Queue and limits needs no new controls.
+
 ### Issue resources
 
 The Issues and issue pages and run, session and verdict links read these.
