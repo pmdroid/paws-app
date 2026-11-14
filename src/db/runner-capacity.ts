@@ -354,24 +354,39 @@ export function* recordRunnerCapacitySteps(
   )
     throw new Error("Invalid runner conversation capacity");
   const { runnerCapacity } = q.t;
-  yield* q.exec(
+  const stored = yield* q.one(
     q.orm
-      .insert(runnerCapacity)
-      .values({
-        runnerId,
-        capacity,
-        ceiling: ceiling ?? null,
-        conversation: conversations ?? null,
+      .select({
+        capacity: runnerCapacity.capacity,
+        ceiling: runnerCapacity.ceiling,
+        conversation: runnerCapacity.conversation,
       })
-      .onConflictDoUpdate({
-        target: runnerCapacity.runnerId,
-        set: {
-          capacity: sql`excluded.capacity`,
-          ceiling: sql`excluded.ceiling`,
-          conversation: sql`excluded.conversation`,
-        },
-      }),
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
   );
+  if (
+    stored?.capacity !== capacity ||
+    stored.ceiling !== (ceiling ?? null) ||
+    stored.conversation !== (conversations ?? null)
+  )
+    yield* q.exec(
+      q.orm
+        .insert(runnerCapacity)
+        .values({
+          runnerId,
+          capacity,
+          ceiling: ceiling ?? null,
+          conversation: conversations ?? null,
+        })
+        .onConflictDoUpdate({
+          target: runnerCapacity.runnerId,
+          set: {
+            capacity: sql`excluded.capacity`,
+            ceiling: sql`excluded.ceiling`,
+            conversation: sql`excluded.conversation`,
+          },
+        }),
+    );
   if (ceiling === undefined) return undefined;
   const row = yield* q.one(
     q.orm

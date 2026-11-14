@@ -145,7 +145,7 @@ forEachDialect((connect) => {
         status: "installed",
         error: null,
         waiting: null,
-        reportedAt: 11,
+        reportedAt: 10,
       },
       {
         name: "ship",
@@ -154,7 +154,7 @@ forEachDialect((connect) => {
         status: "pending",
         error: null,
         waiting: 2,
-        reportedAt: 11,
+        reportedAt: 10,
       },
     ]);
     expect(await db.run((q) => runnerSkillStatesSteps(q, "two"))).toEqual([
@@ -215,5 +215,43 @@ forEachDialect((connect) => {
       recordedAt: 21,
     });
     expect(await db.run((q) => runAgentSetupSteps(q, "other"))).toBeNull();
+  });
+});
+
+forEachDialect((connect) => {
+  test("a runner report writes only the skill rows that changed", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await withoutForeignKeys(db);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "one",
+        workspaceId: "acme",
+        ownerUserId: "o",
+        name: "one",
+        status: "active",
+        createdAt: 1,
+      }),
+    );
+    const report = (waiting: number) => [
+      { name: "lint", version: "a", sha256: sha("a"), status: "installed" as const },
+      { name: "ship", version: "c", sha256: sha("c"), status: "pending" as const, waiting },
+    ];
+    await db.run((q) => recordRunnerSkillsSteps(q, "one", report(2), 10));
+    await db.run((q) => recordRunnerSkillsSteps(q, "one", report(1), 20));
+    await db.run((q) => recordRunnerSkillsSteps(q, "one", report(1), 30));
+    expect(
+      (await db.run((q) => listRunnerSkillsSteps(q, "one"))).map(
+        ({ name, waiting, reportedAt }) => ({ name, waiting, reportedAt }),
+      ),
+    ).toEqual([
+      { name: "lint", waiting: null, reportedAt: 10 },
+      { name: "ship", waiting: 1, reportedAt: 20 },
+    ]);
+    await db.run((q) => recordRunnerSkillsSteps(q, "one", report(1).slice(1), 40));
+    expect((await db.run((q) => listRunnerSkillsSteps(q, "one"))).map(({ name }) => name)).toEqual([
+      "ship",
+    ]);
   });
 });

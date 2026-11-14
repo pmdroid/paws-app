@@ -564,6 +564,17 @@ export function* recordRunnerAccountCapabilitySteps(
     return;
   }
   const parsed = RunnerAccountCapabilitySchema.parse(capability);
+  const stored = yield* q.one(
+    q.orm
+      .select({ protocol: c.protocol, bindings: jsonText(q, c.bindings) })
+      .from(c)
+      .where(eq(c.runnerId, runnerId)),
+  );
+  if (
+    stored?.protocol === parsed.protocol &&
+    Bun.deepEquals(JSON.parse(stored.bindings), JSON.parse(JSON.stringify(parsed.bindings)), true)
+  )
+    return;
   const set = {
     protocol: parsed.protocol,
     bindings: jsonValue(q, parsed.bindings),
