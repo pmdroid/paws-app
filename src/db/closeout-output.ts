@@ -63,6 +63,58 @@ function* stepOutputsSteps(q: Q, where: SQL | undefined, limit: number) {
   }));
 }
 
+export function* legacyCloseoutOutputsSteps(q: Q, limit: number) {
+  const { closeoutProgress: p, closeoutStep: s, agentCloseoutEvent: e } = q.t;
+  const steps = yield* q.all(
+    q.orm
+      .select({
+        progressId: s.progressId,
+        stepId: s.stepId,
+        itemId: p.itemId,
+        head: p.head,
+        checkId: s.stepId,
+        stdout: s.stdout,
+        stderr: s.stderr,
+        at: p.startedAt,
+      })
+      .from(s)
+      .innerJoin(p, eq(p.id, s.progressId))
+      .where(and(isNull(s.outputKey), or(ne(s.stdout, ""), ne(s.stderr, "")), unfinishedNot(q)))
+      .orderBy(p.startedAt, s.progressId, s.stepId)
+      .limit(limit),
+  );
+  const events = yield* q.all(
+    q.orm
+      .select({
+        runId: e.runId,
+        sequence: e.sequence,
+        itemId: e.itemId,
+        head: e.head,
+        checkId: e.checkId,
+        stdout: e.stdout,
+        stderr: e.stderr,
+        at: e.at,
+      })
+      .from(e)
+      .where(and(isNull(e.outputKey), or(ne(e.stdout, ""), ne(e.stderr, ""))))
+      .orderBy(e.at, e.runId, e.sequence)
+      .limit(limit),
+  );
+  return [
+    ...steps.map(({ progressId, stepId, ...row }) => ({
+      ...row,
+      ref: { table: "closeout_step" as const, progressId, stepId },
+    })),
+    ...events.map(({ runId, sequence, ...row }) => ({
+      ...row,
+      checkId: row.checkId ?? "closeout",
+      ref: { table: "agent_closeout_event" as const, runId, sequence },
+    })),
+  ]
+    .sort((a, b) => a.at - b.at)
+    .slice(0, limit);
+}
+
 export function* finishedStepOutputSteps(
   q: Q,
   progressId: string,
@@ -155,9 +207,28 @@ export function* expiredCloseoutOutputsSteps(
   ];
 }
 
-export function* clearCloseoutOutputSteps(q: Q, ref: CloseoutOutputRef) {
+export function* clearCloseoutOutputSteps(
+  q: Q,
+  ref: CloseoutOutputRef,
+  expected?: Pick<StoredCloseoutOutput, "stdout" | "stderr">,
+) {
   const table = ref.table === "closeout_step" ? q.t.closeoutStep : q.t.agentCloseoutEvent;
-  yield* q.exec(q.orm.update(table).set(NO_OUTPUT).where(refWhere(q, ref)));
+  yield* q.exec(
+    q.orm
+      .update(table)
+      .set(NO_OUTPUT)
+      .where(
+        and(
+          refWhere(q, ref),
+          expected &&
+            and(
+              isNull(table.outputKey),
+              eq(table.stdout, expected.stdout),
+              eq(table.stderr, expected.stderr),
+            ),
+        ),
+      ),
+  );
 }
 
 export const CLOSEOUT_LOG_RETENTION_KEY = "closeout.log_retention_days";
