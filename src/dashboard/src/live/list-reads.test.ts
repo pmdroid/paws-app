@@ -192,7 +192,8 @@ async function reads(extra: number) {
   });
   const issues = stable(await provider.issues());
   const calls = store.calls();
-  return { calls, json: [issues, stable(await provider.overview())].map(digest) };
+  const overview = stable(await provider.overview());
+  return { calls, overviewCalls: store.calls() - calls, json: [issues, overview].map(digest) };
 }
 
 const digest = (json: string) => createHash("sha256").update(json).digest("hex");
@@ -215,5 +216,15 @@ describe("the issue list", () => {
     expect(large.calls).toBe(small.calls);
     expect(large.calls).toBeLessThanOrEqual(40);
     expect([small.json, large.json]).toEqual(BEFORE_BATCHING);
+  });
+});
+
+describe("the overview", () => {
+  test("reads the same store calls with 2 or 20 other items and returns its JSON from before batching", async () => {
+    const small = await reads(2);
+    const large = await reads(20);
+    expect(large.overviewCalls).toBe(small.overviewCalls);
+    expect(large.overviewCalls).toBeLessThanOrEqual(40);
+    expect([small.json[1], large.json[1]]).toEqual(BEFORE_BATCHING.map((json) => json[1]));
   });
 });
