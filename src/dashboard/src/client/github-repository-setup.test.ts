@@ -72,7 +72,9 @@ test("a connected workspace shows the Connected badge and the cached selector wi
   expect(root.querySelector("[data-status]")?.textContent).toContain("Updated just now.");
   expect(root.querySelector("[data-login],[data-refresh],[data-install]")).toBeNull();
   expect(root.textContent).not.toContain("Signed in as");
-  const boxes = [...root.querySelectorAll<HTMLInputElement>('input[name="mapping"]')];
+  const boxes = [
+    ...(root as unknown as HTMLElement).querySelectorAll<HTMLInputElement>('input[name="mapping"]'),
+  ];
   expect(boxes.map((box) => [box.dataset.repository, box.checked])).toEqual([
     ["acme/api", true],
     ["acme/web", false],
