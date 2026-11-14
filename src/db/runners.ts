@@ -556,6 +556,23 @@ export function* runnerForCertificateSteps(
   return row ? yield* getRunnerSteps(q, row.id) : null;
 }
 
+export function* currentRunnerCertificatePemSteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+): Steps<string | null> {
+  const { runnerCertificate: c } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ pem: c.pem })
+      .from(c)
+      .where(and(eq(c.runnerId, runnerId), isNull(c.revokedAt), gt(c.acceptedUntil, now)))
+      .orderBy(desc(c.notBefore), desc(c.fingerprint))
+      .limit(1),
+  );
+  return row?.pem ?? null;
+}
+
 function* insertCertificateSteps(q: Q, runnerId: string, certificate: StoredRunnerCertificate) {
   yield* q.exec(
     q.orm.insert(q.t.runnerCertificate).values({

@@ -14,4 +14,7 @@ export function createCommandStore(db: Database) {
   db.run(
     "CREATE TABLE IF NOT EXISTS retro_attempt (retro_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL) STRICT",
   );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS agent_credential (binding_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, agent TEXT NOT NULL, version INTEGER NOT NULL, digest TEXT NOT NULL, commands TEXT NOT NULL, upload TEXT, latest TEXT, files TEXT) STRICT",
+  );
 }

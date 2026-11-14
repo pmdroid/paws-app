@@ -1101,6 +1101,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           runnerFiles: runnerFileObjects(),
           eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
+          secretsDir: paths.secretsDir,
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),

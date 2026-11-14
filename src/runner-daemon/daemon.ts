@@ -3,12 +3,13 @@ import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
-import { openDatabase, sqliteDb } from "../db";
+import { openDatabase, sqliteDb, type Q } from "../db";
 import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import {
+  agentCredential,
   commandReceipt,
   pendingCommand,
   pendingRetroCommand,
@@ -18,6 +19,18 @@ import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
+  RunnerAgentCredentialFilesSchema,
+  RunnerAgentCredentialReceiptSchema,
+  agentCredentialContext,
+  agentCredentialReturnContext,
+  agentCredentialDigest,
+  openForRunner,
+  sealForRunner,
+  runnerCommandAccount,
+  type RunnerAgentCredential,
+  type RunnerAgentCredentialFiles,
+  type RunnerAgentCredentialStore,
+  type RunnerCodingAgent,
   type RunnerAccountCapability,
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
@@ -36,6 +49,7 @@ import {
   type RunnerCommand,
   type RunnerArtifactChunk,
   type RunnerCommandRejection,
+  type RunnerCommandVerification,
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerAgentUser,
@@ -131,6 +145,8 @@ export const EnrollmentTokenSchema = z
   .max(256)
   .regex(/^[A-Za-z0-9_-]+$/);
 
+class CredentialUnavailable extends Error {}
+
 const RETIRED_RECEIPT_RETENTION_MS = 24 * 60 * 60_000;
 const RETIRED_PRUNE_INTERVAL_MS = 10 * 60_000;
 const IDENTITY_REJECTED_RETRY_MS = 60_000;
@@ -149,6 +165,7 @@ export type RunnerDaemonOptions = {
   /** Host metrics sent with every heartbeat. */
   sampleHost?: () => RunnerHostStatus;
   accountBindings?: () => RunnerAccountCapability["bindings"];
+  agentCredentials?: RunnerAgentCredentialStore;
   log?: (line: string) => void;
 };
 
@@ -400,6 +417,186 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return [];
     }
   }
+  const credentialFiles = (text: string) =>
+    RunnerAgentCredentialFilesSchema.parse(JSON.parse(text));
+  const heldContext = (bindingId: string) => `paws-agent-credential-held:${bindingId}`;
+  const sealHeld = (bindingId: string, files: RunnerAgentCredentialFiles) =>
+    sealForRunner(paired().certificate, JSON.stringify(files), heldContext(bindingId));
+  const openHeld = (bindingId: string, sealed: string) =>
+    credentialFiles(openForRunner(localKey(options.root), sealed, heldContext(bindingId)));
+  function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
+    const named = runnerCommandAccount(command);
+    const files = options.agentCredentials;
+    if (!named || !files) return;
+    const { accountId, bindingId } = named.account;
+    const where = eq(agentCredential.bindingId, bindingId);
+    const held = q.select().from(agentCredential).where(where).get();
+    if (held && held.accountId !== accountId) throw new Error("Agent account binding changed.");
+    let written: RunnerAgentCredentialFiles = [];
+    try {
+      if (held?.files) written = openHeld(bindingId, held.files);
+      else if (credential.sealed) {
+        const context = agentCredentialContext(command.id, accountId, credential.version);
+        written = credentialFiles(
+          openForRunner(localKey(options.root), credential.sealed, context),
+        );
+      }
+      if (written.length) files.write(named.account, named.agent, written);
+    } catch (error) {
+      journalCaught(error, "daemon.receiveCredential", null);
+      if (!held) files.remove(named.account, named.agent);
+      throw new CredentialUnavailable();
+    }
+    if (held) {
+      const commands = JSON.stringify([...(JSON.parse(held.commands) as string[]), command.id]);
+      yield* tx.exec(q.update(agentCredential).set({ commands }).where(where));
+      return;
+    }
+    yield* tx.exec(
+      q.insert(agentCredential).values({
+        bindingId,
+        accountId,
+        agent: named.agent,
+        version: credential.version,
+        digest: agentCredentialDigest(written),
+        commands: JSON.stringify([command.id]),
+        ...(written.length ? { files: sealHeld(bindingId, written) } : {}),
+      }),
+    );
+  }
+  function heldCredential(commandId: string) {
+    return q
+      .select()
+      .from(agentCredential)
+      .all()
+      .find((row) => (JSON.parse(row.commands) as string[]).includes(commandId));
+  }
+  function restoreCredentials(commandId: string) {
+    const row = heldCredential(commandId);
+    const credentials = options.agentCredentials;
+    if (!row?.files || !credentials) return;
+    const account = { accountId: row.accountId, bindingId: row.bindingId };
+    try {
+      credentials.write(
+        account,
+        row.agent as RunnerCodingAgent,
+        openHeld(row.bindingId, row.files),
+      );
+    } catch (error) {
+      journalCaught(error, "daemon.restoreCredentials", null);
+    }
+  }
+  function returnCredentials(commandId: string, executionId: string, returned: Buffer | null) {
+    const row = heldCredential(commandId);
+    if (!row) return;
+    const commands = JSON.stringify(
+      (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
+    );
+    const where = eq(agentCredential.bindingId, row.bindingId);
+    let files: RunnerAgentCredentialFiles;
+    try {
+      if (returned === null) throw new Error("credentials.json is missing");
+      files = credentialFiles(
+        openForRunner(
+          localKey(options.root),
+          returned.toString("utf8"),
+          agentCredentialReturnContext(executionId),
+        ),
+      );
+    } catch (error) {
+      journal(
+        `runner.agent_credential.not_returned binding=${row.bindingId} command=${commandId} reason=${error instanceof Error ? error.message : "unreadable"}`,
+      );
+      q.update(agentCredential).set({ commands }).where(where).run();
+      return;
+    }
+    const newest = row.latest ?? row.upload;
+    const known = newest ? agentCredentialDigest(openHeld(row.bindingId, newest)) : row.digest;
+    const changed = files.length > 0 && agentCredentialDigest(files) !== known;
+    q.update(agentCredential)
+      .set({
+        commands,
+        ...(files.length ? { files: sealHeld(row.bindingId, files) } : {}),
+        ...(changed ? { latest: sealHeld(row.bindingId, files) } : {}),
+      })
+      .where(where)
+      .run();
+  }
+  let syncing: Promise<void> | undefined;
+  function syncCredentials(live: readonly { runId: string; generation: number }[]) {
+    syncing ??= uploadCredentials(live).finally(() => {
+      syncing = undefined;
+    });
+    return syncing;
+  }
+  async function uploadCredentials(live: readonly { runId: string; generation: number }[]) {
+    const files = options.agentCredentials;
+    if (!files) return;
+    const running = new Set(live.map(({ runId, generation }) => `${runId}:${generation}`));
+    const waiting = (id: string) => {
+      const row = q.select().from(pendingCommand).where(eq(pendingCommand.id, id)).get();
+      if (!row) return false;
+      if (row.acknowledged !== 2) return true;
+      const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+      return (
+        command.expiresAt > now() ||
+        ("generation" in command && running.has(`${command.runId}:${command.generation}`))
+      );
+    };
+    try {
+      for (const { bindingId } of q
+        .select({ bindingId: agentCredential.bindingId })
+        .from(agentCredential)
+        .all()) {
+        const where = eq(agentCredential.bindingId, bindingId);
+        try {
+          for (;;) {
+            const row = q.select().from(agentCredential).where(where).get();
+            if (!row) break;
+            if (row.upload === null && row.latest !== null) {
+              q.update(agentCredential)
+                .set({ upload: row.latest, latest: null })
+                .where(where)
+                .run();
+              continue;
+            }
+            if (row.upload !== null) {
+              const sent = openHeld(bindingId, row.upload);
+              const { result } = RunnerAgentCredentialReceiptSchema.parse(
+                await authenticated("/v1/agent-credentials", "POST", {
+                  accountId: row.accountId,
+                  version: row.version + 1,
+                  files: sent,
+                }),
+              );
+              if (result !== "written") {
+                journal(`runner.agent_credential.kept binding=${bindingId} result=${result}`);
+                break;
+              }
+              q.update(agentCredential)
+                .set({
+                  version: row.version + 1,
+                  digest: agentCredentialDigest(sent),
+                  upload: null,
+                })
+                .where(where)
+                .run();
+              continue;
+            }
+            const account = { accountId: row.accountId, bindingId };
+            if ((JSON.parse(row.commands) as string[]).some(waiting) || files.busy(account)) break;
+            files.remove(account, row.agent as RunnerCodingAgent);
+            q.delete(agentCredential).where(where).run();
+            break;
+          }
+        } catch (error) {
+          journalCaught(error, "daemon.syncCredentials", null);
+        }
+      }
+    } catch (error) {
+      journalCaught(error, "daemon.uploadCredentials", null);
+    }
+  }
   async function pollCommands(path: string) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
@@ -429,29 +626,36 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const rejected: RunnerCommandRejection[] = [];
     const deniedRepositories = new Set<string>();
     for (const envelope of response.commands) {
-      const result = await store.transaction(function* (tx) {
-        const verified = verifyRunnerCommand(envelope, {
-          trustedKeys,
-          runnerId: identity.runnerId,
-          workspaceId: identity.workspaceId,
-          now: now(),
-          allowedRepositories: options.allowedRepositories,
-          accountBindings,
-          claimCommand,
+      const result = await store
+        .transaction(function* (tx) {
+          const verified = verifyRunnerCommand(envelope, {
+            trustedKeys,
+            runnerId: identity.runnerId,
+            workspaceId: identity.workspaceId,
+            now: now(),
+            allowedRepositories: options.allowedRepositories,
+            accountBindings,
+            claimCommand,
+          });
+          if (
+            verified.ok &&
+            (verified.command.type === "helper") !== (path === "/v1/helper-commands")
+          )
+            throw new Error("Runner command arrived through the wrong queue.");
+          if (verified.ok && envelope.credential)
+            yield* receiveCredential(tx, verified.command, envelope.credential);
+          if (verified.ok)
+            yield* tx.exec(
+              q
+                .insert(pendingCommand)
+                .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
+            );
+          return verified;
+        })
+        .catch((error: unknown): RunnerCommandVerification => {
+          if (!(error instanceof CredentialUnavailable)) throw error;
+          return { ok: false, reason: "account_unavailable" };
         });
-        if (
-          verified.ok &&
-          (verified.command.type === "helper") !== (path === "/v1/helper-commands")
-        )
-          throw new Error("Runner command arrived through the wrong queue.");
-        if (verified.ok)
-          yield* tx.exec(
-            q
-              .insert(pendingCommand)
-              .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
-          );
-        return verified;
-      });
       if (!result.ok) rejected.push(result.reason);
       if (!result.ok && result.repository) deniedRepositories.add(result.repository);
     }
@@ -562,6 +766,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     return false;
   }
   const api = {
+    credentialRecipient: () => paired().certificate,
+    credentialSync: () => syncing ?? Promise.resolve(),
+    carriesCredential: (commandId: string) =>
+      options.agentCredentials !== undefined && heldCredential(commandId) !== undefined,
+    returnCredentials,
+    restoreCredentials,
     status,
     identityRetryIn,
     identityReplaced() {
@@ -703,6 +913,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
+      if (live) void syncCredentials(live);
       return response;
     },
     /** The bundle bytes as Paws sent them. The caller checks size and checksum before using them. */

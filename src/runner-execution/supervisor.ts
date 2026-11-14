@@ -192,6 +192,7 @@ export function createDirectWorkerSupervisor(options: {
   workRoot?: string;
   /** Installs current skills into a home before its worker starts, and pins them for the run. */
   skills?: Pick<RunnerSkillInstaller, "prepareHome" | "hold" | "release">;
+  restoreCredentials?: (commandId: string) => void;
   launch?: (
     executionId: string,
     home: string,
@@ -456,6 +457,7 @@ export function createDirectWorkerSupervisor(options: {
           },
         );
         held.set(executionId, home);
+        options.restoreCredentials?.(readRunnerJob(options.spool, executionId).command.id);
       }
       if (asAgent && options.spool) {
         const { command } = readRunnerJob(options.spool, executionId);
