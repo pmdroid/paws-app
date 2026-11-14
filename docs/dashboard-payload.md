@@ -31,3 +31,5 @@ dashboard payload minute=2026-10-27T09:14:00.000Z largest_bytes=144410 path=/api
 ```
 
 `minute` is the start of the minute, `path` is the route that served the largest body, and `responses` counts the bodies served in that minute. The line is written when the minute ends, to the process's standard error with its other journal lines, so it lands in `journalctl` wherever Paws runs as a service. Search for `dashboard payload` to see growth over time.
+
+Issue detail check findings and detail, including agent Closeout attempts, and CI check log tails over 4,096 UTF-8 bytes carry a short preview. Open a check to load its complete findings and detail from the check log endpoint, which returns optional `findings` and `detail` fields alongside the output streams. CI checks also carry a local `logPath`. It uses the same check log endpoint with `ci=1`, the CI round as `:n`, and the one-based check index as `:check`. This serves the complete stored tail with `full=1`, even without an external CI URL. Open running checks refresh loaded text with each new detail snapshot.

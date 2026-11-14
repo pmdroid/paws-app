@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
@@ -20,7 +20,6 @@ export function* getConversationSteps(q: Q, itemId: string) {
   const row = yield* q.one(
     q.orm
       .select({
-        entries: jsonText(q, linearConversation.entries),
         transcript: linearConversation.transcript,
         transcriptOffset: linearConversation.transcriptOffset,
         blocked: linearConversation.blocked,
@@ -29,15 +28,75 @@ export function* getConversationSteps(q: Q, itemId: string) {
       .from(linearConversation)
       .where(eq(linearConversation.itemId, itemId)),
   );
+  const entries = row ? yield* storedEntries(q, itemId) : "[]";
   return row
     ? {
-        entries: row.entries,
+        entries,
         transcript: row.transcript,
         transcriptOffset: row.transcriptOffset,
         blocked: row.blocked === 1,
         blockedAt: row.blocked === 1 ? (row.blockedAt ?? 0) : null,
       }
     : { entries: "[]", transcript: null, transcriptOffset: 0, blocked: false, blockedAt: null };
+}
+
+function* storedEntries(q: Q, itemId: string) {
+  const { linearConversationEntry } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ entry: jsonText(q, linearConversationEntry.entry) })
+      .from(linearConversationEntry)
+      .where(eq(linearConversationEntry.itemId, itemId))
+      .orderBy(asc(linearConversationEntry.position)),
+  );
+  return `[${rows.map((row) => row.entry).join(",")}]`;
+}
+
+function* appendEntries(q: Q, itemId: string, entries: string) {
+  const { linearConversationEntry } = q.t;
+  const list = JSON.parse(entries) as unknown[];
+  const counted = yield* q.one(
+    q.orm
+      .select({
+        count: sql<number>`count(*)`,
+        differs: sql<
+          number | null
+        >`min(${linearConversationEntry.position}) FILTER (WHERE ${linearConversationEntry.position} < ${list.length} AND ${linearConversationEntry.entry} IS DISTINCT FROM (${entries}::text::jsonb -> ${linearConversationEntry.position}::int))`,
+      })
+      .from(linearConversationEntry)
+      .where(eq(linearConversationEntry.itemId, itemId)),
+  );
+  const stored = Number(counted?.count ?? 0);
+  const differs = counted?.differs;
+  const kept = Math.min(
+    stored,
+    list.length,
+    differs === null || differs === undefined ? Infinity : Number(differs),
+  );
+  if (kept < stored)
+    yield* q.exec(
+      q.orm
+        .delete(linearConversationEntry)
+        .where(
+          and(
+            eq(linearConversationEntry.itemId, itemId),
+            gte(linearConversationEntry.position, kept),
+          ),
+        ),
+    );
+  const added = list.slice(kept);
+  if (added.length === 0) return;
+  const createdAt = Date.now();
+  yield* q.exec(
+    q.orm.insert(linearConversationEntry).values(
+      added.map((entry, index) => ({
+        itemId,
+        position: kept + index,
+        entry: jsonFromText(q, JSON.stringify(entry)),
+        createdAt,
+      })),
+    ),
+  );
 }
 
 export async function getConversation(store: Db, itemId: string): Promise<Conversation> {
@@ -59,30 +118,31 @@ export function* saveConversationSteps(
   blocked = false,
   transcriptOffset = 0,
 ) {
-  const { linearConversation } = q.t;
-  const higher = sql`GREATEST`;
-  yield* q.exec(
-    q.orm
-      .insert(linearConversation)
-      .values({
-        itemId,
-        entries: jsonFromText(q, entries),
-        transcript,
-        blocked: blocked ? 1 : 0,
-        transcriptOffset,
-        blockedAt: blocked ? Date.now() : null,
-      })
-      .onConflictDoUpdate({
-        target: linearConversation.itemId,
-        set: {
-          entries: sql`excluded.entries`,
-          transcript: sql`excluded.transcript`,
-          transcriptOffset: sql`excluded.transcript_offset`,
-          blocked: sql`${higher}(${linearConversation.blocked},excluded.blocked)`,
-          blockedAt: keptBlockedAt(q),
-        },
-      }),
-  );
+  yield* q.transaction(function* (t) {
+    const { linearConversation } = t.t;
+    const higher = sql`GREATEST`;
+    yield* t.exec(
+      t.orm
+        .insert(linearConversation)
+        .values({
+          itemId,
+          transcript,
+          blocked: blocked ? 1 : 0,
+          transcriptOffset,
+          blockedAt: blocked ? Date.now() : null,
+        })
+        .onConflictDoUpdate({
+          target: linearConversation.itemId,
+          set: {
+            transcript: sql`excluded.transcript`,
+            transcriptOffset: sql`excluded.transcript_offset`,
+            blocked: sql`${higher}(${linearConversation.blocked},excluded.blocked)`,
+            blockedAt: keptBlockedAt(t),
+          },
+        }),
+    );
+    yield* appendEntries(t, itemId, entries);
+  });
 }
 
 export async function saveConversation(
@@ -109,7 +169,6 @@ export function* blockConversationSteps(q: Q, itemId: string, now: number) {
       .insert(linearConversation)
       .values({
         itemId,
-        entries: jsonFromText(q, "[]"),
         transcript: null,
         blocked: 1,
         blockedAt: now,

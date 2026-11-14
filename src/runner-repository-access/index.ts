@@ -224,6 +224,8 @@ export function createAgentReadTokens(options: {
 }) {
   const now = options.now ?? Date.now;
   const leases = new Map<string, AgentReadLease>();
+  const opening = new Map<string, Promise<boolean>>();
+  const closed = new Set<string>();
   const leftover = (() => {
     try {
       return [...(options.store?.read() ?? [])];
@@ -260,7 +262,7 @@ export function createAgentReadTokens(options: {
       expiresAt: Math.min(credential.expiresAt, checkedAt + MAX_TOKEN_TTL_MS),
     };
   }
-  return {
+  const api = {
     async open(input: {
       commandId: string;
       itemId: string;
@@ -273,6 +275,10 @@ export function createAgentReadTokens(options: {
         const installationId = await options.installationForRepository(input.repository);
         if (!installationId) throw new Error("no GitHub App installation covers the repository");
         const current = await mint(input.repository, installationId);
+        if (closed.has(input.commandId)) {
+          await options.revoke(current.token);
+          return false;
+        }
         leases.set(input.commandId, {
           ...lease,
           repository: input.repository,
@@ -342,6 +348,8 @@ export function createAgentReadTokens(options: {
       return leases.get(commandId)?.minted ?? [];
     },
     async close(commandId: string): Promise<void> {
+      closed.add(commandId);
+      await opening.get(commandId);
       const lease = leases.get(commandId);
       if (!lease) return;
       leases.delete(commandId);
@@ -353,6 +361,16 @@ export function createAgentReadTokens(options: {
           `${label(lease)} revoke failed: ${failed.reason instanceof Error ? failed.reason.message : String(failed.reason)}`,
         );
       else journal(`${label(lease)} revoked refreshes=${lease.refreshes}`);
+    },
+  };
+  return {
+    ...api,
+    async open(input: Parameters<typeof api.open>[0]) {
+      if (closed.has(input.commandId)) return false;
+      if (leases.has(input.commandId)) return true;
+      return remember(opening, input.commandId, () => api.open(input)).finally(() =>
+        opening.delete(input.commandId),
+      );
     },
   };
 }
@@ -374,8 +392,30 @@ export function createAgentReadAccess(options: { work: RunnerWork; agentRead: Ag
         token: received.token,
       });
       if (command.type !== "run" || !command.githubRead) return denied();
-      const credential = await options.agentRead.credential(command.id);
-      if (!credential) return denied();
+      let credential = await options.agentRead.credential(command.id);
+      if (!credential) {
+        await options.agentRead.open({
+          commandId: command.id,
+          itemId: command.itemId,
+          runId: command.runId,
+          repository: `${command.repository.owner}/${command.repository.repo}`,
+        });
+        credential = await options.agentRead.credential(command.id);
+      }
+      if (!credential) return unavailable();
+      try {
+        await options.work.authorizeAsync({
+          runnerId,
+          runId: command.runId,
+          generation: input.generation,
+          token: received.token,
+        });
+      } catch (error) {
+        await options.work
+          .currentAsync(command.runId, command.generation)
+          .catch(() => options.agentRead.close(command.id));
+        throw error;
+      }
       return Response.json(credential, { headers: { "cache-control": "no-store" } });
     } catch (error) {
       journalCaught(error, "runner-repository-access.createAgentReadAccess", null);

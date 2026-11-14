@@ -1,5 +1,5 @@
 {
-  "id": "4f19684a-f1e4-497b-835c-f24af05c00f1",
+  "id": "2ef6360e-8bb2-4257-9fff-09e18bf18891",
   "prevId": "698e4a63-7969-4415-a5e5-d3e63952a176",
   "version": "7",
   "dialect": "postgresql",
@@ -580,12 +580,6 @@
           "primaryKey": true,
           "notNull": true
         },
-        "entries": {
-          "name": "entries",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
         "transcript": {
           "name": "transcript",
           "type": "text",
@@ -634,6 +628,58 @@
           "value": "blocked IN (0,1)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.linear_conversation_entry": {
+      "name": "linear_conversation_entry",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entry": {
+          "name": "entry",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "linear_conversation_entry_item_id_linear_conversation_item_id_fk": {
+          "name": "linear_conversation_entry_item_id_linear_conversation_item_id_fk",
+          "tableFrom": "linear_conversation_entry",
+          "tableTo": "linear_conversation",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["item_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "linear_conversation_entry_item_id_position_pk": {
+          "name": "linear_conversation_entry_item_id_position_pk",
+          "columns": ["item_id", "position"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.linear_installation_permission": {
@@ -4182,24 +4228,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
-        },
-        "output_key": {
-          "name": "output_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "checks": {
           "name": "checks",
@@ -10069,24 +10097,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
-        },
-        "output_key": {
-          "name": "output_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "log_path": {
           "name": "log_path",
