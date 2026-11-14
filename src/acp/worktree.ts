@@ -168,10 +168,10 @@ export async function createWorktree(options: {
   startRef?: string;
   /** The run's agent exclusions. Missing means nothing is left out. */
   checkoutExclusions?: readonly string[];
-  remoteUrl?: string;
+  cloneFrom?: string;
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<Worktree> {
-  if (options.remoteUrl !== undefined) {
+  if (options.cloneFrom !== undefined) {
     const path = worktreePath(options.pawsRoot, options.itemId);
     return onMirror(path, () => cloneWorktree(options));
   }
@@ -186,7 +186,7 @@ async function cloneWorktree(options: Parameters<typeof createWorktree>[0]): Pro
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   try {
     if (fresh)
-      await (options.networkGit ?? git)(["clone", "--no-checkout", "--", options.remoteUrl!, path]);
+      await (options.networkGit ?? git)(["clone", "--no-checkout", "--", options.cloneFrom!, path]);
     const startRef = options.startRef ?? (await resolveStartRef(`${path}/.git`));
     if (!startRef) throw new Error("Repository has no main or HEAD to start from");
     if (fresh) await git(["-C", path, "checkout", "--no-track", "-b", branch, startRef]);

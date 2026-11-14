@@ -10701,7 +10701,7 @@ export class Orchestrator {
           ...placement,
           ...(this.mirrorsOff()
             ? {
-                remoteUrl: repository.remoteUrl,
+                cloneFrom: repository.remoteUrl,
                 networkGit: await this.repositoryGit(item, repository, signal, "write"),
               }
             : {}),

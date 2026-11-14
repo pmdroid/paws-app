@@ -235,7 +235,7 @@ test("plain item clones reuse work and are removed without creating repos", asyn
   const source = join(root, "source");
   await initRepo(source);
   const pawsRoot = join(root, "paws");
-  const options = { remoteUrl: source, owner: "acme", repo: "demo", itemId: "ENG-9", pawsRoot };
+  const options = { cloneFrom: source, owner: "acme", repo: "demo", itemId: "ENG-9", pawsRoot };
   const created = await createWorktree(options);
   await writeFile(join(created.path, "notes.txt"), "work in progress");
   const reused = await createWorktree(options);

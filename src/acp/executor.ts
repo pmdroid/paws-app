@@ -39,7 +39,7 @@ export async function executeItem({
   } else
     worktree = await createWorktree({
       ...placement,
-      ...(stored ? { remoteUrl: options.remoteUrl, networkGit: options.networkGit } : {}),
+      ...(stored ? { cloneFrom: options.remoteUrl, networkGit: options.networkGit } : {}),
       ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
     });
   const run = await (options.promptRunner ?? runAgent)({
