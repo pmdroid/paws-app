@@ -227,6 +227,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "agents",
     "brief",
     "brief/preview",
+    "closeout",
     "findings",
     "hooks",
     "merging",
