@@ -1,5 +1,5 @@
 {
-  "id": "32355267-29b0-4cc7-8b39-b0bea290b47d",
+  "id": "05394946-89db-45a0-83fe-9e435eb32417",
   "prevId": "9d49a6a8-3f8c-4592-aba2-85e6e06fbcff",
   "version": "7",
   "dialect": "postgresql",
@@ -4265,24 +4265,6 @@
           "notNull": true,
           "default": 0
         },
-        "output_key": {
-          "name": "output_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "checks": {
           "name": "checks",
           "type": "text",
@@ -4314,29 +4296,7 @@
           "notNull": false
         }
       },
-      "indexes": {
-        "agent_closeout_event_item": {
-          "name": "agent_closeout_event_item",
-          "columns": [
-            {
-              "expression": "item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "agent_closeout_event_run_id_sequence_pk": {
@@ -10174,24 +10134,6 @@
           "notNull": true,
           "default": 0
         },
-        "output_key": {
-          "name": "output_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "log_path": {
           "name": "log_path",
           "type": "text",
@@ -15871,23 +15813,7 @@
           "notNull": true
         }
       },
-      "indexes": {
-        "scheduler_project": {
-          "name": "scheduler_project",
-          "columns": [
-            {
-              "expression": "project_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "scheduler_admission_item_id_work_item_id_fk": {
           "name": "scheduler_admission_item_id_work_item_id_fk",

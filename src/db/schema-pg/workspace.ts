@@ -20,6 +20,7 @@ export const workspace = pgTable(
     linearOrganizationId: text("linear_organization_id").notNull(),
     name: text().notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    findingGroupingOff: integer("finding_grouping_off").notNull().default(0),
   },
   (table) => [unique().on(table.linearOrganizationId)],
 );

@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
+import { readSettingSteps, updateSettingSteps } from "./settings";
 
 /** What Paws keeps from one version in an npm registry document. */
 export type NpmVersionMetadata = {
@@ -238,15 +239,11 @@ export async function listAgentVersions(store: Db, agent?: string): Promise<Agen
   return store.run((q) => listAgentVersionsSteps(q, agent));
 }
 
+const AGENT_CATALOG_REFRESHED_AT = "agent_catalog_refreshed_at";
+
 export function* lastAgentCatalogRefreshSteps(q: Q) {
-  const { agentCatalogRefresh } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({ at: agentCatalogRefresh.completedAt })
-      .from(agentCatalogRefresh)
-      .where(eq(agentCatalogRefresh.id, 1)),
-  );
-  return row?.at ?? null;
+  const value = yield* readSettingSteps(q, AGENT_CATALOG_REFRESHED_AT);
+  return value === null ? null : Number(value);
 }
 
 /** When the last complete refresh of the agent catalog ran, or null before the first one. */
@@ -255,13 +252,7 @@ export async function lastAgentCatalogRefresh(store: Db): Promise<number | null>
 }
 
 export function* markAgentCatalogRefreshedSteps(q: Q, at: number) {
-  const { agentCatalogRefresh } = q.t;
-  yield* q.exec(
-    q.orm
-      .insert(agentCatalogRefresh)
-      .values({ id: 1, completedAt: at })
-      .onConflictDoUpdate({ target: agentCatalogRefresh.id, set: { completedAt: at } }),
-  );
+  yield* updateSettingSteps(q, AGENT_CATALOG_REFRESHED_AT, () => String(at), at);
 }
 
 /** Record a refresh in which every agent was evaluated on fresh npm reads. */

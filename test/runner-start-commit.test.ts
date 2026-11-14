@@ -12,7 +12,9 @@ import {
   consumeWorkspaceBootstrap,
   getWorkItem,
   insertQueuedItem,
+  getItemCandidate,
   putWorkspaceUser,
+  recordItemCandidate,
   recordLinearInstallation,
   saveCheckpoint,
 } from "../src/db";
@@ -21,6 +23,7 @@ import {
   createRemoteAgentRunner,
   ensureStartOnRemote,
   RemoteStartUnverified,
+  type GitHubCommits,
 } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -301,6 +304,37 @@ test("a checkpoint on neither the PR branch nor main starts from the branch head
   ]);
 });
 
+test("with mirrors off a failed ancestry read retries preparation and keeps the hidden checkpoint", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "works",
+    hiddenCheckpoint: { runnerVersion: "0.1.67", stored: { ancestry: "fails-once" } },
+  });
+  expect(result.ancestryFailures).toBe(1);
+  expect((result.firstError as Error | undefined)?.name, result.detail).toBe(
+    "CheckpointLookupFailed",
+  );
+  expect(isTransient(result.firstError)).toBe(true);
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
+  expect(result.thoughts).toEqual([]);
+  expect(result.wipCommit).toBe(result.hiddenWip!);
+});
+
+test("with mirrors off a hidden checkpoint whose ancestry reads invalid is dropped", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "works",
+    hiddenCheckpoint: { runnerVersion: "0.1.67", offBranch: true, stored: {} },
+  });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.offersRestore, result.detail).toBe(false);
+  expect(result.baseSha).toBe(result.prHead);
+  expect(result.thoughts).toEqual([
+    `The saved work at ${result.hiddenWip!.slice(0, 8)} is on neither paws/item at ${result.prHead.slice(0, 8)} nor main, so this run continues from ${result.prHead.slice(0, 8)} and the agent redoes the rest.\n`,
+  ]);
+});
+
 test("a runner older than the hidden checkpoint release gets a run command without restoreCheckpoint", async () => {
   const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.66" });
   expect(result.error, result.detail).toBeUndefined();
@@ -354,6 +388,7 @@ async function startScenario(input: {
     rebasedOnEarlierMain?: true;
     lookup?: "fails";
     offBranch?: true;
+    stored?: { ancestry?: "fails-once" };
   };
   runnerVersion?: string;
 }) {
@@ -462,6 +497,37 @@ async function startScenario(input: {
     return git(args.map((arg) => (arg === GITHUB_URL ? origin : arg)));
   };
 
+  let ancestryArmed = false;
+  let ancestryFailures = 0;
+  const storedMode = input.hiddenCheckpoint?.stored;
+  const githubCommits: GitHubCommits = {
+    ref: (name) =>
+      git(["--git-dir", origin, "rev-parse", "--verify", "--quiet", `${name}^{commit}`]).then(
+        (sha) => sha || null,
+        () => null,
+      ),
+    async contains(tip, sha) {
+      if (ancestryArmed && storedMode?.ancestry === "fails-once" && ancestryFailures === 0) {
+        ancestryFailures++;
+        throw new Error("GitHub GET compare failed with status 502");
+      }
+      return (
+        tip === sha ||
+        git(["--git-dir", origin, "merge-base", "--is-ancestor", sha, tip]).then(
+          () => true,
+          () => false,
+        )
+      );
+    },
+    async commit(sha) {
+      ancestryArmed = true;
+      const [subject = "", parents = ""] = (
+        await git(["--git-dir", origin, "log", "-1", "--format=%s%n%P", sha])
+      ).split("\n");
+      return { subject, parents: parents.split(" ").filter(Boolean) };
+    },
+  };
+
   const { db, close } = await tempStore();
   const exec = (query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
   const now = Date.now();
@@ -541,6 +607,13 @@ async function startScenario(input: {
         }
       : {}),
   });
+  if (storedMode)
+    await recordItemCandidate(db, {
+      itemId: item.id,
+      sha: prHead,
+      branch: BRANCH,
+      recordedAt: now,
+    });
   mkdirSync(join(root, "runs"), { recursive: true });
 
   const keys = generateKeyPairSync("ed25519");
@@ -559,6 +632,7 @@ async function startScenario(input: {
     health,
     pollIntervalMs: 5,
     placement: createRunnerPlacement({ store: db }),
+    ...(storedMode ? { storedCandidates: () => githubCommits } : {}),
     async fetchCandidate(candidate) {
       await git([
         "--git-dir",
@@ -624,14 +698,19 @@ async function startScenario(input: {
   let error: unknown;
   let retried = false;
   let pendingBetween: string | undefined;
+  let firstError: unknown;
   try {
     for (
       let attempt = 0;
-      attempt < (input.failFirstDispatch || input.cancelFirstRun ? 2 : 1);
+      attempt <
+      (input.failFirstDispatch || input.cancelFirstRun || storedMode?.ancestry === "fails-once"
+        ? 2
+        : 1);
       attempt++
     ) {
       if (attempt) {
         pendingBetween = (await getWorkItem(db, item.id))?.checkpoint?.lostCommits;
+        firstError ??= error;
         assigned = undefined;
       }
       error = undefined;
@@ -670,7 +749,11 @@ async function startScenario(input: {
     return {
       error,
       base,
-      head: await git(["--git-dir", mirror, "rev-parse", REF]),
+      head: storedMode
+        ? (await getItemCandidate(db, item.id))?.sha
+        : await git(["--git-dir", mirror, "rev-parse", REF]),
+      firstError,
+      ancestryFailures,
       prHead,
       localHead,
       pushes,
