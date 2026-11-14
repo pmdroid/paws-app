@@ -386,3 +386,38 @@ test("a sign-in another worker removed during its cleanup is written back while 
     expect(readFileSync(credentials, "utf8")).toBe('{"claudeAiOauth":{"refreshToken":"r9"}}');
   });
 }, 30_000);
+
+test("after a sign-out moves the stored version on, the next sign-in uploads past it instead of the stale refresh", async () => {
+  await withRunner(async ({ daemon, home, uploads, plane }) => {
+    plane.commands = () => [command("check-9", "login_check")];
+    await daemon.pollCommands();
+    const accountHome = openRunnerAccountHome(home, account, "claude");
+    const credentials = join(accountHome, ".claude/.credentials.json");
+    rmSync(credentials);
+    writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
+    agentTurn(daemon, home, "check-9");
+    plane.receipt = "stale_version";
+    await sync(daemon);
+    expect(sent(uploads)).toEqual([[4, token("r2")]]);
+
+    plane.version = 4;
+    plane.sealed = false;
+    plane.receipt = "written";
+    plane.commands = () => [command("login-9", "login")];
+    await daemon.pollCommands();
+    const signIn = openRunnerAccountHome(home, account, "claude", { signIn: true });
+    writeFileSync(
+      join(signIn, ".claude/.credentials.json"),
+      '{"claudeAiOauth":{"refreshToken":"r3"}}',
+      {
+        mode: 0o600,
+      },
+    );
+    agentTurn(daemon, home, "login-9");
+    await sync(daemon);
+    expect(sent(uploads)).toEqual([
+      [4, token("r2")],
+      [5, token("r3")],
+    ]);
+  });
+}, 30_000);

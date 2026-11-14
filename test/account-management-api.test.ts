@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { AGENT_ACCOUNTS_RETIRED, createAccountManagement } from "../src/account-management";
-import { writeAgentCredentialCiphertextSteps } from "../src/db";
+import { centralAgentAccountsSteps, writeAgentCredentialCiphertextSteps } from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
 import { forEachDialect, seed, withoutForeignKeys } from "./dialects";
 import { seedRunner } from "./runner-rows";
@@ -164,6 +164,11 @@ forEachDialect((connect) => {
       ]);
       expect((await send("DELETE", `/${home.id}/credential`)).status).toBe(200);
       expect((await send("GET", "")).body.accounts[0]?.credential).toBeNull();
+      const candidates = () =>
+        db
+          .run((q) => centralAgentAccountsSteps(q, "acme", "claude"))
+          .then((rows) => rows.map((row) => row.id));
+      expect(await candidates()).toEqual([work.id]);
       const upload = (version: number) =>
         db.transaction((q) =>
           writeAgentCredentialCiphertextSteps(q, {
@@ -176,6 +181,7 @@ forEachDialect((connect) => {
         );
       expect(await upload(2)).toBe("stale_version");
       expect(await upload(3)).toBe("written");
+      expect(await candidates()).toEqual([home.id, work.id]);
       expect((await send("GET", "")).body.accounts[0]?.credential).toEqual({
         refreshedAt: NOW,
         runner: "R2",

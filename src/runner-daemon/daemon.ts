@@ -430,8 +430,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (!named || !files) return;
     const { accountId, bindingId } = named.account;
     const where = eq(agentCredential.bindingId, bindingId);
-    const held = q.select().from(agentCredential).where(where).get();
-    if (held && held.accountId !== accountId) throw new Error("Agent account binding changed.");
+    const stored = q.select().from(agentCredential).where(where).get();
+    if (stored && stored.accountId !== accountId) throw new Error("Agent account binding changed.");
+    const moved = stored !== undefined && credential.version > stored.version;
+    const held = moved ? undefined : stored;
     let written: RunnerAgentCredentialFiles = [];
     try {
       if (held?.files) written = openHeld(bindingId, held.files);
@@ -450,6 +452,22 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (held) {
       const commands = JSON.stringify([...(JSON.parse(held.commands) as string[]), command.id]);
       yield* tx.exec(q.update(agentCredential).set({ commands }).where(where));
+      return;
+    }
+    if (stored) {
+      yield* tx.exec(
+        q
+          .update(agentCredential)
+          .set({
+            version: credential.version,
+            digest: agentCredentialDigest(written),
+            commands: JSON.stringify([...(JSON.parse(stored.commands) as string[]), command.id]),
+            files: written.length ? sealHeld(bindingId, written) : null,
+            upload: null,
+            latest: null,
+          })
+          .where(where),
+      );
       return;
     }
     yield* tx.exec(
