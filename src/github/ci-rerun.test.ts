@@ -92,7 +92,22 @@ test("a commit already re-run is refused before GitHub is asked again", async ()
   expect(github.requests.some((request) => request.method === "POST")).toBe(false);
 });
 
-test("a call while a check on the commit still runs is refused", async () => {
+test("a check from another app that still runs does not block the re-run of a failed Actions run", async () => {
+  const github = fakeGitHub([
+    failedRun,
+    { ...failedRun, conclusion: "success", html_url: failedRun.html_url.replace("/1", "/2") },
+    {
+      status: "in_progress",
+      conclusion: null,
+      html_url: "https://pages.example/deploy/3",
+      slug: "cloudflare-workers-and-pages",
+    },
+  ]);
+  const result = await rerun(github.client);
+  expect(result.rerun).toEqual({ head, runIds: [41474224082] });
+});
+
+test("a call while an Actions check on the commit still runs is refused", async () => {
   const github = fakeGitHub([failedRun, { ...failedRun, status: "in_progress", conclusion: null }]);
   const result = await rerun(github.client);
   expect(result.rerun).toBeUndefined();
