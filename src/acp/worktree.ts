@@ -8,6 +8,7 @@ import { git } from "./git";
 import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
 
 const TRACKING_REF = "+refs/heads/*:refs/remotes/origin/*";
+const REF_RACE = /incorrect old value provided|cannot lock ref/;
 const START_REFS = ["origin/main", "main", "origin/master", "HEAD"] as const;
 
 export interface Mirror {
@@ -96,8 +97,8 @@ async function refreshMirror(
   }
 
   await git(["--git-dir", path, "config", "remote.origin.fetch", TRACKING_REF]);
-  try {
-    await (options.networkGit ?? git)([
+  const fetch = () =>
+    (options.networkGit ?? git)([
       "--git-dir",
       path,
       "fetch",
@@ -105,6 +106,12 @@ async function refreshMirror(
       options.remoteUrl,
       TRACKING_REF,
     ]);
+  try {
+    await fetch().catch((error: unknown) => {
+      if (!REF_RACE.test(error instanceof Error ? error.message : String(error))) throw error;
+      journalCaught(error, "worktree.refreshMirror.refRace", null, "fetching once more");
+      return fetch();
+    });
   } catch (error) {
     if (options.networkGit) throw error;
 
