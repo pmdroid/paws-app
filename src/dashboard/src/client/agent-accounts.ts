@@ -22,6 +22,15 @@ type Account = {
   running?: number;
   session: Login | null;
 };
+type Bound = { bindingId: string; agent: Agent; running?: number; session: Login | null };
+type RunnerAccounts = { accounts: Account[]; bindings?: Bound[] };
+
+export function dialogAccount(result: RunnerAccounts, agent: string, binding?: string) {
+  if (!binding) return result.accounts.find((entry) => entry.agent === agent) ?? null;
+  const bound = result.bindings?.find((b) => b.bindingId === binding && b.agent === agent);
+  return bound ? { ...bound, connected: bound.session?.state === "connected" } : null;
+}
+
 type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
 const NAMES: Record<Agent, string> = {
   claude: "Claude",
@@ -85,6 +94,7 @@ export function openAgentAccounts(
   runner: { id: string; name: string },
   agent: string,
   onClose: () => void,
+  binding?: string,
 ): void {
   if (!(agent in NAMES)) return;
   const name = NAMES[agent as Agent];
@@ -190,6 +200,8 @@ export function openAgentAccounts(
   function accountPath(login?: Login | null): string {
     const base = `/api/runners/${encodeURIComponent(runner.id)}/accounts`;
     if (login === undefined) return base;
+    if (login === null && binding)
+      return `${base}/${agent}/login?binding=${encodeURIComponent(binding)}`;
     return `${base}/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}`;
   }
 
@@ -211,13 +223,13 @@ export function openAgentAccounts(
     feedback.textContent = "";
     try {
       const [result, listed] = await Promise.all([
-        request<{ accounts: Account[] }>(accountPath()),
+        request<RunnerAccounts>(accountPath()),
         request<{ runners: RunnerSignIns[] }>("/api/runners"),
       ]);
       if (!dialog.isConnected || current !== generation) return;
-      account = result.accounts.find((entry) => entry.agent === agent) ?? null;
+      account = dialogAccount(result, agent, binding);
       runnerStatus = listed.runners
-        .find((entry) => entry.id === runner.id)
+        .find((entry) => !binding && entry.id === runner.id)
         ?.agents?.find((entry) => entry.agent === agent)?.status;
       if (!account) feedback.textContent = `${name} is not available on this runner.`;
       paint();

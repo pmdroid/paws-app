@@ -31,6 +31,15 @@ let current = "";
 const PAGE_RESOURCE =
   /^\/api\/(overview|issues|questions|merge-queue|evidence(\/[^/]+\/metadata)?$|status)/;
 
+const AGENT_ACCOUNTS = [
+  ["A1", "claude", "Work", true, { refreshedAt: Date.now() - 600_000, runner: null }],
+  ["A2", "claude", "Personal", false, null],
+  ["A3", "codex", "Team", false, { refreshedAt: Date.now() - 60_000, runner: null }],
+].map(([id, agent, label, extraUsage, credential], index) => ({
+  ...{ id, agent, label, extraUsage, credential, signingIn: false, lease: null },
+  usage: index === 0 ? { limits: [{ window: "5h", usedPercent: 62 }] } : null,
+}));
+
 async function open(width: number, cookie = f.cookie) {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   await context.setExtraHTTPHeaders({ cookie });
@@ -207,7 +216,7 @@ try {
     await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
     await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
-    await expect(admin.locator(".settings-nav a")).toHaveCount(9);
+    await expect(admin.locator(".settings-nav a")).toHaveCount(10);
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -224,7 +233,11 @@ try {
     ] as const)
       await visit(admin, width, name, path, heading);
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
-    await expect(page.locator(".settings-nav a")).toHaveText(["Integrations", "Your account"]);
+    await expect(page.locator(".settings-nav a")).toHaveText([
+      "Agent accounts",
+      "Integrations",
+      "Your account",
+    ]);
     await expect(page.locator("#merge-settings")).toHaveCount(0);
     for (const viewer of [admin, page])
       await viewer.route("**/api/workspaces/github-connect", (route) =>
@@ -276,6 +289,20 @@ try {
       await viewer.unroute("**/api/workspaces/github-connect");
     }
     await admin.unroute("**/api/workspaces/github-setup*");
+    for (const [reader, name, canManage] of [
+      [admin, "settings-agent-accounts", true],
+      [page, "settings-agent-accounts-member", false],
+    ] as const) {
+      await reader.route("**/api/runners/agent-accounts", (route) =>
+        route.fulfill({ json: { canManage, accounts: AGENT_ACCOUNTS } }),
+      );
+      await visit(reader, width, name, "/dashboard/settings/agent-accounts", "Agent accounts");
+      await expect(reader.locator("#agent-account-settings li")).toHaveCount(3);
+      await expect(reader.locator("#agent-account-settings button")).toHaveCount(
+        canManage ? 13 : 0,
+      );
+      await reader.unroute("**/api/runners/agent-accounts");
+    }
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 
