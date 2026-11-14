@@ -4,11 +4,11 @@ import type { githubDelivery } from "./schema-pg";
 
 export type IntegrationEvent = typeof githubDelivery.$inferSelect;
 
-const GITHUB_DELIVERY_KEEP_MS = 3 * 24 * 60 * 60 * 1000;
+const GITHUB_DELIVERY_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function* recordGitHubDeliverySteps(
   q: Q,
-  input: Omit<IntegrationEvent, "receivedAt">,
+  input: { deliveryId: string; event: string; payload?: string },
   now = Date.now(),
 ) {
   const { githubDelivery } = q.t;
@@ -18,7 +18,7 @@ export function* recordGitHubDeliverySteps(
       .values({
         deliveryId: input.deliveryId,
         event: input.event,
-        payload: input.payload,
+        ...deliveryPull(input.payload),
         receivedAt: now,
       })
       .onConflictDoNothing({ target: githubDelivery.deliveryId })
@@ -34,7 +34,7 @@ export function* recordGitHubDeliverySteps(
 
 export async function recordGitHubDelivery(
   store: Db,
-  input: Omit<IntegrationEvent, "receivedAt">,
+  input: { deliveryId: string; event: string; payload?: string },
   now = Date.now(),
 ): Promise<boolean> {
   return store.run((q) => recordGitHubDeliverySteps(q, input, now));
@@ -71,4 +71,24 @@ export function* githubDeliveryRecordedSteps(q: Q, deliveryId: string) {
 
 export async function githubDeliveryRecorded(store: Db, deliveryId: string): Promise<boolean> {
   return store.run((q) => githubDeliveryRecordedSteps(q, deliveryId));
+}
+
+function deliveryPull(payload?: string): { repository: string | null; pullNumber: number | null } {
+  try {
+    const body = JSON.parse(payload ?? "null");
+    const repository = body?.repository?.full_name;
+    const number = body?.pull_request?.number ?? body?.issue?.number;
+    return {
+      repository: typeof repository === "string" ? repository.toLowerCase() : null,
+      pullNumber:
+        typeof number === "number" &&
+        Number.isInteger(number) &&
+        number >= -2147483648 &&
+        number <= 2147483647
+          ? number
+          : null,
+    };
+  } catch {
+    return { repository: null, pullNumber: null };
+  }
 }

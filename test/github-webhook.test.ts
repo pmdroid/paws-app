@@ -91,7 +91,7 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
     paws = await startPaws(env);
     expect((await send()).status).toBe(200);
     expect(await githubDeliveryRows(paws.store)).toMatchObject([
-      { deliveryId: "delivery-1", event: "ping", payload },
+      { deliveryId: "delivery-1", event: "ping", receivedAt: expect.any(Number) },
     ]);
     await paws.stop();
     const stored = readdirSync(paws.paths.pgliteDir, { recursive: true, withFileTypes: true })

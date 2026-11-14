@@ -198,8 +198,7 @@ test("failure after receipt insertion leaves the delivery retryable", async () =
       q.orm.insert(q.t.githubDelivery).values({
         deliveryId: "expired",
         event: "push",
-        payload: "{}",
-        receivedAt: -300_000_000,
+        receivedAt: -15 * 24 * 60 * 60 * 1000,
       }),
     );
     const drop = await failAt(db, "after receipt", "BEFORE DELETE ON github_delivery");

@@ -373,4 +373,67 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+  test("delivery metadata survives dropping payload, including issue comments and malformed bodies", async () => {
+    const pg = await pgliteDb({ migrationsFolder: migrationsBefore("github_delivery_metadata") });
+    try {
+      const bodies = [
+        { repository: { full_name: "Acme/App" }, pull_request: { number: 7 } },
+        { repository: { full_name: "Acme/App" }, issue: { number: 8 } },
+        { repository: { full_name: "Other/App" }, pull_request: { number: 7 } },
+        { repository: { full_name: "Acme/App" }, issue: { number: "7" } },
+      ];
+      for (const [i, body] of [
+        ...bodies.map((value) => JSON.stringify(value)),
+        "invalid",
+        "null",
+        JSON.stringify({
+          repository: { full_name: "Acme/App" },
+          pull_request: { number: 7 },
+          comment: "\u0000",
+        }),
+        '{"repository":{"full_name":"Acme/App"},"issue":{"number":8},"number":1e1000000}',
+        ...["\ud800", "\udc00", "\ud83d\udc36", String.raw`\u0000`].map((comment) =>
+          JSON.stringify({
+            repository: { full_name: "Acme/App" },
+            pull_request: { number: 7 },
+            comment,
+          }),
+        ),
+        ...["Acme/🐶", String.raw`Acme/\u0000`].map((full_name) =>
+          JSON.stringify({ repository: { full_name }, pull_request: { number: 7 } }),
+        ),
+      ].entries())
+        await pg.$client.query("INSERT INTO github_delivery VALUES ($1, 'issue_comment', $2, $3)", [
+          String(i),
+          body,
+          i + 100,
+        ]);
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+      const rows = await pg
+        .select()
+        .from(pgSchema.githubDelivery)
+        .orderBy(pgSchema.githubDelivery.receivedAt);
+      expect(
+        rows.map(({ repository, pullNumber, receivedAt }) => [repository, pullNumber, receivedAt]),
+      ).toEqual([
+        ["acme/app", 7, 100],
+        ["acme/app", 8, 101],
+        ["other/app", 7, 102],
+        ["acme/app", null, 103],
+        [null, null, 104],
+        [null, null, 105],
+        ["acme/app", 7, 106],
+        ["acme/app", 8, 107],
+        ["acme/app", 7, 108],
+        ["acme/app", 7, 109],
+        ["acme/app", 7, 110],
+        ["acme/app", 7, 111],
+        ["acme/🐶", 7, 112],
+        [String.raw`acme/\u0000`, 7, 113],
+      ]);
+      expect(Object.keys(rows[0]!)).not.toContain("payload");
+    } finally {
+      await pg.$client.close();
+    }
+  });
 });
