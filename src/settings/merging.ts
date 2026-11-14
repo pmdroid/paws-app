@@ -645,7 +645,10 @@ async function hotFileView(
 }
 
 /** One line per changed choice, for the audit history. */
-export function mergeChanges(before: MergePolicy | null, after: MergePolicy): string[] {
+export function mergeChanges(
+  before: Pick<MergePolicy, "default"> | null,
+  after: Pick<MergePolicy, "default">,
+): string[] {
   const changes: string[] = [];
   for (const [key, names, title] of [
     ["order", ORDER_NAMES, "merge order"],
@@ -671,7 +674,7 @@ function repositorySettingsView(settings: MergeSettings | null) {
           ...(value.reviewApps === undefined ? {} : { reviewApps: value.reviewApps }),
           ...(value.suggestedFindings === undefined
             ? {}
-            : { suggestedFindings: value.suggestedFindings }),
+            : { suggestedFindings: value.suggestedFindings !== "off" }),
         },
       ]),
     ),

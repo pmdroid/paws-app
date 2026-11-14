@@ -61,7 +61,7 @@ export type MergePolicy = {
   default: MergeChoice;
   repositories?: Record<
     string,
-    { packages?: string[]; reviewApps?: string[]; suggestedFindings?: SuggestedFindingsMode }
+    { packages?: string[]; reviewApps?: string[]; suggestedFindings?: boolean }
   >;
   projects?: Record<string, { lane?: MergeLane }>;
 };
@@ -83,7 +83,7 @@ export type MergeRepositories = Record<
     parallelFiles?: string[];
   }
 >;
-export type MergeSettings = MergePolicy & {
+export type MergeSettings = Pick<MergePolicy, "default"> & {
   lanes: MergeLaneSplit[];
   noProject: MergeNoProject;
   /** `[merge.projects."<Linear project id>"] lane`, kept apart from the Merging settings policy. */
@@ -215,7 +215,7 @@ const policySchema = z.strictObject({
       z.strictObject({
         packages: repositorySchema.shape.packages.removeDefault().optional(),
         reviewApps: repositorySchema.shape.review_apps,
-        suggestedFindings: repositorySchema.shape.suggested_findings,
+        suggestedFindings: z.boolean().optional(),
       }),
     )
     .optional(),
@@ -757,7 +757,17 @@ export function writeMergePolicy(
       const key =
         Object.keys(repositories).find((entry) => entry.toLowerCase() === name.toLowerCase()) ??
         name;
-      repositories[key] = { ...repositories[key], packages: [], ...value };
+      const { suggestedFindings, ...lists } = value;
+      repositories[key] = {
+        ...repositories[key],
+        packages: [],
+        ...lists,
+        ...(suggestedFindings === undefined
+          ? {}
+          : {
+              suggestedFindings: suggestedFindings ? "next_turn" : "off",
+            }),
+      };
     }
     current = { ...current, repositories };
   }

@@ -538,7 +538,7 @@ lane = "project"
       options,
     ))!.json();
   expect(await get()).toMatchObject({
-    repositories: { "acme/web": { packages: ["old/*"] } },
+    repositories: { "acme/web": { packages: ["old/*"], suggestedFindings: false } },
     projects: { project: { lane: "project" } },
   });
   const body = {
@@ -547,7 +547,7 @@ lane = "project"
       "acme/web": {
         packages: ["apps/*"],
         reviewApps: ["acme-review"],
-        suggestedFindings: "own_turn",
+        suggestedFindings: true,
       },
     },
     projects: { project: { lane: "repository" } },
@@ -569,11 +569,25 @@ lane = "project"
   writeFileSync(a.configPath, initial.replace("old/*", "changed/*"));
   expect(await get()).toMatchObject(body);
   expect(readMergeSettings(loadConfigFile(a.configPath))).toMatchObject({
-    repositories: { "acme/web": { ...body.repositories["acme/web"], highRiskPaths: ["infra/**"] } },
+    repositories: {
+      "acme/web": {
+        ...body.repositories["acme/web"],
+        suggestedFindings: "next_turn",
+        highRiskPaths: ["infra/**"],
+      },
+    },
     projectLanes: { project: "repository" },
   });
   expect((await put({ default: body.default }))?.status).toBe(200);
   expect(await get()).toMatchObject(body);
+  const disabled = { ...body, repositories: { "acme/web": { suggestedFindings: false } } };
+  const disabledResponse = await put(disabled);
+  expect(disabledResponse?.status).toBe(200);
+  expect(await disabledResponse!.json()).toMatchObject(disabled);
+  expect(await get()).toMatchObject(disabled);
+  expect(
+    readMergeSettings(loadConfigFile(a.configPath)).repositories["acme/web"]?.suggestedFindings,
+  ).toBe("off");
   expect((await put({ default: body.default, repositories: {}, projects: {} }))?.status).toBe(200);
   expect(await get()).toMatchObject({
     repositories: { "acme/web": { packages: [] } },

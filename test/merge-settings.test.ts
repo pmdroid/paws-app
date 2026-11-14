@@ -130,7 +130,7 @@ packages = ["apps/*", "packages/*"]
       const settings = readMergeSettings(config);
       expect(settings.default.mainMoved).toBe(value);
       const path = join(tempHome(), "config.toml");
-      writeMergePolicy(path, settings, storedMerge(config));
+      writeMergePolicy(path, { default: settings.default }, storedMerge(config));
       expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
     }
   });
@@ -164,7 +164,7 @@ packages = ["apps/*", "packages/*"]
     expect(mergeLaneKey(item("B", PAYMENTS, "ann"), settings)).toBe(":ann");
 
     const path = join(tempHome(), "config.toml");
-    writeMergePolicy(path, settings, storedMerge(config));
+    writeMergePolicy(path, { default: settings.default }, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
     expect(readFileSync(path, "utf8")).toContain('lanes = ["person"]\nno_project = "lane"');
     expect(readFileSync(path, "utf8")).not.toContain("ci-green");
@@ -176,7 +176,11 @@ packages = ["apps/*", "packages/*"]
       const legacy = parseConfigToml(`[merge]\nlane = "${old}"\n`);
       expect(readMergeSettings(legacy).lanes).toEqual([...lanes]);
       const written = join(tempHome(), "config.toml");
-      writeMergePolicy(written, readMergeSettings(legacy), storedMerge(legacy));
+      writeMergePolicy(
+        written,
+        { default: readMergeSettings(legacy).default },
+        storedMerge(legacy),
+      );
       expect(readFileSync(written, "utf8")).not.toMatch(/^lane =/m);
     }
     expect(
@@ -228,7 +232,7 @@ packages = ["apps/*", "packages/*"]
     expect(suggestedFindingsMode(settings, "acme/web")).toBe("off");
     expect(suggestedFindingsMode(settings, "acme/api")).toBe("next_turn");
     const path = join(tempHome(), "config.toml");
-    writeMergePolicy(path, settings, storedMerge(config));
+    writeMergePolicy(path, { default: settings.default }, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
     expect(() =>
       parseConfigToml(`[merge.repositories."acme/platform"]\nsuggested_findings = "always"\n`),
@@ -896,7 +900,7 @@ test("repository and project settings reject invalid values and member writes", 
     { repositories: { invalid: {} } },
     { repositories: { "acme/web": { packages: ["../outside"] } } },
     { repositories: { "acme/web": { reviewApps: ["bad/app"] } } },
-    { repositories: { "acme/web": { suggestedFindings: true } } },
+    { repositories: { "acme/web": { suggestedFindings: "own_turn" } } },
     { projects: { project: { lane: "invalid" } } },
     { projects: { "bad/id": { lane: "project" } } },
   ]) {
@@ -906,5 +910,19 @@ test("repository and project settings reject invalid values and member writes", 
     );
     expect(response?.status).toBe(400);
     expect(await response!.json()).toMatchObject({ error: expect.any(String) });
+  }
+});
+
+test("both enabled stored finding modes are exposed as true", async () => {
+  for (const mode of ["next_turn", "own_turn"]) {
+    const { options } = fixture();
+    writeFileSync(
+      options.configPath,
+      `[merge.repositories."acme/web"]\nsuggested_findings = "${mode}"\n`,
+    );
+    const response = await handleMergeSettingsRequest(request(), options);
+    expect(await response!.json()).toMatchObject({
+      repositories: { "acme/web": { suggestedFindings: true } },
+    });
   }
 });

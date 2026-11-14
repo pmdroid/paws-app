@@ -472,7 +472,7 @@ export async function probeWorkspaceAuthorization(
         "fixture/allowed": {
           packages: ["apps/*"],
           reviewApps: ["review-app"],
-          suggestedFindings: "own_turn",
+          suggestedFindings: true,
         },
       },
       projects: { project: { lane: "repository" } },
