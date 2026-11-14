@@ -1,14 +1,18 @@
+import { boundHeartbeat } from "./bound-runner-account";
+import { boundRunnerAccount } from "./bound-runner-account";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { PawsShutdown } from "../src/core";
 import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
+  bindAgentAccount,
+  createAgentAccount,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -72,9 +76,17 @@ function setAgentReady(db: Db, runnerId: string, ready: number) {
   return db.run((q) =>
     q.exec(
       q.orm
-        .update(q.t.runnerAgentPolicy)
-        .set({ ready })
-        .where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
+        .update(q.t.agentAccount)
+        .set({ enabled: ready })
+        .where(
+          inArray(
+            q.t.agentAccount.id,
+            q.orm
+              .select({ id: q.t.agentAccountBinding.accountId })
+              .from(q.t.agentAccountBinding)
+              .where(eq(q.t.agentAccountBinding.runnerId, runnerId)),
+          ),
+        ),
     ),
   );
 }
@@ -192,6 +204,12 @@ async function setup() {
     disconnect() {},
     now: () => now,
   });
+  const account = await createAgentAccount(db, {
+    workspaceId: workspace.id,
+    agent: "claude",
+    label: "Shared",
+    now,
+  });
   const runners: Record<"a" | "b", string> = { a: "", b: "" };
   for (const name of ["a", "b"] as const) {
     const key = await createRunnerKey(join(root, `client-${name}`));
@@ -203,6 +221,8 @@ async function setup() {
       })
     ).runnerId;
   }
+  for (const runnerId of Object.values(runners))
+    await bindAgentAccount(db, { workspaceId: workspace.id, runnerId, accountId: account.id, now });
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     store: db,
@@ -211,6 +231,7 @@ async function setup() {
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
+  boundHeartbeat(db, work);
   const results = createRunnerResults({ store: db, work, now: () => now });
   const health = createRunnerHealth({ store: db, work, now: () => now });
   const sessions = createAgentSessions({
@@ -260,6 +281,7 @@ async function setup() {
       git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
+  const accountBindings = new Set<string>();
   const seen = new Set<string>();
   const runCommands = new Map<string, RunCommand>();
   /** The next command for `runnerId`, or null once `attempts` polls found none. */
@@ -268,6 +290,7 @@ async function setup() {
     for (let index = 0; index < attempts && Date.now() < deadline; index++) {
       for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
+          accountBindings,
           trustedKeys: new Map([["fixture", signing.publicKey]]),
           runnerId,
           workspaceId: workspace.id,
@@ -275,6 +298,7 @@ async function setup() {
           allowedRepositories: ["fixture/repository"],
           claimCommand: (id) => !seen.has(id) && Boolean(seen.add(id)),
         });
+        if (!verified.ok) throw new Error(JSON.stringify(verified));
         if (verified.ok) {
           await work.acknowledge(runnerId, verified.command.id);
           if (verified.command.type === "run")
@@ -339,6 +363,7 @@ async function setup() {
       result: {
         executionId: workspaceId(),
         commandId: command.id,
+        account: command.account,
         role: "implementer",
         stopReason: extra.handedOver ? "cancelled" : "end_turn",
         timedOut: false,
@@ -412,10 +437,10 @@ async function setup() {
         yield* q.exec(
           q.orm
             .insert(q.t.runnerHostStatus)
-            .values({ runnerId, runnerVersion: "0.1.44", reportedAt: now })
+            .values({ runnerId, runnerVersion: "0.1.61", reportedAt: now })
             .onConflictDoUpdate({
               target: q.t.runnerHostStatus.runnerId,
-              set: { runnerVersion: "0.1.44" },
+              set: { runnerVersion: "0.1.61" },
             }),
         );
         yield* q.exec(
@@ -438,6 +463,9 @@ async function setup() {
         );
       });
     }
+    for (const runnerId of Object.values(runners))
+      accountBindings.add((await boundRunnerAccount(db, workspace.id, runnerId, "claude", now)).id);
+    for (const runnerId of Object.values(runners)) await setAgentReady(db, runnerId, 1);
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
@@ -582,6 +610,7 @@ async function setup() {
     async stopAll() {
       const stopping = [...turns];
       turns.clear();
+      for (const runnerId of Object.values(runners)) await setRunnerVersion(db, runnerId, "0.1.44");
       for (const { stop } of stopping) stop.abort();
       const routes = [...moveRoutes];
       moveRoutes.clear();
@@ -597,6 +626,11 @@ async function setup() {
         while (!stopped.done)
           for (const runnerId of Object.values(runners)) {
             const command = await next(runnerId, 1);
+            if (command?.type === "checkpoint") {
+              const active = runCommands.get(`${command.runId}:${command.generation}`);
+              if (active)
+                await events(active, runnerId, [{ type: "checkpoint", reason: "stop", sha: base }]);
+            }
             const key =
               (command?.type === "cancel" || command?.type === "handover") &&
               `${command.runId}:${command.generation}`;
@@ -613,6 +647,7 @@ async function setup() {
                     result: {
                       executionId: workspaceId(),
                       commandId: cancelled.id,
+                      account: cancelled.account,
                       role: "implementer",
                       stopReason: "cancelled",
                       timedOut: false,
@@ -705,7 +740,10 @@ test("a reviewer after a moved session never carries the implementer's native se
       pawsRoot: context.root,
       signal: stop.signal,
     })
-    .catch((error: unknown) => error);
+    .catch((error: unknown) => {
+      console.error(error);
+      return error;
+    });
   let review: RunnerCommand | null = null;
   for (let index = 0; index < 50 && !review; index++)
     review = (await context.next(runners.a, 20)) ?? (await context.next(runners.b, 20)) ?? null;
@@ -1387,6 +1425,7 @@ for (const [owner, change] of [
         { type: "question", text: "Which delimiter?", options: [] },
       ]);
       if (whileAttached) expect(await context.next(runners.a, 50)).toBeNull();
+      await setRunnerVersion(db, runners.a, "0.1.44");
       await stale();
       await answerQuestion(db, record.runId, "Too late.");
       expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
@@ -1415,6 +1454,7 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
     return { answer: "Never asked." };
   });
   const command = (await context.next(runners.a)) as RunCommand;
+  await setRunnerVersion(db, runners.a, "0.1.44");
   await context.events(command, runners.a, [
     { type: "question", text: "Which delimiter?", options: [] },
   ]);

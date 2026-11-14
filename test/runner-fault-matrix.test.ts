@@ -1,3 +1,6 @@
+import { boundResultSubmissions } from "./bound-runner-account";
+import { boundHeartbeat } from "./bound-runner-account";
+import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +14,7 @@ import {
   OutboxDispatcher,
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
+  getRunnerSetupHold,
   getWorkItem,
   listJobs,
   listRuns,
@@ -254,19 +258,12 @@ test("a temporary agent API error is retried and the task reaches Closeout", asy
   expect(result.retries, result.detail).toEqual([1]);
 }, 60_000);
 
-test("a usage limit while the implementer is prepared posts one thought naming the agent and the reset time", async () => {
+test("preparation waits for a healthy bound account after quota exhaustion", async () => {
   const result = await runRemoteFault("preparation-usage-limit");
-  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.state, result.detail).toBe("queued");
   expect(result.errors, result.detail).toEqual([]);
   expect(result.faultedAttempts, result.detail).toBe(1);
-  expect(
-    result.thoughts.filter((body) => body.includes("usage limit reached")),
-    result.detail,
-  ).toEqual([
-    expect.stringMatching(
-      /^Paused: Claude usage limit reached; resumes at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
-    ),
-  ]);
+  expect(result.thoughts.join("\n")).toContain("Settings › Agent accounts");
 }, 60_000);
 
 async function runRemoteFault(fault: Fault) {
@@ -375,6 +372,7 @@ async function runRemoteFault(fault: Fault) {
   const hung = fault.startsWith("silent-hung");
   const clock = { held: hung ? Date.now() : null };
   const clockNow = () => clock.held ?? Date.now();
+  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     now: clockNow,
@@ -382,8 +380,10 @@ async function runRemoteFault(fault: Fault) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
+  boundHeartbeat(db, work);
   const results = createRunnerResults({ store: db, work, now: clockNow });
   const health = createRunnerHealth({ store: db, work, now: clockNow });
+  boundResultSubmissions(db, results, health);
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",
@@ -561,11 +561,17 @@ async function runRemoteFault(fault: Fault) {
   if (fault === "silent-hung-checkpoint")
     await db.run((q) =>
       q.exec(
-        q.orm.insert(q.t.runnerHostStatus).values({
-          runnerId,
-          runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
-          reportedAt: clockNow(),
-        }),
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({
+            runnerId,
+            runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
+            reportedAt: clockNow(),
+          })
+          .onConflictDoUpdate({
+            target: q.t.runnerHostStatus.runnerId,
+            set: { runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".") },
+          }),
       ),
     );
   let recovering: Promise<void> | null = null;
@@ -910,6 +916,7 @@ async function runRemoteFault(fault: Fault) {
         (await getWorkItem(db, item.id))?.state ?? "",
       )
     ) {
+      if (fault === "preparation-usage-limit" && (await getRunnerSetupHold(db, item.id))) break;
       const ran = await jobs.tick();
       await recover();
       if (ran === null) {

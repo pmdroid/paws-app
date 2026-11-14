@@ -1,3 +1,6 @@
+import { boundResultSubmissions } from "./bound-runner-account";
+import { boundHeartbeat } from "./bound-runner-account";
+import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -245,15 +248,18 @@ async function runRecovering(input: {
       ]),
   );
 
+  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
+  boundHeartbeat(db, work);
   await work.heartbeat(runnerId, input.capacity);
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
+  boundResultSubmissions(db, results, health);
   const prepared = new Map<string, Set<string>>();
   const basePlacement = createRunnerPlacement({ store: db });
   const trackedPlacement: RunnerPlacement = {

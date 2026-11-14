@@ -1,3 +1,4 @@
+import { boundHeartbeat, boundResultSubmissions } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -199,6 +200,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
+  boundHeartbeat(db, work);
   const freeRunner = await pair("owner-runner", ownerId, 1);
   await work.heartbeat(freeRunner, 8);
   let memberRunner: string | null = null;
@@ -223,6 +225,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
 
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
+  boundResultSubmissions(db, results, health);
   const backend = createRemoteAgentRunner({
     store: db,
     work,
