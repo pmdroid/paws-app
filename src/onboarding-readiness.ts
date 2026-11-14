@@ -1,5 +1,6 @@
 import {
   memberVmForMemberSteps,
+  onboardingAccountStatesSteps,
   runnerNameAndOwnerSteps,
   workspaceLinearMemberSteps,
   type Db,
@@ -10,15 +11,6 @@ import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
 
 const AGENTS = ["claude", "codex"] as const;
 
-/**
- * The runner Paws would use for the member and their Claude and Codex sign-ins on it, for the
- * onboarding page. Uses the same eligibility check as placement: a runner the member owns, or one
- * a lead of the issue's Linear project shares. Another member's runner never counts. When none is
- * eligible, it says why: the member's VM is being set up or failed, the member's runner or the
- * lead's shared runner is offline or paused, or the lead's runner isn't shared. Reads SQLite
- * only, so reloading the page costs no Linear or GitHub request, and a runner that enrolls or a
- * VM that finishes shows as ready on the next read.
- */
 export function createOnboardingReadiness(store: Db): OnboardingReadinessReader {
   const runnerRow = (id: string) => store.run((q) => runnerNameAndOwnerSteps(q, id));
   const ownerName = async (id: string) => (await runnerRow(id))?.ownerName ?? "Your project lead";
@@ -41,19 +33,12 @@ export function createOnboardingReadiness(store: Db): OnboardingReadinessReader 
           now,
         }),
       );
-    const signIns: Map<string, EligibleRunner>[] = [];
-    for (const agent of AGENTS)
-      signIns.push(new Map((await check(agent, "work")).map((runner) => [runner.id, runner])));
-    const agentState = (runnerId: string, index: number): OnboardingAgent => {
-      const runner = signIns[index]!.get(runnerId);
-      if (runner?.eligible) return "connected";
-      return runner?.reason === "auth-expired" ? "expired" : "waiting";
-    };
+    const accounts = await store.run((q) => onboardingAccountStatesSteps(q, workspaceId));
+    const agentState = (runnerId: string, index: number): OnboardingAgent =>
+      accounts.get(runnerId)?.[AGENTS[index]!] ?? "waiting";
     const vm = await store.run((q) => memberVmForMemberSteps(q, workspaceId, userId));
     const memberVm = vm !== null;
     const runners = await check("claude", "prepare");
-    // With several usable runners, show the one with the most agents signed in, the member's own
-    // before a shared one.
     const best = runners
       .filter((runner) => runner.eligible)
       .map((runner) => ({
@@ -87,7 +72,6 @@ export function createOnboardingReadiness(store: Db): OnboardingReadinessReader 
     }
     const stalled = (runner: EligibleRunner) =>
       runner.reason === "offline" || runner.reason === "paused";
-    // The member's own runner first, then a runner the project lead shares.
     const own = runners.find((runner) => runner.ownerId === userId && stalled(runner));
     const shared = runners.find(
       (runner) => runner.sharing === 1 && leadUserIds.includes(runner.ownerId) && stalled(runner),
