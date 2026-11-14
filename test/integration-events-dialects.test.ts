@@ -12,17 +12,17 @@ forEachDialect((open) => {
         db.run((q) => recordGitHubDeliverySteps(q, { deliveryId, event }, now));
       expect(await db.run(latestGitHubDeliverySteps)).toBeNull();
       expect(await record("old", "push", 0)).toBe(true);
-      expect(await record("b", "pull_request", 3 * DAY_MS)).toBe(true);
-      expect(await record("a", "push", 3 * DAY_MS)).toBe(true);
-      expect(await record("a", "push", 3 * DAY_MS + 1)).toBe(false);
+      expect(await record("b", "pull_request", 14 * DAY_MS)).toBe(true);
+      expect(await record("a", "push", 14 * DAY_MS)).toBe(true);
+      expect(await record("a", "push", 14 * DAY_MS + 1)).toBe(false);
       expect(await githubDeliveryRows(db)).toEqual([
-        { deliveryId: "a", event: "push", receivedAt: 3 * DAY_MS },
-        { deliveryId: "b", event: "pull_request", receivedAt: 3 * DAY_MS },
+        { deliveryId: "a", event: "push", receivedAt: 14 * DAY_MS },
+        { deliveryId: "b", event: "pull_request", receivedAt: 14 * DAY_MS },
       ]);
-      await record("c", "check_run", 3 * DAY_MS + 5);
+      await record("c", "check_run", 14 * DAY_MS + 5);
       expect(await db.run(latestGitHubDeliverySteps)).toEqual({
         event: "check_run",
-        receivedAt: 3 * DAY_MS + 5,
+        receivedAt: 14 * DAY_MS + 5,
       });
     } finally {
       await close();

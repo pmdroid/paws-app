@@ -18,11 +18,11 @@ test("a GitHub delivery keeps its id, event and time, and a repeated id is not r
   ]);
 });
 
-test("GitHub deliveries older than three days are deleted", async () => {
+test("GitHub deliveries older than 14 days are deleted", async () => {
   const db = (await tempStore()).db;
-  const now = 10 * DAY;
-  await recordGitHubDelivery(db, { deliveryId: "old", event: "check_run" }, now - 3 * DAY - 1);
-  await recordGitHubDelivery(db, { deliveryId: "recent", event: "check_run" }, now - 3 * DAY + 1);
+  const now = 20 * DAY;
+  await recordGitHubDelivery(db, { deliveryId: "old", event: "check_run" }, now - 14 * DAY - 1);
+  await recordGitHubDelivery(db, { deliveryId: "recent", event: "check_run" }, now - 14 * DAY);
   await recordGitHubDelivery(db, { deliveryId: "new", event: "check_run" }, now);
   expect((await githubDeliveryRows(db)).map((row) => row.deliveryId)).toEqual(["recent", "new"]);
 });
