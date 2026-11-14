@@ -61,7 +61,7 @@ import { closeFixRecordsSteps, type FixOutcome } from "./fix-records";
 import { journal } from "./journal";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { getLinearSessionGenerationSteps } from "./linear-sessions";
-import { withOpenFindingsSteps } from "./open-findings";
+import { withOpenFindingsSteps } from "./stop-response";
 import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
 import {
   endMergeCallSteps,

@@ -416,6 +416,8 @@ export const itemPullRequest = pgTable(
     pullNumber: bigint("pull_number", { mode: "number" }).notNull(),
     pullUrl: text("pull_url"),
     openedAt: bigint("opened_at", { mode: "number" }).notNull(),
+    publishedHead: text("published_head"),
+    openFindingsLine: text("open_findings_line"),
   },
   () => [check("item_pull_request_check_1", sql`pull_number > 0`)],
 );
