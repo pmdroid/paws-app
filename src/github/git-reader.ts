@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { journalCaught } from "../journal";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
-import { repoApiPath } from "./client";
+import { compareChangedPaths, readTree, repositoryGet } from "./compare";
 import type { GitHubClient } from "./types";
 
 export type GitHubGitRepository = {
@@ -30,6 +30,11 @@ export type GitHubGitReader = {
   readBlob(repo: string, object: string): { ok: true; bytes: Uint8Array } | Failure;
   fill(repo: string): Promise<boolean>;
   mainCommit(repo: string): string | undefined;
+  changedPaths(
+    repo: string,
+    base: string,
+    head: string,
+  ): Promise<{ ok: true; paths: string[] } | Failure | null>;
   mergeView(
     repo: string,
     main: string,
@@ -54,31 +59,16 @@ export function createGitHubGitReader(options: {
     if (!entry) wanted.set(repo, (entry = { trees: new Set(), blobs: new Set() }));
     return entry;
   };
-  const get = async (target: GitHubGitRepository, suffix: string) => {
-    const token = await acquireOperationToken(target, "pr");
-    const response = await target.client.request({
-      method: "GET",
-      path: repoApiPath(target.owner, target.repo, suffix),
-      token,
+  const get = async (target: GitHubGitRepository, suffix: string) =>
+    repositoryGet({
+      client: target.client,
+      token: await acquireOperationToken(target, "pr"),
+      owner: target.owner,
+      repo: target.repo,
       signal: AbortSignal.timeout(options.timeoutMs ?? 60_000),
-    });
-    if (response.status !== 200 || typeof response.body !== "object" || response.body === null)
-      throw new Error(`GitHub GET ${suffix} failed with status ${response.status}`);
-    return response.body as Record<string, unknown>;
-  };
-  const loadTree = async (target: GitHubGitRepository, commit: string) => {
-    const body = await get(target, `/git/trees/${commit}?recursive=1`);
-    if (body.truncated === true || !Array.isArray(body.tree))
-      throw new Error(`the tree at ${commit.slice(0, 7)} is too large to read`);
-    return (body.tree as { mode?: unknown; type?: unknown; sha?: unknown; path?: unknown }[])
-      .filter((item) => item.type !== "tree")
-      .map((item) => ({
-        mode: String(item.mode),
-        object: String(item.sha),
-        path: String(item.path),
-      }))
-      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-  };
+    })(suffix);
+  const loadTree = (target: GitHubGitRepository, commit: string) =>
+    readTree((suffix) => get(target, suffix), commit);
   const loadBlob = async (target: GitHubGitRepository, sha: string) => {
     const cached = await options.blobs?.get(sha);
     if (cached) return cached;
@@ -156,6 +146,21 @@ export function createGitHubGitReader(options: {
       }
     },
     mainCommit: (repo) => mains.get(repo),
+    async changedPaths(repo, base, head) {
+      const target = options.locate(repo);
+      if (!target) return null;
+      try {
+        const compared = await compareChangedPaths(
+          (suffix) => get(target, suffix),
+          base,
+          head,
+          (commit) => treeAt(target, repo, commit),
+        );
+        return { ok: true, paths: compared.paths };
+      } catch (caught) {
+        return failure(caught);
+      }
+    },
     async mergeView(repo, main, head) {
       const target = options.locate(repo);
       if (!target) return { ok: false, stderr: `${repo} is not a GitHub repository Paws reads` };

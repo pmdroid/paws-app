@@ -372,14 +372,18 @@ async function runRemoteFault(fault: Fault) {
     for (const agent of ["claude", "codex"])
       yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent, ready: 1 }));
   });
+  const hung = fault.startsWith("silent-hung");
+  const clock = { held: hung ? Date.now() : null };
+  const clockNow = () => clock.held ?? Date.now();
   const work = createRunnerWork({
     store: db,
+    now: clockNow,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ store: db, work });
-  const health = createRunnerHealth({ store: db, work });
+  const results = createRunnerResults({ store: db, work, now: clockNow });
+  const health = createRunnerHealth({ store: db, work, now: clockNow });
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",
@@ -401,11 +405,17 @@ async function runRemoteFault(fault: Fault) {
     recovered: null as { restore: string | undefined; prompt: string } | null,
   };
   // The work this fake runner names in its heartbeat, for faults where the runner reports it.
-  const hung = fault.startsWith("silent-hung");
   const reporting = fault === "restarted" || fault === "silent-live" || hung;
   const live = new Map<
     string,
-    { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
+    {
+      command: Extract<RunnerCommand, { type: "run" }>;
+      at: number;
+      hung?: boolean;
+      events?: number;
+      confirmed?: boolean;
+      advanced?: boolean;
+    }
   >();
   const terminated: { runId: string; generation: number; commandId: string }[] = [];
   const heartbeat = async () =>
@@ -426,14 +436,23 @@ async function runRemoteFault(fault: Fault) {
       undefined,
       terminated,
     );
-  const clock = { held: null as number | null, skipped: 0 };
   const backend = createRemoteAgentRunner({
     store: db,
-    now: () => (clock.held ?? Date.now()) - clock.skipped,
+    now: clockNow,
     work,
-    results,
+    results: {
+      ...results,
+      async read(runId, generation, commandId) {
+        const entry = live.get(commandId);
+        if (entry?.confirmed && !entry.advanced) {
+          entry.advanced = true;
+          clock.held = clockNow() + HUNG_RUN_MS;
+        }
+        return results.read(runId, generation, commandId);
+      },
+    },
     health,
-    placement: createRunnerPlacement({ store: db }),
+    placement: createRunnerPlacement({ store: db, now: clockNow }),
     pollIntervalMs: 5,
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
     ...(hung ? { hungRunMs: HUNG_RUN_MS } : {}),
@@ -545,11 +564,18 @@ async function runRemoteFault(fault: Fault) {
         q.orm.insert(q.t.runnerHostStatus).values({
           runnerId,
           runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
-          reportedAt: Date.now(),
+          reportedAt: clockNow(),
         }),
       ),
     );
-  async function recover() {
+  let recovering: Promise<void> | null = null;
+  function recover(): Promise<void> {
+    recovering ??= recoverOnce().finally(() => {
+      recovering = null;
+    });
+    return recovering;
+  }
+  async function recoverOnce() {
     if (!runner.faulty) return;
     const paused = await db.run((q) =>
       q.one(q.orm.select({ runId: q.t.usagePause.runId }).from(q.t.usagePause)),
@@ -639,15 +665,6 @@ async function runRemoteFault(fault: Fault) {
           : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
     });
   }
-  async function checkpointThenHang(command: Extract<RunnerCommand, { type: "run" }>) {
-    clock.held = Date.now();
-    try {
-      await checkpoint(command);
-    } finally {
-      clock.skipped += Date.now() - clock.held;
-      clock.held = null;
-    }
-  }
   async function checkpoint(command: Extract<RunnerCommand, { type: "run" }>) {
     const branch = (await getWorkItem(db, command.itemId))!.branchName;
     await git(["-C", source, "checkout", "-q", "--detach", command.repository.baseSha]);
@@ -701,6 +718,7 @@ async function runRemoteFault(fault: Fault) {
                 ),
               )
             : null;
+        const confirming = [...live.values()].filter((entry) => entry.hung && !entry.confirmed);
         const reply = await heartbeat();
         if (lostBefore && reply.fenced.length)
           runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
@@ -720,8 +738,26 @@ async function runRemoteFault(fault: Fault) {
               generation: entry.command.generation,
               commandId: entry.command.id,
             });
-            runner.hungStopped = Date.now() - entry.at >= HUNG_RUN_MS;
+            runner.hungStopped = clockNow() - entry.at >= HUNG_RUN_MS;
           }
+        for (const entry of confirming) {
+          const consumed = await db.run((q) =>
+            q.one(
+              q.orm
+                .select({ sequence: q.t.runnerWork.consumedSequence })
+                .from(q.t.runnerWork)
+                .where(
+                  and(
+                    eq(q.t.runnerWork.runId, entry.command.runId),
+                    eq(q.t.runnerWork.generation, entry.command.generation),
+                  ),
+                ),
+            ),
+          );
+          if (!live.has(entry.command.id) || (consumed?.sequence ?? 0) < (entry.events ?? 0))
+            continue;
+          entry.confirmed = true;
+        }
       }
       for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
@@ -800,8 +836,12 @@ async function runRemoteFault(fault: Fault) {
           runner.faulty = fault === "silent-hung-always";
           // Paws starts its silence clock when it issues the command, which a busy machine can
           // leave well before this loop picks it up, so the hung bound is measured from then.
-          live.set(command.id, { command, at: command.issuedAt, hung: true });
-          if (fault === "silent-hung-checkpoint") await checkpointThenHang(command);
+          const entry = { command, at: command.issuedAt, hung: true, events: 0 };
+          live.set(command.id, entry);
+          if (fault === "silent-hung-checkpoint") {
+            await checkpoint(command);
+            entry.events = 1;
+          }
           continue;
         }
         if (fault === "silent-unconfirmed" && runner.faulty) {

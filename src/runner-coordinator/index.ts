@@ -111,6 +111,7 @@ export async function openRunnerCoordinator(options: {
   agentSessions?: { objects: AgentSessionObjects; key: Buffer };
   runnerFiles?: { objects: RunFileObjects; key: Buffer };
   eventKey: Buffer;
+  secretsDir?: string;
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
   checkSignIn?: boolean;
@@ -138,6 +139,7 @@ export async function openRunnerCoordinator(options: {
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     eventKey: options.eventKey,
+    ...(options.secretsDir ? { secretsDir: options.secretsDir } : {}),
     now: options.now,
   });
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
@@ -155,6 +157,7 @@ export async function openRunnerCoordinator(options: {
   });
   const helpers = createRunnerHelpers({
     store: options.db,
+    credentials: (runnerId, envelopes) => work.attachCredentials(runnerId, envelopes),
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     now: options.now,

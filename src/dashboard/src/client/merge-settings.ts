@@ -1,12 +1,16 @@
 import { journalCaught } from "../journal";
+import { MERGE_QUEUE_API_PATH, parseMergeQueueResponse } from "../contract";
 import { renderMarkup } from "./theme";
 import type {
   CommentWait,
   HighRiskRepository,
   HotFile,
   IgnoredComments,
+  LaneItem,
   MainMoved,
   MergeChoice,
+  MergeLaneSplit,
+  MergeNoProject,
   MergeOrder,
   MergeSettings,
   MergeSettingsView,
@@ -52,7 +56,59 @@ type View = {
   saved: boolean;
   denied?: boolean;
   ciFix?: { attempts: number; stored: number } | { error: string };
+  queue?: LaneItem[];
 };
+
+const LANE_SPLITS: Record<MergeLaneSplit, string> = {
+  project: "Linear project",
+  person: "Person who delegated the issue",
+};
+const NO_PROJECT: Record<MergeNoProject, string> = {
+  own: "Each issue merges on its own",
+  lane: "One lane, like a project",
+};
+const PARALLEL = [1, 3, 5];
+
+export function laneNames(
+  items: readonly LaneItem[],
+  lanes: readonly MergeLaneSplit[],
+  noProject: MergeNoProject,
+): string[] {
+  const repositories = new Set(items.map((item) => item.repository));
+  const names = items.map((item) => {
+    const parts =
+      repositories.size > 1 ? [item.repository?.split("/").pop() ?? "No repository"] : [];
+    if (item.project === null && noProject === "own") return [...parts, item.id].join(" · ");
+    if (lanes.includes("project")) parts.push(item.project ?? "No project");
+    if (lanes.includes("person")) parts.push(item.owner ?? "No owner");
+    return (parts.length ? parts : [item.repository ?? "No repository"]).join(" · ");
+  });
+  return [...new Set(names)];
+}
+
+function lanePreview(data: MergeSettingsView, queue: readonly LaneItem[] | undefined): string {
+  if (!queue) return "";
+  const names = laneNames(queue, data.lanes ?? [], data.noProject ?? "own");
+  return names.length
+    ? `Lanes now: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}`
+    : "No pull request is in the merge queue now.";
+}
+
+function lanesSection(data: MergeSettingsView, queue: readonly LaneItem[] | undefined): string {
+  const lanes = data.lanes ?? [];
+  const noProject = data.noProject ?? "own";
+  const check = (name: string, label: string, on: boolean, extra = "", type = "checkbox") =>
+    `<label class="flex min-w-0 items-start gap-2"><input type="${type}" name="${name}"${on ? " checked" : ""}${extra}><span class="min-w-0 break-words">${esc(label)}</span></label>`;
+  const splits = `<fieldset class="settings-field min-w-0"><legend>Give each lane its own</legend>${check("lane-repository", "Repository", true, " disabled")}${(Object.entries(LANE_SPLITS) as [MergeLaneSplit, string][]).map(([split, label]) => check(`lane-${split}`, label, lanes.includes(split))).join("")}<small class="sub break-words" id="merge-lanes-preview">${esc(lanePreview(data, queue))}</small></fieldset>`;
+  const radios =
+    data.noProject === undefined
+      ? ""
+      : `<fieldset class="settings-field min-w-0"><legend>Issues without a project</legend>${(Object.entries(NO_PROJECT) as [MergeNoProject, string][]).map(([value, label]) => check("lane-no-project", label, value === noProject, ` value="${value}"`, "radio")).join("")}</fieldset>`;
+  const parallel = data.parallel ?? 1;
+  const counts = [...new Set([...PARALLEL, parallel])].sort((a, b) => a - b);
+  const batch = `<div class="settings-field min-w-0"><label for="merge-parallel">Merges at once in a lane</label><select id="merge-parallel" name="merge-parallel" aria-describedby="merge-parallel-help"${data.parallel === undefined ? " disabled" : ""}>${counts.map((count) => `<option value="${count}"${count === parallel ? " selected" : ""}>${count}</option>`).join("")}</select><small class="sub" id="merge-parallel-help">${data.parallel === undefined ? "This Paws merges one pull request of a lane at a time." : "Green pull requests that change none of the same files merge together."}</small>${check("merge-batch-check", "Check main after a batch", true, ' disabled aria-describedby="merge-batch-check-help"')}<small class="sub" id="merge-batch-check-help">When main's CI fails after a batch, the lane merges one at a time until main is green again.</small></div>`;
+  return `<section class="settings-section" id="merge-lanes"><div class="settings-label"><h2>Merge lanes</h2><p class="sub">Pull requests in one lane merge in order. Lanes don't wait for each other.</p></div><div class="col min-w-0">${splits}${radios}${batch}</div></section>`;
+}
 
 export function ciFixProblem(attempts: number): string | null {
   return Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
@@ -200,6 +256,7 @@ export function renderMergeSettings(view: View): string {
   return `${intro}${data.githubQueueError ? `<p class="settings-message" role="status">${esc(data.githubQueueError)}</p>` : ""}<form id="merge-settings-form"><div id="merge-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
       <section class="settings-section"><div class="settings-label"><h2>Merging</h2><p class="sub">Used by every project.</p></div><div class="col">${choiceFields("default", data.default, repos)}</div></section>
+      ${data.lanes ? lanesSection(data, view.queue) : ""}
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${checksSection(view.ciFix)}
       ${riskGateSection(data.riskGate)}
@@ -300,6 +357,9 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       ? {}
       : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
+    ...(data.lanes ? { lanes: data.lanes } : {}),
+    ...(data.noProject ? { noProject: data.noProject } : {}),
+    ...(data.parallel === undefined ? {} : { parallel: data.parallel }),
     ...(data.commentWait ? { commentWait: data.commentWait } : {}),
     ...(data.highRiskRepositories
       ? {
@@ -358,6 +418,30 @@ export async function mergeSettingsRequest(
   return data as MergeSettingsView;
 }
 
+export async function mergeQueueItems(
+  engine: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LaneItem[] | null> {
+  try {
+    const response = await fetchImpl(new URL(MERGE_QUEUE_API_PATH, engine), {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const parsed = parseMergeQueueResponse(await response.json());
+    if (!parsed.ok) return null;
+    const { entries, issues } = parsed.response;
+    const issue = (id: string) => issues.find((candidate) => candidate.id === id);
+    return entries.map(({ itemId: id, repository }) => ({
+      ...{ id, repository, project: issue(id)?.project?.name ?? null },
+      owner: issue(id)?.owner ?? null,
+    }));
+  } catch (error) {
+    journalCaught(error, "merge-settings.mergeQueueItems", null);
+    return null;
+  }
+}
+
 export function createMergeSettings(invalidate: () => void): {
   mount(root: HTMLElement, engine: string | null): void;
 } {
@@ -390,6 +474,18 @@ export function createMergeSettings(invalidate: () => void): {
     });
     const data = view.data;
     data.default = read("default", data.default);
+    if (data.lanes)
+      data.lanes = (Object.keys(LANE_SPLITS) as MergeLaneSplit[]).filter(
+        (split) => form.querySelector<HTMLInputElement>(`[name="lane-${split}"]`)?.checked,
+      );
+    if (data.noProject)
+      data.noProject = form.querySelector<HTMLInputElement>(
+        '[name="lane-no-project"][value="lane"]',
+      )?.checked
+        ? "lane"
+        : "own";
+    if (data.parallel !== undefined)
+      data.parallel = Number(value("merge-parallel") ?? data.parallel);
     if (data.autoApproveHighRisk !== undefined)
       data.autoApproveHighRisk =
         root!.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]')?.checked ?? false;
@@ -476,6 +572,13 @@ export function createMergeSettings(invalidate: () => void): {
         ]);
         if (started !== generation) return;
         view = { data, busy: view.busy, error: null, saved: false, ciFix };
+        if (data.lanes)
+          void mergeQueueItems(engine!).then((queue) => {
+            if (started !== generation || !queue) return;
+            view.queue = queue;
+            const preview = root?.querySelector("#merge-lanes-preview");
+            if (preview && view.data) preview.textContent = lanePreview(view.data, queue);
+          });
       } catch (error) {
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;

@@ -3,7 +3,9 @@ import {
   latestModelCatalogSteps,
   runnerAgentPoliciesSteps,
   runnerSharingSteps,
+  runnerFixSlotsSteps,
   runnerUsageListSteps,
+  setRunnerFixSlotsSteps,
   setRunnerAgentExtraUsageSteps,
   setRunnerSharingSteps,
   workspaceMemberSteps,
@@ -23,6 +25,9 @@ const policyInput = z.strictObject({
 });
 const extraUsageInput = z.strictObject({
   extraUsage: z.boolean(),
+});
+const fixSlotsInput = z.strictObject({
+  fixSlots: z.number().int().min(0),
 });
 
 /** Why placement ranked the runner first, in the words the runner list shows. */
@@ -85,7 +90,8 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
       /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/agents\/(claude|codex|grok|opencode)\/extra-usage$/.exec(
         path,
       );
-    if (!match && !extra && path !== "/api/runners/usage") return null;
+    const fix = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/fix-slots$/.exec(path);
+    if (!match && !extra && !fix && path !== "/api/runners/usage") return null;
     try {
       const current = await store.run((q) => memberSteps(q, principal));
       if (path === "/api/runners/usage") {
@@ -143,6 +149,34 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
         });
         return json({ ok: true });
       }
+      if (fix) {
+        if (request.method !== "POST") return json({ error: "Use POST." }, 405);
+        const runnerId = fix[1]!;
+        const input = fixSlotsInput.parse(await body(request));
+        const saved = await store.transaction(function* (q) {
+          const changer = yield* memberSteps(q, principal);
+          const host = yield* workspaceRunnerHostSteps(q, runnerId, principal.workspaceId);
+          if (
+            !host ||
+            host.revokedAt !== null ||
+            (host.ownerId !== principal.userId && !isWorkspaceAdmin(changer.role))
+          )
+            throw new Error("Only the host owner or a workspace admin can change fix slots.");
+          const { capacity } = (yield* runnerFixSlotsSteps(q, runnerId))!;
+          if (input.fixSlots > capacity) return capacity;
+          yield* setRunnerFixSlotsSteps(q, runnerId, input.fixSlots);
+          yield* auditWorkspaceAccessSteps(q, {
+            workspaceId: principal.workspaceId,
+            userId: principal.userId,
+            action: "runner.fix_slots.updated",
+            subject: runnerId,
+            now: now(),
+          });
+          return null;
+        });
+        if (saved !== null) return json({ error: `Choose between 0 and ${saved} fix slots.` }, 400);
+        return json({ ok: true });
+      }
       const runnerId = match![1]!;
       function* runnerSteps(q: Q) {
         const row = yield* workspaceRunnerHostSteps(q, runnerId, principal.workspaceId);
@@ -154,6 +188,7 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
         return json({
           ownerUserId: identity.ownerId,
           ...(await store.run((q) => runnerSharingSteps(q, runnerId))),
+          fixSlots: (await store.run((q) => runnerFixSlotsSteps(q, runnerId)))!.fixSlots,
           agents: await store.run((q) => runnerAgentPoliciesSteps(q, runnerId)),
         });
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
@@ -180,7 +215,9 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
           {
             error: extra
               ? "Choose a valid extra usage setting."
-              : "Choose a valid sharing setting.",
+              : fix
+                ? "Choose a valid number of fix slots."
+                : "Choose a valid sharing setting.",
           },
           400,
         );

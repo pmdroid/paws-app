@@ -1,6 +1,6 @@
-import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import {
   loadConfigFile,
+  maxAwakeMsFrom,
   parseTimeLimitSettings,
   readTimeLimitSettings,
   writeTimeLimits,
@@ -29,8 +29,7 @@ export async function handleTimeLimitSettingsRequest(
     return json({ error: "Time limit settings are only available on the local Paws origin" }, 403);
   const listing = () => {
     try {
-      const config = loadConfigFile(options.configPath);
-      return json(readTimeLimitSettings(config, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS));
+      return json(readTimeLimitSettings(loadConfigFile(options.configPath), maxAwakeMsFrom()));
     } catch (error) {
       journalCaught(error, "time-limits.handleTimeLimitSettingsRequest.read", null);
       return json({ error: "Time limit settings could not be read" }, 503);

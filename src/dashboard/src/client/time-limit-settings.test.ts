@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { renderSettingsPage } from "./settings-pages";
+import { renderSettingsPage, setSettingsAdmin } from "./settings-pages";
 import {
   createTimeLimitSettings,
   renderTimeLimitSettings,
@@ -50,6 +50,7 @@ let requests: { url: string; init: RequestInit }[];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  setSettingsAdmin(true);
   window = new Window({ url: "http://127.0.0.1:8787/settings/agents" });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
