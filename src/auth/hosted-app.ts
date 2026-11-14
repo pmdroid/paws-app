@@ -111,7 +111,7 @@ export async function verifyHostedGitHubRepositories(input: {
   app: ActiveGitHubApp;
   installationId: string;
   repositories: string[];
-  user: { login: string; id: number; token: string };
+  user?: { login: string; id: number; token: string };
   signal: AbortSignal;
   fetch?: typeof fetch;
 }): Promise<void> {
@@ -142,12 +142,14 @@ export async function verifyHostedGitHubRepositories(input: {
     )
       throw new GitHubSetupRefusedError("installation", repository);
     const [ownerName, repo] = repository.split("/") as [string, string];
-    const access = await client.request({
-      method: "GET",
-      path: `/repos/${repository}`,
-      token: input.user.token,
-    });
-    if (access.status !== 200 || !record(access.body))
+    const access =
+      input.user &&
+      (await client.request({
+        method: "GET",
+        path: `/repos/${repository}`,
+        token: input.user.token,
+      }));
+    if (access && (access.status !== 200 || !record(access.body)))
       throw new GitHubSetupRefusedError("read", repository);
     try {
       await mintInstallationToken({

@@ -30,11 +30,16 @@ import {
   replaceWorkspaceRepositoriesSteps,
   type Db,
   type Q,
+  type Steps,
 } from "../db";
 import { readWorkspaceJson, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { GitHubStatusCache } from "./github-status-cache";
 import { githubRepositoryChoices } from "./github-repository-choices";
+import {
+  createInstallationRepositoryCache,
+  type InstallationRepositoryCache,
+} from "./github-installation-cache";
 import { dashboardUrl } from "../dashboard-links";
 
 const START = "/api/workspaces/github-setup";
@@ -66,10 +71,13 @@ export function createGitHubRepositorySetup(options: {
   fetch?: typeof fetch;
   now?: () => number;
   cache?: GitHubStatusCache;
+  installations?: InstallationRepositoryCache;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
+  const installations =
+    options.installations ?? createInstallationRepositoryCache({ fetch: http, now });
   const activation = createWorkspaceGitHubActivation(store, options.home, options.env);
   const origin = new URL(options.origin).origin;
   if (!origin.startsWith("https://")) throw new Error("GitHub setup requires HTTPS.");
@@ -155,6 +163,104 @@ export function createGitHubRepositorySetup(options: {
     }
     const unchanged = (pending: Pending, secret: Secret) =>
       store.run((q) => unchangedSteps(q, pending, secret));
+    function chosen(
+      body: Record<string, unknown>,
+      available: readonly { repository: string }[],
+      teams: readonly { id: string }[],
+    ) {
+      if (
+        Object.keys(body).some((key) => !["installationId", "mappings", "setupId"].includes(key)) ||
+        !Array.isArray(body.mappings) ||
+        body.mappings.length > 100
+      )
+        return reply({ error: "Choose repositories and their Linear teams." }, 400);
+      const mappings: { repository: string; teamId: string }[] = [];
+      const seen = new Set<string>();
+      for (const entry of body.mappings) {
+        if (
+          !record(entry) ||
+          Object.keys(entry).length !== 2 ||
+          typeof entry.repository !== "string" ||
+          typeof entry.teamId !== "string" ||
+          !teams.some((team) => team.id === entry.teamId)
+        )
+          return reply({ error: "Choose an available repository and Linear team." }, 400);
+        if (!available.some((repo) => repo.repository === entry.repository))
+          return reply(
+            { error: new GitHubSetupRefusedError("installation", entry.repository).message },
+            409,
+          );
+        const key = `${entry.repository}:${entry.teamId}`;
+        if (seen.has(key))
+          return reply({ error: "Choose each repository and team only once." }, 400);
+        seen.add(key);
+        mappings.push({ repository: entry.repository, teamId: entry.teamId });
+      }
+      return mappings;
+    }
+    async function activate(input: {
+      app: ActiveGitHubApp;
+      installationId: string;
+      mappings: { repository: string; teamId: string }[];
+      expectedGeneration: number;
+      subject: string;
+      stillSteps: (q: Q) => Steps<boolean | null | undefined>;
+      afterSteps?: (q: Q) => Steps<void>;
+      user?: { login: string; id: number; token: string };
+    }) {
+      const { mappings, installationId } = input;
+      const repositories = [...new Set(mappings.map((entry) => entry.repository))].sort();
+      await verifyHostedGitHubRepositories({ ...input, repositories, signal, fetch: http });
+      const currentTeams = await options.teams(request, signal);
+      if (mappings.some((entry) => !currentTeams.some((team) => team.id === entry.teamId)))
+        return reply({ error: "Linear team access changed. Refresh and try again." }, 409);
+      signal.throwIfAborted();
+      const activeId = randomUUID();
+      await activation.save(activeId, { ...input.app, installationId });
+      let committed = false;
+      try {
+        const job = { ready: false };
+        const result = await store.transaction(function* (q) {
+          if (!(yield* input.stillSteps(q))) return denied();
+          yield* q.transaction((savepoint) =>
+            replaceWorkspaceRepositoriesSteps(savepoint, {
+              workspaceId,
+              actorId: userId,
+              repositories: mappings,
+              now: now(),
+            }),
+          );
+          yield* ensureGithubConnectionSteps(q, workspaceId);
+          if (
+            !(yield* advanceGithubConnectionSteps(q, {
+              workspaceId,
+              expectedGeneration: input.expectedGeneration,
+              secretId: activeId,
+              actorId: userId,
+              installationId,
+              repositories,
+            }))
+          )
+            throw new Error("A newer GitHub connection is active. Refresh and try again.");
+          if (input.afterSteps) yield* input.afterSteps(q);
+          yield* auditWorkspaceAccessSteps(q, {
+            workspaceId,
+            userId,
+            action: "github.connect.activated",
+            subject: input.subject,
+            now: now(),
+          });
+          yield* enqueueJobSteps(q, { queue: "github.auth.recover", now: now() });
+          job.ready = true;
+          return reply({ ok: true });
+        });
+        if (job.ready) emitJobReady(store);
+        committed = result.status === 200;
+        return result;
+      } finally {
+        if (!committed) await activation.remove(activeId);
+      }
+    }
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
     try {
       for (const expired of await store.run((q) =>
@@ -242,6 +348,40 @@ export function createGitHubRepositorySetup(options: {
           }),
         });
       }
+      const connected = (await listed()).length
+        ? await store.run((q) => githubConnectionSteps(q, workspaceId))
+        : undefined;
+      if (connected?.secret_id && connected.installation_id) {
+        const installationId = connected.installation_id;
+        const app = { ...activation.template(), installationId };
+        const [listing, teams] = await Promise.all([
+          installations.list(app),
+          options.teams(request, signal),
+        ]);
+        if (request.method === "GET")
+          return reply({
+            signedIn: true,
+            cached: true,
+            installationId,
+            repositories: listing.repositories,
+            teams,
+            mappings: await listed(),
+            refreshedAt: listing.refreshedAt,
+          });
+        const body = await readWorkspaceJson(request);
+        if (!record(body) || (body.installationId ?? installationId) !== installationId)
+          return reply({ error: "Choose repositories and their Linear teams." }, 400);
+        const mappings = chosen(body, listing.repositories, teams);
+        if (mappings instanceof Response) return mappings;
+        return await activate({
+          app,
+          installationId,
+          mappings,
+          expectedGeneration: connected.generation,
+          subject: `${app.appId}:${installationId}:paws-admin`,
+          stillSteps: permittedSteps,
+        });
+      }
       const pending = await find();
       if (!pending)
         return request.method === "PUT"
@@ -254,7 +394,8 @@ export function createGitHubRepositorySetup(options: {
             )
           : reply({ signedIn: false, mappings: await listed() });
       const secret = activation.read<Secret>(pending.secret_id);
-      if (!secret.user || !(await unchanged(pending, secret)))
+      const user = secret.user;
+      if (!user || !(await unchanged(pending, secret)))
         return reply(
           {
             error: "Workspace access changed. Sign in with GitHub again.",
@@ -270,13 +411,7 @@ export function createGitHubRepositorySetup(options: {
       if (selection !== null && (typeof selection !== "string" || !/^[1-9][0-9]*$/.test(selection)))
         return reply({ error: "Choose a GitHub account." }, 400);
       const [choices, teams] = await Promise.all([
-        githubRepositoryChoices(
-          secret.app,
-          secret.user.token,
-          selection as string | null,
-          signal,
-          http,
-        ),
+        githubRepositoryChoices(secret.app, user.token, selection as string | null, signal, http),
         options.teams(request, signal),
       ]);
       if (!(await unchanged(pending, secret))) return denied();
@@ -284,7 +419,7 @@ export function createGitHubRepositorySetup(options: {
         return reply({
           signedIn: true,
           setupId: pending.state_hash,
-          login: secret.user.login,
+          login: user.login,
           ...choices,
           teams,
           mappings: await listed(),
@@ -297,96 +432,27 @@ export function createGitHubRepositorySetup(options: {
           },
           409,
         );
-      if (
-        !record(body) ||
-        Object.keys(body).some((key) => !["installationId", "mappings", "setupId"].includes(key)) ||
-        body.setupId !== pending.state_hash ||
-        !Array.isArray(body.mappings) ||
-        body.mappings.length > 100 ||
-        !choices.installationId
-      )
+      if (!record(body) || body.setupId !== pending.state_hash || !choices.installationId)
         return reply({ error: "Choose repositories and their Linear teams." }, 400);
-      const mappings: { repository: string; teamId: string }[] = [];
-      const seen = new Set<string>();
-      for (const entry of body.mappings) {
-        if (
-          !record(entry) ||
-          Object.keys(entry).length !== 2 ||
-          typeof entry.repository !== "string" ||
-          typeof entry.teamId !== "string" ||
-          !choices.repositories.some((repo) => repo.repository === entry.repository) ||
-          !teams.some((team) => team.id === entry.teamId)
-        )
-          return reply({ error: "Choose an available repository and Linear team." }, 400);
-        const key = `${entry.repository}:${entry.teamId}`;
-        if (seen.has(key))
-          return reply({ error: "Choose each repository and team only once." }, 400);
-        seen.add(key);
-        mappings.push({ repository: entry.repository, teamId: entry.teamId });
-      }
-      const repositories = [...new Set(mappings.map((entry) => entry.repository))].sort();
-      await verifyHostedGitHubRepositories({
+      const mappings = chosen(body, choices.repositories, teams);
+      if (mappings instanceof Response) return mappings;
+      return await activate({
         app: secret.app,
-        user: secret.user,
         installationId: choices.installationId,
-        repositories,
-        signal,
-        fetch: http,
-      });
-      const currentTeams = await options.teams(request, signal);
-      if (mappings.some((entry) => !currentTeams.some((team) => team.id === entry.teamId)))
-        return reply({ error: "Linear team access changed. Refresh and try again." }, 409);
-      signal.throwIfAborted();
-      const activeId = randomUUID();
-      await activation.save(activeId, { ...secret.app, installationId: choices.installationId });
-      let committed = false;
-      try {
-        const job = { ready: false };
-        const result = await store.transaction(function* (q) {
-          if (!(yield* unchangedSteps(q, pending, secret))) return denied();
-          yield* q.transaction((savepoint) =>
-            replaceWorkspaceRepositoriesSteps(savepoint, {
-              workspaceId,
-              actorId: userId,
-              repositories: mappings,
-              now: now(),
-            }),
-          );
-          yield* ensureGithubConnectionSteps(q, workspaceId);
-          if (
-            !(yield* advanceGithubConnectionSteps(q, {
-              workspaceId,
-              expectedGeneration: pending.expected_generation,
-              secretId: activeId,
-              actorId: userId,
-              installationId: choices.installationId,
-              repositories,
-            }))
-          )
-            throw new Error("A newer GitHub connection is active. Refresh and try again.");
+        mappings,
+        user,
+        expectedGeneration: pending.expected_generation,
+        subject: `${secret.app.appId}:${choices.installationId}:${user.id}`,
+        stillSteps: (q) => unchangedSteps(q, pending, secret),
+        afterSteps: function* (q) {
           yield* updateGithubOAuthIntentSteps(
             q,
             pending.state_hash,
             pending.expected_generation + 1,
             JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
           );
-          yield* auditWorkspaceAccessSteps(q, {
-            workspaceId,
-            userId,
-            action: "github.connect.activated",
-            subject: `${secret.app.appId}:${choices.installationId}:${secret.user!.id}`,
-            now: now(),
-          });
-          yield* enqueueJobSteps(q, { queue: "github.auth.recover", now: now() });
-          job.ready = true;
-          return reply({ ok: true });
-        });
-        if (job.ready) emitJobReady(store);
-        committed = result.status === 200;
-        return result;
-      } finally {
-        if (!committed) await activation.remove(activeId);
-      }
+        },
+      });
     } catch (caughtError1) {
       journalCaught(caughtError1, "github-repository-setup.createGitHubRepositorySetup.all", null);
       return reply(
