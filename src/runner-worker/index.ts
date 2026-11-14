@@ -298,8 +298,10 @@ export async function runWithFollowUps(
         continue;
       return result;
     }
-    writeJournal(`item ${agent.itemId} run ${agent.runId} interrupt source=follow_up`);
-    await lifecycle.interrupt();
+    writeJournal(
+      `item ${agent.itemId} run ${agent.runId} interrupt source=follow_up sequence=${sequence - 1} followUpBytes=${Buffer.byteLength(first.text)}`,
+    );
+    await lifecycle.interrupt(first.text);
     prompt = first.text;
   }
 }
@@ -1360,6 +1362,9 @@ export async function executeRunnerCommand(
         if (turnFinished || !running) break;
         await delay(50);
       }
+      writeJournal(
+        `item ${agent.itemId} run ${agent.runId} interrupt source=question_end followUp=none`,
+      );
       questionEnd.abort(FOLLOW_UP_INTERRUPTION);
     };
     const earlierSession =
@@ -1647,7 +1652,12 @@ export async function executeRunnerCommand(
         ? {
             async start(plan) {
               startWorkPlan ??= plan;
-              void delay(START_WORK_GRACE_MS).then(() => workStart.abort(FOLLOW_UP_INTERRUPTION));
+              void delay(START_WORK_GRACE_MS).then(() => {
+                writeJournal(
+                  `item ${agent.itemId} run ${agent.runId} interrupt source=start_work followUp=none`,
+                );
+                workStart.abort(FOLLOW_UP_INTERRUPTION);
+              });
             },
           }
         : undefined,

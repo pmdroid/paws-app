@@ -109,6 +109,10 @@ for (const delivered of [true, false, "completed"] as const)
         await Bun.sleep(10);
       }
       const runId = (await listWorkItems(db))[0]!.currentRunId!;
+      await orchestrator.onLinearEvent(event("created", null));
+      await orchestrator.onLinearEvent(event("prompted", "   "));
+      expect((await getRun(db, runId))?.status).toBe("active");
+      expect(forwarded).toEqual([]);
       if (delivered === "completed") {
         await enqueueOutboxOnce(db, {
           target: "linear",

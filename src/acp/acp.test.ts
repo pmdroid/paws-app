@@ -1266,6 +1266,8 @@ test("follow-up reconstructs public context after cancellation and child cleanup
   await toolFinished;
   await expect(lifecycle.prompt(options)).rejects.toThrow("ACP prompt already running");
   await lifecycle.interrupt();
+  expect(events.filter((event) => event.type === "cancelled")).toEqual([]);
+  await lifecycle.interrupt("Continue with the next request");
   const interrupted = await running;
   expect(interrupted.interrupted).toBe(true);
   expect(interrupted.cancelled).toBe(true);
