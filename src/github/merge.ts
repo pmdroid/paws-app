@@ -203,6 +203,10 @@ export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseRes
 
 const RUNNER_REBASED_REF = "refs/paws/runner-rebased";
 
+function namesRef(ref: string): boolean {
+  return ref.startsWith("refs/");
+}
+
 export async function adoptRunnerRebase(
   input: SerialMergeInput,
   heads: { head: string; base: string; rebased: string; ontoFetchedMain?: boolean },
@@ -247,8 +251,9 @@ export async function adoptRunnerRebase(
     patchId(input.worktree, onto, heads.rebased, signal),
   ]);
   if (before !== after) return { refused: "its patch-id differs from the accepted head's" };
-  if (input.ref) await run(["update-ref", input.ref, heads.rebased, heads.head]);
-  else await run(["reset", "--hard", heads.rebased]);
+  if (input.ref) {
+    if (namesRef(input.ref)) await run(["update-ref", input.ref, heads.rebased, heads.head]);
+  } else await run(["reset", "--hard", heads.rebased]);
   return { rebased: true, branch, base: onto, head: heads.rebased };
 }
 
@@ -589,7 +594,8 @@ async function rebaseInCheckout(
     const checkout: SerialMergeInput = { ...input, worktree: tree };
     delete checkout.ref;
     const pushed = await pushRebased(checkout, url, branch, gitExec);
-    if (pushed.ok) await git(input.worktree, ["update-ref", ref, pushed.head, before], gitExec);
+    if (pushed.ok && namesRef(ref))
+      await git(input.worktree, ["update-ref", ref, pushed.head, before], gitExec);
     return pushed;
   } finally {
     await git(input.worktree, ["worktree", "remove", "--force", tree], gitExec).catch(

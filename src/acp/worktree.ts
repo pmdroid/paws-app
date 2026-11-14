@@ -350,6 +350,56 @@ export async function restoreCandidateRef(options: {
   });
 }
 
+export async function ensureMirrorCommit(options: {
+  owner: string;
+  repo: string;
+  remoteUrl: string;
+  pawsRoot: string;
+  sha: string;
+  networkGit?: (args: string[]) => Promise<string>;
+  signal: AbortSignal;
+}): Promise<string> {
+  if (!/^[a-f0-9]{40}$/.test(options.sha))
+    throw new Error(`Stored candidate ${options.sha} is not a commit SHA.`);
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const has = () =>
+    git(["--git-dir", gitDir, "cat-file", "-e", `${options.sha}^{commit}`], {
+      signal: options.signal,
+    }).then(
+      () => true,
+      () => false,
+    );
+  if ((await exists(gitDir)) && (await has())) return gitDir;
+  await ensureBareMirror(options);
+  await onMirror(gitDir, async () => {
+    if (await has()) return;
+    const scratch = `refs/paws/imports/${randomUUID()}`;
+    try {
+      await (options.networkGit ?? git)([
+        "--git-dir",
+        gitDir,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--",
+        options.remoteUrl,
+        `${options.sha}:${scratch}`,
+      ]);
+    } catch (error) {
+      options.signal.throwIfAborted();
+      throw new Error(
+        `Candidate ${options.sha} is missing on GitHub in ${options.owner}/${options.repo}.`,
+        { cause: error },
+      );
+    } finally {
+      await git(["--git-dir", gitDir, "update-ref", "-d", scratch], {
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => undefined);
+    }
+  });
+  return gitDir;
+}
+
 export async function adoptLegacyCandidate(options: {
   owner: string;
   repo: string;

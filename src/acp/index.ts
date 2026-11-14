@@ -157,6 +157,7 @@ export {
   removeWorktree,
   resolveStartRef,
   restoreCandidateRef,
+  ensureMirrorCommit,
   worktreeMergedInto,
   type CandidateHead,
   type Mirror,

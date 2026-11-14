@@ -150,6 +150,7 @@ import {
   providerFor,
   worktreePath,
   mirrorPath,
+  branchName,
   candidateRef,
   runDir,
   runAgent,
@@ -159,6 +160,7 @@ import {
   adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
+  ensureMirrorCommit,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -437,6 +439,7 @@ import {
   branchContains,
   hasOpenPullOnPrefix,
   readOpenPullHead,
+  readBranchTip,
   readBranchWork,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
@@ -796,6 +799,7 @@ export type OrchestratorOptions = {
     access: "read" | "write",
   ) => Promise<string>;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
+  githubMirrors?: boolean;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   pullRequestMember?: (item: WorkItemRecord) => Promise<PullRequestMember | null>;
   launch?: AgentLaunch;
@@ -3974,6 +3978,7 @@ export class Orchestrator {
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
+        ...(this.storedCandidates() ? { storedCandidate: true } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -4572,6 +4577,15 @@ export class Orchestrator {
         ? {
             path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
             ref: candidateRef(itemPathId(item)),
+            ...(this.storedCandidates()
+              ? {
+                  head: async () => {
+                    const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
+                    if (!recorded) throw new Error(`${item.id} has no recorded candidate commit`);
+                    return recorded.sha;
+                  },
+                }
+              : {}),
           }
         : undefined;
     const policy = await this.commitPolicy(item);
@@ -4869,13 +4883,15 @@ export class Orchestrator {
         });
         await assertCurrent();
         const { ref } = await this.itemHead(item);
-        const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
+        const stored = this.storedCandidates();
+        const at = stored ? ref : (await git(["-C", worktree, "rev-parse", ref])).trim();
         if (at !== head) {
-          await git(
-            ref === "HEAD"
-              ? ["-C", worktree, "reset", "--hard", head]
-              : ["-C", worktree, "update-ref", ref, head, at],
-          );
+          if (!stored)
+            await git(
+              ref === "HEAD"
+                ? ["-C", worktree, "reset", "--hard", head]
+                : ["-C", worktree, "update-ref", ref, head, at],
+            );
           if (ref !== "HEAD")
             await this.store.run((q) =>
               recordItemCandidateSteps(q, {
@@ -6185,7 +6201,7 @@ export class Orchestrator {
       accepted: true,
       evidence,
       worktree,
-      ...(ref === "HEAD" ? {} : { ref }),
+      ...(ref === "HEAD" ? {} : this.storedCandidates() ? { candidate: ref } : { ref }),
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
       owner: repository.owner,
@@ -10648,11 +10664,12 @@ export class Orchestrator {
     const originalProfiles = JSON.stringify(profiles);
     const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
-    await ensureBareMirror({
-      ...repository,
-      pawsRoot: this.options.pawsRoot,
-      networkGit: await this.repositoryGit(item, repository, signal, "write"),
-    });
+    if (!this.storedCandidates())
+      await ensureBareMirror({
+        ...repository,
+        pawsRoot: this.options.pawsRoot,
+        networkGit: await this.repositoryGit(item, repository, signal, "write"),
+      });
     const startRef = worktreeStartRef(item);
     const placement = {
       ...repository,
@@ -10917,18 +10934,37 @@ export class Orchestrator {
    * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
    * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
    */
-  private itemHead(item: WorkItemRecord) {
-    return this.store.run((q) => this.itemHeadSteps(q, item));
+  private async itemHead(item: WorkItemRecord) {
+    const head = await this.store.run((q) => this.itemHeadSteps(q, item));
+    if (head.ref === "HEAD" || !this.storedCandidates()) return head;
+    const repository = await this.repositoryForItem(item);
+    if (!repository) return head;
+    const signal = (await this.signalForItem(item.id)) ?? AbortSignal.timeout(120_000);
+    await ensureMirrorCommit({
+      ...repository,
+      pawsRoot: this.options.pawsRoot,
+      sha: head.ref,
+      networkGit: await this.repositoryGit(item, repository, signal, "read"),
+      signal,
+    });
+    return head;
   }
 
   private *itemHeadSteps(q: Q, item: WorkItemRecord): Steps<{ repo: string; ref: string }> {
     const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    return this.options.remoteExecution && repository
-      ? {
-          repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
-          ref: candidateRef(itemPathId(item)),
-        }
-      : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+    if (!this.options.remoteExecution || !repository)
+      return { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+    const stored = this.storedCandidates()
+      ? (yield* getItemCandidateSteps(q, item.id))?.sha
+      : undefined;
+    return {
+      repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+      ref: stored ?? candidateRef(itemPathId(item)),
+    };
+  }
+
+  private storedCandidates(): boolean {
+    return Boolean(this.options.remoteExecution) && this.options.githubMirrors === false;
   }
 
   private async ensureRecordedCandidate(
@@ -10936,6 +10972,10 @@ export class Orchestrator {
     placement: Parameters<typeof ensureCandidateRef>[0] & { remoteUrl: string },
     signal: AbortSignal,
   ): Promise<string> {
+    if (this.storedCandidates()) {
+      await this.recordBranchTipCandidate(item, placement, signal);
+      return mirrorPath(placement.pawsRoot, placement.owner, placement.repo);
+    }
     await this.restoreCandidate(item, signal);
     const candidate = await ensureCandidateRef(placement);
     if (!(await this.store.run((q) => getItemCandidateSteps(q, item.id))))
@@ -10950,7 +10990,46 @@ export class Orchestrator {
     return candidate.mirrorPath;
   }
 
+  private async recordBranchTipCandidate(
+    item: WorkItemRecord,
+    placement: RepositoryBinding & { itemId: string; startRef?: string },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (await this.store.run((q) => getItemCandidateSteps(q, item.id))) return;
+    const github = this.githubForRepository(placement);
+    if (!github)
+      throw new Error(`Paws has no GitHub access to ${placement.owner}/${placement.repo}`);
+    const tip = (branch: string) =>
+      readBranchTip({
+        client: github.client,
+        owner: placement.owner,
+        repo: placement.repo,
+        branch,
+        ...this.gitHubCredentials(github),
+        signal,
+      });
+    const continued = placement.startRef?.replace(/^origin\//, "");
+    const head =
+      (await tip(branchName(placement.itemId))) ??
+      (continued === undefined ? await tip("main") : await tip(continued));
+    if (!head)
+      throw new Error(
+        continued === undefined
+          ? `${placement.owner}/${placement.repo} has no main to start the candidate from`
+          : `${placement.owner}/${placement.repo} has no ${continued} to start the candidate from`,
+      );
+    await this.store.run((q) =>
+      recordItemCandidateSteps(q, {
+        itemId: item.id,
+        sha: head,
+        branch: item.branchName,
+        recordedAt: this.now(),
+      }),
+    );
+  }
+
   private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+    if (this.storedCandidates()) return;
     const repository = await this.repositoryForItem(item);
     const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
     if (!this.options.remoteExecution || !repository || !recorded) return;
@@ -10970,7 +11049,7 @@ export class Orchestrator {
 
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
     const repository = await this.repositoryForItem(item);
-    if (this.options.remoteExecution && repository)
+    if (this.options.remoteExecution && repository && !this.storedCandidates())
       await adoptLegacyCandidate({
         ...repository,
         itemId: itemPathId(item),
