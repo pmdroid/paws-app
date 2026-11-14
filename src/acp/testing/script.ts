@@ -74,6 +74,7 @@ export interface FakeScript {
   confirmEffort?: string;
   fast?: "boolean" | "select";
   fastOn?: boolean;
+  fastId?: "fast" | "fast-mode";
   fastModels?: string[];
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
