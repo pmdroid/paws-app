@@ -149,22 +149,6 @@ export function* getRetroDispatchSteps(q: Q, commandId: string) {
   return row === undefined ? null : fromRow(q, row);
 }
 
-export async function listRetroDispatches(store: Db, retroId: string): Promise<RetroDispatch[]> {
-  return store.run((q) => listRetroDispatchesSteps(q, retroId));
-}
-
-export function* listRetroDispatchesSteps(q: Q, retroId: string) {
-  const { retroDispatch } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .select()
-      .from(retroDispatch)
-      .where(eq(retroDispatch.retroId, retroId))
-      .orderBy(retroDispatch.attempt),
-  );
-  return rows.map((row) => fromRow(q, row));
-}
-
 export async function openRetroDispatch(store: Db, retroId: string): Promise<RetroDispatch | null> {
   return store.run((q) => openRetroDispatchSteps(q, retroId));
 }
@@ -180,22 +164,6 @@ export function* openRetroDispatchSteps(q: Q, retroId: string) {
       .limit(1),
   );
   return row === undefined ? null : fromRow(q, row);
-}
-
-export async function unfinishedRetroDispatches(store: Db): Promise<RetroDispatch[]> {
-  return store.run((q) => unfinishedRetroDispatchesSteps(q));
-}
-
-export function* unfinishedRetroDispatchesSteps(q: Q) {
-  const { retroDispatch } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .select()
-      .from(retroDispatch)
-      .where(unfinished(q))
-      .orderBy(retroDispatch.createdAt, retroDispatch.commandId),
-  );
-  return rows.map((row) => fromRow(q, row));
 }
 
 export async function deliverableRetroDispatches(
@@ -223,21 +191,6 @@ export function* deliverableRetroDispatchesSteps(q: Q, runnerId: string) {
       .limit(16),
   );
   return rows.map((row) => fromRow(q, row));
-}
-
-export async function retroSlotsHeld(store: Db, runnerId: string): Promise<number> {
-  return store.run((q) => retroSlotsHeldSteps(q, runnerId));
-}
-
-export function* retroSlotsHeldSteps(q: Q, runnerId: string) {
-  const { retroDispatch } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({ held: count() })
-      .from(retroDispatch)
-      .where(and(eq(retroDispatch.runnerId, runnerId), unreleased(q))),
-  );
-  return row!.held;
 }
 
 export async function retroDispatchesNotStarted(store: Db, retroId: string): Promise<number> {

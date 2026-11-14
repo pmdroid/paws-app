@@ -332,14 +332,6 @@ export function* findingGroupRunExistsForDaySteps(
   return row !== undefined;
 }
 
-export async function findingGroupRunExistsForDay(
-  store: Db,
-  workspaceId: string,
-  day: string,
-): Promise<boolean> {
-  return store.run((q) => findingGroupRunExistsForDaySteps(q, workspaceId, day));
-}
-
 export type NewFindingGroupRun = Q["t"]["findingGroupRun"]["$inferInsert"];
 
 export function* insertFindingGroupRunSteps(q: Q, row: NewFindingGroupRun): Steps<void> {

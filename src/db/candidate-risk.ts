@@ -34,11 +34,6 @@ export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
   );
 }
 
-/** Records the tier for a head. A head is classified once against its base; a repeat replaces it. */
-export async function saveCandidateRisk(store: Db, risk: CandidateRisk): Promise<void> {
-  await store.run((q) => saveCandidateRiskSteps(q, risk));
-}
-
 type Row = typeof candidateRisk.$inferSelect;
 
 export function* getCandidateRiskSteps(q: Q, itemId: string, head: string) {

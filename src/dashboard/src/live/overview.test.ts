@@ -8,7 +8,7 @@ import {
   enterMergeQueue,
   insertLinkAsk,
   insertQueuedItem,
-  saveCandidateRisk,
+  saveCandidateRiskSteps,
   upsertCloseoutStep,
   type Db,
 } from "../../../db";
@@ -107,14 +107,16 @@ async function fixture(): Promise<Db> {
     answerers: ["delegator"],
     createdAt: NOW - 5_000,
   });
-  await saveCandidateRisk(db, {
-    itemId: "ENG-4",
-    head: HEAD,
-    base: "base",
-    tier: "high",
-    paths: ["src/auth/session.ts"],
-    classifiedAt: NOW - 5_000,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: "ENG-4",
+      head: HEAD,
+      base: "base",
+      tier: "high",
+      paths: ["src/auth/session.ts"],
+      classifiedAt: NOW - 5_000,
+    }),
+  );
   await insertQueuedItem(db, {
     id: "ENG-5",
     title: "Held review",

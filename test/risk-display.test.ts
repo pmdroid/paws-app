@@ -8,7 +8,7 @@ import { createLiveStatusProvider } from "../src/dashboard";
 import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
 import {
   insertQueuedItem,
-  saveCandidateRisk,
+  saveCandidateRiskSteps,
   saveCandidatePaths,
   upsertCloseoutStep,
   finishCloseoutProgress,
@@ -51,14 +51,16 @@ async function fixture(
     policyDigest: "policy",
     policyPath: null,
   };
-  await saveCandidateRisk(db, {
-    itemId: item.id,
-    head: "head",
-    base: "base",
-    tier: "high",
-    paths: ["auth.ts"],
-    classifiedAt: now,
-  });
+  await db.run((q) =>
+    saveCandidateRiskSteps(q, {
+      itemId: item.id,
+      head: "head",
+      base: "base",
+      tier: "high",
+      paths: ["auth.ts"],
+      classifiedAt: now,
+    }),
+  );
   await saveCandidatePaths(db, {
     itemId: item.id,
     head: "head",

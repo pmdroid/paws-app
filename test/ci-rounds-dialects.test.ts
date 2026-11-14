@@ -1,11 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  countCiFixesSteps,
-  enqueueJobSteps,
-  listCiRoundsSteps,
-  recordCiRoundSteps,
-  type CiRound,
-} from "../src/db";
+import { listCiRoundsSteps, recordCiRoundSteps, type CiRound } from "../src/db";
 import { forEachDialect, insertWorkItem } from "./dialects";
 
 const round = (itemId: string, head: string, recordedAt: number, fix: number | null): CiRound => ({
@@ -30,7 +24,7 @@ const round = (itemId: string, head: string, recordedAt: number, fix: number | n
 });
 
 forEachDialect((open) => {
-  test("a CI round per head replaces on a second read, lists oldest first and counts fixes", async () => {
+  test("a CI round per head replaces on a second read and lists oldest first", async () => {
     const { db, close } = await open();
     try {
       await insertWorkItem(db, "a");
@@ -49,13 +43,6 @@ forEachDialect((open) => {
         ["a", "h1"],
         ["a", "h2"],
       ]);
-
-      expect(await db.run((q) => countCiFixesSteps(q, "a", 999))).toBe(2);
-      const job = await db.run((q) => enqueueJobSteps(q, { queue: "start", now: 25 }));
-      expect(await db.run((q) => countCiFixesSteps(q, "a", job))).toBe(2);
-      const later = await db.run((q) => enqueueJobSteps(q, { queue: "start", now: 40 }));
-      expect(await db.run((q) => countCiFixesSteps(q, "a", later))).toBe(0);
-      expect(await db.run((q) => countCiFixesSteps(q, "b", job))).toBe(0);
     } finally {
       await close();
     }

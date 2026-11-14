@@ -49,11 +49,6 @@ export function* deleteRiskFixSteps(q: Q, itemId: string, head: string) {
   );
 }
 
-/** Forgets the comparison for a head, as when Paws can no longer read the fix. */
-export async function deleteRiskFix(store: Db, itemId: string, head: string): Promise<void> {
-  await store.run((q) => deleteRiskFixSteps(q, itemId, head));
-}
-
 type Row = typeof riskFix.$inferSelect;
 
 export function* getRiskFixSteps(q: Q, itemId: string, head: string) {

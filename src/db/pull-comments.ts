@@ -240,25 +240,6 @@ export async function pendingPullComments(store: Db, itemId: string): Promise<Pu
   return store.run((q) => pendingPullCommentsSteps(q, itemId));
 }
 
-export function* getPullCommentSteps(q: Q, source: PullCommentSource, commentId: number) {
-  const { pullComment } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select()
-      .from(pullComment)
-      .where(and(eq(pullComment.source, source), eq(pullComment.commentId, commentId))),
-  );
-  return row === undefined ? null : mapRow(row);
-}
-
-export async function getPullComment(
-  store: Db,
-  source: PullCommentSource,
-  commentId: number,
-): Promise<PullCommentRecord | null> {
-  return store.run((q) => getPullCommentSteps(q, source, commentId));
-}
-
 /** Settle the given comments that are still open. The number settled. */
 export function* settlePullCommentsSteps(
   q: Q,
