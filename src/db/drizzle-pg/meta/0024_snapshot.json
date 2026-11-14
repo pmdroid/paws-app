@@ -1,6 +1,6 @@
 {
-  "id": "c3050c53-7339-45e5-b12d-9dbcda242c93",
-  "prevId": "1d90001c-4290-48ed-8b43-00f2d43cfb08",
+  "id": "e062eb6c-de6d-4ce9-b31e-25eb29f1363d",
+  "prevId": "5e45369d-3787-4405-a993-d78644690511",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9183,25 +9183,25 @@
           "name": "base_sha",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "tier": {
           "name": "tier",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "paths": {
           "name": "paths",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "classified_at": {
           "name": "classified_at",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "matches": {
           "name": "matches",
@@ -9212,6 +9212,12 @@
         "changed_paths": {
           "name": "changed_paths",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         }
@@ -9227,7 +9233,7 @@
               "nulls": "last"
             },
             {
-              "expression": "classified_at",
+              "expression": "recorded_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

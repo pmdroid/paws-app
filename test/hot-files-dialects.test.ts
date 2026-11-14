@@ -1,6 +1,10 @@
+import { eq } from "drizzle-orm";
 import { afterEach, expect, test } from "bun:test";
 import {
   getCandidatePathsSteps,
+  getCandidateRiskSteps,
+  latestCandidateRiskSteps,
+  latestCandidateRisksSteps,
   hotFilesSteps,
   latestCandidatePathsSteps,
   saveCandidateRiskSteps,
@@ -42,9 +46,36 @@ forEachDialect((connect) => {
 
     expect(await db.run((q) => getCandidatePathsSteps(q, "ENG-1", "h1"))).toEqual(["a.ts", "b.ts"]);
     expect(await db.run((q) => getCandidatePathsSteps(q, "ENG-1", "nope"))).toBeNull();
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.candidateRisk)
+          .set({ classifiedAt: 100 })
+          .where(eq(q.t.candidateRisk.headSha, "h2")),
+      ),
+    );
+    expect((await db.run(latestCandidatePathsSteps)).get("ENG-1")).toEqual(["d.ts"]);
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.candidateRisk).values({
+          itemId: "ENG-1",
+          headSha: "orphan",
+          changedPaths: ["orphan.ts"],
+          recordedAt: 30,
+        }),
+      ),
+    );
+    expect(await db.run((q) => getCandidateRiskSteps(q, "ENG-1", "orphan"))).toBeNull();
+    expect((await db.run((q) => latestCandidateRiskSteps(q, "ENG-1")))?.head).toBe("h2");
+    expect((await db.run((q) => latestCandidateRisksSteps(q, ["ENG-1"]))).get("ENG-1")?.head).toBe(
+      "h2",
+    );
+    expect(await db.run((q) => getCandidatePathsSteps(q, "ENG-1", "orphan"))).toEqual([
+      "orphan.ts",
+    ]);
     expect(await db.run(latestCandidatePathsSteps)).toEqual(
       new Map([
-        ["ENG-1", ["d.ts"]],
+        ["ENG-1", ["orphan.ts"]],
         ["ENG-2", ["y.ts"]],
       ]),
     );
@@ -108,6 +139,15 @@ forEachDialect((connect) => {
     await save(db, "ENG-3", "m1", ["src/a.ts", "src/c.ts"], 800);
     await save(db, "ENG-3", "m2", ["src/late.ts"], 1_050);
     await save(db, "ENG-2", "b1", ["src/a.ts", "src/c.ts", "src/d.ts"], 700);
+
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.candidateRisk)
+          .set({ classifiedAt: 3_000 })
+          .where(eq(q.t.candidateRisk.headSha, "m1")),
+      ),
+    );
 
     expect(await db.run((q) => hotFilesSteps(q, 2_000))).toEqual([
       { repository: "Acme/Paws", path: "src/a.ts", conflicts: 2, items: ["ENG-1", "ENG-2"] },

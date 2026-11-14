@@ -48,7 +48,7 @@ export function* latestCandidatePathsSteps(q: Q): Steps<Map<string, string[]>> {
     .select({ head: later.headSha })
     .from(later)
     .where(and(eq(later.itemId, candidateRisk.itemId), isNotNull(later.changedPaths)))
-    .orderBy(desc(later.classifiedAt), desc(later.headSha))
+    .orderBy(desc(later.recordedAt), desc(later.headSha))
     .limit(1);
   const rows = yield* q.all(
     q.orm
@@ -81,12 +81,12 @@ function* candidatePathsAtSteps(q: Q, itemId: string, head: string | null, at: n
         and(
           eq(candidateRisk.itemId, itemId),
           isNotNull(candidateRisk.changedPaths),
-          or(eq(candidateRisk.headSha, head ?? ""), lte(candidateRisk.classifiedAt, at)),
+          or(eq(candidateRisk.headSha, head ?? ""), lte(candidateRisk.recordedAt, at)),
         ),
       )
       .orderBy(
         desc(sql`${candidateRisk.headSha} = ${head ?? ""}`),
-        desc(candidateRisk.classifiedAt),
+        desc(candidateRisk.recordedAt),
         desc(candidateRisk.headSha),
       )
       .limit(1),

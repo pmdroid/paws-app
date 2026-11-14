@@ -248,19 +248,20 @@ export const candidateRisk = pgTable(
       .notNull()
       .references(() => workItem.id),
     headSha: text("head_sha").notNull(),
-    baseSha: text("base_sha").notNull(),
-    tier: text().notNull(),
-    paths: jsonb().notNull(),
-    classifiedAt: bigint("classified_at", { mode: "number" }).notNull(),
+    baseSha: text("base_sha"),
+    tier: text(),
+    paths: jsonb(),
+    classifiedAt: bigint("classified_at", { mode: "number" }),
     matches: jsonb(),
     changedPaths: jsonb("changed_paths"),
+    recordedAt: bigint("recorded_at", { mode: "number" }),
   },
   (table) => [
     primaryKey({
       columns: [table.itemId, table.headSha],
       name: "candidate_risk_item_id_head_sha_pk",
     }),
-    index("candidate_risk_item").on(table.itemId, table.classifiedAt),
+    index("candidate_risk_item").on(table.itemId, table.recordedAt),
     check("candidate_risk_check_1", sql`tier IN ('high', 'normal')`),
   ],
 );

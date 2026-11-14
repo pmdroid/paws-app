@@ -57,11 +57,12 @@ export function saveChangedPaths(
           tier: "normal",
           paths: [],
           classifiedAt: input.recordedAt,
+          recordedAt: input.recordedAt,
           changedPaths,
         })
         .onConflictDoUpdate({
           target: [q.t.candidateRisk.itemId, q.t.candidateRisk.headSha],
-          set: { changedPaths },
+          set: { changedPaths, recordedAt: input.recordedAt },
         }),
     ),
   );

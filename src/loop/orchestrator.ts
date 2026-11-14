@@ -6363,6 +6363,7 @@ export class Orchestrator {
     const listed = await trustedChangedPaths(worktree, base, head);
     if (!listed.ok) throw new Error(listed.message);
     const changed = listed.paths;
+    const recordedAt = this.now();
     const risk = await classifyPathsRisk({
       git: run,
       base,
@@ -6379,6 +6380,7 @@ export class Orchestrator {
         base,
         ...risk,
         changedPaths: changed,
+        recordedAt,
         classifiedAt: this.now(),
       }),
     );
