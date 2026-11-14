@@ -14,6 +14,7 @@ import {
   checkAnchor,
   checkHash,
   checkKey,
+  checkLogRevision,
   emptyCloseoutView,
   isOpen,
   parseCheckHash,
@@ -774,15 +775,18 @@ function onClick(event: MouseEvent): void {
   }
   if (action === "check-log-full") {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
-    if (check) void loadLog(itemId, attempt, checkId, check.state, true);
+    if (check)
+      void loadLog(
+        itemId,
+        attempt,
+        checkId,
+        checkLogRevision(check.state, page.issue?.generatedAt),
+        true,
+      );
   }
   if (action === "download-output") void downloadOutput(itemId, attempt, checkId);
 }
 
-/**
- * Starts loading the log of every open check row on the issue page that has none for the
- * check's current state. Polling repaints do not load a log again. True when one started.
- */
 function loadOpenLogs(): boolean {
   if (openIssue(currentRoute()) === null) return false;
   let started = false;
@@ -796,8 +800,9 @@ function loadOpenLogs(): boolean {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
     // Evidence rows show no output, and a pending check has none yet.
     if (!check || check.kind === "evidence" || check.state === "pending") continue;
-    if (closeout.logs?.[checkKey(itemId, attempt, checkId)]?.checkState === check.state) continue;
-    void loadLog(itemId, attempt, checkId, check.state);
+    const revision = checkLogRevision(check.state, page.issue?.generatedAt);
+    if (closeout.logs?.[checkKey(itemId, attempt, checkId)]?.checkState === revision) continue;
+    void loadLog(itemId, attempt, checkId, revision);
     started = true;
   }
   return started;

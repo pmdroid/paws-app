@@ -1,3 +1,4 @@
+import { issueCheckLogPath } from "../contract";
 import { journalCaught } from "../journal";
 /**
  * Live dashboard resources: the issue list and detail, check logs, questions, the merge queue
@@ -301,6 +302,7 @@ export function createLiveStatusProvider(
 
 /** One check of one Closeout attempt of a visible issue. `run` picks that run's agent Closeout. */
 export interface CheckLogRequest {
+  ci?: boolean;
   itemId: string;
   attempt: number;
   checkId: string;
@@ -698,6 +700,14 @@ async function readCheckLog(
   const { scope } = await readIssueScope(store, options, request.itemId);
 
   if (scope.items.length === 0) return null;
+  if (request.ci) {
+    const round = scope.ciRounds.find(
+      (entry) => entry.itemId === request.itemId && entry.round === request.attempt,
+    );
+    const index = /^[1-9]\d*$/.test(request.checkId) ? Number(request.checkId) - 1 : -1;
+    const check = round?.checks[index];
+    return check?.logTail == null ? null : { stdout: check.logTail, stderr: "" };
+  }
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
   let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
   if (request.run === null) {
@@ -727,7 +737,18 @@ function withoutOutputs(scope: IssueScope): IssueScope {
     ...scope,
     ciRounds: scope.ciRounds.map((round) => ({
       ...round,
-      checks: round.checks.map((check) => ({ ...check, logTail: summarizeEntry(check.logTail) })),
+      checks: round.checks.map((check, index) => ({
+        ...check,
+        logTail: summarizeEntry(check.logTail),
+        ...(check.logTail != null
+          ? {
+              logPath: issueCheckLogPath(round.itemId, round.round, String(index + 1), {
+                ci: true,
+                full: true,
+              }),
+            }
+          : {}),
+      })),
     })),
     verdicts: scope.verdicts.map((verdict) => ({
       ...verdict,

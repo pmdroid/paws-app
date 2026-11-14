@@ -49,6 +49,10 @@ export type CheckLogView =
       full: boolean;
     };
 
+export function checkLogRevision(state: string, generatedAt: string | undefined): string {
+  return state === "running" ? `${state}:${generatedAt}` : state;
+}
+
 export function emptyCloseoutView(): CloseoutView {
   return { attempt: {}, open: {}, wrap: {} };
 }

@@ -940,7 +940,7 @@ function fixRounds(
   return `<section class="fix-rounds" aria-labelledby="fix-rounds-heading"><h2 id="fix-rounds-heading">Fix rounds</h2><ol class="issue-items" role="list">${rounds
     .map((round) => {
       const failed = round.checks.filter((check) => check.state === "failed");
-      return `<li><div><b>CI round ${round.round}</b> on <span class="mono">${esc(round.head.slice(0, 7))}</span> · ${esc(next(round))} · <span class="muted">${esc(clock24(round.recordedAt))}</span></div>${failed.length ? `<div class="row wrap">${failed.map((check) => (check.url ? `<a href="${esc(check.url)}" target="_blank" rel="noopener noreferrer">${esc(check.name)}</a>` : `<span>${esc(check.name)}</span>`)).join("")}</div>` : ""}</li>`;
+      return `<li><div><b>CI round ${round.round}</b> on <span class="mono">${esc(round.head.slice(0, 7))}</span> · ${esc(next(round))} · <span class="muted">${esc(clock24(round.recordedAt))}</span></div>${failed.length ? `<div class="row wrap">${failed.map((check) => (check.url ? `<a href="${esc(check.url)}" target="_blank" rel="noopener noreferrer">${esc(check.name)}</a>` : `<span>${esc(check.name)}</span>`) + (check.logPath ? ` <a href="${esc(check.logPath)}" target="_blank" rel="noopener noreferrer">Stored log</a>` : "")).join("")}</div>` : ""}</li>`;
     })
     .join("")}</ol></section>`;
 }
