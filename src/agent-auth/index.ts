@@ -11,7 +11,6 @@ import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credenti
 import { createCodexProvider, type AuthProvider, type Device, type Tokens } from "./codex";
 export { createCodexProvider } from "./codex";
 export type { AuthProvider, Device, Tokens } from "./codex";
-
 type State = {
   state: "pending" | "signed-in" | "denied" | "expired";
   device?: Device;

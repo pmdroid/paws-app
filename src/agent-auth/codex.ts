@@ -1,5 +1,4 @@
 import { z } from "zod";
-
 export type Tokens = {
   id_token: string;
   access_token: string;
@@ -37,8 +36,8 @@ export function createCodexProvider(
   issuer = "https://auth.openai.com",
   now = Date.now,
 ): AuthProvider {
-  async function post(path: string, body: Record<string, string>, form = false) {
-    return fetch(issuer + path, {
+  async function post(url: string, body: Record<string, string>, form = false) {
+    return fetch(url, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(30_000),
@@ -55,7 +54,9 @@ export function createCodexProvider(
   }
   return {
     async startDevice() {
-      const response = await post("/api/accounts/deviceauth/usercode", { client_id: CLIENT });
+      const response = await post(`${issuer}/api/accounts/deviceauth/usercode`, {
+        client_id: CLIENT,
+      });
       if (!response.ok) throw new Error("Codex device request failed");
       const value = z
         .object({
@@ -78,7 +79,7 @@ export function createCodexProvider(
     },
     async pollDevice(device) {
       if (device.expiresAt <= now()) return { state: "expired" };
-      const response = await post("/api/accounts/deviceauth/token", {
+      const response = await post(`${issuer}/api/accounts/deviceauth/token`, {
         device_auth_id: device.deviceId,
         user_code: device.userCode,
       });
@@ -98,7 +99,7 @@ export function createCodexProvider(
         state: "signed-in",
         tokens: await tokens(
           await post(
-            "/oauth/token",
+            `${issuer}/oauth/token`,
             {
               grant_type: "authorization_code",
               client_id: CLIENT,
@@ -113,7 +114,7 @@ export function createCodexProvider(
     },
     async refresh(previous) {
       return tokens(
-        await post("/oauth/token", {
+        await post(`${issuer}/oauth/token`, {
           grant_type: "refresh_token",
           client_id: CLIENT,
           refresh_token: previous.refresh_token,
