@@ -162,7 +162,6 @@ type RunnerSession = {
   move: RunnerSessionMove | null;
 };
 
-/** 1 when the condition holds, else 0: a boolean is 0 or 1 on SQLite and true or false on Postgres. */
 const flag = (condition: SQL | undefined) =>
   sql<number>`CASE WHEN ${condition} THEN 1 ELSE 0 END`.mapWith(Number);
 
@@ -180,10 +179,7 @@ function* listRunnerSessionsSteps(
     .select({ decision: progress.decision })
     .from(progress)
     .where(eq(progress.itemId, item.id))
-    .orderBy(
-      desc(progress.updatedAt),
-      q.dialect === "sqlite" ? sql`p.rowid DESC` : desc(progress.id),
-    )
+    .orderBy(desc(progress.updatedAt), desc(progress.id))
     .limit(1);
   const rows = yield* q.all(
     q.orm
@@ -261,13 +257,21 @@ export function* recordRunnerHostStatusSteps(
     miseVersion: sample.miseVersion ?? null,
     strayProcesses: sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
     agentUser: sample.agentUser ?? null,
-    reportedAt,
   };
+  const {
+    runnerId: _runnerId,
+    reportedAt: _reportedAt,
+    ...stored
+  } = getTableColumns(runnerHostStatus);
+  const before = yield* q.one(
+    q.orm.select(stored).from(runnerHostStatus).where(eq(runnerHostStatus.runnerId, runnerId)),
+  );
+  if (before && Bun.deepEquals(before, values)) return;
   yield* q.exec(
     q.orm
       .insert(runnerHostStatus)
-      .values({ runnerId, ...values })
-      .onConflictDoUpdate({ target: runnerHostStatus.runnerId, set: values }),
+      .values({ runnerId, ...values, reportedAt })
+      .onConflictDoUpdate({ target: runnerHostStatus.runnerId, set: { ...values, reportedAt } }),
   );
 }
 
@@ -388,7 +392,7 @@ export function* listRunnerOverviewSteps(
         workHelperSql(q, "runner_helper"),
       ),
     );
-  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const least = sql`LEAST`;
   const rows = yield* q.all(
     q.orm
       .select({
@@ -422,6 +426,7 @@ export function* listRunnerOverviewSteps(
         strayProcesses: host.strayProcesses,
         agentUser: sql<RunnerAgentUser | null>`${host.agentUser}`,
         reportedAt: host.reportedAt,
+        lastSeenAt: runner.lastSeenAt,
         busy: flag(
           or(
             exists(
@@ -486,7 +491,7 @@ export function* listRunnerOverviewSteps(
                 row.strayProcesses === null
                   ? null
                   : (JSON.parse(row.strayProcesses) as RunnerStrayProcess[]),
-              reportedAt: row.reportedAt,
+              reportedAt: Math.max(row.reportedAt, row.lastSeenAt ?? 0),
             },
       os:
         row.osId === null && row.osVersion === null
@@ -554,6 +559,23 @@ export function* runnerForCertificateSteps(
       ),
   );
   return row ? yield* getRunnerSteps(q, row.id) : null;
+}
+
+export function* currentRunnerCertificatePemSteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+): Steps<string | null> {
+  const { runnerCertificate: c } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ pem: c.pem })
+      .from(c)
+      .where(and(eq(c.runnerId, runnerId), isNull(c.revokedAt), gt(c.acceptedUntil, now)))
+      .orderBy(desc(c.notBefore), desc(c.fingerprint))
+      .limit(1),
+  );
+  return row?.pem ?? null;
 }
 
 function* insertCertificateSteps(q: Q, runnerId: string, certificate: StoredRunnerCertificate) {
@@ -748,11 +770,7 @@ export function* isCurrentRunnerCertificateSteps(q: Q, fingerprint: string): Ste
     .select({ fingerprint: latest.fingerprint })
     .from(latest)
     .where(eq(latest.runnerId, certificate.runnerId))
-    .orderBy(
-      ...(q.dialect === "sqlite"
-        ? [sql`latest.rowid DESC`]
-        : [desc(latest.notBefore), desc(latest.fingerprint)]),
-    )
+    .orderBy(...[desc(latest.notBefore), desc(latest.fingerprint)])
     .limit(1);
   const row = yield* q.one(
     q.orm
@@ -790,7 +808,7 @@ export function* renewRunnerCertificateSteps(
   if (!owner) throw new Error("Runner identity is revoked or expired.");
   if (!(yield* isCurrentRunnerCertificateSteps(q, input.previousFingerprint)))
     throw new Error("Runner certificate has been superseded.");
-  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const least = sql`LEAST`;
   yield* q.exec(
     q.orm
       .update(runnerCertificate)
@@ -893,6 +911,18 @@ export function* runRunnerNameSteps(q: Q, runId: string) {
       .where(eq(runnerWork.runId, runId)),
   );
   return row?.name ?? null;
+}
+
+export function* runRunnerNamesSteps(q: Q, runIds: readonly string[]) {
+  const { runner, runnerWork } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId, name: runner.name })
+      .from(runnerWork)
+      .innerJoin(runner, eq(runner.id, runnerWork.runnerId))
+      .where(inArray(runnerWork.runId, [...runIds])),
+  );
+  return new Map(rows.map((row) => [row.runId, row.name]));
 }
 
 export type RunnerAvailability = {
@@ -1165,10 +1195,7 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
 }
 
 /** The newest usage row first when `ended_at` or `started_at` ties. */
-const usageNewest = (q: Q) =>
-  q.dialect === "sqlite"
-    ? sql`runner_execution_usage.rowid DESC`
-    : desc(q.t.runnerExecutionUsage.commandId);
+const usageNewest = (q: Q) => desc(q.t.runnerExecutionUsage.commandId);
 
 /** What placement admitted a runner against: its identity, policy, capacity and owner's standing. */
 export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: string) {
@@ -1209,10 +1236,15 @@ export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: stri
       .from(runnerCapacity)
       .where(eq(runnerCapacity.runnerId, runnerId)),
   );
+  const {
+    lastUsedAt: _lastUsedAt,
+    virtualFinish: _virtualFinish,
+    ...authority
+  } = getTableColumns(runnerAgentPolicy);
   const agentPolicy = agent
     ? yield* q.one(
         q.orm
-          .select()
+          .select(authority)
           .from(runnerAgentPolicy)
           .where(and(eq(runnerAgentPolicy.runnerId, runnerId), eq(runnerAgentPolicy.agent, agent))),
       )

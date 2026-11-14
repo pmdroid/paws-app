@@ -32,7 +32,7 @@ const PILLS = {
   person: ["awaiting_input", "Waiting for a person"],
 } as const;
 
-export function itemPill(item: StatusItem): string {
+export function itemPill(item: Pick<StatusItem, "doing" | "state">): string {
   const doing = item.doing;
   if (doing?.stalled) return statePill("stopped", "Stalled");
   if (!doing || doing.kind === "idle") return statePill(item.state, itemLabel(item.state));
@@ -92,7 +92,10 @@ export function issueTimeLine(
   return [stages, ...waitingPart(item, now)].join(" · ");
 }
 
-export function itemTime(item: StatusItem, now: number): string {
+export function itemTime(
+  item: Pick<StatusItem, "doing" | "state" | "activeMs" | "stateTimes">,
+  now: number,
+): string {
   const line = doingTimeLine(item, now);
   if (line === null) return itemAge(item);
   const label = doingLabel(item) ?? (item.doing?.stalled ? "No live work" : null);

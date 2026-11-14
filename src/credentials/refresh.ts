@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import {
   claimNextJobSteps,
@@ -6,7 +5,6 @@ import {
   enqueueJobOnce,
   failJobSteps,
   getJobSteps,
-  storeOf,
   type Db,
   type Q,
   type Steps,
@@ -15,14 +13,14 @@ import {
 type RotatingCredential = { accessToken: string; refreshToken: string | null };
 
 export async function refreshCredential<T extends RotatingCredential>(input: {
-  db: Database | Db;
+  db: Db;
   identity: string;
   read: (q: Q) => Steps<T | null>;
   write: (q: Q, value: T) => Steps<unknown>;
   refresh: (value: T, signal: AbortSignal) => Promise<T>;
   leaseMs?: number;
 }): Promise<T> {
-  const store = storeOf(input.db);
+  const store = input.db;
   const read = () => store.run((q) => input.read(q));
   const original = await read();
   if (original?.refreshToken == null)

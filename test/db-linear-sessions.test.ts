@@ -55,10 +55,18 @@ forEachDialect((open) => {
     withDb(async (db) => {
       expect(await db.run((q) => getLinearSessionSteps(q, "session"))).toBeNull();
       await db.transaction((q) =>
-        ensureLinearSessionSteps(q, { sessionId: "session", creatorId: "creator", now: 5 }),
+        ensureLinearSessionSteps(q, {
+          sessionId: "session",
+          creatorId: "creator",
+          now: 5,
+        }),
       );
       const session = await db.transaction((q) =>
-        ensureLinearSessionSteps(q, { sessionId: "session", issueId: "issue", appUserId: "app" }),
+        ensureLinearSessionSteps(q, {
+          sessionId: "session",
+          issueId: "issue",
+          appUserId: "app",
+        }),
       );
       expect(session).toEqual({
         sessionId: "session",
@@ -73,7 +81,10 @@ forEachDialect((open) => {
       });
       await expect(
         db.transaction((q) =>
-          ensureLinearSessionSteps(q, { sessionId: "session", creatorId: "other" }),
+          ensureLinearSessionSteps(q, {
+            sessionId: "session",
+            creatorId: "other",
+          }),
         ),
       ).rejects.toThrow("Linear session creatorId ownership changed");
       expect(await db.run((q) => getLinearSessionGenerationSteps(q, "session"))).toBe(0);
@@ -85,11 +96,17 @@ forEachDialect((open) => {
       await db.transaction(function* (q) {
         yield* insertWorkItemSteps(q, "item");
         yield* q.exec(
-          q.orm
-            .insert(q.t.workspaceUser)
-            .values({ id: "user", linearUserId: "creator", name: "Ada", email: "a@example.com" }),
+          q.orm.insert(q.t.workspaceUser).values({
+            id: "user",
+            linearUserId: "creator",
+            name: "Ada",
+            email: "a@example.com",
+          }),
         );
-        yield* ensureLinearSessionSteps(q, { sessionId: "session", creatorId: "creator" });
+        yield* ensureLinearSessionSteps(q, {
+          sessionId: "session",
+          creatorId: "creator",
+        });
         yield* bindLinearSessionTaskSteps(q, "session", "delegation-item");
       });
       expect(await db.run((q) => workItemForSessionSteps(q, "session"))).toEqual({
@@ -133,9 +150,17 @@ forEachDialect((open) => {
       const again = await db.transaction((q) =>
         recordLinearTurnSteps(q, { ...turn("a", 10), actorId: "actor" }),
       );
-      expect(first).toMatchObject({ eventKey: "a", state: "pending", actorId: null });
+      expect(first).toMatchObject({
+        eventKey: "a",
+        state: "pending",
+        actorId: null,
+      });
       expect(JSON.parse(first.payload)).toEqual({ eventKey: "a" });
-      expect(again).toMatchObject({ eventKey: "a", actorId: "actor", ordinal: first.ordinal });
+      expect(again).toMatchObject({
+        eventKey: "a",
+        actorId: "actor",
+        ordinal: first.ordinal,
+      });
       expect(
         (await db.run((q) => listPendingLinearTurnsSteps(q, "session"))).map((t) => t.eventKey),
       ).toEqual(["a", "b", "c"]);
@@ -166,8 +191,7 @@ forEachDialect((open) => {
         yield* q.exec(
           q.orm.insert(q.t.job).values({
             queue: JOB_KIND.start,
-            payload:
-              q.dialect === "postgres" ? { itemId: "item" } : JSON.stringify({ itemId: "item" }),
+            payload: { itemId: "item" },
             runAt: 0,
             status: "running",
             createdAt: 0,
@@ -187,7 +211,11 @@ forEachDialect((open) => {
     withDb(async (db) => {
       await db.transaction(function* (q) {
         yield* insertWorkItemSteps(q, "item");
-        yield* setItem(q, "item", { sessionKey: "session", state: "running", currentRunId: "run" });
+        yield* setItem(q, "item", {
+          sessionKey: "session",
+          state: "running",
+          currentRunId: "run",
+        });
         yield* q.exec(
           q.orm.insert(q.t.workspace).values({
             id: "workspace",
@@ -196,7 +224,10 @@ forEachDialect((open) => {
             createdAt: 0,
           }),
         );
-        yield* ensureLinearSessionSteps(q, { sessionId: "session", organizationId: "org" });
+        yield* ensureLinearSessionSteps(q, {
+          sessionId: "session",
+          organizationId: "org",
+        });
         yield* q.exec(
           q.orm
             .update(q.t.linearSession)

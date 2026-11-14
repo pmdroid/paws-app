@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startDashboardFixture } from "../test/dashboard-fixture";
+import { replaceWorkspaceRepositories } from "../src/db";
 
 const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-dashboard-ui-${Date.now()}`);
@@ -80,7 +81,60 @@ async function follow(page: Page, from: string, expected: string, text?: string)
   });
 }
 
+const REFUSAL = "Your GitHub account can't read acme/widgets.";
 try {
+  for (const [name, cookie, text, width] of (
+    [
+      ["setup-admin", f.adminCookie, "Choose repositories"],
+      ["setup-member", f.cookie, "An admin is still setting up Paws."],
+      ["sign-in", "", "After setup, other people only need to sign in with Linear."],
+    ] as const
+  ).flatMap((screen) => [1440, 390].map((size) => [...screen, size] as const))) {
+    current = `${name}@${width}`;
+    const page = await open(width, cookie);
+    await page.route("**/api/workspaces/github-connect", (route) =>
+      route.fulfill({
+        json: { status: "needs_repositories", canManage: true, requiresSignIn: false },
+      }),
+    );
+    await page.route("**/api/workspaces/github-setup*", (route) =>
+      route.request().method() === "PUT"
+        ? route.fulfill({ status: 409, json: { error: REFUSAL } })
+        : route.fulfill({
+            json: {
+              signedIn: true,
+              login: "octo",
+              installations: [{ id: "1", account: "acme" }],
+              installationId: "1",
+              repositories: [{ repository: "acme/app", private: true }],
+              teams: [{ id: "team", name: "Team", key: "TEAM" }],
+              mappings: [],
+            },
+          }),
+    );
+    for (const path of ["/dashboard", "/dashboard/settings/merging", "/dashboard/runners"]) {
+      await page.goto(f.origin + path);
+      await expect(page.locator("#content")).toContainText(text);
+      await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(0);
+      await expect(page.locator("[data-setup-github] #workspace-github-integration")).toHaveCount(
+        name === "setup-admin" ? 1 : 0,
+      );
+    }
+    if (name === "setup-admin") {
+      await page.getByLabel("Match acme/app to Team").check();
+      await page.getByRole("button", { name: "Save repository access" }).click();
+      await expect(page.locator("[data-setup-github] [data-feedback]")).toHaveText(REFUSAL);
+    }
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.screenshot({ path: join(out, `${name}-${width}.png`), fullPage: true });
+    await page.context().close();
+  }
+  await replaceWorkspaceRepositories(f.db, {
+    workspaceId: "workspace",
+    actorId: "admin",
+    repositories: [{ repository: "acme/app", teamId: "team" }],
+    now: Date.now(),
+  });
   for (const width of [1440, 390]) {
     const page = await open(width);
     const resources = (seen: Request[]) => [
@@ -170,8 +224,58 @@ try {
     ] as const)
       await visit(admin, width, name, path, heading);
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
-    await expect(page.locator(".settings-nav a")).toHaveText(["Your account"]);
+    await expect(page.locator(".settings-nav a")).toHaveText(["Integrations", "Your account"]);
     await expect(page.locator("#merge-settings")).toHaveCount(0);
+    for (const viewer of [admin, page])
+      await viewer.route("**/api/workspaces/github-connect", (route) =>
+        route.fulfill({
+          json: {
+            status: "connected",
+            canManage: viewer === admin,
+            requiresSignIn: false,
+            repositoryCount: 1,
+            lastDelivery: { event: "check_suite", receivedAt: Date.now() },
+          },
+        }),
+      );
+    await admin.route("**/api/workspaces/github-setup*", (route) =>
+      route.fulfill({
+        json: {
+          signedIn: true,
+          cached: true,
+          installationId: "1",
+          repositories: [
+            { repository: "acme/app", private: true },
+            { repository: "acme/site", private: false },
+          ],
+          teams: [{ id: "team", name: "Team", key: "TEAM" }],
+          mappings: [{ repository: "acme/app", teamId: "team" }],
+          refreshedAt: Date.now() - 120_000,
+        },
+      }),
+    );
+    for (const [viewer, name] of [
+      [admin, "integrations-admin"],
+      [page, "integrations-member"],
+    ] as const) {
+      await visit(viewer, width, name, "/dashboard/settings/integrations", "Integrations");
+      const github = viewer.locator("#workspace-github-integration");
+      await expect(github.locator(".pill")).toHaveText("Connected");
+      await expect(github).toContainText("acme");
+      await expect(github.getByRole("button", { name: /Sign in|Refresh/ })).toHaveCount(0);
+      if (viewer === admin) {
+        await expect(github.getByLabel("Match acme/app to Team")).toBeChecked();
+        await expect(github.getByLabel("Match acme/site to Team")).not.toBeChecked();
+        await expect(github.getByRole("button", { name: "Save repository access" })).toBeVisible();
+      } else {
+        await expect(github.getByRole("list", { name: "Mapped repositories" })).toHaveText(
+          "acme/app",
+        );
+        await expect(github.locator("input, select")).toHaveCount(0);
+      }
+      await viewer.unroute("**/api/workspaces/github-connect");
+    }
+    await admin.unroute("**/api/workspaces/github-setup*");
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 

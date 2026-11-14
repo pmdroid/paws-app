@@ -64,10 +64,29 @@ jobs:
           sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' test/postgres-known-failures.txt > "$RUNNER_TEMP/known-failures"
           grep -rlE "$DATABASE_TESTS" test --include='*.test.ts' | grep -vxFf "$RUNNER_TEMP/known-failures" | sed 's|^|./|' > "$RUNNER_TEMP/database-tests"
           wc -l < "$RUNNER_TEMP/database-tests"
-      # --retry=2 absorbs the timing flakes of tests written against in-process PGlite
-      # (a fixed number of ticks standing in for "the query finished"); a test that
-      # fails every time still fails the job.
-      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --retry=2 --shard=${{ matrix.shard }}/3 ./src/db/ $(cat "$RUNNER_TEMP/database-tests")
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/3 ./src/db/ $(cat "$RUNNER_TEMP/database-tests")
+
+  changed-tests:
+    name: changed tests (5 runs)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Run each new or changed test file five times
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- '*.test.ts' | head -n 20 | sed 's|^|./|' > "$RUNNER_TEMP/changed-tests"
+          if [ ! -s "$RUNNER_TEMP/changed-tests" ]; then echo "No new or changed test files"; exit 0; fi
+          cat "$RUNNER_TEMP/changed-tests"
+          bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --rerun-each=5 $(cat "$RUNNER_TEMP/changed-tests")
 
   check:
     name: lint, format, types, test, dashboard build

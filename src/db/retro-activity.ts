@@ -6,7 +6,7 @@ import {
   type ImprovementSource,
 } from "./improvements";
 import { jsonText } from "./json-text";
-import { MIGRATIONS_FOLDER, migrationTags, PG_MIGRATIONS_FOLDER } from "./migrate";
+import { migrationTags, PG_MIGRATIONS_FOLDER } from "./migrate";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 
 export type RetroActivityItem = {
@@ -505,26 +505,19 @@ function truthy(value: unknown): boolean {
 }
 
 function* appliedMigrationsSteps(q: Q): Steps<RetroActivitySnapshot["schema"]> {
-  const sqlite = q.dialect === "sqlite";
   const recorded = yield* q.one(
     q.orm
       .select({ one: sql`1` })
-      .from(sqlite ? sql`sqlite_master` : sql`information_schema.tables`)
-      .where(
-        sqlite
-          ? sql`type = 'table' AND name = '__drizzle_migrations'`
-          : sql`table_schema = 'drizzle' AND table_name = '__drizzle_migrations'`,
-      ),
+      .from(sql`information_schema.tables`)
+      .where(sql`table_schema = 'drizzle' AND table_name = '__drizzle_migrations'`),
   );
   const counted = recorded
     ? yield* q.one(
-        q.orm
-          .select({ n: sql<number>`count(*)` })
-          .from(sqlite ? sql`__drizzle_migrations` : sql`drizzle.__drizzle_migrations`),
+        q.orm.select({ n: sql<number>`count(*)` }).from(sql`drizzle.__drizzle_migrations`),
       )
     : undefined;
   const applied = Number(counted?.n ?? 0);
-  const tags = migrationTags(sqlite ? MIGRATIONS_FOLDER : PG_MIGRATIONS_FOLDER);
+  const tags = migrationTags(PG_MIGRATIONS_FOLDER);
   return { latest: applied === 0 ? null : (tags[applied - 1] ?? null), applied };
 }
 

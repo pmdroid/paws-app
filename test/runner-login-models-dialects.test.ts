@@ -75,7 +75,7 @@ const command =
       id,
       runnerId: "box",
       kind,
-      envelope: (q.dialect === "sqlite" ? "{}" : {}) as string,
+      envelope: {} as string,
       expiresAt,
     });
 
@@ -88,7 +88,7 @@ const helper =
       sessionId: "session",
       sessionGeneration: 1,
       runnerFence: 0,
-      envelope: (q.dialect === "sqlite" ? "{}" : {}) as string,
+      envelope: {} as string,
       expiresAt: NOW + 1_000,
       ...row,
     });
@@ -230,9 +230,12 @@ forEachDialect((open) => {
     expect(await outstanding()).toBe(true);
     expect(await outstanding(NOW + 1_000)).toBe(false);
     await seed(db, (q) =>
-      q.orm
-        .insert(q.t.runnerHealthResult)
-        .values({ commandId: "probe", runnerId: "box", resultJson: "{}", receivedAt: NOW }),
+      q.orm.insert(q.t.runnerHealthResult).values({
+        commandId: "probe",
+        runnerId: "box",
+        resultJson: "{}",
+        receivedAt: NOW,
+      }),
     );
     expect(await outstanding()).toBe(false);
     await seed(db, command("sign-in", "login"));
@@ -250,13 +253,19 @@ forEachDialect((open) => {
       (q) =>
         q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "codex", ready: 1 }),
       (q) =>
-        q.orm
-          .insert(q.t.runnerAgentPolicy)
-          .values({ runnerId: "box", agent: "claude", ready: 1, authExpired: 1 }),
+        q.orm.insert(q.t.runnerAgentPolicy).values({
+          runnerId: "box",
+          agent: "claude",
+          ready: 1,
+          authExpired: 1,
+        }),
       (q) =>
-        q.orm
-          .insert(q.t.runnerAgentPolicy)
-          .values({ runnerId: "box", agent: "grok", ready: 1, cooldownUntil: NOW + 1 }),
+        q.orm.insert(q.t.runnerAgentPolicy).values({
+          runnerId: "box",
+          agent: "grok",
+          ready: 1,
+          cooldownUntil: NOW + 1,
+        }),
     );
     const codex = {
       runnerId: "box",
@@ -275,16 +284,29 @@ forEachDialect((open) => {
 
   test("a catalog entry round-trips as JSON text and is replaced on conflict", async () => {
     const db = await opened(open);
-    const entry = { ...OWNER, model: "gpt", resultJson: '{"a":1}', updatedAt: NOW };
+    const entry = {
+      ...OWNER,
+      model: "gpt",
+      resultJson: '{"a":1}',
+      updatedAt: NOW,
+    };
     await db.run(function* (q) {
       yield* saveAgentModelCatalogSteps(q, entry);
-      yield* saveAgentModelCatalogSteps(q, { ...entry, model: "", updatedAt: NOW + 2 });
+      yield* saveAgentModelCatalogSteps(q, {
+        ...entry,
+        model: "",
+        updatedAt: NOW + 2,
+      });
     });
     const first = await db.run((q) => cachedAgentModelsSteps(q, OWNER));
     expect(first.map((row) => row.model)).toEqual(["", "gpt"]);
     expect(JSON.parse(first[1]!.resultJson)).toEqual({ a: 1 });
     await db.run((q) =>
-      saveAgentModelCatalogSteps(q, { ...entry, resultJson: '{"a":2}', updatedAt: NOW + 5 }),
+      saveAgentModelCatalogSteps(q, {
+        ...entry,
+        resultJson: '{"a":2}',
+        updatedAt: NOW + 5,
+      }),
     );
     const second = await db.run((q) => cachedAgentModelsSteps(q, OWNER));
     expect(second.map((row) => [row.model, row.updatedAt])).toEqual([
@@ -298,7 +320,12 @@ forEachDialect((open) => {
     const db = await opened(open);
     await seed(db, command("probe", "probe"));
     await db.run((q) =>
-      insertAgentModelProbeSteps(q, { ...OWNER, commandId: "probe", model: "", requestedAt: NOW }),
+      insertAgentModelProbeSteps(q, {
+        ...OWNER,
+        commandId: "probe",
+        model: "",
+        requestedAt: NOW,
+      }),
     );
     const pending = () => db.run((q) => pendingAgentModelProbesSteps(q));
     expect(await pending()).toEqual([
@@ -313,9 +340,12 @@ forEachDialect((open) => {
       },
     ]);
     await seed(db, (q) =>
-      q.orm
-        .insert(q.t.runnerHealthResult)
-        .values({ commandId: "probe", runnerId: "box", resultJson: '{"ok":1}', receivedAt: NOW }),
+      q.orm.insert(q.t.runnerHealthResult).values({
+        commandId: "probe",
+        runnerId: "box",
+        resultJson: '{"ok":1}',
+        receivedAt: NOW,
+      }),
     );
     expect((await pending())[0]?.resultJson).toBe('{"ok":1}');
     await db.run((q) => finishAgentModelProbeSteps(q, "probe", NOW + 1));
@@ -379,8 +409,20 @@ forEachDialect((open) => {
     expect(await db.run((q) => storedAgentBindingIdSteps(q, "b-legacy"))).toBe("b-legacy");
     expect(await db.run((q) => storedAgentBindingIdSteps(q, "missing"))).toBeNull();
     expect(await db.run((q) => runnerNamedBindingsSteps(q, "box", "acme"))).toEqual([
-      { bindingId: "b-first", accountId: "A", agent: "codex", label: "first", enabled: 1 },
-      { bindingId: "b-later", accountId: "B", agent: "codex", label: "second", enabled: 0 },
+      {
+        bindingId: "b-first",
+        accountId: "A",
+        agent: "codex",
+        label: "first",
+        enabled: 1,
+      },
+      {
+        bindingId: "b-later",
+        accountId: "B",
+        agent: "codex",
+        label: "second",
+        enabled: 0,
+      },
     ]);
     expect(await db.run((q) => runnerNamedBindingsSteps(q, "box", "other"))).toEqual([]);
   });
@@ -390,8 +432,14 @@ forEachDialect((open) => {
     const leased = runnerLeaseCutoff(NOW) + 1;
     await seedRun(db, "live", "item-1");
     await seedRun(db, "stale", "item-2");
-    await seedWork(db, "live", "box", { commandId: "live", leaseUntil: leased });
-    await seedWork(db, "stale", "box", { commandId: "stale", leaseUntil: leased - 1 });
+    await seedWork(db, "live", "box", {
+      commandId: "live",
+      leaseUntil: leased,
+    });
+    await seedWork(db, "stale", "box", {
+      commandId: "stale",
+      leaseUntil: leased - 1,
+    });
     await seed(
       db,
       (q) =>
@@ -426,8 +474,15 @@ forEachDialect((open) => {
       db.run((q) => runnerAgentOpenWorkCountSteps(q, "box", agent, at));
     await seedRun(db, "live", "item-1");
     await seedRun(db, "ended", "item-2");
-    await seedWork(db, "live", "box", { commandId: "live", leaseUntil: leased });
-    await seedWork(db, "ended", "box", { commandId: "ended", leaseUntil: leased, endedAt: NOW });
+    await seedWork(db, "live", "box", {
+      commandId: "live",
+      leaseUntil: leased,
+    });
+    await seedWork(db, "ended", "box", {
+      commandId: "ended",
+      leaseUntil: leased,
+      endedAt: NOW,
+    });
     expect(await count("codex")).toBe(1);
     expect(await count("claude")).toBe(0);
     expect(await count("codex", NOW + 1)).toBe(0);
@@ -439,7 +494,10 @@ forEachDialect((open) => {
     const busy = (at = NOW) => db.run((q) => runnerHasOpenWorkSteps(q, "box", at));
     expect(await busy()).toBe(false);
     await seedRun(db, "live", "item-1");
-    await seedWork(db, "live", "box", { commandId: "live", leaseUntil: leased });
+    await seedWork(db, "live", "box", {
+      commandId: "live",
+      leaseUntil: leased,
+    });
     expect(await busy()).toBe(true);
     await db.run(function* (q) {
       yield* q.exec(q.orm.update(q.t.runnerWork).set({ endedAt: NOW }));

@@ -36,6 +36,7 @@ import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -90,7 +91,8 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
 test("a failed preparation releases its reservation and the next recovering item gets the slot", async () => {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
-  let failPreparation = true;
+  let failing: string | undefined;
+  let failedRun: string | undefined;
   try {
     await runRecovering({
       count: 2,
@@ -103,13 +105,26 @@ test("a failed preparation releases its reservation and the next recovering item
       ready: async (started, db) =>
         started.size === 1 &&
         (await listWorkItems(db)).some((item) => item.state === "awaiting_input"),
-      wrap(placement) {
+      wrap(placement, db) {
         return {
           ...placement,
+          async candidates(request) {
+            failing ??= request.itemId;
+            if (request.itemId !== failing)
+              await waitFor(
+                async () => failedRun !== undefined && !(await reservationHeld(db, failedRun)),
+                { timeout: 60_000, what: "the failed preparation to release its reservation" },
+              );
+            return placement.candidates(request);
+          },
           *startedSteps(q, input) {
             yield* placement.startedSteps(q, input);
-            if (failPreparation && input.purpose === "prepare") {
-              failPreparation = false;
+            if (
+              failedRun === undefined &&
+              input.itemId === failing &&
+              input.purpose === "prepare"
+            ) {
+              failedRun = input.runId;
               throw new Error("preparation blew up");
             }
           },
@@ -120,6 +135,7 @@ test("a failed preparation releases its reservation and the next recovering item
         expect(lines.join("\n")).not.toContain("Waiting for a free slot");
         const failed = (await listWorkItems(db)).filter((item) => item.state === "awaiting_input");
         expect(failed.map((item) => item.linearIdentifier)).toHaveLength(1);
+        expect(failed[0]!.id).toBe(failing!);
         expect(started.has(failed[0]!.linearIdentifier)).toBe(false);
       },
     });
@@ -136,7 +152,7 @@ async function runRecovering(input: {
   maxAttempts?: number;
   placementPollMs?: number;
   random?: () => number;
-  wrap?: (placement: RunnerPlacement) => RunnerPlacement;
+  wrap?: (placement: RunnerPlacement, db: Db) => RunnerPlacement;
   ready?: (started: Set<string>, db: Db) => Promise<boolean>;
   assert: (started: Set<string>, db: Db) => void | Promise<void>;
 }) {
@@ -251,7 +267,7 @@ async function runRecovering(input: {
       }
     },
   };
-  const placement = input.wrap?.(trackedPlacement) ?? trackedPlacement;
+  const placement = input.wrap?.(trackedPlacement, db) ?? trackedPlacement;
   const backend = createRemoteAgentRunner({
     store: db,
     work,
@@ -468,6 +484,18 @@ async function recover(db: Db, itemId: string, now: number, maxAttempts: number)
     now,
     maxAttempts,
   });
+}
+
+async function reservationHeld(db: Db, runId: string): Promise<boolean> {
+  const rows = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ runId: q.t.runnerReservation.runId })
+        .from(q.t.runnerReservation)
+        .where(eq(q.t.runnerReservation.runId, runId)),
+    ),
+  );
+  return rows.length > 0;
 }
 
 async function resumeLine(db: Db, job: Job): Promise<string> {

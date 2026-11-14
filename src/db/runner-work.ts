@@ -346,6 +346,24 @@ export async function runnerWorkActive(store: Db, runId: string): Promise<boolea
   return store.run((q) => runnerWorkActiveSteps(q, runId));
 }
 
+export function* runnerWorkActiveForRunsSteps(q: Q, runIds: readonly string[]) {
+  const { runnerWork } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runId: runnerWork.runId,
+        agent:
+          sql<number>`CASE WHEN EXISTS(SELECT 1 FROM runner_event e WHERE e.run_id=runner_work.run_id
+          AND e.generation=runner_work.generation AND e.type='activity') THEN 1 ELSE 0 END`.mapWith(
+            Number,
+          ),
+      })
+      .from(runnerWork)
+      .where(inArray(runnerWork.runId, [...runIds])),
+  );
+  return new Map(rows.map((row) => [row.runId, row.agent === 1]));
+}
+
 /** Whether a helper that takes the runner's single health lane has not finished yet. */
 export function* runnerLaneHelperWaitingSteps(q: Q, runnerId: string, now: number) {
   const { runnerHelper } = q.t;
@@ -839,7 +857,7 @@ export async function assignRunnerWork(store: Db, work: NewAssignment): Promise<
 /** Moves the lease forward and never back. */
 export function* extendRunnerWorkLeaseSteps(q: Q, runId: string, until: number): Steps<void> {
   const { runnerWork: w } = q.t;
-  const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const later = sql`GREATEST`;
   yield* q.exec(
     q.orm
       .update(w)
@@ -1213,4 +1231,36 @@ export function* runPlacementCommandSteps(q: Q, runId: string) {
 
 export async function runPlacementCommand(store: Db, runId: string) {
   return store.run((q) => runPlacementCommandSteps(q, runId));
+}
+
+/**
+ * Deletes up to `limit` acknowledged commands of work that ended before `cutoff`, and returns how
+ * many it deleted. It keeps the work's current command, the latest run command of each
+ * generation, a cancel while the work's teardown is unconfirmed, every command of a run with an
+ * unacknowledged one, and commands a result, transcript, health result, model probe or sign-in
+ * still names.
+ */
+export function* pruneEndedRunnerCommandsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerCommand: c } = q.t;
+  const prunable = sql`
+    SELECT o.ordinal FROM runner_command o
+    JOIN runner_work w ON w.run_id=o.run_id
+    WHERE o.acknowledged_at IS NOT NULL AND w.ended_at<${cutoff} AND o.id<>w.command_id
+      AND (o.kind<>'cancel' OR w.teardown_confirmed_at IS NOT NULL)
+      AND NOT EXISTS(SELECT 1 FROM runner_command u WHERE u.run_id=o.run_id AND u.acknowledged_at IS NULL)
+      AND (o.kind<>'run' OR EXISTS(SELECT 1 FROM runner_command n WHERE n.run_id=o.run_id
+        AND n.generation=o.generation AND n.kind='run' AND n.ordinal>o.ordinal))
+      AND NOT EXISTS(SELECT 1 FROM runner_result x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_transcript x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_health_result x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM agent_model_probe x WHERE x.command_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM runner_login x WHERE x.id=o.id)
+    LIMIT ${limit}`;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(c)
+      .where(sql`${c.ordinal} IN (${prunable})`)
+      .returning({ ordinal: c.ordinal }),
+  );
+  return deleted.length;
 }

@@ -3,7 +3,6 @@ import {
   acknowledgeRetroDispatchSteps,
   deliverableRetroDispatchesSteps,
   getRetroDispatchSteps,
-  listRetroDispatchesSteps,
   markRetroDispatchFetchedSteps,
   openRetroDispatchSteps,
   recordRetroDispatchResultSteps,
@@ -14,9 +13,7 @@ import {
   resignRetroDispatchSteps,
   retroDispatchesNotStartedSteps,
   retroGenerationSteps,
-  retroSlotsHeldSteps,
   settleRetroDispatchSteps,
-  unfinishedRetroDispatchesSteps,
   type Db,
 } from "../src/db";
 import { forEachDialect, withoutForeignKeys, type DialectDb } from "./dialects";
@@ -90,7 +87,6 @@ forEachDialect((connect) => {
       "c1",
       "c2",
     ]);
-    expect(await db.run((q) => retroSlotsHeldSteps(q, "box"))).toBe(2);
 
     const resign = { commandId: "c1", envelope: { signed: "again" }, issuedAt: 5, expiresAt: 50 };
     expect(await db.run((q) => resignRetroDispatchSteps(q, resign))).toBe(true);
@@ -142,18 +138,8 @@ forEachDialect((connect) => {
     expect(await db.run((q) => releaseRetroDispatchSteps(q, release))).toBe(false);
     expect(await record("c2", result)).toBe("released");
     expect(await db.run((q) => retroDispatchesNotStartedSteps(q, "retro"))).toBe(1);
-    expect(await db.run((q) => retroSlotsHeldSteps(q, "box"))).toBe(0);
 
-    const commandIds = (rows: { commandId: string }[]) => rows.map((row) => row.commandId);
-    expect(commandIds(await db.run((q) => listRetroDispatchesSteps(q, "retro")))).toEqual([
-      "c1",
-      "c2",
-    ]);
     expect((await db.run((q) => openRetroDispatchSteps(q, "retro")))!.commandId).toBe("c2");
-    expect(commandIds(await db.run((q) => unfinishedRetroDispatchesSteps(q)))).toEqual([
-      "c1",
-      "c2",
-    ]);
 
     await db.run((q) => settleRetroDispatchSteps(q, "c2", 40));
     await db.run((q) => settleRetroDispatchSteps(q, "c2", 41));
@@ -161,7 +147,6 @@ forEachDialect((connect) => {
     expect((await db.run((q) => openRetroDispatchSteps(q, "retro")))!.commandId).toBe("c1");
     await db.run((q) => settleRetroDispatchSteps(q, "c1", 42));
     expect(await db.run((q) => openRetroDispatchSteps(q, "retro"))).toBeNull();
-    expect(await db.run((q) => unfinishedRetroDispatchesSteps(q))).toEqual([]);
   });
 
   test("generation diagnostics accumulate wait and active time", async () => {

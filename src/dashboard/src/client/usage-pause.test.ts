@@ -1,12 +1,12 @@
 import {
   openedView,
   fullStatusFixture,
-  issueList,
+  issueResource,
   pageData,
   type FullStatus,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { parseIssueListResponse } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import { render } from "./render";
 
 function pausedSnapshot(): FullStatus {
@@ -54,15 +54,16 @@ describe("run page while the agent waits for its usage limit", () => {
     expect(html).toContain('id="execution-controls"');
   });
 
-  test("the issue list contract carries the pause and rejects a bad reset time", () => {
-    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(issueList(pausedSnapshot()))));
+  test("the issue detail contract carries the pause and rejects a bad reset time", () => {
+    const detail = () => JSON.parse(JSON.stringify(issueResource(pausedSnapshot(), "ENG-102")));
+    const parsed = parseIssueDetailResponse(detail());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.runs.find((run) => run.id === "r-102")?.usagePause).toEqual({
       agent: "Claude",
       resumeAt: "2026-10-21T18:00:00.000Z",
     });
-    const broken = JSON.parse(JSON.stringify(issueList(pausedSnapshot())));
+    const broken = detail();
     broken.runs.find((run: { id: string }) => run.id === "r-102").usagePause.resumeAt = "soon";
-    expect(parseIssueListResponse(broken).ok).toBe(false);
+    expect(parseIssueDetailResponse(broken).ok).toBe(false);
   });
 });

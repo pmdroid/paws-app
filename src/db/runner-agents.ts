@@ -81,25 +81,66 @@ export function* recordRunnerAgentsSteps(
   reportedAt: number,
 ) {
   const { runnerAgent, runnerAgentTarget } = q.t;
-  yield* q.exec(q.orm.delete(runnerAgent).where(eq(runnerAgent.runnerId, runnerId)));
-  for (const agent of agents)
-    yield* q.exec(
+  const key = (agent: string, status: string) => JSON.stringify([agent, status]);
+  const stored = new Map(
+    (yield* q.all(
       q.orm
-        .insert(runnerAgent)
-        .values({
-          runnerId,
-          agent: agent.agent,
-          version: agent.version,
-          status: agent.status,
-          error: agent.status === "failed" ? (agent.error ?? null) : null,
-          sessions: agent.status === "waiting" ? (agent.sessions ?? null) : null,
-          targetId: agent.target ?? null,
-          reportedAt,
+        .select({
+          agent: runnerAgent.agent,
+          status: runnerAgent.status,
+          version: runnerAgent.version,
+          error: runnerAgent.error,
+          sessions: runnerAgent.sessions,
+          targetId: runnerAgent.targetId,
         })
-        .onConflictDoNothing({
-          target: [runnerAgent.runnerId, runnerAgent.agent, runnerAgent.status],
-        }),
-    );
+        .from(runnerAgent)
+        .where(eq(runnerAgent.runnerId, runnerId)),
+    )).map((row) => [key(row.agent, row.status), row]),
+  );
+  const reported = new Map<string, NonNullable<ReturnType<typeof stored.get>>>();
+  for (const agent of agents) {
+    const id = key(agent.agent, agent.status);
+    if (!reported.has(id))
+      reported.set(id, {
+        agent: agent.agent,
+        status: agent.status,
+        version: agent.version,
+        error: agent.status === "failed" ? (agent.error ?? null) : null,
+        sessions: agent.status === "waiting" ? (agent.sessions ?? null) : null,
+        targetId: agent.target ?? null,
+      });
+  }
+  for (const [id, row] of stored)
+    if (!reported.has(id))
+      yield* q.exec(
+        q.orm
+          .delete(runnerAgent)
+          .where(
+            and(
+              eq(runnerAgent.runnerId, runnerId),
+              eq(runnerAgent.agent, row.agent),
+              eq(runnerAgent.status, row.status),
+            ),
+          ),
+      );
+  for (const [id, values] of reported) {
+    const before = stored.get(id);
+    if (!before)
+      yield* q.exec(q.orm.insert(runnerAgent).values({ runnerId, ...values, reportedAt }));
+    else if (!Bun.deepEquals(before, values))
+      yield* q.exec(
+        q.orm
+          .update(runnerAgent)
+          .set({ ...values, reportedAt })
+          .where(
+            and(
+              eq(runnerAgent.runnerId, runnerId),
+              eq(runnerAgent.agent, values.agent),
+              eq(runnerAgent.status, values.status),
+            ),
+          ),
+      );
+  }
   yield* q.exec(
     q.orm.delete(runnerAgentTarget).where(
       and(

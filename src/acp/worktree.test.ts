@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { commitCheckpoint } from "./checkpoint";
-import { git } from "./git";
+import { GitError, git } from "./git";
 import { createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
 import { branchName } from "./paths";
 
@@ -145,6 +145,53 @@ test("concurrent mirror refreshes fetch one at a time", async () => {
     ),
   );
   expect(overlapped).toBe(0);
+});
+
+async function racedRefresh(failures: number, stderr: string) {
+  const root = await mkdtemp(join(tmpdir(), "paws-wt-"));
+  roots.push(root);
+  const source = join(root, "checkout");
+  const pawsRoot = join(root, "home", ".paws");
+  await initRepo(source);
+  await ensureBareMirror({ remoteUrl: source, owner: "acme", repo: "demo", pawsRoot });
+  const fetches: string[][] = [];
+  const networkGit = async (args: string[]) => {
+    fetches.push(args);
+    if (fetches.length <= failures) throw new GitError(args, 1, stderr);
+    return git(args);
+  };
+  const refresh = ensureBareMirror({
+    remoteUrl: source,
+    owner: "acme",
+    repo: "demo",
+    pawsRoot,
+    networkGit,
+  });
+  return { refresh, fetches, pawsRoot };
+}
+
+const RACED = "error: fetching ref refs/remotes/origin/main failed: incorrect old value provided\n";
+
+test("a fetch that loses a ref race is retried once and the refresh continues", async () => {
+  const { refresh, fetches, pawsRoot } = await racedRefresh(1, RACED);
+  expect((await refresh).path).toBe(join(pawsRoot, "repos", "acme", "demo.git"));
+  expect(fetches).toHaveLength(2);
+  expect(fetches[1]).toEqual(fetches[0]!);
+});
+
+test("a fetch that cannot lock a ref twice fails the refresh", async () => {
+  const { refresh, fetches } = await racedRefresh(
+    2,
+    "error: cannot lock ref 'refs/remotes/origin/main': is at 1 but expected 2\n",
+  );
+  await expect(refresh).rejects.toThrow("cannot lock ref");
+  expect(fetches).toHaveLength(2);
+});
+
+test("a fetch that fails for another reason is not retried", async () => {
+  const { refresh, fetches } = await racedRefresh(1, "fatal: repository not found\n");
+  await expect(refresh).rejects.toThrow("repository not found");
+  expect(fetches).toHaveLength(1);
 });
 
 test("a worktree waits for an in-flight mirror refresh before touching the mirror config", async () => {

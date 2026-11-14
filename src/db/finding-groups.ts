@@ -51,9 +51,8 @@ function groupColumns(q: Q) {
   };
 }
 
-/** `member_ids` is JSON text on SQLite and jsonb on Postgres. */
 function memberIds(q: Q, members: unknown): number[] {
-  return (q.dialect === "sqlite" ? JSON.parse(members as string) : members) as number[];
+  return members as number[];
 }
 
 /** A negative `limit` means no limit. */
@@ -126,31 +125,12 @@ export function* removeFindingFromOpenGroupsSteps(
     q.orm
       .update(findingGroup)
       .set({
-        memberIds:
-          q.dialect === "sqlite"
-            ? sql`(SELECT json_group_array(value) FROM json_each(${members}) WHERE value<>${id})`
-            : sql`COALESCE((SELECT jsonb_agg(e.value ORDER BY e.position) FROM jsonb_array_elements(${members}) WITH ORDINALITY AS e(value, position) WHERE e.value<>to_jsonb(${id}::bigint)), '[]'::jsonb)`,
+        memberIds: sql`COALESCE((SELECT jsonb_agg(e.value ORDER BY e.position) FROM jsonb_array_elements(${members}) WITH ORDINALITY AS e(value, position) WHERE e.value<>to_jsonb(${id}::bigint)), '[]'::jsonb)`,
       })
-      .where(
-        and(
-          untouched,
-          q.dialect === "sqlite"
-            ? sql`EXISTS(SELECT 1 FROM json_each(${members}) WHERE value=${id})`
-            : sql`${members} @> to_jsonb(${id}::bigint)`,
-        ),
-      ),
+      .where(and(untouched, sql`${members} @> to_jsonb(${id}::bigint)`)),
   );
   yield* q.exec(
-    q.orm
-      .delete(findingGroup)
-      .where(
-        and(
-          untouched,
-          q.dialect === "sqlite"
-            ? sql`json_array_length(${members})=0`
-            : sql`jsonb_array_length(${members})=0`,
-        ),
-      ),
+    q.orm.delete(findingGroup).where(and(untouched, sql`jsonb_array_length(${members})=0`)),
   );
 }
 
@@ -324,7 +304,7 @@ export function* lastCompletedFindingGroupRunSteps(
       })
       .from(run)
       .where(and(eq(run.workspaceId, workspaceId), eq(run.status, "completed")))
-      .orderBy(desc(run.startedAt), q.dialect === "sqlite" ? sql`rowid DESC` : desc(run.id))
+      .orderBy(desc(run.startedAt), desc(run.id))
       .limit(1),
   );
   return row ?? null;
@@ -350,14 +330,6 @@ export function* findingGroupRunExistsForDaySteps(
       .where(and(eq(run.workspaceId, workspaceId), eq(run.day, day))),
   );
   return row !== undefined;
-}
-
-export async function findingGroupRunExistsForDay(
-  store: Db,
-  workspaceId: string,
-  day: string,
-): Promise<boolean> {
-  return store.run((q) => findingGroupRunExistsForDaySteps(q, workspaceId, day));
 }
 
 export type NewFindingGroupRun = Q["t"]["findingGroupRun"]["$inferInsert"];
@@ -420,14 +392,11 @@ export function* dropProcessedFindingGroupMembersSteps(
   const { findingGroup: group } = q.t;
   const done = JSON.stringify(processed);
   const open = JSON.stringify(current);
-  const members =
-    q.dialect === "sqlite"
-      ? sql`(SELECT json_group_array(value) FROM json_each(${group.memberIds}) WHERE value NOT IN (SELECT value FROM json_each(${done})) AND value IN (SELECT value FROM json_each(${open})))`
-      : sql`(SELECT COALESCE(jsonb_agg(member.value ORDER BY member.position), '[]'::jsonb) FROM jsonb_array_elements(${group.memberIds}) WITH ORDINALITY AS member(value, position) WHERE member.value NOT IN (SELECT jsonb_array_elements(${done}::text::jsonb)) AND member.value IN (SELECT jsonb_array_elements(${open}::text::jsonb)))`;
+  const members = sql`(SELECT COALESCE(jsonb_agg(member.value ORDER BY member.position), '[]'::jsonb) FROM jsonb_array_elements(${group.memberIds}) WITH ORDINALITY AS member(value, position) WHERE member.value NOT IN (SELECT jsonb_array_elements(${done}::text::jsonb)) AND member.value IN (SELECT jsonb_array_elements(${open}::text::jsonb)))`;
   yield* q.exec(
     q.orm.update(group).set({ memberIds: members }).where(untouchedGroups(q, workspaceId)),
   );
-  const length = q.dialect === "sqlite" ? sql`json_array_length` : sql`jsonb_array_length`;
+  const length = sql`jsonb_array_length`;
   yield* q.exec(
     q.orm
       .delete(group)
@@ -626,10 +595,7 @@ export async function releaseFindingGroupAction(
 
 export function* findingHasGroupActionSteps(q: Q, workspaceId: string, findingId: number) {
   const { findingGroup: g } = q.t;
-  const member =
-    q.dialect === "sqlite"
-      ? sql`EXISTS(SELECT 1 FROM json_each(${g.memberIds}) WHERE value=${findingId})`
-      : sql`${g.memberIds} @> jsonb_build_array(CAST(${findingId} AS bigint))`;
+  const member = sql`${g.memberIds} @> jsonb_build_array(CAST(${findingId} AS bigint))`;
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })

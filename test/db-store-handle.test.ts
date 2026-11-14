@@ -5,14 +5,12 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, startLoops } from "../src/db";
-import { startPaws } from "../src/index";
 import { attachOrchestrator } from "../src/loop";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { serverStore } from "../src/server";
-import { migratedHome } from "./helpers";
 import { tempStore } from "./pglite";
 
 const roots: string[] = [];
@@ -29,19 +27,6 @@ async function database() {
   open.push(close);
   return { db, root };
 }
-
-test("startup holds one store on Postgres", async () => {
-  const paws = await startPaws({
-    PAWS_HOME: await migratedHome(),
-    PAWS_PORT: "0",
-    PAWS_HOST: "127.0.0.1",
-  });
-  try {
-    expect(paws.store.dialect).toBe("postgres");
-  } finally {
-    await paws.stop();
-  }
-});
 
 test("the job loop and the outbox dispatcher hold the store they are given", async () => {
   const { db: store } = await database();

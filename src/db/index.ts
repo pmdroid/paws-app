@@ -25,21 +25,11 @@ export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
-export { legacyMigrate } from "./legacy-migrate";
-export {
-  appliedMigrations,
-  MIGRATIONS_FOLDER,
-  PG_MIGRATIONS_FOLDER,
-  migrate,
-  migrationTags,
-  setAsideLegacyDatabase,
-  setAsideSqliteDatabase,
-} from "./migrate";
+export { PG_MIGRATIONS_FOLDER, migrationTags, setAsideSqliteDatabase } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
 export * from "./pull-request-drafts";
 export * from "./candidate-risk";
-export * from "./open-findings";
 export * from "./review-findings";
 export * from "./risk-fix";
 export * from "./push-outage";
@@ -48,15 +38,7 @@ export * from "./question-handoffs";
 export * from "./policy-outage";
 export * from "./policy-block";
 export * from "./policy-runner-warning";
-export { frozenMigrations } from "./migrations";
-export {
-  MIGRATION_DIRECTORY,
-  combineMigrations,
-  loadMigrationFiles,
-  migrations,
-} from "./migration-files";
-export type { Migration } from "./migration";
-export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
+export { openDatabase } from "./open";
 export {
   connectPglite,
   connectPostgres,
@@ -75,7 +57,6 @@ export { orm, type Orm } from "./orm";
 export {
   postgresDb,
   sqliteDb,
-  storeOf,
   type Db,
   type PgDb,
   type PgOrm,
@@ -84,9 +65,7 @@ export {
   syncSteps,
   type Steps,
 } from "./db";
-export * as schema from "./schema";
 export * as pgSchema from "./schema-pg";
-export { rawSchema } from "./schema/raw";
 export * from "./journal";
 export * from "./outbox";
 export * from "./dead-deliveries";
@@ -120,7 +99,6 @@ export * from "./artifacts";
 export * from "./evidence";
 export * from "./visual-reviews";
 export * from "./question-rows";
-export * from "./linear-inputs";
 export * from "./linear-session-url";
 export * from "./acp-conversations";
 export * from "./remote-merges";
@@ -168,6 +146,7 @@ export * from "./repository-commands";
 export * from "./agent-accounts";
 export * from "./agent-account-credentials";
 export * from "./agent-account-health";
+export * from "./agent-account-overview";
 export * from "./run-fallback";
 export * from "./retros";
 export * from "./retro-dispatch";

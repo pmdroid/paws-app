@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   checkTriggers,
@@ -6,9 +5,7 @@ import {
   enqueueOutboxOnceSteps,
   getLinearSessionGenerationSteps,
   restartSteps,
-  latestHumanTurn,
   latestHumanTurnSteps,
-  fixRounds,
   fixRoundsSteps,
   countRebaseReturnsSteps,
   listRebaseReturnsSteps,
@@ -20,7 +17,6 @@ import {
   type RestartHandoff,
   type Steps,
   type WorkItemRecord,
-  sqliteDb,
 } from "../db";
 import type { askSteps } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
@@ -33,10 +29,6 @@ export type MergeRestart = (
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ) => Steps<{ id: number; armed: boolean } | null>;
-
-export async function latestUserTurn(db: Database, itemId: string): Promise<number> {
-  return await latestHumanTurn(sqliteDb(db), itemId);
-}
 
 export function rebaseReturns(store: Db, itemId: string): Promise<number> {
   return store.run(function* (q) {
@@ -60,10 +52,6 @@ const RESTART_REASONS = {
   "ci-failed": "ci",
   "policy-invalid": "findings",
 } as const;
-
-export async function ciFixes(db: Database, itemId: string): Promise<number> {
-  return await fixRounds(sqliteDb(db), itemId);
-}
 
 /** The pull request a conflict return is about, for the line in the item's Linear session. */
 export type MergeConflictNotice = { sessionId: string | null; pullNumber: number; head: string } & {

@@ -227,11 +227,14 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "agents",
     "brief",
     "brief/preview",
+    "closeout",
     "findings",
     "hooks",
     "merging",
     "skills",
     "time-limits",
+    "github-access",
+    "storage",
   ].map((page) =>
     api(
       page === "brief/preview" ? "POST" : "GET PUT",
@@ -243,6 +246,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       },
     ),
   ),
+  api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
+    sample: "/api/settings/storage/check",
+  }),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {
     sample: "/api/retros/settings",
@@ -306,6 +312,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["PUT", "/api/runners/:id/repositories"],
     ["GET PUT", "/api/runners/:id/policy"],
     ["POST", "/api/runners/:id/agents/:agent/extra-usage"],
+    ["POST", "/api/runners/:id/fix-slots"],
     ["GET POST", "/api/runners/:id/accounts"],
     ["POST", "/api/runners/:id/sessions/move"],
     ["POST", "/api/runners/:id/sessions/:session/move"],
@@ -326,6 +333,17 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     api(method!, pattern!, "delegated", "src/runner-control", {
       via: "/api/runners/accounts",
       sample: pattern!.replaceAll(":id", "01JRUNNER0000000000000000A"),
+    }),
+  ),
+  api("GET POST", "/api/runners/agent-accounts", "delegated", "src/account-management"),
+  ...[
+    ["PUT", "/api/runners/agent-accounts/order"],
+    ["PUT", "/api/runners/agent-accounts/:id/extra-usage"],
+    ["POST", "/api/runners/agent-accounts/:id/sign-in"],
+    ["DELETE", "/api/runners/agent-accounts/:id/credential"],
+  ].map(([method, pattern]) =>
+    api(method!, pattern!, "delegated", "src/account-management", {
+      via: "/api/runners/agent-accounts",
     }),
   ),
   api("POST", "/api/runner-enrollments", "delegated", "src/runner-control"),

@@ -1,5 +1,23 @@
 import { journalCaught, journalItemId } from "../journal";
-import { and, asc, desc, eq, gt, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  notLike,
+  or,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -22,37 +40,22 @@ export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
 export const LINEAR_PROGRESS_INTERVAL_MS = 30_000;
 
-type Dialect = Q["dialect"];
-
-/** A field of a JSON payload as text: `json_extract` on SQLite, `->>` on Postgres. */
-function jsonText(dialect: Dialect, payload: string, key: string): string {
-  return dialect === "sqlite" ? `json_extract(${payload}, '$.${key}')` : `(${payload}->>'${key}')`;
+function jsonText(payload: string, key: string): string {
+  return `(${payload}->>'${key}')`;
 }
 
 /** A field of a JSON payload is `true` or `1`. */
-function jsonOne(dialect: Dialect, payload: string, key: string): string {
-  return dialect === "sqlite"
-    ? `COALESCE(json_extract(${payload}, '$.${key}'), 0) = 1`
-    : `COALESCE((${payload}->'${key}') IN ('true'::jsonb, '1'::jsonb), false)`;
+function jsonOne(payload: string, key: string): string {
+  return `COALESCE((${payload}->'${key}') IN ('true'::jsonb, '1'::jsonb), false)`;
 }
 
-const PROGRESS_SQL = (dialect: Dialect, row: string) =>
+const PROGRESS_SQL = (row: string) =>
   `(${row}.target='linear' AND ${row}.delivery_kind='progress'
     AND ${row}.op = 'activity'
-    AND COALESCE(${jsonText(dialect, `${row}.payload`, "kind")},'') IN ('thought','action'))`;
-
-/** SQLite's LIKE ignores ASCII case; Postgres needs ILIKE for the same match. */
-function likeOf(q: Q) {
-  return q.dialect === "sqlite" ? like : ilike;
-}
-
-/** SQLite stores a payload as JSON text, Postgres as `jsonb`. */
-function payloadIn(q: Q, payload: unknown): unknown {
-  return q.dialect === "sqlite" ? JSON.stringify(payload) : payload;
-}
+    AND COALESCE(${jsonText(`${row}.payload`, "kind")},'') IN ('thought','action'))`;
 
 function payloadOut(q: Q, stored: unknown): unknown {
-  return q.dialect === "sqlite" ? (JSON.parse(stored as string) as unknown) : stored;
+  return stored;
 }
 
 export type OutboxDelivery = "ordered" | "progress" | "critical" | "terminal" | "stop" | "status";
@@ -141,7 +144,7 @@ export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {
 export function* lastOutboxSequenceSteps(q: Q, prefix: string) {
   const { outbox } = q.t;
   // Byte order on both: Postgres compares text by the database collation unless told otherwise.
-  const key = sql`${outbox.idempotencyKey}${sql.raw(q.dialect === "sqlite" ? "" : ' COLLATE "C"')}`;
+  const key = sql`${outbox.idempotencyKey}${sql.raw(' COLLATE "C"')}`;
   const rows = yield* q.all(
     q.orm
       .select({ key: outbox.idempotencyKey })
@@ -195,7 +198,7 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
   const limit = options.limit ?? 32;
   const intervalMs = options.progressIntervalMs ?? 0;
   const blockedKeys = options.blockedKeys ?? [];
-  const progress = (row: string) => sql.raw(PROGRESS_SQL(q.dialect, row));
+  const progress = (row: string) => sql.raw(PROGRESS_SQL(row));
   const throttled =
     intervalMs > 0
       ? sql`AND NOT (${progress("o")} AND EXISTS (
@@ -216,7 +219,7 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
         )}))`
       : sql``;
   // SQLite's CROSS JOIN keeps the planner's join order; Postgres has no CROSS JOIN … ON.
-  const join = sql.raw(q.dialect === "sqlite" ? "CROSS JOIN" : "JOIN");
+  const join = sql.raw("JOIN");
   const heads = sql`WITH ranked AS (
        SELECT o.id, ROW_NUMBER() OVER (
          PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
@@ -465,7 +468,7 @@ export function* retryOutboxSteps(
         options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
       );
   if (rateLimited) {
-    const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+    const later = sql`GREATEST`;
     yield* q.exec(
       q.orm
         .insert(backoff)
@@ -612,7 +615,7 @@ export function* coalesceOutboxSteps(
   const updated = yield* q.all(
     q.orm
       .update(outbox)
-      .set({ payload: payloadIn(q, payload) })
+      .set({ payload: payload })
       .where(
         and(
           eq(outbox.id, row.id),
@@ -663,7 +666,7 @@ export function* attachSessionUpdatesSteps(q: Q, id: number, now: number) {
           eq(outbox.target, "linear"),
           eq(outbox.orderingKey, row.orderingKey),
           eq(outbox.deliveryGeneration, row.generation ?? 0),
-          likeOf(q)(outbox.op, "linear.session.%"),
+          ilike(outbox.op, "linear.session.%"),
           eq(outbox.status, "pending"),
           sql`${outbox.notBefore} <= ${now}`,
           unlockedAt(q, now),
@@ -679,10 +682,7 @@ export function* attachSessionUpdatesSteps(q: Q, id: number, now: number) {
     q.orm
       .update(outbox)
       .set({
-        payload:
-          q.dialect === "sqlite"
-            ? sql`json_set(${outbox.payload}, '$.session', json(${merged}))`
-            : sql`jsonb_set(${outbox.payload}, '{session}', ${merged}::text::jsonb)`,
+        payload: sql`jsonb_set(${outbox.payload}, '{session}', ${merged}::text::jsonb)`,
       })
       .where(and(eq(outbox.id, id), eq(outbox.status, "pending"), unlockedAt(q, now)))
       .returning({ id: outbox.id }),
@@ -763,10 +763,10 @@ export const ELICITATION_REASK_SUFFIX = ":reask";
  * The work item an outbox row belongs to: the payload's item, the run that wrote it,
  * the question it asks, or the item whose session it is ordered on.
  */
-export const OUTBOX_ITEM_SQL = (row: string, dialect: Dialect = "sqlite") => `COALESCE(
-  (SELECT i.id FROM work_item i WHERE i.id = ${jsonText(dialect, `${row}.payload`, "itemId")}),
+export const OUTBOX_ITEM_SQL = (row: string) => `COALESCE(
+  (SELECT i.id FROM work_item i WHERE i.id = ${jsonText(`${row}.payload`, "itemId")}),
   (SELECT r.item_id FROM run r WHERE r.id = ${row}.activity_run_id),
-  (SELECT q.item_id FROM question q WHERE q.id = ${jsonText(dialect, `${row}.payload`, "questionId")}),
+  (SELECT q.item_id FROM question q WHERE q.id = ${jsonText(`${row}.payload`, "questionId")}),
   (SELECT i.id FROM work_item i WHERE ${row}.ordering_key IS NOT NULL
     AND i.session_key = ${row}.ordering_key ORDER BY i.created_at DESC, i.id DESC LIMIT 1)
 )`;
@@ -775,7 +775,7 @@ export function* outboxItemIdSteps(q: Q, id: number) {
   const { outbox } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ itemId: sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}` })
+      .select({ itemId: sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox"))}` })
       .from(outbox)
       .where(eq(outbox.id, id)),
   );
@@ -935,7 +935,7 @@ function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
     op: row.op,
     orderingKey: row.orderingKey ?? null,
     idempotencyKey: row.idempotencyKey,
-    payload: payloadIn(q, row.payload ?? {}),
+    payload: row.payload ?? {},
     priority: row.priority ?? deliveryPriority(delivery),
     notBefore: row.notBefore ?? 0,
     createdAt: now,
@@ -969,8 +969,8 @@ function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
           ),
         ),
     );
-  const ephemeral = sql.raw(jsonOne(q.dialect, "payload", "ephemeral"));
-  const kind = sql.raw(jsonText(q.dialect, "payload", "kind"));
+  const ephemeral = sql.raw(jsonOne("payload", "ephemeral"));
+  const kind = sql.raw(jsonText("payload", "kind"));
   if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
     yield* q.exec(
       q.orm
@@ -1011,7 +1011,7 @@ function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
     delivery === "terminal"
       ? sql`OR (delivery_kind = 'critical'
           AND ((op='elicitation' AND COALESCE((SELECT state FROM work_item
-                WHERE id = ${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}), '') <> 'awaiting_input')
+                WHERE id = ${sql.raw(OUTBOX_ITEM_SQL("outbox"))}), '') <> 'awaiting_input')
             OR ${kind} IN ('thought','action')))`
       : sql``;
   yield* q.exec(
@@ -1047,7 +1047,7 @@ function* repeatedThoughtSteps(q: Q, row: NewOutbox, generation: number) {
   )
     return null;
   const { outbox } = q.t;
-  const kind = sql.raw(jsonText(q.dialect, "payload", "kind"));
+  const kind = sql.raw(jsonText("payload", "kind"));
   const last = yield* q.one(
     q.orm
       .select({ id: outbox.id, payload: outbox.payload })
@@ -1175,8 +1175,8 @@ export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation
           eq(outbox.orderingKey, sessionId),
           eq(outbox.deliveryGeneration, generation),
           or(
-            likeOf(q)(outbox.idempotencyKey, "pull-request-ready:%"),
-            likeOf(q)(outbox.idempotencyKey, "pull-request-opened:%"),
+            ilike(outbox.idempotencyKey, "pull-request-ready:%"),
+            ilike(outbox.idempotencyKey, "pull-request-opened:%"),
           ),
           ne(outbox.status, "dropped"),
         ),
@@ -1257,7 +1257,7 @@ export function* sessionHasFinalResponseSteps(
   rowId?: number,
 ) {
   const { outbox } = q.t;
-  const prefixed = likeOf(q);
+  const prefixed = ilike;
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })
@@ -1288,7 +1288,7 @@ export function* sessionPullRequestOpenSteps(
   rowId?: number,
 ) {
   const { outbox } = q.t;
-  const prefixed = likeOf(q);
+  const prefixed = ilike;
   const row = yield* q.one(
     q.orm
       .select({ key: outbox.idempotencyKey })
@@ -1352,4 +1352,49 @@ export async function dropQuestionElicitations(
   error: string,
 ): Promise<void> {
   await store.run((q) => dropQuestionElicitationsSteps(q, questionId, error));
+}
+
+const KEPT_SENT_OUTBOX_KEYS = [
+  "pull-request-ready:",
+  "merged:",
+  "closed:",
+  "parent-summary:",
+  "link-ask-reminder:",
+];
+
+export function* pruneSentOutboxSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { outbox } = q.t;
+  const newer = alias(outbox, "newer");
+  const prunable = q.orm
+    .select({ id: outbox.id })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.status, "sent"),
+        lt(outbox.sentAt, cutoff),
+        notInArray(outbox.deliveryKind, ["terminal", "stop"]),
+        ...KEPT_SENT_OUTBOX_KEYS.map((prefix) => notLike(outbox.idempotencyKey, `${prefix}%`)),
+        or(
+          isNull(outbox.orderingKey),
+          exists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(newer)
+              .where(
+                and(
+                  eq(newer.target, outbox.target),
+                  eq(newer.orderingKey, outbox.orderingKey),
+                  eq(newer.op, outbox.op),
+                  gt(newer.id, outbox.id),
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(outbox).where(inArray(outbox.id, prunable)).returning({ id: outbox.id }),
+  );
+  return deleted.length;
 }

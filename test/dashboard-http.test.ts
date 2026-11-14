@@ -79,11 +79,12 @@ test("a membership change applies through warm caches and stored ETags", async (
   const tags = new Map<string, string>();
   for (const path of [...LISTS, ...DETAILS("PAS-1")]) {
     const response = await get(path);
-    expect(response.status).toBe(200);
+    expect([path, response.status]).toEqual([path, 200]);
     if (response.headers.get("etag")) tags.set(path, response.headers.get("etag")!);
-    expect((await get(path, { "if-none-match": tags.get(path) ?? "" })).status).toBe(
+    expect([path, (await get(path, { "if-none-match": tags.get(path) ?? "" })).status]).toEqual([
+      path,
       tags.has(path) ? 304 : 200,
-    );
+    ]);
   }
   await f.revoke();
   for (const path of LISTS) {

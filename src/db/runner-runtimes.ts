@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
 /** A runtime as a runner last reported it in its heartbeat. */
@@ -25,22 +25,61 @@ export function* recordRunnerRuntimesSteps(
   reportedAt: number,
 ) {
   const { runnerRuntime } = q.t;
-  yield* q.exec(q.orm.delete(runnerRuntime).where(eq(runnerRuntime.runnerId, runnerId)));
-  for (const runtime of runtimes) {
-    const values = {
-      status: runtime.status,
-      error: runtime.status === "failed" ? (runtime.error ?? null) : null,
-      reportedAt,
-    };
-    yield* q.exec(
+  const key = (tool: string, version: string) => JSON.stringify([tool, version]);
+  const stored = new Map(
+    (yield* q.all(
       q.orm
-        .insert(runnerRuntime)
-        .values({ runnerId, tool: runtime.tool, version: runtime.version, ...values })
-        .onConflictDoUpdate({
-          target: [runnerRuntime.runnerId, runnerRuntime.tool, runnerRuntime.version],
-          set: values,
-        }),
-    );
+        .select({
+          tool: runnerRuntime.tool,
+          version: runnerRuntime.version,
+          status: runnerRuntime.status,
+          error: runnerRuntime.error,
+        })
+        .from(runnerRuntime)
+        .where(eq(runnerRuntime.runnerId, runnerId)),
+    )).map((row) => [key(row.tool, row.version), row]),
+  );
+  const reported = new Map(
+    runtimes.map((runtime) => [
+      key(runtime.tool, runtime.version),
+      {
+        tool: runtime.tool,
+        version: runtime.version,
+        status: runtime.status,
+        error: runtime.status === "failed" ? (runtime.error ?? null) : null,
+      },
+    ]),
+  );
+  for (const [id, row] of stored)
+    if (!reported.has(id))
+      yield* q.exec(
+        q.orm
+          .delete(runnerRuntime)
+          .where(
+            and(
+              eq(runnerRuntime.runnerId, runnerId),
+              eq(runnerRuntime.tool, row.tool),
+              eq(runnerRuntime.version, row.version),
+            ),
+          ),
+      );
+  for (const [id, values] of reported) {
+    const before = stored.get(id);
+    if (!before)
+      yield* q.exec(q.orm.insert(runnerRuntime).values({ runnerId, ...values, reportedAt }));
+    else if (!Bun.deepEquals(before, values))
+      yield* q.exec(
+        q.orm
+          .update(runnerRuntime)
+          .set({ status: values.status, error: values.error, reportedAt })
+          .where(
+            and(
+              eq(runnerRuntime.runnerId, runnerId),
+              eq(runnerRuntime.tool, values.tool),
+              eq(runnerRuntime.version, values.version),
+            ),
+          ),
+      );
   }
 }
 

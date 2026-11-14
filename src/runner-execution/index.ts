@@ -28,6 +28,7 @@ export {
   runnerResultDirectory,
   runnerResultDirectoryRule,
   runnerResultsRootRule,
+  readRunnerCredentials,
   readRunnerResultFile,
   readRunnerResultRange,
   type RunnerResults,
@@ -47,6 +48,8 @@ export {
   publishRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  returnRunnerAgentCredentials,
+  runnerAgentCredentials,
   shareRunnerAgentState,
   shareRunnerWorkRoot,
 } from "./accounts";

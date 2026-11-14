@@ -8,7 +8,9 @@ import {
 } from "../db";
 import { openSecret, sealSecret } from "./files";
 
-export type AgentCredential = Omit<AgentCredentialCiphertext, "ciphertext"> & { blob: string };
+export type AgentCredential = Omit<AgentCredentialCiphertext, "ciphertext"> & {
+  blob: string | null;
+};
 
 export function* readAgentCredentialSteps(
   q: Q,
@@ -18,7 +20,10 @@ export function* readAgentCredentialSteps(
   const stored = yield* agentCredentialCiphertextSteps(q, accountId);
   if (!stored) return null;
   const { ciphertext, ...rest } = stored;
-  return { ...rest, blob: openSecret(secretsDir, context(accountId), ciphertext) };
+  return {
+    ...rest,
+    blob: ciphertext === "" ? null : openSecret(secretsDir, context(accountId), ciphertext),
+  };
 }
 
 export function* writeAgentCredentialSteps(

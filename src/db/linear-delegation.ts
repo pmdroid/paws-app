@@ -1,5 +1,4 @@
 import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
-import { delegationIssueIdSql } from "../core";
 import { type Db, type Q, type Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -187,7 +186,6 @@ type UndelegatedIssue = {
 };
 
 function delegationIssueId(q: Q, item: string) {
-  if (q.dialect === "sqlite") return sql.raw(delegationIssueIdSql(item, "sqlite"));
   const briefIssue = `${item}.brief #>> '{epic,issueId}'`;
   return sql.raw(
     `CASE WHEN ${briefIssue} IS NOT NULL AND ${briefIssue} <> ${item}.linear_issue_id THEN ${briefIssue} ELSE ${item}.linear_issue_id END`,
