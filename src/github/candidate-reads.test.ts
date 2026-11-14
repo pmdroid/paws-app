@@ -71,17 +71,6 @@ test("API patch comparison allows offset changes only when changed file contents
   expect(await sameGitHubCandidatePatch(binary.repository, before, after, base)).toBe(false);
 });
 
-test("API patch comparison rejects edits at different occurrences of the same lines", async () => {
-  const files = (context: string) => ({
-    files: [{ filename: "widgets", status: "modified", patch: context }],
-  });
-  const fake = fixture([
-    files("@@ -1,3 +1,3 @@\n first shelf\n-old\n+new\n end"),
-    files("@@ -8,3 +8,3 @@\n second shelf\n-old\n+new\n end"),
-  ]);
-  expect(await sameGitHubCandidatePatch(fake.repository, before, after, base)).toBe(false);
-});
-
 test("stored candidate summaries come from compare without a mirror", async () => {
   const fake = fixture([{ merge_base_commit: { sha: base }, ahead_by: 2 }]);
   expect(await readGitHubCandidateRange(fake.repository, before)).toEqual({

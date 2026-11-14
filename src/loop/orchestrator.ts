@@ -11033,7 +11033,7 @@ export class Orchestrator {
     after: string,
     base: string,
   ): Promise<boolean> {
-    if (!this.mirrorsOff()) return samePatch(worktree, before, after, base);
+    if (!this.storedCandidates()) return samePatch(worktree, before, after, base);
     const repository = await this.repositoryForItem(item);
     const github = repository && this.githubForRepository(repository);
     if (!repository || !github) return false;
