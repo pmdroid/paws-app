@@ -386,12 +386,21 @@ describe("Postgres drizzle-kit migrations", () => {
         ...bodies.map((value) => JSON.stringify(value)),
         "invalid",
         "null",
+        JSON.stringify({ comment: "\u0000" }),
+        '{"number":1e1000000}',
       ].entries())
         await pg.$client.query("INSERT INTO github_delivery VALUES ($1, 'issue_comment', $2, $3)", [
           String(i),
           body,
           i + 100,
         ]);
+      const validJson = await pg.$client.query(
+        "SELECT payload IS JSON AS valid_json, pg_input_is_valid(payload, 'jsonb') AS valid_jsonb FROM github_delivery WHERE delivery_id IN ('6', '7') ORDER BY delivery_id",
+      );
+      expect(validJson.rows).toEqual([
+        { valid_json: true, valid_jsonb: false },
+        { valid_json: true, valid_jsonb: false },
+      ]);
       await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
       const rows = await pg
         .select()
@@ -406,6 +415,8 @@ describe("Postgres drizzle-kit migrations", () => {
         ["acme/app", null, 103],
         [null, null, 104],
         [null, null, 105],
+        [null, null, 106],
+        [null, null, 107],
       ]);
       expect(Object.keys(rows[0]!)).not.toContain("payload");
     } finally {

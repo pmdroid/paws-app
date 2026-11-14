@@ -1,7 +1,7 @@
 ALTER TABLE "github_delivery" ADD COLUMN "repository" text;--> statement-breakpoint
 ALTER TABLE "github_delivery" ADD COLUMN "pull_number" integer;--> statement-breakpoint
 WITH bodies AS (
-  SELECT delivery_id, CASE WHEN payload IS JSON THEN payload::jsonb ELSE '{}'::jsonb END AS body
+  SELECT delivery_id, CASE WHEN pg_input_is_valid(payload, 'jsonb') THEN payload::jsonb ELSE '{}'::jsonb END AS body
   FROM github_delivery
 ), metadata AS (
   SELECT delivery_id, body->'repository'->'full_name' AS repository,
