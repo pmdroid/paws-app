@@ -116,3 +116,39 @@ test("an unchanged count leaves the agent settings alone, and an invalid one sav
     "CI fix attempts: enter a whole number from 0 to 10.",
   );
 });
+
+test("repository and project drafts survive server validation and then save", async () => {
+  const original = globalThis.fetch;
+  let invalid = true;
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith("/api/settings/merging")) {
+      if (init?.method === "PUT") {
+        if (invalid)
+          return Response.json({ error: "reviewApps must be a GitHub App slug" }, { status: 400 });
+        return original(url, init);
+      }
+      return Response.json({
+        ...MERGING,
+        repositories: { "acme/app": { packages: ["apps/*"], reviewApps: [] } },
+        projects: { abc: { lane: "repository" } },
+      });
+    }
+    return original(url, init);
+  }) as typeof fetch;
+  const root = mount();
+  await settle();
+  setValue(root, "repo-apps-0", "bad slug");
+  setValue(root, "project-lane-0", "project");
+  submit(root);
+  await settle();
+  expect(root.textContent).toContain("reviewApps must be a GitHub App slug");
+  expect(root.querySelector<HTMLTextAreaElement>("#repo-apps-0")!.value).toBe("bad slug");
+  invalid = false;
+  setValue(root, "repo-apps-0", "review-bot");
+  submit(root);
+  await settle();
+  expect(requests.find((request) => request.method === "PUT")?.body).toMatchObject({
+    repositories: { "acme/app": { packages: ["apps/*"], reviewApps: ["review-bot"] } },
+    projects: { abc: { lane: "project" } },
+  });
+});
