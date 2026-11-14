@@ -4,6 +4,9 @@ export {
   agentReadAllowed,
   closeoutPolicyRoot,
   defaultAgents,
+  parseCloseoutSettings,
+  readCloseoutSettings,
+  writeCloseoutSettings,
   emptyConfigFile,
   githubMirrorsOn,
   isImplementer,
@@ -14,6 +17,7 @@ export {
 } from "./file";
 export type {
   AgentsConfig,
+  CloseoutSettings,
   ConfigKeyValue,
   GitHubConfigAuth,
   GrokConfig,

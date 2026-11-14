@@ -1,5 +1,6 @@
 import { parseBriefTemplates } from "./brief";
-import { resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { parseAgentSettingsToml, type AgentSettings } from "./agents";
 
 import {
@@ -17,7 +18,7 @@ import {
   type MergeOrder,
   type MergeRepositories,
 } from "./merge";
-import { readConfigText } from "./settings-store";
+import { readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
@@ -607,4 +608,61 @@ export function closeoutPolicyRoot(
   const root =
     repository === null ? undefined : config.closeoutProjects?.[repository.toLowerCase()];
   return root === undefined ? undefined : resolve(pawsHome, root);
+}
+
+export type CloseoutSettings = { projects: Record<string, { policyRoot: string }> };
+
+export function readCloseoutSettings(config: PawsConfigFile): CloseoutSettings {
+  return {
+    projects: Object.fromEntries(
+      Object.entries(config.closeoutProjects ?? {}).map(([repo, policyRoot]) => [
+        repo,
+        { policyRoot },
+      ]),
+    ),
+  };
+}
+
+export function parseCloseoutSettings(value: unknown): CloseoutSettings {
+  const projects =
+    typeof value === "object" && value !== null ? (value as { projects?: unknown }).projects : null;
+  if (typeof projects !== "object" || projects === null || Array.isArray(projects))
+    throw new Error("projects must be an object keyed by owner/repo");
+  const parsed: CloseoutSettings["projects"] = {};
+  for (const [key, entry] of Object.entries(projects)) {
+    const repo = key.toLowerCase();
+    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+      throw new Error(`projects.${key} must be an owner/repo`);
+    const root = typeof entry === "object" && entry !== null ? entry.policyRoot : undefined;
+    if (typeof root !== "string" || !isAbsolute(root) || root.includes("\0"))
+      throw new Error(`projects.${key}.policyRoot must be an absolute path`);
+    if (!existsSync(root) || !statSync(root).isDirectory())
+      throw new Error(`projects.${key}.policyRoot ${root} is not a directory on the Paws host`);
+    parsed[repo] = { policyRoot: root };
+  }
+  return { projects: parsed };
+}
+
+export function setCloseoutSettingsText(current: string, settings: CloseoutSettings): string {
+  let section = "";
+  const retained = current
+    .split(/\r?\n/)
+    .filter((line) => {
+      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+      if (heading?.[1]) section = heading[1].toLowerCase();
+      return section !== "closeout.projects" && !section.startsWith("closeout.projects.");
+    })
+    .join("\n")
+    .trimEnd();
+  const tables = Object.entries(settings.projects)
+    .map(
+      ([repo, { policyRoot }]) =>
+        `[closeout.projects.${tomlString(repo)}]\npolicy_root = ${tomlString(policyRoot)}\n`,
+    )
+    .join("\n");
+  return [retained, tables].filter((part) => part !== "").join("\n\n") + "\n";
+}
+
+export function writeCloseoutSettings(path: string, settings: CloseoutSettings): Promise<void> {
+  return updateConfigText(path, (text) => setCloseoutSettingsText(text, settings));
 }

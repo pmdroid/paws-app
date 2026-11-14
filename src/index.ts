@@ -1668,7 +1668,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         remoteExecution,
