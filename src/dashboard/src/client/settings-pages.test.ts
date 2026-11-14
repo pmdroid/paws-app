@@ -35,7 +35,7 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("settings shows one tab bar of eleven pages in order, marking the current one", () => {
+test("settings shows one tab bar of thirteen pages in order, marking the current one", () => {
   const doc = new Window().document;
   doc.body.innerHTML = renderSettingsPage("merging");
   const navs = doc.querySelectorAll("nav");
@@ -46,6 +46,8 @@ test("settings shows one tab bar of eleven pages in order, marking the current o
     "Agents",
     "Agent accounts",
     "Merging",
+    "Repositories",
+    "Linear",
     "Storage",
     "Queue and limits",
     "Agent instructions",
@@ -74,12 +76,20 @@ test("settings shows one tab bar of eleven pages in order, marking the current o
 
 test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
   setSettingsAdmin(false);
-  for (const page of SETTINGS_PAGES.filter((entry) => entry.id !== "agent-accounts")) {
+  for (const page of SETTINGS_PAGES.filter(
+    (entry) => !["agent-accounts", "repositories", "linear"].includes(entry.id),
+  )) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
     const shown =
       page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
-    expect(navLinks(doc)).toEqual(["Agent accounts", "Integrations", "Your account"]);
+    expect(navLinks(doc)).toEqual([
+      "Agent accounts",
+      "Repositories",
+      "Linear",
+      "Integrations",
+      "Your account",
+    ]);
     expect(doc.querySelector("a[aria-current]")?.textContent).toBe(shown.name);
     expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
       `<p class="sub">${shown.description}</p>`,
@@ -177,14 +187,20 @@ test("settings list the admin pages only once the session says admin", async () 
       new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
     const loaded = initializeWorkspaceAccess(() => null);
     window.document.body.innerHTML = renderSettingsPage("merging");
-    expect(navLinks(window.document)).toEqual(["Agent accounts", "Integrations", "Your account"]);
+    expect(navLinks(window.document)).toEqual([
+      "Agent accounts",
+      "Repositories",
+      "Linear",
+      "Integrations",
+      "Your account",
+    ]);
     respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
     expect(await loaded).toBe(true);
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual(
       role === "admin"
         ? SETTINGS_PAGES.map((page) => page.name)
-        : ["Agent accounts", "Integrations", "Your account"],
+        : ["Agent accounts", "Repositories", "Linear", "Integrations", "Your account"],
     );
   }
 });

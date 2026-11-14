@@ -1,3 +1,4 @@
+import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
@@ -463,6 +464,7 @@ function paint(): void {
   if (openLinkedCheck()) return;
   scrollToLinkedCard();
 
+  mountRepositorySettings(currentEngine());
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");

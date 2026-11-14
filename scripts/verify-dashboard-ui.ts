@@ -325,7 +325,7 @@ try {
     await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
     await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
-    await expect(admin.locator(".settings-nav a")).toHaveCount(11);
+    await expect(admin.locator(".settings-nav a")).toHaveCount(13);
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -378,6 +378,48 @@ try {
     await summary.click();
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/agent-accounts`);
     await page.unroute("**/api/runners/agent-accounts");
+    for (const viewer of [admin, page]) {
+      for (const [path, initial] of [
+        ["github-access", { agentRead: true, mirrors: false }],
+        ["closeout", { projects: { "pmdroid/paws-app": { policyRoot: "/srv/paws/policy" } } }],
+        ["linear-comments", { agents: ["app_kyoto"] }],
+      ] as const) {
+        let saved: unknown = initial;
+        await viewer.route(`**/api/settings/${path}`, async (route) => {
+          if (route.request().method() === "PUT")
+            saved = {
+              ...route.request().postDataJSON(),
+              restartRequired: path === "github-access",
+            };
+          await route.fulfill({ json: saved });
+        });
+      }
+    }
+    for (const [name, heading] of [
+      ["repositories", "Repositories"],
+      ["linear", "Linear"],
+    ] as const) {
+      await visit(admin, width, `settings-${name}`, `/dashboard/settings/${name}`, heading);
+      await expect(admin.locator(`#${name}-settings [role="alert"]`)).toHaveCount(0);
+      if (name === "repositories") {
+        await admin.getByLabel("Use local mirrors").check();
+        await admin.getByRole("button", { name: "Save GitHub access" }).click();
+        await expect(
+          admin.getByText("Restart Paws for Closeout policy reads to use the new mirrors setting."),
+        ).toBeVisible();
+      } else {
+        await admin.getByLabel("Agents", { exact: true }).fill("app_kyoto\napp_reviewer");
+        await admin.getByRole("button", { name: "Save settings", exact: true }).click();
+        await expect(admin.getByText("Settings saved.", { exact: true })).toBeVisible();
+      }
+      await admin.screenshot({ path: join(out, `settings-${name}-${width}.png`), fullPage: true });
+      await visit(page, width, `settings-${name}-member`, `/dashboard/settings/${name}`, heading);
+      await expect(
+        page.locator(
+          `#${name}-settings input, #${name}-settings textarea, #${name}-settings button`,
+        ),
+      ).toHaveCount(0);
+    }
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
@@ -386,6 +428,8 @@ try {
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
     await expect(page.locator(".settings-nav a")).toHaveText([
       "Agent accounts",
+      "Repositories",
+      "Linear",
       "Integrations",
       "Your account",
     ]);
