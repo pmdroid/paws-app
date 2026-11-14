@@ -81,7 +81,6 @@ import {
   getTaskModeSteps,
   getWorkItemRepositorySteps,
   getWorkItemSteps,
-  itemActivityFactsSteps,
   latestCandidateRiskSteps,
   LINEAR_WEBHOOK_FIX,
   linearConversationUrlAsync,
@@ -106,7 +105,6 @@ import {
   listPushOutagesSteps,
   listQueuePositions,
   listRunsSteps,
-  listTaskBlockersSteps,
   listTaskBlocksSteps,
   listWorkItemEventRowsSteps,
   listWorkItemFactsSteps,
@@ -114,10 +112,8 @@ import {
   openQuestionKindSteps,
   resolveDashboardAliasSteps,
   runnerCapacityWait,
-  runnerWorkActiveSteps,
   sessionRepositoriesAllowedSteps,
   type Db,
-  usagePauseSteps,
   type CloseoutProgressRecord,
   type CloseoutProgressState,
   type CloseoutRound,
@@ -1467,7 +1463,7 @@ function riskCarryOverOf(
 /** The newest state changes the timeline shows. `stateTimes` reads every one. */
 const TIMELINE_LIMIT = 200;
 /** Enough rows for any item's whole history, so its state times start at its creation. */
-const HISTORY_LIMIT = 100_000;
+export const HISTORY_LIMIT = 100_000;
 
 /**
  * The item's state changes from `work_item_event` with its agent's CI re-runs, oldest first,
@@ -1485,7 +1481,7 @@ export async function historyOf(
   return historyFrom(record, facts, now, rows, reruns);
 }
 
-function historyFrom(
+export function historyFrom(
   record: WorkItemRecord,
   facts: ReadonlyMap<string, WorkItemFact>,
   now: number,
@@ -1573,17 +1569,7 @@ export async function mergedTimesFor(
   return times === null ? {} : { mergedTimes: times };
 }
 
-export async function doingFor(
-  store: Db,
-  record: WorkItemRecord,
-  input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
-): Promise<Pick<StatusItem, "doing" | "activeMs">> {
-  const facts = await store.run((q) => itemActivityFactsSteps(q, record, input.now));
-  const phase = record.state === "running" ? await runnerPhase(store, record.currentRunId) : null;
-  return doingFrom(record, input, facts, phase);
-}
-
-function doingFrom(
+export function doingFrom(
   record: WorkItemRecord,
   input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
   facts: ItemActivityFacts,
@@ -1600,17 +1586,6 @@ function stageTimesOf(record: WorkItemRecord): StatusStageTimes {
     fixes: { ms: record.fixMs, limitMs: record.maxFixMs },
     closeout: { ms: record.closeoutMs, limitMs: record.maxCloseoutMs },
   };
-}
-
-/**
- * Runner work is preparing (checkout, mise installs) until its current generation reports an
- * `activity` event. Reads only the plain `type` column; a run without runner work has no phase.
- */
-async function runnerPhase(store: Db, runId: string | null): Promise<DoingPhase | null> {
-  if (runId === null) return null;
-  const active = await store.run((q) => runnerWorkActiveSteps(q, runId));
-  if (active === null) return null;
-  return active ? "agent" : "preparing";
 }
 
 export function questionLine(body: string): string {
@@ -1791,16 +1766,7 @@ async function runsFor(
   return runs;
 }
 
-export async function runUsagePause(
-  store: Db,
-  runId: string,
-  generatedAt: string,
-): Promise<StatusUsagePause | null> {
-  const pause = await store.run((q) => usagePauseSteps(q, runId));
-  return pause === null ? null : usagePauseOf(pause, generatedAt);
-}
-
-function usagePauseOf(pause: UsagePause, generatedAt: string): StatusUsagePause {
+export function usagePauseOf(pause: UsagePause, generatedAt: string): StatusUsagePause {
   return { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
 }
 
@@ -1852,7 +1818,10 @@ async function blockerSatisfied(store: Db, blocker: WorkItemRecord): Promise<boo
   return isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null });
 }
 
-function blockersFrom(reads: ItemReads, record: WorkItemRecord): string[] {
+export function blockersFrom(
+  reads: Pick<ItemReads, "edges" | "items" | "modes" | "merges">,
+  record: WorkItemRecord,
+): string[] {
   const ids: string[] = [];
   for (const issueId of reads.edges.get(record.linearIssueId) ?? []) {
     const blocker = reads.items.get(issueId);
@@ -1860,22 +1829,6 @@ function blockersFrom(reads: ItemReads, record: WorkItemRecord): string[] {
     const mode = reads.modes.get(blocker.id) ?? null;
     const mergeSha = reads.merges.get(blocker.id) ?? null;
     if (isBlockerSatisfied({ state: blocker.state, mode, mergeSha })) continue;
-    const id = publicId(blocker);
-    if (!ids.includes(id)) ids.push(id);
-  }
-  return ids;
-}
-
-export async function blockersFor(
-  store: Db,
-  record: WorkItemRecord,
-  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
-): Promise<string[]> {
-  const ids: string[] = [];
-  for (const issueId of await store.run((q) => listTaskBlockersSteps(q, record.linearIssueId))) {
-    const blocker = itemsByIssue.get(issueId);
-    if (blocker === undefined) continue;
-    if (await blockerSatisfied(store, blocker)) continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
   }
