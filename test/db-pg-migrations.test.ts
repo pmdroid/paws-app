@@ -284,4 +284,32 @@ describe("Postgres drizzle-kit migrations", () => {
       await pg.$client.close();
     }
   });
+
+  test("dropping github_delivery.payload keeps each delivery's id, event and time", async () => {
+    const pg = await pgliteDb({
+      migrationsFolder: migrationsBefore("drop_github_delivery_payload"),
+    });
+    try {
+      await pg.$client.exec(
+        "INSERT INTO github_delivery VALUES ('d-1', 'check_run', '{}', 1000), ('d-2', 'pull_request', '{\"action\":\"opened\"}', 2000)",
+      );
+      const read =
+        "SELECT delivery_id, event, received_at::int AS at FROM github_delivery ORDER BY delivery_id";
+      const before = await pg.$client.query(read);
+      expect(before.rows).toEqual([
+        { delivery_id: "d-1", event: "check_run", at: 1000 },
+        { delivery_id: "d-2", event: "pull_request", at: 2000 },
+      ]);
+
+      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+
+      expect((await pg.$client.query(read)).rows).toEqual(before.rows);
+      const columns = await pg.$client.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'github_delivery' AND column_name = 'payload'",
+      );
+      expect(columns.rows).toEqual([]);
+    } finally {
+      await pg.$client.close();
+    }
+  });
 });

@@ -4,7 +4,7 @@ import type { githubDelivery } from "./schema-pg";
 
 export type IntegrationEvent = typeof githubDelivery.$inferSelect;
 
-const GITHUB_DELIVERY_KEEP_MS = 3 * 24 * 60 * 60 * 1000;
+const GITHUB_DELIVERY_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function* recordGitHubDeliverySteps(
   q: Q,
@@ -18,7 +18,6 @@ export function* recordGitHubDeliverySteps(
       .values({
         deliveryId: input.deliveryId,
         event: input.event,
-        payload: input.payload,
         receivedAt: now,
       })
       .onConflictDoNothing({ target: githubDelivery.deliveryId })
