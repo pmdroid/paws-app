@@ -1,6 +1,7 @@
 import { afterAll } from "bun:test";
 import {
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -64,10 +65,13 @@ const parent = process.env.TMPDIR || "/tmp";
 sweepStaleRoots(parent);
 const root = mkdtempSync(join(parent, "pt-"));
 const namespace = pidNamespace();
-writeFileSync(join(root, ".pid"), `${process.pid}${namespace ? ` ${namespace}` : ""}`);
-process.env.TMPDIR = root;
 const gitConfig = join(root, "gitconfig");
-writeFileSync(gitConfig, "[user]\n\tname = Paws Test\n\temail = test@paws.invalid\n");
+const populateRoot = () => {
+  writeFileSync(join(root, ".pid"), `${process.pid}${namespace ? ` ${namespace}` : ""}`);
+  writeFileSync(gitConfig, "[user]\n\tname = Paws Test\n\temail = test@paws.invalid\n");
+};
+populateRoot();
+process.env.TMPDIR = root;
 process.env.GIT_CONFIG_GLOBAL = gitConfig;
 // Task runners may supply an App bot identity. Disposable test repositories use this fixture.
 for (const role of ["AUTHOR", "COMMITTER"]) {
@@ -75,8 +79,13 @@ for (const role of ["AUTHOR", "COMMITTER"]) {
   process.env[`GIT_${role}_EMAIL`] = "test@paws.invalid";
 }
 const removeRoot = () => rmSync(root, { recursive: true, force: true });
+const resetRoot = () => {
+  removeRoot();
+  mkdirSync(root, { mode: 0o700 });
+  populateRoot();
+};
 try {
-  afterAll(removeRoot);
+  afterAll(resetRoot);
 } catch {}
 process.on("exit", removeRoot);
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
