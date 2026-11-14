@@ -131,7 +131,7 @@ describe("runner list rows", () => {
     expect(html).toContain('data-focus="open:01JRUNNER0000000000000000A">build-box</a>');
     expect(html).toContain('<span class="tag ok">Idle</span>');
     expect(html).toContain("Seen just now · ubuntu 24.04");
-    expect(html).toContain('<span class="tag">Claude</span>');
+    expect(html).toContain('<span class="tag">Claude signed in</span>');
     expect(html).toContain('<span class="mono">1.2.0</span>');
     expect(html).not.toContain("Update available");
     expect(html).not.toContain("data-runner-seat");
@@ -151,9 +151,28 @@ describe("runner list rows", () => {
     );
     expect(html).toContain('<span class="tag bad">Offline</span>');
     expect(html).toContain('<span class="tag paused">Paused</span>');
-    expect(html).toContain('<span class="tag bad">Codex signed out</span>');
+    expect(html).toContain('<span class="tag bad">Codex needs sign-in</span>');
     expect(html).toContain("Update available");
-    expect(html).toContain("No agent signed in");
+    expect(html).toContain('href="/settings/agent-accounts"');
+  });
+
+  test("agent summaries include signed-in, signed-out and cooldown states", () => {
+    const resetsAt = now + 60_000;
+    const html = runnerRowMarkup(
+      {
+        ...runner,
+        agents: [
+          { agent: "claude", status: "signed_in", checkedAt: now },
+          { agent: "codex", status: "signed_out", checkedAt: now },
+          { agent: "grok", status: "usage_limit", checkedAt: now, resetsAt },
+        ],
+      },
+      row,
+    );
+    expect(html).toContain("Claude signed in");
+    expect(html).toContain("Codex needs sign-in");
+    expect(html).toContain(`Grok quota cooldown until ${esc(new Date(resetsAt).toLocaleString())}`);
+    expect(html).toContain('href="/settings/agent-accounts"');
   });
 
   test("three runners render three table rows and tiles from the loaded list", () => {

@@ -650,16 +650,26 @@ function runnerRowTags(
     status,
     agents: live
       ? [
-          ...agents
-            .filter((entry) => entry.status === "signed_in")
-            .map((entry): RowTag => ["", label(entry)]),
-          ...agents
-            .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
-            .map((entry): RowTag =>
-              entry.status === "signed_out"
-                ? ["bad", `${label(entry)} signed out`]
-                : ["warn", `${label(entry)} usage limit`],
-            ),
+          ...agents.map((entry): RowTag => {
+            const name = label(entry);
+            switch (entry.status) {
+              case "signed_in":
+                return ["", `${name} signed in`];
+              case "extra_usage":
+                return ["", `${name} signed in · extra usage`];
+              case "signed_out":
+                return ["bad", `${name} needs sign-in`];
+              case "usage_limit":
+                return [
+                  "warn",
+                  `${name} quota cooldown${entry.resetsAt ? ` until ${new Date(entry.resetsAt).toLocaleString()}` : " · reset time unknown"}`,
+                ];
+              case "checking":
+                return ["", `${name} checking sign-in`];
+              default:
+                return ["", `${name} sign-in unknown`];
+            }
+          }),
         ]
       : [],
   };
@@ -704,11 +714,10 @@ export function runnerRowMarkup(
     .filter(Boolean)
     .map(esc)
     .join(" · ");
-  const signedIn = agents.some(([tone]) => tone === "");
   const agentCell =
     runner.status === "revoked"
       ? ""
-      : `${tagsMarkup(agents)}${signedIn ? "" : '<span class="muted">No agent signed in</span>'}`;
+      : `<a class="flex flex-wrap gap-1.5" href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}" aria-label="Agents on ${esc(runner.name)}: manage agent accounts">${tagsMarkup(agents) || '<span class="muted">No agents reported</span>'}</a>`;
   const cell = (body: string) =>
     `<td><div class="flex min-w-36 flex-wrap items-center gap-1.5 [overflow-wrap:normal]">${body}</div></td>`;
   return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div></div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
