@@ -224,8 +224,58 @@ try {
     ] as const)
       await visit(admin, width, name, path, heading);
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
-    await expect(page.locator(".settings-nav a")).toHaveText(["Your account"]);
+    await expect(page.locator(".settings-nav a")).toHaveText(["Integrations", "Your account"]);
     await expect(page.locator("#merge-settings")).toHaveCount(0);
+    for (const viewer of [admin, page])
+      await viewer.route("**/api/workspaces/github-connect", (route) =>
+        route.fulfill({
+          json: {
+            status: "connected",
+            canManage: viewer === admin,
+            requiresSignIn: false,
+            repositoryCount: 1,
+            lastDelivery: { event: "check_suite", receivedAt: Date.now() },
+          },
+        }),
+      );
+    await admin.route("**/api/workspaces/github-setup*", (route) =>
+      route.fulfill({
+        json: {
+          signedIn: true,
+          cached: true,
+          installationId: "1",
+          repositories: [
+            { repository: "acme/app", private: true },
+            { repository: "acme/site", private: false },
+          ],
+          teams: [{ id: "team", name: "Team", key: "TEAM" }],
+          mappings: [{ repository: "acme/app", teamId: "team" }],
+          refreshedAt: Date.now() - 120_000,
+        },
+      }),
+    );
+    for (const [viewer, name] of [
+      [admin, "integrations-admin"],
+      [page, "integrations-member"],
+    ] as const) {
+      await visit(viewer, width, name, "/dashboard/settings/integrations", "Integrations");
+      const github = viewer.locator("#workspace-github-integration");
+      await expect(github.locator(".pill")).toHaveText("Connected");
+      await expect(github).toContainText("acme");
+      await expect(github.getByRole("button", { name: /Sign in|Refresh/ })).toHaveCount(0);
+      if (viewer === admin) {
+        await expect(github.getByLabel("Match acme/app to Team")).toBeChecked();
+        await expect(github.getByLabel("Match acme/site to Team")).not.toBeChecked();
+        await expect(github.getByRole("button", { name: "Save repository access" })).toBeVisible();
+      } else {
+        await expect(github.getByRole("list", { name: "Mapped repositories" })).toHaveText(
+          "acme/app",
+        );
+        await expect(github.locator("input, select")).toHaveCount(0);
+      }
+      await viewer.unroute("**/api/workspaces/github-connect");
+    }
+    await admin.unroute("**/api/workspaces/github-setup*");
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 
