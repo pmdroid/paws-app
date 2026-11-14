@@ -259,11 +259,53 @@ try {
     );
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
+    await page.route("**/api/runners", (route) =>
+      route.fulfill({
+        json: {
+          runners: [
+            {
+              id: "agent-summary-runner",
+              name: "build-box",
+              codingAgents: ["claude", "codex", "grok"].map((agent) => ({
+                agent,
+                current: "1",
+              })),
+              agents: [{ agent: "claude", status: "signed_out", checkedAt: 1 }],
+            },
+          ],
+        },
+      }),
+    );
+    await page.route("**/api/runners/agent-accounts", (route) =>
+      route.fulfill({
+        json: {
+          accounts: [
+            { agent: "claude", credential: {}, extraUsage: false, usage: null },
+            { agent: "codex", credential: null, extraUsage: false, usage: null },
+            {
+              agent: "grok",
+              credential: {},
+              usage: {
+                limits: [{ window: "5h", usedPercent: 100, resetsAt: Date.now() + 3_600_000 }],
+              },
+            },
+          ].map((account) => ({ ...account, id: account.agent, label: account.agent })),
+        },
+      }),
+    );
     for (const [name, path, heading] of [
-      ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],
+      ["runners", "/dashboard/runners", "Runners"],
     ] as const)
       await visit(page, width, name, path, heading);
+    const summary = page.getByRole("link", {
+      name: /Claude signed in.*Codex needs sign-in.*Grok quota cooldown until/,
+    });
+    await summary.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(out, `runner-agents-${width}.png`), fullPage: true });
+    await summary.click();
+    await expect(page).toHaveURL(`${f.origin}/dashboard/settings/agent-accounts`);
+    await page.unroute("**/api/runners/agent-accounts");
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
