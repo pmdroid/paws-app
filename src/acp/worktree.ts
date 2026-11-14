@@ -468,7 +468,7 @@ export async function removeWorktree(options: {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const path = worktreePath(options.pawsRoot, options.itemId);
   if (!(await exists(path))) return;
-  if ((await stat(`${path}/.git`)).isDirectory()) {
+  if ((await stat(`${path}/.git`).catch(() => null))?.isDirectory()) {
     await rm(path, { recursive: true, force: true });
     return;
   }
