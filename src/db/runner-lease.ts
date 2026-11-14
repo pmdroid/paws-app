@@ -256,8 +256,14 @@ export async function shiftRunnerLeasesForDowntime(
   await store.run((q) => shiftRunnerLeasesForDowntimeSteps(q, now, budgetMs, self));
 }
 
-export function* runnerHoldsRunWorkSteps(q: Q, runId: string, now: number, cancelled = false) {
-  const { runnerWork } = q.t;
+export function* runnerHoldsRunWorkSteps(
+  q: Q,
+  runId: string,
+  now: number,
+  cancelled = false,
+  eventSince?: number,
+) {
+  const { runnerWork, runnerEvent } = q.t;
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })
@@ -266,6 +272,20 @@ export function* runnerHoldsRunWorkSteps(q: Q, runId: string, now: number, cance
         and(
           eq(runnerWork.runId, runId),
           isNull(runnerWork.endedAt),
+          eventSince === undefined
+            ? undefined
+            : exists(
+                q.orm
+                  .select({ one: sql`1` })
+                  .from(runnerEvent)
+                  .where(
+                    and(
+                      eq(runnerEvent.runId, runnerWork.runId),
+                      eq(runnerEvent.generation, runnerWork.generation),
+                      gt(runnerEvent.receivedAt, eventSince),
+                    ),
+                  ),
+              ),
           or(
             gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
             cancelled ? undefined : exists(currentResult(q)),

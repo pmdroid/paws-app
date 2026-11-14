@@ -840,6 +840,7 @@ for (const problem of ["no-session", "notification-error"] as const)
         endedAt: null,
         leaseUntil: Date.now() + 60_000,
       });
+      await runnerEvent(f.db, item.currentRunId!, Date.now());
       if (problem === "no-session") internals.activitySession = () => null;
       else
         internals.askCloseoutHelp = async () => {
@@ -866,7 +867,7 @@ for (const problem of ["no-session", "notification-error"] as const)
   }, 90_000);
 
 for (const state of ["verifying", "merge_queue"] as const)
-  for (const lease of ["missing", "expired", "live", "grace"] as const)
+  for (const lease of ["missing", "expired", "live", "grace", "stale", "silent"] as const)
     test(`a reverify after restart handles an active ${state} run with ${lease} runner work`, async () => {
       const f = await verifyingWithHeldGate({ remote: true });
       try {
@@ -900,12 +901,14 @@ for (const state of ["verifying", "merge_queue"] as const)
             endedAt: null,
             leaseUntil:
               Date.now() +
-              (lease === "live"
+              (["live", "stale", "silent"].includes(lease)
                 ? 60_000
                 : lease === "grace"
                   ? -1_000
                   : -RUNNER_LEASE_GRACE_MS - 1_000),
           });
+        if (lease !== "missing" && lease !== "silent")
+          await runnerEvent(f.db, runId, lease === "stale" ? Date.now() - 120_001 : Date.now());
         const jobId = await enqueueJob(f.db, {
           queue: JOB_KIND.reverify,
           payload: { itemId: item.id },
@@ -1463,6 +1466,55 @@ test("Retry Closeout on a policy that did not load verifies the same head into t
     ]);
     expect(await restartReasons(f.db, item.id)).toEqual([]);
   } finally {
+    await f.close();
+  }
+}, 90_000);
+
+async function runnerEvent(db: Db, runId: string, receivedAt: number): Promise<void> {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.runnerEvent)
+      .values({
+        runId,
+        generation: 1,
+        sequence: 1,
+        payload: {},
+        receivedAt,
+        type: "activity",
+      })
+      .onConflictDoUpdate({
+        target: [q.t.runnerEvent.runId, q.t.runnerEvent.generation, q.t.runnerEvent.sequence],
+        set: { receivedAt },
+      }),
+  );
+}
+
+test("PAS-2017 live runner still asks after twenty minutes", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = (await listWorkItems(f.db))[0]!;
+    await setItem(f.db, item.id, { state: "verifying" });
+    await setRun(f.db, item.currentRunId!, { status: "active" });
+    await setRunnerWork(f.db, item.currentRunId!, {
+      endedAt: null,
+      leaseUntil: Date.now() + 60_000,
+    });
+    await runnerEvent(f.db, item.currentRunId!, Date.now());
+    await enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id, verificationWaitSince: Date.now() - 20 * 60_000 },
+      now: Date.now(),
+    });
+    await f.tickReverify();
+    expect((await getWorkItem(f.db, item.id))?.state).toBe("awaiting_input");
+    expect(await findOpenQuestion(f.db, "ses_1")).not.toBeNull();
+    expect(f.gate.runs).toHaveLength(1);
+  } finally {
+    f.release();
+    await f.turn;
     await f.close();
   }
 }, 90_000);
