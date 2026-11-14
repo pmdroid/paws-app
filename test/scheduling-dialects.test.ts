@@ -291,8 +291,8 @@ forEachDialect((connect) => {
 
     const slots = await db.run((q) => runnerTaskSlotsSteps(q, NOW, 10));
     expect(slots.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
-      { id: "box", capacity: 2, used: 3 },
-      { id: "idle", capacity: 1, used: 0 },
+      { id: "box", fixSlots: 1, capacity: 2, used: 3 },
+      { id: "idle", fixSlots: 1, capacity: 1, used: 0 },
     ]);
   });
 

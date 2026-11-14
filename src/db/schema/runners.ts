@@ -29,6 +29,7 @@ export const runner = sqliteTable(
     lastSeenAt: integer("last_seen_at"),
     liveReportedAt: integer("live_reported_at"),
     terminationsSince: integer("terminations_since"),
+    fixSlots: integer("fix_slots").default(1).notNull(),
   },
   (table) => [
     foreignKey(() => ({
