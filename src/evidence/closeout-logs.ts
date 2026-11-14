@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   pointCloseoutOutputSteps,
-  unmovedCloseoutOutputsSteps,
   type CloseoutOutputPointer,
   type Db,
   type StoredCloseoutOutput,
@@ -18,8 +17,6 @@ import {
 import { ulid } from "./ulid";
 
 export type CloseoutOutput = { stdout: string; stderr: string };
-
-export const CLOSEOUT_LOG_MOVE_JOB = "closeout-logs.move";
 
 export function closeoutLogStorage(home: string, objects?: EvidenceObjects): EvidenceStorage {
   return { root: join(home, "closeout", "logs"), objects };
@@ -88,21 +85,4 @@ export async function moveCloseoutOutput(
   if (await store.transaction((q) => pointCloseoutOutputSteps(q, row, pointer))) return true;
   await removeEvidenceFile(store, storage, pointer.key);
   return false;
-}
-
-export async function moveCloseoutOutputs(
-  store: Db,
-  storage: EvidenceStorage,
-  options: { batch?: number; now?: () => number; signal?: AbortSignal } = {},
-): Promise<number> {
-  const now = options.now ?? Date.now;
-  let moved = 0;
-  for (;;) {
-    options.signal?.throwIfAborted();
-    const rows = await store.run((q) => unmovedCloseoutOutputsSteps(q, options.batch ?? 100));
-    let batch = 0;
-    for (const row of rows) if (await moveCloseoutOutput(store, storage, row, now())) batch++;
-    moved += batch;
-    if (batch === 0) return moved;
-  }
 }

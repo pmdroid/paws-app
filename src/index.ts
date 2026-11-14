@@ -60,9 +60,7 @@ import {
   migrateCloseoutEvidence,
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
-  CLOSEOUT_LOG_MOVE_JOB,
   closeoutLogStorage,
-  moveCloseoutOutputs,
   removeEvidenceFile,
   type EvidenceObjects,
 } from "./evidence";
@@ -2213,18 +2211,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               `${label} pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
             );
         }
-      });
-      created.jobs.register(CLOSEOUT_LOG_MOVE_JOB, (_job, context) =>
-        moveCloseoutOutputs(store, closeoutLogs, {
-          signal: AbortSignal.any([context.signal, abort.signal]),
-        }).then((moved) => {
-          if (moved) journal(`Closeout logs moved to the evidence store: ${moved} outputs`);
-        }),
-      );
-      await enqueueJobOnce(store, {
-        queue: CLOSEOUT_LOG_MOVE_JOB,
-        jobKey: CLOSEOUT_LOG_MOVE_JOB,
-        now: Date.now(),
       });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,

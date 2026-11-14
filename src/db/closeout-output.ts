@@ -77,34 +77,6 @@ function unfinishedNot(q: Q) {
   return notInArray(q.t.closeoutStep.state, ["pending", "running"]);
 }
 
-export function* unmovedCloseoutOutputsSteps(q: Q, limit: number): Steps<StoredCloseoutOutput[]> {
-  const steps = yield* stepOutputsSteps(q, unfinishedNot(q), limit);
-  const { agentCloseoutEvent: e } = q.t;
-  const events = yield* q.all(
-    q.orm
-      .select({
-        runId: e.runId,
-        sequence: e.sequence,
-        itemId: e.itemId,
-        head: e.head,
-        checkId: e.checkId,
-        stdout: e.stdout,
-        stderr: e.stderr,
-      })
-      .from(e)
-      .where(and(isNull(e.outputKey), or(ne(e.stdout, ""), ne(e.stderr, ""))))
-      .limit(Math.max(0, limit - steps.length)),
-  );
-  return [
-    ...steps,
-    ...events.map(({ runId, sequence, checkId, ...row }) => ({
-      ...row,
-      checkId: checkId ?? "closeout",
-      ref: { table: "agent_closeout_event" as const, runId, sequence },
-    })),
-  ];
-}
-
 function refWhere(q: Q, ref: CloseoutOutputRef) {
   const { closeoutStep: s, agentCloseoutEvent: e } = q.t;
   return ref.table === "closeout_step"

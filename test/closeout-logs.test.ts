@@ -1,26 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { handleStatusRequest } from "../src/dashboard";
 import {
-  appendCloseoutOutput,
   beginImplementRun,
   enterMergeQueue,
   insertQueuedItem,
-  recordAgentCloseout,
   saveCloseoutLogRetentionDays,
-  upsertCloseoutStep,
   type CloseoutStepWrite,
   type Db,
 } from "../src/db";
 import {
   closeoutLogStorage,
-  moveCloseoutOutputs,
   removeEvidenceFile,
   withCloseoutOutput,
+  type EvidenceStorage,
 } from "../src/evidence";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { createFakeRunFileObjects } from "../src/run-files";
@@ -83,7 +79,6 @@ function stepRows(db: Db) {
           stdout: q.t.closeoutStep.stdout,
           stderr: q.t.closeoutStep.stderr,
           key: q.t.closeoutStep.outputKey,
-          sha256: q.t.closeoutStep.outputSha256,
         })
         .from(q.t.closeoutStep),
     ),
@@ -133,70 +128,13 @@ test("a new Closeout run's log reads back through the check-log route from the s
   });
 });
 
-test("the move job copies existing output to the store, checks its sha256, then clears the columns", async () => {
-  const { db, objects, storage } = await setup();
-  const item = await seedFailedCheck(db, "ENG-2");
-  await upsertCloseoutStep(db, item.id, identity(item.id), step("running"), NOW);
-  await appendCloseoutOutput(
-    db,
-    item.id,
-    identity(item.id),
-    "unit",
-    "stdout",
-    "old out",
-    false,
-    NOW,
-  );
-  await upsertCloseoutStep(db, item.id, identity(item.id), step("failed"), NOW);
-  await recordAgentCloseout(
-    db,
-    "run-1",
-    item.id,
-    {
-      type: "finished",
-      head: HEAD,
-      id: "lint",
-      kind: "command",
-      command: "bun run lint",
-      attempt: 1,
-      maxAttempts: null,
-      state: "failed",
-      exitCode: 1,
-      timedOut: false,
-      durationMs: 5,
-      stdout: "",
-      stderr: "lint broke",
-      truncated: false,
-    },
-    NOW,
-  );
-
-  expect(await moveCloseoutOutputs(db, storage, { batch: 1, now: () => NOW })).toBe(2);
-  const [row] = await stepRows(db);
-  expect(row).toMatchObject({ stdout: "", stderr: "" });
-  const stored = [...objects.objects.values()].map((bytes) => Buffer.from(bytes).toString());
-  expect(stored.sort()).toEqual([
-    JSON.stringify({ stdout: "", stderr: "lint broke" }),
-    JSON.stringify({ stdout: "old out", stderr: "" }),
-  ]);
-  const bytes = Buffer.from(JSON.stringify({ stdout: "old out", stderr: "" }));
-  expect(row!.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
-  const event = await db.run((q) =>
-    q.one(
-      q.orm
-        .select({ stderr: q.t.agentCloseoutEvent.stderr, key: q.t.agentCloseoutEvent.outputKey })
-        .from(q.t.agentCloseoutEvent)
-        .where(eq(q.t.agentCloseoutEvent.runId, "run-1")),
-    ),
-  );
-  expect(event?.stderr).toBe("");
-  expect(event?.key).not.toBeNull();
-
-  expect(await moveCloseoutOutputs(db, storage, { now: () => NOW })).toBe(0);
-  expect(objects.writes).toHaveLength(2);
-});
-
-async function endedItem(db: Db, id: string, state: string, endedAt: number) {
+async function endedItem(
+  db: Db,
+  storage: EvidenceStorage,
+  id: string,
+  state: string,
+  endedAt: number,
+) {
   await insertWorkItem(db, id);
   await db.run(function* (q) {
     yield* q.exec(q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id)));
@@ -211,17 +149,17 @@ async function endedItem(db: Db, id: string, state: string, endedAt: number) {
       }),
     );
   });
-  await upsertCloseoutStep(db, id, identity(id), step("running"), endedAt);
-  await appendCloseoutOutput(db, id, identity(id), "unit", "stdout", `${id} out`, false, endedAt);
-  await upsertCloseoutStep(db, id, identity(id), step("failed"), endedAt);
+  const progress = createDbCloseoutProgress(db, id, () => endedAt, storage);
+  await progress.step(identity(id), step("running"));
+  await progress.output(identity(id), "unit", "stdout", `${id} out`, false);
+  await progress.step(identity(id), step("failed"));
 }
 
 test("retention deletes the output of items that ended more than the setting's days ago", async () => {
   const { db, objects, storage } = await setup();
-  await endedItem(db, "old", "merged", NOW - 15 * DAY);
-  await endedItem(db, "recent", "merged", NOW - 13 * DAY);
-  await endedItem(db, "open", "running", NOW - 30 * DAY);
-  await moveCloseoutOutputs(db, storage, { now: () => NOW });
+  await endedItem(db, storage, "old", "merged", NOW - 15 * DAY);
+  await endedItem(db, storage, "recent", "merged", NOW - 13 * DAY);
+  await endedItem(db, storage, "open", "running", NOW - 30 * DAY);
   expect(objects.objects.size).toBe(3);
   const remove = (key: string) => removeEvidenceFile(db, storage, key);
   const keys = async () => (await stepRows(db)).map((row) => row.key);
