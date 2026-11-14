@@ -264,9 +264,7 @@ forEachDialect((open) => {
 
   test("a recorded GitHub delivery is found by id", async () => {
     const db = await connect(open);
-    await db.run((q) =>
-      recordGitHubDeliverySteps(q, { deliveryId: "d1", event: "push", payload: "{}" }, 1),
-    );
+    await db.run((q) => recordGitHubDeliverySteps(q, { deliveryId: "d1", event: "push" }, 1));
     expect(await db.run((q) => githubDeliveryRecordedSteps(q, "d1"))).toBe(true);
     expect(await db.run((q) => githubDeliveryRecordedSteps(q, "d2"))).toBe(false);
   });
