@@ -135,11 +135,12 @@ function isSettingsSection(section: string): boolean {
     within("brief") ||
     within("skills") ||
     name === "github_access" ||
-    name === "findings"
+    name === "findings" ||
+    name === "member_vm"
   );
 }
 
-const FILE_UNTIL_SAVED = ["agents.grok", "agents.opencode"];
+const FILE_UNTIL_SAVED = ["agents.grok", "agents.opencode", "member_vm"];
 
 function familyOf(section: string): string | undefined {
   const name = section.trim().toLowerCase();
@@ -157,6 +158,10 @@ function keptFromFile(stored: string): (section: string) => boolean {
     const family = familyOf(section);
     return family !== undefined && !saved.has(family);
   };
+}
+
+export function withoutConfigSection(text: string, name: string): string {
+  return splitSections(text, (_settings, _heading, section) => section.toLowerCase() !== name);
 }
 
 function splitSections(
