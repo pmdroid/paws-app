@@ -18,6 +18,7 @@ import {
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import {
+  parseIssueDetailResponse,
   parseIssueListResponse,
   parseMergeQueueResponse,
   parseOverviewResponse,
@@ -203,10 +204,16 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     if (!questions.ok) throw new Error(questions.error);
     const queue = parseMergeQueueResponse(await read("/api/merge-queue"));
     if (!queue.ok) throw new Error(queue.error);
+    const details = [];
+    for (const issue of list.response.issues) {
+      const detail = parseIssueDetailResponse(await read(`/api/issues/${issue.id}`));
+      if (!detail.ok) throw new Error(detail.error);
+      details.push(detail.response);
+    }
     const records = {
-      items: list.response.issues,
-      runs: list.response.runs,
-      verdicts: list.response.verdicts,
+      items: details.map((detail) => detail.issue),
+      runs: details.flatMap((detail) => detail.runs),
+      verdicts: details.flatMap((detail) => detail.verdicts),
       questions: questions.response.questions,
       mergeQueue: queue.response.entries,
     };
@@ -255,21 +262,23 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
   }
 });
 
-test("each task on /api/issues carries the Linear requests it made", async () => {
+test("each task's detail on /api/issues/:id carries the Linear requests it made", async () => {
   const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
     await insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
     for (let request = 0; request < 3; request++) await countLinearRequest(db, "item-1");
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: db,
-      env: {},
-    });
-    const parsed = parseIssueListResponse(await response?.json());
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(
-      Object.fromEntries(parsed.response.issues.map((item) => [item.id, item.linearRequests])),
-    ).toEqual({ "item-1": 3, "item-2": 0 });
+    const requests: Record<string, number | undefined> = {};
+    for (const id of ["item-1", "item-2"]) {
+      const response = await handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
+        store: db,
+        env: {},
+      });
+      const parsed = parseIssueDetailResponse(await response?.json());
+      if (!parsed.ok) throw new Error(parsed.error);
+      requests[id] = parsed.response.issue.linearRequests;
+    }
+    expect(requests).toEqual({ "item-1": 3, "item-2": 0 });
   } finally {
     await close();
   }

@@ -831,7 +831,9 @@ describe("live status provider", () => {
     expect(parsed.ok && parsed.response.issue.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     await risk("aaaa111122", now + 1);
-    expect((await createLiveStatusProvider(db).issue("ENG-7"))?.issue.riskCarryOver).toBeUndefined();
+    expect(
+      (await createLiveStatusProvider(db).issue("ENG-7"))?.issue.riskCarryOver,
+    ).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", async () => {
