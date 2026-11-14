@@ -253,6 +253,8 @@ export function* suggestDecisionsSteps(q: Q, questionId: string, text: string) {
   }
   return suggestions;
 }
+const SUGGESTION_GONE =
+  "This suggestion changed or is no longer accessible. Answer the question in your own words.";
 export function* confirmDecisionSteps(
   q: Q,
   questionId: string,
@@ -286,9 +288,8 @@ export function* confirmDecisionSteps(
     source.repository !== target.repository ||
     source.teamId !== target.teamId
   )
-    throw new Error(
-      "This suggestion changed or is no longer accessible. Answer the question in your own words.",
-    );
-  yield* acceptDecisionSuggestionSteps(q, match[1]!, linearUserId, now);
+    throw new Error(SUGGESTION_GONE);
+  if (!(yield* acceptDecisionSuggestionSteps(q, match[1]!, linearUserId, now)))
+    throw new Error(SUGGESTION_GONE);
   return saved.statement;
 }
