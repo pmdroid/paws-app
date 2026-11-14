@@ -334,7 +334,10 @@ test("the page lists Linear, membership, runner, coding agents, then the optiona
   });
   expect(ready.slice(2).map((step) => [step.label, step.detail])).toEqual([
     ["Ready", "mia-paws will run this task."],
-    ["Sign-in expired", "Sign in to Codex on mia-paws. The Codex sign-in expired."],
+    [
+      "Sign-in expired",
+      "Ask a workspace admin to add or reconnect Codex in Settings › Agent accounts for mia-paws. The Codex account sign-in expired.",
+    ],
     ["Linked", "Commits will credit @mia-chen."],
   ]);
 });
