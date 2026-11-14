@@ -43,9 +43,15 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       assert.equal(requests.includes("/api/runners/policy"), false);
       assert.equal(requests.includes("/api/runners/usage"), false);
       assert.equal(
-        await page.getByText("bun run paws runner-authority init", { exact: true }).count(),
+        await page
+          .getByText(
+            "Set PAWS_RUNNER_HOST to the address runners connect to, and PAWS_RUNNER_PORT (usually 8788), in the Paws service environment, then restart Paws.",
+            { exact: true },
+          )
+          .count(),
         1,
       );
+      assert.equal(await page.getByText("runner-authority init").count(), 0);
       assert.equal(
         await page
           .getByRole("link", { name: "Open the workspace setup guide" })

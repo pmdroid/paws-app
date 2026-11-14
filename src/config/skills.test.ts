@@ -2,13 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseConfigToml, writeConfigFile, type PawsSetupConfig } from "./file";
+import { parseConfigToml } from "./file";
 import { projectSkillsRoot } from "./skills";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
-test("project skills resolve per repository and survive setup rewrites", () => {
+test("project skills resolve per repository", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-skills-config-"));
   roots.push(root);
   const path = join(root, "config.toml");
@@ -16,21 +16,6 @@ test("project skills resolve per repository and survive setup rewrites", () => {
   const config = parseConfigToml(readFileSync(path, "utf8"));
   expect(projectSkillsRoot(config, root, "ACME/DEMO")).toBe(join(root, "local-skills"));
   expect(projectSkillsRoot(config, root, "other/repo")).toBeUndefined();
-  const setup: PawsSetupConfig = {
-    linearTeam: "ENG",
-    linearTeamId: "team",
-    linearViewerId: "viewer",
-    linearSecret: "secrets/linear",
-    linearClientFile: null,
-    githubAuth: "app",
-    repo: "acme/demo",
-    checkout: "/repo",
-    maxAwakeMs: 1000,
-    implementer: "claude",
-  };
-  writeConfigFile(path, setup);
-  expect(parseConfigToml(readFileSync(path, "utf8")).projectSkills).toEqual(config.projectSkills);
-  expect(writeConfigFile(path, setup)).toBe(false);
 });
 
 test.each([

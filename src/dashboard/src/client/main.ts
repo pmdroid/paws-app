@@ -38,7 +38,7 @@ import {
 } from "./route";
 import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
-import type { SettingsPage } from "./settings-pages";
+import { shownSettingsPage, type SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
@@ -443,9 +443,9 @@ function paint(): void {
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
-      ["agents", "merging", "limits"].includes(model.route.page ?? "agents");
+      ["agents", "merging", "limits"].includes(shownSettingsPage(model.route.page));
   showWorkspaceSettingsPage(
-    model.route.view === "settings" ? (model.route.page ?? "agents") : null,
+    model.route.view === "settings" ? shownSettingsPage(model.route.page) : null,
   );
   document.title = view.title;
   setHtml("#top", view.top);
@@ -510,7 +510,7 @@ function currentRoute(): Route {
 }
 
 function settingsPage(route: Route): SettingsPage | null {
-  return route.view === "settings" ? (route.page ?? "agents") : null;
+  return route.view === "settings" ? shownSettingsPage(route.page) : null;
 }
 
 function source(): string {

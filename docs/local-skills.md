@@ -1,13 +1,16 @@
 # Local implementation skills
 
-Give Paws project-specific skills from a folder on your machine. Add this to `~/.paws/config.toml`:
+Give Paws project-specific skills from a folder on the Paws host. Save the folder for each repository through `PUT /api/settings/skills` ([Project skill roots](configuration.md#project-skill-roots)):
 
-```toml
-[skills.projects."owner/repo"]
-root = "projects/work/skills"
+```json
+{
+  "projectRoots": {
+    "projects": { "owner/repo": { "root": "/home/me/.paws/projects/work/skills" } }
+  }
+}
 ```
 
-Relative paths start at the Paws home directory. Absolute paths work too. Repository names match without regard to case.
+The root must be an absolute path to an existing directory. Repository names match without regard to case. Until the first save, Paws reads `[skills.projects."owner/repo"] root` from `~/.paws/config.toml`, where a relative path starts at the Paws home directory.
 
 Put each skill and its resources in a named directory:
 
@@ -25,7 +28,7 @@ Paws adds these instructions to each implementation and fix prompt. A local dire
 
 Skills can read resources by absolute path through file tools or `cat`. They can run scripts directly, for example `bash /absolute/path/verify-work/scripts/check.sh`, with the repository as the working directory. Scripts resolve their own sibling resources from their script directory. Paws grants access to the selected skill directories; edits to their resources and symlinks escaping those directories are denied.
 
-The configured folder must live outside the repository and contain at least one skill. Paws checks it before starting an implementation agent. It accepts up to 100 skills with at most 1 MiB of combined `SKILL.md` instructions. Running setup again preserves these settings.
+The configured folder must live outside the repository and contain at least one skill. Paws checks it before starting an implementation agent. It accepts up to 100 skills with at most 1 MiB of combined `SKILL.md` instructions.
 
 Closeout reviewers use the review skills supplied by the trusted Closeout policy. Keep acceptance review instructions with that policy and implementation instructions in this local skills folder.
 

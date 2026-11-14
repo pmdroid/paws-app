@@ -286,28 +286,6 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
   return next;
 }
 
-export function selectDefaultImplementer(
-  settings: AgentSettings,
-  implementer: ImplementerName,
-): AgentSettings {
-  return parseAgentSettings({
-    ...settings,
-    defaults: {
-      ...settings.defaults,
-      implementer: {
-        ...(settings.defaults.implementer.agent === implementer
-          ? settings.defaults.implementer
-          : {}),
-        agent: implementer,
-        model:
-          settings.defaults.implementer.agent === implementer
-            ? settings.defaults.implementer.model
-            : null,
-      },
-    },
-  });
-}
-
 export function writeAgentSettings(
   path: string,
   input: AgentSettings,
@@ -322,7 +300,7 @@ export function writeAgentSettings(
 }
 
 /** Render already-validated presets without materializing legacy role defaults. */
-export function renderAgentPresetsText(settings: AgentSettings): string {
+function renderAgentPresetsText(settings: AgentSettings): string {
   return Object.entries(settings.presets ?? {})
     .flatMap(([name, preset]) =>
       (["implementer", "reviewer"] as const).map((role) =>

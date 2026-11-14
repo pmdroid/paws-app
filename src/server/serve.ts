@@ -52,6 +52,10 @@ import {
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   handleTimeLimitSettingsRequest,
+  handleGitHubAccessSettingsRequest,
+  GITHUB_ACCESS_SETTINGS_PATH,
+  handleCloseoutSettingsRequest,
+  CLOSEOUT_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
@@ -168,6 +172,8 @@ export type ServerOptions = {
   store?: Db;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Clock the dashboard resources read their time-derived fields from. Defaults to the system clock. */
+  dashboardNow?: () => Date;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
   healthDisk?: HealthOptions["disk"];
@@ -193,6 +199,7 @@ export type ServerOptions = {
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
+    configPath?: string;
     root: string;
     resolver: SkillResolver;
     updates?: SkillUpdates;
@@ -265,6 +272,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          ...(options.dashboardNow ? { dashboardNow: options.dashboardNow } : {}),
           riskApproval: options.riskApproval,
           riskSettingsChanged: options.riskSettingsChanged,
           webhooks,
@@ -345,6 +353,7 @@ type Secrets = {
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => Promise<LinearUsage>) | undefined;
+  dashboardNow?: ServerOptions["dashboardNow"];
   riskApproval?: ServerOptions["riskApproval"];
   riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
@@ -636,6 +645,40 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
+  if (path === GITHUB_ACCESS_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleGitHubAccessSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === CLOSEOUT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleCloseoutSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
   if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleTimeLimitSettingsRequest(request, {
@@ -736,6 +779,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const status = await handleStatusRequest(request, {
     csrfToken,
     resourceCache: dashboardResources,
+    ...(secrets.dashboardNow ? { now: secrets.dashboardNow } : {}),
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact

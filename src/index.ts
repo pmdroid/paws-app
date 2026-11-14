@@ -82,6 +82,8 @@ import {
   startupSettings,
   resolveAgentProfiles,
   loadEnv,
+  githubMirrorsOn,
+  useActiveGitHubMirrors,
   loadConfigFile,
   resolveTimeLimits,
   loadRunnerControl,
@@ -92,6 +94,7 @@ import {
   describeOverriddenSections,
   journalRetiredAgentProjects,
   journalRetiredProjectSettings,
+  copyCapsToTimeLimits,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -353,6 +356,7 @@ import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands"
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneLoopQueues,
   pruneRunnerEvents,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
@@ -588,6 +592,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    const copiedCaps = await copyCapsToTimeLimits(
+      paths.configFile,
+      loadConfigFile(paths.configFile),
+    );
+    if (copiedCaps !== null) journal(copiedCaps);
     journalRetiredAgentProjects(paths.configFile, journal);
     journalRetiredProjectSettings(paths.configFile, journal);
   } catch (error) {
@@ -609,8 +618,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  useActiveGitHubMirrors(startupMirrors);
   useGitReader(
-    loadConfigFile(paths.configFile).githubMirrors === false
+    !startupMirrors
       ? createGitHubGitReader({
           locate: (path) => {
             const [owner, name, ...rest] = relative(join(paths.home, "repos"), path).split("/");
@@ -1101,6 +1112,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           runnerFiles: runnerFileObjects(),
           eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
+          secretsDir: paths.secretsDir,
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),
@@ -1206,7 +1218,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ store });
-  const accountManagement = createAccountManagement();
+  const accountManagement = createAccountManagement({ store });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,
@@ -1461,6 +1473,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
+        configPath: paths.configFile,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
@@ -1656,7 +1669,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         remoteExecution,
@@ -2170,14 +2183,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
-      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
-          ({ deleted }) => {
-            if (!deleted) return;
-            journal(`runner events pruned: ${deleted} events deleted`);
-          },
-        ),
-      );
+      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, async (_job, context) => {
+        const signal = AbortSignal.any([context.signal, abort.signal]);
+        const { deleted } = await pruneRunnerEvents({ store, signal });
+        if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+        const pruned = Object.entries(await pruneLoopQueues({ store, signal })).filter(
+          ([, rows]) => rows > 0,
+        );
+        if (pruned.length)
+          journal(
+            `loop queues pruned: ${pruned.map(([table, rows]) => `${rows} ${table}`).join(", ")}`,
+          );
+      });
       await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,

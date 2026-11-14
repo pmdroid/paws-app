@@ -30,10 +30,11 @@ import {
   type FakeReviewThread,
   type GitHubClient,
 } from "../github";
-import { findOpenQuestion } from "../questions";
+import { answerSteps, findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
 import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
+import { questionEffects } from "./question-effects";
 import {
   REVIEW_REPLY_MARKER,
   checkReviewReplies,
@@ -666,6 +667,107 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
     expect((await getWorkItem(db, "eng-1"))!.state).toBe("running");
     expect(await unreportedReviewReplies(db, "eng-1")).toEqual([]);
+  });
+});
+
+describe("comments after the fix rounds are spent get replies once the team answers", () => {
+  async function asked(via: "comments" | "review") {
+    const context = await setup();
+    const { db, caps, review, inline } = context;
+    const spent = { ...caps, fixRoundLimit: () => syncSteps(() => 0) };
+    await inline({
+      id: 9001,
+      review: 601,
+      author: "pascal",
+      body: "This sorts the wrong way round.",
+      path: "src/rank.ts",
+    });
+    if (via === "review") {
+      await review({ id: 601, author: "pascal", state: "changes_requested", body: "Fix it." });
+      expect(await handlePullReview(db, 601, spent)).toBe("asked");
+    } else {
+      await inline({
+        id: 9101,
+        review: 701,
+        author: "cursor[bot]",
+        body: "Bug: the cache key ignores the tenant.",
+        path: "src/cache.ts",
+      });
+      expect(await handlePullComments(db, "eng-1", spent)).toBe("asked");
+    }
+    expect((await findOpenQuestion(db, "s-1"))?.kind).toBe("ci-help");
+    expect(await jobs(db, JOB_KIND.resume)).toHaveLength(0);
+    return context;
+  }
+  const answer = (db: Awaited<ReturnType<typeof setup>>["db"], body: string) =>
+    db.transaction((q) =>
+      answerSteps(
+        q,
+        { sessionId: "s-1", deliveryId: "a-1", body, answeredBy: "lead", now: 1_500 },
+        questionEffects(db, { now: 1_500 }),
+      ),
+    );
+  async function turnEnds(db: Awaited<ReturnType<typeof setup>>["db"], finalMessage: string) {
+    await applyWorkItemEvent(db, "eng-1", "dispatched");
+    const item = (await getWorkItem(db, "eng-1"))!;
+    return checkReviewReplies(db, {
+      item,
+      runId: item.currentRunId!,
+      sessionId: "s-1",
+      finalMessage,
+      now: 5_000,
+    });
+  }
+
+  test("continue fixing hands over the reply list; replies post and only the fixed thread resolves", async () => {
+    const { db, github, replies } = await asked("comments");
+    await answer(db, "continue fixing");
+    const text = await handoffText(db);
+    expect(text).toContain("continue fixing");
+    expect(text).toContain("A summary saying you fixed everything is not a reply");
+    expect(text).toContain(
+      "R1. Thread by @pascal: src/rank.ts:12: This sorts the wrong way round.",
+    );
+    expect(text).toContain("R2. Thread by @cursor[bot]: src/cache.ts:40: Bug: the cache key");
+    expect(await turnEnds(db, "R1 fixed: Sorted descending.\nR2 not changed: Out of scope.")).toBe(
+      "complete",
+    );
+    const input = { itemId: "eng-1", pullNumber: 7, head: "abcdef1234567890", now: () => 6_000 };
+    expect(await postReviewReplies(db, input, github)).toBe(2);
+    expect(replies.replies.map((reply) => [reply.commentId, reply.body.split("\n")[0]])).toEqual([
+      [9001, "**Fixed** in abcdef1. Sorted descending."],
+      [9101, "**Not changed.** Out of scope."],
+    ]);
+    expect(replies.resolved).toEqual(["RT_0"]);
+  });
+
+  test("a changes-requested review lists its thread and body, and a turn without them goes back", async () => {
+    const { db } = await asked("review");
+    await answer(db, "continue fixing");
+    const text = await handoffText(db);
+    expect(text).toContain(
+      "R1. Thread by @pascal: src/rank.ts:12: This sorts the wrong way round.",
+    );
+    expect(text).toContain("R2. Review by @pascal: Fix it.");
+    expect(await turnEnds(db, "I fixed everything.")).toBe("sent_back");
+    expect((await jobs(db, JOB_KIND.resume)).at(-1)!.payload).toMatchObject({
+      reason: "follow_up",
+    });
+    expect((await unreportedReviewReplies(db, "eng-1")).map((reply) => reply.number)).toEqual([
+      1, 2,
+    ]);
+  });
+
+  test("an answered Stop ends the item and keeps no reply rows", async () => {
+    const { db, github, replies } = await asked("comments");
+    expect(await unreportedReviewReplies(db, "eng-1")).toHaveLength(2);
+    await answer(db, "Stop");
+    expect((await getWorkItem(db, "eng-1"))!.state).toBe("failed");
+    expect(await jobs(db, JOB_KIND.resume)).toHaveLength(0);
+    expect(await unreportedReviewReplies(db, "eng-1")).toEqual([]);
+    const input = { itemId: "eng-1", pullNumber: 7, head: "abcdef1234567890", now: () => 6_000 };
+    expect(await postReviewReplies(db, input, github)).toBe(0);
+    expect(replies.replies).toEqual([]);
   });
 });
 

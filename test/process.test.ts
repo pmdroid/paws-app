@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { writeConfigFile, pawsPaths, ensureLayout } from "../src/config";
+import { writeFileSync } from "node:fs";
+import { pawsPaths, ensureLayout } from "../src/config";
 import { startPaws } from "../src/index";
 import { EXECUTION_TAG_ENV } from "../src/process";
 import { migratedHome } from "./helpers";
@@ -56,22 +57,15 @@ describe("process", () => {
     expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/dashboard/);
   });
 
-  test("a setup-written config listens on loopback and serves live status", async () => {
+  test("a written config listens on loopback and serves live status", async () => {
     const home = await migratedHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeConfigFile(paths.configFile, {
-      linearTeam: "ENG",
-      linearTeamId: "team_eng",
-      linearViewerId: "viewer_1",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app",
-      repo: "pmdroid/paws-demo",
-      checkout: home,
-      maxAwakeMs: 45 * 60 * 1000,
-      implementer: "claude",
-    });
+    writeFileSync(
+      paths.configFile,
+      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nsecret = "secrets/linear-api-key"\n\n[github]\nrepo = "pmdroid/paws-demo"\n',
+      { mode: 0o600 },
+    );
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",

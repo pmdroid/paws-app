@@ -29,15 +29,7 @@ Set these on the Paws server:
 
 Paws can also read these from `~/.paws/secrets/github-app.json` and `github-app.pem`. Both files are envelope-encrypted, mode `0600`, inside the mode `0700` secrets directory. Environment variables override the saved files.
 
-`config.toml` needs no GitHub credential. `github.auth` is optional, and the only accepted value is `app`:
-
-```toml
-[github]
-auth = "app"
-repo = "owner/name"
-```
-
-A config that still sets `auth = "oauth"` or `auth = "gh"`, or a `GITHUB_AUTH` with either value, stops Paws at startup with a message that points here. Remove the line or set it to `app`. `oauth_client_id` is no longer read. Delete it from `config.toml`.
+`config.toml` needs no GitHub credential. Paws ignores a leftover `[github] auth` key, and `oauth_client_id` is no longer read.
 
 ## Integrations
 
@@ -48,7 +40,7 @@ Start Paws, sign in with Linear as a workspace admin, and open **Settings > Inte
 3. Check the Linear teams that can use each repository. A repository can match several teams.
 4. Choose **Save repository access**.
 
-The first connection, while the workspace maps no repositories, needs the GitHub account that signs in to be an admin of the repository's organization and of each repository, or the owner of a personal account. The picker then lists only repositories that account administers. After that, any Paws admin whose GitHub account can read a repository can add it; the picker lists every repository they can read. Both cases also check that the App is installed and not suspended on the repository and that GitHub issues the App a token for it. A refused save names the cause, such as `Your GitHub account can't read acme/widgets.`
+Installing the App on an organization is done on GitHub by an organization owner. Once it is installed, a Paws admin connects GitHub, first time or later, without being a GitHub organization admin: the picker lists every repository on the installation that their GitHub account can read. Setup checks that the account can read each chosen repository, that the App is installed and not suspended on the repository and that GitHub issues the App a token for it. A refused save names the cause, such as `Your GitHub account can't read acme/widgets.`
 
 Paws keeps App credentials and temporary authorization tokens on the server. Workspace access links back to this picker.
 

@@ -98,6 +98,8 @@ export interface StatusServerOptions {
   startLinearSession?: StartLinearSession;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
+  /** Clock for the live resources' time-derived fields. Defaults to the system clock. */
+  now?: LiveStatusOptions["now"];
   /** Where resource response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
   /**
@@ -257,6 +259,7 @@ function liveProvider(options?: {
   closeoutHome?: string;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
+  now?: LiveStatusOptions["now"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
   if (options?.store) {
@@ -266,6 +269,7 @@ function liveProvider(options?: {
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
       ...(options.riskApproval ? { riskApproval: options.riskApproval } : {}),
+      ...(options.now ? { now: options.now } : {}),
     });
   }
   return {

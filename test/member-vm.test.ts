@@ -44,6 +44,7 @@ import {
 } from "../src/workspace";
 import { seed } from "./dialects";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const EXE_DEV_TOKEN = "fake_exe_dev_token_for_tests_ABCDEFGHIJKLMNOP";
 const LEASE_MS = 60_000;
@@ -229,9 +230,8 @@ describe("member VM", () => {
       },
     };
     void f.jobs(dying).tick();
-    await Bun.sleep(5);
+    await waitFor(() => f.exeDev.vms.size === 1, { what: "the VM create request" });
     expect((await findMemberVm(f.db, f.member))!.step).toBe("create");
-    expect(f.exeDev.vms.size).toBe(1);
 
     f.clock.advance(LEASE_MS + 1);
     const restarted = f.jobs();

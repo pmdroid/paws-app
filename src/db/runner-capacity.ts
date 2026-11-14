@@ -106,6 +106,27 @@ export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, exclu
   return row!;
 }
 
+export function* runnerFixSlotsSteps(q: Q, runnerId: string) {
+  const { runner: r } = q.t;
+  const least = sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST");
+  return yield* q.one(
+    q.orm
+      .select({
+        fixSlots: r.fixSlots,
+        capacity: num(
+          sql`COALESCE((SELECT ${least}(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=${r.id}),1)`,
+        ),
+      })
+      .from(r)
+      .where(eq(r.id, runnerId)),
+  );
+}
+
+export function* setRunnerFixSlotsSteps(q: Q, runnerId: string, fixSlots: number) {
+  const { runner: r } = q.t;
+  yield* q.exec(q.orm.update(r).set({ fixSlots }).where(eq(r.id, runnerId)));
+}
+
 export async function runnerOccupancy(
   store: Db,
   runnerId: string,
