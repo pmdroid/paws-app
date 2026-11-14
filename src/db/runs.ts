@@ -134,21 +134,6 @@ export async function markRun(
   await store.run((q) => markRunSteps(q, id, status, now));
 }
 
-export function* recordReviewRoundsSteps(q: Q, id: string, rounds: number): Steps<void> {
-  const { runReviewRounds } = q.t;
-  yield* q.exec(
-    q.orm
-      .insert(runReviewRounds)
-      .values({ runId: id, rounds })
-      .onConflictDoUpdate({ target: runReviewRounds.runId, set: { rounds } }),
-  );
-}
-
-/** How many review rounds the item needed by the time this run verified it. */
-export async function recordReviewRounds(store: Db, id: string, rounds: number): Promise<void> {
-  await store.run((q) => recordReviewRoundsSteps(q, id, rounds));
-}
-
 export function* releaseRunCapacitySteps(q: Q, runId: string, now: number): Steps<void> {
   const { runnerWork, runnerWorkGrant } = q.t;
   const stored = yield* getRunSteps(q, runId);
