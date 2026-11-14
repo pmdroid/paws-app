@@ -1226,10 +1226,15 @@ export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: stri
       .from(runnerCapacity)
       .where(eq(runnerCapacity.runnerId, runnerId)),
   );
+  const {
+    lastUsedAt: _lastUsedAt,
+    virtualFinish: _virtualFinish,
+    ...authority
+  } = getTableColumns(runnerAgentPolicy);
   const agentPolicy = agent
     ? yield* q.one(
         q.orm
-          .select()
+          .select(authority)
           .from(runnerAgentPolicy)
           .where(and(eq(runnerAgentPolicy.runnerId, runnerId), eq(runnerAgentPolicy.agent, agent))),
       )
