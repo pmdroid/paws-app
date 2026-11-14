@@ -71,12 +71,11 @@ export async function listOverlapHoldAges(store: Db): Promise<Map<string, number
 }
 
 function* lockItemHoldsSteps(q: Q): Steps<void> {
-  if (q.dialect === "postgres")
-    yield* q.exec(
-      q.orm
-        .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${"item-hold"}, 0))` })
-        .from(sql`(SELECT 1) AS lock_scope`),
-    );
+  yield* q.exec(
+    q.orm
+      .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${"item-hold"}, 0))` })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
 }
 
 export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[], now = Date.now()) {

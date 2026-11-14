@@ -16,6 +16,12 @@ export {
   RUNNER_EVENT_KEY_FILE,
   type StoredRunnerEvent,
 } from "./events";
-export { pruneRunnerEvents, RUNNER_EVENT_PRUNE_EVERY_MS, RUNNER_EVENT_PRUNE_JOB } from "./prune";
+export {
+  pruneLoopQueues,
+  pruneRunnerEvents,
+  pruneRunnerTables,
+  RUNNER_EVENT_PRUNE_EVERY_MS,
+  RUNNER_EVENT_PRUNE_JOB,
+} from "./prune";
 
 export { recoverRunnerWorkStall } from "./control";

@@ -1,22 +1,7 @@
-import { parseBriefTemplates, renderBriefTemplates } from "./brief";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, resolve } from "node:path";
-import {
-  parseAgentSettingsToml,
-  renderAgentSettingsText,
-  renderAgentPresetsText,
-  selectDefaultImplementer,
-  writeAgentSettings,
-  type AgentSettings,
-} from "./agents";
+import { parseBriefTemplates } from "./brief";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import { parseAgentSettingsToml, type AgentSettings } from "./agents";
 
 import {
   MAIN_MOVED,
@@ -26,8 +11,6 @@ import {
   MAX_MERGE_PARALLEL,
   parseMergeLanes,
   parseMergeTables,
-  renderMergeSettings,
-  storedMerge,
   type MainMoved,
   type MergeLane,
   type MergeLaneSplit,
@@ -37,9 +20,8 @@ import {
 } from "./merge";
 import { readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
-import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
-import { renderQueueSettings } from "./queue";
-import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
+import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
+import { parseProjectSkills, type ProjectSkills } from "./skills";
 import { checkDatabaseUrl } from "./database";
 
 /** `github.auth`. Paws uses the GitHub App only. */
@@ -92,14 +74,12 @@ export type PawsConfigFile = {
   linearClientFile: string | null;
   linearCommentAgents?: string[];
   webhooks: boolean | null;
-  githubAuth: GitHubConfigAuth | null;
-  trackerKind: TrackerKind | null;
   repo: string | null;
   githubRepos: string[];
   agentReadOff?: string[];
   githubMirrors?: boolean;
+  githubAccess?: GitHubAccess;
   publicUrl: string | null;
-  checkout: string | null;
   maxAwakeMs: number | null;
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
@@ -141,27 +121,6 @@ export type PawsConfigFile = {
   databaseUrl?: string;
 };
 
-/**
- * `linearSecret` and `linearClientFile` are paths relative to `~/.paws`.
- */
-export type PawsSetupConfig = {
-  linearTeam: string;
-  linearTeamId: string;
-  linearViewerId: string;
-  linearSecret: string;
-  linearClientFile: string | null;
-  linearCommentAgents?: readonly string[];
-  githubAuth: GitHubConfigAuth;
-  trackerKind?: "linear";
-  repo: string;
-  githubRepos?: readonly string[];
-  agentReadOff?: readonly string[];
-  checkout: string;
-  maxAwakeMs: number;
-  implementer: ImplementerName;
-  closeoutProjects?: Record<string, string>;
-};
-
 export function emptyConfigFile(): PawsConfigFile {
   return {
     linearTeam: null,
@@ -170,12 +129,9 @@ export function emptyConfigFile(): PawsConfigFile {
     linearSecret: null,
     linearClientFile: null,
     webhooks: null,
-    githubAuth: null,
-    trackerKind: null,
     repo: null,
     githubRepos: [],
     publicUrl: null,
-    checkout: null,
     maxAwakeMs: null,
     agents: defaultAgents(),
   };
@@ -200,7 +156,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
+        !/^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
@@ -234,97 +190,19 @@ export function parseConfigToml(text: string): PawsConfigFile {
   return config;
 }
 
-/** Canonical `config.toml` text. The same input always renders the same bytes. */
-export function renderConfigToml(config: PawsSetupConfig): string {
-  const lines = [
-    "[linear]",
-    `team = ${tomlString(config.linearTeam)}`,
-    `team_id = ${tomlString(config.linearTeamId)}`,
-    `viewer_id = ${tomlString(config.linearViewerId)}`,
-    `secret = ${tomlString(config.linearSecret)}`,
-  ];
-  if (config.linearClientFile !== null) {
-    lines.push(`client_file = ${tomlString(config.linearClientFile)}`);
-  }
-  if (config.linearCommentAgents?.length)
-    lines.push(`comment_agents = ${tomlStringArray(config.linearCommentAgents)}`);
-  lines.push("", "[github]", `auth = ${tomlString(config.githubAuth)}`);
-  lines.push(`repo = ${tomlString(config.repo)}`);
-  if (config.githubRepos?.length) lines.push(`repos = ${tomlStringArray(config.githubRepos)}`);
-  if (config.agentReadOff?.length)
-    lines.push(`agent_read_off = ${tomlStringArray(config.agentReadOff)}`);
-  if (config.trackerKind !== undefined) {
-    lines.push("", "[tracker]", `kind = ${tomlString(config.trackerKind)}`);
-  }
-  lines.push(
-    "",
-    "[checkout]",
-    `path = ${tomlString(config.checkout)}`,
-    "",
-    "[caps]",
-    `max_awake_ms = ${tomlInt(config.maxAwakeMs)}`,
-    "",
-    "[agents]",
-    `implementer = ${tomlString(config.implementer)}`,
-    "",
-    "[agents.grok]",
-    "allow_api_key = false",
-    "",
-  );
-  for (const [repo, root] of Object.entries(config.closeoutProjects ?? {})) {
-    lines.push(`[closeout.projects.${tomlString(repo)}]`, `policy_root = ${tomlString(root)}`, "");
-  }
-  return lines.join("\n");
-}
+export type GitHubAccess = { agentRead?: boolean; mirrors?: boolean };
 
-export function agentReadAllowed(config: Pick<PawsConfigFile, "agentReadOff">, repository: string) {
+export function agentReadAllowed(
+  config: Pick<PawsConfigFile, "agentReadOff" | "githubAccess">,
+  repository: string,
+) {
+  if (config.githubAccess?.agentRead !== undefined) return config.githubAccess.agentRead;
   const name = repository.toLowerCase();
   return !(config.agentReadOff ?? []).some((entry) => entry.toLowerCase() === name);
 }
 
-/**
- * Write `config.toml`. Returns false when the file already has these bytes
- * so a second setup does not touch it.
- */
-export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const stored = parseConfigToml(current);
-  const profiles = parseAgentSettingsToml(current, config.implementer);
-  const rendered =
-    renderConfigToml({
-      ...config,
-      githubRepos: config.githubRepos ?? stored.githubRepos,
-      agentReadOff: config.agentReadOff ?? stored.agentReadOff,
-      linearCommentAgents: config.linearCommentAgents ?? stored.linearCommentAgents,
-      closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
-    }) +
-    renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(storedMerge(stored)) +
-    renderQueueSettings({
-      startTimeoutHours: stored.queueStartTimeoutHours,
-      maxRunningPerOwner: stored.queueMaxRunningPerOwner,
-    }) +
-    renderMemberVmSettings(stored.memberVm) +
-    (stored.findingsGroupingTime
-      ? `\n[findings]\ngrouping_time = ${tomlString(stored.findingsGroupingTime!)}\n`
-      : "") +
-    renderBriefTemplates(parseBriefTemplates(current));
-  const next =
-    profiles === null
-      ? rendered
-      : !hasExplicitAgentProfiles(current)
-        ? `${rendered}\n${renderAgentPresetsText(profiles)}\n`
-        : renderAgentSettingsText(rendered, selectDefaultImplementer(profiles, config.implementer));
-  if (existsSync(path) && readFileSync(path, "utf8") === next) {
-    if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
-    return false;
-  }
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, next, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
-  chmodSync(path, 0o600);
-  return true;
+export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubMirrors" | "githubAccess">) {
+  return config.githubAccess?.mirrors ?? config.githubMirrors ?? true;
 }
 
 export type ConfigKeyValue = string | number | readonly string[] | null;
@@ -397,11 +275,6 @@ function tomlString(value: string): string {
     throw new Error("config value cannot contain a newline");
   }
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-function tomlInt(value: number): string {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error("config integer is invalid");
-  return String(value);
 }
 
 function stripComment(line: string): string {
@@ -539,16 +412,16 @@ function assignConfig(
     return;
   }
   if (section === "github") {
-    if (key === "auth") config.githubAuth = githubAuth(value, line);
-    else if (key === "repo") config.repo = asString(value, line);
+    if (key === "repo") config.repo = asString(value, line);
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
     else if (key === "agent_read_off") config.agentReadOff = asStringArray(value, line);
     else if (key === "mirrors") config.githubMirrors = asBoolean(value, line);
     return;
   }
-  if (section === "tracker") {
-    if (key === "kind")
-      config.trackerKind = oneOf(["linear"] as const, value, line, "tracker.kind");
+  if (section === "github_access") {
+    const access = (config.githubAccess ??= {});
+    if (key === "agent_read") access.agentRead = asBoolean(value, line);
+    else if (key === "mirrors") access.mirrors = asBoolean(value, line);
     else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
@@ -600,10 +473,6 @@ function assignConfig(
     assignMemberVmKey((config.memberVm ??= {}), key, value, line);
     return;
   }
-  if (section === "checkout") {
-    if (key === "path") config.checkout = asString(value, line);
-    return;
-  }
   if (section === "caps") {
     if (key === "max_awake_ms") config.maxAwakeMs = asInt(value, line);
     return;
@@ -628,11 +497,6 @@ function assignConfig(
   }
 }
 
-function hasExplicitAgentProfiles(text: string): boolean {
-  const agents = (Bun.TOML.parse(text) as { agents?: Record<string, unknown> }).agents;
-  return agents?.defaults !== undefined;
-}
-
 const GROUPING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function writeFindingsGroupingTime(path: string, groupingTime: string): Promise<void> {
@@ -641,23 +505,6 @@ export function writeFindingsGroupingTime(path: string, groupingTime: string): P
   return updateConfigText(path, (text) =>
     setConfigKeys(text, "findings", { grouping_time: groupingTime }),
   );
-}
-
-/** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
-export function writeImplementer(path: string, implementer: ImplementerName): Promise<void> {
-  if (!isImplementer(implementer)) {
-    throw new Error("agents.implementer must be claude, grok, codex, or opencode");
-  }
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const profiles = parseAgentSettingsToml(current, implementer);
-  if (profiles !== null && hasExplicitAgentProfiles(current)) {
-    return writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
-  }
-  const next = setImplementerText(current, implementer);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
-  return Promise.resolve();
 }
 
 function oneOf<T extends string>(
@@ -735,12 +582,6 @@ export function setImplementerText(current: string, implementer: ImplementerName
   return `${body}[agents]\n${assignment}\n`;
 }
 
-function githubAuth(value: string | number | boolean | string[], line: number): GitHubConfigAuth {
-  const auth = asString(value, line);
-  if (auth === "app") return auth;
-  throw new Error(`config.toml line ${line} github.auth must be "app"`);
-}
-
 function asString(value: string | number | boolean | string[], line: number): string {
   if (typeof value !== "string") throw new Error(`config.toml line ${line} must be a string`);
   return value;
@@ -773,4 +614,61 @@ export function closeoutPolicyRoot(
   const root =
     repository === null ? undefined : config.closeoutProjects?.[repository.toLowerCase()];
   return root === undefined ? undefined : resolve(pawsHome, root);
+}
+
+export type CloseoutSettings = { projects: Record<string, { policyRoot: string }> };
+
+export function readCloseoutSettings(config: PawsConfigFile): CloseoutSettings {
+  return {
+    projects: Object.fromEntries(
+      Object.entries(config.closeoutProjects ?? {}).map(([repo, policyRoot]) => [
+        repo,
+        { policyRoot },
+      ]),
+    ),
+  };
+}
+
+export function parseCloseoutSettings(value: unknown): CloseoutSettings {
+  const projects =
+    typeof value === "object" && value !== null ? (value as { projects?: unknown }).projects : null;
+  if (typeof projects !== "object" || projects === null || Array.isArray(projects))
+    throw new Error("projects must be an object keyed by owner/repo");
+  const parsed: CloseoutSettings["projects"] = {};
+  for (const [key, entry] of Object.entries(projects)) {
+    const repo = key.toLowerCase();
+    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+      throw new Error(`projects.${key} must be an owner/repo`);
+    const root = typeof entry === "object" && entry !== null ? entry.policyRoot : undefined;
+    if (typeof root !== "string" || !isAbsolute(root) || root.includes("\0"))
+      throw new Error(`projects.${key}.policyRoot must be an absolute path`);
+    if (!existsSync(root) || !statSync(root).isDirectory())
+      throw new Error(`projects.${key}.policyRoot ${root} is not a directory on the Paws host`);
+    parsed[repo] = { policyRoot: root };
+  }
+  return { projects: parsed };
+}
+
+export function setCloseoutSettingsText(current: string, settings: CloseoutSettings): string {
+  let section = "";
+  const retained = current
+    .split(/\r?\n/)
+    .filter((line) => {
+      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+      if (heading?.[1]) section = heading[1].toLowerCase();
+      return section !== "closeout.projects" && !section.startsWith("closeout.projects.");
+    })
+    .join("\n")
+    .trimEnd();
+  const tables = Object.entries(settings.projects)
+    .map(
+      ([repo, { policyRoot }]) =>
+        `[closeout.projects.${tomlString(repo)}]\npolicy_root = ${tomlString(policyRoot)}\n`,
+    )
+    .join("\n");
+  return [retained, tables].filter((part) => part !== "").join("\n\n") + "\n";
+}
+
+export function writeCloseoutSettings(path: string, settings: CloseoutSettings): Promise<void> {
+  return updateConfigText(path, (text) => setCloseoutSettingsText(text, settings));
 }

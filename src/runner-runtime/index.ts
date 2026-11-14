@@ -22,6 +22,7 @@ import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runn
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
+  readRunnerCredentials,
   readRunnerResultFile,
   readRunnerResultRange,
   type RunnerBrokerClient,
@@ -228,6 +229,10 @@ export async function openRunnerRuntime(options: {
         | "repositoryCommandCredential"
         | "postRepositoryCommandResult"
         | "githubReadCredential"
+        | "carriesCredential"
+        | "credentialRecipient"
+        | "restoreCredentials"
+        | "returnCredentials"
       >
     >;
   spool: RunnerSpool;
@@ -270,6 +275,7 @@ export async function openRunnerRuntime(options: {
       results: options.results,
       agentUser: options.agentUser,
       skills: options.skills,
+      restoreCredentials: (id) => options.daemon.restoreCredentials?.(id),
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
@@ -668,6 +674,7 @@ export async function openRunnerRuntime(options: {
     const tail = (broker.log?.(execution.id) ?? "")
       .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
       .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
+    returnCredentials(execution);
     journal.saveResult(
       execution.id,
       RunnerResultSchema.parse({
@@ -690,6 +697,15 @@ export async function openRunnerRuntime(options: {
     );
     await deliverResult(execution);
   }
+  function returnCredentials(execution: Execution) {
+    const { id } = execution.command;
+    if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
+    options.daemon.returnCredentials(
+      id,
+      execution.id,
+      readRunnerCredentials(options.results, execution.id),
+    );
+  }
   function readWorkerResult(execution: Execution) {
     const worker = workerResult.parse(
       JSON.parse(
@@ -707,6 +723,7 @@ export async function openRunnerRuntime(options: {
     return worker;
   }
   async function recoverInterrupted(execution: Execution) {
+    returnCredentials(execution);
     let worker: z.infer<typeof workerResult> | undefined;
     try {
       worker = readWorkerResult(execution);
@@ -1386,9 +1403,17 @@ export async function openRunnerRuntime(options: {
       sessionBundle = await downloadSession(entry);
       check(entry);
       if (command.expiresAt <= now()) throw new Error("Runner command expired before dispatch");
+      options.daemon.restoreCredentials?.(entry.execution.command.id);
       publishRunnerJob(
         options.spool,
-        { executionId: entry.execution.id, command: entry.execution.command },
+        {
+          executionId: entry.execution.id,
+          command: entry.execution.command,
+          ...(options.daemon.credentialRecipient &&
+          options.daemon.carriesCredential?.(entry.execution.command.id)
+            ? { credentials: { certificate: options.daemon.credentialRecipient() } }
+            : {}),
+        },
         {
           repositoryBundle: bundle,
           ...(blobs ? { repositoryBlobs: blobs } : {}),
@@ -1897,6 +1922,7 @@ export async function openRunnerRuntime(options: {
       check(entry);
     }
     await drainTranscript(entry, true);
+    returnCredentials(entry.execution);
     journal.saveResult(entry.execution.id, result);
     retire(entry);
     await deliverResult(entry.execution);

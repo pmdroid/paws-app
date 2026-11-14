@@ -1,4 +1,4 @@
-import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
+import { SETTINGS_PAGES, renderSettingsPage, shownSettingsPage } from "./settings-pages";
 import type {
   EvidenceListResponse,
   EvidenceMetadataResponse,
@@ -6,6 +6,7 @@ import type {
   OverviewIssue,
   OverviewResponse,
   IssueDetailResponse,
+  IssueListItem,
   IssueListResponse,
   StatusItem,
   StatusItemEvent,
@@ -112,7 +113,7 @@ export function render(model: RenderModel): Rendered {
   const route = model.route;
   const pageTitle =
     route.view === "settings"
-      ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
+      ? SETTINGS_PAGES.find((page) => page.id === shownSettingsPage(route.page))!.name
       : PAGES[model.route.view].title;
   const title = `Paws status · ${pageTitle}`;
   return {
@@ -152,11 +153,11 @@ export function render(model: RenderModel): Rendered {
                               model.closeout ?? emptyCloseoutView(),
                               model.engineUrl,
                             )
-                          : model.phase !== "loading" && model.issues && route.view === "issues"
+                          : model.phase !== "loading" &&
+                              model.issues &&
+                              (route.view === "issues" || route.view === "runs")
                             ? viewIssues(model.issues, route.id)
-                            : model.phase !== "loading" && model.issues && route.view === "runs"
-                              ? viewRuns(model.issues, route.id)
-                              : renderPending(model),
+                            : renderPending(model),
     title,
   };
 }
@@ -473,7 +474,7 @@ export function issueRowMatches(
 }
 
 /** A project picker built from the Linear projects of the listed issues. */
-function projectFilter(items: readonly StatusItem[]): string {
+function projectFilter(items: readonly IssueListItem[]): string {
   const projects = new Map<string, string>();
   for (const item of items) if (item.project) projects.set(item.project.id, item.project.name);
   if (!projects.size) return "";
@@ -490,7 +491,7 @@ function projectFilter(items: readonly StatusItem[]): string {
   return `<label class="field issue-project-filter"><span>Project</span><select name="issue-project" data-issue-project-filter aria-label="Filter by project"><option value="">Any project</option>${options}${none}</select></label>`;
 }
 
-function issueRow(generatedAt: string, item: StatusItem): string {
+function issueRow(generatedAt: string, item: IssueListItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
   const blocked = blockers.length
@@ -499,7 +500,7 @@ function issueRow(generatedAt: string, item: StatusItem): string {
   return `<tr class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><td><a href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span></a></td><td>${esc(item.title)}${blocked}</td><td>${itemPill(item)}</td><td class="hide-phone">${esc(item.project?.name ?? "—")}</td><td class="hide-phone">${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : "—"}</td><td>${itemTime(item, Date.parse(generatedAt)) || "—"}</td></tr>`;
 }
 
-function issueBucket(item: StatusItem): "needs" | "done" | "active" {
+function issueBucket(item: IssueListItem): "needs" | "done" | "active" {
   if (["needs_human", "awaiting_input"].includes(item.state)) return "needs";
   if (item.state === "merged" || item.state === "completed") return "done";
   return "active";
@@ -513,12 +514,6 @@ function issueLinks(ids: readonly string[], separator = ""): string {
   return ids
     .map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`)
     .join(separator);
-}
-
-function viewRuns(list: IssueListResponse, id: string | null): string {
-  const run = id === null ? undefined : list.runs.find((entry) => inRun(entry, id));
-  if (run && list.issues.some((item) => item.id === run.itemId)) return issuePending();
-  return viewIssues(list, id);
 }
 
 /**

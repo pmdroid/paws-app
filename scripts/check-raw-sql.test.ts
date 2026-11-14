@@ -3,11 +3,11 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowlistFile, checkRawSql, parseAllowlist, rawCalls } from "./check-raw-sql";
+import { rawCalls } from "./check-raw-sql";
 
-function run(files: Record<string, string>, allowlists: Record<string, string> = {}) {
+function run(files: Record<string, string>) {
   const root = mkdtempSync(join(tmpdir(), "raw-sql-"));
-  for (const [path, source] of Object.entries({ ...files, ...allowlists })) {
+  for (const [path, source] of Object.entries(files)) {
     mkdirSync(join(root, path, ".."), { recursive: true });
     writeFileSync(join(root, path), source);
   }
@@ -58,49 +58,12 @@ test("calls inside comments, strings and templates are not database access", () 
   expect(rawCalls("src/loop/a.ts", source).map((call) => call.line)).toEqual([6]);
 });
 
-test("an allowlisted line passes and is printed; an unused entry is only a note", () => {
-  const result = run(
-    { "src/loop/fixture.ts": 'db.run("DELETE FROM t");\n' },
-    {
-      "scripts/raw-sql-allowlist/src__loop__fixture.ts.txt":
-        'src/loop/fixture.ts | db.run("DELETE FROM t"); | not yet converted to Drizzle\nsrc/loop/gone.ts | db.run("x"); | not yet converted to Drizzle\n',
-    },
-  );
-  expect(result.status).toBe(0);
-  expect(result.stdout).toContain(
-    "allowlisted: 1 × src/loop/fixture.ts (not yet converted to Drizzle)",
-  );
-  expect(result.stdout).toContain(
-    'stale allowlist entry in scripts/raw-sql-allowlist/src__loop__fixture.ts.txt, remove it: src/loop/gone.ts | db.run("x");',
-  );
-});
-
-test("entries split across two allowlist files are both honoured, and a stale entry names its file", () => {
-  const result = run(
-    {
-      "src/loop/one.ts": 'db.run("DELETE FROM a");\n',
-      "src/db/two.ts": 'db.run("DELETE FROM b");\n',
-    },
-    {
-      [allowlistFile("src/loop/one.ts")]:
-        'src/loop/one.ts | db.run("DELETE FROM a"); | reason one\n',
-      [allowlistFile("src/db/two.ts")]:
-        'src/db/two.ts | db.run("DELETE FROM b"); | reason two\nsrc/db/two.ts | db.run("DELETE FROM c"); | reason two\n',
-    },
-  );
-  expect(allowlistFile("src/db/two.ts")).toBe("scripts/raw-sql-allowlist/src__db__two.ts.txt");
-  expect(result.status).toBe(0);
-  expect(result.stdout).toContain("allowlisted: 1 × src/loop/one.ts (reason one)");
-  expect(result.stdout).toContain("allowlisted: 1 × src/db/two.ts (reason two)");
-  expect(result.stdout).toContain(
-    'stale allowlist entry in scripts/raw-sql-allowlist/src__db__two.ts.txt, remove it: src/db/two.ts | db.run("DELETE FROM c");',
-  );
-});
-
-test("a refused call names the allowlist file it belongs in", () => {
+test("a refused call says to write it with Drizzle in the module that owns the table", () => {
   const result = run({ "src/loop/new.ts": 'db.run("DELETE FROM t");\n' });
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain("scripts/raw-sql-allowlist/src__loop__new.ts.txt");
+  expect(result.stderr).toContain(
+    'src/loop/new.ts:1: raw bun:sqlite call; write it with Drizzle in the module that owns the table: db.run("DELETE FROM t");',
+  );
 });
 
 test("finds calls on Database receivers across lines and skips Drizzle, tests and allowed files", () => {
@@ -122,12 +85,4 @@ test("finds calls on Database receivers across lines and skips Drizzle, tests an
   expect(rawCalls("src/db/a.ts", source).map((call) => call.line)).toEqual([2, 4]);
   expect(rawCalls("src/loop/a.test.ts", source)).toEqual([]);
   expect(rawCalls("src/db/open.ts", source)).toEqual([]);
-});
-
-test("a repeated line needs one entry per call", () => {
-  const call = { path: "src/a.ts", line: 1, content: "db.run(x);" };
-  const allowlist = parseAllowlist("src/a.ts | db.run(x); | reason\n");
-  expect(checkRawSql([call, { ...call, line: 2 }], allowlist).refused).toEqual([
-    { ...call, line: 2 },
-  ]);
 });

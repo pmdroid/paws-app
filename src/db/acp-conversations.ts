@@ -60,7 +60,7 @@ export function* saveConversationSteps(
   transcriptOffset = 0,
 ) {
   const { linearConversation } = q.t;
-  const higher = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+  const higher = sql`GREATEST`;
   yield* q.exec(
     q.orm
       .insert(linearConversation)

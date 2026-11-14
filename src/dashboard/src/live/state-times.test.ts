@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { applyWorkItemEvent, insertQueuedItem, type Db } from "../../../db";
 import type { WorkItemEvent } from "../../../core";
-import { parseIssueListResponse, type IssueListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
+import { issueRecords } from "../../test/issue-records";
 import { stateTotals } from "./state-times";
 import { tempStore } from "../../../../test/pglite";
 
@@ -21,11 +21,13 @@ async function database() {
   return db;
 }
 
-async function issueList(db: Db, now: number): Promise<IssueListResponse> {
+function issueList(db: Db, now: number) {
+  return issueRecords(createLiveStatusProvider(db, { now: () => new Date(now), env: {} }));
+}
+
+async function mergedTimesAt(db: Db, now: number) {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env: {} });
-  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
-  if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.response;
+  return (await provider.overview()).mergedTimes ?? null;
 }
 
 /** Applies each event `minutes` after `start`. */
@@ -143,7 +145,7 @@ describe("state times", () => {
     await insertQueuedItem(db, { id: "PAS-91", now: T0 });
     await walk(db, "PAS-91", T0, [[5, "dispatched"]]);
 
-    const times = (await issueList(db, now)).mergedTimes!;
+    const times = (await mergedTimesAt(db, now))!;
     expect(times.since).toBe(new Date(T0).toISOString());
     expect(times.merged).toBe(10);
     // Sorted ages 10 … 100: the median is (50 + 60) / 2, the nearest-rank p90 the 9th.
@@ -161,6 +163,6 @@ describe("state times", () => {
   test("no merged times while nothing merged in the last 24 hours", async () => {
     const db = await database();
     await insertQueuedItem(db, { id: "PAS-3", now: T0 });
-    expect((await issueList(db, T0 + HOUR)).mergedTimes).toBeNull();
+    expect(await mergedTimesAt(db, T0 + HOUR)).toBeNull();
   });
 });

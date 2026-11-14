@@ -51,15 +51,29 @@ export const SETTINGS_PAGES = [
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
+let settingsAdmin = false;
+const MEMBER_PAGES: readonly SettingsPage[] = ["integrations", "account"];
+
+export function setSettingsAdmin(admin: boolean): void {
+  settingsAdmin = admin;
+}
+
+export function shownSettingsPage(page: SettingsPage = "agents"): SettingsPage {
+  return settingsAdmin || MEMBER_PAGES.includes(page) ? page : "account";
+}
+
 function settingsNav(page: SettingsPage): string {
-  const links = SETTINGS_PAGES.map(
-    (entry) =>
-      `<li class="settings-item"><a href="${routeHref({ view: "settings", page: entry.id })}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
-  ).join("");
+  const links = SETTINGS_PAGES.filter((entry) => settingsAdmin || MEMBER_PAGES.includes(entry.id))
+    .map(
+      (entry) =>
+        `<li class="settings-item"><a href="${routeHref({ view: "settings", page: entry.id })}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
+    )
+    .join("");
   return `<nav aria-label="Settings pages" class="settings-nav min-w-0 overflow-x-auto"><ul class="flex w-max min-w-full list-none gap-1 border-b border-border">${links}</ul></nav>`;
 }
 
-export function renderSettingsPage(page: SettingsPage = "agents"): string {
+export function renderSettingsPage(requested?: SettingsPage): string {
+  const page = shownSettingsPage(requested);
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
   return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }

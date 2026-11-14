@@ -97,7 +97,7 @@ type LinearActivitySnapshotInput = {
 };
 
 export function* saveLinearActivitySnapshotSteps(q: Q, input: LinearActivitySnapshotInput) {
-  const snapshot = q.dialect === "sqlite" ? input.snapshot : sql`${input.snapshot}::text::jsonb`;
+  const snapshot = sql`${input.snapshot}::text::jsonb`;
   yield* q.exec(
     q.orm
       .insert(q.t.linearActivitySnapshot)
@@ -122,9 +122,7 @@ export function* listLinearActivitySnapshotsSteps(q: Q, sessionId: string) {
       .where(eq(linearActivitySnapshot.sessionId, sessionId))
       .orderBy(asc(linearActivitySnapshot.createdAt), asc(linearActivitySnapshot.id)),
   );
-  return rows.map((row) =>
-    q.dialect === "sqlite" ? (row.snapshot as string) : JSON.stringify(row.snapshot),
-  );
+  return rows.map((row) => JSON.stringify(row.snapshot));
 }
 
 export async function listLinearActivitySnapshots(

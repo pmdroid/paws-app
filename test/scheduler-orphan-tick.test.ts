@@ -8,8 +8,6 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  migrations,
-  openDatabase,
 } from "../src/db";
 import { registerScheduler } from "../src/scheduler";
 import { workspaceDispatchPg } from "./fake-workspace";
@@ -89,34 +87,5 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     expect(claimed).toEqual(["orphan"]);
   } finally {
     await close();
-  }
-});
-
-test("the migration deletes the retired execution.reconcile recurring job", () => {
-  const db = openDatabase(":memory:");
-  try {
-    db.run(
-      "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
-    );
-    const cutoff = migrations.findIndex(
-      (migration) => migration.id === "122_drop_execution_reconcile_job",
-    );
-    expect(cutoff).toBeGreaterThan(0);
-    for (const migration of migrations.slice(0, cutoff)) {
-      if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-      db.transaction(() => db.run(migration.sql)).immediate();
-      db.run("PRAGMA foreign_keys = ON");
-    }
-    for (const queue of ["execution.reconcile", "scheduler.tick"])
-      db.run(
-        "INSERT INTO job(queue,job_key,payload,priority,run_at,max_attempts,created_at,recurring_every_ms) VALUES(?,?,'{}',5,1,10,1,30000)",
-        [queue, queue],
-      );
-    db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
-    expect(db.query("SELECT queue FROM job ORDER BY queue").all()).toEqual([
-      { queue: "scheduler.tick" },
-    ]);
-  } finally {
-    db.close();
   }
 });

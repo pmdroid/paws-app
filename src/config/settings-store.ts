@@ -71,7 +71,9 @@ async function saveSettings(
   let saved = "";
   await snapshot.store.update((stored) => {
     const file = readFileText(configPath);
-    saved = settingsSections(change(stored === null ? file : withSettings(file, stored)));
+    saved = withOwnedSections(
+      settingsSections(change(stored === null ? file : withSettings(file, stored))),
+    );
     return saved;
   });
   snapshot.stored = saved;
@@ -79,10 +81,12 @@ async function saveSettings(
 }
 
 export function overriddenConfigSections(configPath: string): string[] {
-  if (storedSettings(configPath) === null) return [];
+  const stored = storedSettings(configPath);
+  if (stored === null) return [];
+  const fromFile = keptFromFile(stored);
   const sections = new Set<string>();
   splitSections(readFileText(configPath), (settings, heading) => {
-    if (settings && heading !== undefined) sections.add(heading);
+    if (settings && heading !== undefined && !fromFile(heading)) sections.add(heading);
     return false;
   });
   return [...sections];
@@ -121,29 +125,58 @@ function isSettingsSection(section: string): boolean {
     within("agents.defaults") ||
     within("agents.projects") ||
     within("agents.presets") ||
+    within("agents.grok") ||
+    within("agents.opencode") ||
     within("merge") ||
     name === "queue" ||
     within("time_limits") ||
     within("checkout.projects") ||
+    within("closeout.projects") ||
     within("brief") ||
+    within("skills") ||
+    name === "github_access" ||
     name === "findings"
   );
 }
 
+const FILE_UNTIL_SAVED = ["agents.grok", "agents.opencode"];
+
+function familyOf(section: string): string | undefined {
+  const name = section.trim().toLowerCase();
+  return FILE_UNTIL_SAVED.find((prefix) => name === prefix || name.startsWith(`${prefix}.`));
+}
+
+function keptFromFile(stored: string): (section: string) => boolean {
+  const saved = new Set<string>();
+  splitSections(stored, (_settings, heading) => {
+    const family = heading === undefined ? undefined : familyOf(heading);
+    if (family !== undefined) saved.add(family);
+    return false;
+  });
+  return (section) => {
+    const family = familyOf(section);
+    return family !== undefined && !saved.has(family);
+  };
+}
+
 function splitSections(
   text: string,
-  keep: (settings: boolean, heading?: string) => boolean,
+  keep: (settings: boolean, heading: string | undefined, section: string) => boolean,
 ): string {
   let settings = false;
+  let section = "";
   let open: string | null = null;
   return text
     .split(/\r?\n/)
     .filter((line) => {
       const heading =
         open === null ? /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line) : null;
-      if (heading?.[1]) settings = isSettingsSection(heading[1]);
+      if (heading?.[1]) {
+        settings = isSettingsSection(heading[1]);
+        section = heading[1];
+      }
       open = openStringAfter(line, open);
-      return keep(settings, heading?.[1]);
+      return keep(settings, heading?.[1], section);
     })
     .join("\n")
     .trim();
@@ -177,12 +210,25 @@ function openStringAfter(line: string, start: string | null): string | null {
   return open;
 }
 
+function withOwnedSections(saved: string): string {
+  const fromFile = keptFromFile(saved);
+  const missing = FILE_UNTIL_SAVED.filter((family) => fromFile(family));
+  return [saved.trim(), ...missing.map((family) => `[${family}]`)]
+    .filter((part) => part !== "")
+    .join("\n\n")
+    .concat("\n");
+}
+
 function settingsSections(text: string): string {
   const sections = splitSections(text, (settings) => settings);
   return sections === "" ? "" : `${sections}\n`;
 }
 
 function withSettings(file: string, stored: string): string {
-  const retained = splitSections(file, (settings) => !settings);
+  const fromFile = keptFromFile(stored);
+  const retained = splitSections(
+    file,
+    (settings, _heading, section) => !settings || fromFile(section),
+  );
   return [retained, stored.trim()].filter((part) => part !== "").join("\n\n") + "\n";
 }

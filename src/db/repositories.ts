@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
@@ -16,6 +16,25 @@ export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<Reposit
       .where(eq(repositories.itemId, itemId)),
   );
   return row ?? null;
+}
+
+export function* listWorkItemRepositoriesSteps(
+  q: Q,
+  itemIds: readonly string[],
+): Steps<Map<string, RepositoryBinding>> {
+  const { workItemRepository: repositories } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: repositories.itemId,
+        owner: repositories.owner,
+        repo: repositories.repo,
+        remoteUrl: repositories.remoteUrl,
+      })
+      .from(repositories)
+      .where(inArray(repositories.itemId, [...itemIds])),
+  );
+  return new Map(rows.map(({ itemId, ...binding }) => [itemId, binding]));
 }
 
 export async function getWorkItemRepository(
@@ -134,9 +153,7 @@ export function* getWorkItemRepositoryAnswerSteps(
     : {
         questionId: row.questionId,
         answer: row.answer!,
-        candidates: (q.dialect === "sqlite"
-          ? JSON.parse(row.candidates as string)
-          : row.candidates) as readonly RepositoryBinding[],
+        candidates: row.candidates as readonly RepositoryBinding[],
       };
 }
 
@@ -154,7 +171,7 @@ export function* rememberWorkItemRepositoryChoiceSteps(
   yield* q.exec(
     q.orm
       .update(asked)
-      .set({ chosenRepository: q.dialect === "sqlite" ? JSON.stringify(repository) : repository })
+      .set({ chosenRepository: repository })
       .where(and(eq(asked.itemId, itemId), eq(asked.questionId, questionId))),
   );
   return true;
@@ -190,9 +207,7 @@ export function* getWorkItemRepositoryChoiceSteps(
       ),
   );
   if (row === undefined) return null;
-  return (
-    q.dialect === "sqlite" ? JSON.parse(row.chosen as string) : row.chosen
-  ) as RepositoryBinding;
+  return row.chosen as RepositoryBinding;
 }
 
 export async function getWorkItemRepositoryChoice(

@@ -1,9 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { AgentModelCatalog, AgentSettings } from "../agent-settings";
 import { renderAgentSettings, settingsProblems, settingsRequest } from "./agent-settings";
 import { render } from "./render";
 import { parseRoute, routeHref } from "./route";
-import { renderSettingsPage } from "./settings-pages";
+import { renderSettingsPage, setSettingsAdmin } from "./settings-pages";
+
+beforeEach(() => setSettingsAdmin(true));
 
 function settings(): AgentSettings {
   return {

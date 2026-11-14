@@ -151,7 +151,9 @@ forEachDialect((connect) => {
     });
     expect(policy.host).toEqual({ runnerId: "box", sharing: 1 });
     expect(policy.capacity).toEqual({ capacity: 2, ceiling: 4, desired: null });
-    expect(policy.agent).toMatchObject({ virtualFinish: 2, lastUsedAt: 9, quotaState: "ok" });
+    expect(policy.agent).toMatchObject({ runnerId: "box", agent: "codex", quotaState: "ok" });
+    expect(policy.agent).not.toHaveProperty("virtualFinish");
+    expect(policy.agent).not.toHaveProperty("lastUsedAt");
     expect(policy.membership).toMatchObject({ userId: "owner", role: "member", active: 1 });
     expect(policy.teams.map((team) => team.teamId)).toEqual(["t1", "t2"]);
     const hostOnly = await db.run((q) => runnerPlacementPolicySteps(q, "box"));

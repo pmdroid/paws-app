@@ -6,7 +6,6 @@ import {
   deferPullFeedbackSteps,
   enqueueJobSteps,
   gatherPullFeedbackSteps,
-  getPullCommentSteps,
   pendingPullCommentsSteps,
   pullReviewCheckWaitSteps,
   recordPullCommentSteps,
@@ -14,7 +13,7 @@ import {
   type Db,
   type PullCommentRecord,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, seed } from "./dialects";
+import { forEachDialect, insertWorkItem, pullCommentOutcome, seed } from "./dialects";
 
 const wait = { quietMs: 60, maxMs: 300 };
 
@@ -73,12 +72,11 @@ forEachDialect((open) => {
         await db.run((q) => gatherPullFeedbackSteps(q, "a", 1000, wait, "pull-comments:a:x")),
       ).toBe(false);
 
-      expect(await db.run((q) => getPullCommentSteps(q, "inline", 2))).toEqual({
+      expect((await db.run((q) => pendingPullCommentsSteps(q, "a")))[1]).toEqual({
         ...comment(2, 150),
         handledAt: null,
         outcome: null,
       });
-      expect(await db.run((q) => getPullCommentSteps(q, "review", 2))).toBeNull();
       expect(
         (await db.run((q) => pendingPullCommentsSteps(q, "a"))).map((c) => c.commentId),
       ).toEqual([1, 2]);
@@ -98,10 +96,8 @@ forEachDialect((open) => {
       expect(
         (await db.run((q) => pendingPullCommentsSteps(q, "a"))).map((c) => c.commentId),
       ).toEqual([2]);
-      expect(await db.run((q) => getPullCommentSteps(q, "inline", 1))).toMatchObject({
-        handledAt: 500,
-        outcome: "restarted",
-      });
+      expect(await pullCommentOutcome(db, "inline", 1)).toBe("restarted");
+      expect(await pullCommentOutcome(db, "review", 2)).toBeUndefined();
     } finally {
       await close();
     }

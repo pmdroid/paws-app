@@ -13,6 +13,7 @@ import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
+  readRunnerCredentials,
   readRunnerResultFile,
   type RunnerBrokerClient,
   type RunnerResults,
@@ -92,7 +93,14 @@ export async function openRunnerHealthRuntime(options: {
     Partial<
       Pick<
         RunnerDaemon,
-        "pollHelperCommands" | "helperLease" | "postHelperResult" | "exchangeLogin"
+        | "pollHelperCommands"
+        | "helperLease"
+        | "postHelperResult"
+        | "exchangeLogin"
+        | "carriesCredential"
+        | "credentialRecipient"
+        | "restoreCredentials"
+        | "returnCredentials"
       >
     >;
   spool: RunnerSpool;
@@ -129,6 +137,7 @@ export async function openRunnerHealthRuntime(options: {
       spool: options.spool,
       results: options.results,
       agentUser: options.agentUser,
+      restoreCredentials: (id) => options.daemon.restoreCredentials?.(id),
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
@@ -218,6 +227,15 @@ export async function openRunnerHealthRuntime(options: {
     const event = JSON.parse(lines[lines.length - 1]!) as { type: string; update: unknown };
     if (event.type !== "login") throw new Error("Unexpected login event");
     return RunnerLoginUpdateSchema.parse(event.update);
+  }
+  function returnCredentials(entry: Entry) {
+    const { id } = entry.command;
+    if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
+    options.daemon.returnCredentials(
+      id,
+      entry.id,
+      readRunnerCredentials(options.results, entry.id),
+    );
   }
   function saveLogin(entry: Entry, state: "connected" | "failed") {
     entry.login = { state, terminal: "", authorization: null, inputId: null };
@@ -321,6 +339,7 @@ export async function openRunnerHealthRuntime(options: {
           removeRunnerAnswers(options.spool, entry.id);
         entry.login = update;
         if (update.state === "connected" || update.state === "failed") {
+          returnCredentials(entry);
           saveLogin(entry, update.state);
           update = entry.login!;
           await broker.stop(entry.id);
@@ -363,6 +382,7 @@ export async function openRunnerHealthRuntime(options: {
           journalCaught(caughtError3, "runner-health-runtime.step.parse", null);
           return "held";
         }
+        returnCredentials(entry);
         await broker.stop(entry.id);
         check(entry);
         const payload = JSON.parse(
@@ -501,7 +521,14 @@ export async function openRunnerHealthRuntime(options: {
           if (reply.cancelled) throw new Error("Login was cancelled");
           check(entry);
         }
-        publishRunnerJob(options.spool, { executionId: id, command });
+        options.daemon.restoreCredentials?.(command.id);
+        publishRunnerJob(options.spool, {
+          executionId: id,
+          command,
+          ...(options.daemon.credentialRecipient && options.daemon.carriesCredential?.(command.id)
+            ? { credentials: { certificate: options.daemon.credentialRecipient() } }
+            : {}),
+        });
         check(entry);
         const receipt = await broker.start(id);
         if (receipt.alreadyAdmitted)

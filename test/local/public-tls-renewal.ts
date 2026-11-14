@@ -1,4 +1,4 @@
-import { pgliteServer } from "../pglite";
+import { pgliteServer, tempStore } from "../pglite";
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -11,8 +11,6 @@ import {
   saveRunCommitPolicy,
   getWorkItem,
   insertQueuedItem,
-  openDatabase,
-  migrate,
 } from "../../src/db";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
@@ -167,8 +165,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     ]);
     return exit;
   }
-  const healthDb = openDatabase(":memory:");
-  migrate(healthDb);
+  const { db: healthDb, close: closeHealthDb } = await tempStore();
   function listen(port = 0) {
     return startServer({
       db: healthDb,
@@ -276,7 +273,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     );
   } finally {
     await server.stop(true);
-    healthDb.close();
+    await closeHealthDb();
   }
   const source = join(root, "source");
   mkdirSync(source);

@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import {
   deliveredLinearIssueStateSteps,
   listOpenQuestionsSteps,
-  listWorkItemBlocksSteps,
   listWorkItemFactsSteps,
   openQuestionKindSteps,
   type Q,
@@ -16,54 +15,6 @@ afterEach(async () => {
 });
 
 forEachDialect((connect) => {
-  test("a block edge reads from the newest live item of the blocked issue", async () => {
-    const handle = await connect();
-    open.push(handle);
-    const { db } = handle;
-    await insertWorkItem(db, "A", 1);
-    await insertWorkItem(db, "B", 2);
-    await insertWorkItem(db, "C", 3);
-    await seed(
-      db,
-      (q) => q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "B")),
-      (q) =>
-        q.orm
-          .update(q.t.workItem)
-          .set({ linearIssueId: "issue-B", delegationId: "late" })
-          .where(eq(q.t.workItem.id, "C")),
-      (q) =>
-        q.orm.insert(q.t.taskBlock).values([
-          { blockerLinearIssueId: "issue-A", blockedLinearIssueId: "issue-B" },
-          { blockerLinearIssueId: "issue-B", blockedLinearIssueId: "issue-A" },
-        ]),
-    );
-    expect(await db.run((q) => listWorkItemBlocksSteps(q))).toEqual([
-      {
-        delegationId: "delegation-A",
-        blockerLinearIssueId: "issue-B",
-        blockedLinearIssueId: "issue-A",
-      },
-      { delegationId: "late", blockerLinearIssueId: "issue-A", blockedLinearIssueId: "issue-B" },
-    ]);
-    // A cancelled or withdrawn item no longer carries its issue's edges.
-    await seed(
-      db,
-      (q) => q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "C")),
-      (q) =>
-        q.orm
-          .insert(q.t.workItemSpecification)
-          .values({ itemId: "A", hash: "h", revision: 1, present: 0 }),
-    );
-    expect(await db.run((q) => listWorkItemBlocksSteps(q, "delegation-B"))).toEqual([
-      {
-        delegationId: "delegation-B",
-        blockerLinearIssueId: "issue-A",
-        blockedLinearIssueId: "issue-B",
-      },
-    ]);
-    expect(await db.run((q) => listWorkItemBlocksSteps(q, "delegation-A"))).toEqual([]);
-  });
-
   test("facts name the owner and project, newest item first", async () => {
     const handle = await connect();
     open.push(handle);

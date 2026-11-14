@@ -11,7 +11,6 @@ import {
   listDecisionRowsSteps,
   openDecisionSuggestionSteps,
   recordDecisionSuggestionSteps,
-  replaceDecisionSearchSteps,
   retireDecisionMemorySteps,
   searchDecisionRowsSteps,
   unsavedDecisionAnswersSteps,
@@ -188,7 +187,6 @@ export async function changeDecision(
           workspaceId: actor.workspaceId,
           questionId,
         });
-      yield* replaceDecisionSearchSteps(q, { id, statement: value.statement, tags: value.tags });
     }
     yield* auditWorkspaceAccessSteps(q, {
       workspaceId: actor.workspaceId,

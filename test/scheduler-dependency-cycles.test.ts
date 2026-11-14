@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
+import { eq, like } from "drizzle-orm";
 import { insertQueuedItem, type Q, type Steps } from "../src/db";
 import * as intake from "../src/intake";
-import { tempDb } from "./helpers";
-import { workspaceDispatch } from "./fake-workspace";
+import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 test("dispatch reports a delegation's dependency cycle and skips readiness reads for a delegation without edges", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const readyItemsSteps = intake.readyItemsSteps;
   const cycleChecks: string[] = [];
   const ready = spyOn(intake, "readyItemsSteps").mockImplementation((q, target) => {
@@ -20,10 +21,17 @@ test("dispatch reports a delegation's dependency cycle and skips readiness reads
       ["acme-d", "acme-plain"],
     ] as const) {
       await insertQueuedItem(db, { id, now: 1, sessionKey: `session-${delegationId}` });
-      db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [delegationId, id]);
+      await db.run((q) =>
+        q.exec(q.orm.update(q.t.workItem).set({ delegationId }).where(eq(q.t.workItem.id, id))),
+      );
     }
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-acme-a','lin-item-acme-b'),('lin-item-acme-b','lin-item-acme-a')",
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.taskBlock).values([
+          { blockerLinearIssueId: "lin-item-acme-a", blockedLinearIssueId: "lin-item-acme-b" },
+          { blockerLinearIssueId: "lin-item-acme-b", blockedLinearIssueId: "lin-item-acme-a" },
+        ]),
+      ),
     );
     // oxlint-disable-next-line require-yield
     function* sessionFor(_q: Q, itemId: string): Steps<string> {
@@ -34,15 +42,19 @@ test("dispatch reports a delegation's dependency cycle and skips readiness reads
     await workspaceDispatch(db, { now: 1001, sessionFor });
     expect({
       checked: cycleChecks.sort(),
-      reported: db
-        .query<{ key: string }, []>(
-          "SELECT idempotency_key AS key FROM outbox WHERE idempotency_key LIKE 'dependency-cycle:%'",
+      reported: (
+        await db.run((q) =>
+          q.all(
+            q.orm
+              .select({ key: q.t.outbox.idempotencyKey })
+              .from(q.t.outbox)
+              .where(like(q.t.outbox.idempotencyKey, "dependency-cycle:%")),
+          ),
         )
-        .all()
-        .map(({ key }) => key.split(":")[1]),
+      ).map(({ key }) => key.split(":")[1]),
     }).toEqual({ checked: ["acme-a", "acme-b"], reported: ["acme-cycle"] });
   } finally {
     ready.mockRestore();
-    db.close();
+    await close();
   }
 });

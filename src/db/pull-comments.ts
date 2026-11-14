@@ -62,14 +62,12 @@ export const PULL_REVIEW_CHECK_MAX_WAIT_MS = 15 * 60_000;
 
 export type ReviewCheckWait = { head: string; names: string[] };
 
-/** The smallest of the values: scalar `MIN` on SQLite, `LEAST` on Postgres. */
 export function least(q: Q, ...values: SQL[]): SQL<number> {
-  return sql`${sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST")}(${sql.join(values, sql`, `)})`;
+  return sql`${sql.raw("LEAST")}(${sql.join(values, sql`, `)})`;
 }
 
-/** The largest of the values: scalar `MAX` on SQLite, `GREATEST` on Postgres. */
 export function greatest(q: Q, ...values: SQL[]): SQL<number> {
-  return sql`${sql.raw(q.dialect === "sqlite" ? "MAX" : "GREATEST")}(${sql.join(values, sql`, `)})`;
+  return sql`${sql.raw("GREATEST")}(${sql.join(values, sql`, `)})`;
 }
 
 /**
@@ -240,25 +238,6 @@ export function* pendingPullCommentsSteps(q: Q, itemId: string) {
 
 export async function pendingPullComments(store: Db, itemId: string): Promise<PullCommentRecord[]> {
   return store.run((q) => pendingPullCommentsSteps(q, itemId));
-}
-
-export function* getPullCommentSteps(q: Q, source: PullCommentSource, commentId: number) {
-  const { pullComment } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select()
-      .from(pullComment)
-      .where(and(eq(pullComment.source, source), eq(pullComment.commentId, commentId))),
-  );
-  return row === undefined ? null : mapRow(row);
-}
-
-export async function getPullComment(
-  store: Db,
-  source: PullCommentSource,
-  commentId: number,
-): Promise<PullCommentRecord | null> {
-  return store.run((q) => getPullCommentSteps(q, source, commentId));
 }
 
 /** Settle the given comments that are still open. The number settled. */

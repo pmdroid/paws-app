@@ -80,7 +80,7 @@ export async function cancelPendingRunnerLogins(store: Db, id?: string): Promise
 
 function* latestLoginIdSteps(q: Q, where: ReturnType<typeof and>) {
   const { runnerLogin: l } = q.t;
-  const newestFirst = q.dialect === "sqlite" ? [sql`rowid DESC`] : [desc(l.expiresAt), desc(l.id)];
+  const newestFirst = [desc(l.expiresAt), desc(l.id)];
   const row = yield* q.one(
     q.orm
       .select({ id: l.id })

@@ -49,6 +49,7 @@ import {
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
+  applyRunnerCloseoutStepSteps,
   jobStatusByKey,
   restart,
   reviewerAlertedSinceSteps,
@@ -63,7 +64,6 @@ import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
   saveCheckpointSteps,
-  recordReviewRoundsSteps,
   jobVersionCurrentSteps,
   refreshVerificationJobVersionSteps,
 } from "../db";
@@ -167,6 +167,7 @@ import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   highRiskPaths,
   agentReadAllowed,
+  githubMirrorsOn,
   loadConfigFile,
   mergeLaneKey,
   parallelFiles,
@@ -402,7 +403,6 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
-  saveOpenFindingsSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -1007,7 +1007,6 @@ export class Orchestrator {
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
@@ -4318,7 +4317,6 @@ export class Orchestrator {
         ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
         : before;
       const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
-      await this.recordReviewRounds(item, verdict.owner.runId);
       if ((await this.closeoutStopped(item.id)) !== null) return;
       const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
@@ -4539,8 +4537,13 @@ export class Orchestrator {
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         } else if (
-          owned !== priorRunId ||
-          !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned)))
+          !(
+            this.shuttingDown &&
+            current.state === "verifying" &&
+            (await this.store.run((q) => runnerHoldsRunWorkSteps(q, owned, this.now())))
+          ) &&
+          (owned !== priorRunId ||
+            !(await this.store.run((q) => runnerWorkHasResultSteps(q, owned))))
         ) {
           await this.store.run((q) => releaseRunCapacitySteps(q, owned, this.now()));
         }
@@ -4848,6 +4851,7 @@ export class Orchestrator {
           worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          closeoutProgress: this.runnerCloseoutHook(item, head),
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
@@ -5511,25 +5515,6 @@ export class Orchestrator {
     await this.flush();
   }
 
-  /** Records on the verifying run how many review rounds the item has needed so far. */
-  private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
-    if (runId === null) return;
-    await this.pullCloseoutEvidence(item);
-    try {
-      const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
-      if (rounds.length > 0)
-        await this.store.run((q) => recordReviewRoundsSteps(q, runId, rounds.length));
-    } catch (caught) {
-      journalCaught(
-        caught,
-        "orchestrator.recordReviewRounds",
-        item.id,
-        undefined,
-        this.options.journal,
-      );
-    }
-  }
-
   /**
    * Review attempts ran out: ask on the item page whether to rethink, keep going
    * or stop. Returns false when Paws has no link a person can open, so the
@@ -5895,8 +5880,8 @@ export class Orchestrator {
           return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
-        changedFilesFromGitHub: () =>
-          loadConfigFile(join(this.options.pawsRoot, "config.toml")).githubMirrors === false,
+        mirrorsOff: () =>
+          !githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: async (item, published) => {
@@ -6245,6 +6230,7 @@ export class Orchestrator {
         pullNumber: published.pull.number,
         pullUrl: published.pull.url ?? null,
         openedAt: this.now(),
+        published: { head: published.head, line: openLine },
       }),
     );
     await this.store.run((q) =>
@@ -6262,14 +6248,6 @@ export class Orchestrator {
         },
         this.now(),
       ),
-    );
-    await this.store.run((q) =>
-      saveOpenFindingsSteps(q, {
-        itemId: item.id,
-        head: published.head,
-        line: openLine,
-        now: this.now(),
-      }),
     );
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(
@@ -8332,6 +8310,17 @@ export class Orchestrator {
         if (await this.stopped(item.id)) return;
         await this.store.transaction((q) =>
           recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
+        );
+      },
+    };
+  }
+
+  private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
+    return {
+      record: async (progress) => {
+        if (progress.type === "report" || progress.head !== head) return;
+        await this.store.transaction((q) =>
+          applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );
       },
     };

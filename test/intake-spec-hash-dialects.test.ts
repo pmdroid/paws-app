@@ -28,7 +28,12 @@ async function delegated(connect: () => Promise<DialectDb>, reorder: boolean) {
       title: "Parent",
       description: "Parent instructions",
       subIssues: [
-        { linearIssueId: "a", identifier: "HASH-2", title: "A", description: "Criteria" },
+        {
+          linearIssueId: "a",
+          identifier: "HASH-2",
+          title: "A",
+          description: "Criteria",
+        },
       ],
     },
   ]);
@@ -40,13 +45,19 @@ async function delegated(connect: () => Promise<DialectDb>, reorder: boolean) {
     delegateId: "app",
   });
   lifecycle.issues.set("a", { ...lifecycle.issue, id: "a" });
-  const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+  const intake = await intakeDelegatedIssue(db, tracker, {
+    linearIssueId: "parent",
+    now: 1000,
+  });
   if (!intake.ok) throw new Error("Intake failed");
   const itemId = intake.items[0]!.id;
   await seed(db, (q) =>
-    q.orm
-      .insert(q.t.workspace)
-      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1000 }),
+    q.orm.insert(q.t.workspace).values({
+      id: "workspace",
+      linearOrganizationId: "org",
+      name: "Workspace",
+      createdAt: 1000,
+    }),
   );
   await recordLinearInstallation(db, {
     organizationId: "org",
@@ -56,15 +67,14 @@ async function delegated(connect: () => Promise<DialectDb>, reorder: boolean) {
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(db, "session", intake.delegation.id, {
+    actorId: "human",
+  });
   const items = () => db.run((q) => listReconciliationItemsSteps(q, intake.delegation.id));
   if (reorder) {
     const brief = reversed(JSON.parse((await items())[0]!.brief!));
     await seed(db, (q) =>
-      q.orm
-        .update(q.t.workItem)
-        .set({ brief: db.dialect === "sqlite" ? JSON.stringify(brief) : brief })
-        .where(eq(q.t.workItem.id, itemId)),
+      q.orm.update(q.t.workItem).set({ brief: brief }).where(eq(q.t.workItem.id, itemId)),
     );
   }
   const recorded: ItemChanges[] = [];
@@ -88,7 +98,11 @@ forEachDialect((connect) => {
       expect((await items())[0]).toMatchObject({ id: itemId, hash: null });
       await reconcile();
       expect(recorded[0]!.specChangedItemIds).toEqual([]);
-      expect((await items())[0]).toMatchObject({ id: itemId, revision: 1, present: 1 });
+      expect((await items())[0]).toMatchObject({
+        id: itemId,
+        revision: 1,
+        present: 1,
+      });
     } finally {
       await handle.close();
     }

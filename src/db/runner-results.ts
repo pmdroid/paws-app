@@ -411,18 +411,28 @@ export function* sealRunnerEventSteps(
   );
 }
 
-/**
- * Deletes up to `limit` events of runs that ended before `cutoff`, keeping the questions and
- * artifacts nobody answered, and returns how many it deleted.
- */
-export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
-  const { runnerEvent: e } = q.t;
-  const prunableRuns = sql`
+function endedRunsBefore(cutoff: number) {
+  return sql`
     SELECT r.id FROM run r
     WHERE r.status IN ('ended','lost') AND r.updated_at<${cutoff}
       AND NOT EXISTS(SELECT 1 FROM work_item i WHERE i.current_run_id=r.id
         AND i.state NOT IN ('merged','completed','cancelled'))
-      AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=r.id AND w.ended_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=r.id AND w.ended_at IS NULL)`;
+}
+
+/**
+ * Deletes up to `limit` events of runs that ended before `cutoff`, only those of `type` when
+ * given, keeping the questions and artifacts nobody answered, and returns how many it deleted.
+ */
+export function* pruneRunnerEventsSteps(
+  q: Q,
+  cutoff: number,
+  limit: number,
+  type?: string,
+): Steps<number> {
+  const { runnerEvent: e } = q.t;
+  const prunableRuns = sql`
+    ${endedRunsBefore(cutoff)}
       AND NOT EXISTS(SELECT 1 FROM runner_event q
         WHERE q.run_id=r.id
           AND (q.type IN ('question','artifact','closeout_policy','ci_rerun') OR (q.type IS NULL AND q.key_id IS NULL))
@@ -431,6 +441,7 @@ export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): St
   const prunable = sql`
     SELECT e.run_id, e.generation, e.sequence FROM runner_event e
     WHERE e.run_id IN (${prunableRuns})
+      AND ${type === undefined ? sql`1=1` : sql`e.type=${type}`}
       AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
         WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
     LIMIT ${limit}`;
@@ -439,6 +450,95 @@ export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): St
       .delete(e)
       .where(sql`(${e.runId}, ${e.generation}, ${e.sequence}) IN (${prunable})`)
       .returning({ sequence: e.sequence }),
+  );
+  return deleted.length;
+}
+
+/**
+ * Deletes up to `limit` answers of runs that ended before `cutoff`, with the question events they
+ * answered, and returns how many answers it deleted.
+ */
+export function* pruneRunnerQuestionAnswersSteps(
+  q: Q,
+  cutoff: number,
+  limit: number,
+): Steps<number> {
+  const { runnerEvent: e, runnerQuestionAnswer: a } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(a)
+      .where(
+        sql`(${a.runId}, ${a.generation}, ${a.sequence}) IN (
+          SELECT p.run_id, p.generation, p.sequence FROM runner_question_answer p
+          WHERE p.run_id IN (${endedRunsBefore(cutoff)}) LIMIT ${limit})`,
+      )
+      .returning({ runId: a.runId, generation: a.generation, sequence: a.sequence }),
+  );
+  const answered = new Map<string, { runId: string; generation: number; sequences: number[] }>();
+  for (const row of deleted) {
+    const key = `${row.generation}:${row.runId}`;
+    const entry = answered.get(key) ?? {
+      runId: row.runId,
+      generation: row.generation,
+      sequences: [],
+    };
+    entry.sequences.push(row.sequence);
+    answered.set(key, entry);
+  }
+  for (const entry of answered.values())
+    yield* q.exec(
+      q.orm
+        .delete(e)
+        .where(
+          and(
+            eq(e.runId, entry.runId),
+            eq(e.generation, entry.generation),
+            inArray(e.sequence, entry.sequences),
+          ),
+        ),
+    );
+  return deleted.length;
+}
+
+/** Deletes up to `limit` follow-ups of runs that ended before `cutoff`; returns how many. */
+export function* pruneRunnerFollowUpsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerFollowUp: f } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(f)
+      .where(
+        sql`(${f.runId}, ${f.generation}, ${f.sequence}) IN (
+          SELECT p.run_id, p.generation, p.sequence FROM runner_follow_up p
+          WHERE p.run_id IN (${endedRunsBefore(cutoff)}) LIMIT ${limit})`,
+      )
+      .returning({ sequence: f.sequence }),
+  );
+  return deleted.length;
+}
+
+/**
+ * Deletes up to `limit` results received before `cutoff` once a later generation of the same run
+ * has a result for the same command kind, and returns how many it deleted.
+ */
+export function* pruneSupersededRunnerResultsSteps(
+  q: Q,
+  cutoff: number,
+  limit: number,
+): Steps<number> {
+  const { runnerResult: r } = q.t;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(r)
+      .where(
+        sql`(${r.runId}, ${r.generation}) IN (
+          SELECT o.run_id, o.generation FROM runner_result o
+          JOIN runner_command oc ON oc.id=o.command_id
+          WHERE o.received_at<${cutoff}
+            AND EXISTS(SELECT 1 FROM runner_result n JOIN runner_command nc ON nc.id=n.command_id
+              WHERE n.run_id=o.run_id AND n.generation>o.generation AND nc.kind=oc.kind)
+          LIMIT ${limit})`,
+      )
+      .returning({ generation: r.generation }),
   );
   return deleted.length;
 }

@@ -1,8 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { setSettingsAdmin } from "./settings-pages";
 import { settleReactWork } from "./settle-react";
+
+beforeEach(() => setSettingsAdmin(true));
 
 const saved = new Map<string, unknown>();
 
