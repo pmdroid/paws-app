@@ -43,7 +43,6 @@ export function ensureLayout(paths: PawsPaths): void {
   const dirs = [
     paths.home,
     paths.secretsDir,
-    paths.reposDir,
     paths.publicationDir,
     paths.worktreesDir,
     paths.runsDir,

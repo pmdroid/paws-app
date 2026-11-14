@@ -1,6 +1,6 @@
 import { createCloseoutGate, type CodexReviewer } from "../../src/closeout";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import {
@@ -14,7 +14,7 @@ import {
   type Db,
   type Q,
 } from "../../src/db";
-import { pawsPaths } from "../../src/config";
+import { ensureLayout, pawsPaths } from "../../src/config";
 import { count as countRows, inArray, eq, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
@@ -337,6 +337,7 @@ export type Proof = {
   policy?: string;
   /** Appended to the scenario's `config.toml`. */
   config?: string;
+  forbidRepos?: boolean;
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
   member?: { login: string; token: string; refused?: number };
@@ -366,6 +367,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     join(pawsRoot, "config.toml"),
     `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`,
   );
+  const repos = join(pawsRoot, "repos");
+  const reposEvents: string[] = [];
+  const reposWatch = proof.forbidRepos
+    ? watch(pawsRoot, (_event, file) => {
+        if (file === "repos") reposEvents.push(String(file));
+      })
+    : undefined;
+  ensureLayout(pawsPaths(pawsRoot));
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents"), { recursive: true });
@@ -427,6 +436,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
     }),
     launch,
+    githubMirrors: proof.forbidRepos ? false : undefined,
     ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
     ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
   });
@@ -580,6 +590,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     await orchestrator.shutdown();
     await outbox.idle();
   }
+  await Bun.sleep(50);
+  reposWatch?.close();
+  if (proof.forbidRepos)
+    context.expect(
+      "PAWS_HOME/repos was never created or changed from startup through shutdown",
+      reposEvents.length === 0 && !existsSync(repos),
+      { events: reposEvents, exists: existsSync(repos) },
+    );
   const result = {
     name,
     summary: proof.summary,

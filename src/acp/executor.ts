@@ -1,6 +1,11 @@
 import { mkdir } from "node:fs/promises";
-import { branchName, mirrorPath } from "./paths";
-import { createWorktree, ensureBareMirror, ensureCandidateRef } from "./worktree";
+import { branchName, mirrorPath, worktreePath } from "./paths";
+import {
+  createItemCheckout,
+  createWorktree,
+  ensureBareMirror,
+  ensureCandidateRef,
+} from "./worktree";
 import { runAgent } from "./run";
 import type { ExecuteItemOptions, ExecuteItemResult } from "./types";
 
@@ -15,15 +20,21 @@ export async function executeItem({
   ...options
 }: ExecuteItemOptions): Promise<ExecuteItemResult> {
   const stored = storedCandidate === true && options.workspace !== undefined;
-  const mirror = stored
-    ? { path: mirrorPath(options.pawsRoot, options.owner, options.repo) }
-    : await ensureBareMirror({
-        remoteUrl: options.remoteUrl,
-        owner: options.owner,
-        repo: options.repo,
-        pawsRoot: options.pawsRoot,
-        ...(options.networkGit ? { networkGit: options.networkGit } : {}),
-      });
+  const mirror =
+    stored || options.mirrors === false
+      ? {
+          path:
+            options.mirrors === false
+              ? worktreePath(options.pawsRoot, options.itemId)
+              : mirrorPath(options.pawsRoot, options.owner, options.repo),
+        }
+      : await ensureBareMirror({
+          remoteUrl: options.remoteUrl,
+          owner: options.owner,
+          repo: options.repo,
+          pawsRoot: options.pawsRoot,
+          ...(options.networkGit ? { networkGit: options.networkGit } : {}),
+        });
   const placement = {
     owner: options.owner,
     repo: options.repo,
@@ -37,10 +48,15 @@ export async function executeItem({
     await mkdir(options.workspace, { recursive: true, mode: 0o700 });
     worktree = { path: options.workspace, branch: branchName(options.itemId) };
   } else
-    worktree = await createWorktree({
-      ...placement,
-      ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
-    });
+    worktree =
+      options.mirrors === false
+        ? await createItemCheckout(options)
+        : await createWorktree({
+            ...placement,
+            ...(options.checkoutExclusions
+              ? { checkoutExclusions: options.checkoutExclusions }
+              : {}),
+          });
   const run = await (options.promptRunner ?? runAgent)({
     ...options,
     role: options.role ?? "implementer",

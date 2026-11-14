@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -23,6 +24,7 @@ test("the layout creates tmpDir with mode 0700", () => {
   homes.push(home);
   const paths = pawsPaths(home);
   ensureLayout(paths);
+  expect(existsSync(paths.reposDir)).toBe(false);
   expect(paths.tmpDir).toBe(join(home, "tmp"));
   expect(statSync(paths.tmpDir).mode & 0o777).toBe(0o700);
 });

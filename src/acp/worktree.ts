@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { assertDescendsFromAny } from "../core";
 import { git } from "./git";
@@ -171,6 +171,41 @@ export async function createWorktree(options: {
 }): Promise<Worktree> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   return onMirror(gitDir, () => addWorktree(gitDir, options));
+}
+
+/** An independent item checkout for installations that disable shared mirrors. */
+export async function createItemCheckout(options: {
+  remoteUrl: string;
+  itemId: string;
+  pawsRoot: string;
+  startRef?: string;
+  checkoutExclusions?: readonly string[];
+  networkGit?: (args: string[]) => Promise<string>;
+}): Promise<Worktree> {
+  const path = worktreePath(options.pawsRoot, options.itemId);
+  return onMirror(path, async () => {
+    const branch = branchName(options.itemId);
+    const startRef = options.startRef ?? "origin/main";
+    if (!(await exists(path))) {
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      try {
+        await (options.networkGit ?? git)([
+          "clone",
+          "--no-checkout",
+          "--",
+          options.remoteUrl,
+          path,
+        ]);
+        await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
+        await git(["-C", path, "checkout", "-b", branch, startRef]);
+      } catch (error) {
+        await rm(path, { recursive: true, force: true });
+        throw error;
+      }
+    }
+    await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
+    return { path, branch, mirrorPath: path, itemId: options.itemId, startRef };
+  });
 }
 
 async function addWorktree(
@@ -442,7 +477,12 @@ export async function removeWorktree(options: {
 }): Promise<void> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const path = worktreePath(options.pawsRoot, options.itemId);
-  if (!(await exists(gitDir)) || !(await exists(path))) return;
+  if (!(await exists(path))) return;
+  if ((await stat(`${path}/.git`).catch(() => null))?.isDirectory()) {
+    await rm(path, { recursive: true, force: true });
+    return;
+  }
+  if (!(await exists(gitDir))) return;
   await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]);
 }
 

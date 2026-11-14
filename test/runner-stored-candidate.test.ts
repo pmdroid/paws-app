@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
@@ -355,8 +355,7 @@ test("with mirrors off a runner run starts from the stored candidate and never c
     while (Date.now() < deadline && (await checkpoint())?.wipCommit !== candidate)
       await Bun.sleep(10);
     expect(await checkpoint(), detail).toMatchObject({ baseSha: main, wipCommit: candidate });
-    const mirror = join(root, "repos", "acme", "fixture.git");
-    expect(await git(["--git-dir", mirror, "for-each-ref", "refs/paws/candidates"])).toBe("");
+    expect(existsSync(join(root, "repos"))).toBe(false);
   } finally {
     controller.abort();
     await orchestrator.shutdown().catch(() => undefined);

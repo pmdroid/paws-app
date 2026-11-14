@@ -150,6 +150,7 @@ export {
 export {
   adoptLegacyCandidate,
   createWorktree,
+  createItemCheckout,
   ensureBareMirror,
   ensureCandidateRef,
   mirrorFiles,

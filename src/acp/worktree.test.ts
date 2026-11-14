@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { commitCheckpoint } from "./checkpoint";
 import { GitError, git } from "./git";
-import { createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
+import { createItemCheckout, createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
 import { branchName } from "./paths";
 
 const roots: string[] = [];
@@ -227,4 +227,20 @@ test("a worktree waits for an in-flight mirror refresh before touching the mirro
   release.resolve();
   await refresh;
   expect((await worktree).branch).toBe(branchName("ENG-8"));
+});
+
+test("independent item checkouts reuse WIP and clean up without creating repos", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-checkout-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const pawsRoot = join(root, "home");
+  const options = { remoteUrl: source, pawsRoot, itemId: "ENG-9" };
+  const created = await createItemCheckout(options);
+  await writeFile(join(created.path, "notes.txt"), "unfinished");
+  await createItemCheckout(options);
+  expect(await readFile(join(created.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect(await stat(join(pawsRoot, "repos")).catch(() => null)).toBeNull();
+  await removeWorktree({ ...options, owner: "acme", repo: "demo" });
+  expect(await stat(created.path).catch(() => null)).toBeNull();
 });

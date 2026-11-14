@@ -155,12 +155,12 @@ import {
   runDir,
   runAgent,
   createWorktree,
+  createItemCheckout,
   ensureBareMirror,
   ensureCandidateRef,
   adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
-  ensureMirrorCommit,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -3978,6 +3978,7 @@ export class Orchestrator {
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
+        mirrors: this.options.githubMirrors,
         ...(this.storedCandidates() ? { storedCandidate: true } : {}),
         signal: controller.signal,
         promptRunner,
@@ -4575,7 +4576,9 @@ export class Orchestrator {
     const mirror =
       this.options.remoteExecution && repository
         ? {
-            path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+            path: this.storedCandidates()
+              ? worktreePath(this.options.pawsRoot, itemPathId(item))
+              : mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
             ref: candidateRef(itemPathId(item)),
             ...(this.storedCandidates()
               ? {
@@ -10664,7 +10667,7 @@ export class Orchestrator {
     const originalProfiles = JSON.stringify(profiles);
     const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
-    if (!this.storedCandidates())
+    if (this.options.githubMirrors !== false)
       await ensureBareMirror({
         ...repository,
         pawsRoot: this.options.pawsRoot,
@@ -10677,16 +10680,22 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       ...(startRef ? { startRef } : {}),
     };
-    // A runner-backed item gets its candidate ref in the mirror, not a worktree.
+    // Stored candidates use an independent inspection checkout; legacy runners use mirror refs.
     const worktree = this.options.remoteExecution
       ? {
           path: this.runnerWorkspace(runId),
           repo: await this.ensureRecordedCandidate(item, placement, signal),
         }
-      : await createWorktree({
-          ...placement,
-          checkoutExclusions: (await this.runCheckout(item)).agent,
-        }).then((created) => ({ path: created.path, repo: created.path }));
+      : this.options.githubMirrors === false
+        ? await createItemCheckout({
+            ...placement,
+            networkGit: await this.repositoryGit(item, repository, signal, "write"),
+            checkoutExclusions: (await this.runCheckout(item)).agent,
+          }).then((created) => ({ path: created.path, repo: created.path }))
+        : await createWorktree({
+            ...placement,
+            checkoutExclusions: (await this.runCheckout(item)).agent,
+          }).then((created) => ({ path: created.path, repo: created.path }));
     const required = await (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.repo,
       this.options.home,
@@ -10931,8 +10940,8 @@ export class Orchestrator {
   }
 
   /**
-   * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
-   * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
+   * Stored runner candidates are inspected by SHA in an independent item checkout. Legacy
+   * runners use a mirror ref; local execution reads the item checkout's HEAD.
    */
   private async itemHead(item: WorkItemRecord) {
     const head = await this.store.run((q) => this.itemHeadSteps(q, item));
@@ -10940,13 +10949,21 @@ export class Orchestrator {
     const repository = await this.repositoryForItem(item);
     if (!repository) return head;
     const signal = (await this.signalForItem(item.id)) ?? AbortSignal.timeout(120_000);
-    await ensureMirrorCommit({
+    await createItemCheckout({
+      itemId: itemPathId(item),
       ...repository,
       pawsRoot: this.options.pawsRoot,
-      sha: head.ref,
+      startRef: head.ref,
       networkGit: await this.repositoryGit(item, repository, signal, "read"),
-      signal,
     });
+    await ((await this.repositoryGit(item, repository, signal, "read")) ?? git)([
+      "-C",
+      head.repo,
+      "fetch",
+      "--",
+      repository.remoteUrl,
+      head.ref,
+    ]);
     return head;
   }
 
@@ -10958,7 +10975,9 @@ export class Orchestrator {
       ? (yield* getItemCandidateSteps(q, item.id))?.sha
       : undefined;
     return {
-      repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+      repo: this.storedCandidates()
+        ? worktreePath(this.options.pawsRoot, itemPathId(item))
+        : mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
       ref: stored ?? candidateRef(itemPathId(item)),
     };
   }
@@ -10974,7 +10993,12 @@ export class Orchestrator {
   ): Promise<string> {
     if (this.storedCandidates()) {
       await this.recordBranchTipCandidate(item, placement, signal);
-      return mirrorPath(placement.pawsRoot, placement.owner, placement.repo);
+      return (
+        await createItemCheckout({
+          ...placement,
+          networkGit: await this.repositoryGit(item, placement, signal, "read"),
+        })
+      ).path;
     }
     await this.restoreCandidate(item, signal);
     const candidate = await ensureCandidateRef(placement);
