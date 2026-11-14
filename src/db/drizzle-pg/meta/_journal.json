@@ -176,6 +176,13 @@
       "when": 1794646322077,
       "tag": "0024_drop_open_findings_and_activity_listing",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794670342492,
+      "tag": "0025_fold_run_owner_and_agent_setup",
+      "breakpoints": true
     }
   ]
 }
