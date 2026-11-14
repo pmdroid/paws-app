@@ -1,3 +1,4 @@
+import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
   AGENT_CREDENTIAL_RUNNER_VERSION,
@@ -100,6 +101,8 @@ export function* agentAccountOverviewSteps(
         ),
     )).map((row) => row.accountId),
   );
+  const expired = new Set<string>();
+  for (const row of accounts) if (yield* agentAuthFailureSteps(q, row.id)) expired.add(row.id);
   return accounts.map((row) => {
     const lease = leases.get(row.id);
     return {
@@ -110,7 +113,7 @@ export function* agentAccountOverviewSteps(
       extraUsage: row.extraUsage === 1,
       signingIn: signingIn.has(row.id),
       credential:
-        row.refreshedAt === null || row.signedOut === ""
+        row.refreshedAt === null || row.signedOut === "" || expired.has(row.id)
           ? null
           : {
               refreshedAt: row.refreshedAt,

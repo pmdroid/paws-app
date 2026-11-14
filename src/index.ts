@@ -1,3 +1,4 @@
+import { createAgentAuth } from "./agent-auth";
 import {
   createFindingGrouping,
   registerFindingGrouping,
@@ -1226,7 +1227,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ store });
-  const accountManagement = createAccountManagement({ store });
+  const agentAuth = createAgentAuth({ store, secretsDir: paths.secretsDir });
+  periodic.push({
+    queue: "agent.auth.refresh",
+    everyMs: 60_000,
+    atStartup: true,
+    run: () => agentAuth.tick(),
+  });
+  const accountManagement = createAccountManagement({ store, agentAuth });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,

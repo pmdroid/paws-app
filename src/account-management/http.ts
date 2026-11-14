@@ -15,7 +15,7 @@ import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
-  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential))?$/;
+  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential|device))?$/;
 
 export const AGENT_ACCOUNTS_RETIRED = "This route was replaced by /api/runners/agent-accounts.";
 
@@ -36,7 +36,13 @@ function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
-export function createAccountManagement(options: { store?: Db; now?: () => number } = {}) {
+export function createAccountManagement(
+  options: {
+    store?: Db;
+    now?: () => number;
+    agentAuth?: { device(workspaceId: string, id: string, start: boolean): Promise<unknown> };
+  } = {},
+) {
   const now = options.now ?? Date.now;
   return async function browser(
     request: Request,
@@ -55,6 +61,11 @@ export function createAccountManagement(options: { store?: Db; now?: () => numbe
       if (!order && !accountId && method === "GET") {
         const accounts = await store.run((q) => agentAccountOverviewSteps(q, workspaceId, now()));
         return json({ canManage: admin, accounts });
+      }
+      if (action === "device" && (method === "POST" || method === "GET")) {
+        if (!admin) return json({ error: "Only workspace admins can change agent accounts." }, 403);
+        if (!options.agentAuth) return json({ error: "Device sign-in is unavailable." }, 503);
+        return json(await options.agentAuth.device(workspaceId, accountId!, method === "POST"));
       }
       if (method === "GET") return json({ error: "Unsupported agent account request." }, 405);
       if (!admin) return json({ error: "Only workspace admins can change agent accounts." }, 403);

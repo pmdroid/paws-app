@@ -186,3 +186,4 @@ export * from "./fix-records";
 export * from "./setup-facts";
 export { githubBlobCache } from "./github-blobs";
 export * from "./session-done";
+export * from "./agent-auth";
