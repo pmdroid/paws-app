@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
@@ -171,6 +171,8 @@ test("with mirrors off a runner run starts from the stored candidate and never c
   const client: GitHubClient = {
     async request({ method, path }) {
       refCalls.push(`${method} ${path}`);
+      if (path === `/repos/acme/fixture/compare/main...${candidate}?per_page=1`)
+        return { status: 200, body: { merge_base_commit: { sha: main }, ahead_by: 1 } };
       return path === "/repos/acme/fixture/git/ref/heads/main"
         ? { status: 200, body: { object: { sha: main, type: "commit" } } }
         : { status: 404, body: { message: "Not Found" } };
@@ -356,7 +358,7 @@ test("with mirrors off a runner run starts from the stored candidate and never c
       await Bun.sleep(10);
     expect(await checkpoint(), detail).toMatchObject({ baseSha: main, wipCommit: candidate });
     const mirror = join(root, "repos", "acme", "fixture.git");
-    expect(await git(["--git-dir", mirror, "for-each-ref", "refs/paws/candidates"])).toBe("");
+    expect(existsSync(mirror)).toBe(false);
   } finally {
     controller.abort();
     await orchestrator.shutdown().catch(() => undefined);

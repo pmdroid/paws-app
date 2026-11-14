@@ -1,3 +1,4 @@
+import { Orchestrator } from "./orchestrator";
 import { RiskDisplayReader } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import { afterAll, beforeAll, expect, test } from "bun:test";
@@ -1340,4 +1341,18 @@ test("an unreadable risk row cannot prevent the sole pull-request response", asy
     display.close();
     await f.close();
   }
+});
+
+test("local mirrors-off compares unpublished commits without GitHub", async () => {
+  const subject = Object.create(Orchestrator.prototype) as Orchestrator;
+  Object.defineProperty(subject, "options", { value: { githubMirrors: false } });
+  expect(
+    await subject["sameCandidatePatch"](
+      {} as Parameters<(typeof subject)["sameCandidatePatch"]>[0],
+      repo,
+      heads.s,
+      heads.rebased,
+      heads.newMain,
+    ),
+  ).toBe(true);
 });

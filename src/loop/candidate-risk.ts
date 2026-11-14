@@ -1,3 +1,4 @@
+import type { GitHubGitReader } from "../github";
 import {
   HIGH_RISK_PATHS_FILE,
   HIGH_RISK_PATHS_FILE_MAX_BYTES,
@@ -45,9 +46,10 @@ export async function classifyPathsRisk(input: {
   git: RiskGit;
   base: string;
   changed: readonly string[];
+  fileGlobs?: readonly string[];
   settingsGlobs: readonly string[];
 }): Promise<RiskClassification & { matches: RiskMatch[] }> {
-  const fileGlobs = (await highRiskPathsFileAt(input.git, input.base)) ?? [];
+  const fileGlobs = input.fileGlobs ?? (await highRiskPathsFileAt(input.git, input.base)) ?? [];
   return classifyRiskByList(input.changed, { settings: input.settingsGlobs, file: fileGlobs });
 }
 
@@ -57,4 +59,25 @@ export async function highRiskPathsFileAt(git: RiskGit, commit: string): Promise
   if (!listed.startsWith("100")) return null;
   const text = await git(["cat-file", "blob", `${commit}:${HIGH_RISK_PATHS_FILE}`]);
   return parseHighRiskPathsFile(text.slice(0, HIGH_RISK_PATHS_FILE_MAX_BYTES));
+}
+
+export async function gitHubRiskInputs(
+  reader: GitHubGitReader,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<{ changed: string[]; fileGlobs: string[] }> {
+  const changed = await reader.changedPaths(repo, base, head);
+  if (!changed?.ok) throw new Error("Candidate changed paths are unavailable");
+  let listed = reader.listBlobs(repo, base, HIGH_RISK_PATHS_FILE);
+  if (!listed.ok && (await reader.fill(repo)))
+    listed = reader.listBlobs(repo, base, HIGH_RISK_PATHS_FILE);
+  if (!listed.ok) throw new Error("Base risk policy is unavailable");
+  const file = listed.blobs.find((entry) => entry.path === HIGH_RISK_PATHS_FILE);
+  if (!file || !file.mode.startsWith("100")) return { changed: changed.paths, fileGlobs: [] };
+  let read = reader.readBlob(repo, file.object);
+  if (!read.ok && (await reader.fill(repo))) read = reader.readBlob(repo, file.object);
+  if (!read.ok) throw new Error("Base risk policy blob is unavailable");
+  const text = new TextDecoder().decode(read.bytes.slice(0, HIGH_RISK_PATHS_FILE_MAX_BYTES));
+  return { changed: changed.paths, fileGlobs: parseHighRiskPathsFile(text) };
 }

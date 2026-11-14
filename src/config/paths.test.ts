@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -46,4 +47,13 @@ test("the startup sweep removes only tmp entries older than 24 hours", () => {
   age("stale-file", 48);
   sweepTmpDir(paths, now);
   expect(readdirSync(paths.tmpDir)).toEqual(["paws-publication-recent"]);
+});
+
+test("mirrors disabled leaves repos absent at startup", () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-home-"));
+  homes.push(home);
+  const paths = pawsPaths(home);
+  writeFileSync(paths.configFile, "[github]\nmirrors = false\n");
+  ensureLayout(paths);
+  expect(existsSync(paths.reposDir)).toBe(false);
 });

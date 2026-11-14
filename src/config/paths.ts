@@ -1,5 +1,6 @@
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { githubMirrorsOn, loadConfigFile } from "./file";
 
 /** Directories under `~/.paws`. The developer's own checkout is never one of these. */
 export type PawsPaths = {
@@ -43,7 +44,7 @@ export function ensureLayout(paths: PawsPaths): void {
   const dirs = [
     paths.home,
     paths.secretsDir,
-    paths.reposDir,
+    ...(githubMirrorsOn(loadConfigFile(paths.configFile)) ? [paths.reposDir] : []),
     paths.publicationDir,
     paths.worktreesDir,
     paths.runsDir,

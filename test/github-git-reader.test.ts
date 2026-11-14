@@ -1,3 +1,4 @@
+import { classifyPathsRisk, gitHubRiskInputs } from "../src/loop/candidate-risk";
 import { afterAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -7,6 +8,7 @@ import { tempStore } from "./pglite";
 import { githubBlobCache } from "../src/db";
 import { createGitHubGitReader, type GitHubClient } from "../src/github";
 import {
+  reviewRequirements,
   createGitReader,
   mergeResultPolicyError,
   POLICY_CHANGED_ON_BOTH_SIDES,
@@ -362,4 +364,47 @@ test("a repository the GitHub reader does not locate keeps its local git diff", 
     useGitReader(null);
   }
   expect(calls).toEqual([]);
+});
+
+test("remote preflight reads review requirements through an explicit cold GitHub reader", async () => {
+  const { client, home, calls } = fixture();
+  const result = await reviewRequirements(MIRROR, home, undefined, apiReader(client));
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.items.map((item) => item.id)).toEqual(["review"]);
+  expect(calls.some((path) => path.includes("/git/ref/heads/main"))).toBe(true);
+  expect(calls.some((path) => path.includes("/git/blobs/"))).toBe(true);
+});
+
+test("remote risk classification reads changed paths and the base policy without a mirror", async () => {
+  const { work, head: base, client, calls } = fixture({ ".paws/high-risk-paths": "src/app.ts\n" });
+  writeFileSync(join(work, "src/app.ts"), "export const changed = true;\n");
+  rmSync(join(work, ".paws/high-risk-paths"));
+  execFileSync("git", ["-C", work, "add", "."]);
+  execFileSync("git", [
+    "-C",
+    work,
+    "-c",
+    "user.name=Acme",
+    "-c",
+    "user.email=acme@example.com",
+    "commit",
+    "-qm",
+    "candidate",
+  ]);
+  const head = execFileSync("git", ["-C", work, "rev-parse", "HEAD"]).toString().trim();
+  const input = await gitHubRiskInputs(apiReader(client), MIRROR, base, head);
+  const risk = await classifyPathsRisk({
+    git: async () => {
+      throw new Error("local Git must not run");
+    },
+    base,
+    changed: input.changed,
+    fileGlobs: input.fileGlobs,
+    settingsGlobs: [],
+  });
+  expect(risk.tier).toBe("high");
+  expect(risk.paths).toEqual(["src/app.ts"]);
+  expect(input.changed).toContain(".paws/high-risk-paths");
+  expect(calls.some((path) => path.includes(`/git/trees/${base}`))).toBe(true);
+  expect(calls.some((path) => path.includes("/git/blobs/"))).toBe(true);
 });
