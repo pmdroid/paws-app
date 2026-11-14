@@ -24,9 +24,9 @@ const view = (queue: AgentSettings["queue"]) => ({
   saved: false,
 });
 
-test("Queue and limits follows Merging and holds the Queue and Time limits sections", () => {
+test("Queue and limits follows Storage and holds the Queue and Time limits sections", () => {
   const ids = SETTINGS_PAGES.map((page) => page.id);
-  expect(ids.indexOf("limits")).toBe(ids.indexOf("merging") + 1);
+  expect(ids.indexOf("limits")).toBe(ids.indexOf("storage") + 1);
   expect(SETTINGS_PAGES.find((page) => page.id === "limits")).toMatchObject({
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
