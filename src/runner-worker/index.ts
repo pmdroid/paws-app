@@ -294,7 +294,8 @@ export async function runWithFollowUps(
     if (first === null || "result" in first) {
       waiting.abort();
       const result = first?.result ?? (await turn);
-      if (result.interrupted && !agent.signal?.aborted) continue;
+      if (result.interrupted && result.stopReason !== "cancelled" && !agent.signal?.aborted)
+        continue;
       return result;
     }
     writeJournal(`item ${agent.itemId} run ${agent.runId} interrupt source=follow_up`);

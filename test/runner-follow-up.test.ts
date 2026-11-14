@@ -111,3 +111,27 @@ for (const emptyDelivery of [true, false])
     expect(result.stopReason).toBe("end_turn");
     expect(calls).toBe(emptyDelivery ? 1 : 2);
   });
+
+test("an unsolicited cancelled stop leaves retry decisions to the backend", async () => {
+  let calls = 0;
+  const result = await runWithFollowUps(
+    {
+      role: "implementer",
+      itemId: "item",
+      runId: "run",
+      prompt: "Repair",
+      worktreePath: "/work/tree",
+      pawsRoot: "/nonexistent-follow-up",
+    },
+    (_sequence, signal) =>
+      new Promise<string>((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      ),
+    async () => {
+      calls++;
+      return { ...finished(true), interrupted: true };
+    },
+  );
+  expect(calls).toBe(1);
+  expect(result).toMatchObject({ stopReason: "cancelled", cancelled: true, interrupted: true });
+});

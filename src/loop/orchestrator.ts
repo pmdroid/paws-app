@@ -4031,7 +4031,11 @@ export class Orchestrator {
         });
         return;
       }
-      if (executed.run.interrupted && !this.askedRuns.has(run.id)) {
+      if (
+        executed.run.interrupted &&
+        executed.run.stopReason !== "cancelled" &&
+        !this.askedRuns.has(run.id)
+      ) {
         await restart(this.store, finished, {
           reason: "follow_up",
           body: "Continue the task from the preserved workspace and address any pending follow-up.",
