@@ -11,8 +11,6 @@ import {
   resolveAgentProfiles,
   useSettingsStore,
   writeAgentSettings,
-  writeConfigFile,
-  writeImplementer,
   type AgentSettings,
 } from "../src/config";
 import { tempHome } from "./helpers";
@@ -25,7 +23,7 @@ const settings: AgentSettings = {
 };
 
 describe("agent settings config", () => {
-  test("persists role effort and preserves it on same-agent setup", () => {
+  test("persists role effort", () => {
     const path = join(tempHome(), "config.toml");
     const next: AgentSettings = {
       defaults: {
@@ -36,10 +34,6 @@ describe("agent settings config", () => {
     writeAgentSettings(path, next);
     expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
     expect(resolveAgentProfiles(loadConfigFile(path)).reviewer.effort).toBe("xhigh");
-    writeImplementer(path, "claude");
-    expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
-    writeImplementer(path, "grok");
-    expect(resolveAgentProfiles(loadConfigFile(path)).implementer.effort).toBeUndefined();
     expect(() =>
       parseAgentSettings({
         ...next,
@@ -170,46 +164,6 @@ describe("agent settings config", () => {
     ).toThrow();
   });
 
-  test("legacy implementer selection updates the profile and resets a changed vendor model", () => {
-    const path = join(tempHome(), "config.toml");
-    writeAgentSettings(path, settings);
-    writeImplementer(path, "claude");
-    expect(readAgentSettings(loadConfigFile(path))).toEqual(settings);
-    writeImplementer(path, "grok");
-    expect(resolveAgentProfiles(loadConfigFile(path)).implementer).toEqual({
-      agent: "grok",
-      model: null,
-    });
-    const before = readFileSync(path, "utf8");
-    expect(() => writeImplementer(path, "codex")).toThrow(/different/);
-    expect(readFileSync(path, "utf8")).toBe(before);
-  });
-
-  test("rerunning setup preserves explicit profiles", () => {
-    const path = join(tempHome(), "config.toml");
-    writeAgentSettings(path, settings);
-    const setup = {
-      linearTeam: "ENG",
-      linearTeamId: "team-eng",
-      linearViewerId: "viewer",
-      linearSecret: "secrets/linear-api-key",
-      linearClientFile: null,
-      githubAuth: "app" as const,
-      repo: "pmdroid/barkvisor",
-      checkout: "/tmp/checkout",
-      maxAwakeMs: 1_000,
-      implementer: "claude" as const,
-    };
-    expect(writeConfigFile(path, setup)).toBe(true);
-    expect(readAgentSettings(loadConfigFile(path))).toEqual(settings);
-    expect(writeConfigFile(path, setup)).toBe(false);
-    writeConfigFile(path, { ...setup, implementer: "grok" });
-    expect(resolveAgentProfiles(loadConfigFile(path)).implementer).toEqual({
-      agent: "grok",
-      model: null,
-    });
-  });
-
   test("allows different explicit models on one provider", () => {
     const parsed = parseAgentSettings({
       defaults: {
@@ -254,36 +208,4 @@ describe("agent settings config", () => {
       "reviewerFallback",
     );
   });
-});
-
-test("presets-only legacy Codex config survives setup and implementer writes", () => {
-  const path = join(tempHome(), "config.toml");
-  writeFileSync(
-    path,
-    '[agents]\nimplementer = "codex"\n[agents.presets.Opus]\nagent = "claude"\nmodel = "opus"\n',
-  );
-  const before = resolveAgentProfiles(loadConfigFile(path));
-  const presets = readAgentSettings(loadConfigFile(path)).presets;
-  const setup = {
-    linearTeam: "ACME",
-    linearTeamId: "team-acme",
-    linearViewerId: "viewer",
-    linearSecret: "secrets/linear-api-key",
-    linearClientFile: null,
-    githubAuth: "app" as const,
-    repo: "acme/app",
-    checkout: "/tmp/checkout",
-    maxAwakeMs: 1_000,
-    implementer: "codex" as const,
-  };
-  expect(writeConfigFile(path, setup)).toBe(true);
-  expect(writeConfigFile(path, setup)).toBe(false);
-  expect(resolveAgentProfiles(loadConfigFile(path))).toEqual(before);
-  expect(readAgentSettings(loadConfigFile(path)).presets).toEqual(presets);
-  for (const implementer of ["codex", "claude", "codex"] as const) {
-    writeImplementer(path, implementer);
-    expect(resolveAgentProfiles(loadConfigFile(path)).implementer.agent).toBe(implementer);
-    expect(readAgentSettings(loadConfigFile(path)).presets).toEqual(presets);
-    expect(readFileSync(path, "utf8")).not.toContain("[agents.defaults");
-  }
 });
