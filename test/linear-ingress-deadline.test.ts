@@ -451,8 +451,7 @@ test("another session delivery cannot hold the first acknowledgement's intake op
       otherSettled = true;
     });
     await f.deliver();
-    const outcome = await Promise.race([f.outcome(), Bun.sleep(100).then(() => "still pending")]);
-    expect(outcome).toBeNull();
+    expect(await f.outcome()).toBeNull();
     expect(otherSettled).toBe(false);
     expect(f.followedUp).toBe(1);
     const original = (await listOutbox(f.db, "session"))[0]!;
