@@ -237,6 +237,8 @@ import {
 import {
   hydrateCloseoutEvidence,
   publishCloseoutEvidence,
+  storeCloseoutOutput,
+  withCloseoutOutput,
   type EvidenceObjects,
   type EvidenceStorage,
 } from "../evidence";
@@ -324,6 +326,8 @@ import {
   itemContinuedSteps,
   latestRestartEventSteps,
   listAgentCloseoutSteps,
+  type AgentCloseoutEvent,
+  type AgentCloseoutProgress,
   listArtifactsSteps,
   listRunnerSetupHoldsSteps,
   openRunnerRepositoryQuestionsSteps,
@@ -783,6 +787,7 @@ export type OrchestratorOptions = {
     objects?: EvidenceObjects;
   } | null;
   closeoutEvidenceObjects?: EvidenceObjects;
+  closeoutLogs?: EvidenceStorage;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -4120,7 +4125,7 @@ export class Orchestrator {
         head,
         this.candidateFor(run.id),
         turnPasses(
-          await this.store.run((q) => listAgentCloseoutSteps(q, [run.id])),
+          await this.agentCloseoutWithOutput(run.id),
           await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
         ),
       );
@@ -4728,7 +4733,12 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
-    const recorded = createDbCloseoutProgress(this.store, item.id, () => this.now());
+    const recorded = createDbCloseoutProgress(
+      this.store,
+      item.id,
+      () => this.now(),
+      this.options.closeoutLogs,
+    );
     const publishing = this.closeoutEvidence()?.objects?.()
       ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
       : null;
@@ -8319,11 +8329,42 @@ export class Orchestrator {
     return {
       record: async (progress) => {
         if (await this.stopped(item.id)) return;
+        const stored = await this.storedAgentCloseout(item.id, progress);
         await this.store.transaction((q) =>
-          recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
+          recordAgentCloseoutSteps(q, runId, item.id, stored, this.now()),
         );
       },
     };
+  }
+
+  private async agentCloseoutWithOutput(runId: string): Promise<AgentCloseoutEvent[]> {
+    const events = await this.store.run((q) => listAgentCloseoutSteps(q, [runId]));
+    const logs = this.options.closeoutLogs;
+    if (!logs) return events;
+    return Promise.all(
+      events.map(async (event) =>
+        event.progress.type === "finished" && event.progress.output
+          ? { ...event, progress: await withCloseoutOutput(this.store, logs, event.progress) }
+          : event,
+      ),
+    );
+  }
+
+  private async storedAgentCloseout(
+    itemId: string,
+    progress: AgentCloseoutProgress,
+  ): Promise<AgentCloseoutProgress> {
+    const logs = this.options.closeoutLogs;
+    if (!logs || progress.type !== "finished" || (!progress.stdout && !progress.stderr))
+      return progress;
+    try {
+      const location = { itemId, headCommit: progress.head, checkId: progress.id };
+      const output = await storeCloseoutOutput(this.store, logs, location, progress, this.now());
+      return { ...progress, stdout: "", stderr: "", output };
+    } catch (error) {
+      journalCaught(error, "orchestrator.storedAgentCloseout", itemId);
+      return progress;
+    }
   }
 
   private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {

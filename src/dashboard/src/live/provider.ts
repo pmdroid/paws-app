@@ -121,6 +121,7 @@ import {
   type CloseoutProgressState,
   type CloseoutRound,
   type CloseoutStepRecord,
+  type CloseoutOutputPointer,
 } from "../../../db";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
@@ -235,7 +236,14 @@ export type LiveStatusOptions = {
   };
   env?: NodeJS.ProcessEnv;
   linearUsage?: () => Promise<LinearUsageView>;
+  closeoutOutput?: CloseoutOutputReader;
 };
+
+export type CloseoutOutputReader = <
+  T extends { stdout: string; stderr: string; output?: CloseoutOutputPointer | null },
+>(
+  record: T,
+) => Promise<T>;
 
 export type LinearUsageView = {
   budget: {
@@ -606,7 +614,7 @@ async function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): Promise<ItemDetail | null> {
-  const { scope, blocks, records, current } = await readIssueScope(store, options, id);
+  const { scope, blocks, records, current } = await readIssueScope(store, options, id, true);
   if (scope.items.length === 0 || current === null) return null;
   let risk: StatusItemRisk | null;
   try {
@@ -697,7 +705,7 @@ async function readCheckLog(
   request: CheckLogRequest,
   options: LiveStatusOptions,
 ): Promise<CheckOutput | null> {
-  const { scope } = await readIssueScope(store, options, request.itemId);
+  const { scope } = await readIssueScope(store, options, request.itemId, true);
 
   if (scope.items.length === 0) return null;
   if (request.ci) {
@@ -1013,7 +1021,9 @@ async function readIssueScope(
   store: Db,
   options: LiveStatusOptions,
   only?: string,
+  outputs = false,
 ): Promise<ScopedIssues> {
+  const read = outputs ? options.closeoutOutput : undefined;
   // The list reads summaries only: no merge queue, questions, evidence, CI rounds or deliveries.
   const issuesOnly = only === undefined;
   const now = options.now?.() ?? new Date();
@@ -1099,7 +1109,11 @@ async function readIssueScope(
       stageTimes: stageTimesOf(record),
     });
   }
-  const progress = await store.run(listCloseoutProgressSteps);
+  const progress = await withStepOutputs(
+    await store.run(listCloseoutProgressSteps),
+    new Set(records.map((record) => record.id)),
+    read,
+  );
   const rounds = await store.run((q) => listCloseoutRoundsSteps(q));
   const merge: Pick<IssueScope, "mergeQueue" | "mergeHistory"> = issuesOnly
     ? { mergeQueue: [] }
@@ -1142,7 +1156,7 @@ async function readIssueScope(
       ? {}
       : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
     evidence: issuesOnly ? [] : await evidenceFor(store, records),
-    agentCloseout: await agentCloseoutFor(store, records, now.getTime(), env),
+    agentCloseout: await agentCloseoutFor(store, records, now.getTime(), env, read),
     ciRounds: issuesOnly ? [] : await ciRoundsFor(store, records, env),
     dead: issuesOnly ? [] : await deadFor(store, records),
     ...(only === undefined ? await mergedTimesFor(store, visible, facts, now.getTime()) : {}),
@@ -1239,11 +1253,25 @@ function sessionAttempt(
   return endedAt === undefined ? session : { ...session, endedAt: iso(endedAt) };
 }
 
+async function withStepOutputs(
+  progress: CloseoutProgressRecord[],
+  items: ReadonlySet<string>,
+  read: CloseoutOutputReader | undefined,
+): Promise<CloseoutProgressRecord[]> {
+  if (read === undefined) return progress;
+  return Promise.all(
+    progress.map(async (row) =>
+      items.has(row.itemId) ? { ...row, steps: await Promise.all(row.steps.map(read)) } : row,
+    ),
+  );
+}
+
 async function agentCloseoutFor(
   store: Db,
   records: readonly WorkItemRecord[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
+  read?: CloseoutOutputReader,
 ): Promise<StatusAgentCloseout[]> {
   const stored = new Map<string, StoredRun[]>();
   for (const run of await store.run((q) => listRunsSteps(q)))
@@ -1256,7 +1284,9 @@ async function agentCloseoutFor(
   });
   const byRun = new Map<string, AgentCloseoutEvent[]>();
   const runIds = shown.map(({ run }) => run.id);
-  for (const event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
+  for (let event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
+    if (read && event.progress.type === "finished" && event.progress.output)
+      event = { ...event, progress: await read(event.progress) };
     const events = byRun.get(event.runId) ?? [];
     events.push(event);
     byRun.set(event.runId, events);

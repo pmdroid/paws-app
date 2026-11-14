@@ -42,9 +42,12 @@ export type CloseoutStepWrite = {
   preExisting?: readonly number[] | null;
 };
 
+export type CloseoutOutputPointer = { key: string; bytes: number; sha256: string };
+
 export type CloseoutStepRecord = CloseoutStepWrite & {
   stdout: string;
   stderr: string;
+  output?: CloseoutOutputPointer | null;
 };
 
 export type CloseoutProgressRecord = CloseoutProgressIdentity & {
@@ -73,6 +76,7 @@ type ExistingStep = Pick<
   | "tokens"
   | "reviewFailOn"
   | "reviewPreExisting"
+  | "outputKey"
 >;
 
 export async function ensureCloseoutProgress(
@@ -160,6 +164,7 @@ export function* upsertCloseoutStepSteps(
           tokens: closeoutStep.tokens,
           reviewFailOn: closeoutStep.reviewFailOn,
           reviewPreExisting: closeoutStep.reviewPreExisting,
+          outputKey: closeoutStep.outputKey,
         })
         .from(closeoutStep)
         .where(key),
@@ -215,9 +220,17 @@ export function* upsertCloseoutStepSteps(
         set: values,
       }),
   );
-  if (clearOutput)
-    yield* q.exec(q.orm.update(closeoutStep).set({ stdout: "", stderr: "" }).where(key));
+  if (!clearOutput) return null;
+  yield* q.exec(
+    q.orm
+      .update(closeoutStep)
+      .set({ stdout: "", stderr: "", ...NO_POINTER })
+      .where(key),
+  );
+  return existing.outputKey;
 }
+
+const NO_POINTER = { outputKey: null, outputBytes: null, outputSha256: null };
 
 function startedAtFor(existing: ExistingStep | null, step: CloseoutStepWrite): number | null {
   if (step.state === "pending") return null;
@@ -272,11 +285,15 @@ export function* appendCloseoutOutputSteps(
   const key = and(eq(closeoutStep.progressId, progressId), eq(closeoutStep.stepId, stepId));
   const row = yield* q.one(
     q.orm
-      .select({ stdout: closeoutStep.stdout, stderr: closeoutStep.stderr })
+      .select({
+        stdout: closeoutStep.stdout,
+        stderr: closeoutStep.stderr,
+        outputKey: closeoutStep.outputKey,
+      })
       .from(closeoutStep)
       .where(key),
   );
-  if (row === undefined) return;
+  if (row === undefined || row.outputKey !== null) return;
   const column = stream === "stderr" ? "stderr" : "stdout";
   const appended = bound(row[column], text);
   yield* q.exec(
@@ -664,7 +681,18 @@ function mapStep(row: StepRow): CloseoutStepRecord {
     preExisting: indexes(row.reviewPreExisting),
     stdout: row.stdout,
     stderr: row.stderr,
+    output: pointerOf(row),
   };
+}
+
+export function pointerOf(row: {
+  outputKey: string | null;
+  outputBytes: number | null;
+  outputSha256: string | null;
+}): CloseoutOutputPointer | null {
+  return row.outputKey === null
+    ? null
+    : { key: row.outputKey, bytes: row.outputBytes ?? 0, sha256: row.outputSha256 ?? "" };
 }
 
 function reviewSnapshot(
@@ -705,6 +733,10 @@ function indexes(value: string | null): number[] | null {
   } catch {
     return null;
   }
+}
+
+export function closeoutProgressId(itemId: string, identity: CloseoutProgressIdentity): string {
+  return progressKey(itemId, identity);
 }
 
 function progressKey(itemId: string, identity: CloseoutProgressIdentity): string {

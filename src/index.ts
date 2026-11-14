@@ -60,6 +60,9 @@ import {
   migrateCloseoutEvidence,
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
+  closeoutLogStorage,
+  uploadLocalCloseoutLogs,
+  removeEvidenceFile,
   type EvidenceObjects,
 } from "./evidence";
 import {
@@ -359,6 +362,7 @@ import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands"
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneCloseoutLogs,
   pruneLoopQueues,
   pruneRunnerEvents,
   pruneRunnerTables,
@@ -1057,6 +1061,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     (options?.runnerTranscriptObjects ? () => null : sealedEvidenceObjects(paths));
   void uploadLocalEvidence(store, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
+  );
+  const closeoutLogs = closeoutLogStorage(paths.home, evidenceObjects);
+  void uploadLocalCloseoutLogs(store, closeoutLogs).catch((error: unknown) =>
+    journalCaught(error, "index.startPaws.uploadLocalCloseoutLogs", null),
   );
   const closeoutEvidence = {
     root: join(paths.home, "closeout", "evidence"),
@@ -1983,6 +1991,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         files: linear?.files,
         secretsDir: paths.secretsDir,
         closeoutEvidenceObjects: evidenceObjects,
+        closeoutLogs,
         evidence: runtime.publicUrl
           ? {
               publicUrl: runtime.publicUrl,
@@ -2219,6 +2228,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         const signal = AbortSignal.any([context.signal, abort.signal]);
         const { deleted } = await pruneRunnerEvents({ store, signal });
         if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+        const logs = await pruneCloseoutLogs({
+          store,
+          signal,
+          remove: (key) => removeEvidenceFile(store, closeoutLogs, key),
+        });
+        if (logs) journal(`Closeout logs pruned: ${logs} outputs deleted`);
         for (const [label, prune] of [
           ["loop queues", pruneLoopQueues],
           ["runner tables", pruneRunnerTables],
