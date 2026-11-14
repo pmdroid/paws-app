@@ -377,3 +377,12 @@ test("admin VM size saves with PUT and keeps the server validation message", asy
   expect(root.textContent).toContain("member_vm.cpu must be a positive integer");
   expect(root.querySelector<HTMLInputElement>("#vm-size-cpu")!.value).toBe("-1");
 });
+
+test("members do not request or edit member VM settings", async () => {
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as never);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  expect(requests.some((request) => request.url === "/api/settings/member-vm")).toBe(false);
+  expect(root.querySelector("[data-vm-size]")).toBeNull();
+});

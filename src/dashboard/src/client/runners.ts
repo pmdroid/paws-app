@@ -1627,7 +1627,11 @@ export function createRunners() {
       );
       if (current !== generation) return;
       memberVm = vm;
-      vmSize = await api<MemberVmSize>("/api/settings/member-vm").catch(() => vmSize);
+      vmSize =
+        identity.role === "admin"
+          ? await api<MemberVmSize>("/api/settings/member-vm").catch(() => vmSize)
+          : null;
+      if (current !== generation) return;
       // exe.dev's pool list is read once per page, for Create VM and Move to pool.
       if (vm.available && pools.state === "loading")
         pools = await api<{ available: boolean; pools?: ExeDevPool[] }>(
@@ -1703,7 +1707,7 @@ export function createRunners() {
     }
   }
   function vmSizeSettings(): string {
-    if (vmSize === null) return "";
+    if (!manages() || vmSize === null) return "";
     const fields = [
       ["cpu", "CPUs"],
       ["memoryGb", "Memory (GB)"],

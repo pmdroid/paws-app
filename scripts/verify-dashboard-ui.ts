@@ -185,7 +185,7 @@ try {
     await expect(admin.locator("[data-findings-message]")).toContainText("Grouping time saved.");
     await admin.screenshot({ path: join(out, `findings-editable-${width}.png`), fullPage: true });
     await admin.route("**/api/runners", (route) =>
-      route.fulfill({ json: { runners: [], serverVersion: null } }),
+      route.fulfill({ json: { runners: [], serverVersion: null, workspaceReady: true } }),
     );
     let vmSize = { cpu: 4, memoryGb: 8 };
     await admin.route("**/api/settings/member-vm", async (route) => {

@@ -260,10 +260,11 @@ export function createFindings(): {
     const mounted = root;
     const started = ++groupsGeneration;
     try {
-      const [groups, settings] = await Promise.all([
-        findingGroupsRequest(engine),
-        findingSettingsRequest(engine).catch(() => null),
-      ]);
+      const groups = (await findingGroupsRequest(engine)) as FindingGroupsResponse;
+      const settings =
+        view.local && groups.canChange
+          ? await findingSettingsRequest(engine).catch(() => null)
+          : null;
       if (root !== mounted || started !== groupsGeneration) return;
       view.groups = groups as FindingGroupsResponse;
       view.groupingTime = settings?.groupingTime;

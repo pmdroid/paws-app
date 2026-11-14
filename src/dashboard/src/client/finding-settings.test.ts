@@ -131,9 +131,9 @@ test("grouping time loads and saves independently of the grouping switch", async
   expect(root.textContent).toContain("Grouping time saved.");
 });
 
-test("members see the grouping time without an editor when the route supplies it", async () => {
+test("members do not request the admin-only settings route", async () => {
   groups = { ...groups, canRun: false, canChange: false };
   const root = await mount();
   expect(root.querySelector('[name="groupingTime"]')).toBeNull();
-  expect(root.textContent).toContain("06:00 UTC");
+  expect(requests.some((request) => request.path === "/api/settings/findings")).toBe(false);
 });
