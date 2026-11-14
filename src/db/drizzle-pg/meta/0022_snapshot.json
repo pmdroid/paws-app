@@ -1,5 +1,5 @@
 {
-  "id": "31335156-b93a-4c64-a3dc-e41e5be0e443",
+  "id": "f44892e6-4fff-4091-bdee-a3e8e8aa8075",
   "prevId": "7ae7659a-38ea-4dfb-a74c-ea6fa4b59cef",
   "version": "7",
   "dialect": "postgresql",
@@ -1001,6 +1001,12 @@
         },
         "installation_observed_at": {
           "name": "installation_observed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activities_listed_generation": {
+          "name": "activities_listed_generation",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -4366,7 +4372,29 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "agent_closeout_event_item": {
+          "name": "agent_closeout_event_item",
+          "columns": [
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "agent_closeout_event_run_id_sequence_pk": {
@@ -7293,6 +7321,18 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "published_head": {
+          "name": "published_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "open_findings_line": {
+          "name": "open_findings_line",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -15941,7 +15981,23 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "scheduler_project": {
+          "name": "scheduler_project",
+          "columns": [
+            {
+              "expression": "project_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "scheduler_admission_item_id_work_item_id_fk": {
           "name": "scheduler_admission_item_id_work_item_id_fk",

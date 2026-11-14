@@ -405,7 +405,7 @@ type AgentSetupInput = {
 };
 
 export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
-  const setup = q.t.runAgentSetup;
+  const work = q.t.runnerWork;
   const pins = new Map(
     (yield* listSkillsSteps(q))
       .filter(
@@ -420,26 +420,15 @@ export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
       version: row.version,
       status: row.status as "installed" | "pending",
     }));
-  // `skills` and `hooks` are text columns on both dialects.
   yield* q.exec(
     q.orm
-      .insert(setup)
-      .values({
-        runId: input.runId,
-        runnerId: input.runnerId,
+      .update(work)
+      .set({
         skills: JSON.stringify(skills),
         hooks: JSON.stringify(input.hooks),
-        recordedAt: input.at,
+        setupRecordedAt: input.at,
       })
-      .onConflictDoUpdate({
-        target: setup.runId,
-        set: {
-          runnerId: sql`excluded.runner_id`,
-          skills: sql`excluded.skills`,
-          hooks: sql`excluded.hooks`,
-          recordedAt: sql`excluded.recorded_at`,
-        },
-      }),
+      .where(and(eq(work.runId, input.runId), eq(work.runnerId, input.runnerId))),
   );
 }
 
@@ -455,29 +444,35 @@ export function* runAgentSetupsSteps(
   q: Q,
   runIds: readonly string[],
 ): Steps<Map<string, RunAgentSetup>> {
-  const setup = q.t.runAgentSetup;
+  const work = q.t.runnerWork;
   const rows = yield* q.all(
     q.orm
       .select({
-        runId: setup.runId,
-        runnerId: setup.runnerId,
-        skills: setup.skills,
-        hooks: setup.hooks,
-        recordedAt: setup.recordedAt,
+        runId: work.runId,
+        runnerId: work.runnerId,
+        skills: work.skills,
+        hooks: work.hooks,
+        recordedAt: work.setupRecordedAt,
       })
-      .from(setup)
-      .where(inArray(setup.runId, [...runIds])),
+      .from(work)
+      .where(inArray(work.runId, [...runIds])),
   );
   return new Map(
-    rows.map((row) => [
-      row.runId,
-      {
-        runnerId: row.runnerId,
-        skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
-        hooks: JSON.parse(row.hooks) as RunHook[],
-        recordedAt: row.recordedAt,
-      },
-    ]),
+    rows.flatMap((row) =>
+      row.skills === null || row.hooks === null || row.recordedAt === null
+        ? []
+        : [
+            [
+              row.runId,
+              {
+                runnerId: row.runnerId,
+                skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
+                hooks: JSON.parse(row.hooks) as RunHook[],
+                recordedAt: row.recordedAt,
+              },
+            ] as const,
+          ],
+    ),
   );
 }
 

@@ -306,6 +306,38 @@ function unitsThatImport(
   return users;
 }
 
+export const CLOSEOUT_TEST_CAP = 120;
+
+export function directTests(
+  changed: readonly string[],
+  tests: readonly string[],
+): { path: string; reasons: string[] }[] {
+  const chosen = new Map<string, string[]>();
+  const choose = (path: string, reason: string) =>
+    chosen.set(path, [...(chosen.get(path) ?? []), reason]);
+  const units = new Set(changed.map(sourceUnit).filter((unit) => unit !== undefined));
+  for (const test of tests) {
+    if (changed.includes(test)) choose(test, "changed");
+    for (const unit of units) if (test.startsWith(`${unit}/`)) choose(test, `in ${unit}`);
+  }
+  for (const path of ALWAYS) if (tests.includes(path)) choose(path, "always");
+  return [...chosen]
+    .map(([path, reasons]) => ({ path, reasons }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function capSelection(
+  selection: Selection,
+  changed: readonly string[] | null,
+  tests: readonly string[],
+  cap = CLOSEOUT_TEST_CAP,
+): { selection: Selection; leftToCi: number } {
+  const size = selection.full ? tests.length : selection.files.length;
+  if (size <= cap || changed === null) return { selection, leftToCi: 0 };
+  const files = directTests(changed, tests);
+  return { selection: { full: false, files }, leftToCi: size - files.length };
+}
+
 /** What ran and why, for the check's log and evidence. */
 export function describeSelection(selection: Selection, total: number): string {
   if (selection.full) return `affected-tests: full suite (${total} files): ${selection.reason}`;
@@ -329,16 +361,22 @@ if (import.meta.main) {
   const root = process.cwd();
   const from = base ?? git(root, ["merge-base", "origin/main", "HEAD"]);
   const tests = testFiles(root);
-  const selection =
+  const changed = from === null ? null : changedPaths(root, from, head);
+  const affected =
     from === null
       ? ({ full: true, reason: "no base: origin/main and HEAD have no merge base" } as const)
       : selectTests({
           root,
-          changed: changedPaths(root, from, head),
+          changed,
           tests,
           knownFailures: knownFailureChanges(root, from, head),
         });
+  const { selection, leftToCi } = capSelection(affected, changed, tests);
   if (from !== null) console.log(`affected-tests: base ${from}, head ${head}`);
+  if (leftToCi > 0)
+    console.log(
+      `affected-tests: the change reaches more than ${CLOSEOUT_TEST_CAP} test files; running its direct tests and leaving ${leftToCi} to GitHub CI`,
+    );
   console.log(describeSelection(selection, tests.length));
   if (!list && (selection.full || selection.files.length > 0)) {
     const command = testCommand(bail);
