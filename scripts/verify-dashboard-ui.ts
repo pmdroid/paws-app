@@ -210,6 +210,78 @@ try {
       fullPage: true,
     });
 
+    let storage: {
+      kind: string;
+      source: string;
+      bucket: string | null;
+      endpoint: string | null;
+      region: string | null;
+      accessKeyId: string | null;
+      hasSecretAccessKey: boolean;
+      hasSessionToken: boolean;
+      closeoutLogRetentionDays: number;
+    } = {
+      kind: "local",
+      source: "settings",
+      bucket: null,
+      endpoint: null,
+      region: null,
+      accessKeyId: null,
+      hasSecretAccessKey: false,
+      hasSessionToken: false,
+      closeoutLogRetentionDays: 0,
+    };
+    await admin.route("**/api/settings/storage", async (route) => {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        expect(body.secretAccessKey).toBeUndefined();
+        expect(body.sessionToken).toBeUndefined();
+        storage = { ...storage, ...body };
+        await route.fulfill({ json: { ...storage, restartRequired: true } });
+      } else await route.fulfill({ json: storage });
+    });
+    await admin.route("**/api/settings/storage/check", (route) =>
+      route.fulfill({ json: { ok: true } }),
+    );
+    await visit(admin, width, "storage-local", "/dashboard/settings/storage", "Storage");
+    await expect(admin.locator("#storage-kind")).toHaveValue("local");
+    await admin.locator("#storage-days").fill("14");
+    await admin.getByRole("button", { name: "Save storage settings" }).click();
+    await expect(admin.getByText("Storage settings saved.", { exact: true })).toBeVisible();
+    await expect(admin.getByText("Restart Paws to apply the storage settings.")).toBeVisible();
+    await admin.reload();
+    await expect(admin.locator("#storage-days")).toHaveValue("14");
+    storage = {
+      ...storage,
+      kind: "s3",
+      bucket: "paws-evidence",
+      endpoint: "https://s3.example.test",
+      region: "us-east-1",
+      accessKeyId: "example-key",
+      hasSecretAccessKey: true,
+      hasSessionToken: true,
+    } as typeof storage;
+    await admin.reload();
+    await expect(admin.locator("#storage-bucket")).toHaveValue("paws-evidence");
+    await expect(admin.locator("#storage-secretAccessKey")).toHaveValue("");
+    await expect(admin.locator("#storage-sessionToken")).toHaveAttribute(
+      "placeholder",
+      "Saved, enter a new one to replace it",
+    );
+    await admin.getByRole("button", { name: "Check connection" }).click();
+    await expect(admin.getByText("Connection OK.", { exact: true })).toBeVisible();
+    await admin.getByRole("button", { name: "Save storage settings" }).click();
+    await expect(admin.getByText("Storage settings saved.", { exact: true })).toBeVisible();
+    await admin.screenshot({ path: join(out, `storage-s3-${width}.png`), fullPage: true });
+    storage.source = "environment";
+    await admin.reload();
+    await expect(admin.getByText("Set by PAWS_S3_* on this host")).toBeVisible();
+    await expect(admin.locator("#storage-kind")).toBeDisabled();
+    await expect(admin.locator("#storage-days")).toBeDisabled();
+    await admin.screenshot({ path: join(out, `storage-environment-${width}.png`), fullPage: true });
+    await admin.unroute("**/api/settings/storage");
+    await admin.unroute("**/api/settings/storage/check");
+
     await admin.route("**/api/settings/agents", (route) =>
       route.fulfill({
         json: {
@@ -253,7 +325,7 @@ try {
     await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
     await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
-    await expect(admin.locator(".settings-nav a")).toHaveCount(10);
+    await expect(admin.locator(".settings-nav a")).toHaveCount(11);
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

@@ -18,6 +18,11 @@ export const SETTINGS_PAGES = [
     description: "Choose how accepted pull requests reach main.",
   },
   {
+    id: "storage",
+    name: "Storage",
+    description: "Configure object storage and Closeout log retention.",
+  },
+  {
     id: "limits",
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
@@ -80,5 +85,5 @@ function settingsNav(page: SettingsPage): string {
 export function renderSettingsPage(requested?: SettingsPage): string {
   const page = shownSettingsPage(requested);
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }
