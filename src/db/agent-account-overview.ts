@@ -46,6 +46,7 @@ export function* agentAccountOverviewSteps(
         label: a.label,
         position: a.position,
         extraUsage: a.extraUsage,
+        signedOut: c.ciphertext,
         refreshedAt: c.updatedAt,
         refreshedBy: c.runnerId,
         limits: u.limitsJson,
@@ -109,7 +110,7 @@ export function* agentAccountOverviewSteps(
       extraUsage: row.extraUsage === 1,
       signingIn: signingIn.has(row.id),
       credential:
-        row.refreshedAt === null
+        row.refreshedAt === null || row.signedOut === ""
           ? null
           : {
               refreshedAt: row.refreshedAt,
@@ -203,16 +204,31 @@ export function* setAgentAccountExtraUsageSteps(
 
 export function* signOutAgentAccountSteps(
   q: Q,
-  input: { workspaceId: string; accountId: string },
+  input: { workspaceId: string; accountId: string; now: number },
 ): Steps<void> {
   const row = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
   const { agentAccountCredential: c } = q.t;
-  yield* q.exec(q.orm.delete(c).where(eq(c.accountId, row.id)));
+  const stored = yield* q.one(
+    q.orm.select({ version: c.version }).from(c).where(eq(c.accountId, row.id)),
+  );
+  const signedOut = {
+    agent: row.agent,
+    ciphertext: "",
+    version: (stored?.version ?? 0) + 1,
+    updatedAt: input.now,
+    runnerId: null,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(c)
+      .values({ accountId: row.id, ...signedOut })
+      .onConflictDoUpdate({ target: c.accountId, set: signedOut }),
+  );
 }
 
 export function* centralSignInTargetSteps(
   q: Q,
-  input: { workspaceId: string; accountId: string; now: number },
+  input: { workspaceId: string; userId: string; accountId: string; now: number },
 ): Steps<{ runnerId: string; bindingId: string; agent: RunnerCodingAgent }> {
   const account = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
   const { runner, runnerHostStatus: h } = q.t;
@@ -224,6 +240,7 @@ export function* centralSignInTargetSteps(
       .where(
         and(
           eq(runner.workspaceId, input.workspaceId),
+          eq(runner.ownerUserId, input.userId),
           eq(runner.status, "active"),
           isNull(runner.revokedAt),
           gt(runner.lastSeenAt, input.now - ONLINE_MS),
@@ -237,7 +254,7 @@ export function* centralSignInTargetSteps(
   if (!target)
     throw new AgentAccountError(
       "runner_unsupported",
-      "No online runner supports central sign-ins. Start or update a runner, then try again.",
+      "None of your runners is online with central sign-ins. Start or update one of your runners, then try again.",
     );
   const agent = account.agent as RunnerCodingAgent;
   const bound = yield* liveAccountBindingSteps(q, target.id, account.id);

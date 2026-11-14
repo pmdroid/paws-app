@@ -88,12 +88,17 @@ export function createAccountManagement(options: { store?: Db; now?: () => numbe
       if (action === "sign-in" && method === "POST")
         return json(
           await store.transaction((q) =>
-            centralSignInTargetSteps(q, { workspaceId, accountId: accountId!, now: now() }),
+            centralSignInTargetSteps(q, {
+              workspaceId,
+              userId: principal.userId,
+              accountId: accountId!,
+              now: now(),
+            }),
           ),
         );
       if (action === "credential" && method === "DELETE") {
         await store.transaction((q) =>
-          signOutAgentAccountSteps(q, { workspaceId, accountId: accountId! }),
+          signOutAgentAccountSteps(q, { workspaceId, accountId: accountId!, now: now() }),
         );
         return json({ ok: true });
       }

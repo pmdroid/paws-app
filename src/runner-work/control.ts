@@ -698,7 +698,10 @@ export function createRunnerWork(options: {
           const stored = named
             ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
             : null;
-          if (!named || (command.type !== "login" && stored?.agent !== named.agent)) {
+          if (
+            !named ||
+            (command.type !== "login" && (stored?.agent !== named.agent || stored.blob === null))
+          ) {
             sent.push(envelope);
             continue;
           }
@@ -708,7 +711,7 @@ export function createRunnerWork(options: {
             ...envelope,
             credential: {
               version: at,
-              ...(command.type === "login" || !stored
+              ...(command.type === "login" || !stored?.blob
                 ? {}
                 : { sealed: sealForRunner(pem, stored.blob, context) }),
             },

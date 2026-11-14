@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { AGENT_ACCOUNTS_RETIRED, createAccountManagement } from "../src/account-management";
+import { writeAgentCredentialCiphertextSteps } from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
 import { forEachDialect, seed, withoutForeignKeys } from "./dialects";
 import { seedRunner } from "./runner-rows";
@@ -71,10 +72,12 @@ forEachDialect((connect) => {
           .insert(q.t.workspace)
           .values({ id: "acme", linearOrganizationId: "org", name: "acme", createdAt: NOW }),
       );
-      await seedRunner(db, "R1", { lastSeenAt: NOW - 5_000 });
-      await seedRunner(db, "R2", { lastSeenAt: NOW - 5_000 });
+      await seedRunner(db, "R0", { lastSeenAt: NOW - 5_000, ownerUserId: "bea" });
+      await seedRunner(db, "R1", { lastSeenAt: NOW - 5_000, ownerUserId: "ada" });
+      await seedRunner(db, "R2", { lastSeenAt: NOW - 5_000, ownerUserId: "ada" });
       await seed(db, (q) =>
         q.orm.insert(q.t.runnerHostStatus).values([
+          { runnerId: "R0", runnerVersion: "9.0.0", reportedAt: NOW },
           { runnerId: "R1", runnerVersion: "0.1.0", reportedAt: NOW },
           { runnerId: "R2", runnerVersion: "9.0.0", reportedAt: NOW },
         ]),
@@ -161,6 +164,22 @@ forEachDialect((connect) => {
       ]);
       expect((await send("DELETE", `/${home.id}/credential`)).status).toBe(200);
       expect((await send("GET", "")).body.accounts[0]?.credential).toBeNull();
+      const upload = (version: number) =>
+        db.transaction((q) =>
+          writeAgentCredentialCiphertextSteps(q, {
+            accountId: home.id,
+            runnerId: "R2",
+            version,
+            ciphertext: "late",
+            now: NOW,
+          }),
+        );
+      expect(await upload(2)).toBe("stale_version");
+      expect(await upload(3)).toBe("written");
+      expect((await send("GET", "")).body.accounts[0]?.credential).toEqual({
+        refreshedAt: NOW,
+        runner: "R2",
+      });
       const member = { ...principal, role: "member" as const };
       expect((await send("GET", "", undefined, member)).body.canManage).toBe(false);
       for (const [method, path, body] of [
