@@ -188,12 +188,12 @@ export async function storedCheckpointStart(
   checkpoint: string,
   bases: readonly string[],
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | null> {
   const read = await github.commit(checkpoint, signal);
   const start = read.subject === CHECKPOINT_COMMIT_MESSAGE ? read.parents[0] : checkpoint;
-  if (!start) throw new Error(`Checkpoint ${checkpoint.slice(0, 7)} has no parent`);
+  if (!start) return null;
   for (const base of bases) if (await github.contains(start, base, signal)) return start;
-  throw new Error(`Commit ${start} does not descend from ${bases.join(" or ")}.`);
+  return null;
 }
 
 export async function ensureStoredStartOnGitHub(input: {

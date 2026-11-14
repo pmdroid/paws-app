@@ -263,7 +263,12 @@ test("a hidden checkpoint is checked through the API and starts on its parent", 
   expect(await storedCheckpointStart(github, CANDIDATE, ["e".repeat(40), MAIN], signal)).toBe(
     CANDIDATE,
   );
-  await expect(storedCheckpointStart(github, checkpoint, ["e".repeat(40)], signal)).rejects.toThrow(
-    /does not descend/,
-  );
+  expect(await storedCheckpointStart(github, checkpoint, ["e".repeat(40)], signal)).toBeNull();
+  const failing: GitHubCommits = {
+    ...github,
+    contains: async () => {
+      throw new Error("GitHub GET failed with status 502");
+    },
+  };
+  await expect(storedCheckpointStart(failing, checkpoint, [MAIN], signal)).rejects.toThrow(/502/);
 });

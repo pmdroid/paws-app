@@ -1392,10 +1392,21 @@ export function createRemoteAgentRunner(options: {
                 const savedOn = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint
                   ?.checkpointMain;
                 const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
-                const startsOn = (bases: string[]) =>
-                  (github
-                    ? storedCheckpointStart(github, saved, bases, signal)
-                    : checkpointStart((args) => git(["--git-dir", mirror!, ...args]), saved, bases)
+                const savedBranch = restoreCheckpoint.branch;
+                const startsOn = async (bases: string[]) => {
+                  if (github) {
+                    const start = await storedCheckpointStart(github, saved, bases, signal).catch(
+                      (error: unknown) => {
+                        signal.throwIfAborted();
+                        throw new CheckpointLookupFailed(savedBranch, { cause: error });
+                      },
+                    );
+                    return start !== null;
+                  }
+                  return checkpointStart(
+                    (args) => git(["--git-dir", mirror!, ...args]),
+                    saved,
+                    bases,
                   ).then(
                     () => true,
                     (error: unknown) => {
@@ -1403,6 +1414,7 @@ export function createRemoteAgentRunner(options: {
                       return false;
                     },
                   );
+                };
                 if (!(await startsOn(mainSha ? [head, mainSha] : [head]))) {
                   if (savedMain && savedMain !== mainSha && (await startsOn([savedMain])))
                     mainSha = savedMain;
