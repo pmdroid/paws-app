@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { type Q, type Db } from "./db";
-import { closeoutEvidenceObject, evidenceObject } from "./schema";
+import { closeoutEvidenceObject, evidenceObject } from "./schema-pg";
 
 export type EvidenceMediaType =
   | "video/webm"

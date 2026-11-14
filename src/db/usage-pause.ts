@@ -3,7 +3,7 @@ import { systemClock } from "../core";
 import { resumeAccountHealthNowSteps } from "./agent-account-health";
 import { type Db, type Q, type Steps } from "./db";
 import { accrueAwakeSteps } from "./items";
-import { usagePause as usagePauseTable } from "./schema";
+import { usagePause as usagePauseTable } from "./schema-pg";
 
 /** A run waiting for its agent's usage limit to reset. */
 export type UsagePause = typeof usagePauseTable.$inferSelect;

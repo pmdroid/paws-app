@@ -1,6 +1,6 @@
 import { desc, eq, lt } from "drizzle-orm";
 import { type Q, type Db } from "./db";
-import type { githubDelivery } from "./schema";
+import type { githubDelivery } from "./schema-pg";
 
 export type IntegrationEvent = typeof githubDelivery.$inferSelect;
 

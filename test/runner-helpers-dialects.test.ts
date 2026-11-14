@@ -86,9 +86,7 @@ forEachDialect((connect) => {
     await db.run((q) => acknowledgeRunnerHelperSteps(q, "acked", 1));
     await db.run((q) => endRunnerHelperSteps(q, "ended", 1));
 
-    expect(await db.run((q) => unacknowledgedRunnerHelpersSteps(q, "box", 50))).toEqual(
-      db.dialect === "sqlite" ? ["z", "a"] : ["a", "z"],
-    );
+    expect(await db.run((q) => unacknowledgedRunnerHelpersSteps(q, "box", 50))).toEqual(["a", "z"]);
   });
 
   test("acknowledging and ending keep the first time", async () => {

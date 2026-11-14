@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
 import { type Q, type Db, type Steps } from "./db";
-import { workItemTask } from "./schema";
+import { workItemTask } from "./schema-pg";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { markRunSteps } from "./runs";

@@ -39,7 +39,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/credentials`                                        | Secret file access and credential refresh                             |
 | `src/dashboard`                                          | Dashboard client, server contract and build                           |
 | `src/dashboard-links`                                    | Canonical dashboard paths, links and old `/status` redirects          |
-| `src/db`                                                 | SQLite migrations, domain rows, jobs, outbox and transactional writes |
+| `src/db`                                                 | Postgres schema, migrations, domain rows, jobs, outbox and writes     |
 | `src/decisions`                                          | Workspace decisions and repository access choices                     |
 | `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                |
 | `src/doctor`                                             | Local prerequisites, agent profiles and external access probes        |
@@ -110,13 +110,13 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 
-`src/core` does not open SQLite and does not talk to Linear. `transition()` is pure. The single writer that commits a transition, outbox rows, and jobs in one `BEGIN IMMEDIATE` transaction comes later; call `transition()` and do not add a second state machine.
+`src/core` does not open the database and does not talk to Linear. `transition()` is pure. The single writer that commits a transition, outbox rows, and jobs in one transaction comes later; call `transition()` and do not add a second state machine.
 
-SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. Migrations are drizzle-kit migrations in `src/db/drizzle/`, append-only and generated from the schema in `src/db/schema/`: change the schema, then run `bun x drizzle-kit generate --name <what_it_does>`. Use a custom migration (`bun x drizzle-kit generate --custom --name <what_it_does>`) with hand-written SQL only for what drizzle-kit can't express: `STRICT`, triggers, data backfills. Shipped migrations, their snapshots and journal entries are never edited (see `src/db/README.md`).
+Paws keeps its state in Postgres (PGlite or a server). Migrations are drizzle-kit migrations in `src/db/drizzle-pg/`, append-only and generated from the schema in `src/db/schema-pg/`: change the schema, then run `bun x drizzle-kit generate --name <what_it_does>`. Use a custom migration (`bun x drizzle-kit generate --custom --name <what_it_does>`) with hand-written SQL only for what drizzle-kit can't express: triggers, data backfills. Shipped migrations, their snapshots and journal entries are never edited (see `src/db/README.md`). The runner's own SQLite stores (`src/runner-journal`, `src/runner-daemon`) open through `openDatabase()` with WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000` and `temp_store=MEMORY`.
 
-Database access goes through Drizzle in `src/db`; new raw SQL is refused by `bun run check`. `bun run raw-sql` fails on `.query(`, `.run(`, `.prepare(` or `.exec(` on a `bun:sqlite` `Database` outside tests, `src/db/migrate.ts`, `src/db/open.ts`, the runner store table bootstraps listed in `ALLOWED_FILES` in `scripts/check-raw-sql.ts` and Drizzle's `sql` template in `src/db`. There is no raw SQL: queries live in their owning `src/db` module.
+Database access goes through Drizzle in `src/db`; new raw SQL is refused by `bun run check`. `bun run raw-sql` fails on `.query(`, `.run(`, `.prepare(` or `.exec(` on a `bun:sqlite` `Database` outside tests, `src/db/open.ts`, the runner store table bootstraps listed in `ALLOWED_FILES` in `scripts/check-raw-sql.ts` and Drizzle's `sql` template in `src/db`. There is no raw SQL: queries live in their owning `src/db` module.
 
-External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
+External adapters are async. Database helpers return promises through `db.run()` and `db.transaction()` (see `src/db/README.md`). Keep transactions short.
 
 A new runner feature declares its minimum runner version in `src/runner-protocol/versions.ts` as the next release (one patch above the latest `v*` tag). The `runner release` workflow fails when the tag is below any constant there, and CI fails when a constant added or changed since the latest `v*` tag names that release or an earlier one (`bun scripts/check-runner-versions.ts --since-latest-release`). Check `git ls-remote --tags origin` before choosing the version: a release can ship while a branch is open.
 

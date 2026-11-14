@@ -404,7 +404,7 @@ describe("Conflict-prone files", () => {
         parallelFiles: [{ repository: "acme/platform", paths: ["src/index.ts"] }],
         hotFiles: [
           { ...file("src/index.ts", 4), held: false, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
-          { ...file("src/db/drizzle/meta/_journal.json", 2), held: true },
+          { ...file("src/db/drizzle-pg/meta/_journal.json", 2), held: true },
         ],
       },
       busy: null,
@@ -417,7 +417,7 @@ describe("Conflict-prone files", () => {
     expect(html).toContain('<li class="hot-file opacity-60"><code>src/index.ts</code>');
     expect(html).not.toContain("Holding");
     expect(html).toContain(
-      'data-path="src/db/drizzle/meta/_journal.json" checked> Hold work that changes this file</label><p class="sub">Migrations made side by side need a manual rebase</p>',
+      'data-path="src/db/drizzle-pg/meta/_journal.json" checked> Hold work that changes this file</label><p class="sub">Migrations made side by side need a manual rebase</p>',
     );
     expect(
       mergeSettingsBody({

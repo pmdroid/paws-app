@@ -104,7 +104,10 @@ forEachDialect((open) => {
       const activations = await db.run((q) =>
         q.all(
           q.orm
-            .select({ id: q.t.jobActivation.id, jobId: q.t.jobActivation.jobId })
+            .select({
+              id: q.t.jobActivation.id,
+              jobId: q.t.jobActivation.jobId,
+            })
             .from(q.t.jobActivation)
             .orderBy(q.t.jobActivation.id),
         ),
@@ -125,7 +128,10 @@ forEachDialect((open) => {
         await db.run((q) => enqueueJobOnceSteps(q, { queue: "work", jobKey: "k", now: 0 })),
       ).toEqual({ id: first.id, inserted: false });
 
-      const reconcile = { queue: "linear.item.reconcile", jobKey: "linear.item.reconcile:a" };
+      const reconcile = {
+        queue: "linear.item.reconcile",
+        jobKey: "linear.item.reconcile:a",
+      };
       const [one, two] = await Promise.all([
         enqueueJobOnce(db, reconcile),
         enqueueJobOnce(db, reconcile),
@@ -146,11 +152,18 @@ forEachDialect((open) => {
       const claimed = (await claim(db, 0, ["tick"]))!;
       expect(await db.run((q) => completeJobSteps(q, claimed, 10))).toBe(true);
       const again = await db.transaction((q) =>
-        reenqueueJobSteps(q, { ...job, now: 20 }, (previous) => ({ n: 2, was: previous?.id })),
+        reenqueueJobSteps(q, { ...job, now: 20 }, (previous) => ({
+          n: 2,
+          was: previous?.id,
+        })),
       );
       expect(again).toEqual({ id: armed.id, pending: true, armed: true });
       const row = (await getJob(db, armed.id))!;
-      expect(row).toMatchObject({ status: "pending", runAt: 20, payload: { n: 2, was: armed.id } });
+      expect(row).toMatchObject({
+        status: "pending",
+        runAt: 20,
+        payload: { n: 2, was: armed.id },
+      });
       expect(row.activationId).not.toBe(claimed.activationId);
       await expect(
         db.transaction((q) => reenqueueJobSteps(q, { ...job, queue: "other" })),
@@ -173,7 +186,12 @@ forEachDialect((open) => {
       expect(await db.run((q) => nextClaimableRunAtSteps(q, { now: 100, queues: [] }))).toBeNull();
       expect(await claim(db, 100, [])).toBeNull();
       const job = (await claim(db, 100, ["work"]))!;
-      expect(job).toMatchObject({ id: first, status: "running", attempts: 1, lockedUntil: 1_100 });
+      expect(job).toMatchObject({
+        id: first,
+        status: "running",
+        attempts: 1,
+        lockedUntil: 1_100,
+      });
       expect(job.lockedBy).toStartWith("paws:");
       expect((await claim(db, 100, ["work"]))?.id).toBe(later);
       expect(await claim(db, 100, ["work"])).toBeNull();
@@ -202,7 +220,7 @@ forEachDialect((open) => {
             jobId: start,
             projectKey: "p",
             repositoryKey: "r",
-            paths: (q.dialect === "sqlite" ? "[]" : []) as string[],
+            paths: [] as string[],
             hot: 0,
             createdAt: 0,
           }),
@@ -238,19 +256,33 @@ forEachDialect((open) => {
             q.orm.update(q.t.workItem).set({ state: "merge_queue" }).where(eq(q.t.workItem.id, id)),
           );
           yield* q.exec(
-            q.orm
-              .insert(q.t.mergeQueueEntry)
-              .values({ itemId: id, repository: "acme/app", readyAt: 0, lane: "main" }),
+            q.orm.insert(q.t.mergeQueueEntry).values({
+              itemId: id,
+              repository: "acme/app",
+              readyAt: 0,
+              lane: "main",
+            }),
           );
           yield* q.exec(
-            q.orm
-              .insert(q.t.workItemRepository)
-              .values({ itemId: id, owner: "Acme", repo: "app", remoteUrl: "x" }),
+            q.orm.insert(q.t.workItemRepository).values({
+              itemId: id,
+              owner: "Acme",
+              repo: "app",
+              remoteUrl: "x",
+            }),
           );
         });
       }
-      await enqueue(db, { queue: JOB_KIND.merge, payload: { itemId: "a" }, now: 0 });
-      await enqueue(db, { queue: JOB_KIND.merge, payload: { itemId: "b" }, now: 0 });
+      await enqueue(db, {
+        queue: JOB_KIND.merge,
+        payload: { itemId: "a" },
+        now: 0,
+      });
+      await enqueue(db, {
+        queue: JOB_KIND.merge,
+        payload: { itemId: "b" },
+        now: 0,
+      });
       expect((await claim(db, 10))?.payload).toEqual({ itemId: "a" });
       expect(await claim(db, 10)).toBeNull();
       expect(
@@ -265,7 +297,11 @@ forEachDialect((open) => {
   test("leased updates succeed only for the lease holder", async () =>
     withDb(open, async (db) => {
       await insertWorkItem(db, "item");
-      const id = await enqueue(db, { queue: "work", payload: { itemId: "item" }, now: 0 });
+      const id = await enqueue(db, {
+        queue: "work",
+        payload: { itemId: "item" },
+        now: 0,
+      });
       const job = (await claim(db, 0))!;
       const stranger: Job = { ...job, lockedBy: "someone-else" };
       expect(await db.run((q) => extendJobLeaseSteps(q, stranger, 0, 5_000))).toBe(false);
@@ -294,7 +330,11 @@ forEachDialect((open) => {
       );
       expect(await db.run((q) => jobVersionCurrentSteps(q, job))).toBe(true);
 
-      const parked = { runAt: 9_000, payload: { itemId: "item", parked: true }, attempts: -2 };
+      const parked = {
+        runAt: 9_000,
+        payload: { itemId: "item", parked: true },
+        attempts: -2,
+      };
       expect(await db.run((q) => parkLeasedJobSteps(q, job, { ...parked, now: 6_000 }))).toBe(
         false,
       );
@@ -317,7 +357,12 @@ forEachDialect((open) => {
       });
       expect(
         await db.run((q) =>
-          parkLeasedJobSteps(q, job, { runAt: 9_000, payload: {}, attempts: 1, now: 10 }),
+          parkLeasedJobSteps(q, job, {
+            runAt: 9_000,
+            payload: {},
+            attempts: 1,
+            now: 10,
+          }),
         ),
       ).toBe(true);
       expect((await getJob(db, id))?.runAt).toBe(500);
@@ -328,9 +373,17 @@ forEachDialect((open) => {
       const id = await enqueue(db, { queue: "work", maxAttempts: 2, now: 0 });
       const first = (await claim(db, 0))!;
       const retried = await db.run((q) =>
-        failJobSteps(q, first, new Error("boom"), { now: 0, baseMs: 100, capMs: 100 }),
+        failJobSteps(q, first, new Error("boom"), {
+          now: 0,
+          baseMs: 100,
+          capMs: 100,
+        }),
       );
-      expect(retried).toMatchObject({ status: "pending", lastError: "boom", attempts: 1 });
+      expect(retried).toMatchObject({
+        status: "pending",
+        lastError: "boom",
+        attempts: 1,
+      });
       expect(retried!.runAt).toBeGreaterThan(0);
       const second = (await claim(db, retried!.runAt))!;
       expect(await db.run((q) => failJobSteps(q, second, "again", { now: 50_000 }))).toMatchObject({
@@ -342,7 +395,11 @@ forEachDialect((open) => {
       await db.run((q) => noteJobErrorSteps(q, id, "noted"));
       expect((await getJob(db, id))?.lastError).toBe("noted");
 
-      const tick = await enqueue(db, { queue: "tick", recurringEveryMs: 1_000, now: 0 });
+      const tick = await enqueue(db, {
+        queue: "tick",
+        recurringEveryMs: 1_000,
+        now: 0,
+      });
       const fired = (await claim(db, 0, ["tick"]))!;
       expect(await db.run((q) => completeJobSteps(q, fired, 100))).toBe(true);
       expect(await getJob(db, tick)).toMatchObject({
@@ -352,31 +409,55 @@ forEachDialect((open) => {
       });
       const retry = (await claim(db, 1_100, ["tick"]))!;
       expect(await db.run((q) => retryLeasedJobSteps(q, retry, 3_000, "later"))).toBe(true);
-      expect(await getJob(db, tick)).toMatchObject({ status: "pending", runAt: 3_000 });
+      expect(await getJob(db, tick)).toMatchObject({
+        status: "pending",
+        runAt: 3_000,
+      });
     }));
 
   test("cancellation and run-now touch only the rows they name", async () =>
     withDb(open, async (db) => {
-      const pending = await enqueue(db, { queue: "work", payload: { itemId: "a" }, now: 0 });
-      const other = await enqueue(db, { queue: "work", payload: { itemId: "b" }, now: 0 });
+      const pending = await enqueue(db, {
+        queue: "work",
+        payload: { itemId: "a" },
+        now: 0,
+      });
+      const other = await enqueue(db, {
+        queue: "work",
+        payload: { itemId: "b" },
+        now: 0,
+      });
       const command = await enqueue(db, {
         queue: JOB_KIND.command,
         payload: { itemId: "a" },
         now: 0,
       });
-      const future = await enqueue(db, { queue: "later", runAt: 9_000, now: 0 });
+      const future = await enqueue(db, {
+        queue: "later",
+        runAt: 9_000,
+        now: 0,
+      });
       await db.run((q) => runPendingJobNowSteps(q, future, 100));
       expect((await getJob(db, future))?.runAt).toBe(100);
       await db.run((q) => cancelPendingItemJobsSteps(q, "work", "b", 200));
-      expect(await getJob(db, other)).toMatchObject({ status: "cancelled", finishedAt: 200 });
+      expect(await getJob(db, other)).toMatchObject({
+        status: "cancelled",
+        finishedAt: 200,
+      });
       expect(
         await db.run((q) => cancelOpenJobsSteps(q, { reason: "halt", itemId: "a", now: 300 })),
       ).toBe(1);
-      expect(await getJob(db, pending)).toMatchObject({ status: "cancelled", lastError: "halt" });
+      expect(await getJob(db, pending)).toMatchObject({
+        status: "cancelled",
+        lastError: "halt",
+      });
       expect((await getJob(db, command))?.status).toBe("pending");
       expect(await db.run((q) => cancelOpenJobsSteps(q, { reason: "none" }))).toBe(0);
       await db.run((q) => cancelAdmittedJobSteps(q, future, 400));
-      expect(await getJob(db, future)).toMatchObject({ status: "cancelled", finishedAt: 400 });
+      expect(await getJob(db, future)).toMatchObject({
+        status: "cancelled",
+        finishedAt: 400,
+      });
     }));
 
   test("an async enqueue wakes the job loop after each insert, and a keyed repeat does not", async () =>
@@ -388,7 +469,11 @@ forEachDialect((open) => {
       try {
         const id = await enqueueJob(db, { queue: "work", now: 0 });
         expect(woken).toBe(1);
-        const keyed = await enqueueJobOnce(db, { queue: "work", jobKey: "k", now: 0 });
+        const keyed = await enqueueJobOnce(db, {
+          queue: "work",
+          jobKey: "k",
+          now: 0,
+        });
         expect(woken).toBe(2);
         expect(await enqueueJobOnce(db, { queue: "work", jobKey: "k", now: 0 })).toBe(keyed);
         expect(woken).toBe(2);

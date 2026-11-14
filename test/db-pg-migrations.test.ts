@@ -3,7 +3,7 @@ import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getTableName } from "drizzle-orm";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { PG_MIGRATIONS_FOLDER, pgSchema, rawSchema } from "../src/db";
+import { PG_MIGRATIONS_FOLDER, pgSchema } from "../src/db";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -57,9 +57,15 @@ describe("Postgres drizzle-kit migrations", () => {
       const columns = await db.$client.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.columns WHERE column_name = 'repository' AND udt_name = 'citext'",
       );
-      expect(columns.rows.map((row) => row.table_name).sort()).toEqual(
-        Object.keys(rawSchema.collations).sort(),
-      );
+      expect(columns.rows.map((row) => row.table_name).sort()).toEqual([
+        "improvement",
+        "retro_collection_lock",
+        "retro_coverage_gap",
+        "retro_evidence",
+        "retro_item",
+        "retro_repository",
+        "retro_watermark",
+      ]);
       const equal = await db.$client.query<{ equal: boolean }>(
         "SELECT 'Org/Repo'::citext = 'org/repo' AS equal",
       );

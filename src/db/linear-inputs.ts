@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { type Q, type Db } from "./db";
-import type { linearInput } from "./schema";
+import type { linearInput } from "./schema-pg";
 
 export type LinearInputRecord = typeof linearInput.$inferSelect;
 

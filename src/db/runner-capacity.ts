@@ -101,7 +101,7 @@ export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, exclu
 
 export function* runnerFixSlotsSteps(q: Q, runnerId: string) {
   const { runner: r } = q.t;
-  const least = sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST");
+  const least = sql.raw("LEAST");
   return yield* q.one(
     q.orm
       .select({

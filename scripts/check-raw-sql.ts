@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ALLOWED_FILES = new Set([
-  "src/db/migrate.ts",
   "src/db/open.ts",
   "src/runner-daemon/commands-ddl.ts",
   "src/runner-health-runtime/health-ddl.ts",

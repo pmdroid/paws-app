@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db, Q, Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";
-import type { restartHold as restartHoldTable } from "./schema";
+import type { restartHold as restartHoldTable } from "./schema-pg";
 
 export const RESTART_QUESTION =
   "Paws lost this task's run more than once, through a restart or a runner that stopped answering. Start it again from its branch in a fresh session? Stop the session to leave it.";
