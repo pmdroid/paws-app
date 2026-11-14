@@ -251,13 +251,14 @@ export async function recoverFindingGroupRuns(store: Db, now: number): Promise<v
 }
 
 export function* findingGroupingEnabledSteps(q: Q, workspaceId: string): Steps<boolean> {
-  const { findingGroupingOff } = q.t;
-  return !(yield* q.one(
+  const { workspace } = q.t;
+  const row = yield* q.one(
     q.orm
-      .select({ workspaceId: findingGroupingOff.workspaceId })
-      .from(findingGroupingOff)
-      .where(eq(findingGroupingOff.workspaceId, workspaceId)),
-  ));
+      .select({ off: workspace.findingGroupingOff })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId)),
+  );
+  return !row?.off;
 }
 
 export async function findingGroupingEnabled(store: Db, workspaceId: string): Promise<boolean> {
@@ -265,13 +266,13 @@ export async function findingGroupingEnabled(store: Db, workspaceId: string): Pr
 }
 
 export function* setFindingGroupingSteps(q: Q, workspaceId: string, on: boolean): Steps<void> {
-  const { findingGroupingOff } = q.t;
-  if (on)
-    yield* q.exec(
-      q.orm.delete(findingGroupingOff).where(eq(findingGroupingOff.workspaceId, workspaceId)),
-    );
-  else
-    yield* q.exec(q.orm.insert(findingGroupingOff).values({ workspaceId }).onConflictDoNothing());
+  const { workspace } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(workspace)
+      .set({ findingGroupingOff: on ? 0 : 1 })
+      .where(eq(workspace.id, workspaceId)),
+  );
 }
 
 export async function setFindingGrouping(
