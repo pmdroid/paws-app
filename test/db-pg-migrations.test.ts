@@ -332,7 +332,7 @@ describe("Postgres drizzle-kit migrations", () => {
         { repository: { full_name: "Acme/App" }, issue: { number: "7" } },
       ];
       for (const [i, body] of [
-        ...bodies.map((body) => JSON.stringify(body)),
+        ...bodies.map((value) => JSON.stringify(value)),
         "invalid",
         "null",
       ].entries())
