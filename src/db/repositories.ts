@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
@@ -16,6 +16,25 @@ export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<Reposit
       .where(eq(repositories.itemId, itemId)),
   );
   return row ?? null;
+}
+
+export function* listWorkItemRepositoriesSteps(
+  q: Q,
+  itemIds: readonly string[],
+): Steps<Map<string, RepositoryBinding>> {
+  const { workItemRepository: repositories } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: repositories.itemId,
+        owner: repositories.owner,
+        repo: repositories.repo,
+        remoteUrl: repositories.remoteUrl,
+      })
+      .from(repositories)
+      .where(inArray(repositories.itemId, [...itemIds])),
+  );
+  return new Map(rows.map(({ itemId, ...binding }) => [itemId, binding]));
 }
 
 export async function getWorkItemRepository(

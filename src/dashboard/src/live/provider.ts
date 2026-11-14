@@ -42,6 +42,7 @@ import type {
   OutboxRow,
   MergeQueuePosition,
   QueuePosition,
+  TaskMergeSettings,
   VisualReviewRecord,
   WorkItemEventRow,
   WorkItemFact,
@@ -77,9 +78,10 @@ import {
   getLinkAskSteps,
   getRiskFixSteps,
   getRunSteps,
-  getTaskMergeSettingsSteps,
+  listTaskMergeSettingsSteps,
   getTaskModeSteps,
-  getWorkItemRepositorySteps,
+  listWorkItemRepositoriesSteps,
+  listConfirmedRemoteMergesSteps,
   getWorkItemSteps,
   itemActivityFactsSteps,
   latestCandidateRiskSteps,
@@ -2514,8 +2516,19 @@ async function mergeQueueFor(
   const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));
   // The repository Paws bound the item to names it. `config.repo` only names items from before
   // repository binding, and an item with none of these is under "Repository not known".
-  const repositoryOf = async (record: WorkItemRecord): Promise<string | null> => {
-    const bound = await store.run((q) => getWorkItemRepositorySteps(q, record.id));
+  const ids = (input.listed ?? records).map((record) => record.id);
+  const reads = ids.length
+    ? await store.run(function* (q) {
+        return {
+          bound: yield* listWorkItemRepositoriesSteps(q, ids),
+          kept: yield* listTaskMergeSettingsSteps(q, ids),
+          merges: yield* listConfirmedRemoteMergesSteps(q, ids),
+        };
+      })
+    : { bound: new Map(), kept: new Map(), merges: new Map() };
+  const settingsOf = (itemId: string) => mergeSettings(reads.kept.get(itemId));
+  const repositoryOf = (record: WorkItemRecord): string | null => {
+    const bound = reads.bound.get(record.id);
     return (
       (bound ? `${bound.owner}/${bound.repo}` : null) ??
       places.get(record.id)?.repository ??
@@ -2541,7 +2554,7 @@ async function mergeQueueFor(
     const ahead = place?.nextItemId
       ? records.find((candidate) => candidate.id === place.nextItemId)
       : undefined;
-    const repository = await repositoryOf(record);
+    const repository = repositoryOf(record);
     const enqueued = place
       ? iso(place.readyAt, generatedAt)
       : enqueuedAt(record.id, jobs, generatedAt);
@@ -2565,7 +2578,7 @@ async function mergeQueueFor(
       acceptedAt: accepted,
       waitingFor: reason,
       detail,
-      settings: await mergeSettings(store, record.id),
+      settings: settingsOf(record.id),
       steps: mergeSteps(job),
       ...(reason === "ahead" && ahead
         ? {
@@ -2590,7 +2603,7 @@ async function mergeQueueFor(
   const history: StatusMergeOutcome[] = [];
   for (const record of input.listed ?? records) {
     if (record.state === "merged" || record.state === "completed") {
-      const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, record.id));
+      const merge = reads.merges.get(record.id);
       if (!merge || merge.confirmedAt < since) continue;
       history.push({
         itemId: publicId(record),
@@ -2598,21 +2611,21 @@ async function mergeQueueFor(
         outcome: "merged",
         reason: null,
         at: iso(merge.confirmedAt, generatedAt),
-        settings: await mergeSettings(store, record.id),
+        settings: settingsOf(record.id),
       });
       continue;
     }
     if (!BACK_WITH_AGENT_STATES.has(record.state) || places.has(record.id)) continue;
     const back = backWithAgent(record.id, jobs);
     if (!back || back.at < since) continue;
-    const repository = await repositoryOf(record);
+    const repository = repositoryOf(record);
     history.push({
       itemId: publicId(record),
       repository,
       outcome: "back_with_agent",
       reason: back.reason,
       at: iso(back.at, generatedAt),
-      settings: await mergeSettings(store, record.id),
+      settings: settingsOf(record.id),
     });
   }
   history.sort((left, right) => right.at.localeCompare(left.at));
@@ -2642,8 +2655,7 @@ function pullRepository(url: string | undefined): string | null {
 }
 
 /** The settings the task resolved when its merge started. The workspace default until then. */
-async function mergeSettings(store: Db, itemId: string): Promise<StatusMergeSettings> {
-  const kept = await store.run((q) => getTaskMergeSettingsSteps(q, itemId));
+function mergeSettings(kept: TaskMergeSettings | undefined): StatusMergeSettings {
   if (!kept) return { order: "queue", mainMoved: "ci", rule: null };
   const sources = isRecord(kept.resolved.sources) ? kept.resolved.sources : {};
   const rule = isRecord(kept.resolved.rule) ? readString(kept.resolved.rule, "label") : null;
