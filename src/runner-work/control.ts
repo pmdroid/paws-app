@@ -77,6 +77,7 @@ import type { KeyObject } from "node:crypto";
 import {
   executionAuthorityUntil,
   FAST_MODE_RUNNER_VERSION,
+  CODEX_FAST_MODE_RUNNER_VERSION,
   LIVE_PREVIEW_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -484,17 +485,14 @@ export function createRunnerWork(options: {
       )
     )
       delete command.livePreview;
+    const fastVersion =
+      command.profile.agent === "codex" ? CODEX_FAST_MODE_RUNNER_VERSION : FAST_MODE_RUNNER_VERSION;
     if (
       command.profile.fast !== undefined &&
-      !runnerReleaseAtLeast(
-        yield* runnerHostVersionSteps(q, command.runnerId),
-        FAST_MODE_RUNNER_VERSION,
-      )
+      !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, command.runnerId), fastVersion)
     ) {
       if (command.profile.fast)
-        journal(
-          `fast mode needs runner ${FAST_MODE_RUNNER_VERSION.join(".")} for run ${command.runId}`,
-        );
+        journal(`fast mode needs runner ${fastVersion.join(".")} for run ${command.runId}`);
       delete command.profile.fast;
     }
     const envelope = yield* queueSteps(q, command);

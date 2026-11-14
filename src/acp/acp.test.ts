@@ -1898,17 +1898,26 @@ for (const failure of ["unsupported", "unadvertised", "rejected", "unconfirmed"]
   });
 }
 
-for (const [kind, fast, fastOn, value] of [
-  ["boolean", true, false, true],
-  ["select", true, false, "on"],
-  ["select", undefined, true, "off"],
+for (const [agent, kind, fast, fastOn, value] of [
+  ["claude", "boolean", true, false, true],
+  ["codex", "boolean", true, false, true],
+  ["codex", "select", true, false, "on"],
+  ["codex", "select", undefined, true, "off"],
+  ["claude", "select", true, false, "on"],
+  ["claude", "select", undefined, true, "off"],
 ] as const) {
-  test(`ACP sets a ${kind} fast option to ${String(value)} for fast ${String(fast)}`, async () => {
+  test(`ACP sets a ${agent} ${kind} fast option to ${String(value)} for fast ${String(fast)}`, async () => {
     const layout = await layoutRepo();
-    const files = await writeScript(layout.root, { fast: kind, fastOn, steps: [{ type: "end" }] });
+    const fastId = agent === "codex" ? "fast-mode" : "fast";
+    const files = await writeScript(layout.root, {
+      fast: kind,
+      fastId,
+      fastOn,
+      steps: [{ type: "end" }],
+    });
     const result = await runAgent({
       role: "implementer",
-      profile: { agent: "claude", model: null, ...(fast === undefined ? {} : { fast }) },
+      profile: { agent, model: null, ...(fast === undefined ? {} : { fast }) },
       itemId: "ENG-1",
       runId: "fast",
       prompt: "implement",
@@ -1923,7 +1932,7 @@ for (const [kind, fast, fastOn, value] of [
     const trace = await readResult(files.resultPath);
     expect(trace.fastSelection).toEqual({
       sessionId: result.sessionId,
-      configId: "fast",
+      configId: fastId,
       ...(kind === "boolean" ? { type: "boolean" } : {}),
       value,
     });
@@ -2187,6 +2196,7 @@ test("connection probe reports fast for the models that offer it", async () => {
     models: ["gpt-model-a", "gpt-model-b"],
     fast: "select",
     fastModels: ["gpt-model-b"],
+    fastId: "fast-mode",
     steps: [{ type: "end" }],
   });
   const prior = process.env.PAWS_CODEX_ACP;

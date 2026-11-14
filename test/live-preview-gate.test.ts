@@ -18,6 +18,7 @@ import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identi
 import { setJournalSink } from "../src/journal";
 import {
   FAST_MODE_RUNNER_VERSION,
+  CODEX_FAST_MODE_RUNNER_VERSION,
   LIVE_PREVIEW_RUNNER_VERSION,
   type RunnerCommand,
 } from "../src/runner-protocol";
@@ -33,7 +34,7 @@ const repository = {
   baseSha: "a".repeat(40),
 };
 
-async function assigned(runnerVersion: string) {
+async function assigned(runnerVersion: string, agent: "claude" | "codex" = "codex") {
   const root = mkdtempSync(join(tmpdir(), "paws-preview-gate-"));
   const now = () => 1_800_000_000_000;
   const { db, close } = await tempStore();
@@ -111,7 +112,7 @@ async function assigned(runnerVersion: string) {
       itemId: item.id,
       generation: 1,
       repository,
-      profile: { agent: "codex", model: "scripted", fast: true },
+      profile: { agent, model: "scripted", fast: true },
       prompt: "Fixture",
       livePreview: { command: "bun run dev", port: 5173 },
     };
@@ -126,22 +127,29 @@ async function assigned(runnerVersion: string) {
 
 const assignedPreview = async (version: string) => (await assigned(version))?.livePreview;
 
-test("a runner below the fast mode release runs without fast and journals why", async () => {
-  const [major, minor, patch] = FAST_MODE_RUNNER_VERSION;
-  const lines: string[] = [];
-  const restore = setJournalSink((line) => lines.push(line));
-  try {
-    expect((await assigned(`${major}.${minor}.${patch - 1}`))?.profile.fast).toBeUndefined();
-  } finally {
-    restore();
-  }
-  expect(lines.filter((line) => line.startsWith("fast mode needs runner"))).toEqual([
-    expect.stringMatching(
-      new RegExp(`^fast mode needs runner ${major}\\.${minor}\\.${patch} for run `),
-    ),
-  ]);
-  expect((await assigned(`${major}.${minor}.${patch}`))?.profile.fast).toBe(true);
-});
+for (const [agent, version] of [
+  ["claude", FAST_MODE_RUNNER_VERSION],
+  ["codex", CODEX_FAST_MODE_RUNNER_VERSION],
+] as const) {
+  test(`a runner below the ${agent} fast mode release runs without fast and journals why`, async () => {
+    const [major, minor, patch] = version;
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    try {
+      expect(
+        (await assigned(`${major}.${minor}.${patch - 1}`, agent))?.profile.fast,
+      ).toBeUndefined();
+    } finally {
+      restore();
+    }
+    expect(lines.filter((line) => line.startsWith("fast mode needs runner"))).toEqual([
+      expect.stringMatching(
+        new RegExp(`^fast mode needs runner ${major}\\.${minor}\\.${patch} for run `),
+      ),
+    ]);
+    expect((await assigned(`${major}.${minor}.${patch}`, agent))?.profile.fast).toBe(true);
+  });
+}
 
 test("a runner below the live preview release never gets the field", async () => {
   const [major, minor, patch] = LIVE_PREVIEW_RUNNER_VERSION;

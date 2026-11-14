@@ -13,7 +13,11 @@ import {
   runnerHelperAvailability,
   runnerOccupancy,
 } from "../db";
-import { FAST_MODE_RUNNER_VERSION, RUNNER_CONVERSATION_MS } from "../runner-protocol";
+import {
+  CODEX_FAST_MODE_RUNNER_VERSION,
+  FAST_MODE_RUNNER_VERSION,
+  RUNNER_CONVERSATION_MS,
+} from "../runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from ".";
 import { sqlRun, tempStore } from "../../test/pglite";
@@ -23,7 +27,11 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-async function fixture(version: string | null, conversations?: number) {
+async function fixture(
+  version: string | null,
+  conversations?: number,
+  agent: "claude" | "codex" = "claude",
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-lane-"));
   const { db, close: closeDb } = await tempStore();
   const now = Date.now();
@@ -69,7 +77,7 @@ async function fixture(version: string | null, conversations?: number) {
         runnerId: "runner",
         sessionId,
         purpose,
-        profile: { agent: "claude", model: null, fast: true },
+        profile: { agent, model: null, fast: true },
         prompt: "What does the acme checkout do?",
         ...(purpose === "conversation"
           ? {
@@ -109,6 +117,15 @@ test("a helper keeps fast mode only on a runner that knows it", async () => {
   const helper = await older.dispatch("session-1", "classify");
   expect(helper.type === "helper" && helper.profile).toEqual({ agent: "claude", model: null });
   const current = await fixture(FAST_MODE_RUNNER_VERSION.join("."));
+  const fast = await current.dispatch("session-1", "classify");
+  expect(fast.type === "helper" && fast.profile.fast).toBe(true);
+});
+
+test("a Codex helper needs the runner that detects fast-mode", async () => {
+  const older = await fixture(FAST_MODE_RUNNER_VERSION.join("."), undefined, "codex");
+  const helper = await older.dispatch("session-1", "classify");
+  expect(helper.type === "helper" && helper.profile.fast).toBeUndefined();
+  const current = await fixture(CODEX_FAST_MODE_RUNNER_VERSION.join("."), undefined, "codex");
   const fast = await current.dispatch("session-1", "classify");
   expect(fast.type === "helper" && fast.profile.fast).toBe(true);
 });

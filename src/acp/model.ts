@@ -48,7 +48,9 @@ function effortOption(options: SessionConfigOption[] | null | undefined) {
 
 function fastOption(options: SessionConfigOption[] | null | undefined) {
   return options?.find(
-    (option) => option.id === "fast" && (option.type === "boolean" || option.type === "select"),
+    (option) =>
+      ["fast", "fast-mode"].includes(option.id) &&
+      (option.type === "boolean" || option.type === "select"),
   );
 }
 
