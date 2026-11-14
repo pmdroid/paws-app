@@ -176,6 +176,13 @@
       "when": 1794646322077,
       "tag": "0024_drop_open_findings_and_activity_listing",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794669154195,
+      "tag": "0025_linear_conversation_entry",
+      "breakpoints": true
     }
   ]
 }
