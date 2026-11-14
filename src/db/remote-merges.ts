@@ -32,6 +32,25 @@ export function* getConfirmedRemoteMergeSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
+export function* listConfirmedRemoteMergesSteps(q: Q, itemIds: readonly string[]) {
+  const { remoteMergeFact } = q.t;
+  const rows: ConfirmedRemoteMerge[] = yield* q.all(
+    q.orm
+      .select({
+        itemId: remoteMergeFact.itemId,
+        repositoryOwner: remoteMergeFact.repositoryOwner,
+        repositoryName: remoteMergeFact.repositoryName,
+        pullNumber: remoteMergeFact.pullNumber,
+        pullUrl: remoteMergeFact.pullUrl,
+        mergeSha: remoteMergeFact.mergeSha,
+        confirmedAt: remoteMergeFact.confirmedAt,
+      })
+      .from(remoteMergeFact)
+      .where(inArray(remoteMergeFact.itemId, [...itemIds])),
+  );
+  return new Map(rows.map((row) => [row.itemId, row]));
+}
+
 export async function getConfirmedRemoteMerge(
   store: Db,
   itemId: string,
