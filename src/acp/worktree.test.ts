@@ -244,3 +244,67 @@ test("independent item checkouts reuse WIP and clean up without creating repos",
   await removeWorktree({ ...options, owner: "acme", repo: "demo" });
   expect(await stat(created.path).catch(() => null)).toBeNull();
 });
+
+test("a fresh inspection checkout fetches an unadvertised candidate before checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-candidate-recovery-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const origin = join(root, "origin.git");
+  await git(["clone", "--bare", source, origin]);
+  await writeFile(join(source, "candidate.txt"), "recover this commit");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Candidate"]);
+  const sha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+  await git(["-C", source, "push", origin, "HEAD:refs/heads/temporary"]);
+  await git(["--git-dir", origin, "update-ref", "-d", "refs/heads/temporary"]);
+  const pawsRoot = join(root, "home");
+  let fetched = false;
+  const created = await createItemCheckout({
+    remoteUrl: `file://${origin}`,
+    itemId: "ENG-10",
+    pawsRoot,
+    startRef: sha,
+    async networkGit(args) {
+      if (args.at(-1) === sha) {
+        const path = args[1]!;
+        expect(
+          await git(["-C", path, "cat-file", "-e", sha]).then(
+            () => true,
+            () => false,
+          ),
+        ).toBe(false);
+        fetched = true;
+      }
+      return git(args);
+    },
+  });
+  expect(fetched).toBe(true);
+  expect((await git(["-C", created.path, "rev-parse", "HEAD"])).trim()).toBe(sha);
+  expect(await readFile(join(created.path, "candidate.txt"), "utf8")).toBe("recover this commit");
+  expect(await stat(join(pawsRoot, "repos")).catch(() => null)).toBeNull();
+});
+
+test("reusing an inspection checkout refreshes main policy and preserves WIP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-policy-refresh-"));
+  roots.push(root);
+  const source = join(root, "source");
+  await initRepo(source);
+  const options = { remoteUrl: source, pawsRoot: join(root, "home"), itemId: "ENG-11" };
+  const created = await createItemCheckout(options);
+  const head = (await git(["-C", created.path, "rev-parse", "HEAD"])).trim();
+  await writeFile(join(created.path, "notes.txt"), "unfinished");
+  await writeFile(join(source, "reviews.yaml"), "required: security\n");
+  await git(["-C", source, "add", "."]);
+  await git(["-C", source, "commit", "-m", "Require security review"]);
+  await createItemCheckout({ ...options, startRef: head });
+  expect(await git(["-C", created.path, "show", "origin/main:reviews.yaml"])).toBe(
+    "required: security\n",
+  );
+  expect((await git(["-C", created.path, "rev-parse", "origin/main"])).trim()).toBe(
+    (await git(["-C", source, "rev-parse", "HEAD"])).trim(),
+  );
+  expect((await git(["-C", created.path, "rev-parse", "HEAD"])).trim()).toBe(head);
+  expect(await readFile(join(created.path, "notes.txt"), "utf8")).toBe("unfinished");
+  expect(await stat(join(options.pawsRoot, "repos")).catch(() => null)).toBeNull();
+});

@@ -10956,14 +10956,6 @@ export class Orchestrator {
       startRef: head.ref,
       networkGit: await this.repositoryGit(item, repository, signal, "read"),
     });
-    await ((await this.repositoryGit(item, repository, signal, "read")) ?? git)([
-      "-C",
-      head.repo,
-      "fetch",
-      "--",
-      repository.remoteUrl,
-      head.ref,
-    ]);
     return head;
   }
 

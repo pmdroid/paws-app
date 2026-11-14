@@ -186,24 +186,37 @@ export async function createItemCheckout(options: {
   return onMirror(path, async () => {
     const branch = branchName(options.itemId);
     const startRef = options.startRef ?? "origin/main";
-    if (!(await exists(path))) {
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      try {
-        await (options.networkGit ?? git)([
-          "clone",
-          "--no-checkout",
-          "--",
-          options.remoteUrl,
-          path,
-        ]);
-        await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
-        await git(["-C", path, "checkout", "-b", branch, startRef]);
-      } catch (error) {
-        await rm(path, { recursive: true, force: true });
-        throw error;
+    const fresh = !(await exists(path));
+    const fetch = options.networkGit ?? git;
+    try {
+      if (fresh) {
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        await fetch(["clone", "--no-checkout", "--", options.remoteUrl, path]);
       }
+      await fetch([
+        "-C",
+        path,
+        "fetch",
+        "--no-tags",
+        "--prune",
+        "--",
+        options.remoteUrl,
+        TRACKING_REF,
+      ]);
+      if (/^[a-f0-9]{40}$/.test(startRef)) {
+        const present = await git(["-C", path, "cat-file", "-e", `${startRef}^{commit}`]).then(
+          () => true,
+          () => false,
+        );
+        if (!present)
+          await fetch(["-C", path, "fetch", "--no-tags", "--", options.remoteUrl, startRef]);
+      }
+      await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
+      if (fresh) await git(["-C", path, "checkout", "-b", branch, startRef]);
+    } catch (error) {
+      if (fresh) await rm(path, { recursive: true, force: true });
+      throw error;
     }
-    await checkoutPatterns(path, exclusionPatterns(options.checkoutExclusions ?? []));
     return { path, branch, mirrorPath: path, itemId: options.itemId, startRef };
   });
 }
