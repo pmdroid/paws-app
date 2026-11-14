@@ -1,3 +1,4 @@
+import { issueCheckLogPath } from "../contract";
 import { journalCaught } from "../journal";
 /**
  * Live dashboard resources: the issue list and detail, check logs, questions, the merge queue
@@ -301,6 +302,7 @@ export function createLiveStatusProvider(
 
 /** One check of one Closeout attempt of a visible issue. `run` picks that run's agent Closeout. */
 export interface CheckLogRequest {
+  ci?: boolean;
   itemId: string;
   attempt: number;
   checkId: string;
@@ -308,6 +310,8 @@ export interface CheckLogRequest {
 }
 
 export interface CheckOutput {
+  findings?: string;
+  detail?: string;
   stdout: string;
   stderr: string;
 }
@@ -696,6 +700,14 @@ async function readCheckLog(
   const { scope } = await readIssueScope(store, options, request.itemId);
 
   if (scope.items.length === 0) return null;
+  if (request.ci) {
+    const round = scope.ciRounds.find(
+      (entry) => entry.itemId === request.itemId && entry.round === request.attempt,
+    );
+    const index = /^[1-9]\d*$/.test(request.checkId) ? Number(request.checkId) - 1 : -1;
+    const check = round?.checks[index];
+    return check?.logTail == null ? null : { stdout: check.logTail, stderr: "" };
+  }
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
   let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
   if (request.run === null) {
@@ -711,13 +723,33 @@ async function readCheckLog(
     .find((entry) => entry.number === request.attempt)
     ?.checks.find((entry) => entry.id === request.checkId);
   if (!check) return null;
-  return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+  return {
+    stdout: check.stdout ?? "",
+    stderr: check.stderr ?? "",
+    ...(check.findings != null ? { findings: check.findings } : {}),
+    ...(check.detail != null ? { detail: check.detail } : {}),
+  };
 }
 
 /** The scope without check `stdout` and `stderr`, which the issue page loads per check. */
 function withoutOutputs(scope: IssueScope): IssueScope {
   return {
     ...scope,
+    ciRounds: scope.ciRounds.map((round) => ({
+      ...round,
+      checks: round.checks.map((check, index) => ({
+        ...check,
+        logTail: summarizeEntry(check.logTail),
+        ...(check.logTail != null
+          ? {
+              logPath: issueCheckLogPath(round.itemId, round.round, String(index + 1), {
+                ci: true,
+                full: true,
+              }),
+            }
+          : {}),
+      })),
+    })),
     verdicts: scope.verdicts.map((verdict) => ({
       ...verdict,
       checks: verdict.checks.map(withoutOutput),
@@ -736,7 +768,16 @@ function attemptWithoutOutput(attempt: StatusCloseoutAttempt): StatusCloseoutAtt
 
 function withoutOutput(check: StatusCheck): StatusCheck {
   const { stdout: _stdout, stderr: _stderr, ...rest } = check;
-  return rest;
+  return {
+    ...rest,
+    findings: summarizeEntry(check.findings),
+    detail: summarizeEntry(check.detail),
+  };
+}
+
+function summarizeEntry<T extends string | null | undefined>(value: T): T | string {
+  if (value == null || new TextEncoder().encode(value).length <= 4096) return value;
+  return `${value.slice(0, 512)}… (open the check log for full text)`;
 }
 
 export function emptyMergeQueue(
