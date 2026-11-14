@@ -6,6 +6,7 @@ import {
   enqueueOutbox,
   listOutbox,
   readSessionDone,
+  recordCarriedAccept,
   recordItemPullRequest,
   saveSessionDone,
   type Db,
@@ -73,7 +74,7 @@ function finish(
   db: Db,
   ci: PullCi["state"],
   now: number,
-  options: { checks?: string[]; open?: boolean | null } = {},
+  options: { checks?: string[]; open?: boolean | null; head?: string } = {},
 ) {
   const reads: string[] = [];
   return finishOpenedSessions(db, {
@@ -87,7 +88,8 @@ function finish(
       }));
       return { state: ci, message: "", checks, failedChecks: [] } as PullCi;
     },
-    pullOpen: async () => (options.open === undefined ? true : options.open),
+    readPull: async () =>
+      options.open === null ? null : { head: options.head ?? "head-1", open: options.open ?? true },
   }).then(() => reads);
 }
 
@@ -210,6 +212,37 @@ describe("when Paws finishes the Linear session", () => {
     expect(await responses(db)).toEqual([`${BODY}\n\nStill waiting: CI pending.`]);
   });
 
+  test("the cap counts from the pull request's first opening, not a later publication", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await db.run(function* (q) {
+      yield* q.exec(q.orm.update(q.t.outbox).set({ createdAt: OPENED + 3 * 60 * MINUTE }));
+    });
+    await finish(db, "pending", OPENED + 4 * 60 * MINUTE);
+    expect(await responses(db)).toEqual([`${BODY}\n\nStill waiting: CI pending.`]);
+  });
+
+  test("a closed pull request gets nothing even when no head is accepted", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await db.run(function* (q) {
+      yield* q.exec(q.orm.update(q.t.workItem).set({ acceptedHead: null }));
+    });
+    expect(await finish(db, "pending", OPENED + 5 * 60 * MINUTE, { open: false })).toEqual([]);
+    expect(await responses(db)).toEqual([]);
+  });
+
+  test("a head the merge lane rebased with carried acceptance is the one CI is read on", async () => {
+    const db = await opened({ sessionDone: "ci_green" });
+    await recordCarriedAccept(db, {
+      itemId: "item",
+      head: "head-2",
+      acceptedHead: "head-1",
+      base: "main-2",
+      now: OPENED,
+    });
+    expect(await finish(db, "green", OPENED + MINUTE, { head: "head-2" })).toEqual(["head-2"]);
+    expect(await responses(db)).toEqual([`${BODY}\n\nCI is green.`]);
+  });
+
   test("an optional check that is failing or running keeps green CI from finishing the session", async () => {
     const db = await opened({ sessionDone: "ci_green" });
     await finish(db, "green", OPENED + MINUTE, { checks: ["SUCCESS", "IN_PROGRESS"] });
@@ -231,7 +264,7 @@ describe("when Paws finishes the Linear session", () => {
         });
         return { state: "green", checks: [] } as PullCi;
       },
-      pullOpen: async () => true,
+      readPull: async () => ({ head: "head-1", open: true }),
     });
     expect(await responses(db)).toEqual([]);
   });
@@ -287,7 +320,8 @@ describe("the session setting on the Merging settings API", () => {
     expect(await readSessionDone(store.db)).toMatchObject({ sessionQuietMinutes: 25 });
     for (const body of [
       { sessionDone: "merged" },
-      ...[0, 121, 2.5].map((n) => ({ sessionQuietMinutes: n })),
+      { sessionDone: null },
+      ...[0, 121, 2.5, null].map((n) => ({ sessionQuietMinutes: n })),
     ])
       expect((await put(body))?.status).toBe(400);
     expect((await put({}))?.status).toBe(200);

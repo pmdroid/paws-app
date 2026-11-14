@@ -1,5 +1,6 @@
 import {
   enqueueOutboxOnceSteps,
+  carriedAcceptForSteps,
   getItemPullRequestSteps,
   getLinearSessionGenerationSteps,
   getWorkItemSteps,
@@ -61,7 +62,10 @@ export function sessionDoneLine(
 export type SessionDoneDeps = {
   now(): number;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
-  pullOpen(item: WorkItemRecord, pullNumber: number): Promise<boolean | null>;
+  readPull(
+    item: WorkItemRecord,
+    pullNumber: number,
+  ): Promise<{ head: string; open: boolean } | null>;
 };
 
 export async function finishOpenedSessions(
@@ -98,10 +102,16 @@ async function finishOpenedSession(
   if (!facts?.item) return;
   const { item, pull } = facts;
   const now = deps.now();
-  const read: PullCi | null =
-    settings.sessionDone !== "pull_request" && pull && item.acceptedHead
-      ? await deps.readPullCi(item, { number: pull.pullNumber, head: item.acceptedHead })
+  const deferred = settings.sessionDone !== "pull_request" && pull !== null;
+  const remote = deferred ? await deps.readPull(item, pull.pullNumber) : null;
+  if (remote?.open === false) return;
+  const carried =
+    remote && item.acceptedHead && remote.head !== item.acceptedHead
+      ? await store.run((q) => carriedAcceptForSteps(q, item.id, remote.head))
       : null;
+  const head = remote && carried === item.acceptedHead ? remote.head : item.acceptedHead;
+  const read: PullCi | null =
+    deferred && head ? await deps.readPullCi(item, { number: pull.pullNumber, head }) : null;
   const lastCommentAt = pull
     ? await store.run((q) =>
         lastPullActivityAtSteps(
@@ -116,12 +126,10 @@ async function finishOpenedSession(
     ci: reportedCi(read),
     fixRound: FIX_ROUND_STATES.has(item.state),
     lastCommentAt,
-    openedAt: session.openedAt,
+    openedAt: pull?.openedAt ?? session.openedAt,
     now,
   });
   if (line === null) return;
-  if (read?.state === "unknown" && pull && (await deps.pullOpen(item, pull.pullNumber)) === false)
-    return;
   await store.transaction(function* (q) {
     const current = yield* getWorkItemSteps(q, item.id);
     if (

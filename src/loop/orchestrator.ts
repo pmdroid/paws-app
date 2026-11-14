@@ -8628,8 +8628,7 @@ export class Orchestrator {
       {
         now: () => this.now(),
         readPullCi: (item, pull) => this.readItemPullCi(item, pull),
-        pullOpen: async (item, pullNumber) =>
-          (await this.readItemPull(item, pullNumber, undefined, 1))?.open ?? null,
+        readPull: (item, pullNumber) => this.readItemPull(item, pullNumber, undefined, 1),
       },
       itemId,
     ).catch((error: unknown) =>

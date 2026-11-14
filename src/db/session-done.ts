@@ -19,8 +19,11 @@ export function parseSessionDone(
   value: Partial<Record<keyof SessionDoneSettings, unknown>>,
   current: SessionDoneSettings = DEFAULT_SESSION_DONE,
 ): SessionDoneSettings {
-  const done = value.sessionDone ?? current.sessionDone;
-  const quiet = value.sessionQuietMinutes ?? current.sessionQuietMinutes;
+  const done = value.sessionDone === undefined ? current.sessionDone : value.sessionDone;
+  const quiet =
+    value.sessionQuietMinutes === undefined
+      ? current.sessionQuietMinutes
+      : value.sessionQuietMinutes;
   if (!SESSION_DONE.includes(done as SessionDone))
     throw new Error(`sessionDone must be ${SESSION_DONE.join(", ")}`);
   if (typeof quiet !== "number" || !Number.isInteger(quiet) || quiet < 1 || quiet > 120)
