@@ -6,7 +6,12 @@ import type { itemBranchState, itemPullRequest } from "./schema-pg";
 
 export type ItemBranchState = typeof itemBranchState.$inferSelect;
 
-export type ItemPullRequest = typeof itemPullRequest.$inferSelect;
+export type ItemPullRequest = Omit<
+  typeof itemPullRequest.$inferSelect,
+  "publishedHead" | "openFindingsLine"
+>;
+
+type RecordedPullRequest = ItemPullRequest & { published?: { head: string; line: string } };
 
 export function* recordItemBranchStateSteps(q: Q, state: ItemBranchState): Steps<void> {
   const { itemBranchState } = q.t;
@@ -39,31 +44,48 @@ export async function getItemBranchState(
   return store.run((q) => getItemBranchStateSteps(q, itemId));
 }
 
-export function* recordItemPullRequestSteps(q: Q, pull: ItemPullRequest): Steps<void> {
+export function* recordItemPullRequestSteps(q: Q, pull: RecordedPullRequest): Steps<void> {
   const { itemPullRequest } = q.t;
+  const { published, ...row } = pull;
+  const findings = published
+    ? { publishedHead: published.head, openFindingsLine: published.line }
+    : {};
   yield* q.exec(
     q.orm
       .insert(itemPullRequest)
-      .values(pull)
+      .values({ ...row, ...findings })
       .onConflictDoUpdate({
         target: itemPullRequest.itemId,
         set: {
           pullNumber: pull.pullNumber,
           pullUrl: sql`COALESCE(excluded.pull_url, ${itemPullRequest.pullUrl})`,
+          ...findings,
         },
       }),
   );
 }
 
-/** The pull request Paws opened for the item. Republishing keeps the same number. */
-export async function recordItemPullRequest(store: Db, pull: ItemPullRequest): Promise<void> {
+/**
+ * The pull request Paws opened for the item. Republishing keeps the same number. `published`
+ * is the head it published and the line the final Linear response carries for what was still
+ * open there, already escaped; an empty line means nothing was open.
+ */
+export async function recordItemPullRequest(store: Db, pull: RecordedPullRequest): Promise<void> {
   await store.run((q) => recordItemPullRequestSteps(q, pull));
 }
 
 export function* getItemPullRequestSteps(q: Q, itemId: string): Steps<ItemPullRequest | null> {
   const { itemPullRequest } = q.t;
   const row = yield* q.one(
-    q.orm.select().from(itemPullRequest).where(eq(itemPullRequest.itemId, itemId)),
+    q.orm
+      .select({
+        itemId: itemPullRequest.itemId,
+        pullNumber: itemPullRequest.pullNumber,
+        pullUrl: itemPullRequest.pullUrl,
+        openedAt: itemPullRequest.openedAt,
+      })
+      .from(itemPullRequest)
+      .where(eq(itemPullRequest.itemId, itemId)),
   );
   return row ?? null;
 }
@@ -73,6 +95,35 @@ export async function getItemPullRequest(
   itemId: string,
 ): Promise<ItemPullRequest | null> {
   return store.run((q) => getItemPullRequestSteps(q, itemId));
+}
+
+export function* getPublishedHeadSteps(q: Q, itemId: string): Steps<string | null> {
+  const { itemPullRequest } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ head: itemPullRequest.publishedHead })
+      .from(itemPullRequest)
+      .where(eq(itemPullRequest.itemId, itemId)),
+  );
+  return row?.head ?? null;
+}
+
+/** The open-findings line of the item's last published head, or null when nothing was open. */
+export function* getOpenFindingsLineSteps(q: Q, itemId: string): Steps<string | null> {
+  const { itemPullRequest } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ line: itemPullRequest.openFindingsLine })
+      .from(itemPullRequest)
+      .where(eq(itemPullRequest.itemId, itemId)),
+  );
+  return row?.line ? row.line : null;
+}
+
+/** A final response with the open-findings line of the item's last published head after it. */
+export function* withOpenFindingsSteps(q: Q, itemId: string, body: string): Steps<string> {
+  const line = yield* getOpenFindingsLineSteps(q, itemId);
+  return line === null ? body : `${body}\n\n${line}`;
 }
 
 type StopOptions = { reason?: boolean; pullClosing?: boolean };

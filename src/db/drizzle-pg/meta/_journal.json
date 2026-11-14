@@ -155,6 +155,27 @@
       "when": 1794637259494,
       "tag": "0021_drop_dead_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794646313303,
+      "tag": "0022_open_findings_and_activity_listing_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794646313929,
+      "tag": "0023_backfill_open_findings_and_activity_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794646322077,
+      "tag": "0024_drop_open_findings_and_activity_listing",
+      "breakpoints": true
     }
   ]
 }
