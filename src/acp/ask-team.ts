@@ -373,6 +373,17 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     async closeoutReport() {
       if (!closeout) return undefined;
       await closeout.settled();
+      if (allowCloseoutRun && options.context.runId.startsWith("checks-")) {
+        const report = JSON.parse(await closeout.report());
+        if (report.blocked === null) {
+          for (const check of report.required) {
+            if (check.kind === "command" && !check.result) {
+              options.signal.throwIfAborted();
+              await closeout.run(check.id);
+            }
+          }
+        }
+      }
       return closeout.report({ probes: true });
     },
     async close() {
