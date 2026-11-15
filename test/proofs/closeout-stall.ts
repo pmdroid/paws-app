@@ -22,6 +22,7 @@ import type { Proof } from "./harness";
 export default {
   covers: [
     "src/loop/closeout-stall.ts",
+    "src/runner-backend/index.ts",
     "src/loop/orchestrator.ts",
     "test/closeout-rules-first.test.ts",
   ],
@@ -30,7 +31,14 @@ export default {
   agent: () => [],
   async run(proof) {
     const child = Bun.spawn(
-      ["bun", "test", "test/closeout-rules-first.test.ts", "--test-name-pattern", "idle checks"],
+      [
+        "bun",
+        "test",
+        "test/closeout-rules-first.test.ts",
+        "test/runner-closeout-restart.test.ts",
+        "--test-name-pattern",
+        "idle checks|a Closeout check run keeps running",
+      ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [stdout, stderr, status] = await Promise.all([

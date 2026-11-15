@@ -227,6 +227,12 @@ test("idle checks resume once at fifteen minutes and a twenty-minute command kee
         };
       }
       if (checksTurns === 2) {
+        for (let activity = 0; activity < 2; activity++) {
+          elapsed += 10 * 60_000;
+          await options.onEvent?.({ type: "progress", text: "Still checking" });
+          await orchestrator.recoverStalledCloseout();
+          expect(ended).toBe(0);
+        }
         await options.closeoutProgress?.record({
           type: "report",
           head: (

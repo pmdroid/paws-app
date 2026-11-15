@@ -4969,6 +4969,10 @@ export class Orchestrator {
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           closeoutProgress: this.runnerCloseoutHook(item, head),
+          onEvent: () => {
+            const activity = this.checksActivity.get(item.id);
+            if (activity) activity.since = this.now();
+          },
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,

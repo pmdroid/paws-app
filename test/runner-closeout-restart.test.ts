@@ -379,7 +379,11 @@ async function fixture(agentRead?: AgentRead) {
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /** Starts the Closeout command, lets one event through, and shuts Paws down mid-command. */
-async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => RunAgentOptions) {
+async function shutDownMidCommand(
+  f: Fixture,
+  options: (signal: AbortSignal) => RunAgentOptions,
+  check = false,
+) {
   const shutdown = new AbortController();
   const first = f.services.backend
     .forItem(f.item.id)(options(shutdown.signal))
@@ -389,7 +393,27 @@ async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => 
     );
   await f.until(() => f.placed.length === 1);
   const command = f.placed[0]!;
-  await f.say(command, 1, "Before the restart.");
+  if (check)
+    await f.services.work.event({
+      runnerId: f.runnerId,
+      runId: command.runId,
+      generation: command.generation,
+      token: await f.grant(command),
+      sequence: 1,
+      event: {
+        type: "closeout",
+        progress: {
+          type: "started",
+          head: f.head,
+          id: "long-test",
+          kind: "command",
+          command: "test",
+          attempt: 1,
+          maxAttempts: 3,
+        },
+      },
+    });
+  else await f.say(command, 1, "Before the restart.");
   await f.until(async () => (await f.consumed()) === 1);
   shutdown.abort(new PawsShutdown());
   expect(await first).not.toBeNull();
@@ -485,13 +509,24 @@ test("a Closeout review keeps running through a Paws restart and its result is u
 test("a Closeout check run keeps running through a Paws restart and its report is used once", async () => {
   const f = await fixture();
   try {
-    const command = await shutDownMidCommand(f, f.checks);
+    const command = await shutDownMidCommand(f, f.checks, true);
     expect(command.type).toBe("run");
     await restartWithRunnerHolding(f);
 
     const commands = await f.commandCount();
     f.events.length = 0;
-    const resumed = f.services.backend.forItem(f.item.id)(f.checks(new AbortController().signal));
+    const restored: string[] = [];
+    const resumed = f.services.backend.forItem(f.item.id)({
+      ...f.checks(new AbortController().signal),
+      closeoutProgress: {
+        record: async (event) => {
+          if (event.type === "started") restored.push(event.id);
+        },
+      },
+    });
+    await f.until(() => restored.length === 1);
+    expect(restored).toEqual(["long-test"]);
+    expect(await f.consumed()).toBe(1);
     expect(await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT })).toEqual({
       duplicate: false,
     });

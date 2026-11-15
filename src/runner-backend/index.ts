@@ -1861,6 +1861,19 @@ export function createRemoteAgentRunner(options: {
           const scoped = taskScope ?? (await work.scope(selected.runId, selected.workspaceId));
           command = assigned;
           let cursor = attached?.cursor ?? 0;
+          if (input.closeoutProgress && cursor > 0) {
+            let replayed = 0;
+            while (replayed < cursor) {
+              const events = await results.events(assigned.runId, assigned.generation, replayed);
+              const consumed = events.filter((event) => event.sequence <= cursor);
+              if (consumed.length === 0) break;
+              for (const row of consumed) {
+                if (row.event.type === "closeout")
+                  await input.closeoutProgress.record(scrub(row.event.progress));
+                replayed = row.sequence;
+              }
+            }
+          }
           let complete: RunnerResult | null = null;
           let disposition: PlacementDisposition | undefined;
           let heardAt = now();
