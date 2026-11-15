@@ -98,7 +98,6 @@ import {
   SKILL_HOOK_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   REVIEW_BRIEF_LIMIT,
-  REVIEW_COMMAND_RUNNER_VERSION,
   REVIEW_CONTEXT_RUNNER_VERSION,
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CLOSEOUT_FOCUS_RUNNER_VERSION,
@@ -1600,10 +1599,10 @@ export function createRemoteAgentRunner(options: {
               const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
               if (
                 input.reviewCommand &&
-                !versionAtLeast(await hostVersion(selected.id), REVIEW_COMMAND_RUNNER_VERSION)
+                !versionAtLeast(runnerVersion, REVIEW_CONTEXT_RUNNER_VERSION)
               )
                 throw new Error(
-                  `Runner ${selected.id} needs runner ${REVIEW_COMMAND_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
+                  `Runner ${selected.id} needs runner ${REVIEW_CONTEXT_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
                 );
               const runtimeNotices = [
                 ...(runtimeList?.notices ?? []),
@@ -1656,12 +1655,7 @@ export function createRemoteAgentRunner(options: {
                       type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                       ...(input.role === "reviewer" && input.reviewCommand
                         ? {
-                            reviewCommand: versionAtLeast(
-                              runnerVersion,
-                              REVIEW_CONTEXT_RUNNER_VERSION,
-                            )
-                              ? reviewContext(input.reviewCommand)
-                              : { base: input.reviewCommand.base },
+                            reviewCommand: reviewContext(input.reviewCommand),
                           }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
