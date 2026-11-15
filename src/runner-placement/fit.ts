@@ -4,9 +4,7 @@ import {
   getRunnerSteps,
   runnerHostVersionSteps,
   getWorkItemRepositorySteps,
-  legacyAgentAccountId,
-  legacyAgentBindingId,
-  legacyBindingAccountHealthSteps,
+  listAgentBindingsSteps,
   runnerRepositoryRefusalSteps,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
@@ -19,20 +17,21 @@ import {
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
 } from "../runner-protocol";
-import { accountHealthBlockSteps, BINDING_REASON_TEXT } from "./account-health";
+import { bindingReadinessSteps, BINDING_REASON_TEXT } from "./account-health";
 import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
-type AccountRefusal = { reason: string; until?: number };
+type AccountRefusal = { reason: string; until?: number; refusals?: AccountRefusal[] };
 type AccountFit = { account: PlacementAccount; low: boolean };
-type SignInRunner = Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & {
-  signedIn: boolean;
-};
+type SignInRunner = Pick<EligibleRunner, "id">;
 type SignInInput = {
   agent: RunnerCodingAgent;
   model: string | null | undefined;
   purpose: PlacementPurpose;
   at: number;
+  exceptCommandId?: string;
+  excludeBindingIds?: readonly string[];
+  bindingId?: string;
 };
 
 export function* repositoryRejectionSteps(
@@ -54,39 +53,54 @@ export function* signInFitSteps(
   input: SignInInput,
   requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>,
 ): Steps<AccountFit | AccountRefusal> {
-  const { agent, at, purpose } = input;
-  if (!runner.signedIn) return { reason: "agent not signed in" };
-  const accountId = legacyAgentAccountId(workspaceId, agent);
-  if (
-    agent === "claude" &&
-    requiresOAuthSteps &&
-    (yield* requiresOAuthSteps(q, accountId)) &&
-    !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), CLAUDE_OAUTH_RUNNER_VERSION)
-  )
-    return {
-      reason: `Claude OAuth credentials need runner ${CLAUDE_OAUTH_RUNNER_VERSION.join(".")} or later`,
-    };
-  if (runner.cooldownUntil > at)
-    return { reason: "agent quota cooldown", until: runner.cooldownUntil };
-  const bindingId = legacyAgentBindingId(runner.id, agent);
-  const health = yield* accountHealthBlockSteps(
-    q,
-    bindingId,
-    (yield* legacyBindingAccountHealthSteps(q, runner.id, agent, input.model)).filter(
-      (row) => row.kind !== "quota" && row.kind !== "auth",
-    ),
-    at,
-    purpose,
+  const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
+    (binding) => binding.runnerId === runner.id && binding.agent === input.agent && !binding.legacy,
   );
-  if (health)
-    return {
-      reason: BINDING_REASON_TEXT[health.reason],
-      ...(health.until !== null ? { until: health.until } : {}),
-    };
-  return {
-    account: { accountId, bindingId, named: false },
-    low: runner.quotaState === "low",
-  };
+  const refusals: AccountRefusal[] = [];
+  for (const binding of bindings) {
+    if (
+      input.excludeBindingIds?.includes(binding.id) ||
+      (input.bindingId && input.bindingId !== binding.id)
+    )
+      continue;
+    if (
+      input.agent === "claude" &&
+      requiresOAuthSteps &&
+      (yield* requiresOAuthSteps(q, binding.accountId)) &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, runner.id),
+        CLAUDE_OAUTH_RUNNER_VERSION,
+      )
+    ) {
+      refusals.push({
+        reason: `Claude OAuth credentials need runner ${CLAUDE_OAUTH_RUNNER_VERSION.join(".")} or later`,
+      });
+      continue;
+    }
+    const readiness = yield* bindingReadinessSteps(q, {
+      bindingId: binding.id,
+      model: input.model,
+      now: input.at,
+      purpose: input.purpose,
+      runnerCapacity: false,
+      exceptCommandId: input.exceptCommandId,
+    });
+    if (readiness.ready)
+      return {
+        account: { accountId: binding.accountId, bindingId: binding.id, named: true },
+        low: readiness.low,
+      };
+    refusals.push({
+      reason:
+        readiness.reason === "busy"
+          ? "account at its concurrency limit"
+          : BINDING_REASON_TEXT[readiness.reason],
+      ...(readiness.until !== null ? { until: readiness.until } : {}),
+    });
+  }
+  const first =
+    refusals.find((r) => r.reason === "account at its concurrency limit") ?? refusals[0];
+  return { ...(first ?? { reason: "agent not signed in" }), refusals };
 }
 
 function* runnerVerdictsSteps(
@@ -135,7 +149,7 @@ function* runnerVerdictsSteps(
       );
       continue;
     }
-    const fit = yield* signInFitSteps(q, { ...runner, signedIn: true }, scope.workspaceId, {
+    const fit = yield* signInFitSteps(q, runner, scope.workspaceId, {
       agent: input.agent as RunnerCodingAgent,
       model: input.model,
       purpose: "work",

@@ -1,8 +1,11 @@
+import { boundAccountSteps, boundPlacementAccounts } from "../bound-runner-account";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   beginImplementRun,
+  holdForRunnerSetupSteps,
+  listJobs,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
@@ -18,7 +21,7 @@ import {
 import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
-import { count, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, count, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
@@ -134,6 +137,7 @@ export async function probeRunnerPlacement(
       teamId,
       observedAtMs: ++installationObservation,
     });
+  await boundPlacementAccounts(db);
   const placement = createRunnerPlacement({ store: db, now: () => now });
   const request: PlacementRequest = {
     itemId: item.id,
@@ -152,8 +156,22 @@ export async function probeRunnerPlacement(
     const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
     const commandId = workspaceId();
-    await db.transaction((q) =>
-      placement.startedSteps(q, {
+    await db.transaction(function* (q) {
+      const account = yield* boundAccountSteps(q, runnerId);
+      yield* q.exec(
+        q.orm.insert(q.t.runnerCommandAccount).values({
+          commandId,
+          workspaceId: workspace.id,
+          runnerId,
+          agent: "codex",
+          accountId: account.accountId,
+          bindingId: account.bindingId,
+          named: 1,
+          recordedAt: now,
+        }),
+      );
+      return yield* placement.startedSteps(q, {
+        account: yield* boundAccountSteps(q, runnerId),
         commandId,
         runnerId,
         itemId: item.id,
@@ -162,8 +180,8 @@ export async function probeRunnerPlacement(
         purpose,
         role,
         startedAt: now,
-      }),
-    );
+      });
+    });
     return commandId;
   };
   const result = (
@@ -214,8 +232,9 @@ export async function probeRunnerPlacement(
         .where(eq(q.t.workItem.id, item.id)),
     );
     const progressCommand = workspaceId();
-    await db.transaction((q) =>
-      placement.startedSteps(q, {
+    await db.transaction(function* (q) {
+      return yield* placement.startedSteps(q, {
+        account: yield* boundAccountSteps(q, "own"),
         commandId: progressCommand,
         runnerId: "own",
         itemId: item.id,
@@ -224,8 +243,8 @@ export async function probeRunnerPlacement(
         role: request.role,
         purpose: request.purpose,
         startedAt: now,
-      }),
-    );
+      });
+    });
     await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: progressCommand,
@@ -241,8 +260,9 @@ export async function probeRunnerPlacement(
     );
     await assert.rejects(
       () =>
-        db.transaction((q) =>
-          placement.startedSteps(q, {
+        db.transaction(function* (q) {
+          return yield* placement.startedSteps(q, {
+            account: yield* boundAccountSteps(q, "own"),
             commandId: workspaceId(),
             runnerId: "own",
             itemId: item.id,
@@ -251,8 +271,8 @@ export async function probeRunnerPlacement(
             role: request.role,
             purpose: request.purpose,
             startedAt: now,
-          }),
-        ),
+          });
+        }),
       /selection authority changed/,
     );
     observe("Selection grants are consumed once and cannot authorize another command", true, {
@@ -280,17 +300,22 @@ export async function probeRunnerPlacement(
       q.all(
         q.orm
           .select({
-            reset: q.t.runnerAgentPolicy.resetsAt,
-            cooldown: q.t.runnerAgentPolicy.cooldownUntil,
+            reset: q.t.agentAccountHealth.resetsAt,
+            cooldown: q.t.agentAccountHealth.nextCheckAt,
           })
-          .from(q.t.runnerAgentPolicy)
-          .where(eq(q.t.runnerAgentPolicy.runnerId, "own")),
+          .from(q.t.agentAccountHealth)
+          .where(
+            and(
+              eq(q.t.agentAccountHealth.runnerId, "own"),
+              eq(q.t.agentAccountHealth.kind, "quota"),
+            ),
+          ),
       ),
     );
     if (!quota) throw new Error("Missing quota for own");
     assert.equal(quota.reset, now + 1_800_000);
-    assert.equal(quota.cooldown, quota.reset);
-    now += 1_800_001;
+    assert.equal(quota.cooldown, quota.reset! + 60_000);
+    now += 1_860_001;
     await change((q) => q.orm.update(q.t.runner).set({ lastSeenAt: now }));
     const probe = await start("own", "prepare");
     await db.transaction((q) =>
@@ -305,9 +330,14 @@ export async function probeRunnerPlacement(
       await db.run((q) =>
         q.all(
           q.orm
-            .select({ state: q.t.runnerAgentPolicy.quotaState })
-            .from(q.t.runnerAgentPolicy)
-            .where(eq(q.t.runnerAgentPolicy.runnerId, "own")),
+            .select({ state: q.t.agentAccountHealth.state })
+            .from(q.t.agentAccountHealth)
+            .where(
+              and(
+                eq(q.t.agentAccountHealth.runnerId, "own"),
+                eq(q.t.agentAccountHealth.kind, "quota"),
+              ),
+            ),
         ),
       ),
       [{ state: "exhausted" }],
@@ -355,6 +385,7 @@ export async function probeRunnerPlacement(
           );
       }
     };
+    now++;
     const fencedSignedOut = await onlySecond(() => start("second", "prepare"));
     await db.transaction((q) =>
       placement.finishedSteps(q, {
@@ -365,7 +396,28 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
+    await change((q) =>
+      q.orm
+        .update(q.t.agentAccountHealth)
+        .set({ nextCheckAt: now })
+        .where(
+          and(
+            eq(q.t.agentAccountHealth.runnerId, "second"),
+            eq(q.t.agentAccountHealth.kind, "auth"),
+          ),
+        ),
+    );
     const login = await onlySecond(() => start("second", "prepare"));
+    assert(!(await ids()).includes("second"));
+    await db.transaction((q) =>
+      holdForRunnerSetupSteps(q, {
+        itemId: item.id,
+        ownerUserId: owner,
+        reason: "agent-not-signed-in",
+        runnerId: "second",
+        now,
+      }),
+    );
     await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: login,
@@ -375,6 +427,8 @@ export async function probeRunnerPlacement(
       }),
     );
     assert((await ids()).includes("second"));
+    assert((await listJobs(db)).some((job) => job.queue === "runner_setup.check"));
+    observe("A probe already running wakes a new setup hold on success", true, null);
     const fencedSignedIn = await start("second");
     await db.transaction((q) =>
       placement.finishedSteps(q, {
@@ -451,8 +505,9 @@ export async function probeRunnerPlacement(
     await setSharing(1);
     await assert.rejects(
       () =>
-        db.transaction((q) =>
-          placement.startedSteps(q, {
+        db.transaction(function* (q) {
+          return yield* placement.startedSteps(q, {
+            account: yield* boundAccountSteps(q, "own"),
             commandId: workspaceId(),
             runnerId: "own",
             itemId: item.id,
@@ -461,8 +516,8 @@ export async function probeRunnerPlacement(
             role: "implementer",
             purpose: "work",
             startedAt: now,
-          }),
-        ),
+          });
+        }),
       /selection authority changed/,
     );
     await setSharing(0);

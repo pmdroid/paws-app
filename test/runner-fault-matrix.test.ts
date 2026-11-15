@@ -1,3 +1,6 @@
+import { boundResultSubmissions } from "./bound-runner-account";
+import { boundHeartbeat } from "./bound-runner-account";
+import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -375,6 +378,7 @@ async function runRemoteFault(fault: Fault) {
   const hung = fault.startsWith("silent-hung");
   const clock = { held: hung ? Date.now() : null };
   const clockNow = () => clock.held ?? Date.now();
+  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     now: clockNow,
@@ -382,8 +386,10 @@ async function runRemoteFault(fault: Fault) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
+  boundHeartbeat(db, work);
   const results = createRunnerResults({ store: db, work, now: clockNow });
   const health = createRunnerHealth({ store: db, work, now: clockNow });
+  boundResultSubmissions(db, results, health);
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",
@@ -561,11 +567,17 @@ async function runRemoteFault(fault: Fault) {
   if (fault === "silent-hung-checkpoint")
     await db.run((q) =>
       q.exec(
-        q.orm.insert(q.t.runnerHostStatus).values({
-          runnerId,
-          runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
-          reportedAt: clockNow(),
-        }),
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({
+            runnerId,
+            runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
+            reportedAt: clockNow(),
+          })
+          .onConflictDoUpdate({
+            target: q.t.runnerHostStatus.runnerId,
+            set: { runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".") },
+          }),
       ),
     );
   let recovering: Promise<void> | null = null;

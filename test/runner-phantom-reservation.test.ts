@@ -1,3 +1,8 @@
+import {
+  boundPlacementAccounts,
+  boundHeartbeat,
+  boundResultSubmissions,
+} from "./bound-runner-account";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -92,6 +97,7 @@ async function fixture() {
   };
   const agentbox = await enroll("agentbox", 1);
   const goldbox = await enroll("goldbox", 0);
+  await boundPlacementAccounts(store);
   const work = createRunnerWork({
     store,
     keyId: "acme",
@@ -99,11 +105,14 @@ async function fixture() {
     eventKey: Buffer.alloc(32, 7),
     now: () => clock,
   });
+  boundHeartbeat(store, work);
   const health = createRunnerHealth({ store, work, now: () => clock });
+  const results = createRunnerResults({ store, work });
+  boundResultSubmissions(store, results, health);
   const backend = createRemoteAgentRunner({
     store,
     work,
-    results: createRunnerResults({ store, work }),
+    results,
     health,
     now: () => clock,
     pollIntervalMs: 5,
@@ -181,7 +190,10 @@ async function fixture() {
     item,
     probe,
     tick: (ms: number) => (clock += ms),
-    heartbeat: (id: string) => work.heartbeat(id, 1),
+    heartbeat: async (id: string) => {
+      await boundPlacementAccounts(store);
+      return work.heartbeat(id, 1);
+    },
   };
 }
 

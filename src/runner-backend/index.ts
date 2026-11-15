@@ -440,7 +440,7 @@ export function createRemoteAgentRunner(options: {
       ),
     ];
     if (
-      (resetsAt === null || heldForSession) &&
+      (resetsAt === null || heldForSession || busy.length > 0) &&
       (busy.length > 0 ||
         (offered.length === 0 && (await store.run((q) => anyActiveRunnerSteps(q)))))
     )

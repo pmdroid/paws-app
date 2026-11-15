@@ -1,3 +1,6 @@
+import { boundResultSubmissions } from "./bound-runner-account";
+import { boundHeartbeat } from "./bound-runner-account";
+import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +16,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   insertRun,
+  beginImplementRun,
   listJobs,
   listWorkItems,
   putWorkspaceUser,
@@ -47,7 +51,7 @@ afterAll(() => {
   });
 });
 
-test("four tasks waiting for a busy runner leave the execution workers free for a fifth task on a free runner", async () => {
+async function capacity(mixed: boolean) {
   const root = mkdtempSync(join(tmpdir(), "paws-capacity-wait-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -160,6 +164,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   );
 
   let workNow = Date.now;
+  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
@@ -167,6 +172,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     eventKey: Buffer.alloc(32, 7),
     now: () => workNow(),
   });
+  boundHeartbeat(db, work);
   workNow = () => now - 120_000;
   await work.enqueue({
     id: "cancel-other",
@@ -186,6 +192,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   await work.heartbeat(freeRunner, 8);
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
+  boundResultSubmissions(db, results, health);
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
   const placement = createRunnerPlacement({ store: db });
@@ -203,6 +210,10 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         )
           ? busyRunner
           : freeRunner;
+        if (mixed && want === busyRunner) {
+          request.onRejected?.(busyRunner, "account at its concurrency limit");
+          request.onRejected?.(busyRunner, "agent account quota cooldown", now + 3_600_000);
+        }
         return (await placement.candidates(request)).filter((runner) => runner.id === want);
       },
     },
@@ -335,6 +346,22 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
+    if (mixed) {
+      const item = (await listWorkItems(db)).find((row) => row.linearIdentifier === "ENG-1")!;
+      await beginImplementRun(db, item.id, now);
+      return await expect(
+        backend.forItem(item.id)({
+          profile: { agent: "claude", model: null },
+          role: "implementer",
+          itemId: item.id,
+          runId: "probe",
+          worktreePath: root,
+          pawsRoot: root,
+          prepareOnly: true,
+          prompt: "Prepare the agent",
+        }),
+      ).rejects.toMatchObject({ name: "RunnerCapacityWait" });
+    }
     await dispatch(db, { now: clock.now() });
     expect(
       await db.run((q) =>
@@ -400,7 +427,17 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     await close();
     rmSync(root, { recursive: true, force: true });
   }
-}, 60_000);
+}
+test(
+  "four tasks waiting for a busy runner leave the execution workers free for a fifth task on a free runner",
+  () => capacity(false),
+  60_000,
+);
+test(
+  "mixed account concurrency and timed refusals preserve capacity wakeups",
+  () => capacity(true),
+  60_000,
+);
 
 function receipt(command: RunnerCommand) {
   return {

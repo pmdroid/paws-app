@@ -3109,7 +3109,7 @@ export class Orchestrator {
     const url = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
     return need.reason === "no-runner"
       ? `You don't have a runner Paws can use yet. Create a VM or add a host here: ${url}. I'll start on my own once it's ready.`
-      : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;
+      : `Your runner ${need.runnerName} needs a healthy bound ${runnerAgentName(need.agent)} account. Add or bind an account in Settings › Agent accounts; I'll start right after.`;
   }
 
   private async nextRunnerWait(job: Job, caught: unknown): Promise<RunnerCapacityWaitState | null> {
