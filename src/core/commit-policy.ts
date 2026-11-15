@@ -58,7 +58,7 @@ export function validateCommitAttribution(
   const expected = policyCoauthors(policy)
     .map((human) => `${human.name} <${human.email}>`)
     .sort();
-  if (JSON.stringify([...trailers].sort()) !== JSON.stringify(expected))
+  if (JSON.stringify([...new Set(trailers)].sort()) !== JSON.stringify(expected))
     throw new Error(
       "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy. No candidate was rewritten.",
     );
