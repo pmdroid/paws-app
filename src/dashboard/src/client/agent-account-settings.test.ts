@@ -135,7 +135,6 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
     "Sign Work out on every runner?",
   );
   await click(root, "A1", "sign-out-confirm");
-  await click(root, "A2", "sign-in");
   expect(requests).toEqual([
     {
       method: "POST",
@@ -153,10 +152,7 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
       body: { extraUsage: true },
     },
     { method: "DELETE", path: "/api/runners/agent-accounts/A1/credential", body: undefined },
-    { method: "POST", path: "/api/runners/agent-accounts/A2/sign-in", body: undefined },
   ]);
-  expect(opened.at(-1)?.slice(0, 2)).toEqual([{ id: "R1", name: "agentbox" }, "claude"]);
-  expect(opened.at(-1)?.[3]).toBe("B1");
 });
 
 test("a Claude account takes a pasted setup token and clears the field", async () => {
@@ -195,10 +191,13 @@ test("only Claude accounts render a setup token field", () => {
     confirm: null,
   });
   expect(html.match(/data-account-token/g)).toHaveLength(1);
+  expect(html.match(/data-account-action="sign-in"/g)).toHaveLength(1);
+  expect(html).toMatch(/data-account-id="A2"[^]*data-account-action="sign-in"/);
 });
 
 test("an admin sees the API's error message", async () => {
   setSettingsAdmin(true);
+  agent = "grok";
   const root = await mount();
   failure = "None of your runners is online with central sign-ins.";
   await click(root, "A1", "sign-in");
@@ -261,7 +260,7 @@ for (const state of ["expired", "denied"]) {
   });
 }
 
-for (const provider of ["claude", "grok", "opencode"] as const) {
+for (const provider of ["grok", "opencode"] as const) {
   test(`${provider} keeps the supported runner sign-in flow`, async () => {
     agent = provider;
     const root = await mount();
