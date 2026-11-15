@@ -125,7 +125,7 @@ if [ "$1" = upgrade ]; then
       /^[[:space:]]*PAWS_DATABASE_URL[[:space:]]*=/ {{
         sub(/^[^=]*=[[:space:]]*/, "")
         sub(/[[:space:]]*$/, "")
-        configured = ($0 != "" && $0 != "\\"\\"" && $0 != "\\047\\047")
+        configured = ($0 !~ /^[[:space:]]*$/ && $0 !~ /^"[[:space:]]*"$/ && $0 !~ /^\\047[[:space:]]*\\047$/)
       }}
       END {{ print configured + 0 }}
     ' {root}/etc/paws/control-plane.env)

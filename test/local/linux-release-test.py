@@ -2295,10 +2295,21 @@ class ControlPlaneDebTests(unittest.TestCase):
             run("postinst", "configure")
             self.assertIn("systemctl enable paws.service", log.read_text())
             self.assertIn("systemctl start paws.service", log.read_text())
+            empty_values = ("", "''", '""', "   ", "' '", '" "', "' \t '", '" \t "')
+            for empty in empty_values:
+                with self.subTest(backup_for=empty):
+                    previous = set((home / "backups").iterdir())
+                    config.write_text(f"PAWS_DATABASE_URL={empty}\n")
+                    run("preinst", "upgrade", "1.0.6")
+                    current = list((home / "backups").iterdir())
+                    self.assertEqual(len(current), 3)
+                    added = set(current) - previous
+                    self.assertEqual(len(added), 1)
+                    self.assertEqual((added.pop() / "data").read_text(), "database")
             cp = commands / "cp"
             cp.write_text("#!/bin/sh\nexit 1\n")
             cp.chmod(0o755)
-            for empty in ("", "''", '""'):
+            for empty in empty_values:
                 with self.subTest(empty=empty):
                     config.write_text(f"PAWS_DATABASE_URL={empty}\n")
                     log.write_text("")
