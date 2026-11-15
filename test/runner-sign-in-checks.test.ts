@@ -93,7 +93,7 @@ async function fixture() {
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)
-          .values({ runnerId: id, runnerVersion: "0.1.53", reportedAt: at }),
+          .values({ runnerId: id, runnerVersion: "0.1.83", reportedAt: at }),
     );
     return id;
   };

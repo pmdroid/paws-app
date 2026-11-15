@@ -748,7 +748,7 @@ function shareRunnerPaths(
 }
 
 function shareWithAgents(descriptor: number, owners: RunnerAccountOwners, mode = 0o640): void {
-  fchownSync(descriptor, -1, owners.agentGid);
+  if (fstatSync(descriptor).gid !== owners.agentGid) fchownSync(descriptor, -1, owners.agentGid);
   fchmodSync(descriptor, mode);
 }
 
