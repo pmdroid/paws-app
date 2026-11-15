@@ -66,6 +66,7 @@
     "command": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "exec", "timeoutSeconds"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -78,6 +79,7 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
         },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" },
         "ci": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\r\\n]+$" },
         "recheck": { "type": "boolean" }
@@ -86,6 +88,7 @@
     "review": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "skill", "independence", "failOn"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -105,6 +108,7 @@
         "scope": { "enum": ["candidate", "diff"] },
         "parallel": { "type": "boolean" },
         "minChangedLines": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" },
         "recheck": { "type": "boolean" }
       }
@@ -112,6 +116,7 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -127,6 +132,7 @@
         "minimum": { "type": "integer", "minimum": 1, "maximum": 100 },
         "hint": { "type": "string", "minLength": 1, "maxLength": 500 },
         "approval": { "const": "human" },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" },
         "recheck": { "type": "boolean" }
       }
@@ -134,6 +140,7 @@
     "preview": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "approval"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -141,6 +148,7 @@
         "gate": { "const": "beforePR" },
         "approval": { "const": "human" },
         "hint": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" },
         "recheck": { "type": "boolean" }
       }
@@ -154,6 +162,7 @@
     "rule": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "probe", "summary", "failOn"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -165,6 +174,7 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
         },
         "summary": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\r\\n]+$" },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" },
         "failOn": { "enum": ["P0", "P1", "P2", "P3"] },
         "onFail": { "enum": ["fix", "approve"] },
@@ -174,6 +184,7 @@
     "setupStep": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "exec", "timeoutSeconds"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -184,6 +195,7 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
         },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "except": { "$ref": "#/$defs/paths" },
         "paths": { "$ref": "#/$defs/paths" }
       }
     }

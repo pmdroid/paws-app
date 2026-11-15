@@ -246,7 +246,7 @@ function judgeItem(
     if (request.changedPaths == null) {
       return row(item, "invalid", "changed paths are unavailable");
     }
-    if (!anyPathMatches(paths, request.changedPaths)) {
+    if (!anyPathMatches(paths, request.changedPaths, item.except)) {
       return row(item, "skipped", "no changed path matches");
     }
   }

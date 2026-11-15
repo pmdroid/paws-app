@@ -9,6 +9,10 @@
 import { anyPathMatches } from "../policy/paths";
 
 /** True when any pattern matches any changed path. */
-export function matchPaths(patterns: readonly string[], paths: readonly string[]): boolean {
-  return anyPathMatches(patterns, paths);
+export function matchPaths(
+  patterns: readonly string[],
+  paths: readonly string[],
+  except: readonly string[] = [],
+): boolean {
+  return anyPathMatches(patterns, paths, except);
 }

@@ -840,13 +840,16 @@ function needsChangedPaths(policy: ResolvedPolicy, gate: Gate): boolean {
   return setup || items || rules;
 }
 
-function inScope(item: { paths?: string[] }, changed: readonly string[] | null): boolean {
+function inScope(
+  item: { paths?: string[]; except?: string[] },
+  changed: readonly string[] | null,
+): boolean {
   if (!hasPaths(item)) return true;
   if (changed === null) return false;
-  return matchPaths(item.paths ?? [], changed);
+  return matchPaths(item.paths ?? [], changed, item.except);
 }
 
-function hasPaths(item: { paths?: string[] }): boolean {
+function hasPaths(item: { paths?: string[]; except?: string[] }): boolean {
   return item.paths !== undefined && item.paths.length > 0;
 }
 

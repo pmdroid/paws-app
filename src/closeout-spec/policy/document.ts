@@ -269,6 +269,7 @@ function decodeRules(value: unknown): PolicyRule[] {
     };
     if (entry.exec !== undefined) rule.exec = expectStrings(entry.exec);
     if (entry.paths !== undefined) rule.paths = expectStrings(entry.paths);
+    if (entry.except !== undefined) rule.except = expectStrings(entry.except);
     if (entry.onFail !== undefined) rule.onFail = expectOnFail(entry.onFail);
     if (entry.recheck !== undefined) rule.recheck = expectBoolean(entry.recheck);
     return rule;
@@ -329,6 +330,7 @@ function decodeItem(value: unknown): PolicyItem {
       timeoutSeconds: expectInt(value.timeoutSeconds),
     };
     if (paths !== undefined) item.paths = paths;
+    if (value.except !== undefined) item.except = expectStrings(value.except);
     if (value.ci !== undefined) item.ci = expectString(value.ci);
     if (recheck !== undefined) item.recheck = recheck;
     return item;
@@ -347,6 +349,7 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.minChangedLines !== undefined)
       item.minChangedLines = expectInt(value.minChangedLines);
     if (paths !== undefined) item.paths = paths;
+    if (value.except !== undefined) item.except = expectStrings(value.except);
     if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
@@ -357,6 +360,7 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.hint !== undefined) item.hint = expectString(value.hint);
     if (value.approval !== undefined) item.approval = expectApproval(value.approval);
     if (paths !== undefined) item.paths = paths;
+    if (value.except !== undefined) item.except = expectStrings(value.except);
     if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
@@ -369,6 +373,7 @@ function decodeItem(value: unknown): PolicyItem {
     };
     if (value.hint !== undefined) item.hint = expectString(value.hint);
     if (paths !== undefined) item.paths = paths;
+    if (value.except !== undefined) item.except = expectStrings(value.except);
     if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
@@ -402,6 +407,7 @@ function decodeSetup(value: unknown): PolicySetupStep[] {
       timeoutSeconds: expectInt(entry.timeoutSeconds),
     };
     if (entry.paths !== undefined) step.paths = expectStrings(entry.paths);
+    if (entry.except !== undefined) step.except = expectStrings(entry.except);
     return step;
   });
 }

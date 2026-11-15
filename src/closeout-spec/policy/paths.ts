@@ -70,8 +70,16 @@ export function pathsMatch(pattern: string, path: string): boolean {
   return matchSegments(pattern.split("/"), path.split("/"));
 }
 
-export function anyPathMatches(patterns: readonly string[], paths: readonly string[]): boolean {
-  return patterns.some((pattern) => paths.some((path) => pathsMatch(pattern, path)));
+export function anyPathMatches(
+  patterns: readonly string[],
+  paths: readonly string[],
+  except: readonly string[] = [],
+): boolean {
+  return paths.some(
+    (path) =>
+      patterns.some((pattern) => pathsMatch(pattern, path)) &&
+      !except.some((pattern) => pathsMatch(pattern, path)),
+  );
 }
 
 function drivePrefix(pattern: string): boolean {

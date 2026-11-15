@@ -198,6 +198,8 @@ function walk(
       if (state.ids.has(step.id)) return `duplicate requirement id ${step.id}`;
       state.ids.add(step.id);
       const paths = checkPathPatterns(step.paths ?? []);
+      const except = checkPathPatterns(step.except ?? []);
+      if (!except.ok) return except.message;
       if (!paths.ok) return paths.message;
       const resolved: ResolvedSetup = {
         id: step.id,
@@ -207,6 +209,7 @@ function walk(
         timeoutSeconds: step.timeoutSeconds,
       };
       if (paths.paths.length > 0) resolved.paths = paths.paths;
+      if (except.paths.length > 0) resolved.except = except.paths;
       state.setup.push(resolved);
     }
   }
@@ -217,6 +220,8 @@ function walk(
     state.ids.add(id);
     if (raw.kind === "command") {
       const paths = checkPathPatterns(raw.paths ?? []);
+      const except = checkPathPatterns(raw.except ?? []);
+      if (!except.ok) return except.message;
       if (!paths.ok) return paths.message;
       const item: ResolvedCommand = {
         id,
@@ -226,6 +231,7 @@ function walk(
         timeoutSeconds: raw.timeoutSeconds,
       };
       if (paths.paths.length > 0) item.paths = paths.paths;
+      if (except.paths.length > 0) item.except = except.paths;
       if (raw.ci !== undefined) item.ci = raw.ci;
       if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
@@ -233,6 +239,8 @@ function walk(
     }
     if (raw.kind === "evidence") {
       const paths = checkPathPatterns(raw.paths ?? []);
+      const except = checkPathPatterns(raw.except ?? []);
+      if (!except.ok) return except.message;
       if (!paths.ok) return paths.message;
       const item: ResolvedEvidence = {
         id,
@@ -244,12 +252,15 @@ function walk(
       if (raw.hint !== undefined) item.hint = raw.hint;
       if (raw.approval !== undefined) item.approval = raw.approval;
       if (paths.paths.length > 0) item.paths = paths.paths;
+      if (except.paths.length > 0) item.except = except.paths;
       if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
       continue;
     }
     if (raw.kind === "preview") {
       const paths = checkPathPatterns(raw.paths ?? []);
+      const except = checkPathPatterns(raw.except ?? []);
+      if (!except.ok) return except.message;
       if (!paths.ok) return paths.message;
       const item: ResolvedPreview = {
         id,
@@ -259,6 +270,7 @@ function walk(
       };
       if (raw.hint !== undefined) item.hint = raw.hint;
       if (paths.paths.length > 0) item.paths = paths.paths;
+      if (except.paths.length > 0) item.except = except.paths;
       if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
       continue;
@@ -270,6 +282,8 @@ function walk(
     const skillFile = state.tree.read(skill);
     if (skillFile.status !== "file") return `skill is missing: ${skill}`;
     const paths = checkPathPatterns(raw.paths ?? []);
+    const except = checkPathPatterns(raw.except ?? []);
+    if (!except.ok) return except.message;
     if (!paths.ok) return paths.message;
     const item: ResolvedReview = {
       id,
@@ -286,6 +300,7 @@ function walk(
     if (raw.parallel !== undefined) item.parallel = raw.parallel;
     if (raw.minChangedLines !== undefined) item.minChangedLines = raw.minChangedLines;
     if (paths.paths.length > 0) item.paths = paths.paths;
+    if (except.paths.length > 0) item.except = except.paths;
     if (raw.recheck === true) item.recheck = true;
     state.items.push(item);
   }
@@ -314,6 +329,8 @@ function resolveRule(state: WalkState, raw: PolicyRule): ResolvedRule | string {
   if (read.bytes.byteLength > POLICY_MAX_BYTES)
     return `probe is larger than ${POLICY_MAX_BYTES} bytes: ${probe}`;
   const paths = checkPathPatterns(raw.paths ?? []);
+  const except = checkPathPatterns(raw.except ?? []);
+  if (!except.ok) return except.message;
   if (!paths.ok) return paths.message;
   const sha256 = sha256Hex(read.bytes);
   state.probeFiles.set(probe, read.bytes);
@@ -331,6 +348,7 @@ function resolveRule(state: WalkState, raw: PolicyRule): ResolvedRule | string {
     onFail: raw.onFail ?? "fix",
   };
   if (paths.paths.length > 0) rule.paths = paths.paths;
+  if (except.paths.length > 0) rule.except = except.paths;
   if (raw.recheck === true) rule.recheck = true;
   return rule;
 }

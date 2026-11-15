@@ -66,6 +66,7 @@ items:
     kind: evidence
     gate: beforePR
     paths: ["src/dashboard/**", "landing/**"]
+    except: ["**/*.test.ts"]
     media: [image, video]
     minimum: 1
     hint: Screenshot each changed screen at desktop width and at 390 px.

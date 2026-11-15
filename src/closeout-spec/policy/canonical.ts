@@ -100,6 +100,7 @@ function ruleJson(rule: ResolvedRule): Record<string, unknown> {
       ...(rule.recheck === true ? { recheck: true } : {}),
     },
     rule.paths,
+    rule.except,
   );
 }
 
@@ -120,6 +121,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
     return withPaths(
       { id: item.id, kind: item.kind, gate: item.gate, supported: false },
       item.paths,
+      item.except,
     );
   }
   if (item.kind === "command") {
@@ -134,6 +136,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         ...(item.recheck === true ? { recheck: true } : {}),
       },
       item.paths,
+      item.except,
     );
   }
   if (item.kind === "evidence") {
@@ -149,6 +152,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         ...(item.recheck === true ? { recheck: true } : {}),
       },
       item.paths,
+      item.except,
     );
   }
   if (item.kind === "preview") {
@@ -162,6 +166,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         ...(item.recheck === true ? { recheck: true } : {}),
       },
       item.paths,
+      item.except,
     );
   }
   return withPaths(
@@ -181,6 +186,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
       ...(item.recheck === true ? { recheck: true } : {}),
     },
     item.paths,
+    item.except,
   );
 }
 
@@ -194,14 +200,17 @@ function setupJson(step: ResolvedSetup): Record<string, unknown> {
       timeoutSeconds: step.timeoutSeconds,
     },
     step.paths,
+    step.except,
   );
 }
 
 function withPaths(
   value: Record<string, unknown>,
   paths: string[] | undefined,
+  except: string[] | undefined,
 ): Record<string, unknown> {
   if (paths !== undefined && paths.length > 0) value.paths = paths;
+  if (except !== undefined && except.length > 0) value.except = except;
   return value;
 }
 

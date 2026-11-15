@@ -1,5 +1,6 @@
 import {
   CLOSEOUT_CI_KEY_RUNNER_VERSION,
+  CLOSEOUT_EXCEPT_RUNNER_VERSION,
   CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
@@ -10,6 +11,9 @@ import {
  * known to every runner Paws places work on, or unknown to this Paws too.
  */
 export const POLICY_KEY_RUNNER_VERSIONS: Readonly<Record<string, RunnerVersion>> = {
+  "items[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
+  "rules[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
+  "setup[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
   "items[].ci": CLOSEOUT_CI_KEY_RUNNER_VERSION,
   "items[].recheck": CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
   "rules[].recheck": CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
