@@ -94,6 +94,7 @@ const sessionWaitsByDatabase = new WeakMap<Db, Map<string, SessionWait>>();
 
 export function createRunnerPlacement(options: {
   store: Db;
+  requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>;
   sessionActorSteps?: (q: Q, sessionId: string) => Steps<string | undefined>;
   now?: () => number;
 }): RunnerPlacement {
@@ -319,6 +320,7 @@ export function createRunnerPlacement(options: {
       },
       workspaceId,
       { agent, model: input.profile?.model, purpose: input.purpose, at: now() },
+      options.requiresOAuthSteps,
     );
     if ("reason" in fit)
       throw new PlacementRaceError(`default sign-in: ${fit.reason} before assignment`);
@@ -446,12 +448,18 @@ export function createRunnerPlacement(options: {
         reject("excluded after failed attempt");
         continue;
       }
-      const fit = yield* signInFitSteps(q, runner, current.workspace.id, {
-        agent,
-        model: input.profile?.model,
-        purpose: input.purpose,
-        at,
-      });
+      const fit = yield* signInFitSteps(
+        q,
+        runner,
+        current.workspace.id,
+        {
+          agent,
+          model: input.profile?.model,
+          purpose: input.purpose,
+          at,
+        },
+        options.requiresOAuthSteps,
+      );
       if ("reason" in fit) {
         input.onRejected?.(runner.id, fit.reason, ...(fit.until !== undefined ? [fit.until] : []));
         continue;

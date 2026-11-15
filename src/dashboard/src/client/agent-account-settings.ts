@@ -14,7 +14,8 @@ export type CentralAccount = {
   label: string;
   extraUsage: boolean;
   signingIn: boolean;
-  credential: { refreshedAt: number; runner: string | null } | null;
+  health?: "healthy" | "expiring";
+  credential: { refreshedAt: number; runner: string | null; expiresAt?: number } | null;
   usage: { limits: { window: string; usedPercent: number }[] } | null;
   lease: { runner: string; issue: { identifier: string } | null } | null;
 };
@@ -36,6 +37,9 @@ function accountStatus(account: CentralAccount, runners: Record<string, string>)
         ? `Signed in, refreshed ${new Date(account.credential.refreshedAt).toLocaleString()} by ${runner(account.credential.runner)}`
         : "Signed out",
   ];
+  if (account.credential?.expiresAt)
+    parts.push(`Token expires ${new Date(account.credential.expiresAt).toLocaleDateString()}`);
+  if (account.health === "expiring") parts.push("Sign in again to renew the token");
   if (account.lease)
     parts.push(
       `In use by ${account.lease.issue?.identifier ?? "a run"} on ${runner(account.lease.runner)}`,

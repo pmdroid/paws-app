@@ -198,6 +198,7 @@ export {
   CONVERSATION_TOOLS_RUNNER_VERSION,
   AGENT_CREDENTIAL_RUNNER_VERSION,
   ACCESS_CREDENTIAL_RUNNER_VERSION,
+  CLAUDE_OAUTH_RUNNER_VERSION,
   COMPLETE_CHECKS_RUNNER_VERSION,
 } from "./versions";
 export {
@@ -241,6 +242,8 @@ export {
   accessCredentialFiles,
   accessCredentialExpiry,
   RunnerAgentCredentialFilesSchema,
+  ClaudeOAuthTokenSchema,
+  claudeTokenHealth,
   RunnerAgentCredentialReceiptSchema,
   RunnerAgentCredentialUploadSchema,
   agentCredentialContext,

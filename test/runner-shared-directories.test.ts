@@ -62,6 +62,7 @@ function chowns() {
 
 test("the supervisor makes a task directory the agent group can write, without a chown", async () => {
   const root = temporary();
+  mkdirSync(join(root, "agent"), { mode: 0o770 });
   const spool = {
     root: join(root, "spool"),
     runnerUid: process.getuid!(),
@@ -122,6 +123,7 @@ setgidTest(
   "a task directory under a setgid root carries no setgid bit, so copying its checkout keeps working",
   async () => {
     const root = temporary();
+    mkdirSync(join(root, "agent"), { mode: 0o770 });
     const spool = {
       root: join(root, "spool"),
       runnerUid: process.getuid!(),

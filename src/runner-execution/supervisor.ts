@@ -23,6 +23,7 @@ import type { RunnerSkillInstaller } from "./skills";
 import { openSharedDirectory } from "./shared";
 import {
   confirmRunnerAccountHold,
+  convertClaudeCredentials,
   holdRunnerAccountHome,
   openRunnerAccountHome,
   releaseRunnerAccountHome,
@@ -234,8 +235,15 @@ export function createDirectWorkerSupervisor(options: {
   function recordedHome(executionId: string): string | undefined {
     if (!options.spool) return;
     try {
-      const named = runnerCommandAccount(readRunnerJob(options.spool, executionId).command);
-      return named ? runnerAccountHome(agentHome, named.account) : undefined;
+      const { command } = readRunnerJob(options.spool, executionId);
+      const named = runnerCommandAccount(command);
+      const agent =
+        "profile" in command ? command.profile?.agent : "agent" in command ? command.agent : null;
+      return named
+        ? runnerAccountHome(agentHome, named.account)
+        : agent === "claude"
+          ? agentHome
+          : undefined;
     } catch (caughtError3) {
       journalCaught(caughtError3, "supervisor.recordedHome.readRunnerJob", null);
       return;
@@ -446,7 +454,9 @@ export function createDirectWorkerSupervisor(options: {
       0o600,
     );
     try {
-      if (home !== agentHome && options.spool && options.results) {
+      if (options.spool && options.results && recordedHome(executionId)) {
+        if (readRunnerJob(options.spool, executionId).command.type !== "login")
+          convertClaudeCredentials(home);
         holdRunnerAccountHome(
           home,
           executionId,

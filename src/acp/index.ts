@@ -96,7 +96,7 @@ export {
   type AcpConversationEntry,
   type AcpPromptLifecycle,
 } from "./lifecycle";
-export { accountAgentEnv, isBlockedEnv, minimalAgentEnv } from "./env";
+export { claudeAgentEnv, accountAgentEnv, isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";

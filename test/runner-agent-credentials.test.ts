@@ -488,3 +488,62 @@ test("central Codex credentials are access-only, replaced ten minutes before exp
     expect(uploads).toEqual([]);
   });
 });
+
+test("Claude OAuth accounts use the token environment and never return refreshed credentials", async () => {
+  const { claudeAgentEnv, accountAgentEnv, minimalAgentEnv } = await import("../src/acp");
+  const { claudeTokenHealth } = await import("../src/runner-protocol");
+  const root = mkdtempSync(join(tmpdir(), "paws-oauth-"));
+  const createdAt = Date.now();
+  const expiresAt = createdAt + 365 * 86400000;
+  const credential = { kind: "oauth_token", token: "sk-ant-oat01-test", createdAt, expiresAt };
+  try {
+    const credentials = runnerAgentCredentials(root);
+    credentials.write(account, "claude", stored);
+    const stagedHome = openRunnerAccountHome(root, account, "claude");
+    const active = join(stagedHome, ".paws-active");
+    mkdirSync(active, { recursive: true });
+    writeFileSync(
+      join(active, "01J0000000000000000000EXE2"),
+      JSON.stringify({ scope: "0123456789abcdef" }),
+    );
+    const incoming = [
+      {
+        path: ".claude/paws-oauth.json",
+        data: Buffer.from(JSON.stringify(credential)).toString("base64"),
+      },
+    ];
+    expect(() => credentials.write(account, "claude", incoming)).toThrow("conversion waits");
+    expect(existsSync(join(stagedHome, ".claude/.credentials.json"))).toBe(true);
+    rmSync(active, { recursive: true });
+    credentials.write(account, "claude", [...stored, ...incoming]);
+    const home = openRunnerAccountHome(root, account, "claude");
+    expect(existsSync(join(home, ".claude/.credentials.json"))).toBe(false);
+    expect(
+      minimalAgentEnv({ ...accountAgentEnv(home), ...claudeAgentEnv(home) })
+        .CLAUDE_CODE_OAUTH_TOKEN,
+    ).toBeUndefined();
+    expect(claudeAgentEnv(home).CLAUDE_CODE_OAUTH_TOKEN).toBe(credential.token);
+    mkdirSync(active, { recursive: true });
+    writeFileSync(
+      join(active, "01J0000000000000000000EXE2"),
+      JSON.stringify({ scope: "0123456789abcdef" }),
+    );
+    const renewed = { ...credential, token: "sk-ant-oat01-renewed" };
+    credentials.write(account, "claude", [
+      {
+        path: ".claude/paws-oauth.json",
+        data: Buffer.from(JSON.stringify(renewed)).toString("base64"),
+      },
+    ]);
+    expect(claudeAgentEnv(home).CLAUDE_CODE_OAUTH_TOKEN).toBe(renewed.token);
+    let returned = false;
+    returnRunnerAgentCredentials(home, "claude", "execution", () => {
+      returned = true;
+    });
+    expect(returned).toBe(false);
+    expect(claudeTokenHealth(expiresAt, expiresAt - 14 * 86400000)).toBe("expiring");
+    expect(claudeTokenHealth(expiresAt, expiresAt - 14 * 86400000 - 1)).toBe("healthy");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

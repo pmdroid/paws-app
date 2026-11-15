@@ -1,3 +1,4 @@
+import { readFileSync, existsSync } from "node:fs";
 import { journalCaught } from "../journal";
 import { join } from "node:path";
 /** Variables an agent and its hooks may inherit. Everything else stays with Paws. */
@@ -143,4 +144,18 @@ export function accountAgentEnv(home: string): Record<string, string> {
     XDG_STATE_HOME: join(home, ".local", "state"),
     XDG_CACHE_HOME: join(home, ".cache"),
   };
+}
+
+export function claudeAgentEnv(home: string): Record<string, string> {
+  const path = join(home, ".claude/paws-oauth.json");
+  const credential = existsSync(path)
+    ? (JSON.parse(readFileSync(path, "utf8")) as { kind?: string; token?: string })
+    : null;
+  const token =
+    credential?.kind === "oauth_token" &&
+    typeof credential.token === "string" &&
+    /^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(credential.token)
+      ? credential.token
+      : undefined;
+  return token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
 }

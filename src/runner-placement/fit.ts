@@ -2,6 +2,7 @@ import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
   getRunnerSteps,
+  runnerHostVersionSteps,
   getWorkItemRepositorySteps,
   legacyAgentAccountId,
   legacyAgentBindingId,
@@ -13,7 +14,11 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import {
+  CLAUDE_OAUTH_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCodingAgent,
+} from "../runner-protocol";
 import { accountHealthBlockSteps, BINDING_REASON_TEXT } from "./account-health";
 import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
@@ -47,9 +52,20 @@ export function* signInFitSteps(
   runner: SignInRunner,
   workspaceId: string,
   input: SignInInput,
+  requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>,
 ): Steps<AccountFit | AccountRefusal> {
   const { agent, at, purpose } = input;
   if (!runner.signedIn) return { reason: "agent not signed in" };
+  const accountId = legacyAgentAccountId(workspaceId, agent);
+  if (
+    agent === "claude" &&
+    requiresOAuthSteps &&
+    (yield* requiresOAuthSteps(q, accountId)) &&
+    !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), CLAUDE_OAUTH_RUNNER_VERSION)
+  )
+    return {
+      reason: `Claude OAuth credentials need runner ${CLAUDE_OAUTH_RUNNER_VERSION.join(".")} or later`,
+    };
   if (runner.cooldownUntil > at)
     return { reason: "agent quota cooldown", until: runner.cooldownUntil };
   const bindingId = legacyAgentBindingId(runner.id, agent);
@@ -68,7 +84,7 @@ export function* signInFitSteps(
       ...(health.until !== null ? { until: health.until } : {}),
     };
   return {
-    account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
+    account: { accountId, bindingId, named: false },
     low: runner.quotaState === "low",
   };
 }

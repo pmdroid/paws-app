@@ -73,7 +73,7 @@ async function fixture() {
     (q) =>
       q.orm
         .insert(q.t.runnerHostStatus)
-        .values({ runnerId, runnerVersion: "0.1.53", reportedAt: at }),
+        .values({ runnerId, runnerVersion: "0.1.83", reportedAt: at }),
   );
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
@@ -462,4 +462,18 @@ test("the owner can sign in agents on a paused runner, not on a draining or revo
     await status(value);
     await expect(f.login.start(f.owner, f.runnerId, "codex")).rejects.toThrow();
   }
+});
+
+test("Claude setup-token sign-in rejects an older runner with an upgrade reason", async () => {
+  const f = await fixture();
+  await seed(f.db, (q) =>
+    q.orm
+      .update(q.t.runnerHostStatus)
+      .set({ runnerVersion: "0.1.82" })
+      .where(eq(q.t.runnerHostStatus.runnerId, f.runnerId)),
+  );
+  await expect(f.login.start(f.owner, f.runnerId, "claude")).rejects.toThrow(
+    "Claude OAuth credentials need runner 0.1.83 or later",
+  );
+  expect(await logins(f.db)).toEqual([]);
 });

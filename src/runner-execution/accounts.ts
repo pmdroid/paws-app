@@ -167,15 +167,23 @@ export function runnerAgentCredentials(
     write(account, agent, written) {
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
       markRunnerAccountSignedIn(home, account, agent, owners);
-      const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
       const busy = activeExecutions(home).length > 0;
+      const oauth =
+        agent === "claude" && written.some((file) => file.path === ".claude/paws-oauth.json");
+      if (oauth) convertClaudeCredentials(home, true);
+      const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
       for (const file of written) {
+        if (oauth && file.path === ".claude/.credentials.json") continue;
         if (!allowed.has(file.path)) throw new RunnerAccountHomeError("Agent sign-in is unsafe");
         const target = join(home, file.path);
         let folder = home;
         for (const part of relative(home, dirname(target)).split(sep).filter(Boolean))
           credentialFolder((folder = join(folder, part)), owners);
-        if ((busy || file.path === CLAUDE_STATE) && present(target)) continue;
+        if (
+          ((busy && file.path !== ".claude/paws-oauth.json") || file.path === CLAUDE_STATE) &&
+          present(target)
+        )
+          continue;
         writeSharedFile(target, Buffer.from(file.data, "base64"), owners, 0o660);
       }
     },
@@ -187,15 +195,30 @@ export function runnerAgentCredentials(
   };
 }
 
+export function convertClaudeCredentials(
+  home: string,
+  oauth = present(join(home, ".claude/paws-oauth.json")),
+): void {
+  const legacy = join(home, ".claude/.credentials.json");
+  if (!oauth || !present(legacy)) return;
+  if (activeExecutions(home).length)
+    throw new RunnerAccountHomeError("Claude credential conversion waits for active work");
+  rmSync(legacy, { force: true });
+}
+
 export function returnRunnerAgentCredentials(
   home: string,
   agent: RunnerCodingAgent,
   executionId: string,
   publish: (files: RunnerAgentCredentialFiles) => void,
+  signingIn = false,
 ): void {
+  const oauth = agent === "claude" && present(join(home, ".claude/paws-oauth.json"));
+  if (!signingIn && oauth) return;
   const read: RunnerAgentCredentialFiles = [];
   const raw = new Map<string, Buffer>();
   for (const path of RUNNER_AGENT_CREDENTIAL_FILES[agent]) {
+    if (oauth && path === ".claude/.credentials.json") continue;
     let data = readCredentialFile(join(home, path));
     if (data && path !== CLAUDE_STATE) raw.set(path, data);
     if (data && path === CLAUDE_STATE) {
@@ -337,6 +360,7 @@ function writeHold(
 
 export function releaseRunnerAccountHome(home: string, executionId: string): void {
   rmSync(join(home, ACTIVE, ExecutionIdSchema.parse(executionId)), { force: true });
+  if (activeExecutions(home).length === 0) convertClaudeCredentials(home);
 }
 
 export function publishRunnerAccountHome(
@@ -724,7 +748,7 @@ function shareRunnerPaths(
 }
 
 function shareWithAgents(descriptor: number, owners: RunnerAccountOwners, mode = 0o640): void {
-  fchownSync(descriptor, -1, owners.agentGid);
+  if (fstatSync(descriptor).gid !== owners.agentGid) fchownSync(descriptor, -1, owners.agentGid);
   fchmodSync(descriptor, mode);
 }
 

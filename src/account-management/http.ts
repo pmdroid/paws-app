@@ -10,7 +10,12 @@ import {
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import { RUNNER_CODING_AGENTS } from "../runner-protocol";
+import { readAgentCredentialSteps } from "../credentials";
+import {
+  ClaudeOAuthTokenSchema,
+  claudeTokenHealth,
+  RUNNER_CODING_AGENTS,
+} from "../runner-protocol";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
@@ -39,6 +44,7 @@ function json(value: unknown, status = 200) {
 export function createAccountManagement(
   options: {
     store?: Db;
+    secretsDir?: string;
     now?: () => number;
     agentAuth?: { device(workspaceId: string, id: string, start: boolean): Promise<unknown> };
   } = {},
@@ -60,7 +66,35 @@ export function createAccountManagement(
     try {
       if (!order && !accountId && method === "GET") {
         const accounts = await store.run((q) => agentAccountOverviewSteps(q, workspaceId, now()));
-        return json({ canManage: admin, accounts });
+        const metadata = await store.run(function* (q) {
+          const result = [];
+          for (const account of accounts) {
+            const stored =
+              options.secretsDir && account.agent === "claude"
+                ? yield* readAgentCredentialSteps(q, options.secretsDir, account.id)
+                : null;
+            const files = stored?.blob ? JSON.parse(stored.blob) : [];
+            const file = files.find(
+              (entry: { path: string }) => entry.path === ".claude/paws-oauth.json",
+            );
+            const token = file
+              ? ClaudeOAuthTokenSchema.parse(
+                  JSON.parse(Buffer.from(file.data, "base64").toString("utf8")),
+                )
+              : null;
+            result.push({
+              ...account,
+              ...(token
+                ? {
+                    health: claudeTokenHealth(token.expiresAt, now()),
+                    credential: { ...account.credential, expiresAt: token.expiresAt },
+                  }
+                : {}),
+            });
+          }
+          return result;
+        });
+        return json({ canManage: admin, accounts: metadata });
       }
       if (action === "device" && (method === "POST" || method === "GET")) {
         if (!admin) return json({ error: "Only workspace admins can change agent accounts." }, 403);

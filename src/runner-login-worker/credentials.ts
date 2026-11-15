@@ -24,6 +24,7 @@ type Agent = "claude" | "codex" | "grok" | "opencode";
  */
 const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> = {
   claude: [
+    { path: ".claude/paws-oauth.json" },
     { path: ".claude/.credentials.json" },
     { path: ".claude/.claude.json", merge: ["oauthAccount"] },
   ],
@@ -62,8 +63,10 @@ export function discardLoginHome(staged: string): void {
  * beside its target and renamed over it, so a reader sees the old file or the new one.
  */
 export function publishCredentials(agent: Agent, staged: string, home: string): void {
+  const oauth = agent === "claude" && read(join(staged, ".claude/paws-oauth.json")) !== null;
   let published = 0;
   for (const file of CREDENTIALS[agent]) {
+    if (oauth && file.path === ".claude/.credentials.json") continue;
     const source = read(join(staged, file.path));
     if (source === null) continue;
     const target = join(home, file.path);

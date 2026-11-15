@@ -9,9 +9,16 @@ import {
   writeAgentAuthSteps,
   assignRunnerWorkSteps,
   bindAgentAccountSteps,
+  insertRunnerLoginSteps,
+  runnerLoginRowSteps,
+  runnerResultForCommandSteps,
+  healthResultJsonSteps,
+  insertRunnerCommandSteps,
 } from "../src/db";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
+  RunnerResultSchema,
+  RunnerHealthResultSchema,
   agentCredentialContext,
   openForRunner,
   signRunnerCommand,
@@ -107,7 +114,13 @@ forEachDialect((connect) => {
       secretsDir,
       now: () => NOW,
     });
-    const envelope = (runnerId: string, type: "login" | "login_check", id: string) =>
+    const envelope = (
+      runnerId: string,
+      type: "login" | "login_check",
+      id: string,
+      agent: "codex" | "claude" = "codex",
+      accountId = stored,
+    ) =>
       signRunnerCommand({
         keyId: "coordinator",
         privateKey: signing.privateKey,
@@ -118,10 +131,105 @@ forEachDialect((connect) => {
           workspaceId: "acme",
           issuedAt: NOW,
           expiresAt: NOW + 60_000,
-          agent: "codex",
-          account: { accountId: stored, bindingId: "binding" },
+          agent,
+          account: { accountId, bindingId: "binding" },
         } as RunnerCommand,
       });
+
+    const oauthClaude = await db.transaction((q) =>
+      createAgentAccountSteps(q, {
+        workspaceId: "acme",
+        agent: "claude",
+        label: "OAuth",
+        now: NOW,
+      }),
+    );
+    await db.transaction((q) =>
+      writeAgentCredentialSteps(q, secretsDir, {
+        accountId: oauthClaude.id,
+        runnerId: "old",
+        version: 1,
+        blob: JSON.stringify([{ path: ".claude/paws-oauth.json", data: "e30=" }]),
+        now: NOW,
+      }),
+    );
+    await db.run((q) =>
+      insertRunnerLoginSteps(q, {
+        id: "stale",
+        runnerId: "old",
+        workspaceId: "acme",
+        userId: "owner",
+        agent: "claude",
+        expiresAt: NOW + 60000,
+        updatedAt: NOW,
+        bindingId: null,
+      }),
+    );
+    const compatible = envelope("old", "login", "compatible");
+    for (const signed of [envelope("old", "login", "stale", "claude", oauthClaude.id), compatible])
+      await db.run((q) =>
+        insertRunnerCommandSteps(q, {
+          id: signed === compatible ? "compatible" : "stale",
+          runnerId: "old",
+          runId: null,
+          generation: null,
+          kind: "login",
+          envelope: signed,
+          expiresAt: NOW + 60000,
+        }),
+      );
+    for (let poll = 0; poll < 2; poll++)
+      expect((await work.commands("old")).map((entry) => entry.payload)).toEqual([
+        compatible.payload,
+      ]);
+
+    expect((await db.run((q) => runnerLoginRowSteps(q, "stale")))?.state).toBe("failed");
+    for (const type of ["run", "login_check"] as const) {
+      const command = {
+        ...JSON.parse(
+          Buffer.from(
+            envelope("old", "login_check", type, "claude", oauthClaude.id).payload,
+            "base64url",
+          ).toString("utf8"),
+        ),
+        ...(type === "run"
+          ? {
+              type,
+              agent: undefined,
+              itemId: "item",
+              runId: "run",
+              generation: 1,
+              repository: {
+                owner: "acme",
+                repo: "app",
+                remoteUrl: "https://github.com/acme/app.git",
+                baseSha: "a".repeat(40),
+              },
+              profile: { agent: "claude", model: null },
+              prompt: "test",
+            }
+          : { type }),
+      };
+      delete command.agent;
+      if (type === "login_check") command.agent = "claude";
+      const signed = signRunnerCommand({
+        keyId: "coordinator",
+        privateKey: signing.privateKey,
+        command,
+      });
+      expect(
+        (await work.attachCredentials("old", [signed, compatible])).map((entry) => entry.payload),
+      ).toEqual([compatible.payload]);
+      const result = await db.run((q) =>
+        type === "run"
+          ? runnerResultForCommandSteps(q, command, type)
+          : healthResultJsonSteps(q, type),
+      );
+      expect(
+        (type === "run" ? RunnerResultSchema : RunnerHealthResultSchema).parse(JSON.parse(result!))
+          .errorMessage,
+      ).toContain("Upgrade the runner");
+    }
 
     const old = envelope("old", "login_check", "check-old");
     expect(await work.attachCredentials("old", [old])).toEqual([old]);
