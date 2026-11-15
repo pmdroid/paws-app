@@ -633,7 +633,7 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
   }
 }, 60_000);
 
-test("a review command carries the brief and earlier findings only to a runner that accepts them", async () => {
+test("a review command refuses runners that would discard the brief and earlier findings", async () => {
   const earlier = [
     {
       severity: "P1" as const,
@@ -643,10 +643,7 @@ test("a review command carries the brief and earlier findings only to a runner t
       status: "open" as const,
     },
   ];
-  for (const [version, expected] of [
-    ["0.1.54", (base: string) => ({ base })],
-    ["9.0.0", (base: string) => ({ base, brief: "Issue: PAS-1", earlier })],
-  ] as const) {
+  for (const version of ["0.1.54", "0.1.55"]) {
     const f = await fixture();
     try {
       await runnerVersion(f, version);
@@ -656,9 +653,18 @@ test("a review command carries the brief and earlier findings only to a runner t
         ...options,
         reviewCommand: { base, brief: "Issue: PAS-1", earlier },
       });
+      if (version === "0.1.54") {
+        await expect(running).rejects.toThrow("needs runner 0.1.55 or later");
+        expect(f.placed).toHaveLength(0);
+        continue;
+      }
       await f.until(() => f.placed.length === 1);
       const command = f.placed[0]!;
-      expect(command.type === "review" && command.reviewCommand).toEqual(expected(base));
+      expect(command.type === "review" && command.reviewCommand).toEqual({
+        base,
+        brief: "Issue: PAS-1",
+        earlier,
+      });
       await f.finish(command, { reviewText: REVIEW_TEXT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });
     } finally {

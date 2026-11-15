@@ -1378,7 +1378,7 @@ export async function probeRunnerBackend(
         () => "",
         (error: Error) => error.message,
       );
-    await reportRunnerVersion(runnerId, "0.1.47", Date.now());
+    await reportRunnerVersion(runnerId, "0.1.55", Date.now());
     const commandReviewer = await item();
     let commandText = "";
     const commandReviewed = backend.forItem(commandReviewer.id)({
@@ -1415,7 +1415,7 @@ export async function probeRunnerBackend(
       commandReview.reviewCommand?.base === reviewBase &&
         commandReview.repository.baseSha === head &&
         commandText === "[]" &&
-        /needs runner 0\.1\.47 or later/.test(tooOld) &&
+        /needs runner 0\.1\.55 or later/.test(tooOld) &&
         refusedReviews.length === 2 &&
         /read-only reviewer work/.test(refusedReviews[0]!) &&
         /Claude or Codex model/.test(refusedReviews[1]!),

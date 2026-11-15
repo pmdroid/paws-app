@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { reviewInstructions } from "../closeout";
 import type {
   AcpEvent,
   AgentRole,
@@ -169,7 +170,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
     async review(request): Promise<ReviewResult> {
       const launchProfiles = await deps.profiles?.();
       const prompt = [
-        ...(deps.brief ? [deps.brief] : []),
+        reviewInstructions({ brief: deps.brief, earlier: request.earlier }),
         request.prompt ?? "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
         `Base ${request.base}, head ${request.head}.`,
@@ -287,7 +288,11 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
   return {
     async review(request): Promise<ReviewResult> {
       const profiles = await deps.profiles?.();
-      const prompt = `Review ${request.base}..${request.head} with the agent's review command.`;
+      const prompt = [
+        `Review ${request.base}..${request.head} with the agent's review command.`,
+        "",
+        reviewInstructions({ brief: deps.brief, earlier: request.earlier }),
+      ].join("\n");
       const launch = deps.launch({
         role: "reviewer",
         profile: profiles?.reviewer,
