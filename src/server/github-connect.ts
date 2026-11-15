@@ -37,9 +37,21 @@ import {
   GitHubSetupRefusedError,
   type ActiveGitHubApp,
 } from "../auth";
+import { join } from "node:path";
+import { loadGitHubAppCredentials } from "../config";
+import { saveSecret, storedSecrets } from "../credentials";
+import {
+  GitHubHttpError,
+  createFetchGitHubClient,
+  signAppJwt,
+  INSTALLATION_PERMISSIONS,
+} from "../github";
+import { GITHUB_APP_EVENTS } from "../doctor";
+import { readWorkspaceJson } from "../workspace";
 import { dashboardUrl } from "../dashboard-links";
 
 const START = "/api/workspaces/github-connect";
+const APP = "/api/workspaces/github-app";
 const CALLBACK = "/auth/github-app/callback";
 type Intent = {
   app: ActiveGitHubApp;
@@ -66,7 +78,7 @@ export function createHostedGitHubConnect(options: {
   const activation = createWorkspaceGitHubActivation(store, options.home, options.env);
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
-    if (![START, CALLBACK].includes(url.pathname)) return null;
+    if (![START, CALLBACK, APP].includes(url.pathname)) return null;
     const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     function* permittedSteps(q: Q) {
@@ -124,6 +136,103 @@ export function createHostedGitHubConnect(options: {
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
+    if (url.pathname === APP) {
+      const configured = () =>
+        Boolean(options.env.GITHUB_APP_ID || loadGitHubAppCredentials(options.home, options.env));
+      const reply = (body: unknown, status = 200) =>
+        Response.json(body, { status, headers: { "cache-control": "no-store" } });
+      if (request.method === "GET")
+        return reply({
+          configured: configured(),
+          canManage: await permitted(),
+          webhookUrl: origin + "/webhooks/github",
+          permissions: INSTALLATION_PERMISSIONS,
+          events: GITHUB_APP_EVENTS,
+        });
+      if (
+        request.method !== "POST" ||
+        request.headers.get("origin") !== origin ||
+        !validWorkspaceCsrf(request, access!.session) ||
+        !(await permitted())
+      )
+        return denied();
+      if (configured()) return reply({ error: "The GitHub App is already configured." }, 409);
+      if (storedSecrets() === null)
+        return reply({ error: "The database secret store is unavailable." }, 503);
+      let input: Record<string, string>;
+      try {
+        const body = await readWorkspaceJson(request);
+        const fields = ["appId", "privateKeyPem", "webhookSecret", "clientId", "clientSecret"];
+        if (
+          !body ||
+          typeof body !== "object" ||
+          Array.isArray(body) ||
+          Object.keys(body).length !== fields.length ||
+          fields.some(
+            (field) =>
+              typeof (body as Record<string, unknown>)[field] !== "string" ||
+              !(body as Record<string, string>)[field]!.trim(),
+          )
+        )
+          throw new Error();
+        input = body as Record<string, string>;
+        if (!/^[1-9][0-9]{0,19}$/.test(input.appId!)) throw new Error();
+      } catch {
+        return reply(
+          {
+            error:
+              "Enter an App ID, PEM private key, webhook secret, OAuth client ID and client secret.",
+          },
+          400,
+        );
+      }
+      let token: string;
+      try {
+        token = signAppJwt(input.appId!, input.privateKeyPem!);
+      } catch {
+        return reply({ error: "The private key must be a valid RSA PEM private key." }, 400);
+      }
+      const client = createFetchGitHubClient((target, init) =>
+        (options.fetch ?? fetch)(String(target), {
+          ...init,
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
+        }),
+      );
+      try {
+        const response = await client.request({ method: "GET", path: "/app", token });
+        if (response.status !== 200) throw new GitHubHttpError(response);
+        const app = response.body as { id?: number; client_id?: string; message?: string };
+        if (String(app.id) !== input.appId || app.client_id !== input.clientId)
+          return reply(
+            { error: "The App ID and OAuth client ID must belong to the same GitHub App." },
+            400,
+          );
+      } catch (error) {
+        if (error instanceof GitHubHttpError && error.status < 500)
+          return reply(
+            {
+              error: error.message
+                .replaceAll(input.privateKeyPem!, "[redacted]")
+                .replaceAll(input.clientSecret!, "[redacted]")
+                .replaceAll(input.webhookSecret!, "[redacted]"),
+            },
+            400,
+          );
+        return reply({ error: "GitHub could not be reached. Try again." }, 503);
+      }
+      if (!(await permitted())) return denied();
+      if (configured()) return reply({ error: "The GitHub App is already configured." }, 409);
+      await saveSecret(
+        join(options.home, "secrets", "github-browser-app.json"),
+        JSON.stringify({
+          ...input,
+          privateKeyPath: join(options.home, "secrets", "github-app.pem"),
+          installationId: null,
+        }),
+        true,
+      );
+      return reply({ configured: true });
+    }
     if (request.method !== "GET") cache.clear(access!.principal.workspaceId);
     if (url.pathname === START && request.method === "GET") {
       let app: ActiveGitHubApp;

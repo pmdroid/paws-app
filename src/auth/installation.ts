@@ -31,7 +31,8 @@ export function createGitHubInstallationCheck(options: {
         return false;
       const [owner, repo] = repository.split("/") as [string, string];
       const privateKeyPem =
-        "privateKeyPem" in app ? app.privateKeyPem : readSecretFile(app.privateKeyPath, false);
+        app.privateKeyPem ??
+        readSecretFile("privateKeyPath" in app ? app.privateKeyPath : "", false);
       if (!privateKeyPem) return false;
       const client = createFetchGitHubClient((url, init) =>
         (options.fetch ?? fetch)(String(url), { ...init, signal }),

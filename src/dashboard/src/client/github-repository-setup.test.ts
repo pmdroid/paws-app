@@ -29,6 +29,7 @@ afterEach(async () => {
 
 function serve(status: string, setup: Record<string, unknown>) {
   globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    if (String(url) === "/api/workspaces/github-app") return Response.json({ configured: true });
     if (String(url) === "/api/workspaces/github-connect")
       return Response.json({ status, repositoryCount: 2, lastDelivery: null });
     if (init?.method === "PUT") puts.push(JSON.parse(String(init.body)));

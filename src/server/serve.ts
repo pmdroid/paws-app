@@ -13,7 +13,7 @@ import {
 import { handleSlackWebhook } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -429,7 +429,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (access !== null) csrfToken = access.session.csrfToken;
     }
     if (
-      (path === "/api/workspaces/github-connect" ||
+      (path === "/api/workspaces/github-app" ||
+        path === "/api/workspaces/github-connect" ||
         path === "/api/workspaces/github-setup" ||
         path === "/auth/github-app/callback") &&
       secrets.store
@@ -909,12 +910,21 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
+    if (request.method === "POST" && path === "/webhooks/github") {
+      const saved = loadGitHubAppCredentials(
+        loadRuntime(secrets.statusEnv ?? process.env).env.home,
+        secrets.statusEnv ?? process.env,
+      )?.webhookSecret;
+      if (!secrets.webhooks && !saved) return new Response("not found", { status: 404 });
+      return handleGitHubWebhook(
+        request,
+        secrets.githubWebhookSecret ?? saved ?? null,
+        secrets.githubWebhook,
+      );
+    }
     if (!secrets.webhooks) return new Response("not found", { status: 404 });
     if (request.method === "POST" && path === "/webhooks/linear") {
       return handleLinearWebhook(request, secrets.linearWebhookSecret, secrets.linearWebhook);
-    }
-    if (request.method === "POST" && path === "/webhooks/github") {
-      return handleGitHubWebhook(request, secrets.githubWebhookSecret, secrets.githubWebhook);
     }
     return new Response("not found", { status: 404 });
   }

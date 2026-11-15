@@ -9,13 +9,17 @@ export type GitHubAppCredentials = {
   clientSecret: string;
   privateKeyPath: string;
   installationId: string | null;
+  privateKeyPem?: string;
+  webhookSecret?: string;
 };
 
 export function loadGitHubAppCredentials(
   home: string,
   env: EnvSource,
 ): GitHubAppCredentials | null {
-  const path = join(pawsPaths(home).secretsDir, "github-app.json");
+  const dir = pawsPaths(home).secretsDir;
+  const browser = join(dir, "github-browser-app.json");
+  const path = secretFileExists(browser) ? browser : join(dir, "github-app.json");
   let saved: Partial<GitHubAppCredentials> = {};
   if (secretFileExists(path)) {
     try {
@@ -44,6 +48,8 @@ export function loadGitHubAppCredentials(
   )
     return null;
   return {
+    ...(env.GITHUB_APP_PRIVATE_KEY_PATH ? {} : { privateKeyPem: saved.privateKeyPem }),
+    webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? saved.webhookSecret,
     appId,
     clientId,
     clientSecret,
