@@ -119,12 +119,7 @@ export {
   startSuggestionTurn,
   withDecisions,
 } from "./suggested-findings";
-export {
-  backfillReviewFindings,
-  recordAcceptedFindings,
-  REVIEW_FINDINGS_BACKFILL_JOB,
-  type TaskReviewReader,
-} from "./review-findings";
+export { recordAcceptedFindings } from "./review-findings";
 export {
   askRiskApproval,
   riskApprovalFor,

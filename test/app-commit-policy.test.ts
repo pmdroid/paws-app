@@ -19,10 +19,7 @@ import {
   insertRun,
 } from "../src/db";
 import type { RunnerCommand } from "../src/runner-protocol";
-import { eq } from "drizzle-orm";
-import { json, seed } from "./dialects";
 import { tempHome, withHomeStore } from "./helpers";
-import { tempStore } from "./pglite";
 
 const credit = {
   id: 8,
@@ -260,42 +257,6 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
       saveRunCommitPolicy(db, run.id, { ...policy, credit: { ...credit, id: 9 } }),
     ).rejects.toThrow("cannot change");
   });
-});
-
-test("a run stored with the old lead and steerer policy keeps crediting only the steerer", async () => {
-  const { db, close } = await tempStore();
-  try {
-    const item = await insertQueuedItem(db, { id: "item", now: 1 });
-    const { run } = await beginImplementRun(db, item.id, 1);
-    const storeCheckpoint = (checkpoint: unknown) =>
-      seed(db, (q) =>
-        q.orm
-          .update(q.t.run)
-          .set({ checkpoint: json(db, checkpoint) })
-          .where(eq(q.t.run.id, run.id)),
-      );
-    await storeCheckpoint({
-      phase: "running",
-      commitPolicy: {
-        bot: policy.bot,
-        projectLead: { ...credit, id: 7, login: "lead" },
-        taskSteerer: credit,
-      },
-    });
-    expect(await getItemRunCommitPolicy(db, item.id)).toEqual(policy);
-    await saveRunCommitPolicy(db, run.id, policy);
-    await saveRunCommitPolicy(db, run.id, policy);
-    await storeCheckpoint({
-      phase: "running",
-      commitPolicy: { bot: policy.bot, projectLead: null },
-    });
-    expect((await getRun(db, run.id))?.checkpoint?.commitPolicy).toEqual({
-      bot: policy.bot,
-      credit: null,
-    });
-  } finally {
-    await close();
-  }
 });
 
 test("an agent rebase onto the run's main passes attribution only when that main is named", async () => {

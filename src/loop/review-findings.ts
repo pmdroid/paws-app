@@ -1,8 +1,7 @@
-import { bugClass, reviewRecordsAt, taskReviewRecords, type Finding } from "../closeout";
+import { bugClass, reviewRecordsAt } from "../closeout";
 import { findingPlace } from "../core";
 import {
   acceptedCloseoutReviewsSteps,
-  acceptedCloseoutRunsSteps,
   getWorkItemRepositorySteps,
   recordReviewFindingsSteps,
   type AcceptedCloseoutReviews,
@@ -10,14 +9,6 @@ import {
   type ReviewFindingReport,
 } from "../db";
 import { acceptedReviewRecords, nonBlockingFindings, type ReviewRecord } from "./open-findings";
-
-/** The one-time job that fills `review_finding` from the evidence of runs accepted before it. */
-export const REVIEW_FINDINGS_BACKFILL_JOB = "review-findings.backfill";
-
-/** Reads every review round stored for a task, at each head. */
-export type TaskReviewReader = (
-  taskId: string,
-) => Promise<Array<ReviewRecord & { head: string; findings: Finding[] }>>;
 
 /**
  * Stores the non-blocking findings of the item's accepted head on the Findings page, read from
@@ -52,48 +43,6 @@ export async function recordAcceptedFindings(
     records,
     changedPaths: input.changedPaths ?? [],
   });
-}
-
-/**
- * Fills the Findings page from every run Closeout accepted, oldest first, reading each task's
- * evidence file once. Running it again changes nothing: a run is recorded at the time Closeout
- * finished it, and an item counts once per finding.
- */
-export async function backfillReviewFindings(options: {
-  store: Db;
-  pawsRoot: string;
-  read?: TaskReviewReader;
-}): Promise<{ runs: number; recorded: number; gone: number }> {
-  const { store } = options;
-  const read: TaskReviewReader =
-    options.read ?? ((taskId) => taskReviewRecords(taskId, options.pawsRoot));
-  const byTask = new Map<string, Awaited<ReturnType<TaskReviewReader>>>();
-  let runs = 0;
-  let recorded = 0;
-  let gone = 0;
-  for (const run of await store.run(acceptedCloseoutRunsSteps)) {
-    if (run.reviews.length === 0) continue;
-    const repository = await store.run((q) => getWorkItemRepositorySteps(q, run.itemId));
-    if (repository === null) continue;
-    let records = byTask.get(run.taskId);
-    if (records === undefined) {
-      records = await read(run.taskId);
-      byTask.set(run.taskId, records);
-    }
-    const result = await recordRun(store, {
-      itemId: run.itemId,
-      repository: `${repository.owner}/${repository.repo}`,
-      head: run.head,
-      seenAt: run.at,
-      reviews: run.reviews,
-      records: records.filter((entry) => entry.head === run.head),
-      changedPaths: [],
-    });
-    runs++;
-    recorded += result.recorded;
-    gone += result.gone;
-  }
-  return { runs, recorded, gone };
 }
 
 async function recordRun(

@@ -17,13 +17,7 @@ import {
   type Db,
 } from "../src/db";
 import { formatFixFeedback } from "../src/closeout";
-import {
-  backfillReviewFindings,
-  failedReviewFindings,
-  recordAcceptedFindings,
-  reviewFindingGroups,
-  type TaskReviewReader,
-} from "../src/loop";
+import { failedReviewFindings, recordAcceptedFindings, reviewFindingGroups } from "../src/loop";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
@@ -391,61 +385,6 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
         now: 4000,
       }),
     ).toBeNull();
-  } finally {
-    await close();
-  }
-});
-
-test("the backfill reads each task's evidence once and running it again changes nothing", async () => {
-  const { db, close } = await tempStore();
-  const home = tempHome();
-  try {
-    await item(db, "item-a");
-    await item(db, "item-b");
-    await accept(db, home, {
-      itemId: "item-a",
-      head: "a".repeat(40),
-      at: 100,
-      findings: [STALE, MINOR],
-      preExisting: [0],
-    });
-    await accept(db, home, {
-      itemId: "item-a",
-      head: "e".repeat(40),
-      at: 150,
-      findings: [STALE, MINOR],
-      preExisting: [0],
-    });
-    await accept(db, home, {
-      itemId: "item-b",
-      head: "c".repeat(40),
-      at: 200,
-      findings: [STALE, BLOCKING],
-      preExisting: [0],
-      failOn: "P2",
-    });
-    const reads: string[] = [];
-    const { taskReviewRecords } = await import("../src/closeout");
-    const read: TaskReviewReader = (taskId) => {
-      reads.push(taskId);
-      return taskReviewRecords(taskId, home);
-    };
-    expect(await backfillReviewFindings({ store: db, pawsRoot: home, read })).toEqual({
-      runs: 3,
-      recorded: 5,
-      // Item b's review reported a blocking finding in src/new.ts and not item a's P2 there.
-      gone: 1,
-    });
-    expect(reads).toEqual(["item-a", "item-b"]);
-    const once = await listReviewFindings(db);
-    expect(
-      once.map((row) => [row.path, row.status, row.itemCount, row.first.at, row.last.at]),
-    ).toEqual([
-      ["src/legacy.ts", "open", 2, 100, 200],
-      ["src/new.ts", "gone", 1, 100, 150],
-    ]);
-    await backfillReviewFindings({ store: db, pawsRoot: home });
-    expect(await listReviewFindings(db)).toEqual(once);
   } finally {
     await close();
   }

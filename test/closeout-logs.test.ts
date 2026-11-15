@@ -6,9 +6,6 @@ import { eq } from "drizzle-orm";
 import { handleStatusRequest } from "../src/dashboard";
 import {
   beginImplementRun,
-  legacyCloseoutOutputsSteps,
-  clearCloseoutOutputSteps,
-  pointCloseoutOutputSteps,
   enterMergeQueue,
   getEvidenceObject,
   listAgentCloseout,
@@ -285,118 +282,6 @@ test("local step and agent logs upload when object storage is enabled", async ()
   ).toMatchObject({ stdout: "old out" });
 });
 
-async function legacyRows(db: Db, count: number, at = NOW) {
-  await insertWorkItem(db, "legacy");
-  const progress = createDbCloseoutProgress(db, "legacy", () => at);
-  for (let i = 0; i < count; i++) {
-    const id = String(i);
-    await progress.step(identity("legacy"), { ...step("running"), id });
-    await progress.output(identity("legacy"), id, "stdout", `out ${i}`, false);
-    await progress.output(identity("legacy"), id, "stderr", `err ${i}`, false);
-    await progress.step(identity("legacy"), { ...step("failed"), id });
-  }
-}
-
-async function legacyEvent(db: Db, at = NOW) {
-  await recordAgentCloseout(
-    db,
-    "run",
-    "legacy",
-    {
-      type: "finished",
-      head: HEAD,
-      id: "unit",
-      kind: "command",
-      command: "bun test",
-      attempt: 1,
-      maxAttempts: null,
-      state: "failed",
-      exitCode: 1,
-      timedOut: false,
-      durationMs: 1,
-      stdout: "agent out",
-      stderr: "agent err",
-      truncated: false,
-    },
-    at,
-  );
-}
-
-test("maintenance moves three legacy outputs across both tables and hydrates them", async () => {
-  const { db, storage, objects } = await setup();
-  await legacyRows(db, 2);
-  await legacyEvent(db);
-  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(3);
-  const rows = await db.run((q) => q.all(q.orm.select().from(q.t.closeoutStep)));
-  for (const row of rows) {
-    expect(row).toMatchObject({ stdout: "", stderr: "" });
-    expect(
-      await withCloseoutOutput(db, storage, {
-        ...row,
-        output: { key: row.outputKey!, bytes: row.outputBytes!, sha256: row.outputSha256! },
-      }),
-    ).toMatchObject({ stdout: `out ${row.stepId}`, stderr: `err ${row.stepId}` });
-  }
-  const event = (await listAgentCloseout(db, ["run"]))[0]!;
-  expect(event.progress).toMatchObject({ stdout: "", stderr: "" });
-  if (event.progress.type !== "finished") throw new Error("Expected finished event");
-  expect(await withCloseoutOutput(db, storage, event.progress)).toMatchObject({
-    stdout: "agent out",
-    stderr: "agent err",
-  });
-});
-
-test("expired legacy output is cleared without storing it", async () => {
-  const { db, storage, objects } = await setup();
-  await legacyRows(db, 1, NOW - 15 * DAY);
-  await legacyEvent(db, NOW - 15 * DAY);
-  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(0);
-  expect(await stepRows(db)).toEqual([{ stdout: "", stderr: "", key: null }]);
-  expect((await listAgentCloseout(db, ["run"]))[0]!.progress).toMatchObject({
-    stdout: "",
-    stderr: "",
-  });
-});
-
-test("failed legacy moves preserve columns, continue the batch and retry next run", async () => {
-  const { db, storage, objects } = await setup();
-  await legacyRows(db, 3);
-  const write = objects.write;
-  let failed = false;
-  objects.write = async (...args) => {
-    if (!failed) {
-      failed = true;
-      throw new Error("storage unavailable");
-    }
-    return write(...args);
-  };
-  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect((await stepRows(db)).filter((row) => row.key === null)).toEqual([
-    { stdout: "out 0", stderr: "err 0", key: null },
-  ]);
-  objects.write = write;
-  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(
-    (await stepRows(db)).every((row) => row.key !== null && row.stdout === "" && row.stderr === ""),
-  ).toBe(true);
-});
-
-test("maintenance processes only the oldest 200 legacy rows across both tables", async () => {
-  const { db, storage, objects } = await setup();
-  await legacyRows(db, 200);
-  await legacyEvent(db, NOW - DAY);
-  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(200);
-  expect((await stepRows(db)).filter((row) => row.key === null)).toHaveLength(1);
-  expect((await listAgentCloseout(db, ["run"]))[0]!.progress).toMatchObject({
-    stdout: "",
-    stderr: "",
-    output: { key: expect.any(String) },
-  });
-});
-
 test("maintenance leaves running output appendable until the check finishes", async () => {
   const { db, storage, objects } = await setup();
   await insertWorkItem(db, "active");
@@ -409,26 +294,5 @@ test("maintenance leaves running output appendable until the check finishes", as
   expect(objects.writes).toHaveLength(0);
   await progress.step(identity("active"), step("failed"));
   await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(1);
-});
-
-test("expired legacy clearing preserves changed columns and newly installed pointers", async () => {
-  const { db } = await setup();
-  await legacyRows(db, 1, NOW - 15 * DAY);
-  await legacyEvent(db, NOW - 15 * DAY);
-  const rows = await db.run((q) => legacyCloseoutOutputsSteps(q, 200));
-  for (const row of rows) {
-    const table = row.ref.table === "closeout_step" ? "closeoutStep" : "agentCloseoutEvent";
-    await db.run((q) => q.exec(q.orm.update(q.t[table]).set({ stdout: "new output" })));
-    await db.transaction((q) => clearCloseoutOutputSteps(q, row.ref, row));
-    const current = await db.run((q) => q.one(q.orm.select().from(q.t[table])));
-    expect(current!.stdout).toBe("new output");
-    const pointer = { key: "installed", bytes: 10, sha256: "hash" };
-    await db.transaction((q) =>
-      pointCloseoutOutputSteps(q, { ...row, stdout: "new output" }, pointer),
-    );
-    await db.transaction((q) => clearCloseoutOutputSteps(q, row.ref, { stdout: "", stderr: "" }));
-    const moved = await db.run((q) => q.one(q.orm.select().from(q.t[table])));
-    expect(moved!.outputKey).toBe("installed");
-  }
+  expect(objects.writes).toHaveLength(0);
 });

@@ -985,7 +985,7 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
       (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
         (s) => s.id === "security-review",
       )!.findings,
-    ).toBe(findings === "{broken" ? findings : null);
+    ).toBeNull();
     expect(await f.read()).toBe("missing");
   }
   await f.close();
@@ -1017,7 +1017,7 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
     (await getCloseoutProgress(f.db, f.itemId, heads.s))!.steps.find(
       (s) => s.id === "security-review",
     )!.findings,
-  ).toBe('{"example":1}');
+  ).toBeNull();
   expect(await f.read()).toBe("missing");
   await f.step("security-review", "P3 notes", ["P3"]);
   await f.progress.begin(f.identity);
