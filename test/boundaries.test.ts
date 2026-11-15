@@ -6,6 +6,7 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 const TEST_HELPERS = new URL("./", import.meta.url).pathname;
 
 const MODULES = [
+  "assets",
   "webhook-body",
   "journal",
   "onboarding",
@@ -112,21 +113,22 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   slack: ["journal", "config", "credentials", "db", "webhook-body"],
   core: [],
   "host-operation": [],
-  db: ["journal", "core", "runner-protocol", "dashboard-links", "host-operation"],
+  assets: [],
+  db: ["assets", "journal", "core", "runner-protocol", "dashboard-links", "host-operation"],
   linear: ["journal", "core", "credentials", "db", "webhook-body"],
   intake: ["journal", "core", "db", "linear", "dashboard-links"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
   "finding-groups": ["db", "linear"],
   improvements: ["db", "journal", "workspace"],
-  acp: ["journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
+  acp: ["assets", "journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],
   github: ["journal", "core", "process", "webhook-body"],
   merge: ["journal", "core", "db", "github", "questions"],
   questions: ["core", "db", "workspace"],
   decisions: ["db", "scheduler"],
-  dashboard: ["db", "core", "dashboard-links"],
+  dashboard: ["assets", "db", "core", "dashboard-links"],
   evidence: ["journal", "db", "run-files"],
   "finding-issues": [
     "journal",
@@ -244,7 +246,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-login-worker": ["journal", "acp", "install", "runner-protocol"],
   "runner-execution": ["journal", "runner-protocol", "process"],
   "runner-repositories": ["journal", "github", "runner-protocol", "core"],
-  process: ["journal"],
+  process: ["assets", "journal"],
   "runner-failure": ["core", "journal", "runner-daemon"],
   "runner-cli": [
     "runner-failure",

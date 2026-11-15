@@ -1,6 +1,27 @@
+import { assetPath, compiled } from "../assets";
+import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
+async function pgliteOptions() {
+  if (!compiled()) return { extensions: { citext } };
+  const pgliteAssets = assetPath("node_modules/@electric-sql/pglite/dist");
+  return {
+    extensions: {
+      citext: {
+        name: "citext",
+        setup: async () => ({ bundlePath: pathToFileURL(`${pgliteAssets}/citext.tar.gz`) }),
+      },
+    },
+    pgliteWasmModule: await WebAssembly.compile(
+      await Bun.file(`${pgliteAssets}/pglite.wasm`).arrayBuffer(),
+    ),
+    initdbWasmModule: await WebAssembly.compile(
+      await Bun.file(`${pgliteAssets}/initdb.wasm`).arrayBuffer(),
+    ),
+    fsBundle: Bun.file(`${pgliteAssets}/pglite.data`),
+  };
+}
 import { SQL } from "bun";
 import { drizzle, type BunSQLDatabase } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
@@ -10,6 +31,8 @@ import { PG_MIGRATIONS_FOLDER } from "./migrate";
 import * as pgSchema from "./schema-pg";
 import type { PostgresConnection } from "./db-check";
 import { postgresDb, type PgDb } from "./db";
+
+const runtimeOptions = await pgliteOptions();
 
 export type PostgresDb = BunSQLDatabase<typeof pgSchema> & { $client: SQL };
 
@@ -67,7 +90,7 @@ function lockPglite(dir: string): () => void {
 export function connectPglite(dir: string): PostgresConnection {
   const release = lockPglite(dir);
   try {
-    const client = new PGlite(dir, { extensions: { citext } });
+    const client = new PGlite(dir, runtimeOptions);
     const db = drizzlePglite({ client, schema: pgSchema });
     return {
       db,
@@ -81,7 +104,7 @@ export function connectPglite(dir: string): PostgresConnection {
 }
 
 export async function openPglite(dir: string): Promise<PgliteDb> {
-  const client = new PGlite(dir, { extensions: { citext } });
+  const client = new PGlite(dir, runtimeOptions);
   const db = drizzlePglite({ client, schema: pgSchema });
   try {
     await migratePglite(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });

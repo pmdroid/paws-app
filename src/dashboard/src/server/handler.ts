@@ -1,3 +1,4 @@
+import { assetPath } from "../../../assets";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -808,7 +809,7 @@ function withBase(body: string): string {
 }
 
 function defaultStaticDir(): string | null {
-  const dir = join(import.meta.dir, "../../dist");
+  const dir = assetPath("src/dashboard/dist");
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 

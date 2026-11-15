@@ -449,7 +449,11 @@ async function main(): Promise<void> {
 }
 
 const entry = process.argv[1] ?? "";
-if (entry.endsWith("ask-team-mcp.ts") || entry.endsWith("ask-team-mcp.js")) {
+if (
+  process.argv[2] === "__ask-team-mcp" ||
+  entry.endsWith("ask-team-mcp.ts") ||
+  entry.endsWith("ask-team-mcp.js")
+) {
   main().catch((error: unknown) => {
     journalCaught(error, "ask-team-mcp.recover.main", null);
     const message = error instanceof Error ? error.message : String(error);

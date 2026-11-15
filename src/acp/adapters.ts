@@ -1,3 +1,4 @@
+import { assetPath, compiled } from "../assets";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentsConfig } from "../config";
@@ -68,6 +69,7 @@ export type OpencodeCommand = {
 
 /** Checkout root that contains the paws `package.json`. */
 export function pawsPackageRoot(start: string = import.meta.dir): string {
+  if (compiled()) return assetPath(".");
   let dir = start;
   for (let i = 0; i < 8; i++) {
     const candidate = join(dir, "package.json");
