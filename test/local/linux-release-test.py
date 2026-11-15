@@ -2315,20 +2315,62 @@ class ControlPlaneDebTests(unittest.TestCase):
                     self.assertEqual(len(added), 1)
                     self.assertEqual((added.pop() / "data").read_text(), "database")
             cp = commands / "cp"
-            cp.write_text("#!/bin/sh\nexit 28\n")
+            cp.write_text('#!/bin/sh\nfor destination do :; done\nmkdir -p "$destination"\nprintf incomplete > "$destination/partial"\nexit 28\n')
             cp.chmod(0o755)
             for empty in empty_values:
                 with self.subTest(empty=empty):
                     config.write_text(f"PAWS_DATABASE_URL=postgres://localhost/earlier\n\n # comment\n ; comment\n PAWS_DATABASE_URL = {empty} \n")
                     log.write_text("")
+                    previous = set((home / "backups").iterdir())
                     with self.assertRaises(subprocess.CalledProcessError) as failure:
                         run("preinst", "upgrade", "1.0.6")
                     self.assertEqual(failure.exception.returncode, 28)
+                    self.assertEqual(set((home / "backups").iterdir()), previous)
                     self.assertEqual((root / "service-state").read_text(), "start")
                     self.assertEqual(log.read_text().splitlines(), ["systemctl stop paws.service", "systemctl start paws.service"])
                     log.write_text("")
                     run("preinst", "abort-upgrade", "1.0.6")
                     self.assertEqual(log.read_text().splitlines(), ["systemctl start paws.service"])
+
+            cp.unlink()
+            default_backups = set((home / "backups").iterdir())
+            custom = root / "srv/custom paws"
+            (custom / "pglite").mkdir(parents=True)
+            (custom / "pglite/data").write_text("active database")
+            config.write_text('PAWS_HOME="/srv/custom paws"\n')
+            for version in ("2.0.0", "2.0.1", "2.0.2", "2.0.3"):
+                run("preinst", "upgrade", version)
+            custom_backups = list((custom / "backups").iterdir())
+            self.assertEqual(len(custom_backups), 3)
+            self.assertFalse(any(path.name.startswith("pglite-2.0.0-") for path in custom_backups))
+            self.assertTrue(all((path / "data").read_text() == "active database" for path in custom_backups))
+            self.assertEqual(set((home / "backups").iterdir()), default_backups)
+            config.write_text('PAWS_HOME="/srv/custom paws"\nPAWS_DATABASE_URL=postgres://localhost/paws\n')
+            run("preinst", "upgrade", "2.0.4")
+            self.assertEqual(set((custom / "backups").iterdir()), set(custom_backups))
+            config.write_text('PAWS_HOME="/srv/custom paws"\n')
+            for command in ("find", "sort", "tail", "cut"):
+                with self.subTest(pruning_failure=command):
+                    failing = commands / command
+                    failing.write_text("#!/bin/sh\nexit 29\n")
+                    failing.chmod(0o755)
+                    try:
+                        with self.assertRaises(subprocess.CalledProcessError) as failure:
+                            run("preinst", "upgrade", "2.0.5")
+                        self.assertEqual(failure.exception.returncode, 29)
+                        self.assertEqual((root / "service-state").read_text(), "start")
+                        self.assertTrue(all(path.name.startswith("pglite-") for path in (custom / "backups").iterdir()))
+                    finally:
+                        failing.unlink()
+            run("preinst", "upgrade", "2.0.6")
+            self.assertEqual(len(list((custom / "backups").iterdir())), 3)
+            config.unlink()
+            run("preinst", "upgrade", "2.0.7")
+            log.write_text("")
+            run("postinst", "configure", "2.0.6")
+            self.assertFalse(config.exists())
+            self.assertNotIn("chown", log.read_text())
+            self.assertNotIn("systemctl start", log.read_text())
 
 
 

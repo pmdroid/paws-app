@@ -119,9 +119,8 @@ def control_plane_scripts(root=""):
         "preinst": f"""#!/bin/sh
 set -eu
 if [ "$1" = upgrade ]; then
-  database_set=0
-  if [ -f {root}/etc/paws/control-plane.env ]; then
-    database_set=$(awk '
+  read_setting() {{
+    awk -v key="$1" '
       function trim(value) {{
         sub(/^[[:space:]]*/, "", value)
         sub(/[[:space:]]*$/, "", value)
@@ -131,27 +130,41 @@ if [ "$1" = upgrade ]; then
         line = trim($0)
         if (line == "" || line ~ /^[#;]/) next
         separator = index(line, "=")
-        if (!separator || trim(substr(line, 1, separator - 1)) != "PAWS_DATABASE_URL") next
+        if (!separator || trim(substr(line, 1, separator - 1)) != key) next
         value = trim(substr(line, separator + 1))
         quote = substr(value, 1, 1)
         if (length(value) >= 2 && (quote == "\\"" || quote == sprintf("%c", 39)) && substr(value, length(value), 1) == quote)
           value = substr(value, 2, length(value) - 2)
-        configured = (trim(value) != "")
+        setting = trim(value)
       }}
-      END {{ print configured + 0 }}
-    ' {root}/etc/paws/control-plane.env)
+      END {{ print setting }}
+    ' {root}/etc/paws/control-plane.env
+  }}
+  database_url=
+  paws_home=/var/lib/paws
+  if [ -f {root}/etc/paws/control-plane.env ]; then
+    database_url=$(read_setting PAWS_DATABASE_URL)
+    configured_home=$(read_setting PAWS_HOME)
+    if [ -n "$configured_home" ]; then paws_home="$configured_home"; fi
   fi
+  case "$paws_home" in /*) ;; *) paws_home="/var/lib/paws/$paws_home" ;; esac
+  paws_home="{root}$paws_home"
+  staging=
   systemctl stop paws.service
-  trap 'status=$?; trap - 0; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi; exit "$status"' 0
-  if [ "$database_set" = 0 ] && [ -d {root}/var/lib/paws/pglite ]; then
-    backups={root}/var/lib/paws/backups
+  trap 'status=$?; trap - 0; if [ -n "$staging" ]; then rm -rf -- "$staging" || true; fi; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi; exit "$status"' 0
+  if [ -z "$database_url" ] && [ -d "$paws_home/pglite" ]; then
+    backups="$paws_home/backups"
     install -d -m 0700 "$backups"
+    staging=$(mktemp -d "$backups/.pglite-XXXXXX")
     destination="$backups/pglite-$2-$(date -u +%Y%m%dT%H%M%S%NZ)"
-    cp -a -- {root}/var/lib/paws/pglite "$destination"
-    touch "$destination"
-    find "$backups" -mindepth 1 -maxdepth 1 -type d -name 'pglite-*' -printf '%T@ %p\\n' |
-      sort -rn | tail -n +4 | cut -d ' ' -f 2- |
-      while IFS= read -r old; do rm -rf -- "$old"; done
+    cp -a -- "$paws_home/pglite" "$staging/data"
+    touch "$staging/data"
+    mv -T -- "$staging/data" "$destination"
+    find "$backups" -mindepth 1 -maxdepth 1 -type d -name 'pglite-*' -printf '%T@ %p\\n' > "$staging/list"
+    sort -rn "$staging/list" > "$staging/sorted"
+    tail -n +4 "$staging/sorted" > "$staging/old"
+    cut -d ' ' -f 2- "$staging/old" > "$staging/paths"
+    while IFS= read -r old; do rm -rf -- "$old"; done < "$staging/paths"
   fi
 elif [ "$1" = abort-upgrade ]; then
   systemctl start paws.service
@@ -162,11 +175,15 @@ set -eu
 if [ "$1" = configure ]; then
   systemd-sysusers {root}/usr/lib/sysusers.d/paws.conf
   systemd-tmpfiles --create {root}/usr/lib/tmpfiles.d/paws.conf
-  chown root:paws {root}/etc/paws/control-plane.env
-  chmod 0600 {root}/etc/paws/control-plane.env
+  if [ -f {root}/etc/paws/control-plane.env ]; then
+    chown root:paws {root}/etc/paws/control-plane.env
+    chmod 0600 {root}/etc/paws/control-plane.env
+  fi
   systemctl daemon-reload
   if [ -z "${{2:-}}" ]; then systemctl enable paws.service; fi
-  systemctl start paws.service
+  if [ -f {root}/etc/paws/control-plane.env ]; then
+    systemctl start paws.service
+  fi
 fi
 """,
         "prerm": """#!/bin/sh
