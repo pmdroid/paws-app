@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
@@ -371,4 +371,91 @@ test("release actions are immutable and builds have no environment or secrets", 
   );
   expect(verify).toBeGreaterThan(0);
   expect(verify).toBeLessThan(publish);
+});
+
+test("dry-run dispatch builds but never publishes, and publications retain their queue", () => {
+  const evaluate = (expression: string, dry_run: boolean, resign_only: boolean) =>
+    new Function(
+      "github",
+      "inputs",
+      "needs",
+      "startsWith",
+      "always",
+      `return (${expression.replace(/^\$\{\{ | \}\}$/g, "")})`,
+    )(
+      { event_name: "workflow_dispatch", ref: "refs/tags/v1.2.3" },
+      { dry_run, resign_only },
+      { build: { result: "success" } },
+      (value: string, prefix: string) => value.startsWith(prefix),
+      () => true,
+    );
+  for (const resign of [false, true]) {
+    expect(evaluate(workflow.jobs.build.if, true, resign)).toBe(!resign);
+    expect(evaluate(workflow.jobs.publish.if, true, resign)).toBe(false);
+    expect(evaluate(workflow.jobs["publish-apt"].if, true, resign)).toBe(false);
+  }
+  expect(evaluate(workflow.jobs.build.if, false, true)).toBe(false);
+  expect(evaluate(workflow.jobs["publish-apt"].if, false, true)).toBe(true);
+  for (const concurrency of [workflow.concurrency, workflow.jobs["publish-apt"].concurrency]) {
+    expect(concurrency.queue).toBe("max");
+    expect(concurrency["cancel-in-progress"]).toBe(false);
+  }
+});
+
+test("the actual publication gate rejects off-main tags and unsuccessful CI", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-release-gate-"));
+  const run = async (script: string, env = {}) => {
+    const child = Bun.spawn(["bash", "-e", "-o", "pipefail", "-c", script], {
+      cwd: root,
+      env: { ...process.env, ...env },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(child.stderr).text();
+    return { code: await child.exited, stderr };
+  };
+  try {
+    expect(
+      (
+        await run(`
+      git init -b main origin
+      cd origin
+      git -c user.name=Test -c user.email=test@example.com commit --allow-empty -m initial
+      git -c user.name=Test -c user.email=test@example.com tag -a v1.2.3 -m release
+      git checkout -b outside
+      git -c user.name=Test -c user.email=test@example.com commit --allow-empty -m outside
+      git tag v1.2.4
+      git checkout main
+      mkdir ../bin
+    `)
+      ).code,
+    ).toBe(0);
+    writeFileSync(join(root, "bin/gh"), '#!/bin/sh\nprintf "%s\\n" "$CI_SUCCESS"\n', {
+      mode: 0o755,
+    });
+    const gate = workflow.jobs["publish-apt"].steps[0].run.replace(
+      '"https://github.com/$GITHUB_REPOSITORY.git"',
+      '"$TEST_ORIGIN"',
+    );
+    for (const [index, [tag, success, expected]] of (
+      [
+        ["v1.2.3", "true", 0],
+        ["v1.2.4", "true", 1],
+        ["v1.2.3", "false", 1],
+      ] as const
+    ).entries()) {
+      const result = await run(gate.replaceAll("/release-gate", `/gate-${index}`), {
+        PATH: `${join(root, "bin")}:${process.env.PATH}`,
+        RUNNER_TEMP: root,
+        GITHUB_REPOSITORY: "test/repository",
+        RELEASE_TAG: tag,
+        TEST_ORIGIN: join(root, "origin"),
+        CI_SUCCESS: success,
+      });
+      if (result.code !== expected) throw new Error(result.stderr);
+      expect(result.code).toBe(expected);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
