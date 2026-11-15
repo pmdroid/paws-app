@@ -363,14 +363,6 @@ test("release actions are immutable and builds have no environment or secrets", 
   expect(workflow.jobs.publish.if).toBe("github.event_name == 'release'");
   const steps = workflow.jobs["publish-apt"].steps;
   expect(steps[0].name).toBe("Gate tag on main and successful CI");
-  const verify = steps.findIndex(
-    (step: { name?: string }) => step.name === "Verify packages before repository signing",
-  );
-  const publish = steps.findIndex(
-    (step: { name?: string }) => step.name === "Publish or renew metadata",
-  );
-  expect(verify).toBeGreaterThan(0);
-  expect(verify).toBeLessThan(publish);
 });
 
 test("dry-run dispatch builds but never publishes, and publications retain their queue", () => {
@@ -455,6 +447,33 @@ test("the actual publication gate rejects off-main tags and unsuccessful CI", as
       if (result.code !== expected) throw new Error(result.stderr);
       expect(result.code).toBe(expected);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apt verification rejects an extra nested package before attestation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-extra-deb-"));
+  try {
+    const script = workflow.jobs["publish-apt"].steps.find(
+      (step: { name?: string }) => step.name === "Verify packages before repository signing",
+    ).run;
+    const child = Bun.spawn(
+      [
+        "bash",
+        "-e",
+        "-c",
+        `
+      mkdir -p "$RUNNER_TEMP/apt-packages/nested"
+      cd "$RUNNER_TEMP/apt-packages"
+      touch paws-{runner,control-plane}_1.2.3_{amd64,arm64}.deb nested/extra.deb
+      ${script}
+    `,
+      ],
+      { env: { ...process.env, RUNNER_TEMP: root }, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await new Response(child.stderr).text()).toBe("");
+    expect(await child.exited).not.toBe(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -193,6 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/apt-packages"
+          mapfile -d '' packages < <(find . -type f -name '*.deb' -print0)
+          test "${#packages[@]}" -eq 4
           for name in paws-runner paws-control-plane; do
             for arch in amd64 arm64; do
               packages=("${name}_"*"_${arch}.deb")
