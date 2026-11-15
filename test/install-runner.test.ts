@@ -53,9 +53,10 @@ if [ "$1" = install ]; then
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      -y) shift ;;
+      -y|--reinstall) shift ;;
       rootlesskit|uidmap|slirp4netns|dbus-user-session) shift ;;
-      *) test -s "$1" || exit 1; cp "$1" "$PAWS_INSTALLED_DEB"; exit 0 ;;
+      paws-runner*) printf package > "$PAWS_INSTALLED_DEB"; exit 0 ;;
+      *) exit 1 ;;
     esac
   done
   exit 0
@@ -81,7 +82,14 @@ function serve(routes: Record<string, string>, latest: string) {
 }
 
 async function install(args: string[], env: Record<string, string>) {
-  const child = Bun.spawn(["/bin/sh", script, ...args], {
+  const copy = join(env.HOME!, "installer.sh");
+  writeFileSync(
+    copy,
+    readFileSync(script, "utf8")
+      .replaceAll("/usr/share/keyrings", join(env.HOME!, "keyrings"))
+      .replaceAll("/etc/apt/sources.list.d", join(env.HOME!, "sources")),
+  );
+  const child = Bun.spawn(["/bin/sh", copy, ...args], {
     env,
     stdout: "pipe",
     stderr: "pipe",
@@ -103,7 +111,7 @@ async function withRelease(
   const aptLog = join(directory, "apt.log");
   const installed = join(directory, "installed.deb");
   fakes(directory);
-  const server = serve(routes, latest);
+  const server = serve({ "/paws.gpg": "repository-key", ...routes }, latest);
   try {
     await run(server.url.origin, directory, aptLog, installed);
   } finally {
@@ -153,7 +161,7 @@ test("installer rejects a non-root caller before download", async () => {
   );
 });
 
-test("installer follows the latest release and installs the matching package", async () => {
+test("installer installs latest through apt with the mirror keyring and source", async () => {
   const name = "paws-runner_1.2.3_amd64.deb";
   const body = "amd64-package";
   await withRelease(
@@ -165,11 +173,14 @@ test("installer follows the latest release and installs the matching package", a
     async (origin, directory, aptLog, installed) => {
       const result = await install([], envFor(origin, directory, aptLog, installed));
       expect(result.code).toBe(0);
-      expect(result.stdout).toContain("Installed paws-runner 1.2.3");
-      expect(readFileSync(installed, "utf8")).toBe(body);
+      expect(readFileSync(join(directory, "keyrings/paws.gpg"), "utf8")).toBe("repository-key");
+      expect(readFileSync(join(directory, "sources/paws.list"), "utf8")).toContain(
+        origin + " stable main",
+      );
+      expect(readFileSync(installed, "utf8")).toBe("package");
       const log = readFileSync(aptLog, "utf8");
       expect(log.startsWith("update\ninstall -y ")).toBe(true);
-      expect(log).toContain("/paws-runner_1.2.3_amd64.deb\n");
+      expect(log).toBe("update\ninstall -y paws-runner\n");
     },
   );
 });
@@ -190,13 +201,14 @@ test("installer selects the requested version and architecture", async () => {
         envFor(origin, directory, aptLog, installed, { FAKE_ARCH: "arm64" }),
       );
       expect(result.code).toBe(0);
-      expect(readFileSync(installed, "utf8")).toBe(body);
+      expect(readFileSync(installed, "utf8")).toBe("package");
       expect(result.stdout).toContain("Installing paws-runner 2.0.0 (arm64)");
+      expect(readFileSync(aptLog, "utf8")).toBe("update\ninstall -y paws-runner=2.0.0\n");
     },
   );
 });
 
-test("installer accepts a release tag without a v prefix", async () => {
+test("installer accepts a pinned version without a v prefix", async () => {
   const name = "paws-runner_0.4.0_amd64.deb";
   const body = "bare-tag";
   await withRelease(
@@ -208,65 +220,7 @@ test("installer accepts a release tag without a v prefix", async () => {
     async (origin, directory, aptLog, installed) => {
       const result = await install(["0.4.0"], envFor(origin, directory, aptLog, installed));
       expect(result.code).toBe(0);
-      expect(readFileSync(installed, "utf8")).toBe(body);
-    },
-  );
-});
-
-test("installer refuses a checksum that does not match the package", async () => {
-  const name = "paws-runner_1.2.3_amd64.deb";
-  await withRelease(
-    {
-      [`/download/v1.2.3/${name}`]: "package",
-      [`/download/v1.2.3/${name}.sha256`]: checksum(name, "other"),
-    },
-    "/tag/v1.2.3",
-    async (origin, directory, aptLog, installed) => {
-      const result = await install([], envFor(origin, directory, aptLog, installed));
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("Checksum verification failed");
-      expect(existsSync(aptLog)).toBe(false);
-      expect(existsSync(installed)).toBe(false);
-    },
-  );
-});
-
-test("installer refuses a checksum that does not bind the package alone", async () => {
-  const name = "paws-runner_1.2.3_amd64.deb";
-  const body = "package";
-  const other = "elsewhere";
-  await withRelease(
-    {
-      [`/download/v1.2.3/${name}`]: body,
-      [`/download/v1.2.3/${name}.sha256`]: `${checksum(other, other)}${digest(body)}  ${name}\n`,
-    },
-    "/tag/v1.2.3",
-    async (origin, directory, aptLog, installed) => {
-      const result = await install([], envFor(origin, directory, aptLog, installed));
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("Published checksum must be one line");
-      expect(existsSync(aptLog)).toBe(false);
-      expect(existsSync(installed)).toBe(false);
-    },
-  );
-});
-
-test("installer refuses a checksum for a different filename", async () => {
-  const name = "paws-runner_1.2.3_amd64.deb";
-  const body = "package";
-  await withRelease(
-    {
-      [`/download/v1.2.3/${name}`]: body,
-      [`/download/v1.2.3/${name}.sha256`]: checksum("other.deb", body),
-    },
-    "/tag/v1.2.3",
-    async (origin, directory, aptLog, installed) => {
-      const result = await install(
-        ["--version=1.2.3"],
-        envFor(origin, directory, aptLog, installed),
-      );
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("Checksum verification failed");
+      expect(readFileSync(installed, "utf8")).toBe("package");
     },
   );
 });
@@ -291,27 +245,7 @@ test("installer refuses an unsupported architecture and an invalid version", asy
 test("installer help and the default download command stay on https", () => {
   const source = readFileSync(script, "utf8");
   expect(source).toContain("curl --proto '=https' --tlsv1.2 -fsSL");
-  expect(source).toContain("https://github.com/pmdroid/paws-app/releases");
-});
-
-test("installer refuses a checksum joined with a carriage return", async () => {
-  const name = "paws-runner_1.2.3_amd64.deb";
-  const body = "package";
-  const line = checksum(name, body).replace(/\n$/, "");
-  await withRelease(
-    {
-      [`/download/v1.2.3/${name}`]: body,
-      [`/download/v1.2.3/${name}.sha256`]: `${line}\rother.deb`,
-    },
-    "/tag/v1.2.3",
-    async (origin, directory, aptLog, installed) => {
-      const result = await install([], envFor(origin, directory, aptLog, installed));
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("Published checksum must be one line");
-      expect(existsSync(aptLog)).toBe(false);
-      expect(existsSync(installed)).toBe(false);
-    },
-  );
+  expect(source).toContain("https://get.paws.boo/apt");
 });
 
 test("installer refuses an http download base outside the loopback opt-in", async () => {
@@ -350,6 +284,7 @@ test("installer passes the Docker access choice to package configuration", async
       expect(choice()).toBe("unset");
       expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(choice()).toBe("grant");
+      expect(readFileSync(aptLog, "utf8")).toContain("install --reinstall -y paws-runner=1.2.3");
       expect((await install(["1.2.3", "--no-docker-access"], env)).code).toBe(0);
       expect(choice()).toBe("deny");
       const fromEnv = await install(
@@ -405,11 +340,11 @@ test("installer adds the rootless Docker tools before the package when Docker ac
       expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(2);
       expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns dbus-user-session");
-      expect(installs()[1]).toEndWith(`/${name}`);
+      expect(installs()[1]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(aptLog);
       expect((await install(["--no-docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(1);
-      expect(installs()[0]).toEndWith(`/${name}`);
+      expect(installs()[0]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(join(directory, "bin", "dockerd"));
       if (!existsSync("/usr/bin/dockerd") && !existsSync("/bin/dockerd")) {
         rmSync(aptLog);

@@ -407,29 +407,12 @@ class ReleaseVerification(unittest.TestCase):
         self.assertEqual(self.verify()["version"], "1.2.3")
         self.assertEqual(self.verify()["bunVersion"], "1.4.4")
 
-    def test_unsigned_changed_manifest_and_changed_artifact_fail(self):
-        original = self.signature.read_bytes()
-        self.signature.write_bytes(b"")
-        with self.assertRaises(ValueError):
-            self.verify()
-        self.signature.write_bytes(original)
-        self.manifest.write_bytes(self.manifest.read_bytes() + b" ")
-        with self.assertRaises(ValueError):
-            self.verify()
-        self.sign()
+    def test_signature_is_not_required_but_artifact_digest_is(self):
+        self.signature.unlink()
+        self.key.unlink()
+        self.assertEqual(self.verify()["version"], "1.2.3")
         self.artifact.write_bytes(self.artifact.read_bytes() + b"tampered")
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
-            self.verify()
-
-    def test_wrong_trusted_key_and_non_ed25519_key_fail(self):
-        wrong = self.root / "wrong.pem"
-        self.openssl("genpkey", "-algorithm", "ED25519", "-out", str(wrong))
-        self.openssl("pkey", "-in", str(wrong), "-pubout", "-out", str(self.key))
-        with self.assertRaises(ValueError):
-            self.verify()
-        self.openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(wrong))
-        self.openssl("pkey", "-in", str(wrong), "-pubout", "-out", str(self.key))
-        with self.assertRaisesRegex(ValueError, "Ed25519"):
             self.verify()
 
     def test_strict_fields_versions_platform_and_runtime(self):
@@ -1714,6 +1697,10 @@ class RunnerUpgrade(unittest.TestCase):
             (state / "release.json").chmod(0o600)
         (control / "admission.json").write_text(json.dumps({"releaseKeyFingerprint": "key", **incoming}))
         return subprocess.run(["/bin/sh", str(control / "preinst"), action, "0.1.75"], env={"PATH": "/usr/bin:/bin", "LANG": "C"}, capture_output=True, timeout=30)
+
+    def test_preinst_upgrades_a_signed_release_to_an_apt_package(self):
+        result = self.preinst({"version": "0.1.82", "artifactSha256": "old"}, {"version": "0.1.83", "artifactSha256": "next", "releaseKeyFingerprint": "apt"})
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_preinst_refuses_an_older_package_before_dpkg_unpacks_it(self):
         result = self.preinst({"version": "0.1.75", "artifactSha256": "new"}, {"version": "0.1.73", "artifactSha256": "old"})

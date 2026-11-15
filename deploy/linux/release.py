@@ -518,36 +518,23 @@ def snapshot_artifact(source, destination):
 
 def verify_release(arguments, staging):
     manifest_bytes = read_regular(arguments.manifest, 65_536)
-    signature = read_regular(arguments.signature, 64)
-    key_bytes = read_regular(arguments.release_key, 16_384)
-    if len(signature) != 64:
-        raise ValueError("Ed25519 signature must be 64 bytes")
-    manifest_path = staging / "manifest.json"
-    signature_path = staging / "manifest.sig"
-    key_path = staging / "release.pub"
-    for path, content in ((manifest_path, manifest_bytes), (signature_path, signature), (key_path, key_bytes)):
-        path.write_bytes(content)
-        path.chmod(0o600)
-    der = command(["/usr/bin/openssl", "pkey", "-pubin", "-in", str(key_path), "-outform", "DER"])
-    if len(der) != 44 or der[:12] != bytes.fromhex("302a300506032b6570032100"):
-        raise ValueError("Release key must be an Ed25519 public key")
-    command(["/usr/bin/openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(key_path), "-sigfile", str(signature_path), "-in", str(manifest_path)])
+    (staging / "manifest.json").write_bytes(manifest_bytes)
     manifest = parse_manifest(manifest_bytes)
     check_platform(manifest)
     artifact = staging / "artifact.tar"
     if snapshot_artifact(arguments.artifact, artifact) != manifest["artifactSha256"]:
         raise ValueError("Release artifact digest mismatch")
     inspect_archive(artifact)
-    return manifest, artifact, hashlib.sha256(der).hexdigest()
+    return manifest, artifact, "apt"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=("verify",))
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--signature", required=True)
+    parser.add_argument("--signature")
     parser.add_argument("--artifact", required=True)
-    parser.add_argument("--release-key", required=True)
+    parser.add_argument("--release-key")
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="paws-release-") as directory:
         manifest, _, fingerprint = verify_release(arguments, pathlib.Path(directory))

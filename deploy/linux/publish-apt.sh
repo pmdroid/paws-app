@@ -28,6 +28,8 @@ export GNUPGHOME="$work/gnupg"
 trap 'gpgconf --kill gpg-agent; rm -rf -- "$work"' EXIT
 mkdir -m 700 "$GNUPGHOME"
 printf '%s' "$PAWS_APT_SIGNING_KEY" | gpg --batch --import
+gpg --batch --export > "$work/paws.gpg"
+test -s "$work/paws.gpg"
 export AWS_ACCESS_KEY_ID="$PAWS_APT_R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PAWS_APT_R2_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=auto
 endpoint="https://$PAWS_APT_R2_ACCOUNT_ID.r2.cloudflarestorage.com"
 remote="s3://$PAWS_APT_R2_BUCKET"
@@ -45,6 +47,7 @@ if [[ "$1" == build ]]; then
   aws --endpoint-url "$endpoint" s3 sync "$work/repository/dists/stable/main/" "$remote/dists/stable/main/" --exclude '*' --include '*/by-hash/*'
   aws --endpoint-url "$endpoint" s3 sync "$work/repository/dists/stable/main/" "$remote/dists/stable/main/" --exclude '*/by-hash/*'
 fi
+aws --endpoint-url "$endpoint" s3 cp "$work/paws.gpg" "$remote/paws.gpg"
 aws --endpoint-url "$endpoint" s3 cp "$work/repository/dists/stable/InRelease" "$remote/dists/stable/InRelease"
 if [[ "$1" == build ]]; then
   aws --endpoint-url "$endpoint" s3 sync "$work/repository/dists/stable/main/" "$remote/dists/stable/main/" --delete --exclude '*' --include '*/by-hash/*'

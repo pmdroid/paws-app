@@ -2,6 +2,18 @@
 
 Changes that need action on upgrade come first in each entry. Settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-15: Runners install through apt
+
+### Changed
+
+Existing runners need one manual install on each host after active work finishes:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh
+```
+
+The installer configures the signed Paws apt repository and installs the runner through apt. Separate release manifest signatures are removed. Paws does not upgrade runners through the control plane. Use the same command for later upgrades. See [runner enrollment](docs/runner-enrollment.md).
+
 ## 2026-11-11: Paws runs on Postgres and starts fresh
 
 ### Changed

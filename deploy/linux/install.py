@@ -652,7 +652,7 @@ def admitted_release(manifest, fingerprint, reinstall=False):
     info = record.lstat()
     if info.st_uid != 0 or info.st_mode & 0o7777 != 0o600:
         raise ValueError("Unsafe installed release state")
-    if previous["releaseKeyFingerprint"] != fingerprint:
+    if fingerprint != "apt" and previous["releaseKeyFingerprint"] != fingerprint:
         raise ValueError("Release trust key does not match installed trust")
     incoming = tuple(map(int, manifest["version"].split(".")))
     installed = tuple(map(int, previous["version"].split(".")))
@@ -1579,7 +1579,7 @@ def main():
         return
     parser = argparse.ArgumentParser()
     for name in ("manifest", "signature", "artifact", "release-key"):
-        parser.add_argument("--" + name, required=True)
+        parser.add_argument("--" + name, required=name not in ("signature", "release-key"))
     arguments = parser.parse_args()
     docker = docker_access_choice()
     with tempfile.TemporaryDirectory(prefix="paws-release-") as temporary:

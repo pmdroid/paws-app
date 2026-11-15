@@ -81,14 +81,18 @@ export PAWS_APT_R2_ACCOUNT_ID=fixture PAWS_APT_R2_ACCESS_KEY_ID=fixture PAWS_APT
 export PAWS_APT_SIGNING_KEY=$(gpg --batch --pinentry-mode loopback --passphrase test --armor --export-secret-keys)
 bash "$publisher" build "$work/incoming"
 awk '$3 ~ /^s3:/ {print $3, $4, $5, $6, $7}' "$work/aws.log" > "$work/order"
-head -4 "$work/order" | sed 's/ *$//' > "$work/phases"
-printf '%s\n' 's3://fixture/pool/' 's3://fixture/dists/stable/main/ --exclude * --include */by-hash/*' 's3://fixture/dists/stable/main/ --exclude */by-hash/*' 's3://fixture/dists/stable/InRelease' > "$work/expected"
+head -5 "$work/order" | sed 's/ *$//' > "$work/phases"
+printf '%s\n' 's3://fixture/pool/' 's3://fixture/dists/stable/main/ --exclude * --include */by-hash/*' 's3://fixture/dists/stable/main/ --exclude */by-hash/*' 's3://fixture/paws.gpg' 's3://fixture/dists/stable/InRelease' > "$work/expected"
 cmp "$work/expected" "$work/phases"
+cmp "$work/public.gpg" "$work/remote/paws.gpg"
+gpgv --keyring "$work/remote/paws.gpg" "$work/remote/dists/stable/InRelease"
 test ! -e "$work/remote/dists/stable/Release" && test ! -e "$work/remote/dists/stable/Release.gpg"
 cp -r "$work/remote" "$work/remote-before"
 : > "$work/aws.log"
 bash "$publisher" resign_only
-test "$(wc -l < "$work/aws.log")" = 2
+test "$(wc -l < "$work/aws.log")" = 3
+cmp "$work/public.gpg" "$work/remote/paws.gpg"
+gpgv --keyring "$work/remote/paws.gpg" "$work/remote/dists/stable/InRelease"
 ! grep -q sync "$work/aws.log"
 diff -r "$work/remote-before/pool" "$work/remote/pool"
 diff -r "$work/remote-before/dists/stable/main" "$work/remote/dists/stable/main"
@@ -127,7 +131,7 @@ for arch in amd64 arm64; do
   test "$(grep -c '^Package: paws-runner$' "$index")" -ge 2
   ! grep -q '^Package: paws-control-plane$' "$index"
 done
-gpgv --keyring "$work/public.gpg" "$AWS_TEST_REMOTE/dists/stable/InRelease"
+gpgv --keyring "$AWS_TEST_REMOTE/paws.gpg" "$AWS_TEST_REMOTE/dists/stable/InRelease"
 rm "$work/runner-only"/*_arm64.deb
 : > "$work/aws.log"
 if bash "$publisher" build "$work/runner-only"; then exit 1; fi

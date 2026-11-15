@@ -111,7 +111,7 @@ def build(arguments):
         package = root / "package"
         payload = package / "usr/lib/paws-runner-package"
         payload.mkdir(parents=True)
-        for source, name in ((artifact, "artifact.tar"), (root / "manifest.json", "manifest.json"), (root / "manifest.sig", "manifest.sig"), (root / "release.pub", "release.pub"), *((ROOT / name, name) for name in ("install.py", "release.py", "deb-control.py"))):
+        for source, name in ((artifact, "artifact.tar"), (root / "manifest.json", "manifest.json"), *((ROOT / name, name) for name in ("install.py", "release.py", "deb-control.py"))):
             shutil.copyfile(source, payload / name)
             (payload / name).chmod(0o644)
         (payload / "dockerd-rootless.sh").write_bytes(launcher)
@@ -189,7 +189,7 @@ def main():
             parser.add_argument("--" + name, required=True)
         print(build_control_plane(parser.parse_args()))
         return
-    for name in ("manifest", "signature", "artifact", "release-key", "output"):
+    for name in ("manifest", "artifact", "output"):
         parser.add_argument("--" + name, required=True)
     print(build(parser.parse_args()))
 
