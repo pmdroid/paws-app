@@ -22,7 +22,98 @@ concurrency:
   queue: max
 
 jobs:
+  prepare:
+    if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
+    name: Runner archive (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux-x64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",sys.argv[1]) else 1)' "$version"
+          echo "RUNNER_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check minimum runner versions
+        run: bun scripts/check-runner-versions.ts "$RUNNER_VERSION"
+      - run: bun install --frozen-lockfile
+      - name: Build runner archive
+        env:
+          RUNNER_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python3 -I -B deploy/linux/package.py --source "$GITHUB_WORKSPACE" --bun "$(command -v bun)" --version "$RUNNER_VERSION" --platform "$RUNNER_PLATFORM" --output "$RUNNER_TEMP/runner-archive"
+      - name: Hash manifest
+        run: cd "$RUNNER_TEMP/runner-archive" && sha256sum manifest.json > manifest.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: archive-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/runner-archive/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manifest-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/runner-archive/manifest.json
+            ${{ runner.temp }}/runner-archive/manifest.sha256
+          if-no-files-found: error
+
+  sign-manifest:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        architecture: [amd64, arm64]
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: manifest-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/manifest
+      - name: Check manifest hash
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          sha256sum manifest.json | cmp - manifest.sha256
+      - name: Sign runner manifest
+        env:
+          PAWS_RUNNER_RELEASE_KEY: ${{ secrets.PAWS_RUNNER_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/paws-runner-release.pem"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s\n' "$PAWS_RUNNER_RELEASE_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/manifest/manifest.json" -out "$RUNNER_TEMP/manifest/manifest.sig"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signature-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/manifest/manifest.sig
+            ${{ runner.temp }}/manifest/manifest.sha256
+          if-no-files-found: error
+
   build:
+    needs: [prepare, sign-manifest]
     if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
     name: Debian package (${{ matrix.architecture }})
     strategy:
@@ -58,23 +149,23 @@ jobs:
       - name: Check minimum runner versions
         run: bun scripts/check-runner-versions.ts "$RUNNER_VERSION"
       - run: bun install --frozen-lockfile
-      - name: Build runner archive
-        env:
-          RUNNER_PLATFORM: ${{ matrix.platform }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: archive-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/runner-archive
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signature-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/signature
+      - name: Check signed manifest handoff
         run: |
-          python3 -I -B deploy/linux/package.py --source "$GITHUB_WORKSPACE" --bun "$(command -v bun)" --version "$RUNNER_VERSION" --platform "$RUNNER_PLATFORM" --output "$RUNNER_TEMP/runner-archive"
-      - name: Sign runner manifest
-        run: |
-          umask 077
-          key="$RUNNER_TEMP/paws-runner-release.pem"
-          trap 'rm -f -- "$key"' EXIT
-          # Compatibility signature for the existing package format; apt and provenance establish trust.
-          openssl genpkey -algorithm ED25519 -out "$key"
-          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/release.pub"
-          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/runner-archive/manifest.json" -out "$RUNNER_TEMP/runner-archive/manifest.sig"
+          cd "$RUNNER_TEMP/runner-archive"
+          sha256sum manifest.json | cmp - manifest.sha256
+          cmp manifest.sha256 "$RUNNER_TEMP/signature/manifest.sha256"
+          cp "$RUNNER_TEMP/signature/manifest.sig" manifest.sig
       - name: Build Debian package
         run: |
-          python3 -I -B deploy/linux/deb-package.py --artifact "$RUNNER_TEMP/runner-archive/artifact.tar" --manifest "$RUNNER_TEMP/runner-archive/manifest.json" --signature "$RUNNER_TEMP/runner-archive/manifest.sig" --release-key "$RUNNER_TEMP/release.pub" --output dist
+          python3 -I -B deploy/linux/deb-package.py --artifact "$RUNNER_TEMP/runner-archive/artifact.tar" --manifest "$RUNNER_TEMP/runner-archive/manifest.json" --signature "$RUNNER_TEMP/runner-archive/manifest.sig" --release-key deploy/linux/release.pub --output dist
       - name: Build control-plane Debian package
         env:
           DEBIAN_ARCHITECTURE: ${{ matrix.architecture }}
