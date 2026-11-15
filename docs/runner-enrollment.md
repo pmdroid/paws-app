@@ -1,6 +1,14 @@
 # Enroll a remote Linux runner
 
-The installer adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Control-plane upgrades use the same installer. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
+The installer adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
+
+Existing runners need one manual install to move to apt. Wait for active work to finish, then run on each runner host:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh
+```
+
+Paws does not upgrade runners through the control plane. Run the same command for later runner upgrades.
 
 Enrollment connects a Linux host to your Paws workspace. The runner daemon runs as the non-root `paws-runner` user, and the coding agents (Claude, Codex, Grok, OpenCode) and everything they start run as `paws-agent`, which can't read the runner's identity keys. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
