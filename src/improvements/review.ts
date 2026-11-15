@@ -111,7 +111,6 @@ export type ImprovementView = {
     at: number | null;
   };
   issue: InboxItem["issue"];
-  legacy: InboxItem["legacy"];
   deliveries: DeliveryView[];
   implementation: InboxItem["improvement"]["implementationState"];
   verification: InboxItem["verification"];
@@ -195,7 +194,6 @@ function* improvementViewSteps(q: Q, item: InboxItem): Steps<ImprovementView> {
       at: improvement.reviewedAt,
     },
     issue: item.issue,
-    legacy: item.legacy,
     deliveries: deliveries.map((delivery) => ({
       id: delivery.id,
       operation: delivery.operation,
@@ -464,8 +462,6 @@ const CONFLICT_MESSAGE = {
     "This improvement is already accepted and its issue delivery may have reached Linear. It cannot be rejected or reopened here.",
   cancel_comment:
     "This evidence comment may already have reached Linear, or its link has not finished. Retry it instead.",
-  legacy:
-    "A Findings action already filed, added or is filing these findings. Review the existing issue instead.",
   proposal_changed:
     "A newer proposal replaced the one you reviewed. Review the current text before deciding.",
   known_issue: "This improvement already has an issue. Link it instead of creating a duplicate.",
@@ -640,8 +636,6 @@ export async function decideInboxItem(
           : yield* linkRefusalSteps(q, current, item, linked, request.intent.allowClosed === true);
       if (refused) return refused;
     }
-    if (item.legacy.some((action) => action.kind !== "dismissed"))
-      return yield* conflict(q, item, "legacy");
     if (request.kind === "accept" && item.proposal.version !== request.proposalVersion)
       return yield* conflict(q, item, "proposal_changed");
     let review: ImprovementReview;

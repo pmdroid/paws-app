@@ -32,7 +32,6 @@ import {
   worldPg,
   type Json,
 } from "./improvement-fixtures";
-import { waitFor } from "./wait-for";
 
 const open: (() => Promise<void>)[] = [];
 
@@ -545,7 +544,7 @@ describe("improvement decisions", () => {
   });
 });
 
-describe("daily findings share legacy claims", () => {
+describe("daily finding decisions", () => {
   test("new daily acceptance needs a criterion stored as an annotation", async () => {
     const w = await world();
     await seedDaily(w.db);
@@ -577,7 +576,7 @@ describe("daily findings share legacy claims", () => {
     ).toBe(true);
   });
 
-  test("legacy File after inbox Create is refused, and inbox Create after a legacy claim conflicts", async () => {
+  test("Findings File after inbox Create is refused", async () => {
     const w = await world();
     const { groupId } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
@@ -610,28 +609,6 @@ describe("daily findings share legacy claims", () => {
     );
     expect(legacy!.status).toBe(409);
     expect(files).toEqual([]);
-
-    const other = await world();
-    const seeded = await seedDaily(other.db);
-    await other.db.run((q) =>
-      q.exec(
-        q.orm
-          .update(q.t.findingGroup)
-          .set({ action: "file" })
-          .where(eq(q.t.findingGroup.id, seeded.groupId)),
-      ),
-    );
-    const [claimed] = (await other.api("ada", "/api/improvements?source=daily")).body.items;
-    expect(claimed.lifecycle).toBe("pending");
-    const refused = await other.api(
-      "ada",
-      `/api/improvements/${claimed.id}/decision`,
-      accept(1, undefined, {
-        verificationCriterion: "Gone.",
-        proposalVersion: claimed.proposal.version,
-      }),
-    );
-    expect([refused.status, refused.body.reason]).toEqual([409, "legacy"]);
   });
 });
 
@@ -760,47 +737,6 @@ describe("individual finding issues share the inbox claim", () => {
     const refused = await post();
     expect(refused!.status).toBe(409);
     expect(filed).toEqual([]);
-  });
-
-  test("an individual filing, finished or in flight, blocks the inbox accept", async () => {
-    const w = await world();
-    await seedDaily(w.db);
-    let release = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    const { post, filed } = await route(w, () => gate);
-    const pending = post();
-    await waitFor(() => filed.length > 0, { what: "the individual filing" });
-    expect(filed).toHaveLength(1);
-    const during = await acceptDaily(w);
-    expect([during.status, during.body.reason]).toEqual([409, "legacy"]);
-    release();
-    expect((await pending)!.status).toBe(200);
-    const after = await acceptDaily(w);
-    expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
-    expect(after.body.item).toMatchObject({
-      issue: { identifier: "PAS-77", origin: "legacy" },
-      legacy: [{ kind: "filed", issue: "PAS-77" }],
-    });
-    expect(await listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
-  });
-
-  test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
-    const w = await world();
-    const { groupId } = await seedDaily(w.db);
-    const dismissed = await handleFindingGroupsRequest(
-      new Request("http://paws.test/api/finding-groups", {
-        method: "POST",
-        body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
-      }),
-      { store: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
-    );
-    expect(dismissed!.status).toBe(200);
-    const { post } = await route(w);
-    expect((await post())!.status).toBe(200);
-    const after = await acceptDaily(w);
-    expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
-    expect(after.body.item.issue).toMatchObject({ identifier: "PAS-77", origin: "legacy" });
-    expect(await listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
   });
 });
 

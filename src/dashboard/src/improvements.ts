@@ -35,15 +35,7 @@ type KnownIssue = {
   id: string | null;
   identifier: string | null;
   url: string | null;
-  origin: "decision" | "legacy";
-};
-
-type LegacyAction = {
-  kind: "filed" | "added" | "dismissed" | "claimed";
-  issue: string | null;
-  reason: string | null;
-  by: string | null;
-  at: number | null;
+  origin: "decision";
 };
 
 type DeliveryView = {
@@ -82,7 +74,6 @@ export type ImprovementItem = {
     at: number | null;
   };
   issue: KnownIssue | null;
-  legacy: LegacyAction[];
   deliveries: DeliveryView[];
   implementation: ImprovementImplementationState;
   verification: ImprovementVerificationState;

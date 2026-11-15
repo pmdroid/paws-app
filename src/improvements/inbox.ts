@@ -1,14 +1,12 @@
 import {
   findingGroupingEnabledSteps,
   lastFindingGroupRunSteps,
-  listFindingGroupsSteps,
   listImprovementProposalsSteps,
   listImprovementsSteps,
   listRetroCoverageGapsSteps,
   listRetroEvidenceSteps,
   listRetrosSteps,
   retroScheduleRuntimeSteps,
-  reviewFindingIssueClaimsSteps,
   reviewFindingItemsSteps,
   type FindingGroupRun,
   type Improvement,
@@ -20,7 +18,7 @@ import {
   type Steps,
   type Db,
 } from "../db";
-import { improvementFindingsSteps, legacyActions, type LegacyAction } from "./daily";
+import { improvementFindingsSteps } from "./daily";
 
 export type ImprovementAccess = {
   workspaceId: string;
@@ -35,7 +33,7 @@ export type KnownIssue = {
   id: string | null;
   identifier: string | null;
   url: string | null;
-  origin: "decision" | "legacy";
+  origin: "decision";
 };
 
 export type DailyMember = {
@@ -56,8 +54,6 @@ export type InboxItem = {
   criterion: string | null;
   lifecycle: InboxLifecycle;
   issue: KnownIssue | null;
-  legacy: LegacyAction[];
-  undecided: number[];
   verification: ImprovementVerificationState;
   members: DailyMember[];
 };
@@ -69,22 +65,14 @@ function allowedRepository(access: ImprovementAccess, repository: string): boole
   );
 }
 
-function lifecycleOf(
-  improvement: Improvement,
-  legacy: readonly LegacyAction[],
-  undecided: readonly number[],
-): InboxLifecycle {
+function lifecycleOf(improvement: Improvement): InboxLifecycle {
   if (improvement.reviewState === "rejected") return "rejected";
   if (improvement.issue) return "linked";
   if (improvement.reviewState === "accepted") return "pending";
-  if (legacy.some((a) => a.kind === "claimed")) return "pending";
-  if (undecided.length) return "needs_review";
-  if (legacy.some((a) => a.kind === "filed" || a.kind === "added")) return "linked";
-  if (legacy.length && legacy.every((a) => a.kind === "dismissed")) return "rejected";
   return "needs_review";
 }
 
-function issueOf(improvement: Improvement, legacy: readonly LegacyAction[]): KnownIssue | null {
+function issueOf(improvement: Improvement): KnownIssue | null {
   if (improvement.issue)
     return {
       id: improvement.issue.id,
@@ -92,12 +80,10 @@ function issueOf(improvement: Improvement, legacy: readonly LegacyAction[]): Kno
       url: improvement.issue.url,
       origin: "decision",
     };
-  const filed = legacy.find((a) => a.issue !== null && a.kind !== "dismissed");
-  return filed ? { id: null, identifier: filed.issue, url: null, origin: "legacy" } : null;
+  return null;
 }
 
 export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<InboxItem[]> {
-  const groups = yield* listFindingGroupsSteps(q, access.workspaceId);
   const evidence = new Map<string, Map<string, string>>();
   function* retroEvidenceSteps(retroId: string) {
     if (!evidence.has(retroId))
@@ -118,8 +104,6 @@ export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<Inb
     const sourceKind = proposal.source.kind;
     const sourceKeys = [...new Set(proposals.map((p) => p.source.key))];
     let members: DailyMember[] = [];
-    let legacy: LegacyAction[] = [];
-    let undecided: number[] = [];
     if (sourceKind === "daily_finding") {
       const findings = yield* improvementFindingsSteps(q, improvement.id);
       if (findings.length !== sourceKeys.length) continue;
@@ -136,28 +120,6 @@ export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<Inb
             )),
       );
       if (!visible) continue;
-      legacy = legacyActions(findings, groups);
-      const covered = new Set(
-        legacy
-          .filter((action) => action.kind !== "dismissed")
-          .flatMap((action) => action.findingIds),
-      );
-      const claims = yield* reviewFindingIssueClaimsSteps(q, findings);
-      for (const f of findings) {
-        const claim = claims.get(f.key);
-        if (covered.has(f.id) || claim === undefined) continue;
-        legacy.push({
-          kind: claim.issue ? "filed" : "claimed",
-          groupId: null,
-          findingIds: [f.id],
-          issue: claim.issue?.identifier ?? null,
-          reason: null,
-          by: claim.issue?.filedBy ?? null,
-          at: claim.issue?.filedAt ?? null,
-        });
-      }
-      const decided = new Set(legacy.flatMap((a) => a.findingIds));
-      undecided = findings.filter((f) => !decided.has(f.id)).map((f) => f.id);
       members = findings.map((f) => ({
         findingId: f.id,
         key: f.key,
@@ -187,10 +149,8 @@ export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<Inb
       sourceKeys,
       proposal,
       criterion: proposal.verificationCriterion.trim() || null,
-      lifecycle: lifecycleOf(improvement, legacy, undecided),
-      issue: issueOf(improvement, legacy),
-      legacy,
-      undecided,
+      lifecycle: lifecycleOf(improvement),
+      issue: issueOf(improvement),
       verification: improvement.verificationState,
       members,
     });
@@ -252,10 +212,7 @@ export function reuseChoice(
     item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt)
   )
     return { kind: "review", issue, reason: "recurred" };
-  const scopeChanged =
-    issue.origin === "decision"
-      ? item.improvement.reviewedProposal !== item.proposal.version
-      : item.undecided.length > 0;
+  const scopeChanged = item.improvement.reviewedProposal !== item.proposal.version;
   if (scopeChanged) return { kind: "review", issue, reason: "scope_changed" };
   if (issueState === "unknown") return { kind: "review", issue, reason: "unconfirmed" };
   return { kind: "reuse", issue };

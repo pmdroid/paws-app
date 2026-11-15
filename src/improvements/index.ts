@@ -2,9 +2,7 @@ export {
   dailyFindingKey,
   improvementFindings,
   ingestDailyFindings,
-  legacyActions,
   type DailyIngestResult,
-  type LegacyAction,
 } from "./daily";
 export {
   improvementSourceStatus,
