@@ -172,74 +172,92 @@ function instance(input: {
   return { pawsRoot, db, jobs, tracker, github, orchestrator, flush };
 }
 
-test("instance B verifies and merges the candidate instance A imported, from the recorded SHA", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-replica-"));
-  const checkMark = path.join(root, "check-ran");
-  const bare = await originWithPolicy(root, checkMark);
-  const shared = await pgliteDb();
-  const checksRuns: string[] = [];
-  const a = instance({ root, name: "a", bare, shared, checksRuns });
-  const b = instance({ root, name: "b", bare, shared, checksRuns });
-  try {
-    await a.orchestrator.onLinearEvent(created());
-    await seedRows(a.db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
-    const turn = a.jobs.tick();
-    await attachRunnerLease(a.db);
-    await turn;
-    await a.flush();
+test.each(["missing", "stale"])(
+  "replica restores a %s candidate ref",
+  async (cache) => {
+    const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-replica-"));
+    const checkMark = path.join(root, "check-ran");
+    const bare = await originWithPolicy(root, checkMark);
+    const shared = await pgliteDb();
+    const checksRuns: string[] = [];
+    const a = instance({ root, name: "a", bare, shared, checksRuns });
+    const b = instance({ root, name: "b", bare, shared, checksRuns });
+    try {
+      await a.orchestrator.onLinearEvent(created());
+      await seedRows(a.db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
+      const turn = a.jobs.tick();
+      await attachRunnerLease(a.db);
+      await turn;
+      await a.flush();
 
-    const item = (await listWorkItems(b.db))[0]!;
-    expect((await getWorkItem(b.db, item.id))?.state).toBe("awaiting_input");
-    const recorded = (await getItemCandidate(b.db, item.id))!;
-    expect(recorded.branch).toBe(item.branchName);
-    expect(checksRuns).toEqual([`a:${recorded.sha}`]);
+      const item = (await listWorkItems(b.db))[0]!;
+      expect((await getWorkItem(b.db, item.id))?.state).toBe("awaiting_input");
+      const recorded = (await getItemCandidate(b.db, item.id))!;
+      expect(recorded.branch).toBe(item.branchName);
+      expect(checksRuns).toEqual([`a:${recorded.sha}`]);
 
-    // Run files stay on local disk for now; only the mirror differs between the instances.
-    await cp(path.join(a.pawsRoot, "runs"), path.join(b.pawsRoot, "runs"), { recursive: true });
-    const question = (await findOpenQuestion(b.db, "ses_1"))!;
-    expect(
-      await b.orchestrator.decideLinkAsk({
-        questionId: question.id,
-        decision: "approve",
-        note: "The field moved to a new route.",
-        answeredBy: "delegator-1",
-        actor: { workspaceId: "ws-1", userId: "user-1", name: "Owner" },
-      }),
-    ).toBe("answered");
-    while ((await b.jobs.tick([JOB_KIND.reverify])) !== null);
-    await b.flush();
+      const mirrorB = mirrorPath(b.pawsRoot, repository.owner, repository.repo);
+      if (cache === "stale") {
+        await ensureBareMirror({ ...repository, remoteUrl: bare, pawsRoot: b.pawsRoot });
+        const main = await git("--git-dir", mirrorB, "rev-parse", "main");
+        expect(main).not.toBe(recorded.sha);
+        const ref = await git(
+          "--git-dir",
+          mirrorPath(a.pawsRoot, repository.owner, repository.repo),
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/paws/candidates",
+        );
+        await git("--git-dir", mirrorB, "update-ref", ref, main);
+      }
 
-    expect(checksRuns).toEqual([`a:${recorded.sha}`, `b:${recorded.sha}`]);
-    const mirrorB = mirrorPath(b.pawsRoot, repository.owner, repository.repo);
-    expect(
-      await git(
-        "--git-dir",
-        mirrorB,
-        "for-each-ref",
-        "--format=%(objectname)",
-        "refs/paws/candidates",
-      ),
-    ).toBe(recorded.sha);
-    expect((await getWorkItem(b.db, item.id))?.state).toBe("merge_queue");
-
-    for (
-      let tick = 0;
-      tick < 20 && (await getWorkItem(b.db, item.id))?.state !== "merged";
-      tick++
-    ) {
-      await b.jobs.tick();
+      // Run files stay on local disk for now; only the mirror differs between the instances.
+      await cp(path.join(a.pawsRoot, "runs"), path.join(b.pawsRoot, "runs"), { recursive: true });
+      const question = (await findOpenQuestion(b.db, "ses_1"))!;
+      expect(
+        await b.orchestrator.decideLinkAsk({
+          questionId: question.id,
+          decision: "approve",
+          note: "The field moved to a new route.",
+          answeredBy: "delegator-1",
+          actor: { workspaceId: "ws-1", userId: "user-1", name: "Owner" },
+        }),
+      ).toBe("answered");
+      while ((await b.jobs.tick([JOB_KIND.reverify])) !== null);
       await b.flush();
+
+      expect(checksRuns).toEqual([`a:${recorded.sha}`, `b:${recorded.sha}`]);
+      expect(
+        await git(
+          "--git-dir",
+          mirrorB,
+          "for-each-ref",
+          "--format=%(objectname)",
+          "refs/paws/candidates",
+        ),
+      ).toBe(recorded.sha);
+      expect((await getWorkItem(b.db, item.id))?.state).toBe("merge_queue");
+
+      for (
+        let tick = 0;
+        tick < 20 && (await getWorkItem(b.db, item.id))?.state !== "merged";
+        tick++
+      ) {
+        await b.jobs.tick();
+        await b.flush();
+      }
+      expect((await getWorkItem(b.db, item.id))?.state).toBe("merged");
+      expect(b.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([recorded.sha]);
+      expect(a.github.merged).toEqual([]);
+    } finally {
+      await a.orchestrator.shutdown();
+      await b.orchestrator.shutdown();
+      await shared.$client.close();
+      await rm(root, { recursive: true, force: true });
     }
-    expect((await getWorkItem(b.db, item.id))?.state).toBe("merged");
-    expect(b.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([recorded.sha]);
-    expect(a.github.merged).toEqual([]);
-  } finally {
-    await a.orchestrator.shutdown();
-    await b.orchestrator.shutdown();
-    await shared.$client.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 120_000);
+  },
+  120_000,
+);
 
 test("a recorded candidate SHA that GitHub lacks is an error that names it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-missing-"));

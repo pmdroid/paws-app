@@ -5855,6 +5855,7 @@ export class Orchestrator {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
+    await this.restoreCandidate(item, await this.signalForItem(item.id));
     const { repo: worktree, ref } = await this.itemHead(item);
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
@@ -6206,6 +6207,7 @@ export class Orchestrator {
     });
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
+    await this.restoreCandidate(item, await this.signalForItem(item.id));
     const { repo: worktree, ref } = await this.itemHead(item);
     const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
@@ -7142,6 +7144,7 @@ export class Orchestrator {
         ? current.state
         : null;
     if (phase === null) return;
+    await this.restoreCandidate(current, await this.signalForItem(current.id));
     const { repo: worktree, ref } = await this.itemHead(current);
     let head = "";
     let base = current.checkpoint?.baseSha ?? "";
