@@ -2258,6 +2258,9 @@ class ControlPlaneDebTests(unittest.TestCase):
             for name in ("systemctl", "systemd-sysusers", "systemd-tmpfiles", "chown"):
                 fake = commands / name
                 fake.write_text(f'#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "{log}"\n')
+                if name == "systemctl":
+                    with fake.open("a") as script:
+                        script.write(f'case "$1" in start|stop) printf "%s" "$1" > "{root / "service-state"}" ;; esac\n')
                 fake.chmod(0o755)
             environment = {**os.environ, "PATH": str(commands) + ":" + os.environ["PATH"]}
             scripts = control.control_plane_scripts(str(root))
@@ -2283,8 +2286,13 @@ class ControlPlaneDebTests(unittest.TestCase):
                 "'postgres://localhost/paws?sslmode=require&connect_timeout=10'",
                 '"postgres://localhost/paws?sslmode=require&connect_timeout=10"',
                 f"$(touch {marker})",
+                f"`touch {marker}`",
+                "$PAWS_UNDEFINED_VARIABLE",
+                "postgres://localhost/a path with spaces",
+                "'postgres://localhost/a path with spaces'",
+                '"postgres://localhost/a path with spaces"',
             ):
-                config.write_text(f"PAWS_DATABASE_URL={value}\nOTHER=$(touch {marker})\n")
+                config.write_text(f"\n # comment\n ; comment\nignored line\nPAWS_DATABASE_URL={value}\n # PAWS_DATABASE_URL=\n ; PAWS_DATABASE_URL=\nOTHER=$(touch {marker})\n")
                 run("preinst", "upgrade", "1.0.5")
                 self.assertEqual(sorted((home / "backups").iterdir()), backups)
                 self.assertFalse(marker.exists())
@@ -2299,7 +2307,7 @@ class ControlPlaneDebTests(unittest.TestCase):
             for empty in empty_values:
                 with self.subTest(backup_for=empty):
                     previous = set((home / "backups").iterdir())
-                    config.write_text(f"PAWS_DATABASE_URL={empty}\n")
+                    config.write_text(f"PAWS_DATABASE_URL=postgres://localhost/earlier\n\n # comment\n ; comment\n PAWS_DATABASE_URL = {empty} \n")
                     run("preinst", "upgrade", "1.0.6")
                     current = list((home / "backups").iterdir())
                     self.assertEqual(len(current), 3)
@@ -2307,14 +2315,16 @@ class ControlPlaneDebTests(unittest.TestCase):
                     self.assertEqual(len(added), 1)
                     self.assertEqual((added.pop() / "data").read_text(), "database")
             cp = commands / "cp"
-            cp.write_text("#!/bin/sh\nexit 1\n")
+            cp.write_text("#!/bin/sh\nexit 28\n")
             cp.chmod(0o755)
             for empty in empty_values:
                 with self.subTest(empty=empty):
-                    config.write_text(f"PAWS_DATABASE_URL={empty}\n")
+                    config.write_text(f"PAWS_DATABASE_URL=postgres://localhost/earlier\n\n # comment\n ; comment\n PAWS_DATABASE_URL = {empty} \n")
                     log.write_text("")
-                    with self.assertRaises(subprocess.CalledProcessError):
+                    with self.assertRaises(subprocess.CalledProcessError) as failure:
                         run("preinst", "upgrade", "1.0.6")
+                    self.assertEqual(failure.exception.returncode, 28)
+                    self.assertEqual((root / "service-state").read_text(), "start")
                     self.assertEqual(log.read_text().splitlines(), ["systemctl stop paws.service", "systemctl start paws.service"])
                     log.write_text("")
                     run("preinst", "abort-upgrade", "1.0.6")

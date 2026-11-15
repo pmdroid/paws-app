@@ -122,16 +122,27 @@ if [ "$1" = upgrade ]; then
   database_set=0
   if [ -f {root}/etc/paws/control-plane.env ]; then
     database_set=$(awk '
-      /^[[:space:]]*PAWS_DATABASE_URL[[:space:]]*=/ {{
-        sub(/^[^=]*=[[:space:]]*/, "")
-        sub(/[[:space:]]*$/, "")
-        configured = ($0 !~ /^[[:space:]]*$/ && $0 !~ /^"[[:space:]]*"$/ && $0 !~ /^\\047[[:space:]]*\\047$/)
+      function trim(value) {{
+        sub(/^[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        return value
+      }}
+      {{
+        line = trim($0)
+        if (line == "" || line ~ /^[#;]/) next
+        separator = index(line, "=")
+        if (!separator || trim(substr(line, 1, separator - 1)) != "PAWS_DATABASE_URL") next
+        value = trim(substr(line, separator + 1))
+        quote = substr(value, 1, 1)
+        if (length(value) >= 2 && (quote == "\\"" || quote == sprintf("%c", 39)) && substr(value, length(value), 1) == quote)
+          value = substr(value, 2, length(value) - 2)
+        configured = (trim(value) != "")
       }}
       END {{ print configured + 0 }}
     ' {root}/etc/paws/control-plane.env)
   fi
   systemctl stop paws.service
-  trap 'status=$?; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi' 0
+  trap 'status=$?; trap - 0; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi; exit "$status"' 0
   if [ "$database_set" = 0 ] && [ -d {root}/var/lib/paws/pglite ]; then
     backups={root}/var/lib/paws/backups
     install -d -m 0700 "$backups"
