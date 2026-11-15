@@ -84,6 +84,9 @@ test("workflow bounds stress and feeds the matrix to the required aggregate", ()
     readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8"),
   );
   const stress = workflow.jobs["changed-tests"];
+  expect(workflow.jobs["select-changed-tests"].steps.at(-2).run).toBe(
+    "bun install --frozen-lockfile",
+  );
   expect(workflow.jobs["select-changed-tests"].steps.at(-1).run).toBe(
     'bun scripts/stress-tests.ts "origin/$BASE_REF"',
   );
