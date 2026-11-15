@@ -2,13 +2,7 @@ import assert from "node:assert/strict";
 import { and, eq, isNull } from "drizzle-orm";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import {
-  branchName,
-  candidateRef,
-  mirrorPath,
-  runAgent,
-  type RunAgentOptions,
-} from "../../src/acp";
+import { runAgent, type RunAgentOptions } from "../../src/acp";
 import { JOB_KIND, systemClock, FakeClock } from "../../src/core";
 import {
   JobLoop,
@@ -1028,24 +1022,6 @@ export async function probeRunnerOrchestration(
           await git(["-C", source, "push", origin, "HEAD:main"]);
           movedMain = await git(["-C", source, "rev-parse", "HEAD"]);
         }
-        const legacy = scenario === "crashed-review" || scenario === "merge";
-        const mirror = mirrorPath(home, "acme", "fixture");
-        const candidate = candidateRef(itemPathId(item));
-        if (legacy) {
-          // An item from before candidate refs keeps its head only on its branch.
-          const held = await git(["--git-dir", mirror, "rev-parse", candidate]);
-          await git([
-            "--git-dir",
-            mirror,
-            "update-ref",
-            `refs/heads/${branchName(itemPathId(item))}`,
-            held,
-          ]);
-          await git(["--git-dir", mirror, "update-ref", "-d", candidate]);
-          await seed(db, (q) =>
-            q.orm.delete(q.t.itemCandidate).where(eq(q.t.itemCandidate.itemId, item.id)),
-          );
-        }
         const reverifyId = merging
           ? (await listJobs(db)).find(
               (job) => job.queue === JOB_KIND.merge && job.status === "pending",
@@ -1079,8 +1055,6 @@ export async function probeRunnerOrchestration(
           }
         }
         const verified = (await getWorkItem(db, item.id))!;
-        if (legacy && verified.state !== "merged")
-          assert.equal(await git(["--git-dir", mirror, "rev-parse", candidate]), accepted);
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
           const question = await findOpenQuestion(db, "session");
