@@ -15,6 +15,7 @@ export type AccountHealthState =
 export type AccountHealthSource = "result" | "login_check" | "sign_in" | "resume";
 
 export type AccountHealth = {
+  limitsJson?: string | null;
   kind: AccountHealthKind;
   scope: "account" | "binding" | "provider";
   scopeId: string;

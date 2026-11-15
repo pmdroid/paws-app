@@ -55,7 +55,10 @@ export function createUsageReader(
     if (expires <= now()) throw new UsageCredentialExpired();
     headers.Authorization = `Bearer ${token}`;
     const response = await fetch(
-      agent === "codex" ? origins.codex + "/wham/usage" : origins.claude + "/api/oauth/usage",
+      new URL(
+        agent === "codex" ? "wham/usage" : "api/oauth/usage",
+        (agent === "codex" ? origins.codex : origins.claude) + "/",
+      ),
       { headers, redirect: "error", signal: AbortSignal.timeout(15_000) },
     );
     if (response.status === 401) throw new UsageAuthExpired();
