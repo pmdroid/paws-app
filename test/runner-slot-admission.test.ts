@@ -9,6 +9,7 @@ import {
   holdForRunnerSetup,
   insertRun,
   listItemHolds,
+  listAgentBindings,
   schedulerRunnerSlots,
   getWorkItem,
   runnerHasCapacity,
@@ -634,7 +635,12 @@ test("sign-in host warnings persist while queued work is held for runner setup",
   const db = await database();
   const { pair, queue, pass, userId } = await workspaceWithRunners(db);
   const runnerId = await pair("unsigned", 1, [REPOSITORY]);
-  await setAgentPolicy(db, (q) => eq(q.t.runnerAgentPolicy.runnerId, runnerId), { ready: 0 });
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.agentAccountBinding)
+      .set({ removedAt: NOW })
+      .where(eq(q.t.agentAccountBinding.runnerId, runnerId)),
+  );
   await queue("held");
   const reports: RunnerHostRefusal[][] = [];
   await pass(reports);
@@ -681,8 +687,16 @@ test("admission fails over from a busy session runner once session grace ends", 
     endedAt: NOW,
     teardownConfirmedAt: NOW,
   });
+  const binding = (await listAgentBindings(db, workspace.id)).find(
+    (row) => row.runnerId === holder && !row.legacy,
+  )!;
   const payload = Buffer.from(
-    JSON.stringify({ runnerId: holder, runId: earlier.id, profile: { agent: "claude" } }),
+    JSON.stringify({
+      runnerId: holder,
+      runId: earlier.id,
+      profile: { agent: "claude" },
+      account: { accountId: binding.accountId, bindingId: binding.id },
+    }),
   ).toString("base64url");
   await seed(
     db,
