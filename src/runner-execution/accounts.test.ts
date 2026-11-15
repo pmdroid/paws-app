@@ -17,7 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   activeExecutions,
-  convertClaudeCredentials,
   confirmRunnerAccountHold,
   holdRunnerAccountHome,
   markRunnerAccountSignedIn,
@@ -545,18 +544,4 @@ test.skipIf(process.geteuid!() === 0)("a work root the runner cannot list is not
   } finally {
     chmodSync(work, 0o700);
   }
-});
-
-test("default Claude conversion waits for legacy users and completes on last release", () => {
-  const home = agentHome();
-  mkdirSync(join(home, ".claude"));
-  const legacy = join(home, ".claude/.credentials.json");
-  writeFileSync(legacy, "legacy");
-  hold(home, other, home, live());
-  writeFileSync(join(home, ".claude/paws-oauth.json"), "{}");
-  expect(() => convertClaudeCredentials(home)).toThrow(/waits for active work/);
-  expect(readFileSync(legacy, "utf8")).toBe("legacy");
-  releaseRunnerAccountHome(home, other);
-  expect(readdirSync(join(home, ".claude"))).toEqual(["paws-oauth.json"]);
-  convertClaudeCredentials(home);
 });

@@ -498,7 +498,7 @@ test("Claude OAuth accounts use the token environment and never return refreshed
   const credential = { kind: "oauth_token", token: "sk-ant-oat01-test", createdAt, expiresAt };
   try {
     const credentials = runnerAgentCredentials(root);
-    credentials.write(account, "claude", stored);
+    credentials.write(account, "claude", []);
     const stagedHome = openRunnerAccountHome(root, account, "claude");
     const active = join(stagedHome, ".paws-active");
     mkdirSync(active, { recursive: true });
@@ -512,12 +512,8 @@ test("Claude OAuth accounts use the token environment and never return refreshed
         data: Buffer.from(JSON.stringify(credential)).toString("base64"),
       },
     ];
-    expect(() => credentials.write(account, "claude", incoming)).toThrow("conversion waits");
-    expect(existsSync(join(stagedHome, ".claude/.credentials.json"))).toBe(true);
-    rmSync(active, { recursive: true });
-    credentials.write(account, "claude", [...stored, ...incoming]);
+    credentials.write(account, "claude", incoming);
     const home = openRunnerAccountHome(root, account, "claude");
-    expect(existsSync(join(home, ".claude/.credentials.json"))).toBe(false);
     expect(
       minimalAgentEnv({ ...accountAgentEnv(home), ...claudeAgentEnv(home) })
         .CLAUDE_CODE_OAUTH_TOKEN,

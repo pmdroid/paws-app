@@ -170,7 +170,6 @@ export function runnerAgentCredentials(
       const busy = activeExecutions(home).length > 0;
       const oauth =
         agent === "claude" && written.some((file) => file.path === ".claude/paws-oauth.json");
-      if (oauth) convertClaudeCredentials(home, true);
       const allowed = new Set(RUNNER_AGENT_CREDENTIAL_FILES[agent]);
       for (const file of written) {
         if (oauth && file.path === ".claude/.credentials.json") continue;
@@ -193,17 +192,6 @@ export function runnerAgentCredentials(
         if (path !== CLAUDE_STATE) rmSync(target, { force: true });
     },
   };
-}
-
-export function convertClaudeCredentials(
-  home: string,
-  oauth = present(join(home, ".claude/paws-oauth.json")),
-): void {
-  const legacy = join(home, ".claude/.credentials.json");
-  if (!oauth || !present(legacy)) return;
-  if (activeExecutions(home).length)
-    throw new RunnerAccountHomeError("Claude credential conversion waits for active work");
-  rmSync(legacy, { force: true });
 }
 
 export function returnRunnerAgentCredentials(
@@ -360,7 +348,6 @@ function writeHold(
 
 export function releaseRunnerAccountHome(home: string, executionId: string): void {
   rmSync(join(home, ACTIVE, ExecutionIdSchema.parse(executionId)), { force: true });
-  if (activeExecutions(home).length === 0) convertClaudeCredentials(home);
 }
 
 export function publishRunnerAccountHome(
