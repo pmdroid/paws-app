@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { RunAgentOptions, RunAgentResult } from "../src/acp";
+import { reviewInstructions } from "../src/closeout-spec";
 import { createReviewCommandReviewer } from "../src/loop";
 
 const base = "a".repeat(40);
@@ -70,7 +71,13 @@ test("the live gate's reviewer asks the item's runner for the review command of 
     reviewCommand: { base, brief: "Required output: `secret-brief`" },
   });
   expect(calls[0]!.reviewCommand).not.toHaveProperty("earlier");
-  expect(calls[0]!.prompt).toBe(`Review ${base}..${head} with the agent's review command.`);
+  expect(calls[0]!.prompt).toBe(
+    [
+      `Review ${base}..${head} with the agent's review command.`,
+      "",
+      reviewInstructions({ brief: "Required output: `secret-brief`" }),
+    ].join("\n"),
+  );
 });
 
 test("a later round's review command carries the earlier rounds' findings", async () => {
