@@ -3,6 +3,12 @@ name: runner release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      resign_only:
+        description: Re-sign apt metadata without changing packages; select the latest v* tag as the run ref
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -10,9 +16,11 @@ permissions:
 concurrency:
   group: runner-release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   build:
+    if: github.event_name == 'release'
     name: Debian package (${{ matrix.architecture }})
     strategy:
       fail-fast: false
@@ -99,3 +107,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish-apt:
+    name: Publish signed apt repository
+    needs: build
+    if: ${{ always() && ((github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && needs.build.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))) }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install repository tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg awscli
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'release'
+        with:
+          pattern: paws-*
+          path: ${{ runner.temp }}/apt-packages
+          merge-multiple: true
+      - name: Publish or renew metadata
+        env:
+          PAWS_APT_R2_ACCOUNT_ID: ${{ secrets.PAWS_APT_R2_ACCOUNT_ID }}
+          PAWS_APT_R2_ACCESS_KEY_ID: ${{ secrets.PAWS_APT_R2_ACCESS_KEY_ID }}
+          PAWS_APT_R2_SECRET_ACCESS_KEY: ${{ secrets.PAWS_APT_R2_SECRET_ACCESS_KEY }}
+          PAWS_APT_R2_BUCKET: ${{ secrets.PAWS_APT_R2_BUCKET }}
+          PAWS_APT_SIGNING_KEY: ${{ secrets.PAWS_APT_SIGNING_KEY }}
+          PAWS_APT_SIGNING_PASSPHRASE: ${{ secrets.PAWS_APT_SIGNING_PASSPHRASE }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          mode=build
+          if [[ "$EVENT" == workflow_dispatch ]]; then mode=resign_only; fi
+          bash deploy/linux/publish-apt.sh "$mode" "$RUNNER_TEMP/apt-packages"

@@ -160,3 +160,10 @@ jobs:
         env:
           PAWS_VERSION: ci-${{ github.sha }}
       - run: bun scripts/smoke-binary.ts
+
+  apt-repository:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
+      - run: bash deploy/linux/test-apt.sh
