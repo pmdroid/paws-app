@@ -73,6 +73,10 @@ export function* finishedStepOutputSteps(
   return (yield* stepOutputsSteps(q, and(where, unfinishedNot(q)), 1))[0] ?? null;
 }
 
+export function* pendingCloseoutOutputsSteps(q: Q): Steps<StoredCloseoutOutput[]> {
+  return yield* stepOutputsSteps(q, unfinishedNot(q), 100);
+}
+
 function unfinishedNot(q: Q) {
   return notInArray(q.t.closeoutStep.state, ["pending", "running"]);
 }

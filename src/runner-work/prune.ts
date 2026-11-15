@@ -3,6 +3,7 @@ import {
   clearCloseoutOutputSteps,
   closeoutLogRetentionDays,
   expiredCloseoutOutputsSteps,
+  pendingCloseoutOutputsSteps,
   pruneFinishedAgentModelProbesSteps,
   pruneFinishedJobsSteps,
   pruneHandledInboxEventsSteps,
@@ -20,7 +21,7 @@ import {
   type Steps,
 } from "../db";
 
-import { type EvidenceStorage } from "../evidence";
+import { moveCloseoutOutput, type EvidenceStorage } from "../evidence";
 
 export const RUNNER_EVENT_PRUNE_JOB = "runner-events.prune";
 export const RUNNER_EVENT_PRUNE_EVERY_MS = 3_600_000;
@@ -130,6 +131,11 @@ export async function pruneCloseoutLogs(
   const days = await closeoutLogRetentionDays(options.store);
   const now = options.now ?? Date.now();
   const cutoff = now - days * DAY;
+  const pending = await options.store.run((q) => pendingCloseoutOutputsSteps(q));
+  for (const row of pending) {
+    options.signal?.throwIfAborted();
+    await moveCloseoutOutput(options.store, options.storage, row, now);
+  }
   if (days === 0) return 0;
   let deleted = 0;
   for (;;) {

@@ -294,5 +294,23 @@ test("maintenance leaves running output appendable until the check finishes", as
   expect(objects.writes).toHaveLength(0);
   await progress.step(identity("active"), step("failed"));
   await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(0);
+  expect(objects.writes).toHaveLength(1);
+});
+
+test("maintenance retries failed current uploads and expires them after retention", async () => {
+  const { db, storage, objects } = await setup();
+  const write = objects.write;
+  objects.write = async () => {
+    throw new Error("upload unavailable");
+  };
+  await endedItem(db, storage, "retry", "merged", NOW);
+  expect(await stepRows(db)).toEqual([{ stdout: "retry out", stderr: "", key: null }]);
+  objects.write = write;
+  const remove = (key: string) => removeEvidenceFile(db, storage, key);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove });
+  expect((await stepRows(db))[0]!.key).not.toBeNull();
+  expect(objects.objects.size).toBe(1);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW + 15 * DAY, remove })).toBe(1);
+  expect(await stepRows(db)).toEqual([{ stdout: "", stderr: "", key: null }]);
+  expect(objects.objects.size).toBe(0);
 });

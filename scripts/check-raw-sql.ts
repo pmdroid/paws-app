@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
-const CALL = /\b(?:db|database|\w*Db|\w*Database)\.\s*(?:query|run|prepare|exec)\s*\(\s*(sql`)/g;
+const CALL =
+  /\b(?:db|database|\w*Db|\w*Database)\s*\.\s*(?:select|query|run|prepare|exec)\s*\(\s*(sql`)/g;
 const REGEX_BEFORE = /(?:[(,=:[!&|?{};+\-*%<>~^]|^|\breturn)$/;
 
 export function maskCode(source: string): string {

@@ -338,3 +338,42 @@ test("large policies are transferred in bounded chunks and policy changes fail c
     message: "Closeout policy changed during transfer",
   });
 });
+
+test("retry reuse excludes command and setup paths matched by except", async () => {
+  const text = [
+    'specVersion: "0.1"',
+    "setup:",
+    "  - id: install",
+    '    exec: ["true"]',
+    "    timeoutSeconds: 30",
+    '    paths: ["**"]',
+    '    except: ["ignored/**"]',
+    "items:",
+    "  - id: unit",
+    "    kind: command",
+    "    gate: beforePR",
+    '    exec: ["true"]',
+    "    timeoutSeconds: 30",
+    '    paths: ["**"]',
+    '    except: ["ignored/**"]',
+    "  - id: failed",
+    "    kind: command",
+    "    gate: beforePR",
+    '    exec: ["false"]',
+    "    timeoutSeconds: 30",
+  ].join("\n");
+  const root = workspace(text);
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "candidate");
+  const head = git(root, "rev-parse", "HEAD");
+  mkdirSync(join(root, "ignored"));
+  writeFileSync(join(root, "ignored", "file.ts"), "changed");
+  const loaded = await workspacePolicyFiles(root);
+  if (!loaded.ok || loaded.absent) throw new Error("missing policy");
+  const session = createCloseoutSession(root, {
+    policy: async () => loaded,
+    focus: { scope: "changed", head, policyDigest: loaded.digest, passed: ["install", "unit"] },
+  });
+  const listed = await report(session);
+  expect(listed.pending).toEqual(["failed"]);
+});

@@ -183,6 +183,7 @@ type Listed = {
   exec?: string[];
   timeoutSeconds?: number;
   paths?: string[];
+  except?: string[];
   differentModel: boolean;
   matched: string[];
   evidence?: ResolvedEvidence;
@@ -1078,6 +1079,7 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
       hint: item.id,
       differentModel: false,
       ...(item.paths !== undefined ? { paths: item.paths } : {}),
+      ...(item.except !== undefined ? { except: item.except } : {}),
       matched,
     };
   }
@@ -1120,6 +1122,7 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
     timeoutSeconds: item.timeoutSeconds,
     differentModel: false,
     ...(item.paths !== undefined ? { paths: item.paths } : {}),
+    ...(item.except !== undefined ? { except: item.except } : {}),
     matched,
   };
 }
