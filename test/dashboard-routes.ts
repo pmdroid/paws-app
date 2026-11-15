@@ -122,7 +122,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("GET", "/dashboard/assets/:file", "canonical", "PAS-895", { via: "/dashboard" }),
   api("GET", "/", "alias", "PAS-895", { via: null, sample: "/?from=linear", anonymous: 307 }),
-  api("GET", "/status", "removed", "PAS-895", { sample: "/status", anonymous: 404 }),
+  api("GET", "/status", "removed", "PAS-895", { via: null, sample: "/status", anonymous: 404 }),
   api("GET", "/status/:page", "removed", "PAS-895", {
     via: null,
     sample: "/status/issues/PAS-1?from=linear",
