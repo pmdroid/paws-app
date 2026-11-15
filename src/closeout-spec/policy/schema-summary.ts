@@ -15,12 +15,12 @@ export type PolicySchemaDocument = SchemaObject & {
 
 export const POLICY_SCHEMA_SUMMARY = `Closeout policy schema (.agents/closeout.yaml). No other keys or kinds exist.
 - top level: requires specVersion="0.1"; optional description, retry, imports, items, setup, rules
-- items[] kind "command": requires id, gate="beforePR", exec, timeoutSeconds; optional paths, except, ci, recheck
-- items[] kind "review": requires id, gate="beforePR", skill, independence, failOn=P0|P1|P2|P3; optional scope, parallel, minChangedLines, paths, except, recheck
-- items[] kind "evidence": requires id, gate="beforePR"; optional media, minimum, hint, approval, paths, except, recheck
-- items[] kind "preview": requires id, gate="beforePR", approval="human"; optional hint, paths, except, recheck
-- rules[]: requires id, probe, summary, failOn=P0|P1|P2|P3; optional exec, paths, except, onFail, recheck
-- setup[]: requires id, exec, timeoutSeconds; optional paths, except`;
+- items[] kind "command": requires id, gate="beforePR", exec, timeoutSeconds; optional except, paths, ci, recheck
+- items[] kind "review": requires id, gate="beforePR", skill, independence, failOn=P0|P1|P2|P3; optional scope, parallel, minChangedLines, except, paths, recheck
+- items[] kind "evidence": requires id, gate="beforePR"; optional media, minimum, hint, approval, except, paths, recheck
+- items[] kind "preview": requires id, gate="beforePR", approval="human"; optional hint, except, paths, recheck
+- rules[]: requires id, probe, summary, failOn=P0|P1|P2|P3; optional exec, except, paths, onFail, recheck
+- setup[]: requires id, exec, timeoutSeconds; optional except, paths`;
 
 export function summarizePolicySchema(schema: PolicySchemaDocument): string {
   const kinds = schema.$defs.item.oneOf.map((entry) => {
