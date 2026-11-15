@@ -103,6 +103,12 @@ describePglite((connect) => {
           body: (await response!.json()) as Record<string, unknown>,
         }));
       const claude = (await send("POST", "", { agent: "claude", label: "Pasted" })).body;
+      expect(await send("POST", `/${claude.id}/sign-in`)).toEqual({
+        status: 400,
+        body: {
+          error: "Claude signs in with a pasted setup token. Run claude setup-token and paste it.",
+        },
+      });
       const codex = (await send("POST", "", { agent: "codex", label: "Codex" })).body;
       expect((await send("PUT", `/${claude.id}/token`, { token: "not-a-token" })).status).toBe(400);
       expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-bad" })).toEqual({

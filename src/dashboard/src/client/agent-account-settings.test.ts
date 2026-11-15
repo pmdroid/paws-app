@@ -195,6 +195,8 @@ test("only Claude accounts render a setup token field", () => {
     confirm: null,
   });
   expect(html.match(/data-account-token/g)).toHaveLength(1);
+  expect(html.match(/data-account-action="sign-in"/g)).toHaveLength(1);
+  expect(html).toMatch(/data-account-id="A2"[^]*data-account-action="sign-in"/);
 });
 
 test("an admin sees the API's error message", async () => {
