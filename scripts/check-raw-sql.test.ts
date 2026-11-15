@@ -15,3 +15,11 @@ test("ignores SQL calls in comments and strings", () => {
   expect(rawCalls("src/loop/a.ts", "// db.run(sql`DELETE FROM t`);")).toEqual([]);
   expect(rawCalls("src/loop/a.ts", '"db.run(sql`DELETE FROM t`);"')).toEqual([]);
 });
+
+test("Drizzle calls with whitespace before the dot are refused", () => {
+  const source = "db .select(sql`count(*)`);";
+  expect(rawCalls("src/loop/a.ts", source)).toEqual([
+    { path: "src/loop/a.ts", line: 1, content: source },
+  ]);
+  expect(rawCalls("src/db/a.ts", source)).toEqual([]);
+});

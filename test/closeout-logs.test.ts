@@ -294,5 +294,84 @@ test("maintenance leaves running output appendable until the check finishes", as
   expect(objects.writes).toHaveLength(0);
   await progress.step(identity("active"), step("failed"));
   await pruneCloseoutLogs({ store: db, storage, now: NOW, remove: async () => {} });
-  expect(objects.writes).toHaveLength(0);
+  expect(objects.writes).toHaveLength(1);
+});
+
+test("maintenance retries failed current uploads and expires them after retention", async () => {
+  const { db, storage, objects } = await setup();
+  const write = objects.write;
+  objects.write = async () => {
+    throw new Error("upload unavailable");
+  };
+  await endedItem(db, storage, "retry", "merged", NOW);
+  expect(await stepRows(db)).toEqual([{ stdout: "retry out", stderr: "", key: null }]);
+  objects.write = write;
+  const remove = (key: string) => removeEvidenceFile(db, storage, key);
+  await pruneCloseoutLogs({ store: db, storage, now: NOW, remove });
+  expect((await stepRows(db))[0]!.key).not.toBeNull();
+  expect(objects.objects.size).toBe(1);
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW + 15 * DAY, remove })).toBe(1);
+  expect(await stepRows(db)).toEqual([{ stdout: "", stderr: "", key: null }]);
+  expect(objects.objects.size).toBe(0);
+});
+
+test("failed retries do not block retention of unrelated logs", async () => {
+  const { db, storage, objects } = await setup();
+  await endedItem(db, storage, "stored", "merged", NOW - 15 * DAY);
+  objects.write = async () => {
+    throw new Error("upload unavailable");
+  };
+  await endedItem(db, storage, "pending", "merged", NOW - 15 * DAY);
+  let attempts = 0;
+  objects.write = async () => {
+    attempts++;
+    throw new Error("upload still unavailable");
+  };
+  const removed: string[] = [];
+  const remove = async (key: string) => {
+    await removeEvidenceFile(db, storage, key);
+    removed.push(key);
+  };
+  expect(await pruneCloseoutLogs({ store: db, storage, now: NOW, remove })).toBe(2);
+  expect(attempts).toBe(1);
+  expect(removed).toHaveLength(1);
+  expect(objects.objects.size).toBe(0);
+  expect(await stepRows(db)).toEqual([
+    { stdout: "", stderr: "", key: null },
+    { stdout: "", stderr: "", key: null },
+  ]);
+});
+
+test("maintenance retries every pending batch before expiring logs", async () => {
+  const { db, storage, objects } = await setup();
+  objects.write = async () => {
+    throw new Error("upload unavailable");
+  };
+  await endedItem(db, storage, "backlog", "merged", NOW - 15 * DAY);
+  await db.run(function* (q) {
+    const original = (yield* q.one(q.orm.select().from(q.t.closeoutStep)))!;
+    yield* q.exec(
+      q.orm.insert(q.t.closeoutStep).values(
+        Array.from({ length: 100 }, (_, i) => ({
+          ...original,
+          stepId: `unit-${String(i).padStart(3, "0")}`,
+        })),
+      ),
+    );
+  });
+  const attempts: string[] = [];
+  objects.write = async (_key, bytes) => {
+    attempts.push(Buffer.from(bytes).toString());
+    throw new Error("upload still unavailable");
+  };
+  expect(
+    await pruneCloseoutLogs({
+      store: db,
+      storage,
+      now: NOW,
+      remove: (key) => removeEvidenceFile(db, storage, key),
+    }),
+  ).toBe(101);
+  expect(attempts).toHaveLength(101);
+  expect((await stepRows(db)).every((row) => row.stdout === "" && row.key === null)).toBe(true);
 });
