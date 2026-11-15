@@ -2277,12 +2277,38 @@ class ControlPlaneDebTests(unittest.TestCase):
             saved = config.read_bytes()
             run("preinst", "upgrade", "1.0.4")
             self.assertEqual(sorted((home / "backups").iterdir()), backups)
+            marker = root / "executed"
+            for value in (
+                "postgres://localhost/paws?sslmode=require&connect_timeout=10",
+                "'postgres://localhost/paws?sslmode=require&connect_timeout=10'",
+                '"postgres://localhost/paws?sslmode=require&connect_timeout=10"',
+                f"$(touch {marker})",
+            ):
+                config.write_text(f"PAWS_DATABASE_URL={value}\nOTHER=$(touch {marker})\n")
+                run("preinst", "upgrade", "1.0.5")
+                self.assertEqual(sorted((home / "backups").iterdir()), backups)
+                self.assertFalse(marker.exists())
+            config.write_bytes(saved)
             run("postinst", "configure", "1.0.3")
             self.assertEqual(config.read_bytes(), saved)
             self.assertNotIn("systemctl enable", log.read_text())
             run("postinst", "configure")
             self.assertIn("systemctl enable paws.service", log.read_text())
             self.assertIn("systemctl start paws.service", log.read_text())
+            cp = commands / "cp"
+            cp.write_text("#!/bin/sh\nexit 1\n")
+            cp.chmod(0o755)
+            for empty in ("", "''", '""'):
+                with self.subTest(empty=empty):
+                    config.write_text(f"PAWS_DATABASE_URL={empty}\n")
+                    log.write_text("")
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        run("preinst", "upgrade", "1.0.6")
+                    self.assertEqual(log.read_text().splitlines(), ["systemctl stop paws.service", "systemctl start paws.service"])
+                    log.write_text("")
+                    run("preinst", "abort-upgrade", "1.0.6")
+                    self.assertEqual(log.read_text().splitlines(), ["systemctl start paws.service"])
+
 
 
 if __name__ == "__main__":

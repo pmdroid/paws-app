@@ -119,12 +119,20 @@ def control_plane_scripts(root=""):
         "preinst": f"""#!/bin/sh
 set -eu
 if [ "$1" = upgrade ]; then
-  systemctl stop paws.service
-  PAWS_DATABASE_URL=
+  database_set=0
   if [ -f {root}/etc/paws/control-plane.env ]; then
-    . {root}/etc/paws/control-plane.env
+    database_set=$(awk '
+      /^[[:space:]]*PAWS_DATABASE_URL[[:space:]]*=/ {{
+        sub(/^[^=]*=[[:space:]]*/, "")
+        sub(/[[:space:]]*$/, "")
+        configured = ($0 != "" && $0 != "\\"\\"" && $0 != "\\047\\047")
+      }}
+      END {{ print configured + 0 }}
+    ' {root}/etc/paws/control-plane.env)
   fi
-  if [ -z "$PAWS_DATABASE_URL" ] && [ -d {root}/var/lib/paws/pglite ]; then
+  systemctl stop paws.service
+  trap 'status=$?; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi' 0
+  if [ "$database_set" = 0 ] && [ -d {root}/var/lib/paws/pglite ]; then
     backups={root}/var/lib/paws/backups
     install -d -m 0700 "$backups"
     destination="$backups/pglite-$2-$(date -u +%Y%m%dT%H%M%S%NZ)"
@@ -134,6 +142,8 @@ if [ "$1" = upgrade ]; then
       sort -rn | tail -n +4 | cut -d ' ' -f 2- |
       while IFS= read -r old; do rm -rf -- "$old"; done
   fi
+elif [ "$1" = abort-upgrade ]; then
+  systemctl start paws.service
 fi
 """,
         "postinst": f"""#!/bin/sh
