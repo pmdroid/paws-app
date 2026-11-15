@@ -4913,6 +4913,8 @@ export class Orchestrator {
     }
   }
 
+  private readonly checksActivity = new Map<string, { since: number; commands: Set<string> }>();
+
   private async runRunnerCloseout(
     item: WorkItemRecord,
     deps: AcpAgentDeps,
@@ -4930,6 +4932,20 @@ export class Orchestrator {
       rulesFirst: boolean;
       again?: boolean;
     },
+  ): Promise<void> {
+    const activity = { since: this.now(), commands: new Set<string>() };
+    this.checksActivity.set(item.id, activity);
+    try {
+      await this.runRunnerCloseoutTurn(item, deps, input);
+    } finally {
+      this.checksActivity.delete(item.id);
+    }
+  }
+
+  private async runRunnerCloseoutTurn(
+    item: WorkItemRecord,
+    deps: AcpAgentDeps,
+    input: Parameters<Orchestrator["runRunnerCloseout"]>[2],
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
     const short = head.slice(0, 7);
@@ -7777,6 +7793,10 @@ export class Orchestrator {
   async recoverStalledCloseout(): Promise<void> {
     await recoverStalledCloseout(this.store, {
       now: this.now(),
+      checksActivity: (id) => {
+        const activity = this.checksActivity.get(id);
+        return activity && { since: activity.since, running: activity.commands.size > 0 };
+      },
       cancel: (id) => this.joinChangedItems([id]),
       journal: this.options.journal ?? journal,
     });
@@ -8498,7 +8518,16 @@ export class Orchestrator {
   private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
     return {
       record: async (progress) => {
-        if (progress.type === "report" || progress.head !== head) return;
+        if (progress.head !== head) return;
+        const activity = this.checksActivity.get(item.id);
+        if (activity) {
+          activity.since = this.now();
+          if (progress.type !== "report") {
+            if (progress.type === "started") activity.commands.add(progress.id);
+            else activity.commands.delete(progress.id);
+          }
+        }
+        if (progress.type === "report") return;
         await this.store.transaction((q) =>
           applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );

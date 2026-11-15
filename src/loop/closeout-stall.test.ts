@@ -176,3 +176,46 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
     await close();
   }
 });
+
+for (const running of [false, true]) {
+  test(`remote checks ${running ? "keep a twenty-minute command" : "retry an idle turn at fifteen minutes"}`, async () => {
+    const { db, close } = await tempStore();
+    try {
+      const clock = new FakeClock(Date.now() + 1000);
+      await verifyingItem("remote", db, clock.now());
+      let since = clock.now();
+      let ended = 0;
+      const check = () =>
+        recoverStalledCloseout(db, {
+          now: clock.now(),
+          checksActivity: () => ({ since, running }),
+          cancel: async () => {
+            ended++;
+          },
+          journal: () => {},
+        });
+      clock.advance(15 * 60_000 - 1);
+      await check();
+      expect(ended).toBe(0);
+      clock.advance(1);
+      await check();
+      expect(ended).toBe(running ? 0 : 1);
+      expect(await findOpenQuestion(db, "ses-remote")).toBeNull();
+      if (running) {
+        clock.advance(5 * 60_000);
+        await check();
+        expect(ended).toBe(0);
+        expect(await listJobs(db)).toHaveLength(0);
+      } else {
+        expect((await listJobs(db)).filter((j) => j.queue === JOB_KIND.reverify)).toHaveLength(1);
+        since = clock.now();
+        clock.advance(15 * 60_000);
+        await check();
+        expect(ended).toBe(2);
+        expect((await getWorkItem(db, "remote"))?.state).toBe("awaiting_input");
+      }
+    } finally {
+      await close();
+    }
+  });
+}

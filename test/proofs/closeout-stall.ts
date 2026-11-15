@@ -22,7 +22,7 @@ import type { Proof } from "./harness";
 export default {
   covers: ["src/loop/closeout-stall.ts"],
   summary:
-    "Quiet verification retries once, then asks a person whose Retry Closeout answer verifies the same head.",
+    "Idle remote checks retry at fifteen minutes, then ask a person; a twenty-minute command continues.",
   agent: () => [],
   async run(proof) {
     const { db, close } = await tempStore();
@@ -43,13 +43,24 @@ export default {
       });
       await claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
       const lines: string[] = [];
-      for (let attempt = 0; attempt < 2; attempt++) {
-        clock.advance(31 * 60_000);
-        await recoverStalledCloseout(db, {
+      let since = clock.now();
+      let running = true;
+      const recover = () =>
+        recoverStalledCloseout(db, {
           now: clock.now(),
+          checksActivity: () => ({ since, running }),
           cancel: async () => {},
           journal: (line) => lines.push(line),
         });
+      clock.advance(20 * 60_000);
+      await recover();
+      proof.expect("a twenty-minute command continues", lines.length === 0);
+      running = false;
+      since = clock.now();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        clock.advance(15 * 60_000);
+        await recover();
+        since = clock.now();
         if (attempt === 0) {
           await markRun(db, (await getWorkItem(db, "quiet"))!.currentRunId!, "lost", clock.now());
           const rerun = await insertRun(db, {
