@@ -139,13 +139,10 @@ export const agentAccountHealth = pgTable(
     state: text().notNull(),
     source: text().notNull(),
     sourceId: text("source_id").notNull(),
-    bindingId: text("binding_id")
-      .notNull()
-      .references(() => agentAccountBinding.id),
-    runnerId: text("runner_id")
-      .notNull()
-      .references(() => runner.id),
+    bindingId: text("binding_id").references(() => agentAccountBinding.id),
+    runnerId: text("runner_id").references(() => runner.id),
     observedAt: bigint("observed_at", { mode: "number" }).notNull(),
+    limitsJson: text("limits_json"),
     resetsAt: bigint("resets_at", { mode: "number" }),
     nextCheckAt: bigint("next_check_at", { mode: "number" }),
     failures: bigint({ mode: "number" }).default(0).notNull(),

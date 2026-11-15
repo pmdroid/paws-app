@@ -1,5 +1,7 @@
 import {
+  agentCredentialCiphertextSteps,
   chargeRunnerAgentSteps,
+  enqueueJobSteps,
   commandAccountSteps,
   delegatedLinearUserIdSteps,
   delegationProjectLeadIdsSteps,
@@ -728,6 +730,17 @@ export function createRunnerPlacement(options: {
             : 0,
       resetsAt: quota?.state === "exhausted" ? quota.resetsAt : null,
     });
+    const accountUsage = yield* commandAccountSteps(q, input.commandId);
+    if (
+      accountUsage?.named &&
+      ["claude", "codex"].includes(accountUsage.agent) &&
+      (yield* agentCredentialCiphertextSteps(q, accountUsage.accountId))?.ciphertext
+    )
+      yield* enqueueJobSteps(q, {
+        queue: "agent.usage.after-run",
+        payload: { accountId: accountUsage.accountId },
+        now: input.finishedAt,
+      });
     const runsAsDefault = (yield* commandAccountSteps(q, input.commandId))?.named !== true;
     if (usage.agent && runsAsDefault)
       yield* settleRunnerAgentSteps(q, {

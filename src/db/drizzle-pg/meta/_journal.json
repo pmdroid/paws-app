@@ -239,6 +239,13 @@
       "when": 1794682080380,
       "tag": "0033_github_delivery_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794708202138,
+      "tag": "0034_account_provider_usage",
+      "breakpoints": true
     }
   ]
 }
