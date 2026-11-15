@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   commitPolicyMessage,
+  appBotCommitIdentity,
+  commitCoauthorTrailers,
+  validateCommitAttribution,
   policyCoauthors,
   policyPullRequestCredit,
   type GitCommitPolicy,
@@ -56,6 +59,23 @@ test("bot-only policy omits human credit and still rejects malformed identities"
   expect(commitPolicyMessage("change", botOnly)).toBe("change\n");
   expect(policyPullRequestCredit(botOnly)).toBe("");
   expect(() => policyCoauthors({ ...botOnly, bot: { ...policy.bot, id: 0 } })).toThrow();
+});
+
+test("repeated consenting coauthor trailers are accepted but unknown coauthors are rejected", () => {
+  const bot = appBotCommitIdentity(policy.bot);
+  const metadata = [bot.name, bot.email, bot.name, bot.email];
+  const trailer = `Co-authored-by: ${credit.name} <${credit.email}>`;
+  const message = `Squashed change\n\n${trailer}\n${trailer}\n`;
+  expect(() =>
+    validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message)),
+  ).not.toThrow();
+  expect(() =>
+    validateCommitAttribution(
+      policy,
+      metadata,
+      commitCoauthorTrailers(`${message}Co-authored-by: Unknown <unknown@example.test>\n`),
+    ),
+  ).toThrow("Co-authored-by trailers must match the consenting identities");
 });
 
 async function fixture() {
