@@ -479,67 +479,9 @@ test("apt verification rejects an extra nested package before attestation", asyn
   }
 });
 
-test("manifest handoffs reject tampering and preserve the signer key across builds", async () => {
-  const signer = workflow.jobs["sign-manifest"];
-  expect(signer.environment).toBe("release");
-  expect(signer.permissions).toEqual({ contents: "read" });
-  expect(JSON.stringify(signer)).not.toContain("actions/checkout");
-  expect(workflow.jobs.build.needs).toEqual(["prepare", "sign-manifest"]);
+test("runner packages use apt trust without a manifest signing job", () => {
+  expect(workflow.jobs["sign-manifest"]).toBeUndefined();
+  expect(workflow.jobs.build.needs).toBe("prepare");
+  expect(JSON.stringify(workflow.jobs.build)).not.toContain("--signature");
   expect(JSON.stringify(workflow.jobs.prepare)).not.toContain("secrets.");
-  expect(JSON.stringify(workflow.jobs.build)).toContain("--release-key deploy/linux/release.pub");
-  const step = (job: string, name: string) =>
-    workflow.jobs[job].steps.find((value: { name?: string }) => value.name === name).run;
-  const root = mkdtempSync(join(tmpdir(), "paws-manifest-handoff-"));
-  try {
-    const child = Bun.spawn(
-      [
-        "bash",
-        "-e",
-        "-o",
-        "pipefail",
-        "-c",
-        `
-      mkdir -p "$RUNNER_TEMP"/{runner-archive,manifest,signature}
-      openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/test-key"
-      openssl pkey -in "$RUNNER_TEMP/test-key" -pubout -out "$RUNNER_TEMP/test-pub"
-      export PAWS_RUNNER_RELEASE_KEY="$(cat "$RUNNER_TEMP/test-key")"
-      for version in 1.2.3 1.2.4; do
-        printf '{"version":"%s"}' "$version" > "$RUNNER_TEMP/runner-archive/manifest.json"
-        bash -e -o pipefail -c "$HASH"
-        cp "$RUNNER_TEMP/runner-archive/"manifest.* "$RUNNER_TEMP/manifest/"
-        bash -e -o pipefail -c "$CHECK"
-        printf tampered >> "$RUNNER_TEMP/manifest/manifest.json"
-        if bash -e -o pipefail -c "$CHECK"; then exit 1; fi
-        cp "$RUNNER_TEMP/runner-archive/manifest.json" "$RUNNER_TEMP/manifest/"
-        bash -e -o pipefail -c "$SIGN"
-        test ! -e "$RUNNER_TEMP/paws-runner-release.pem"
-        cp "$RUNNER_TEMP/manifest/"manifest.{sha256,sig} "$RUNNER_TEMP/signature/"
-        bash -e -o pipefail -c "$HANDOFF"
-        openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/test-pub" -sigfile "$RUNNER_TEMP/runner-archive/manifest.sig" -in "$RUNNER_TEMP/runner-archive/manifest.json"
-        printf tampered >> "$RUNNER_TEMP/runner-archive/manifest.json"
-        if bash -e -o pipefail -c "$HANDOFF"; then exit 1; fi
-        cp "$RUNNER_TEMP/manifest/manifest.json" "$RUNNER_TEMP/runner-archive/"
-        printf tampered > "$RUNNER_TEMP/signature/manifest.sha256"
-        if bash -e -o pipefail -c "$HANDOFF"; then exit 1; fi
-      done
-    `,
-      ],
-      {
-        env: {
-          ...process.env,
-          RUNNER_TEMP: root,
-          HASH: step("prepare", "Hash manifest"),
-          CHECK: step("sign-manifest", "Check manifest hash"),
-          SIGN: step("sign-manifest", "Sign runner manifest"),
-          HANDOFF: step("build", "Check signed manifest handoff"),
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const stderr = await new Response(child.stderr).text();
-    if ((await child.exited) !== 0) throw new Error(stderr);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });

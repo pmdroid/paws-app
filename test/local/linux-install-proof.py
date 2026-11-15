@@ -112,19 +112,6 @@ def main():
         def install(success=True, trust=key, env=None):
             return run(["/usr/bin/python3", str(ROOT / "install.py"), "--artifact", str(artifact), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(trust)], success, env)
         sign("0.1.1")
-        signature.write_bytes(b"")
-        install(False)
-        if pathlib.Path("/opt/paws-runner").exists():
-            raise RuntimeError("Unsigned release mutated installation")
-        sign("0.1.1")
-        wrong = root / "wrong.pem"
-        wrong_key = root / "wrong.pub"
-        run(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519", "-out", str(wrong)])
-        run(["/usr/bin/openssl", "pkey", "-in", str(wrong), "-pubout", "-out", str(wrong_key)])
-        install(False, wrong_key)
-        manifest.write_bytes(manifest.read_bytes() + b" ")
-        install(False)
-        sign("0.1.1")
         flock = pathlib.Path("/usr/bin/flock")
         hidden_flock = pathlib.Path("/usr/bin/paws-proof-flock")
         flock.rename(hidden_flock)
@@ -217,11 +204,6 @@ def main():
             install(False)
             if state_path.read_bytes() != installed:
                 raise RuntimeError("Rejected replay changed monotonic state")
-        sign("0.1.2")
-        run(["/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(wrong), "-in", str(manifest), "-out", str(signature)])
-        install(False, wrong_key)
-        if state_path.read_bytes() != installed:
-            raise RuntimeError("New signing key changed pinned trust state")
         sign("0.1.2")
         for template in ("paws-agent", "paws-check", "paws-check-witness"):
             (ROOT / "active-worker").write_text(template + "@01K00000000000000000000000.service")
@@ -382,7 +364,7 @@ module.main()
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "agentLaunchersRecovered": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777), "dockerAccess": docker}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "agentLaunchersRecovered": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777), "dockerAccess": docker}
         print(json.dumps(observations))
 
 

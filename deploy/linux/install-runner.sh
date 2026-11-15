@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-base=${PAWS_RUNNER_DOWNLOAD_BASE:-https://github.com/pmdroid/paws-app/releases}
+base=${PAWS_RUNNER_DOWNLOAD_BASE:-https://get.paws.boo/apt}
 
 die() {
   printf '%s\n' "$1" >&2
@@ -139,47 +139,20 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 need curl
-need sha256sum
 need apt-get
 arch=$(architecture)
-
-if [ -z "$version" ]; then
-  if ! effective=$(fetch -o /dev/null -w '%{url_effective}' "${base}/latest"); then
-    die "Could not resolve the latest runner release"
-  fi
-  tag=${effective%/}
-  tag=${tag##*/}
-  tag=${tag%%\?*}
-  version=$(normalize_version "$tag") || die "Latest release tag is not a runner version"
-fi
-
-name="paws-runner_${version}_${arch}.deb"
+base=${base%/}
+case $base in
+  *[!a-zA-Z0-9:/._-]*) die "Invalid repository base URL" ;;
+esac
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
-cd "$workdir"
-
-downloaded=""
-for tag in "v${version}" "$version"; do
-  package_url="${base}/download/${tag}/${name}"
-  if fetch -o "$name" "$package_url" && fetch -o "${name}.sha256" "${package_url}.sha256" && [ -s "$name" ] && [ -s "${name}.sha256" ]; then
-    downloaded=$tag
-    break
-  fi
-  rm -f "$name" "${name}.sha256"
-done
-if [ -z "$downloaded" ]; then
-  die "No ${arch} runner package is published for ${version}"
-fi
-
-if [ "$(wc -l < "${name}.sha256")" -ne 1 ]; then
-  die "Published checksum must be one line"
-fi
-checksum_line=$(tr -d '\r' < "${name}.sha256")
-expected=$(sha256sum "$name")
-if [ "$checksum_line" != "$expected" ]; then
-  die "Checksum verification failed for ${name}"
-fi
-sha256sum --strict --check "${name}.sha256" || die "Checksum verification failed for ${name}"
+fetch -o "$workdir/paws.gpg" "$base/paws.gpg"
+[ -s "$workdir/paws.gpg" ] || die "Empty repository keyring"
+install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
+install -m 0644 "$workdir/paws.gpg" /usr/share/keyrings/paws.gpg
+printf '%s\n' "deb [signed-by=/usr/share/keyrings/paws.gpg] $base stable main" > /etc/apt/sources.list.d/paws.list
+chmod 0644 /etc/apt/sources.list.d/paws.list
 
 # Docker access for agent jobs: a rootless Docker daemon that runs as the account agents run as. The package never
 # prompts; this script asks only on a terminal, when Docker Engine is installed and the daemon isn't set up.
@@ -216,5 +189,7 @@ apt-get update
 if [ "$docker_access" = grant ] && [ -n "$docker_engine" ]; then
   apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session
 fi
-apt-get install -y "${workdir}/${name}"
+package=paws-runner
+[ -z "$version" ] || package="paws-runner=$version"
+apt-get install -y "$package"
 printf '%s\n' "Installed paws-runner ${version}"

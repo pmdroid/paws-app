@@ -135,3 +135,5 @@ export const CODEX_FAST_MODE_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
 export const FOLLOW_UP_GUARD_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
 export const ACCESS_CREDENTIAL_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
 export const CLAUDE_OAUTH_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
+
+export const APT_INSTALL_RUNNER_VERSION: RunnerVersion = [0, 1, 83];

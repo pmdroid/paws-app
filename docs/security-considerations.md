@@ -18,7 +18,7 @@ Review runner access when a member leaves or a host is retired. Use the Runners 
 
 ## Release and package publishing
 
-The release workflow builds the runner and control-plane Debian packages for amd64 and arm64 without repository secrets or a GitHub environment. It records SHA-256 checksums and creates GitHub build provenance for each package. The packages and Sigstore bundles pass to publishing through workflow artifacts. A separate `sign-manifest` job in the protected `release` environment signs runner manifests with the existing `PAWS_RUNNER_RELEASE_KEY`. It checks out no repository code and receives only manifests and their SHA-256 records. Both artifact handoffs re-check the manifest hash. The final secret-free package job verifies signatures against the pinned release public key, preserving existing runners' trusted fingerprint.
+The release workflow builds the runner and control-plane Debian packages for amd64 and arm64 without repository secrets or a GitHub environment. It records SHA-256 checksums and creates GitHub build provenance for each package. The packages and Sigstore bundles pass to publishing through workflow artifacts. Apt verifies the signed repository metadata and package hashes. Runner packages retain a manifest for version, platform and payload digest checks; they require no separate manifest signature.
 
 Before publishing, the protected `release` environment job checks that the tag's commit is on `main` and its latest main push `ci` run succeeded. It checks each package's SHA-256 and verifies its attestation against this repository's release workflow before adding packages to apt. The GitHub release also carries `.deb` and `.sha256` assets for manual downloads.
 

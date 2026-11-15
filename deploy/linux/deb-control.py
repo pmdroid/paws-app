@@ -68,7 +68,7 @@ def configure():
         print(json.dumps(installer.defer_configure(docker)))
         return
     journal = installer.Journal()
-    arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("signature", "manifest.sig"), ("artifact", "artifact.tar"), ("release_key", "release.pub"))})
+    arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("artifact", "artifact.tar"))})
     with tempfile.TemporaryDirectory(prefix="paws-debian-") as temporary:
         with journal.phase("verify"):
             manifest, artifact, fingerprint = installer.release.verify_release(arguments, pathlib.Path(temporary))

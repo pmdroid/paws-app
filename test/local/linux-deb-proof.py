@@ -42,19 +42,13 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
     observations = []
     with tempfile.TemporaryDirectory(prefix="paws-deb-proof-") as temporary:
         root = pathlib.Path(temporary)
-        private = root / "signing.pem"
-        key = root / "release.pub"
         manifest = root / "manifest.json"
-        signature = root / "manifest.sig"
         artifact = ROOT / "package/artifact.tar"
         original = json.loads((ROOT / "package/manifest.json").read_text())
-        run(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private)])
-        run(["/usr/bin/openssl", "pkey", "-in", str(private), "-pubout", "-out", str(key)])
         def build(version, success=True):
             manifest.write_text(json.dumps({**original, "version": version}))
-            run(["/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private), "-in", str(manifest), "-out", str(signature)])
             output = root / version
-            run(["/usr/bin/python3", "-I", "-B", str(ROOT / "deb-package.py"), "--manifest", str(manifest), "--signature", str(signature), "--artifact", str(artifact), "--release-key", str(key), "--output", str(output)], success)
+            run(["/usr/bin/python3", "-I", "-B", str(ROOT / "deb-package.py"), "--manifest", str(manifest), "--artifact", str(artifact), "--output", str(output)], success)
             return next(output.glob("*.deb"), None)
         def install(package, success=True):
             return run(["/usr/bin/dpkg", "--force-depends", "--install", str(package)], success)
@@ -112,7 +106,12 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         assert set(json.loads(services.read_text())) == set(active)
         worker.unlink()
         observations.append({"name": "actual dpkg upgrade refuses active execution without stopping its daemon", "passed": True})
+        recorded = pathlib.Path("/var/lib/paws-runner-install/release.json")
+        previous = json.loads(recorded.read_text())
+        previous["releaseKeyFingerprint"] = "previous-ed25519-fingerprint"
+        recorded.write_text(json.dumps(previous))
         install(second)
+        assert json.loads(recorded.read_text())["releaseKeyFingerprint"] == "apt"
         assert pathlib.Path("/opt/paws-runner/current").resolve().name == "0.1.2"
         assert set(json.loads(services.read_text())) == set(active)
         assert all(path.read_text() == "preserved local identity state" for path in markers)
@@ -164,10 +163,10 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         run(["/usr/bin/dpkg", "--purge", "paws-runner"])
         assert not config.exists() and all(path.exists() for path in markers)
         observations.append({"name": "reinstall after removal succeeds and purge removes configuration without deleting agent state", "passed": True})
-        signature.write_bytes(bytes(64))
-        run(["/usr/bin/python3", "-I", "-B", str(ROOT / "deb-package.py"), "--manifest", str(manifest), "--signature", str(signature), "--artifact", str(artifact), "--release-key", str(key), "--output", str(root / "invalid")], False)
+        artifact.write_bytes(artifact.read_bytes() + b"tampered")
+        run(["/usr/bin/python3", "-I", "-B", str(ROOT / "deb-package.py"), "--manifest", str(manifest), "--artifact", str(artifact), "--output", str(root / "invalid")], False)
         assert not list((root / "invalid").glob("*.deb"))
-        observations.append({"name": "invalid signed inputs produce no Debian package", "passed": True})
+        observations.append({"name": "invalid payload digest produce no Debian package", "passed": True})
     print(json.dumps({"observations": observations, "systemctlLifecycle": "recording fixture", "packageManager": "real dpkg with dependency resolution bypassed in disposable namespace", "architecture": architecture}))
 
 
