@@ -171,7 +171,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   }
 }, 90_000);
 
-test("closeout_step follows the runner's check progress before the checks run ends", async () => {
+test("idle checks resume once at fifteen minutes and a twenty-minute command keeps running", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-remote-steps-"));
   const bare = await originWithChecks(root);
   const pawsRoot = path.join(root, "paws");
@@ -179,7 +179,8 @@ test("closeout_step follows the runner's check progress before the checks run en
   await mkdir(pawsRoot, { recursive: true });
   await mkdir(home, { recursive: true });
   const { db, close } = await tempStore();
-  const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
+  let elapsed = 0;
+  const clock: Clock = { now: () => Date.now() + elapsed, mono: () => performance.now() };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const tracker = createFakeTracker([
@@ -191,12 +192,49 @@ test("closeout_step follows the runner's check progress before the checks run en
       subIssues: [],
     },
   ]);
+  let ready!: () => void;
+  const idle = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let checksTurns = 0;
+  let ended = 0;
   const midRun: Array<Record<string, string>> = [];
   const repository = { owner: "pmdroid", repo: "paws-demo" };
   const runner = cloneRunnerPg(
     repository,
     async (options: RunAgentOptions): Promise<RunAgentResult> => {
       if (options.checkpoint !== false) return runAgent(options);
+      checksTurns++;
+      if (checksTurns === 1) {
+        await options.closeoutProgress?.record({
+          type: "report",
+          head: (
+            await exec("git", ["-C", options.worktreePath, "rev-parse", "HEAD"])
+          ).stdout.trim(),
+          maxAttempts: 3,
+          checks: [],
+          blocked: null,
+        });
+        ready();
+        await new Promise<void>((resolve) =>
+          options.signal!.addEventListener(
+            "abort",
+            () => {
+              ended++;
+              resolve();
+            },
+            { once: true },
+          ),
+        );
+        return {
+          role: "implementer",
+          stopReason: "cancelled",
+          timedOut: false,
+          cancelled: true,
+          authRequired: false,
+          agentExited: true,
+        };
+      }
       let reported = Promise.resolve();
       const session = createCloseoutSession(options.worktreePath, {
         policy: async () => workspacePolicyFiles(options.worktreePath),
@@ -206,6 +244,10 @@ test("closeout_step follows the runner's check progress before the checks run en
             if (event.type === "started" && event.id === "test") {
               const steps = (await listCloseoutProgress(db)).at(-1)?.steps ?? [];
               midRun.push(Object.fromEntries(steps.map((step) => [step.id, step.state])));
+              elapsed += 20 * 60_000;
+              await orchestrator.recoverStalledCloseout();
+              expect(ended).toBe(1);
+              expect(await findOpenQuestion(db, "ses_1")).toBeNull();
             }
           });
         },
@@ -274,8 +316,15 @@ test("closeout_step follows the runner's check progress before the checks run en
     await orchestrator.onLinearEvent(created());
     const turn = jobs.tick();
     await attachRunnerLease(db);
+    await idle;
+    elapsed += 15 * 60_000;
+    await orchestrator.recoverStalledCloseout();
     await turn;
+    expect(ended).toBe(1);
+    expect(await findOpenQuestion(db, "ses_1")).toBeNull();
+    await jobs.tick([JOB_KIND.reverify]);
     await flush();
+    expect(checksTurns).toBe(2);
 
     expect(midRun).toEqual([{ install: "passed", test: "running" }]);
     const item = (await listWorkItems(db))[0]!;
