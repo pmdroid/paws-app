@@ -18,7 +18,6 @@ import {
   enqueueJob,
   enqueueRunnerSetupCheck,
   enqueueRunnerSetupChecks,
-  setRunnerAgentSignedInSteps,
   listJobs,
   type Db,
 } from "../src/db";
@@ -249,7 +248,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
     });
     expect(await thoughts(db)).toHaveLength(1);
     expect((await thoughts(db))[0]).toMatch(
-      /^Your runner member-vm needs (Claude|Codex) signed in\. Sign in on the \[Runners page\]\(https:\/\/paws\.example\/dashboard\/runners\); I'll start right after\.$/,
+      /^Your runner member-vm needs a healthy bound (Claude|Codex) account\. Add or bind an account in Settings › Agent accounts; I'll start right after\.$/,
     );
   } finally {
     await paws.shutdown();
@@ -411,7 +410,7 @@ for (const trigger of TRIGGERS)
     }
   });
 
-test("an agent signing in on their runner resumes the item held for it", async () => {
+test("binding healthy accounts to their runner resumes the item held for it", async () => {
   const fixture = await held(async (db, users, now) => {
     await addRunner(db, "own", users.me!, now, 0);
     await holdForRunnerSetup(db, {
@@ -424,10 +423,9 @@ test("an agent signing in on their runner resumes the item held for it", async (
     });
   });
   try {
-    const { db, users, clock } = fixture;
+    const { db, users } = fixture;
     expect((await getRunnerSetupHold(db, "mine"))?.reason).toBe("agent-not-signed-in");
-    for (const agent of ["claude", "codex"])
-      await db.transaction((q) => setRunnerAgentSignedInSteps(q, "own", agent, true, clock.now()));
+    await signIn(db, "own");
     expect(await checkJobs(db)).toEqual([users.me!]);
     expect(await fixture.runChecks()).toBe(1);
     expect(await getRunnerSetupHold(db, "mine")).toBeNull();
@@ -442,6 +440,7 @@ test("startup resumes an item held before its runner became ready", async () => 
   try {
     const { db, users, clock } = fixture;
     await signIn(db, "own");
+    await forgetChecks(db);
     expect(await checkJobs(db)).toEqual([]);
     await enqueueRunnerSetupChecks(db, clock.now());
     await enqueueRunnerSetupChecks(db, clock.now());
@@ -547,6 +546,17 @@ const onlyCodex = async (db: Db, runner: string) => {
       .update(q.t.runnerAgentPolicy)
       .set({ ready: 0 })
       .where(eq(q.t.runnerAgentPolicy.runnerId, runner)),
+  );
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.agentAccountBinding)
+      .set({ removedAt: START })
+      .where(
+        and(
+          eq(q.t.agentAccountBinding.runnerId, runner),
+          eq(q.t.agentAccountBinding.agent, "claude"),
+        ),
+      ),
   );
   await signIn(db, runner, "codex");
 };

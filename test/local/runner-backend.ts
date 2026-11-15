@@ -3392,9 +3392,9 @@ export async function probeRunnerBackend(
           ),
       );
       const waitAbort = new AbortController();
-      const waitingRun = placedBackend.forItem(queued.id)(
-        input(queued, { signal: waitAbort.signal, checkpoint: false }),
-      );
+      const waitingRun = placedBackend
+        .forItem(queued.id)(input(queued, { signal: waitAbort.signal, checkpoint: false }))
+        .catch(() => undefined);
       const placedWhenFree = await dispatched();
       assert.equal(placedWhenFree, hostIds[0]);
       await next(placedWhenFree!);
@@ -3549,6 +3549,7 @@ export async function probeRunnerBackend(
       const offlineRun = placedBackend.forItem(offline.id)(
         input(offline, { signal: offlineAbort.signal, checkpoint: false }),
       );
+      void offlineRun.catch(() => undefined);
       const placedWhenOnline = await dispatched();
       assert.notEqual(placedWhenOnline, null);
       await next(placedWhenOnline!);
@@ -3589,6 +3590,7 @@ export async function probeRunnerBackend(
       const retriedRun = backend.forItem(raced.id)(
         input(raced, { signal: racedAbort.signal, checkpoint: false }),
       );
+      void retriedRun.catch(() => undefined);
       const placedAfterRace = await dispatched();
       assert.notEqual(placedAfterRace, null);
       await next(placedAfterRace!);
