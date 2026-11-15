@@ -13,6 +13,9 @@ import {
   createAgentAccount,
   ensureLegacyAgentBinding,
   openPawsStore,
+  insertQueuedItem,
+  holdForRunnerSetup,
+  listJobs,
   recordAccountObservation,
   removeAgentBinding,
   resumeAccountHealthNow,
@@ -625,3 +628,41 @@ test("failures are classified so only account problems change account health", (
     classifyAgentFailure({ result: result({ errorMessage: "10% remaining" }), now: NOW }),
   ).toMatchObject({ kind: "task", quota: { state: "low" } });
 });
+
+for (const source of ["login_check", "sign_in"] as const)
+  test(`${source} success wakes a setup hold, but stale success does not`, async () => {
+    const { db, bindings } = await fixture();
+    await recordAccountObservation(db, {
+      bindingId: bindings.a1,
+      source: "result",
+      sourceId: "expired",
+      observedAt: NOW,
+      now: NOW,
+      state: "auth_required",
+    });
+    await insertQueuedItem(db, { id: "held", now: NOW });
+    await holdForRunnerSetup(db, {
+      itemId: "held",
+      ownerUserId: "U1",
+      runnerId: "R1",
+      reason: "agent-not-signed-in",
+      agent: "claude",
+      now: NOW,
+    });
+    const success = (observedAt: number) =>
+      recordAccountObservation(db, {
+        bindingId: bindings.a1,
+        source,
+        sourceId: `${source}-${observedAt}`,
+        observedAt,
+        now: NOW + 2,
+        state: "ok",
+        clears: ["auth"],
+      });
+    const checks = async () =>
+      (await listJobs(db)).filter((job) => job.queue === "runner_setup.check");
+    await success(NOW - 1);
+    expect(await checks()).toHaveLength(0);
+    await success(NOW + 1);
+    expect(await checks()).toMatchObject([{ payload: { ownerUserId: "U1" }, status: "pending" }]);
+  });

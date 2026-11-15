@@ -440,11 +440,19 @@ export function createRemoteAgentRunner(options: {
       ),
     ];
     if (
-      (resetsAt === null || heldForSession) &&
+      (resetsAt === null || heldForSession || busy.length > 0) &&
       (busy.length > 0 ||
         (offered.length === 0 && (await store.run((q) => anyActiveRunnerSteps(q)))))
     )
-      throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined, details);
+      throw new RunnerCapacityWait(
+        busy,
+        resetsAt === null
+          ? heldForSession
+            ? SESSION_GRACE_MS
+            : undefined
+          : Math.min(heldForSession ? SESSION_GRACE_MS : Infinity, Math.max(0, resetsAt - now())),
+        details,
+      );
     const readyRunners = options.placement
       ? async () => {
           const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;

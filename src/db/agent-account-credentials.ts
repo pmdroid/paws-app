@@ -1,8 +1,9 @@
 import { providerUsageSteps } from "./account-provider-usage";
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import { AgentAccountError } from "./agent-accounts";
+import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
 import { type Q, type Steps } from "./db";
 import type { RunnerAgentLimit } from "./runners";
 
@@ -122,7 +123,7 @@ export function* writeAgentCredentialCiphertextSteps(
   const { agentAccount, agentAccountCredential: c } = q.t;
   const account = yield* q.one(
     q.orm
-      .select({ agent: agentAccount.agent })
+      .select({ agent: agentAccount.agent, workspaceId: agentAccount.workspaceId })
       .from(agentAccount)
       .where(eq(agentAccount.id, input.accountId)),
   );
@@ -155,7 +156,11 @@ export function* writeAgentCredentialCiphertextSteps(
       })
       .returning({ accountId: c.accountId }),
   );
-  return rows.length > 0 ? "written" : "stale_version";
+  if (rows.length === 0) return "stale_version";
+  for (const binding of yield* listAgentBindingsSteps(q, account.workspaceId, input.accountId))
+    if (binding.removedAt === null)
+      yield* enqueueRunnerSetupChecksSteps(q, input.now, { runnerId: binding.runnerId });
+  return "written";
 }
 
 export function* recordAgentAccountUsageSteps(

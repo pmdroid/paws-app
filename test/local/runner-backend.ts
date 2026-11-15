@@ -1,4 +1,5 @@
 import { bindFixtureAccounts } from "../pglite-fixtures";
+import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createAcpActivityReporter } from "../../src/loop";
@@ -8,6 +9,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   putWorkspaceUser,
+  listAgentBindings,
+  recordAccountObservation,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   beginImplementRun,
@@ -222,6 +225,8 @@ export async function probeRunnerBackend(
   });
   const results = createRunnerResults({ store: db, work, now: () => now });
   const health = createRunnerHealth({ store: db, work, now: () => now });
+  boundHeartbeat(db, work);
+  boundResultSubmissions(db, results, health);
   await work.heartbeat(runnerId);
   const source = join(root, "source");
   async function git(args: string[]) {
@@ -350,6 +355,11 @@ export async function probeRunnerBackend(
           workspaceId: workspace.id,
           now,
           allowedRepositories: ["fixture/repository"],
+          accountBindings: new Set(
+            (await listAgentBindings(db, workspace.id))
+              .filter((binding) => binding.runnerId === selectedRunnerId && !binding.legacy)
+              .map((binding) => binding.id),
+          ),
           claimCommand: (id) => {
             if (seen.has(id)) return false;
             seen.add(id);
@@ -2545,7 +2555,7 @@ export async function probeRunnerBackend(
           await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
-      for (const host of hostIds) await reportRunnerVersion(host, "0.1.26", now);
+      for (const host of hostIds) await reportRunnerVersion(host, "0.1.61", now);
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
         const record = await item();
         const affinityNotices: string[] = [];
@@ -2659,7 +2669,6 @@ export async function probeRunnerBackend(
         );
         await setRunStatus(record.run.id, "ended");
       }
-      for (const host of hostIds) await clearHostStatus(host);
       observe(
         "Implementation, review and fixes keep one runner slot, replacing unavailable hosts once",
         true,
@@ -3192,7 +3201,7 @@ export async function probeRunnerBackend(
         input(artifactItem, {
           role: "reviewer",
           readOnly: true,
-          profile: { agent: "codex" as const, model: null },
+          profile: { agent: "codex" as const, model: "review-model" },
           signal: failoverAbort.signal,
           onEvent(event) {
             if (event.type === "session_update") rejectedReviewEvents.push(JSON.stringify(event));
@@ -3249,13 +3258,21 @@ export async function probeRunnerBackend(
       );
     }
     {
-      const coolDown = (until: number) =>
-        seed(db, (q) =>
-          q.orm
-            .update(q.t.runnerAgentPolicy)
-            .set({ cooldownUntil: until })
-            .where(eq(q.t.runnerAgentPolicy.agent, "codex")),
-        );
+      const coolDown = async (until: number) => {
+        if (!until) now++;
+        for (const binding of await listAgentBindings(db, workspace.id))
+          if (!binding.legacy && binding.agent === "codex")
+            await recordAccountObservation(db, {
+              bindingId: binding.id,
+              source: "result",
+              sourceId: randomUUID(),
+              state: until ? "exhausted" : "ok",
+              clears: ["quota"],
+              resetsAt: until,
+              observedAt: now,
+              now,
+            });
+      };
       const dispatched = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds) if ((await work.commands(hostId)).length) return hostId;
@@ -3276,6 +3293,7 @@ export async function probeRunnerBackend(
       const limitedRun = placedBackend.forItem(limited.id)(
         input(limited, {
           signal: limitAbort.signal,
+          checkpoint: false,
           onEvent: (event) => {
             if (event.type === "progress" && !event.text.startsWith("Starting on "))
               lines.push(event.text);
@@ -3288,11 +3306,11 @@ export async function probeRunnerBackend(
         () => (finished = true),
       );
       const limitedPause = await paused((await getWorkItem(db, limited.id))!.currentRunId!);
-      assert.equal(limitedPause?.resumeAt, now + 180_000);
+      assert.equal(limitedPause?.resumeAt, now + 240_000);
       await delay(20);
       assert.equal(finished, false);
       // The line names the date too when the resume falls on the next UTC day.
-      const resume = new Date(now + 180_000).toISOString();
+      const resume = new Date(now + 240_000).toISOString();
       const day =
         resume.slice(0, 10) === new Date(now).toISOString().slice(0, 10)
           ? ""
@@ -3300,14 +3318,16 @@ export async function probeRunnerBackend(
       assert.deepEqual(lines, [
         `Paused: Codex usage limit reached; resumes at ${day}${resume.slice(11, 16)} UTC.`,
       ]);
-      now += 180_000;
+      now += 240_000;
       for (const hostId of hostIds) await work.heartbeat(hostId);
       await memberChecked();
       const placedOn = await dispatched();
       assert(placedOn);
+      await next(placedOn);
       assert.equal(await usagePause(db, limitedPause!.runId), null);
       assert.equal(lines.length, 2);
       limitAbort.abort();
+      await next(placedOn);
       await limitedRun.catch(() => undefined);
       observe(
         "work that cannot start for a usage limit waits for its reset instead of failing",
@@ -3321,7 +3341,7 @@ export async function probeRunnerBackend(
       const exhaustedAbort = new AbortController();
       await coolDown(now + 3_600_000);
       const exhaustedRun = placedBackend.forItem(exhausted.id)(
-        input(exhausted, { signal: exhaustedAbort.signal }),
+        input(exhausted, { signal: exhaustedAbort.signal, checkpoint: false }),
       );
       void exhaustedRun.catch(() => undefined);
       const exhaustedRunId = (await getWorkItem(db, exhausted.id))!.currentRunId!;
@@ -3330,8 +3350,11 @@ export async function probeRunnerBackend(
       await delay(20);
       for (const hostId of hostIds) assert.equal((await work.commands(hostId)).length, 0);
       assert.equal(await resumeUsagePauseNow(db, exhaustedRunId, now), true);
-      assert(await dispatched());
+      const resumedOn = await dispatched();
+      assert(resumedOn);
+      await next(resumedOn);
       exhaustedAbort.abort();
+      await next(resumedOn);
       await exhaustedRun.catch(() => undefined);
       await coolDown(0);
       observe("Resume now ends a usage-limit wait and lifts the agent cooldown", true, {});
@@ -3369,12 +3392,14 @@ export async function probeRunnerBackend(
           ),
       );
       const waitAbort = new AbortController();
-      const waitingRun = placedBackend.forItem(queued.id)(
-        input(queued, { signal: waitAbort.signal }),
-      );
+      const waitingRun = placedBackend
+        .forItem(queued.id)(input(queued, { signal: waitAbort.signal, checkpoint: false }))
+        .catch(() => undefined);
       const placedWhenFree = await dispatched();
       assert.equal(placedWhenFree, hostIds[0]);
+      await next(placedWhenFree!);
       waitAbort.abort();
+      await next(placedWhenFree!);
       await waitingRun.catch(() => undefined);
       await endWork(occupied);
       observe(
@@ -3408,7 +3433,7 @@ export async function probeRunnerBackend(
           wipCommit: head,
         });
         const stopVersioned = new AbortController();
-        const versionedRun = placedBackend.forItem(record.id)(
+        const versionedRun = backend.forItem(record.id)(
           input(record, { signal: stopVersioned.signal, checkpoint: false }),
         );
         void versionedRun.catch(() => undefined);
@@ -3450,6 +3475,7 @@ export async function probeRunnerBackend(
       observe("runners receive the task's main commit and checkpoint opt-out", true, {
         current: current.repository.mainSha,
       });
+      await reportVersion("0.1.61");
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)
@@ -3467,7 +3493,7 @@ export async function probeRunnerBackend(
       const restartAbort = new AbortController();
       let restartFailure: unknown = null;
       const restartedRun = placedBackend.forItem(restarted.id)(
-        input(restarted, { signal: restartAbort.signal }),
+        input(restarted, { signal: restartAbort.signal, checkpoint: false }),
       );
       void restartedRun.catch((error: unknown) => (restartFailure = error));
       const firstPlacement = await nextRun();
@@ -3479,6 +3505,7 @@ export async function probeRunnerBackend(
       assert.equal(secondPlacement.runId, firstPlacement.runId);
       assert.equal(secondPlacement.generation, firstPlacement.generation + 1);
       restartAbort.abort();
+      await firstDispatch();
       await restartedRun.catch(() => undefined);
       await drain();
       observe(
@@ -3520,11 +3547,14 @@ export async function probeRunnerBackend(
       for (const hostId of hostIds) await work.heartbeat(hostId);
       const offlineAbort = new AbortController();
       const offlineRun = placedBackend.forItem(offline.id)(
-        input(offline, { signal: offlineAbort.signal }),
+        input(offline, { signal: offlineAbort.signal, checkpoint: false }),
       );
+      void offlineRun.catch(() => undefined);
       const placedWhenOnline = await dispatched();
       assert.notEqual(placedWhenOnline, null);
+      await next(placedWhenOnline!);
       offlineAbort.abort();
+      await next(placedWhenOnline!);
       await offlineRun.catch(() => undefined);
       await drain();
       observe("placement waits for a paired runner to come online instead of failing", true, {
@@ -3534,7 +3564,7 @@ export async function probeRunnerBackend(
       const racedAbort = new AbortController();
       let racedFailure: unknown = null;
       const filled: string[] = [];
-      const racedRun = placedBackend.forItem(raced.id)(
+      const racedRun = backend.forItem(raced.id)(
         input(raced, {
           signal: racedAbort.signal,
           prepareInputFiles: async ({ prompt }) => {
@@ -3557,12 +3587,15 @@ export async function probeRunnerBackend(
       assert(racedFailure instanceof RunnerCapacityWait);
       await endWork(filled);
       await finishRuns();
-      const retriedRun = placedBackend.forItem(raced.id)(
-        input(raced, { signal: racedAbort.signal }),
+      const retriedRun = backend.forItem(raced.id)(
+        input(raced, { signal: racedAbort.signal, checkpoint: false }),
       );
+      void retriedRun.catch(() => undefined);
       const placedAfterRace = await dispatched();
       assert.notEqual(placedAfterRace, null);
+      await next(placedAfterRace!);
       racedAbort.abort();
+      await next(placedAfterRace!);
       await retriedRun.catch(() => undefined);
       await drain();
       observe(

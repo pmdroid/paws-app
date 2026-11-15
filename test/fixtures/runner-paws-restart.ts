@@ -1,4 +1,5 @@
 import { bindFixtureAccounts } from "../pglite-fixtures";
+import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
 import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
@@ -142,6 +143,8 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
   });
   const results = createRunnerResults({ store: store, work });
   const health = createRunnerHealth({ store: store, work });
+  boundHeartbeat(store, work);
+  boundResultSubmissions(store, results, health);
   services = { work, results, health };
   const backend = createRemoteAgentRunner({
     store: store,

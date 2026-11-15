@@ -1,3 +1,8 @@
+import {
+  boundPlacementAccounts,
+  boundHeartbeat,
+  boundResultSubmissions,
+} from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -617,14 +622,17 @@ async function startScenario(input: {
   mkdirSync(join(root, "runs"), { recursive: true });
 
   const keys = generateKeyPairSync("ed25519");
+  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
+  boundHeartbeat(db, work);
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
+  boundResultSubmissions(db, results, health);
   const backend = createRemoteAgentRunner({
     store: db,
     work,
