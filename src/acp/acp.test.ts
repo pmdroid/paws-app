@@ -303,6 +303,37 @@ test.each([
   expect(trace.methods).not.toContain("authenticate");
 });
 
+test("a turn error keeps the agent's error data in the error message", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      {
+        type: "turn_error",
+        message: "Internal error",
+        data: {
+          message: "You've hit your usage limit. Try again in 3 hours.",
+          codexErrorInfo: "usageLimitExceeded",
+        },
+      },
+    ],
+  });
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-quota",
+    prompt: "work",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    onEvent: () => undefined,
+  });
+  expect(result.stopReason).toBe("error");
+  expect(result.errorMessage).toContain("You've hit your usage limit. Try again in 3 hours.");
+});
+
 test.each([
   {
     options: [{ label: "Accept as a pre-existing runner failure and proceed", value: "proceed" }],
