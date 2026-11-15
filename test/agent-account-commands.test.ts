@@ -109,11 +109,11 @@ async function fixture() {
       };
       return { id: payload.id, account: payload.account };
     });
-  return { db, now, runnerId, workspace: workspace.id, heartbeat, check, queued };
+  return { db, now, runnerId, userId, workspace: workspace.id, heartbeat, check, queued };
 }
 
 test("an old runner keeps running the default sign-in and never receives a named account", async () => {
-  const { db, now, runnerId, workspace, heartbeat, check, queued } = await fixture();
+  const { db, now, runnerId, userId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
   const legacy = await check();
   expect(await commandAccount(db, legacy)).toMatchObject({
@@ -123,12 +123,14 @@ test("an old runner keeps running the default sign-in and never receives a named
   });
 
   const account = await createAgentAccount(db, {
+    ownerUserId: userId,
     workspaceId: workspace,
     agent: "claude",
     label: "B",
     now,
   });
   const binding = await bindAgentAccount(db, {
+    userId: userId,
     workspaceId: workspace,
     accountId: account.id,
     runnerId,

@@ -21,11 +21,12 @@ export default {
   agent: () => [],
   async run(proof) {
     const db = proof.store;
-    const { pair, workspace } = await workspaceWithRunners(db);
+    const { pair, workspace, userId } = await workspaceWithRunners(db);
     const runnerId = await pair("usage-runner", 1, [REPOSITORY]);
     await seed(db, (q) => q.orm.update(q.t.agentAccount).set({ enabled: 0 }));
     const account = await db.transaction((q) =>
       createAgentAccountSteps(q, {
+        ownerUserId: userId,
         workspaceId: workspace.id,
         agent: "claude",
         label: "Usage",
@@ -75,6 +76,7 @@ export default {
     );
     const binding = await db.transaction((q) =>
       bindAgentAccountSteps(q, {
+        userId,
         workspaceId: workspace.id,
         accountId: account.id,
         runnerId,

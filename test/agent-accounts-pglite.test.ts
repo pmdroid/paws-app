@@ -74,6 +74,37 @@ const probe = (id: string, account?: { accountId: string; bindingId: string }): 
 });
 
 describePglite((connect) => {
+  test("binding requires the account owner and their runner", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await workspace(db);
+    await seedRunner(db, "OTHER", { ownerUserId: "other" });
+    const a = await db.transaction((q) =>
+      createAgentAccountSteps(q, {
+        workspaceId: "acme",
+        ownerUserId: "owner",
+        agent: "claude",
+        label: "Mine",
+        now: NOW,
+      }),
+    );
+    expect(a.ownerUserId).toBe("owner");
+    const bind = (userId: string, runnerId: string) =>
+      db.transaction((q) =>
+        bindAgentAccountSteps(q, {
+          workspaceId: "acme",
+          userId,
+          accountId: a.id,
+          runnerId,
+          now: NOW,
+        }),
+      );
+    expect(await code(bind("other", "R1"))).toBe("not-your-account");
+    expect(await code(bind("owner", "OTHER"))).toBe("not-your-runner");
+    expect((await bind("owner", "R1")).runnerId).toBe("R1");
+  });
+
   test("accounts are created, renamed, disabled, limited, listed, admitted and removed", async () => {
     const handle = await connect();
     open.push(handle);
@@ -81,12 +112,19 @@ describePglite((connect) => {
     await workspace(db);
     const create = (label: string, now = NOW) =>
       db.transaction((q) =>
-        createAgentAccountSteps(q, { workspaceId: "acme", agent: "claude", label, now }),
+        createAgentAccountSteps(q, {
+          ownerUserId: "owner",
+          workspaceId: "acme",
+          agent: "claude",
+          label,
+          now,
+        }),
       );
 
     const a = await create(" Work ");
     expect(a).toEqual({
       id: a.id,
+      ownerUserId: "owner",
       workspaceId: "acme",
       agent: "claude",
       label: "Work",
@@ -101,6 +139,7 @@ describePglite((connect) => {
       await code(
         db.transaction((q) =>
           createAgentAccountSteps(q, {
+            ownerUserId: "owner",
             workspaceId: "nope",
             agent: "claude",
             label: "X",
@@ -202,11 +241,23 @@ describePglite((connect) => {
     const { db } = handle;
     await workspace(db);
     const a = await db.transaction((q) =>
-      createAgentAccountSteps(q, { workspaceId: "acme", agent: "codex", label: "A", now: NOW }),
+      createAgentAccountSteps(q, {
+        ownerUserId: "owner",
+        workspaceId: "acme",
+        agent: "codex",
+        label: "A",
+        now: NOW,
+      }),
     );
     const bind = (runnerId: string, now = NOW) =>
       db.transaction((q) =>
-        bindAgentAccountSteps(q, { workspaceId: "acme", accountId: a.id, runnerId, now }),
+        bindAgentAccountSteps(q, {
+          userId: "owner",
+          workspaceId: "acme",
+          accountId: a.id,
+          runnerId,
+          now,
+        }),
       );
     const r1 = await bind("R1");
     expect(r1).toEqual({
@@ -287,10 +338,22 @@ describePglite((connect) => {
     });
 
     const a = await db.transaction((q) =>
-      createAgentAccountSteps(q, { workspaceId: "acme", agent: "claude", label: "A", now: NOW }),
+      createAgentAccountSteps(q, {
+        ownerUserId: "owner",
+        workspaceId: "acme",
+        agent: "claude",
+        label: "A",
+        now: NOW,
+      }),
     );
     const bound = await db.transaction((q) =>
-      bindAgentAccountSteps(q, { workspaceId: "acme", accountId: a.id, runnerId: "R1", now: NOW }),
+      bindAgentAccountSteps(q, {
+        userId: "owner",
+        workspaceId: "acme",
+        accountId: a.id,
+        runnerId: "R1",
+        now: NOW,
+      }),
     );
     const named = { accountId: a.id, bindingId: bound.id };
     const unsupported = () =>

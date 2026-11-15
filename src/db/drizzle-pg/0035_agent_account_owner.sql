@@ -1,0 +1,4 @@
+ALTER TABLE "agent_account" ADD COLUMN "owner_user_id" text;--> statement-breakpoint
+ALTER TABLE "agent_account" ADD CONSTRAINT "agent_account_owner_fk" FOREIGN KEY ("workspace_id","owner_user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+UPDATE agent_account AS a SET owner_user_id = CASE WHEN EXISTS (SELECT 1 FROM agent_account_binding b WHERE b.account_id = a.id AND b.removed_at IS NULL) THEN (SELECT r.owner_user_id FROM agent_account_binding b JOIN runner r ON r.id = b.runner_id WHERE b.account_id = a.id AND b.removed_at IS NULL ORDER BY b.created_at, b.id LIMIT 1) ELSE (SELECT m.user_id FROM workspace_member m WHERE m.workspace_id = a.workspace_id AND m.role = 'owner' ORDER BY m.checked_at, m.user_id LIMIT 1) END WHERE a.legacy = 0;

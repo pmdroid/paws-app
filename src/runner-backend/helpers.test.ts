@@ -794,12 +794,16 @@ test("a helper whose named account hits its quota retries with the next account 
         )[0] ?? null)!.id;
         for (const label of ["A", "B"]) {
           const account = await createAgentAccount(db, {
+            ownerUserId: (
+              await sqlRows<{ id: string }>(db, "SELECT owner_user_id AS id FROM runner LIMIT 1")
+            )[0]!.id,
             workspaceId: workspace,
             agent: "codex",
             label,
             now: Date.now(),
           });
           const binding = await bindAgentAccount(db, {
+            userId: account.ownerUserId!,
             workspaceId: workspace,
             accountId: account.id,
             runnerId: "runner",
@@ -1023,12 +1027,16 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
     await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner WHERE id='runner'")
   )[0] ?? null)!.id;
   const account = await createAgentAccount(f.db, {
+    ownerUserId: (
+      await sqlRows<{ id: string }>(f.db, "SELECT owner_user_id AS id FROM runner LIMIT 1")
+    )[0]!.id,
     workspaceId: workspace,
     agent: "codex",
     label: "A",
     now: Date.now(),
   });
   const binding = await bindAgentAccount(f.db, {
+    userId: account.ownerUserId!,
     workspaceId: workspace,
     accountId: account.id,
     runnerId: "runner",

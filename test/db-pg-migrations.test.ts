@@ -437,3 +437,36 @@ describe("Postgres drizzle-kit migrations", () => {
     }
   });
 });
+
+test("account ownership backfills from oldest live binding or first workspace owner", async () => {
+  const pg = await pgliteDb({ migrationsFolder: migrationsBefore("agent_account_owner") });
+  try {
+    await pg.$client.exec(`
+      INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',0);
+      INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES
+        ('first','first','First','first@test'),('later','later','Later','later@test');
+      INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES
+        ('w','first','owner','manual',1,1),('w','later','owner','manual',1,2);
+      INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES
+        ('r1','w','first','R1','active',0),('r2','w','later','R2','active',0);
+      INSERT INTO agent_account(id,workspace_id,agent,label,legacy,created_at,updated_at) VALUES
+        ('bound','w','claude','Bound',0,0,0),('fallback','w','claude','Fallback',0,0,0),
+        ('legacy','w','claude','Legacy',1,0,0);
+      INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,quota_scope,created_at,removed_at) VALUES
+        ('removed','w','bound','claude','r1','account',0,1),
+        ('old','w','bound','claude','r2','account',1,NULL),
+        ('new','w','bound','claude','r1','account',2,NULL);
+    `);
+    await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+    expect(
+      (await pg.$client.query("SELECT id, owner_user_id FROM agent_account ORDER BY id")).rows,
+    ).toEqual([
+      { id: "bound", owner_user_id: "later" },
+      { id: "fallback", owner_user_id: "first" },
+      { id: "legacy", owner_user_id: null },
+    ]);
+    expect((await pg.$client.query("SELECT id FROM agent_account_binding")).rows).toHaveLength(3);
+  } finally {
+    await pg.$client.close();
+  }
+});

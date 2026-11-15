@@ -108,12 +108,14 @@ export async function addRunnerPg(
   );
   if (input.ready !== false) {
     const account = await createAgentAccount(db, {
+      ownerUserId: input.owner ?? "admin",
       workspaceId: "ws",
       agent: "codex",
       label: input.id,
       now: 0,
     });
     await bindAgentAccount(db, {
+      userId: input.owner ?? "admin",
       workspaceId: "ws",
       accountId: account.id,
       runnerId: input.id,

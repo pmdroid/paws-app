@@ -36,6 +36,7 @@ import { ulid } from "./ulid";
 export type AgentAccount = {
   id: string;
   workspaceId: string;
+  ownerUserId: string | null;
   agent: RunnerCodingAgent;
   label: string;
   legacy: boolean;
@@ -69,6 +70,8 @@ type CommandAccount = {
 };
 
 type AgentAccountErrorCode =
+  | "not-your-account"
+  | "not-your-runner"
   | "not_found"
   | "foreign_workspace"
   | "duplicate"
@@ -101,6 +104,7 @@ const accountColumns = (q: Q) => {
   return {
     id: a.id,
     workspaceId: a.workspaceId,
+    ownerUserId: a.ownerUserId,
     agent: a.agent,
     label: a.label,
     legacy: a.legacy,
@@ -155,7 +159,11 @@ function* runnerWorkspaceSteps(q: Q, runnerId: string) {
   const { runner } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ workspaceId: runner.workspaceId, revokedAt: runner.revokedAt })
+      .select({
+        workspaceId: runner.workspaceId,
+        ownerUserId: runner.ownerUserId,
+        revokedAt: runner.revokedAt,
+      })
       .from(runner)
       .where(eq(runner.id, runnerId)),
   );
@@ -326,7 +334,13 @@ function* labelTakenSteps(
 
 export function* createAgentAccountSteps(
   q: Q,
-  input: { workspaceId: string; agent: RunnerCodingAgent; label: string; now: number },
+  input: {
+    workspaceId: string;
+    ownerUserId: string;
+    agent: RunnerCodingAgent;
+    label: string;
+    now: number;
+  },
 ) {
   const { agentAccount, workspace } = q.t;
   const label = parseLabel(input.label);
@@ -357,6 +371,7 @@ export function* createAgentAccountSteps(
     q.orm.insert(agentAccount).values({
       id,
       workspaceId: input.workspaceId,
+      ownerUserId: input.ownerUserId,
       agent: input.agent,
       label,
       legacy: 0,
@@ -371,7 +386,13 @@ export function* createAgentAccountSteps(
 
 export async function createAgentAccount(
   store: Db,
-  input: { workspaceId: string; agent: RunnerCodingAgent; label: string; now: number },
+  input: {
+    workspaceId: string;
+    ownerUserId: string;
+    agent: RunnerCodingAgent;
+    label: string;
+    now: number;
+  },
 ): Promise<AgentAccount> {
   return store.transaction((q) => createAgentAccountSteps(q, input));
 }
@@ -492,15 +513,19 @@ export async function removeAgentAccount(
 
 export function* bindAgentAccountSteps(
   q: Q,
-  input: { workspaceId: string; accountId: string; runnerId: string; now: number },
+  input: { workspaceId: string; userId: string; accountId: string; runnerId: string; now: number },
 ) {
   const { agentAccountBinding: b } = q.t;
   const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
   if (row.legacy)
     throw new AgentAccountError("legacy", "The default sign-in account binds automatically");
+  if (row.ownerUserId !== input.userId)
+    throw new AgentAccountError("not-your-account", "Agent account belongs to another member");
   const runner = yield* runnerWorkspaceSteps(q, input.runnerId);
   if (runner.workspaceId !== input.workspaceId)
     throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
+  if (runner.ownerUserId !== row.ownerUserId)
+    throw new AgentAccountError("not-your-runner", "Runner belongs to another member");
   if (runner.revokedAt !== null) throw new AgentAccountError("removed", "Runner was revoked");
   const bound = yield* q.one(
     q.orm
@@ -529,7 +554,7 @@ export function* bindAgentAccountSteps(
 
 export async function bindAgentAccount(
   store: Db,
-  input: { workspaceId: string; accountId: string; runnerId: string; now: number },
+  input: { workspaceId: string; userId: string; accountId: string; runnerId: string; now: number },
 ): Promise<AgentAccountBinding> {
   return store.transaction((q) => bindAgentAccountSteps(q, input));
 }

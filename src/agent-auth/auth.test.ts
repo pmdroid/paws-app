@@ -43,8 +43,25 @@ async function setup(signedIn = false) {
       .insert(q.t.workspace)
       .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: time }),
   );
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({ id: "user", linearUserId: "user", name: "User", email: "user@test.invalid" }),
+    (q) =>
+      q.orm.insert(q.t.workspaceMember).values({
+        workspaceId: "workspace",
+        userId: "user",
+        role: "owner",
+        source: "manual",
+        active: 1,
+        checkedAt: time,
+      }),
+  );
   const account = await db.transaction((q) =>
     createAgentAccountSteps(q, {
+      ownerUserId: "user",
       workspaceId: "workspace",
       agent: "codex",
       label: "Codex",
@@ -119,16 +136,20 @@ test("refresh persists rotated tokens under a runner lease and health gates ever
     (q) =>
       q.orm
         .insert(q.t.workspaceUser)
-        .values({ id: "user", linearUserId: "user", name: "User", email: "user@example.test" }),
+        .values({ id: "user", linearUserId: "user", name: "User", email: "user@example.test" })
+        .onConflictDoNothing(),
     (q) =>
-      q.orm.insert(q.t.workspaceMember).values({
-        workspaceId: "workspace",
-        userId: "user",
-        role: "admin",
-        source: "manual",
-        active: 1,
-        checkedAt: s.now(),
-      }),
+      q.orm
+        .insert(q.t.workspaceMember)
+        .values({
+          workspaceId: "workspace",
+          userId: "user",
+          role: "admin",
+          source: "manual",
+          active: 1,
+          checkedAt: s.now(),
+        })
+        .onConflictDoNothing(),
     (q) =>
       q.orm.insert(q.t.runner).values({
         id: "runner",
@@ -140,7 +161,9 @@ test("refresh persists rotated tokens under a runner lease and health gates ever
       }),
   );
   const holder = { workspaceId: "workspace", accountId: s.id, runnerId: "runner", now: s.now() };
-  const binding = await s.db.transaction((q) => bindAgentAccountSteps(q, holder));
+  const binding = await s.db.transaction((q) =>
+    bindAgentAccountSteps(q, { userId: "user", ...holder }),
+  );
   await s.db.transaction((q) =>
     takeAgentAccountLeaseSteps(q, { ...holder, runId: "run", until: s.now() + 10_000_000 }),
   );
@@ -353,6 +376,7 @@ test("every scheduled poll reads later accounts despite changing latency", async
   const s = await setup(true);
   const other = await s.db.transaction((q) =>
     createAgentAccountSteps(q, {
+      ownerUserId: "user",
       workspaceId: "workspace",
       agent: "codex",
       label: "Second",

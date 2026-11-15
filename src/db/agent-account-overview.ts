@@ -38,6 +38,7 @@ export function* agentAccountOverviewSteps(
   q: Q,
   workspaceId: string,
   now: number,
+  ownerUserId?: string,
 ): Steps<AgentAccountOverview[]> {
   const { agentAccount: a, agentAccountCredential: c, agentAccountUsage: u } = q.t;
   const { agentAccountLease: l, agentAccountBinding: b, runner, runnerLogin, run, workItem } = q.t;
@@ -58,7 +59,14 @@ export function* agentAccountOverviewSteps(
       .from(a)
       .leftJoin(c, eq(c.accountId, a.id))
       .leftJoin(u, eq(u.accountId, a.id))
-      .where(and(eq(a.workspaceId, workspaceId), eq(a.legacy, 0), isNull(a.removedAt)))
+      .where(
+        and(
+          eq(a.workspaceId, workspaceId),
+          eq(a.legacy, 0),
+          isNull(a.removedAt),
+          ownerUserId === undefined ? undefined : eq(a.ownerUserId, ownerUserId),
+        ),
+      )
       .orderBy(asc(a.agent), asc(a.position), asc(a.createdAt), asc(a.id)),
   );
   const ids = accounts.map((row) => row.id);
@@ -150,7 +158,7 @@ function* liveCentralAccountSteps(q: Q, workspaceId: string, accountId: string) 
   const { agentAccount: a } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ id: a.id, agent: a.agent })
+      .select({ id: a.id, agent: a.agent, ownerUserId: a.ownerUserId })
       .from(a)
       .where(
         and(
@@ -242,6 +250,8 @@ export function* centralSignInTargetSteps(
   input: { workspaceId: string; userId: string; accountId: string; now: number },
 ): Steps<{ runnerId: string; bindingId: string; agent: RunnerCodingAgent }> {
   const account = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
+  if (account.ownerUserId !== input.userId)
+    throw new AgentAccountError("not-your-account", "Agent account belongs to another member");
   const { runner, runnerHostStatus: h } = q.t;
   const online = yield* q.all(
     q.orm
@@ -275,6 +285,7 @@ export function* centralSignInTargetSteps(
   if (bound) return { runnerId: target.id, bindingId: bound.id, agent };
   const binding = yield* bindAgentAccountSteps(q, {
     workspaceId: input.workspaceId,
+    userId: input.userId,
     accountId: account.id,
     runnerId: target.id,
     now: input.now,
