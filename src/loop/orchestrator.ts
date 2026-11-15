@@ -156,7 +156,6 @@ import {
   createWorktree,
   ensureBareMirror,
   ensureCandidateRef,
-  adoptLegacyCandidate,
   removeCandidateRef,
   restoreCandidateRef,
   FOLLOW_UP_INTERRUPTION,
@@ -5856,7 +5855,7 @@ export class Orchestrator {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
-    const { repo: worktree, ref } = await this.legacyItemHead(item);
+    const { repo: worktree, ref } = await this.itemHead(item);
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
     try {
@@ -6207,7 +6206,7 @@ export class Orchestrator {
     });
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
-    const { repo: worktree, ref } = await this.legacyItemHead(item);
+    const { repo: worktree, ref } = await this.itemHead(item);
     const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
     if (await this.stopped(item.id)) return { kind: "obsolete" };
@@ -7143,7 +7142,7 @@ export class Orchestrator {
         ? current.state
         : null;
     if (phase === null) return;
-    const { repo: worktree, ref } = await this.legacyItemHead(current);
+    const { repo: worktree, ref } = await this.itemHead(current);
     let head = "";
     let base = current.checkpoint?.baseSha ?? "";
     try {
@@ -11284,18 +11283,6 @@ export class Orchestrator {
       ...(baseSha ? { baseSha } : {}),
       ...(networkGit ? { networkGit } : {}),
     });
-  }
-
-  private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
-    const repository = await this.repositoryForItem(item);
-    if (this.options.remoteExecution && repository && !this.storedCandidates())
-      await adoptLegacyCandidate({
-        ...repository,
-        itemId: itemPathId(item),
-        pawsRoot: this.options.pawsRoot,
-      });
-    await this.restoreCandidate(item, await this.signalForItem(item.id));
-    return await this.itemHead(item);
   }
 
   /** Where a runner-backed run stages the agent's input files; it is no checkout. */

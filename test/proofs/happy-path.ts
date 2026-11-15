@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { getItemCandidate, listWorkItemsByStates } from "../../src/db";
 import { ACME, type Proof } from "./harness";
 
 export default {
@@ -74,6 +75,13 @@ export default {
       "the item is merged, not failed",
       merged && (await proof.itemState()) === "merged",
       await proof.itemState(),
+    );
+    const [item] = await listWorkItemsByStates(proof.store, ["merged"]);
+    const candidate = item && (await getItemCandidate(proof.store, item.id));
+    proof.expect(
+      "the merged item has a recorded candidate in the current layout",
+      Boolean(candidate?.sha),
+      candidate,
     );
     const final = proof.linear.progress.at(-1);
     proof.expect(
