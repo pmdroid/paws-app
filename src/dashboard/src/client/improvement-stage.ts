@@ -1,6 +1,6 @@
 import type { ImprovementItem } from "../improvements";
 
-export type ImprovementStage = "findings" | "review" | "rejected" | "accepted";
+export type ImprovementStage = "review" | "rejected" | "accepted";
 
 export type ImprovementAction =
   | "create"
@@ -17,7 +17,6 @@ export type ImprovementAction =
   | "recovery";
 
 const ALLOWED: Record<ImprovementStage, ReadonlySet<ImprovementAction>> = {
-  findings: new Set(),
   review: new Set(["create", "link", "reject", "use-issue"]),
   rejected: new Set(["reopen"]),
   accepted: new Set([
@@ -31,11 +30,10 @@ const ALLOWED: Record<ImprovementStage, ReadonlySet<ImprovementAction>> = {
   ]),
 };
 
-type Staged = Pick<ImprovementItem, "legacy" | "lifecycle" | "reviewState"> &
+type Staged = Pick<ImprovementItem, "lifecycle" | "reviewState"> &
   Partial<Pick<ImprovementItem, "deliveries">>;
 
 export function improvementStage(item: Staged): ImprovementStage {
-  if (item.legacy.some((action) => action.kind !== "dismissed")) return "findings";
   if (item.lifecycle === "needs_review") return "review";
   if (item.lifecycle === "rejected") return "rejected";
   return "accepted";

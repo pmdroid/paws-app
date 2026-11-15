@@ -36,7 +36,6 @@ const detail: ImprovementDetail = {
       at: null,
     },
     issue: null,
-    legacy: [],
     deliveries: [],
     implementation: "unknown",
     verification: "unknown",

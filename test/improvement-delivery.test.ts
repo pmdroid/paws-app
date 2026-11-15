@@ -189,8 +189,6 @@ const view = async (w: World, id: string) =>
     criterion: null,
     lifecycle: "pending",
     issue: null,
-    legacy: [],
-    undecided: [],
     verification: "unknown",
     members: [],
   });

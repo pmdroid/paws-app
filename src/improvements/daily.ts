@@ -62,16 +62,6 @@ function sameProposal(a: ImprovementProposalInput, b: ImprovementProposalInput):
   );
 }
 
-export type LegacyAction = {
-  kind: "filed" | "added" | "dismissed" | "claimed";
-  groupId: string | null;
-  findingIds: number[];
-  issue: string | null;
-  reason: string | null;
-  by: string | null;
-  at: number | null;
-};
-
 function findingKeys(proposals: readonly ImprovementProposal[]) {
   const keys = new Set(
     proposals.filter((p) => p.source.kind === "daily_finding").map((p) => p.source.key),
@@ -99,43 +89,6 @@ export function* improvementFindingsSteps(
 ): Steps<ReviewFindingRecord[]> {
   const { keys, ids } = findingKeys(yield* listImprovementProposalsSteps(q, improvementId));
   return ownFindings(keys, yield* reviewFindingsByIdsSteps(q, ids));
-}
-
-export function legacyActions(
-  findings: readonly ReviewFindingRecord[],
-  groups: readonly FindingGroup[],
-): LegacyAction[] {
-  const ids = new Set(findings.map((f) => f.id));
-  const covered = new Set<number>();
-  const actions: LegacyAction[] = [];
-  for (const group of groups) {
-    if (group.status === "open" && group.action === null) continue;
-    const members = group.memberIds.filter((id) => ids.has(id));
-    if (!members.length) continue;
-    for (const id of members) covered.add(id);
-    actions.push({
-      kind: group.status === "open" ? "claimed" : group.status,
-      groupId: group.id,
-      findingIds: members,
-      issue: group.filedIssue,
-      reason: group.statusReason,
-      by: null,
-      at: null,
-    });
-  }
-  for (const f of findings) {
-    if (covered.has(f.id) || (f.status !== "filed" && f.status !== "dismissed")) continue;
-    actions.push({
-      kind: f.status,
-      groupId: null,
-      findingIds: [f.id],
-      issue: f.filedIssue,
-      reason: f.statusReason,
-      by: f.statusBy,
-      at: f.statusAt,
-    });
-  }
-  return actions;
 }
 
 export type DailyIngestResult = {
@@ -201,7 +154,7 @@ export async function ingestDailyFindings(
       break;
     }
     result.units++;
-    if (await ingestUnit(store, workspaceId, unit, groups, used, options.now, result)) written++;
+    if (await ingestUnit(store, workspaceId, unit, used, options.now, result)) written++;
   }
   return result;
 }
@@ -210,7 +163,6 @@ async function ingestUnit(
   store: Db,
   workspaceId: string,
   unit: Unit,
-  groups: readonly FindingGroup[],
   used: Set<string>,
   now: number,
   result: DailyIngestResult,
@@ -221,12 +173,7 @@ async function ingestUnit(
       found.push(yield* improvementBySourceSteps(q, workspaceId, source(f)));
     let open: Improvement | null = null;
     for (const i of found)
-      if (
-        i !== null &&
-        i.reviewState === "needs_review" &&
-        !used.has(i.id) &&
-        (unit.acted || legacyActions(yield* improvementFindingsSteps(q, i.id), groups).length === 0)
-      ) {
+      if (i !== null && i.reviewState === "needs_review" && !used.has(i.id)) {
         open = i;
         break;
       }

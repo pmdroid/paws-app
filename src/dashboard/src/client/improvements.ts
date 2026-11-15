@@ -180,10 +180,6 @@ function period(start: number, end: number): string {
   return `${day(start)} to ${day(end)}`;
 }
 
-const FINDINGS_LABEL = "Handled in Findings";
-const FINDINGS_NEXT =
-  "A Findings action already filed, added or is filing these findings. Follow that issue from Findings; the inbox does not decide it again.";
-
 const tag = (label: string, tone = "") =>
   `<span class="tag wrap${tone ? ` ${tone}` : ""}">${esc(label)}</span>`;
 
@@ -192,8 +188,7 @@ const attentionTag = (state: AttentionState) =>
 
 function attentionOf(view: ImprovementsView, item: ImprovementItem): AttentionState | null {
   const stage = improvementStage(item);
-  if (stage === "findings" || (stage === "rejected" && item.reviewState !== "rejected"))
-    return null;
+  if (stage === "rejected" && item.reviewState !== "rejected") return null;
   if (view.follow?.followThrough.id === item.id) return view.follow.followThrough.attention;
   return view.attention?.items.find((entry) => entry.id === item.id)?.attention ?? null;
 }
@@ -359,11 +354,7 @@ function renderList(view: ImprovementsView): string {
 function row(view: ImprovementsView, item: ImprovementItem): string {
   const selected = item.id === view.id;
   const attention = attentionOf(view, item);
-  const state = attention
-    ? attentionTag(attention)
-    : improvementStage(item) === "findings"
-      ? tag(FINDINGS_LABEL)
-      : tag(LIFECYCLE_LABEL[item.lifecycle]);
+  const state = attention ? attentionTag(attention) : tag(LIFECYCLE_LABEL[item.lifecycle]);
   const issue = item.issue?.identifier ? tag(item.issue.identifier) : "";
   return `<li><a class="improvement-row" href="${esc(itemHref(item.id, view.filter))}" data-improvement-row="${esc(item.id)}"${selected ? ' aria-current="true"' : ""}>
     <span class="row">${tag(SOURCE_LABEL[item.sourceKind])}<span class="muted">${esc(item.repository)}</span></span>
@@ -399,7 +390,7 @@ function renderDetail(view: ImprovementsView): string {
   return `${back}${stale}<article class="improvement-detail" data-improvement="${esc(item.id)}">
     <header class="improvement-head">${SOURCE_BADGE[item.sourceKind]}<h2 id="improvement-heading" tabindex="-1">${esc(item.proposal.title)}</h2>${span ? `<span class="mono improvement-period">${esc(span)}</span>` : ""}</header>
     <div class="row">${tag(item.proposal.actionStep)}<span class="muted">${esc(item.repository)}</span>${attention ? attentionTag(attention) : ""}</div>
-    <p class="muted">${esc(attention ? NEXT_ACTION[attention] : improvementStage(item) === "findings" ? FINDINGS_NEXT : LIFECYCLE_LABEL[item.lifecycle])}</p>
+    <p class="muted">${esc(attention ? NEXT_ACTION[attention] : LIFECYCLE_LABEL[item.lifecycle])}</p>
     <div class="improvement-fields" data-improvement-fields="">
       ${field("problem", "Problem", `<p>${esc(item.proposal.problem)}</p>`)}
       ${field("change", "Intended change", `<p>${esc(item.proposal.proposedChange)}</p>`)}
@@ -479,25 +470,16 @@ function defaultChoice(detail: ImprovementDetail): DecisionChoice {
 function renderDecision(view: ImprovementsView, detail: ImprovementDetail): string {
   const item = detail.item;
   const stage = improvementStage(item);
-  const legacy = item.legacy.length
-    ? `<p class="muted">Earlier Findings actions: ${item.legacy.map((action) => `${esc(action.kind)}${action.issue ? ` <span class="lin-id">${esc(action.issue)}</span>` : ""}`).join(", ")}.</p>`
-    : "";
-  if (stage === "findings")
-    return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Handled in Findings</h3>${item.issue?.identifier ? `<p>Linear issue <span class="lin-id">${esc(item.issue.identifier)}</span>.</p>` : ""}${legacy}<p class="muted">${esc(FINDINGS_NEXT)}</p><a class="btn" href="${esc(routeHref({ view: "findings" }))}">Open Findings</a></section>`;
   if (stage === "review") return renderChoices(view, detail);
   if (stage === "rejected")
-    return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decision</h3>${
-      item.reviewState === "rejected"
-        ? `<p>Rejected${item.decision.by ? ` by ${esc(item.decision.by)}` : ""}${item.decision.at ? ` ${esc(utcTime(item.decision.at))}` : ""}: ${esc(item.decision.reason ?? "")}</p>`
-        : `<p>Dismissed from Findings.</p>`
-    }${legacy}<p class="muted">No issue was filed. It stays in this history.</p>${stageAllows(item, "reopen") ? `<button class="btn" type="button" data-improvement-action="reopen"${disabled(view)}>Reopen for review</button>` : ""}</section>`;
+    return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decision</h3>${`<p>Rejected${item.decision.by ? ` by ${esc(item.decision.by)}` : ""}${item.decision.at ? ` ${esc(utcTime(item.decision.at))}` : ""}: ${esc(item.decision.reason ?? "")}</p>`}<p class="muted">No issue was filed. It stays in this history.</p>${stageAllows(item, "reopen") ? `<button class="btn" type="button" data-improvement-action="reopen"${disabled(view)}>Reopen for review</button>` : ""}</section>`;
   const intent =
     item.decision.intent === "link"
       ? `link ${item.decision.intentIssueId ? `<span class="lin-id">${esc(item.decision.intentIssueId)}</span>` : "an existing issue"}${item.decision.evidenceComment ? " and add an evidence comment" : ""}`
       : "create an issue";
   const accepted = `<p>Accepted${item.decision.by ? ` by ${esc(item.decision.by)}` : ""}${item.decision.at ? ` ${esc(utcTime(item.decision.at))}` : ""}: ${intent}.</p>`;
   const linked = item.issue ? `<p>Linear issue ${issueLink(item.issue)}.</p>` : "";
-  return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decision and filing</h3>${accepted}${linked}${legacy}${renderDeliveries(view, detail)}</section>`;
+  return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decision and filing</h3>${accepted}${linked}${renderDeliveries(view, detail)}</section>`;
 }
 
 function renderChoices(view: ImprovementsView, detail: ImprovementDetail): string {
