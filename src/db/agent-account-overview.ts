@@ -1,3 +1,4 @@
+import { providerUsageSteps } from "./account-provider-usage";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
@@ -22,7 +23,7 @@ export type AgentAccountOverview = {
   extraUsage: boolean;
   signingIn: boolean;
   credential: { refreshedAt: number; runner: string | null } | null;
-  usage: { limits: RunnerAgentLimit[]; observedAt: number } | null;
+  usage: { limits: RunnerAgentLimit[]; observedAt: number; stale?: boolean } | null;
   lease: {
     runner: string;
     runId: string;
@@ -102,6 +103,11 @@ export function* agentAccountOverviewSteps(
         ),
     )).map((row) => row.accountId),
   );
+  const providerUsage = new Map<string, NonNullable<AgentAccountOverview["usage"]>>();
+  for (const id of ids) {
+    const stored = yield* providerUsageSteps(q, id);
+    if (stored?.limitsJson) providerUsage.set(id, JSON.parse(stored.limitsJson));
+  }
   const expired = new Set<string>();
   for (const row of accounts) if (yield* agentAuthFailureSteps(q, row.id)) expired.add(row.id);
   return accounts.map((row) => {
@@ -121,9 +127,10 @@ export function* agentAccountOverviewSteps(
               runner: row.refreshedBy === null ? null : (runners.get(row.refreshedBy) ?? null),
             },
       usage:
-        row.limits === null || row.observedAt === null
+        providerUsage.get(row.id) ??
+        (row.limits === null || row.observedAt === null
           ? null
-          : { limits: JSON.parse(row.limits) as RunnerAgentLimit[], observedAt: row.observedAt },
+          : { limits: JSON.parse(row.limits) as RunnerAgentLimit[], observedAt: row.observedAt }),
       lease: lease
         ? {
             runner: runners.get(lease.runnerId) ?? lease.runnerId,

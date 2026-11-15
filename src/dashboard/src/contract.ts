@@ -2536,3 +2536,9 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], path: str
   }
   return value as T;
 }
+
+export type AgentAccountUsage = {
+  limits: { window: string; usedPercent: number; resetsAt: number | null }[];
+  observedAt: number;
+  stale?: boolean;
+};

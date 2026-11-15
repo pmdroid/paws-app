@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { createAgentAccountSettings, type CentralAccount } from "./agent-account-settings";
+import {
+  createAgentAccountSettings,
+  renderAgentAccountSettings,
+  type CentralAccount,
+} from "./agent-account-settings";
 import { renderSettingsPage, setSettingsAdmin } from "./settings-pages";
 import { settleReactWork } from "./settle-react";
 
@@ -8,7 +12,7 @@ const ENGINE = "http://127.0.0.1:8787";
 const account = (id: string, label: string): CentralAccount => ({
   ...{ id, label, agent: "claude", extraUsage: false, signingIn: false, lease: null },
   credential: { refreshedAt: 0, runner: "R1" },
-  usage: { limits: [{ window: "5h", usedPercent: 40 }] },
+  usage: { limits: [{ window: "5h", usedPercent: 40, resetsAt: null }], observedAt: 0 },
 });
 const GLOBALS = ["window", "document", "Element", "HTMLElement", "Event"] as const;
 const saved = new Map<string, unknown>();
@@ -117,7 +121,7 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
     "Home",
   ]);
   expect(root.querySelector("[data-account-status]")?.textContent).toContain(
-    "by agentbox · 5h: 40% used · Extra usage off",
+    "by agentbox · Extra usage off",
   );
   const form = root.querySelector("[data-account-add]")!;
   (form.querySelector("select") as unknown as HTMLSelectElement).value = "codex";
@@ -231,5 +235,51 @@ for (const provider of ["claude", "grok", "opencode"] as const) {
     expect(opened[0]?.slice(0, 2)).toEqual([{ id: "R1", name: "agentbox" }, provider]);
     expect(opened[0]?.slice(3)).toEqual(["B1", "Work"]);
     expect(window.document.querySelector("[data-device-code]")).toBeNull();
+  });
+}
+
+for (const manage of [true, false]) {
+  test(`usage windows and account states render with management ${manage}`, () => {
+    const reset = Date.now() + 3600000;
+    const row = account("A1", "Work");
+    row.usage = {
+      observedAt: Date.now() - 180000,
+      limits: [
+        { window: "5-hour", usedPercent: 62, resetsAt: reset },
+        { window: "Weekly", usedPercent: 30, resetsAt: reset + 86400000 },
+      ],
+    };
+    const render = () => {
+      window.document.body.innerHTML = renderAgentAccountSettings({
+        canManage: manage,
+        accounts: [row],
+        runners: {},
+        busy: null,
+        error: null,
+        confirm: null,
+      });
+      return window.document.body.textContent;
+    };
+    expect(render()).toContain("5-hour 62% · resets");
+    expect(render()).toContain("Weekly 30% · resets");
+    expect(render()).toContain(
+      new Date(reset).toLocaleString([], {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    );
+    expect(render()).toContain("updated 3 min ago");
+    expect(window.document.querySelectorAll("progress")).toHaveLength(2);
+    expect(window.document.querySelector("progress")?.value).toBe(62);
+    row.usage.stale = true;
+    row.usage.limits[0]!.usedPercent = 100;
+    expect(render()).toContain("stale");
+    expect(render()).toContain("Limit reached until");
+    row.extraUsage = true;
+    expect(render()).toContain("Using extra usage");
+    row.usage = null;
+    render();
+    expect(window.document.querySelector("[data-account-usage]")).toBeNull();
   });
 }

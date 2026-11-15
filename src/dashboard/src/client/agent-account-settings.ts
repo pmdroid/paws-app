@@ -1,3 +1,4 @@
+import type { AgentAccountUsage } from "../contract";
 import { journalCaught } from "../journal";
 import { openAgentAccounts } from "./agent-accounts";
 import { openAgentDeviceDialog } from "./agent-device-dialog";
@@ -16,7 +17,7 @@ export type CentralAccount = {
   signingIn: boolean;
   health?: "healthy" | "expiring";
   credential: { refreshedAt: number; runner: string | null; expiresAt?: number } | null;
-  usage: { limits: { window: string; usedPercent: number }[] } | null;
+  usage: AgentAccountUsage | null;
   lease: { runner: string; issue: { identifier: string } | null } | null;
 };
 export type AccountsView = {
@@ -44,16 +45,44 @@ function accountStatus(account: CentralAccount, runners: Record<string, string>)
     parts.push(
       `In use by ${account.lease.issue?.identifier ?? "a run"} on ${runner(account.lease.runner)}`,
     );
-  for (const limit of account.usage?.limits ?? [])
-    parts.push(`${limit.window}: ${limit.usedPercent}% used`);
   parts.push(account.extraUsage ? "Extra usage on" : "Extra usage off");
   return parts.join(" · ");
+}
+
+function accountUsage(account: CentralAccount): string {
+  const usage = account.usage;
+  if (!usage) return "";
+  const reset = (time: number) =>
+    new Date(time).toLocaleString([], {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const windows = usage.limits
+    .map((limit) => {
+      const label = `${limit.window} ${limit.usedPercent}%${limit.resetsAt === null ? "" : ` · resets ${reset(limit.resetsAt)}`}`;
+      return `<div class="col"><span class="sub">${esc(label)}</span><progress max="100" value="${Math.min(100, Math.max(0, limit.usedPercent))}" aria-label="${esc(limit.window)} usage"></progress></div>`;
+    })
+    .join("");
+  const reached = usage.limits.filter((limit) => limit.usedPercent >= 100);
+  const resets = reached.flatMap((limit) => (limit.resetsAt === null ? [] : [limit.resetsAt]));
+  const state = reached.length
+    ? account.extraUsage
+      ? "Using extra usage"
+      : resets.length === reached.length
+        ? `Limit reached until ${reset(Math.max(...resets))}`
+        : "Limit reached"
+    : "";
+  const freshness = usage.stale
+    ? "stale"
+    : `updated ${Math.max(0, Math.floor((Date.now() - usage.observedAt) / 60000))} min ago`;
+  return `<div class="col" data-account-usage>${windows}<p class="sub">${esc([state, freshness].filter(Boolean).join(" · "))}</p></div>`;
 }
 
 function accountRow(account: CentralAccount, index: number, count: number, view: AccountsView) {
   const label = esc(account.label);
   const busy = view.busy ? " disabled" : "";
-  const status = `<p class="sub" data-account-status>${esc(accountStatus(account, view.runners))}</p>`;
+  const status = `<p class="sub" data-account-status>${esc(accountStatus(account, view.runners))}</p>${accountUsage(account)}`;
   if (!view.canManage)
     return `<li class="settings-card" data-account-id="${esc(account.id)}"><strong>${label}</strong>${status}</li>`;
   const controls =
