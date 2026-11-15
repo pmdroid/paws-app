@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { reviewInstructions } from "../closeout-spec";
+import { reviewInstructions } from "../closeout";
 import type {
   AcpEvent,
   AgentRole,

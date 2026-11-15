@@ -105,3 +105,5 @@ export type {
 
 export { bypassable, bypassSummary } from "./bypass";
 export type { CloseoutBypass } from "./bypass";
+
+export { reviewInstructions } from "../closeout-spec";
