@@ -1,20 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pawsPaths } from "../src/config";
-import {
-  openDatabase,
-  openPawsStore,
-  setAsideSqliteDatabase,
-  setSyncCursorSteps,
-  syncCursorSteps,
-  type Db,
-} from "../src/db";
-import { setJournalSink } from "../src/journal";
+import { openPawsStore, setSyncCursorSteps, syncCursorSteps, type Db } from "../src/db";
 import { tempHome } from "./helpers";
 import { pgliteServer } from "./pglite";
-
-const NOW = new Date("2026-11-11T03:04:05.678Z");
 
 async function roundTrip(store: Db, name: string) {
   await store.run((q) => setSyncCursorSteps(q, name, 42));
@@ -72,53 +62,5 @@ describe("openPawsStore", () => {
         pgliteDir: tempHome(),
       }),
     ).rejects.toThrow();
-  });
-});
-
-describe("setAsideSqliteDatabase", () => {
-  test("renames paws.db with its WAL and SHM, untouched, once", () => {
-    const home = tempHome();
-    const path = join(home, "paws.db");
-    const db = openDatabase(path);
-    db.run("PRAGMA wal_autocheckpoint = 0");
-    db.run("CREATE TABLE kept (value TEXT)");
-    db.run("INSERT INTO kept VALUES ('old')");
-    const before = {
-      file: readFileSync(path),
-      wal: readFileSync(`${path}-wal`),
-      shm: readFileSync(`${path}-shm`),
-    };
-    const lines: string[] = [];
-    const restore = setJournalSink((line) => lines.push(line));
-    let moved: string | null;
-    try {
-      moved = setAsideSqliteDatabase(path, NOW);
-    } finally {
-      restore();
-      db.close();
-    }
-    const target = join(home, "paws.db.pre-postgres-20261111T030405Z");
-    expect(moved).toBe(target);
-    expect(lines).toEqual([
-      `database moved to Postgres: the SQLite database was renamed to ${target}; Paws starts on a fresh database`,
-    ]);
-    expect(readFileSync(target)).toEqual(before.file);
-    expect(readFileSync(`${target}-wal`)).toEqual(before.wal);
-    expect(readFileSync(`${target}-shm`)).toEqual(before.shm);
-    const names = readdirSync(home).sort();
-    expect(names).toEqual([
-      "paws.db.pre-postgres-20261111T030405Z",
-      "paws.db.pre-postgres-20261111T030405Z-shm",
-      "paws.db.pre-postgres-20261111T030405Z-wal",
-    ]);
-
-    expect(setAsideSqliteDatabase(path, new Date(NOW.getTime() + 60_000))).toBeNull();
-    expect(readdirSync(home).sort()).toEqual(names);
-  });
-
-  test("does nothing when there is no paws.db", () => {
-    const home = tempHome();
-    expect(setAsideSqliteDatabase(join(home, "paws.db"), NOW)).toBeNull();
-    expect(readdirSync(home)).toEqual([]);
   });
 });

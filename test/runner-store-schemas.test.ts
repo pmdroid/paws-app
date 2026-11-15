@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { getTableName } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
-import { openDatabase } from "../src/db";
+import { openDatabase } from "../src/runner-journal";
 import { openRunnerDaemon } from "../src/runner-daemon";
 import { createCommandStore } from "../src/runner-daemon/commands-ddl";
 import * as commandSchema from "../src/runner-daemon/commands-schema";

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getWorkItem, insertQueuedItem, openDatabase, setJournalSink } from "../src/db";
+import { getWorkItem, insertQueuedItem } from "../src/db";
 import { saveSecret, useDatabaseSecrets } from "../src/credentials";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
@@ -32,55 +32,6 @@ test("without [database] url Paws starts on PGlite in pglite/ and keeps its rows
   } finally {
     await second.stop();
   }
-});
-
-test("an existing paws.db is renamed with its WAL and SHM, untouched, and only once", async () => {
-  const home = tempHome();
-  const path = join(home, "paws.db");
-  const old = openDatabase(path);
-  old.run("PRAGMA wal_autocheckpoint = 0");
-  old.run("CREATE TABLE work_item(id TEXT PRIMARY KEY)");
-  old.run("INSERT INTO work_item(id) VALUES('old')");
-  const before = {
-    file: readFileSync(path),
-    wal: readFileSync(`${path}-wal`),
-    shm: readFileSync(`${path}-shm`),
-  };
-  const lines: string[] = [];
-  const restore = setJournalSink((line) => lines.push(line));
-  try {
-    const paws = await start(home);
-    try {
-      expect(await getWorkItem(paws.store, "old")).toBeNull();
-    } finally {
-      await paws.stop();
-    }
-  } finally {
-    restore();
-    old.close();
-  }
-  const moved = readdirSync(home)
-    .filter((name) => name.startsWith("paws.db.pre-postgres-"))
-    .sort();
-  expect(moved).toHaveLength(3);
-  const [target, shm, wal] = moved.map((name) => join(home, name)) as [string, string, string];
-  expect(shm).toBe(`${target}-shm`);
-  expect(wal).toBe(`${target}-wal`);
-  expect(existsSync(path)).toBe(false);
-  expect(readFileSync(target)).toEqual(before.file);
-  expect(readFileSync(wal)).toEqual(before.wal);
-  expect(readFileSync(shm)).toEqual(before.shm);
-  expect(lines.filter((line) => line.startsWith("database moved to Postgres"))).toEqual([
-    `database moved to Postgres: the SQLite database was renamed to ${target}; Paws starts on a fresh database`,
-  ]);
-
-  const again = await start(home);
-  await again.stop();
-  expect(
-    readdirSync(home)
-      .filter((name) => name.startsWith("paws.db"))
-      .sort(),
-  ).toEqual(moved);
 });
 
 test("with [database] url Paws migrates that Postgres and runs on it", async () => {

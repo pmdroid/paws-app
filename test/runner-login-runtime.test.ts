@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../src/db";
+import { openDatabase } from "../src/runner-journal";
 import { openRunnerHealthRuntime } from "../src/runner-health-runtime";
 import { RunnerCommandSchema, type RunnerCommand } from "../src/runner-protocol";
 

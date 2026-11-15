@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { openDatabase } from "../db";
+import { openDatabase } from "../runner-journal";
 import { eq, inArray, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createRetroStore } from "./retro-ddl";

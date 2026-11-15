@@ -1,4 +1,4 @@
-import type { Changes, Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 
 export type Orm = BunSQLiteDatabase & { $client: Database };
@@ -12,8 +12,4 @@ export function orm(db: Database): Orm {
     handles.set(db, handle);
   }
   return handle;
-}
-
-export function changes(query: { run(): unknown }): number {
-  return (query.run() as Changes).changes;
 }

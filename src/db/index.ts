@@ -25,7 +25,7 @@ export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
-export { PG_MIGRATIONS_FOLDER, migrationTags, setAsideSqliteDatabase } from "./migrate";
+export { PG_MIGRATIONS_FOLDER, migrationTags } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
 export * from "./pull-request-drafts";
@@ -38,7 +38,6 @@ export * from "./question-handoffs";
 export * from "./policy-outage";
 export * from "./policy-block";
 export * from "./policy-runner-warning";
-export { openDatabase } from "./open";
 export {
   connectPglite,
   connectPostgres,
@@ -53,18 +52,7 @@ export {
 export { checkPostgres, type MigrationReport, type PostgresConnection } from "./db-check";
 export * from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
-export { orm, type Orm } from "./orm";
-export {
-  postgresDb,
-  sqliteDb,
-  type Db,
-  type PgDb,
-  type PgOrm,
-  type Q,
-  type SqliteDb,
-  syncSteps,
-  type Steps,
-} from "./db";
+export { postgresDb, type Db, type PgDb, type PgOrm, type Q, syncSteps, type Steps } from "./db";
 export * as pgSchema from "./schema-pg";
 export * from "./journal";
 export * from "./outbox";

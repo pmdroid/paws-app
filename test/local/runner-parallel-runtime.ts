@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import { readRunnerJob } from "../../src/runner-execution";
 import { openRunnerRuntime } from "../../src/runner-runtime";
 import type { RunnerCommand } from "../../src/runner-protocol";

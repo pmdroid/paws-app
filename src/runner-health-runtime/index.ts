@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { publishRunnerAnswer, removeRunnerAnswers } from "../runner-answers";
-import { openDatabase } from "../db";
+import { openDatabase } from "../runner-journal";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createHealthStore } from "./health-ddl";

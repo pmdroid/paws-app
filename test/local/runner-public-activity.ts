@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
-import { beginImplementRun, insertQueuedItem, openDatabase } from "../../src/db";
+import { beginImplementRun, insertQueuedItem } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import { openExecutionJournal, type WorkCommand } from "../../src/runner-journal";
 import { RunnerEventSchema } from "../../src/runner-protocol";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";

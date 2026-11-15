@@ -135,7 +135,6 @@ import {
   readSettingSteps,
   updateSettingSteps,
   CONFIG_SETTINGS_KEY,
-  setAsideSqliteDatabase,
   openPawsStore,
   type PawsStore,
   prepareShutdown,
@@ -510,7 +509,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ? loadRunnerTranscriptStores(paths.home)
         : undefined;
   const earlyTranscripts = databaseUrl === null ? loadTranscripts() : undefined;
-  setAsideSqliteDatabase(paths.db);
   ensureLayout(paths);
   sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);

@@ -4,11 +4,11 @@ import { join } from "node:path";
 import {
   advanceLinearSessionGeneration,
   consumeWorkspaceBootstrap,
-  openDatabase,
   openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon } from "../../src/runner-daemon";
 import { readRunnerJob } from "../../src/runner-execution";

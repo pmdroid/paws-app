@@ -16,7 +16,6 @@
     "knip:all": "knip",
     "check": "bun run lint && bun run fmt:check && bun run typecheck && bun run test && bun run build:dashboard && bun run links && bun run raw-sql && bun run graphql && bun run knip",
     "build:dashboard": "bun src/dashboard/build.ts",
-    "bench": "bun scripts/bench.ts",
     "verify:local": "bun --no-env-file scripts/verify-local.ts",
     "verify:proof": "bun --no-env-file scripts/verify-proof.ts",
     "verify:ui": "bun run build:dashboard && bun --no-env-file scripts/verify-dashboard-ui.ts",

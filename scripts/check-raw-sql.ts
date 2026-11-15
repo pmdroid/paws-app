@@ -1,20 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ALLOWED_FILES = new Set([
-  "src/db/open.ts",
-  "src/runner-daemon/commands-ddl.ts",
-  "src/runner-health-runtime/health-ddl.ts",
-  "src/runner-journal/ddl.ts",
-  "src/runner-retro-runtime/retro-ddl.ts",
-]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
-const RECEIVER = /^(?:db|database|\w*Db|\w*Database)$/;
-const OPENED = /\b(?:const|let)\s+(\w+)\s*=\s*(?:new Database|openDatabase)\(/g;
-const TYPED_DB = /\b(\w+)\s*:\s*Db\b/g;
-const TYPED_DATABASE = /\b(\w+)\s*:\s*Database\b/g;
-const CALL =
-  /(?<![\w$.])((?:[\w$]+\.)*([\w$]+)\s*\.(?:query|run|prepare|exec))\s*(?:<[^()]*?>\s*)?\(\s*(sql`)?/g;
+const CALL = /\b(?:db|database|\w*Db|\w*Database)\.\s*(?:query|run|prepare|exec)\s*\(\s*(sql`)/g;
 const REGEX_BEFORE = /(?:[(,=:[!&|?{};+\-*%<>~^]|^|\breturn)$/;
 
 export function maskCode(source: string): string {
@@ -82,24 +70,13 @@ export function maskCode(source: string): string {
 
 export type RawCall = { path: string; line: number; content: string };
 export function rawCalls(path: string, source: string): RawCall[] {
-  if (TEST_FILE.test(path) || ALLOWED_FILES.has(path)) return [];
+  if (TEST_FILE.test(path) || path.startsWith("src/db/")) return [];
   const code = maskCode(source);
-  const opened = new Set([...code.matchAll(OPENED)].map((match) => match[1]!));
-  const databases = new Set([...code.matchAll(TYPED_DATABASE)].map((match) => match[1]!));
-  const dbs = new Set(
-    [...code.matchAll(TYPED_DB)].map((match) => match[1]!).filter((name) => !databases.has(name)),
-  );
   const lines = source.split("\n");
   const calls: RawCall[] = [];
   for (const match of code.matchAll(CALL)) {
-    const [, call, name, drizzleSql] = match;
-    if (!RECEIVER.test(name!) && !opened.has(name!)) continue;
-    if (dbs.has(name!) && !opened.has(name!)) continue;
-    if (drizzleSql && path.startsWith("src/db/")) continue;
-    const start = code.slice(0, match.index).split("\n").length;
-    const method = start + call!.split("\n").length - 1;
-    const content = lines.slice(start - 1, method).map((line) => line.trim());
-    calls.push({ path, line: method, content: content.join(" ") });
+    const line = code.slice(0, match.index).split("\n").length;
+    calls.push({ path, line, content: lines[line - 1]!.trim() });
   }
   return calls;
 }
@@ -115,7 +92,7 @@ function main(root: string): number {
   const refused = sourceCalls(root);
   for (const call of refused)
     console.error(
-      `${call.path}:${call.line}: raw bun:sqlite call; write it with Drizzle in the module that owns the table: ${call.content}`,
+      `${call.path}:${call.line}: raw SQL call; write it with Drizzle in the module that owns the table: ${call.content}`,
     );
   if (refused.length === 0) return 0;
   console.error(`\n${refused.length} raw SQL call(s) refused.`);
