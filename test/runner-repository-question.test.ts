@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import { expect, test } from "bun:test";
 import { FakeClock, JOB_KIND, RunnerCapacityWait } from "../src/core";
 import {
@@ -85,8 +86,8 @@ async function workspace(db: Db) {
   });
 }
 
-function addRunner(db: Db, id: string, seenAt: number) {
-  return seed(
+async function addRunner(db: Db, id: string, seenAt: number) {
+  await seed(
     db,
     (q) =>
       q.orm.insert(q.t.runner).values({
@@ -104,6 +105,7 @@ function addRunner(db: Db, id: string, seenAt: number) {
         .insert(q.t.runnerAgentPolicy)
         .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready: 1 }))),
   );
+  await bindFixtureAccounts(db, id);
 }
 
 function orchestrator(db: Db, clock: FakeClock, jobs: JobLoop) {

@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import {
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -60,6 +61,7 @@ export async function workspaceWithRunners(db: Db) {
     );
     await recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
     await recordRunnerRepositories(db, id, repositories, NOW);
+    await bindFixtureAccounts(db, id);
     return id;
   };
   const queue = async (id: string) => {

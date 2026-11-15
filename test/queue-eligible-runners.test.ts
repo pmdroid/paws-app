@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
@@ -81,8 +82,8 @@ async function workspace(db: Db) {
   return users;
 }
 
-function addRunner(db: Db, id: string, ownerId: string, seenAt: number): Promise<void> {
-  return seed(
+async function addRunner(db: Db, id: string, ownerId: string, seenAt: number): Promise<void> {
+  await seed(
     db,
     (q) =>
       q.orm.insert(q.t.runner).values({
@@ -100,6 +101,7 @@ function addRunner(db: Db, id: string, ownerId: string, seenAt: number): Promise
         .insert(q.t.runnerAgentPolicy)
         .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready: 1 }))),
   );
+  await bindFixtureAccounts(db, id);
 }
 
 function orchestrator(db: Db, clock: FakeClock) {

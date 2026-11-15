@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "../dialects";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createAcpActivityReporter } from "../../src/loop";
@@ -2482,6 +2483,7 @@ export async function probeRunnerBackend(
             .values({ runnerId: id, agent: "codex", ready: 1, virtualFinish: index * 10 }),
       );
     }
+    await bindFixtureAccounts(db);
     const placement = createRunnerPlacement({
       store: db,
       now: () => now,
