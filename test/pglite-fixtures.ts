@@ -172,12 +172,14 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       )
     ) {
       const account = await createAgentAccount(db, {
+        ownerUserId: "owner",
         workspaceId: row.workspaceId,
         agent: row.agent as RunnerCodingAgent,
         label: row.runnerId + "-" + row.agent,
         now: row.now,
       });
       await bindAgentAccount(db, {
+        userId: "owner",
         workspaceId: row.workspaceId,
         accountId: account.id,
         runnerId: row.runnerId,

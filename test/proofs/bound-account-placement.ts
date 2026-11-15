@@ -64,8 +64,18 @@ export default {
       );
     }
     const at = { workspaceId: workspace.id, now: NOW };
-    const a = await data.createAgentAccount(db, { ...at, agent: "claude", label: "alternate" });
-    const alternate = await data.bindAgentAccount(db, { ...at, runnerId, accountId: a.id });
+    const a = await data.createAgentAccount(db, {
+      ownerUserId: userId,
+      ...at,
+      agent: "claude",
+      label: "alternate",
+    });
+    const alternate = await data.bindAgentAccount(db, {
+      userId: userId,
+      ...at,
+      runnerId,
+      accountId: a.id,
+    });
     const [next] = await placement.candidates({ ...request, excludeRunnerIds: [binding.id] });
     expect("failover chooses the alternate binding", next?.account?.bindingId === alternate.id);
   },

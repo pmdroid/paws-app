@@ -12,7 +12,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
-import { workspace } from "./workspace";
+import { workspace, workspaceMember } from "./workspace";
 import { runner } from "./runners";
 
 export const agentAccount = pgTable(
@@ -22,6 +22,7 @@ export const agentAccount = pgTable(
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspace.id),
+    ownerUserId: text("owner_user_id"),
     agent: text().notNull(),
     label: text().notNull(),
     legacy: integer().default(0).notNull(),
@@ -34,6 +35,11 @@ export const agentAccount = pgTable(
     extraUsage: integer("extra_usage").default(0).notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.ownerUserId],
+      foreignColumns: [workspaceMember.workspaceId, workspaceMember.userId],
+      name: "agent_account_owner_fk",
+    }),
     unique().on(table.id, table.workspaceId, table.agent),
     uniqueIndex("agent_account_label")
       .on(table.workspaceId, table.agent, sql`lower(label)`)

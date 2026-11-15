@@ -205,6 +205,7 @@ async function setup() {
     now: () => now,
   });
   const account = await createAgentAccount(db, {
+    ownerUserId: userId,
     workspaceId: workspace.id,
     agent: "claude",
     label: "Shared",
@@ -222,7 +223,13 @@ async function setup() {
     ).runnerId;
   }
   for (const runnerId of Object.values(runners))
-    await bindAgentAccount(db, { workspaceId: workspace.id, runnerId, accountId: account.id, now });
+    await bindAgentAccount(db, {
+      userId: userId,
+      workspaceId: workspace.id,
+      runnerId,
+      accountId: account.id,
+      now,
+    });
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     store: db,

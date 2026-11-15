@@ -184,10 +184,15 @@ describePglite((connect) => {
         refreshedAt: NOW,
         runner: "R2",
       });
-      const member = { ...principal, role: "member" as const };
-      expect((await send("GET", "", undefined, member)).body.canManage).toBe(false);
+      const member = { ...principal, userId: "bea", role: "member" as const };
+      expect((await send("GET", "", undefined, member)).body.canManage).toBe(true);
+      expect((await send("GET", "", undefined, member)).body.accounts).toEqual([]);
+      const mine = await send("POST", "", { agent: "codex", label: "Mine" }, member);
+      expect(mine.status).toBe(201);
+      expect(
+        (await send("GET", "", undefined, member)).body.accounts.map((a) => a.id),
+      ).toEqual([mine.body.id]);
       for (const [method, path, body] of [
-        ["POST", "", { agent: "codex", label: "Mine" }],
         ["PUT", "/order", { agent: "claude", ids: [work.id, home.id] }],
         ["PUT", `/${work.id}/extra-usage`, { extraUsage: false }],
         ["POST", `/${work.id}/sign-in`, undefined],

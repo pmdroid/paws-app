@@ -84,25 +84,29 @@ async function seed(db: Db) {
     ),
   );
   const a = await createAgentAccount(db, {
+    ownerUserId: "U1",
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
   const b = await createAgentAccount(db, {
+    ownerUserId: "U1",
     workspaceId: "W1",
     agent: "claude",
     label: "B",
     now: NOW,
   });
   const c = await createAgentAccount(db, {
+    ownerUserId: "U1",
     workspaceId: "W1",
     agent: "codex",
     label: "C",
     now: NOW,
   });
   const bind = async (accountId: string, runnerId: string) =>
-    (await bindAgentAccount(db, { workspaceId: "W1", accountId, runnerId, now: NOW })).id;
+    (await bindAgentAccount(db, { userId: "U1", workspaceId: "W1", accountId, runnerId, now: NOW }))
+      .id;
   return {
     accounts: { a: a.id, b: b.id, c: c.id },
     bindings: {
@@ -368,6 +372,7 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
   await setRunner(db, { lastSeenAt: NOW - 120_000 }, "R3");
   const r3 = (
     await bindAgentAccount(db, {
+      userId: "U1",
       workspaceId: "W1",
       accountId: accounts.c,
       runnerId: "R3",

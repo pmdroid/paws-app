@@ -104,9 +104,15 @@ async function acme() {
     return { placed, rejected };
   };
   const createAccount = (label: string) =>
-    createAgentAccount(db, { workspaceId: workspace.id, agent: "claude", label, now });
+    createAgentAccount(db, {
+      ownerUserId: ada,
+      workspaceId: workspace.id,
+      agent: "claude",
+      label,
+      now,
+    });
   const bind = (runnerId: string, accountId: string) =>
-    bindAgentAccount(db, { workspaceId: workspace.id, runnerId, accountId, now });
+    bindAgentAccount(db, { userId: ada, workspaceId: workspace.id, runnerId, accountId, now });
   return { db, now, workspaceId: workspace.id, item, placement, place, createAccount, bind };
 }
 

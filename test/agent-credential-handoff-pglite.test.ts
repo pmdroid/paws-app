@@ -90,7 +90,13 @@ describePglite((connect) => {
     }
     const account = (workspaceId: string, label: string) =>
       db.transaction((q) =>
-        createAgentAccountSteps(q, { workspaceId, agent: "codex", label, now: NOW }),
+        createAgentAccountSteps(q, {
+          ownerUserId: "owner",
+          workspaceId,
+          agent: "codex",
+          label,
+          now: NOW,
+        }),
       );
     const stored = (await account("acme", "Stored")).id;
     const fresh = (await account("acme", "Fresh")).id;
@@ -138,6 +144,7 @@ describePglite((connect) => {
 
     const oauthClaude = await db.transaction((q) =>
       createAgentAccountSteps(q, {
+        ownerUserId: "owner",
         workspaceId: "acme",
         agent: "claude",
         label: "OAuth",
@@ -289,6 +296,7 @@ describePglite((connect) => {
     ).rejects.toThrow();
     const claude = await db.transaction((q) =>
       createAgentAccountSteps(q, {
+        ownerUserId: "owner",
         workspaceId: "acme",
         agent: "claude",
         label: "Claude",
@@ -333,6 +341,7 @@ describePglite((connect) => {
     await expect(work.currentCredential("new", stored)).rejects.toThrow();
     const binding = await db.transaction((q) =>
       bindAgentAccountSteps(q, {
+        userId: "owner",
         workspaceId: "acme",
         accountId: stored,
         runnerId: "new",

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AgentAccountError,
+  getAgentAccountSteps,
   agentAccountOverviewSteps,
   centralSignInTargetSteps,
   createAgentAccountSteps,
@@ -16,7 +17,7 @@ import {
   claudeTokenHealth,
   RUNNER_CODING_AGENTS,
 } from "../runner-protocol";
-import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
+import { type WorkspacePrincipal } from "../workspace";
 
 const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
@@ -30,6 +31,8 @@ const Order = z.strictObject({ agent, ids: z.array(z.string().min(1).max(128)).m
 const ExtraUsage = z.strictObject({ extraUsage: z.boolean() });
 
 const STATUS: Record<string, number> = {
+  "not-your-account": 403,
+  "not-your-runner": 403,
   not_found: 404,
   foreign_workspace: 404,
   removed: 404,
@@ -62,10 +65,21 @@ export function createAccountManagement(
     const { workspaceId } = principal;
     const [, order, accountId, action] = match;
     const method = request.method;
-    const admin = isWorkspaceAdmin(principal.role);
+    const userId = principal.userId;
     try {
+      const requireOwner = async (id: string) => {
+        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, id));
+        if (account.ownerUserId !== userId)
+          throw new AgentAccountError(
+            "not-your-account",
+            "Agent account belongs to another member",
+          );
+      };
+      if (accountId) await requireOwner(accountId);
       if (!order && !accountId && method === "GET") {
-        const accounts = await store.run((q) => agentAccountOverviewSteps(q, workspaceId, now()));
+        const accounts = await store.run((q) =>
+          agentAccountOverviewSteps(q, workspaceId, now(), userId),
+        );
         const metadata = await store.run(function* (q) {
           const result = [];
           for (const account of accounts) {
@@ -94,24 +108,23 @@ export function createAccountManagement(
           }
           return result;
         });
-        return json({ canManage: admin, accounts: metadata });
+        return json({ canManage: true, accounts: metadata });
       }
       if (action === "device" && (method === "POST" || method === "GET")) {
-        if (!admin) return json({ error: "Only workspace admins can change agent accounts." }, 403);
         if (!options.agentAuth) return json({ error: "Device sign-in is unavailable." }, 503);
         return json(await options.agentAuth.device(workspaceId, accountId!, method === "POST"));
       }
       if (method === "GET") return json({ error: "Unsupported agent account request." }, 405);
-      if (!admin) return json({ error: "Only workspace admins can change agent accounts." }, 403);
       if (!order && !accountId && method === "POST") {
         const input = Create.parse(await request.json());
         const account = await store.transaction((q) =>
-          createAgentAccountSteps(q, { workspaceId, ...input, now: now() }),
+          createAgentAccountSteps(q, { workspaceId, ownerUserId: userId, ...input, now: now() }),
         );
         return json({ id: account.id, agent: account.agent, label: account.label }, 201);
       }
       if (order && method === "PUT") {
         const input = Order.parse(await request.json());
+        for (const id of input.ids) await requireOwner(id);
         await store.transaction((q) =>
           orderAgentAccountsSteps(q, { workspaceId, ...input, now: now() }),
         );

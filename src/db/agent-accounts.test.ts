@@ -130,6 +130,7 @@ const probe = (
 test("one account has several bindings and rejects duplicates and foreign workspaces", async () => {
   const db = await fresh();
   const a = await createAgentAccount(db, {
+    ownerUserId: "user-W1",
     workspaceId: "W1",
     agent: "claude",
     label: "Team",
@@ -139,6 +140,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await createAgentAccount(db, {
+          ownerUserId: "user-W1",
           workspaceId: "W1",
           agent: "claude",
           label: " team ",
@@ -149,6 +151,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     (
       await createAgentAccount(db, {
+        ownerUserId: "user-W1",
         workspaceId: "W1",
         agent: "codex",
         label: "Team",
@@ -160,6 +163,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await createAgentAccount(db, {
+          ownerUserId: "user-W1",
           workspaceId: "W1",
           agent: "claude",
           label: "",
@@ -171,6 +175,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await createAgentAccount(db, {
+          ownerUserId: "user-W1",
           workspaceId: "nope",
           agent: "claude",
           label: "X",
@@ -180,12 +185,14 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   ).toBe("not_found");
 
   const first = await bindAgentAccount(db, {
+    userId: "user-W1",
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
     now: NOW,
   });
   const second = await bindAgentAccount(db, {
+    userId: "user-W1",
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R2",
@@ -200,6 +207,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await bindAgentAccount(db, {
+          userId: "user-W1",
           workspaceId: "W1",
           accountId: a.id,
           runnerId: "R1",
@@ -211,6 +219,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await bindAgentAccount(db, {
+          userId: "user-W1",
           workspaceId: "W1",
           accountId: a.id,
           runnerId: "R3",
@@ -222,6 +231,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
     await code(
       async () =>
         await bindAgentAccount(db, {
+          userId: "user-W1",
           workspaceId: "W2",
           accountId: a.id,
           runnerId: "R3",
@@ -246,6 +256,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
   expect(
     (
       await bindAgentAccount(db, {
+        userId: "user-W1",
         workspaceId: "W1",
         accountId: a.id,
         runnerId: "R1",
@@ -258,6 +269,7 @@ test("one account has several bindings and rejects duplicates and foreign worksp
 test("the schema keeps each binding to one workspace, account and agent", async () => {
   const db = await fresh();
   const a = await createAgentAccount(db, {
+    ownerUserId: "user-W1",
     workspaceId: "W1",
     agent: "claude",
     label: "A",
@@ -338,12 +350,14 @@ test("commands without an account record the runner's legacy identity", async ()
 test("a named account is refused unless the runner reports the binding", async () => {
   const db = await fresh();
   const a = await createAgentAccount(db, {
+    ownerUserId: "user-W1",
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
   const bound = await bindAgentAccount(db, {
+    userId: "user-W1",
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
@@ -390,12 +404,14 @@ test("a named account is refused unless the runner reports the binding", async (
 test("identity stays attached after an account is disabled or removed", async () => {
   const db = await fresh();
   const a = await createAgentAccount(db, {
+    ownerUserId: "user-W1",
     workspaceId: "W1",
     agent: "claude",
     label: "A",
     now: NOW,
   });
   const bound = await bindAgentAccount(db, {
+    userId: "user-W1",
     workspaceId: "W1",
     accountId: a.id,
     runnerId: "R1",
@@ -447,6 +463,7 @@ test("identity stays attached after an account is disabled or removed", async ()
   expect(
     (
       await createAgentAccount(db, {
+        ownerUserId: "user-W1",
         workspaceId: "W1",
         agent: "claude",
         label: "A",
@@ -479,6 +496,7 @@ test("identity stays attached after an account is disabled or removed", async ()
     await code(
       async () =>
         await bindAgentAccount(db, {
+          userId: "user-W1",
           workspaceId: "W1",
           accountId: "legacy_claude_W1",
           runnerId: "R1",

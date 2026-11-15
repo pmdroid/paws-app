@@ -87,6 +87,7 @@ async function fixture() {
   const named = async (label: string) =>
     (
       await createAgentAccount(db, {
+        ownerUserId: owner,
         workspaceId: workspace.id,
         agent: "claude",
         label,
@@ -101,6 +102,7 @@ async function fixture() {
   const bind = async (accountId: string, runnerId: string) =>
     (
       await bindAgentAccount(db, {
+        userId: owner,
         workspaceId: workspace.id,
         accountId,
         runnerId,

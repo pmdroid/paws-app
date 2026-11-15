@@ -113,12 +113,14 @@ async function fixture(runnerVersion = "0.1.61") {
   });
   const health = createRunnerHealth({ store: db, work, now: () => clock.at });
   const account = await createAgentAccount(db, {
+    ownerUserId: userId,
     workspaceId: workspace.id,
     agent: "codex",
     label: "Second",
     now,
   });
   const binding = await bindAgentAccount(db, {
+    userId: account.ownerUserId!,
     workspaceId: workspace.id,
     accountId: account.id,
     runnerId,
@@ -235,6 +237,7 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
   const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding } =
     await fixture();
   const other = await bindAgentAccount(db, {
+    userId: account.ownerUserId!,
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,
@@ -277,6 +280,7 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
     /not available/,
   );
   const elsewhere = await bindAgentAccount(db, {
+    userId: account.ownerUserId!,
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,

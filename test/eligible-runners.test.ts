@@ -97,12 +97,14 @@ async function workspace(runners: Record<string, Runner>) {
     );
     if (runner.ready !== 0 && runner.status !== "revoked") {
       const account = await createAgentAccount(db, {
+        ownerUserId: users[runner.owner]!,
         workspaceId: ws.id,
         agent: "codex",
         label: id,
         now,
       });
       const binding = await bindAgentAccount(db, {
+        userId: users[runner.owner]!,
         workspaceId: ws.id,
         accountId: account.id,
         runnerId: id,

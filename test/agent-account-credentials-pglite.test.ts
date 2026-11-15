@@ -40,7 +40,13 @@ async function setup(connect: () => Promise<PgliteTestDb>) {
   await seedRunner(db, "R2");
   const account = (label: string) =>
     db.transaction((q) =>
-      createAgentAccountSteps(q, { workspaceId: "acme", agent: "claude", label, now: NOW }),
+      createAgentAccountSteps(q, {
+        ownerUserId: "owner",
+        workspaceId: "acme",
+        agent: "claude",
+        label,
+        now: NOW,
+      }),
     );
   const secrets = mkdtempSync(join(tmpdir(), "paws-agent-credential-"));
   dirs.push(secrets);

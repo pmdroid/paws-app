@@ -173,15 +173,12 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     if (ready || (delegatorRunner === "unsigned" && name === "member-vm")) {
       const common = { workspaceId: workspace.id, now };
       const { id } = await createAgentAccount(db, {
+        ownerUserId: userId,
         ...common,
         agent: "claude",
         label: name,
       });
-      await bindAgentAccount(db, {
-        ...common,
-        accountId: id,
-        runnerId,
-      });
+      await bindAgentAccount(db, { userId: userId, ...common, accountId: id, runnerId });
       if (!ready)
         await setAgentAccountEnabled(db, {
           ...common,
