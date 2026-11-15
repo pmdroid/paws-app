@@ -264,7 +264,7 @@ test.skipIf(process.platform !== "linux")(
 test.skipIf(process.platform !== "linux")(
   "lost publication Git ownership reports cleanup failure before returning",
   async () => {
-    const root = await mkdtemp(join(tmpdir(), "paws-publication-owner-"));
+    const root = await mkdtemp(join(tmpdir(), "paws-publication-process-anchor.ts-owner-"));
     const script = join(root, "wait.js");
     const marker = join(root, "owner.json");
     let cleanupFailed = false;
@@ -276,7 +276,7 @@ test.skipIf(process.platform !== "linux")(
     try {
       writeFileSync(
         script,
-        `const fs=require("node:fs"); process.on("SIGTERM", () => {}); let anchor=process.ppid; while(!fs.readFileSync("/proc/"+anchor+"/cmdline", "utf8").includes("process-anchor.ts")) { const stat=fs.readFileSync("/proc/"+anchor+"/stat", "utf8"); anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]); } fs.writeFileSync(process.argv[2], ""); setTimeout(() => fs.writeFileSync(process.argv[2], JSON.stringify({ pid:process.pid, anchor })), 100); setInterval(() => {}, 1000);`,
+        `const fs=require("node:fs"); process.on("SIGTERM", () => {}); const stat=fs.readFileSync("/proc/self/stat", "utf8"); const anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[2]); fs.writeFileSync(process.argv[2], ""); setTimeout(() => fs.writeFileSync(process.argv[2], JSON.stringify({ pid:process.pid, anchor })), 100); setInterval(() => {}, 1000);`,
       );
       pending = f.guarded
         .gitExec(
@@ -298,6 +298,14 @@ test.skipIf(process.platform !== "linux")(
       }
       if (owner === undefined) throw new Error("owner.json never held the child's pid");
       pid = owner.pid;
+      expect(Number.isInteger(owner.anchor) && owner.anchor > 1).toBe(true);
+      const anchorStat = readFileSync(`/proc/${owner.anchor}/stat`, "utf8");
+      const [, parent, group] = anchorStat.slice(anchorStat.lastIndexOf(")") + 2).split(" ");
+      expect(Number(parent)).toBe(process.pid);
+      expect(Number(group)).toBe(owner.anchor);
+      const argv = readFileSync(`/proc/${owner.anchor}/cmdline`, "utf8").split("\0");
+      expect(argv).toContain(join(process.cwd(), "src/process/process-anchor.ts"));
+      expect(JSON.parse(argv.at(-2)!)[2]).toBe(root);
       process.kill(owner.anchor, "SIGKILL");
       f.controller.abort();
       expect(await pending).toMatchObject({ message: "Git process cleanup could not be verified" });
