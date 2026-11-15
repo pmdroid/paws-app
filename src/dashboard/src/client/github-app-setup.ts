@@ -7,7 +7,9 @@ export async function initializeGitHubAppSetup(
   proceed: () => void,
 ) {
   const section = document.createElement("section");
+  section.id = "workspace-github-integration";
   section.className = "settings-section";
+  section.textContent = "Checking GitHub App…";
   section.dataset.settingsPage = "integrations";
   root.append(section);
   async function load() {
