@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { DEFAULT_IGNORED_COMMENT_BOTS } from "../config";
 import { JOB_KIND } from "../core";
 import {
@@ -37,6 +37,11 @@ import type { PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 import { tempStore } from "../../test/pglite";
 
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
+
 const FILTER: PullCommentFilter = {
   appId: async () => "42",
   appLogin: () => "paws-test[bot]",
@@ -48,7 +53,8 @@ const FINDINGS = "Closeout found: `src/rank.ts:30` sorts the wrong way round.";
 const CHECKS = [{ name: "test (0/2)", url: "https://ci.example/acme/one/1" }];
 
 async function setup(state: "running" | "verifying" | "merge_queue") {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",

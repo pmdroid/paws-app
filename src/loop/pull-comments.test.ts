@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import type { StoredReviewFinding } from "../closeout";
 import { DEFAULT_IGNORED_COMMENT_BOTS } from "../config";
@@ -48,6 +48,11 @@ import { readReviewChecks } from "./review-checks";
 import { worktreeBranch } from "./sources";
 import { pullCommentOutcome, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
+
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
 
 const THREADS: FakeReviewThread[] = [
   {
@@ -104,7 +109,8 @@ function setState(db: Db, state: WorkItemState) {
 }
 
 async function setup(threads = THREADS) {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",

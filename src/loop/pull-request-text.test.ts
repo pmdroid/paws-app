@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
@@ -16,6 +16,11 @@ import { applyPullRequestDraft } from "./pull-request-text";
 import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
+
 const EVIDENCE = "## Closeout\n\nAll checks passed at 474f2d1b.";
 
 async function fixture(
@@ -28,7 +33,8 @@ async function fixture(
     savedDescription?: string;
   } = {},
 ) {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",

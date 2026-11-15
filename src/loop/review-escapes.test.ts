@@ -21,6 +21,11 @@ import {
 import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -47,7 +52,8 @@ async function accepted() {
   await run(root, "commit", "-qm", "rank");
   const head = await run(root, "rev-parse", "HEAD");
 
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await beginImplementRun(db, "eng-1", 1);
   await enterMergeQueue(db, "eng-1", {

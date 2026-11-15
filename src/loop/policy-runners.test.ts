@@ -1,9 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { listPolicyRunnerWarnings, type Db } from "../db";
 import { setJournalSink } from "../journal";
 import { checkPolicyRunners } from "./policy-runners";
 import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
+
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
 
 const NOW = Date.parse("2026-10-28T06:43:00.000Z");
 const REPOSITORY = "pmdroid/paws-app";
@@ -25,7 +30,8 @@ items:
 ]);
 
 async function database() {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   await withoutForeignKeys(db);
   return db;
 }
