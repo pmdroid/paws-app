@@ -552,6 +552,41 @@ export function* bindAgentAccountSteps(
   return (yield* bindingRowSteps(q, id))!;
 }
 
+export function* bindToOwnerRunnersSteps(q: Q, accountId: string, now: number) {
+  const { agentAccount: a, runner: r } = q.t;
+  const owned = yield* q.one(
+    q.orm
+      .select({ workspaceId: a.workspaceId, ownerUserId: a.ownerUserId, legacy: a.legacy })
+      .from(a)
+      .where(and(eq(a.id, accountId), isNull(a.removedAt))),
+  );
+  if (!owned || owned.legacy || owned.ownerUserId === null) return;
+  const runners = yield* q.all(
+    q.orm
+      .select({ id: r.id })
+      .from(r)
+      .where(
+        and(
+          eq(r.workspaceId, owned.workspaceId),
+          eq(r.ownerUserId, owned.ownerUserId),
+          eq(r.status, "active"),
+          isNull(r.revokedAt),
+        ),
+      )
+      .orderBy(asc(r.id)),
+  );
+  for (const runner of runners) {
+    if (yield* liveAccountBindingSteps(q, runner.id, accountId)) continue;
+    yield* bindAgentAccountSteps(q, {
+      workspaceId: owned.workspaceId,
+      userId: owned.ownerUserId,
+      accountId,
+      runnerId: runner.id,
+      now,
+    });
+  }
+}
+
 export async function bindAgentAccount(
   store: Db,
   input: { workspaceId: string; userId: string; accountId: string; runnerId: string; now: number },
