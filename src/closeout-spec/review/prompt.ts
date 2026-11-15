@@ -1,6 +1,7 @@
 import { journalCaught } from "../../journal";
 import { sha256Hex } from "../policy/canonical";
 import type { EarlierFinding, ReviewScope } from "../types";
+import { reviewInstructions } from "./command";
 import { renderEarlierFindings } from "./earlier";
 import { FINDING_FORMAT } from "./findings";
 import { gitOutput, gitRun } from "./git";
@@ -176,8 +177,11 @@ export function renderReviewPrompt(
   head: string,
   scope: ReviewScope = "candidate",
   earlier: readonly EarlierFinding[] = [],
+  brief?: string,
 ): string {
-  const rounds = renderEarlierFindings(earlier);
+  const rounds = brief?.trim()
+    ? [reviewInstructions({ brief, earlier })]
+    : renderEarlierFindings(earlier);
   const references =
     material.references.length === 0
       ? "(none)"

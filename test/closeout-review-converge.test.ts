@@ -12,6 +12,9 @@ import {
   parseLocation,
   preExistingFindings,
   renderReviewPrompt,
+  reviewInstructions,
+  REVIEW_COMMAND_RULE,
+  REVIEW_INSTRUCTIONS_BYTES,
   reviewRoundFindings,
   type Finding,
   type ResolvedPolicyPresent,
@@ -296,6 +299,30 @@ describe("second review round", () => {
       ].join("\n"),
     );
     expect(prompt.indexOf("# Diff ")).toBeLessThan(prompt.indexOf("# Earlier findings"));
+  });
+
+  test("the prompt includes the issue brief and shared review instructions within their byte budget", () => {
+    const brief = "decided: Remove retired config keys.";
+    const earlier = earlierFindings(records, scope, order);
+    for (const text of [brief, "ü".repeat(10_000)]) {
+      const prompt = renderReviewPrompt(material(), BASE, HEAD, "candidate", earlier, text);
+      const instructions = reviewInstructions({ brief: text, earlier });
+      expect(prompt).toContain(instructions);
+      expect(prompt).toContain("# Issue brief");
+      expect(prompt).toContain(REVIEW_COMMAND_RULE);
+      expect(Buffer.byteLength(instructions, "utf8")).toBeLessThanOrEqual(
+        REVIEW_INSTRUCTIONS_BYTES,
+      );
+      if (text === brief) expect(prompt).toContain(brief);
+    }
+  });
+
+  test("an absent or blank brief preserves the original prompt", () => {
+    const earlier = earlierFindings(records, scope, order);
+    const original = renderReviewPrompt(material(), BASE, HEAD, "candidate", earlier);
+    expect(renderReviewPrompt(material(), BASE, HEAD, "candidate", earlier, "  ")).toBe(original);
+    expect(original).not.toContain("# Issue brief");
+    expect(original).not.toContain("# Review rule");
   });
 
   test("the finding format asks for path:line, every place, and defines severities", () => {
