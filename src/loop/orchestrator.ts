@@ -4913,6 +4913,8 @@ export class Orchestrator {
     }
   }
 
+  private readonly checksActivity = new Map<string, { since: number; commands: Set<string> }>();
+
   private async runRunnerCloseout(
     item: WorkItemRecord,
     deps: AcpAgentDeps,
@@ -4967,6 +4969,10 @@ export class Orchestrator {
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           closeoutProgress: this.runnerCloseoutHook(item, head),
+          onEvent: () => {
+            const activity = this.checksActivity.get(item.id);
+            if (activity) activity.since = this.now();
+          },
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
@@ -4974,10 +4980,14 @@ export class Orchestrator {
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
         };
-        const result = await runner!({
-          ...options,
-          ...(await this.trustedRunInputs(item, options)),
-        });
+        const trusted = await this.trustedRunInputs(item, options);
+        this.checksActivity.set(item.id, { since: this.now(), commands: new Set<string>() });
+        let result: RunAgentResult;
+        try {
+          result = await runner!({ ...options, ...trusted });
+        } finally {
+          this.checksActivity.delete(item.id);
+        }
         await assertCurrent();
         const { ref } = await this.itemHead(item);
         const stored = this.storedCandidates();
@@ -7777,6 +7787,10 @@ export class Orchestrator {
   async recoverStalledCloseout(): Promise<void> {
     await recoverStalledCloseout(this.store, {
       now: this.now(),
+      checksActivity: (id) => {
+        const activity = this.checksActivity.get(id);
+        return activity && { since: activity.since, running: activity.commands.size > 0 };
+      },
       cancel: (id) => this.joinChangedItems([id]),
       journal: this.options.journal ?? journal,
     });
@@ -8498,7 +8512,16 @@ export class Orchestrator {
   private runnerCloseoutHook(item: WorkItemRecord, head: string): CloseoutProgressHook {
     return {
       record: async (progress) => {
-        if (progress.type === "report" || progress.head !== head) return;
+        if (progress.head !== head) return;
+        const activity = this.checksActivity.get(item.id);
+        if (activity) {
+          activity.since = this.now();
+          if (progress.type !== "report") {
+            if (progress.type === "started") activity.commands.add(progress.id);
+            else activity.commands.delete(progress.id);
+          }
+        }
+        if (progress.type === "report") return;
         await this.store.transaction((q) =>
           applyRunnerCloseoutStepSteps(q, item.id, head, progress, this.now()),
         );

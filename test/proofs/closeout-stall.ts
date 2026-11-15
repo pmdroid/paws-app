@@ -20,11 +20,37 @@ import { questionEffects } from "../../src/loop/question-effects";
 import type { Proof } from "./harness";
 
 export default {
-  covers: ["src/loop/closeout-stall.ts"],
+  covers: [
+    "src/loop/closeout-stall.ts",
+    "src/runner-backend/index.ts",
+    "src/loop/orchestrator.ts",
+    "test/closeout-rules-first.test.ts",
+  ],
   summary:
-    "Quiet verification retries once, then asks a person whose Retry Closeout answer verifies the same head.",
+    "Idle remote checks retry at fifteen minutes, then ask a person; a twenty-minute command continues.",
   agent: () => [],
   async run(proof) {
+    const child = Bun.spawn(
+      [
+        "bun",
+        "test",
+        "test/closeout-rules-first.test.ts",
+        "test/runner-closeout-restart.test.ts",
+        "--test-name-pattern",
+        "idle checks|a Closeout check run keeps running",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    proof.expect(
+      "runner waits consume no retry and unfinished commands do not protect later attempts",
+      status === 0,
+      { stdout, stderr },
+    );
     const { db, close } = await tempStore();
     try {
       const clock = new FakeClock(Date.now() + 1000);
@@ -43,13 +69,24 @@ export default {
       });
       await claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
       const lines: string[] = [];
-      for (let attempt = 0; attempt < 2; attempt++) {
-        clock.advance(31 * 60_000);
-        await recoverStalledCloseout(db, {
+      let since = clock.now();
+      let running = true;
+      const recover = () =>
+        recoverStalledCloseout(db, {
           now: clock.now(),
+          checksActivity: () => ({ since, running }),
           cancel: async () => {},
           journal: (line) => lines.push(line),
         });
+      clock.advance(20 * 60_000);
+      await recover();
+      proof.expect("a twenty-minute command continues", lines.length === 0);
+      running = false;
+      since = clock.now();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        clock.advance(15 * 60_000);
+        await recover();
+        since = clock.now();
         if (attempt === 0) {
           await markRun(db, (await getWorkItem(db, "quiet"))!.currentRunId!, "lost", clock.now());
           const rerun = await insertRun(db, {

@@ -29,6 +29,7 @@ export async function recoverStalledCloseout(
     now: number;
     cancel: (itemId: string) => Promise<void>;
     journal: (line: string) => void;
+    checksActivity?: (itemId: string) => { since: number; running: boolean } | undefined;
   },
 ): Promise<void> {
   const items = await store.run(function* (q) {
@@ -53,14 +54,23 @@ export async function recoverStalledCloseout(
     const agentCloseout = await store.run((q) =>
       listAgentCloseoutSteps(q, item.currentRunId ? [item.currentRunId] : []),
     );
-    const since = Math.max(
-      times.get(id) ?? 0,
-      retry?.createdAt ?? 0,
-      ...records.map((p) => p.updatedAt),
-      ...agentCloseout.map((e) => e.at),
-    );
+    const checks = input.checksActivity?.(id);
+    const since =
+      checks?.since ??
+      Math.max(
+        times.get(id) ?? 0,
+        retry?.createdAt ?? 0,
+        ...records.map((p) => p.updatedAt),
+        ...agentCloseout.map((e) => e.at),
+      );
     const facts = await store.run((q) => itemActivityFactsSteps(q, item, input.now));
-    if (input.now - since < QUIET_MS || facts.liveRunner || facts.usagePause) continue;
+    if (
+      input.now - since < (checks ? 15 * 60_000 : QUIET_MS) ||
+      checks?.running ||
+      (!checks && facts.liveRunner) ||
+      facts.usagePause
+    )
+      continue;
     // A failed cancel must not stop the sweep: the job would go dead and strand the other items.
     try {
       // Fence the old job before joining it, preventing a competing finalizer recovery.
