@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    services:
+    services: &postgres-service
       postgres:
         image: postgres:17
         env:
@@ -52,7 +52,7 @@ jobs:
     env:
       PAWS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       # Test files whose database follows PAWS_TEST_DATABASE_URL (helpers in test/pglite.ts).
-      DATABASE_TESTS: tempStore|serverPostgres|forEachDialect|pgliteServer|improvement-fixtures|decision-memory-fixture
+      DATABASE_TESTS: &database-tests tempStore|serverPostgres|forEachDialect|pgliteServer|improvement-fixtures|decision-memory-fixture
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -81,11 +81,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - id: select
         env:
+          DATABASE_TESTS: *database-tests
           BASE_REF: ${{ github.base_ref }}
         run: bun scripts/stress-tests.ts "origin/$BASE_REF"
 
   changed-tests:
-    name: changed tests (batch ${{ matrix.batch }}, 3 runs)
+    name: changed tests (${{ matrix.dialect }}, batch ${{ matrix.batch }}, 3 runs)
     needs: [select-changed-tests]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -94,6 +95,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix: ${{ fromJSON(needs.select-changed-tests.outputs.matrix) }}
+    services: *postgres-service
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -102,6 +104,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Run each selected test file three times
         env:
+          STRESS_DIALECT: ${{ matrix.dialect }}
+          PAWS_TEST_DATABASE_URL: ${{ matrix.dialect == 'postgres' && 'postgres://postgres:postgres@127.0.0.1:5432/postgres' || '' }}
           STRESS_FILES: ${{ toJSON(matrix.files) }}
         run: bun scripts/stress-tests.ts --run
 

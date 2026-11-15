@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stressMatrix } from "./stress-tests";
@@ -37,10 +45,16 @@ for (const count of [0, 1, 11, 21]) {
       git("add", ".");
       git("commit", "--allow-empty", "-qm", "change");
       const matrix = stressMatrix(root, "base");
-      expect(matrix.include.map((batch) => batch.files.length)).toEqual(
-        count === 0 ? [0] : count === 1 ? [1] : count === 11 ? [10, 1] : [10, 10, 1],
-      );
-      expect(matrix.include.flatMap((batch) => batch.files)).toEqual(expected);
+      expect(
+        matrix.include
+          .filter((batch) => batch.dialect === "default")
+          .map((batch) => batch.files.length),
+      ).toEqual(count === 0 ? [0] : count === 1 ? [1] : count === 11 ? [10, 1] : [10, 10, 1]);
+      expect(
+        matrix.include
+          .filter((batch) => batch.dialect === "default")
+          .flatMap((batch) => batch.files),
+      ).toEqual(expected);
     });
   });
 }
@@ -56,7 +70,11 @@ test("includes modifications, rename destinations and test conventions, excludes
     writeFileSync(join(root, "modified.test.ts"), "after");
     git("add", ".");
     git("commit", "-qm", "modify");
-    expect(stressMatrix(root, "base").include.flatMap((batch) => batch.files)).toEqual([
+    expect(
+      stressMatrix(root, "base")
+        .include.filter((batch) => batch.dialect === "default")
+        .flatMap((batch) => batch.files),
+    ).toEqual([
       "./modified.test.ts",
       "./renamed.test.tsx",
       "./space name.spec.jsx",
@@ -102,4 +120,108 @@ test("workflow bounds stress and feeds the matrix to the required aggregate", ()
   expect(readFileSync(join(import.meta.dir, "stress-tests.ts"), "utf8")).toContain(
     '"--rerun-each=3"',
   );
+});
+
+test("database selection repeats only eligible changed tests on Postgres", () => {
+  history((root, git) => {
+    mkdirSync(join(root, "src/db"), { recursive: true });
+    mkdirSync(join(root, "test"));
+    const files = {
+      "src/db/rows.test.ts": "",
+      "test/caller.test.ts": "tempStore",
+      "test/plain.test.ts": "",
+      "test/excluded.test.ts": "tempStore",
+    };
+    for (const [file, body] of Object.entries(files)) writeFileSync(join(root, file), body);
+    writeFileSync(
+      join(root, "test/postgres-known-failures.txt"),
+      "# existing exclusions\ntest/excluded.test.ts\n",
+    );
+    git("add", ".");
+    git("commit", "-qm", "database changes");
+    const matrix = stressMatrix(root, "base");
+    expect(
+      matrix.include.filter((batch) => batch.dialect === "default").flatMap((batch) => batch.files),
+    ).toEqual(
+      Object.keys(files)
+        .sort()
+        .map((file) => `./${file}`),
+    );
+    expect(
+      matrix.include
+        .filter((batch) => batch.dialect === "postgres")
+        .flatMap((batch) => batch.files),
+    ).toEqual(["./src/db/rows.test.ts", "./test/caller.test.ts"]);
+  });
+});
+
+test("Postgres stress requires a server URL and skips an empty subset explicitly", () => {
+  const run = (files: string[]) =>
+    spawnSync(process.execPath, [join(import.meta.dir, "stress-tests.ts"), "--run"], {
+      env: {
+        ...process.env,
+        STRESS_FILES: JSON.stringify(files),
+        STRESS_DIALECT: "postgres",
+        PAWS_TEST_DATABASE_URL: "",
+      },
+      encoding: "utf8",
+    });
+  expect(run(["./src/db/rows.test.ts"]).stderr).toContain("Postgres stress requires");
+  expect(run([]).status).toBe(0);
+  expect(run([]).stdout).toContain("No new or changed test files for this backend");
+});
+
+test("server-only failure propagates through the stress process to the required aggregate", () => {
+  history((root) => {
+    const workflow = Bun.YAML.parse(
+      readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8"),
+    );
+    const stress = workflow.jobs["changed-tests"];
+    expect(stress.services).toEqual(workflow.jobs["test-postgres"].services);
+    expect(stress.steps.at(-1).env.PAWS_TEST_DATABASE_URL).toContain(
+      "matrix.dialect == 'postgres'",
+    );
+    expect(workflow.jobs["select-changed-tests"].steps.at(-1).env.DATABASE_TESTS).toBe(
+      workflow.jobs["test-postgres"].env.DATABASE_TESTS,
+    );
+    writeFileSync(
+      join(root, "bun"),
+      '#!/bin/sh\nprintf "%s\\n" "$PAWS_TEST_DATABASE_URL" "$@"\nif [ -n "$PAWS_TEST_DATABASE_URL" ]; then exit 7; fi\n',
+      { mode: 0o755 },
+    );
+    for (const dialect of ["default", "postgres"]) {
+      const url =
+        dialect === "postgres" ? workflow.jobs["test-postgres"].env.PAWS_TEST_DATABASE_URL : "";
+      const result = spawnSync(
+        process.execPath,
+        [join(import.meta.dir, "stress-tests.ts"), "--run"],
+        {
+          env: {
+            ...process.env,
+            PATH: root,
+            STRESS_FILES: '["./src/db/rows.test.ts"]',
+            STRESS_DIALECT: dialect,
+            PAWS_TEST_DATABASE_URL: url,
+          },
+          encoding: "utf8",
+        },
+      );
+      expect(result.stdout).toContain("--rerun-each=3");
+      expect(result.stdout).toContain("./src/db/rows.test.ts");
+      expect(result.status).toBe(dialect === "postgres" ? 7 : 0);
+      if (url) expect(result.stdout).toContain(url);
+      const gate = workflow.jobs.check.steps[0];
+      const aggregate = spawnSync("bash", ["-e", "-c", gate.run], {
+        env: {
+          ...process.env,
+          EVENT_NAME: "pull_request",
+          TEST_RESULT: "success",
+          POSTGRES_RESULT: "success",
+          SELECTION_RESULT: "success",
+          STRESS_RESULT: result.status === 0 ? "success" : "failure",
+        },
+      });
+      expect(aggregate.status === 0).toBe(dialect === "default");
+    }
+  });
 });

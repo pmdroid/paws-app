@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { testFiles } from "./affected-tests";
 
@@ -15,14 +15,36 @@ export function stressMatrix(root: string, base: string) {
   if (diff.error || diff.status !== 0) throw new Error(`Cannot read stress diff: ${diff.stderr}`);
   const existing = new Set(testFiles(root));
   const files = [...new Set(diff.stdout.split("\0").filter((path) => existing.has(path)))].sort();
-  const count = Math.max(1, Math.ceil(files.length / 10));
-  if (count > 256) throw new Error(`Unsupported stress batch count: ${count}`);
-  return {
-    include: Array.from({ length: count }, (_, index) => ({
-      batch: index + 1,
-      files: files.slice(index * 10, (index + 1) * 10).map((path) => `./${path}`),
-    })),
-  };
+  const classifier = new RegExp(
+    process.env.DATABASE_TESTS ??
+      "tempStore|serverPostgres|forEachDialect|pgliteServer|improvement-fixtures|decision-memory-fixture",
+  );
+  const exclusions = join(root, "test/postgres-known-failures.txt");
+  const excluded = new Set(
+    (existsSync(exclusions) ? readFileSync(exclusions, "utf8") : "")
+      .split("\n")
+      .map((line) => line.replace(/#.*$/, "").trim())
+      .filter(Boolean),
+  );
+  const database = files.filter(
+    (file) =>
+      file.startsWith("src/db/") ||
+      (file.startsWith("test/") &&
+        file.endsWith(".test.ts") &&
+        !excluded.has(file) &&
+        classifier.test(readFileSync(join(root, file), "utf8"))),
+  );
+  const include = [...batches(files, "default"), ...batches(database, "postgres")];
+  if (include.length > 256) throw new Error(`Unsupported stress batch count: ${include.length}`);
+  return { include };
+}
+
+function batches(files: string[], dialect: string) {
+  return Array.from({ length: Math.max(1, Math.ceil(files.length / 10)) }, (_, index) => ({
+    batch: index + 1,
+    dialect,
+    files: files.slice(index * 10, (index + 1) * 10).map((path) => `./${path}`),
+  }));
 }
 
 if (import.meta.main) {
@@ -34,7 +56,9 @@ if (import.meta.main) {
       files.some((file) => typeof file !== "string" || !file.startsWith("./"))
     )
       throw new Error("Invalid stress batch");
-    if (files.length === 0) console.log("No new or changed test files");
+    if (files.length === 0) console.log("No new or changed test files for this backend");
+    else if (process.env.STRESS_DIALECT === "postgres" && !process.env.PAWS_TEST_DATABASE_URL)
+      throw new Error("Postgres stress requires PAWS_TEST_DATABASE_URL");
     else {
       const run = spawnSync(
         "bun",
