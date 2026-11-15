@@ -17,6 +17,9 @@ let window: Window;
 let requests: { method: string; path: string; body: unknown }[];
 let canManage: boolean;
 let failure: string | null;
+let agent: CentralAccount["agent"];
+let deviceState: string;
+let polls: number;
 
 beforeEach(() => {
   window = new Window({ url: `${ENGINE}/settings/agent-accounts` });
@@ -29,6 +32,12 @@ beforeEach(() => {
   requests = [];
   canManage = true;
   failure = null;
+  agent = "claude";
+  deviceState = "pending";
+  polls = 0;
+  window.HTMLDialogElement.prototype.showModal = function () {
+    this.open = true;
+  };
   opened.length = 0;
   globalThis.fetch = (async (url: URL | string, init: RequestInit) => {
     const { pathname, search } = new URL(String(url));
@@ -44,12 +53,30 @@ beforeEach(() => {
     if (failure && method !== "GET") return Response.json({ error: failure }, { status: 409 });
     if (pathname === "/api/runners")
       return Response.json({ runners: [{ id: "R1", name: "agentbox" }] });
+    if (pathname.endsWith("/device")) {
+      if (agent !== "codex")
+        return Response.json({ error: "Codex account is unavailable" }, { status: 404 });
+      if (method === "GET") {
+        polls++;
+        return Response.json({ state: deviceState });
+      }
+      return Response.json({
+        userCode: "ABCD-1234",
+        verificationUri: "https://auth.openai.com/codex/device",
+        interval: 0.03,
+        expiresAt: Date.now() + 300000,
+      });
+    }
     if (pathname.endsWith("/sign-in"))
-      return Response.json({ runnerId: "R1", bindingId: "B1", agent: "claude" });
+      return Response.json({
+        runnerId: "R1",
+        bindingId: "B1",
+        agent: pathname.includes("/A1/") ? agent : "claude",
+      });
     if (method !== "GET") return Response.json({ ok: true });
     return Response.json({
       canManage,
-      accounts: [account("A1", "Work"), account("A2", "Home")],
+      accounts: [{ ...account("A1", "Work"), agent }, account("A2", "Home")],
     });
   }) as typeof fetch;
 });
@@ -148,3 +175,61 @@ test("a member sees the accounts read-only, with no controls", async () => {
   expect(root.querySelectorAll("button, input, select, form, [draggable]")).toHaveLength(0);
   expect(requests).toEqual([]);
 });
+
+test("Codex sign-in shows a device code, polls and closes after approval", async () => {
+  agent = "codex";
+  const root = await mount();
+  await click(root, "A1", "sign-in");
+  const dialog = window.document.querySelector("dialog")!;
+  expect(dialog.querySelector("h2")?.textContent).toBe("Sign in to Codex for Work");
+  expect(dialog.querySelector("[data-device-code]")?.textContent).toBe("ABCD-1234");
+  expect(dialog.querySelector("a")?.href).toBe("https://auth.openai.com/codex/device");
+  expect(dialog.textContent).toContain("Waiting for you to approve… expires in 5 min");
+  expect(dialog.textContent).not.toContain("agentbox");
+  expect(dialog.querySelector("pre")).toBeNull();
+  expect(opened).toHaveLength(0);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  expect(polls).toBeGreaterThan(0);
+  deviceState = "signed-in";
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  expect(dialog.textContent).toContain("Signed in");
+  await new Promise((resolve) => setTimeout(resolve, 1050));
+  expect(window.document.querySelector("dialog")).toBeNull();
+  expect(requests.some((entry) => entry.path.endsWith("/sign-in"))).toBe(false);
+});
+for (const state of ["expired", "denied"]) {
+  test(`device sign-in ${state} offers Retry`, async () => {
+    agent = "codex";
+    deviceState = state;
+    const root = await mount();
+    await click(root, "A1", "sign-in");
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    const dialog = window.document.querySelector("dialog")!;
+    expect(dialog.textContent).toContain(`Sign-in ${state}`);
+    const retry = dialog.querySelector("[data-device-retry]") as unknown as HTMLButtonElement;
+    expect(retry.hidden).toBe(false);
+    deviceState = "pending";
+    retry.click();
+    await settle();
+    expect((dialog.querySelector("[data-device-challenge]") as unknown as HTMLElement).hidden).toBe(
+      false,
+    );
+    expect(requests.filter((entry) => entry.path.endsWith("/device"))).toHaveLength(2);
+    (dialog.querySelector("[data-device-close]") as unknown as HTMLButtonElement).click();
+  });
+}
+
+for (const provider of ["claude", "grok", "opencode"] as const) {
+  test(`${provider} keeps the supported runner sign-in flow`, async () => {
+    agent = provider;
+    const root = await mount();
+    await click(root, "A1", "sign-in");
+    expect(requests).toEqual([
+      { method: "POST", path: "/api/runners/agent-accounts/A1/sign-in", body: undefined },
+    ]);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]?.slice(0, 2)).toEqual([{ id: "R1", name: "agentbox" }, provider]);
+    expect(opened[0]?.slice(3)).toEqual(["B1", "Work"]);
+    expect(window.document.querySelector("[data-device-code]")).toBeNull();
+  });
+}
