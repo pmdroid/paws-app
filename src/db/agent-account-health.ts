@@ -1,3 +1,4 @@
+import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
@@ -198,6 +199,8 @@ export function* recordAccountObservationSteps(q: Q, observation: AccountObserva
     );
     outcomes[kind] = "applied";
   }
+  if (observation.state === "ok" && Object.values(outcomes).includes("applied"))
+    yield* enqueueRunnerSetupChecksSteps(q, observation.now, { runnerId: binding.runnerId });
   return outcomes;
 }
 

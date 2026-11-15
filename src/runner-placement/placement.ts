@@ -19,7 +19,6 @@ import {
   pinnedSlotsReservedSteps,
   quotaRecheckAtSteps,
   recordAccountObservationSteps,
-  enqueueRunnerSetupChecksSteps,
   runnerExecutionHistorySteps,
   runnerExecutionReceiptSteps,
   runnerHasCapacitySteps,
@@ -295,7 +294,6 @@ export function createRunnerPlacement(options: {
       });
     if (quota?.state === "low" && kind !== "quota") observations.push({ ...base, state: "low" });
     for (const observation of observations) yield* recordAccountObservationSteps(q, observation);
-    if (kind === "ok") yield* enqueueRunnerSetupChecksSteps(q, now(), { runnerId: owner.runnerId });
     if (kind !== "quota") return null;
     return yield* quotaRecheckAtSteps(q, commandId, owner.workspaceId);
   }

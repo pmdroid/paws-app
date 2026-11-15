@@ -198,6 +198,7 @@ async function capacity(mixed: boolean) {
   const placement = createRunnerPlacement({ store: db });
   const backend = createRemoteAgentRunner({
     store: db,
+    now: () => clock.now(),
     work,
     results,
     health,
@@ -212,7 +213,8 @@ async function capacity(mixed: boolean) {
           : freeRunner;
         if (mixed && want === busyRunner) {
           request.onRejected?.(busyRunner, "account at its concurrency limit");
-          request.onRejected?.(busyRunner, "agent account quota cooldown", now + 3_600_000);
+          request.onRejected?.(freeRunner, "agent account quota cooldown", now + 3_600_000);
+          return [];
         }
         return (await placement.candidates(request)).filter((runner) => runner.id === want);
       },
@@ -360,7 +362,11 @@ async function capacity(mixed: boolean) {
           prepareOnly: true,
           prompt: "Prepare the agent",
         }),
-      ).rejects.toMatchObject({ name: "RunnerCapacityWait" });
+      ).rejects.toMatchObject({
+        name: "RunnerCapacityWait",
+        runnerIds: [busyRunner],
+        holdMs: 3_600_000,
+      });
     }
     await dispatch(db, { now: clock.now() });
     expect(
@@ -434,7 +440,7 @@ test(
   60_000,
 );
 test(
-  "mixed account concurrency and timed refusals preserve capacity wakeups",
+  "mixed account concurrency and timed refusals preserve capacity wakeups and timed retries",
   () => capacity(true),
   60_000,
 );
