@@ -216,7 +216,6 @@ export async function createFindingGrouping(options: {
       const day = new Date(at).toISOString().slice(0, 10);
       // Persist the daily claim before any external read or helper dispatch, including failures.
       const findings = await options.sources(workspaceId);
-      // Version the persisted cursor semantics: legacy fingerprints used list offsets.
       const fingerprint =
         "id:" +
         createHash("sha256")
@@ -289,7 +288,7 @@ export async function createFindingGrouping(options: {
           const batch = groupingBatch(
             open,
             allIssues,
-            last?.fingerprint.startsWith("id:") ? last.findingCursor : 0,
+            last?.findingCursor ?? 0,
             last?.issueCursor ?? 0,
           );
           nextFindingCursor = batch.nextFindingCursor;

@@ -1096,46 +1096,6 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
   }
 });
 
-test("legacy position cursors start a fresh ID-based pass", async () => {
-  const f = await seed();
-  try {
-    await write(f.db, (q) =>
-      q.orm.insert(q.t.findingGroupRun).values({
-        id: "legacy",
-        workspaceId: "ws",
-        day: "2026-10-27",
-        startedAt: epoch - 86400000,
-        finishedAt: epoch - 86400000,
-        fingerprint: "legacy-snapshot",
-        status: "completed",
-        findingCursor: 100,
-      }),
-    );
-    const source = (await f.sources())[0]!;
-    let firstId = 0;
-    const rows = Array.from({ length: 25 }, (_, i) => ({
-      ...source,
-      id: (i + 1) * 10,
-      text: "x".repeat(4000),
-    }));
-    const grouping = await createFindingGrouping({
-      store: f.db,
-      issues: f.issues,
-      sources: () => rows,
-      now: () => epoch,
-      helper: async (input) => {
-        firstId = (JSON.parse(input.prompt.split("\n\n").at(-1)!) as { findings: { id: number }[] })
-          .findings[0]!.id;
-        return { text: '{"groups":[]}' };
-      },
-    });
-    await grouping.run("ws", new AbortController().signal);
-    expect(firstId).toBe(10);
-  } finally {
-    await f.close();
-  }
-});
-
 test("a workspace with grouping off spends no turn and cannot run now", async () => {
   const f = await seed();
   try {

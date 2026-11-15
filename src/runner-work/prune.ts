@@ -1,7 +1,6 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
   clearCloseoutOutputSteps,
-  legacyCloseoutOutputsSteps,
   closeoutLogRetentionDays,
   expiredCloseoutOutputsSteps,
   pruneFinishedAgentModelProbesSteps,
@@ -21,8 +20,7 @@ import {
   type Steps,
 } from "../db";
 
-import { moveCloseoutOutput, type EvidenceStorage } from "../evidence";
-import { journalCaught } from "../journal";
+import { type EvidenceStorage } from "../evidence";
 
 export const RUNNER_EVENT_PRUNE_JOB = "runner-events.prune";
 export const RUNNER_EVENT_PRUNE_EVERY_MS = 3_600_000;
@@ -132,17 +130,6 @@ export async function pruneCloseoutLogs(
   const days = await closeoutLogRetentionDays(options.store);
   const now = options.now ?? Date.now();
   const cutoff = now - days * DAY;
-  const legacy = await options.store.run((q) => legacyCloseoutOutputsSteps(q, 200));
-  for (const row of legacy) {
-    options.signal?.throwIfAborted();
-    try {
-      if (days !== 0 && row.at < cutoff)
-        await options.store.transaction((q) => clearCloseoutOutputSteps(q, row.ref, row));
-      else await moveCloseoutOutput(options.store, options.storage, row, now);
-    } catch (error) {
-      journalCaught(error, "pruneCloseoutLogs.move", row.itemId);
-    }
-  }
   if (days === 0) return 0;
   let deleted = 0;
   for (;;) {

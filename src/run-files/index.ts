@@ -13,7 +13,6 @@ export {
   withLocalRunFileFallback,
   withSealedRunFileObjects,
   createFakeRunFileObjects,
-  migrateRunFileObjects,
   type RunFileObjects,
 } from "./objects";
 export {

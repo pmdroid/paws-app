@@ -31,7 +31,6 @@ export type CloseoutStepWrite = {
   logPath: string | null;
   evidencePath: string | null;
   findings: string | null;
-  /** Structured severities of this exact review attempt; absent on legacy results. */
   findingSeverities?: readonly ("P0" | "P1" | "P2" | "P3")[] | null;
   ordinal: number;
   durationMs?: number | null;
@@ -698,7 +697,8 @@ export function pointerOf(row: {
 function reviewSnapshot(
   row: Pick<StepRow, "kind" | "attempt" | "findings">,
 ): Pick<CloseoutStepRecord, "findings" | "findingSeverities"> {
-  if (row.kind === "review" && row.findings?.startsWith("{")) {
+  if (row.kind !== "review") return { findings: row.findings };
+  if (row.findings?.startsWith("{")) {
     try {
       const value = JSON.parse(row.findings) as Record<string, unknown> | null;
       if (
@@ -716,12 +716,11 @@ function reviewSnapshot(
               : null,
         };
     } catch {
-      // Preserve legacy text; malformed snapshot envelopes cannot authorize approval.
-      return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
+      return { findings: null, findingSeverities: null };
     }
-    return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
+    return { findings: null, findingSeverities: null };
   }
-  return { findings: row.findings };
+  return { findings: null, findingSeverities: null };
 }
 
 function indexes(value: string | null): number[] | null {
