@@ -1,4 +1,4 @@
-import { createAgentAuth } from "./agent-auth";
+import { createAccountUsage, createAgentAuth } from "./agent-auth";
 import { browserSetupRuntime } from "./onboarding";
 import {
   createFindingGrouping,
@@ -1245,6 +1245,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     atStartup: true,
     run: () => agentAuth.tick(),
   });
+  const accountUsage = createAccountUsage({ store, secretsDir: paths.secretsDir });
+  periodic.push({
+    queue: "agent.usage.poll",
+    everyMs: 300_000,
+    atStartup: true,
+    run: () => accountUsage.tick(),
+  });
   const accountManagement = createAccountManagement({
     store,
     agentAuth,
@@ -2303,6 +2310,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       const alone = !(await store.run((q) =>
         jobInstanceElsewhereSteps(q, instance.id, Date.now()),
       ));
+      created.jobs.register("agent.usage.after-run", (job) =>
+        accountUsage.tick((job.payload as { accountId: string }).accountId),
+      );
       for (const work of periodic) {
         created.jobs.register(work.queue, async (_job, context) => {
           await work.run(context.signal);

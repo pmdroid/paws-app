@@ -1,3 +1,4 @@
+import { providerUsageSteps } from "./account-provider-usage";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
@@ -216,7 +217,14 @@ export function* centralAgentAccountsSteps(
       .orderBy(asc(a.position), asc(a.createdAt), asc(a.id)),
   );
   const eligible = [];
-  for (const row of rows) if (!(yield* agentAuthFailureSteps(q, row.id))) eligible.push(row);
+  for (const row of rows) {
+    if (yield* agentAuthFailureSteps(q, row.id)) continue;
+    const usage = yield* providerUsageSteps(q, row.id);
+    eligible.push({
+      ...row,
+      limits: usage?.limitsJson ? JSON.stringify(JSON.parse(usage.limitsJson).limits) : row.limits,
+    });
+  }
   return eligible.map((row) => ({
     id: row.id,
     concurrency: row.concurrency,

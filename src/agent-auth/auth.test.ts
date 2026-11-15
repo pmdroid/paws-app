@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { tempStore } from "../../test/pglite";
 import { seed } from "../../test/dialects";
 import {
+  readAgentAuthSteps,
+  writeAgentAuthSteps,
+  providerUsageSteps,
   agentCredentialCiphertextSteps,
   createAgentAccountSteps,
   takeAgentAccountLeaseSteps,
@@ -14,13 +17,19 @@ import {
   agentAccountOverviewSteps,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
-import { createAgentAuth, createCodexProvider } from "./index";
+import {
+  createAccountUsage,
+  createUsageReader,
+  createAgentAuth,
+  createCodexProvider,
+} from "./index";
+import { UsageAuthExpired } from "./usage";
 import { fakeCodexOAuth } from "./fake";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function setup() {
+async function setup(signedIn = false) {
   let time = 1_800_000_000_000;
   const now = () => time;
   const { db, close } = await tempStore();
@@ -48,6 +57,12 @@ async function setup() {
     provider: createCodexProvider(fake.issuer, now),
     now,
   });
+  if (signedIn) {
+    await auth.device("workspace", account.id, true);
+    fake.approve();
+    time += 5000;
+    await auth.device("workspace", account.id, false);
+  }
   return {
     db,
     dir,
@@ -193,4 +208,180 @@ test("a replaced in-flight device poll cannot report sign-in success", async () 
   release.resolve();
   expect(await poll).toEqual({ state: "pending" });
   expect(await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id))).toBeNull();
+});
+
+test("provider usage persists per account, polls five minutes, rereads after runs and preserves stale usage", async () => {
+  const s = await setup(true);
+  let calls = 0;
+  let status = 200;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      calls++;
+      return Response.json(
+        {
+          rate_limit: {
+            primary_window: {
+              used_percent: 100,
+              limit_window_seconds: 18000,
+              reset_at: 2000000000,
+            },
+          },
+        },
+        { status },
+      );
+    },
+  });
+  cleanup.push(() => server.stop(true));
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: createUsageReader({ codex: server.url.origin, claude: server.url.origin }, s.now),
+  });
+  await usage.tick();
+  const read = () => s.db.run((q) => providerUsageSteps(q, s.id));
+  const first = (await read())!;
+  expect(JSON.parse(first.limitsJson!).limits).toEqual([
+    { window: "5-hour", usedPercent: 100, resetsAt: 2000000000000 },
+  ]);
+  expect(
+    (await s.db.run((q) => centralAgentAccountsSteps(q, "workspace", "codex")))[0]!.limits,
+  ).toHaveLength(1);
+  s.advance(300000);
+  await usage.tick();
+  expect(calls).toBe(2);
+  expect(JSON.parse((await read())!.limitsJson!).observedAt).toBe(s.now());
+  await usage.tick(s.id);
+  expect(calls).toBe(3);
+  const last = JSON.parse((await read())!.limitsJson!).observedAt;
+  s.advance(3600000);
+  await usage.tick();
+  expect(calls).toBe(3);
+  expect(JSON.parse((await read())!.limitsJson!).observedAt).toBe(last);
+  expect(JSON.parse((await read())!.limitsJson!).stale).toBe(true);
+  s.advance(-3600000);
+  status = 401;
+  await usage.tick(s.id);
+  expect(await s.db.run((q) => centralAgentAccountsSteps(q, "workspace", "codex"))).toHaveLength(0);
+  expect(JSON.parse((await read())!.limitsJson!).observedAt).toBe(last);
+  expect(JSON.parse((await read())!.limitsJson!).stale).toBe(true);
+});
+test("poll latency does not skip the next five-minute read and overlapping run completions reread", async () => {
+  const s = await setup(true);
+  let calls = 0;
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: async () => {
+      calls++;
+      if (calls === 2) {
+        entered.resolve();
+        await release.promise;
+      }
+      s.advance(1000);
+      return [{ window: "5-hour", usedPercent: calls, resetsAt: null }];
+    },
+  });
+  await usage.tick();
+  s.advance(299000);
+  const periodic = usage.tick();
+  await entered.promise;
+  const firstRun = usage.tick(s.id),
+    secondRun = usage.tick(s.id);
+  release.resolve();
+  await Promise.all([periodic, firstRun, secondRun]);
+  expect(calls).toBe(4);
+  expect(
+    JSON.parse((await s.db.run((q) => providerUsageSteps(q, s.id)))!.limitsJson!).limits[0]
+      .usedPercent,
+  ).toBe(4);
+});
+for (const error of [new UsageAuthExpired(), new Error("provider unavailable")])
+  test(`replaced credential ignores in-flight ${error.constructor.name}`, async () => {
+    const s = await setup(true);
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let fail = false;
+    const usage = createAccountUsage({
+      store: s.db,
+      secretsDir: s.dir,
+      now: s.now,
+      readUsage: async () => {
+        if (fail) {
+          entered.resolve();
+          await release.promise;
+          throw error;
+        }
+        return [];
+      },
+    });
+    await usage.tick();
+    fail = true;
+    const pending = usage.tick(s.id);
+    await entered.promise;
+    const credential = (await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id)))!;
+    await s.db.transaction((q) =>
+      writeAgentCredentialSteps(q, s.dir, {
+        accountId: s.id,
+        runnerId: null,
+        version: 2,
+        blob: credential.blob!,
+        now: s.now(),
+      }),
+    );
+    const state = JSON.stringify({
+      state: "signed-in",
+      version: 2,
+      health: "ok",
+      retryAt: 0,
+      failures: 0,
+    });
+    await s.db.transaction((q) => writeAgentAuthSteps(q, s.id, state));
+    release.resolve();
+    await pending;
+    expect(await s.db.run((q) => readAgentAuthSteps(q, s.id))).toBe(state);
+    expect(
+      JSON.parse((await s.db.run((q) => providerUsageSteps(q, s.id)))!.limitsJson!).stale,
+    ).toBe(false);
+  });
+test("every scheduled poll reads later accounts despite changing latency", async () => {
+  const s = await setup(true);
+  const other = await s.db.transaction((q) =>
+    createAgentAccountSteps(q, {
+      workspaceId: "workspace",
+      agent: "codex",
+      label: "Second",
+      now: s.now(),
+    }),
+  );
+  const credential = (await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id)))!;
+  await s.db.transaction((q) =>
+    writeAgentCredentialSteps(q, s.dir, {
+      accountId: other.id,
+      runnerId: null,
+      version: 1,
+      blob: credential.blob!,
+      now: s.now(),
+    }),
+  );
+  let calls = 0;
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: async () => {
+      if (++calls === 1) s.advance(1000);
+      return [];
+    },
+  });
+  await usage.tick();
+  expect(calls).toBe(2);
+  s.advance(299000);
+  await usage.tick();
+  expect(calls).toBe(4);
 });
