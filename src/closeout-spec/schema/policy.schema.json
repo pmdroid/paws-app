@@ -66,6 +66,7 @@
     "command": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "exec", "timeoutSeconds"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -87,6 +88,7 @@
     "review": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "skill", "independence", "failOn"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -114,6 +116,7 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -137,6 +140,7 @@
     "preview": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "kind", "gate", "approval"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -158,6 +162,7 @@
     "rule": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "probe", "summary", "failOn"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
@@ -179,6 +184,7 @@
     "setupStep": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": { "except": ["paths"] },
       "required": ["id", "exec", "timeoutSeconds"],
       "properties": {
         "id": { "$ref": "#/$defs/slug" },

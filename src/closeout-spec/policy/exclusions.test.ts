@@ -57,3 +57,19 @@ test("visual proof skips dashboard tests and still requires dashboard source cha
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("except requires paths on every scoped policy entry", () => {
+  const entries = [
+    'items:\n  - id: command\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30',
+    "items:\n  - id: evidence\n    kind: evidence\n    gate: beforePR",
+    "items:\n  - id: preview\n    kind: preview\n    gate: beforePR\n    approval: human",
+    "items:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/review/SKILL.md\n    independence: { differentSession: true, differentModel: false }\n    failOn: P1",
+    'setup:\n  - id: install\n    exec: ["true"]\n    timeoutSeconds: 30',
+    "rules:\n  - id: rule\n    probe: .agents/probe.ts\n    summary: Check rule\n    failOn: P1",
+  ];
+  for (const entry of entries) {
+    const document = `specVersion: "0.1"\n${entry}\n    except: ["**/*.test.ts"]\n`;
+    expect(parsePolicy(document).ok).toBe(false);
+    expect(parsePolicy(document + '    paths: ["src/**"]\n').ok).toBe(true);
+  }
+});
