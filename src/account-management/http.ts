@@ -147,7 +147,16 @@ export function createAccountManagement(
         );
         return json({ ok: true });
       }
-      if (action === "sign-in" && method === "POST")
+      if (action === "sign-in" && method === "POST") {
+        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
+        if (account.agent === "claude")
+          return json(
+            {
+              error:
+                "Claude signs in with a pasted setup token. Run claude setup-token and paste it.",
+            },
+            400,
+          );
         return json(
           await store.transaction((q) =>
             centralSignInTargetSteps(q, {
@@ -158,6 +167,7 @@ export function createAccountManagement(
             }),
           ),
         );
+      }
       if (action === "token" && method === "PUT") {
         const { secretsDir } = options;
         if (!secretsDir || !options.checkClaudeToken)

@@ -186,10 +186,7 @@ describePglite((connect) => {
         (await send("PUT", "/order", { agent: "claude", ids: [home.id, work.id] })).status,
       ).toBe(200);
       expect((await send("PUT", `/${work.id}/extra-usage`, { extraUsage: true })).status).toBe(200);
-      expect((await send("POST", `/${home.id}/sign-in`)).body).toMatchObject({
-        runnerId: "R2",
-        agent: "claude",
-      });
+      expect((await send("POST", `/${home.id}/sign-in`)).status).toBe(400);
       await seed(db, (q) =>
         q.orm.insert(q.t.agentAccountCredential).values({
           accountId: home.id,
