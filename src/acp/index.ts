@@ -148,7 +148,6 @@ export {
   type SuggestedFindingLine,
 } from "./types";
 export {
-  adoptLegacyCandidate,
   createWorktree,
   createItemCheckout,
   ensureBareMirror,
