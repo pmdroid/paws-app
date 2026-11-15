@@ -73,6 +73,7 @@ forEachDialect((connect) => {
     expect(await observe(db, { ...ok, sourceId: "s2" })).toEqual({ quota: "stale" });
     expect(await db.run((q) => bindingAccountHealthSteps(q, "A-R2"))).toEqual([
       {
+        limitsJson: null,
         kind: "quota",
         scope: "account",
         scopeId: "A",
