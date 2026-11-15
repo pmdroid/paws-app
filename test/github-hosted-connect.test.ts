@@ -1,3 +1,8 @@
+import { mkdirSync, existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { useDatabaseSecrets, readSecretFile } from "../src/credentials";
+import { secretRowsSteps } from "../src/db";
+import { loadGitHubAppCredentials } from "../src/config";
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -135,6 +140,7 @@ async function fixture() {
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
   let installationStatus = 200;
+  let appStatus = 200;
   let tokenGate: ((inFlight: number) => Promise<void>) | undefined;
   let tokensInFlight = 0;
   let maxTokensInFlight = 0;
@@ -207,6 +213,11 @@ async function fixture() {
           ],
         });
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
+      if (url.pathname === "/app" && appStatus !== 200)
+        return Response.json(
+          { message: "A JSON web token could not be decoded" },
+          { status: appStatus },
+        );
       if (url.pathname === "/app")
         return Response.json({
           id: 99,
@@ -352,6 +363,9 @@ async function fixture() {
     },
     get maxTokensInFlight() {
       return maxTokensInFlight;
+    },
+    setAppStatus(value: number) {
+      appStatus = value;
     },
     setInstallationStatus(value: number) {
       installationStatus = value;
@@ -1160,6 +1174,91 @@ test("an installation_repositories webhook and the ten-minute sweep refresh the 
     before = f.calls.length;
     expect(await listed()).toEqual(["acme/widgets"]);
     expect(f.calls.length).toBe(before);
+  } finally {
+    await f.close();
+  }
+});
+
+test("browser App setup encrypts all five fields and continues without restarting", async () => {
+  const f = await fixture();
+  const dir = join(f.home, "secrets");
+  mkdirSync(dir);
+  writeFileSync(join(dir, ".envelope-key"), randomBytes(32), { mode: 0o600 });
+  const secrets = await useDatabaseSecrets(f.db, dir);
+  try {
+    for (const name of Object.keys(f.env)) delete (f.env as Record<string, string>)[name];
+    const handler = f.handler();
+    const url = "https://paws.example/api/workspaces/github-app";
+    const payload = {
+      appId: "99",
+      clientId: "Iv1.fake",
+      clientSecret: "oauth-secret",
+      privateKeyPem: key,
+      webhookSecret: "webhook-secret",
+    };
+    const post = (role: string, body = payload) =>
+      handler(
+        f.request(role, url, {
+          method: "POST",
+          headers: {
+            origin: "https://paws.example",
+            "content-type": "application/json",
+            "x-paws-csrf": f.sessions[role]!.session.csrfToken,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect(
+      ((await (await handler(f.request("admin", url)))!.json()) as { configured: boolean })
+        .configured,
+    ).toBe(false);
+    expect((await post("member"))!.status).toBe(403);
+    const bad = await post("admin", { ...payload, privateKeyPem: "bad PEM" });
+    expect(bad!.status).toBe(400);
+    expect(((await bad!.json()) as { error: string }).error).toContain("PEM");
+    expect(await f.db.run(secretRowsSteps)).toEqual([]);
+    f.setAppStatus(401);
+    const refused = await post("admin");
+    expect(refused!.status).toBe(400);
+    expect(await refused!.json()).toMatchObject({
+      error: "GitHub HTTP 401: A JSON web token could not be decoded",
+    });
+    expect(await f.db.run(secretRowsSteps)).toEqual([]);
+    f.setAppStatus(200);
+    expect((await post("admin"))!.status).toBe(200);
+    expect(f.calls.some((call) => call.path === "/app")).toBe(true);
+    const saved = await f.db.run(secretRowsSteps);
+    expect(saved).toHaveLength(1);
+    for (const value of Object.values(payload).filter((entry) => entry.length > 5))
+      expect(saved[0]!.ciphertext).not.toContain(value);
+    expect(existsSync(join(dir, "github-browser-app.json"))).toBe(false);
+    expect(JSON.parse(readSecretFile(join(dir, "github-browser-app.json"))!)).toMatchObject(
+      payload,
+    );
+    expect(createWorkspaceGitHubActivation(f.db, f.home, f.env).template().privateKeyPem).toBe(key);
+    expect(loadGitHubAppCredentials(f.home, { ...f.env, GITHUB_APP_ID: "123" })!.appId).toBe("123");
+    f.setInstallationStatus(404);
+    const status = await handler(
+      f.request("admin", "https://paws.example/api/workspaces/github-connect"),
+    );
+    expect(await status!.json()).toMatchObject({
+      status: "needs_installation",
+      installationUrl: "https://github.com/apps/fixture-paws/installations/new",
+    });
+    expect((await post("admin"))!.status).toBe(409);
+  } finally {
+    await secrets.close();
+    await f.close();
+  }
+});
+
+test("environment App ID skips browser App setup", async () => {
+  const f = await fixture();
+  try {
+    const response = await f.handler()(
+      f.request("admin", "https://paws.example/api/workspaces/github-app"),
+    );
+    expect(await response!.json()).toMatchObject({ configured: true });
   } finally {
     await f.close();
   }

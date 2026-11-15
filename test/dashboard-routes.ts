@@ -366,6 +366,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["GET POST", "/api/workspaces/github-attribution", 401],
     ["GET POST", "/api/workspaces/github-integration", 401],
     ["GET POST", "/api/workspaces/github-connect", null],
+    ["GET POST", "/api/workspaces/github-app", null],
     ["GET POST", "/api/workspaces/github-setup", null],
   ].map(([method, pattern, anonymous]) =>
     api(method as string, pattern as string, "delegated", "src/workspace", {

@@ -138,6 +138,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "dashboard-links",
   ],
   server: [
+    "credentials",
+    "doctor",
     "journal",
     "runner-placement",
     "runner-protocol",

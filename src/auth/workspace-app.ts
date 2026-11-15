@@ -28,7 +28,7 @@ export function createWorkspaceGitHubActivation(
   function template(): ActiveGitHubApp {
     const app = loadGitHubAppCredentials(home, env);
     if (!app) throw new Error("Configure the GitHub App on the Paws control plane first.");
-    const privateKeyPem = readSecretFile(app.privateKeyPath, false);
+    const privateKeyPem = app.privateKeyPem ?? readSecretFile(app.privateKeyPath, false);
     if (!privateKeyPem) throw new Error("GitHub App key unavailable.");
     return { ...app, privateKeyPem, generation: 0 };
   }
