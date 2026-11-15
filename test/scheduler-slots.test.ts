@@ -13,7 +13,7 @@ import {
   type Db,
 } from "../src/db";
 import { eq } from "drizzle-orm";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

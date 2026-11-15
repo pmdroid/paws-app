@@ -19,7 +19,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork, createRunnerWorkHttp, type RunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const repository = {

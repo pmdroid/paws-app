@@ -19,7 +19,7 @@ import {
   type ImprovementSource,
   type Db,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const REPO = "pmdroid/paws-app";

@@ -23,7 +23,7 @@ import {
   type Db,
 } from "../src/db";
 import { eq } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
 import { handleStatusRequest } from "../src/dashboard";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";

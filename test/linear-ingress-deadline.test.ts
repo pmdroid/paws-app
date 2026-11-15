@@ -23,7 +23,7 @@ import {
 } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess } from "../src/loop";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 async function delayed(release: Promise<void>, signal: AbortSignal): Promise<void> {

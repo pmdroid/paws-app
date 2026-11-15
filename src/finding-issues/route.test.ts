@@ -11,7 +11,7 @@ import { createFakeTracker, REVIEW_FINDING_LABEL } from "../linear";
 import type { StatusReview, StatusReviewFinding } from "../dashboard";
 import { issueWorkspaceSession } from "../workspace";
 import { createFindingIssueRoute } from "./route";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;

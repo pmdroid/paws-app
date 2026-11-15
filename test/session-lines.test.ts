@@ -17,7 +17,7 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { askSteps } from "../src/loop";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];

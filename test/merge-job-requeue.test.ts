@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { cancelOpenJobs, getJob } from "../src/db";
 import { enqueueVerifiedMerge } from "../src/loop";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test.each(["done", "cancelled", "dead"] as const)(

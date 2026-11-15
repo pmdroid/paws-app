@@ -8,7 +8,7 @@ import {
   type Db,
 } from "../src/db";
 import { joinFakeWorkspacePg, workspaceDispatchPg } from "./fake-workspace";
-import { saveChangedPaths } from "./dialects";
+import { saveChangedPaths } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;

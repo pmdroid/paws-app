@@ -12,7 +12,7 @@ import {
 import { createFakeTracker, type SessionUpdate } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import type { ItemWait } from "../src/scheduler";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";

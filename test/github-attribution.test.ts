@@ -16,7 +16,7 @@ import {
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 import { setJournalSink } from "../src/journal";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { copyMigratedPglite } from "./pglite";
 
 async function fixture(configured = true) {

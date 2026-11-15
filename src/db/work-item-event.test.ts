@@ -7,7 +7,7 @@ import {
   listWorkItemEventRows,
   TransitionRejectedError,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const closes: (() => Promise<void>)[] = [];

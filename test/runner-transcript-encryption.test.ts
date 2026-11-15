@@ -12,7 +12,7 @@ import {
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
 import type { Db } from "../src/db";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

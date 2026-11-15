@@ -7,7 +7,7 @@ import {
   suggestedFindingsSteps,
   type Db,
 } from "../src/db";
-import { forEachDialect, insertWorkItem } from "./dialects";
+import { describePglite, insertWorkItem } from "./pglite-fixtures";
 
 const handed = (findingId: string) => ({
   findingId,
@@ -17,7 +17,7 @@ const handed = (findingId: string) => ({
   explanation: `explain ${findingId}`,
 });
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

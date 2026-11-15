@@ -19,7 +19,7 @@ import {
   type OnboardingReadiness,
   type OnboardingVmStep,
 } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_800_000_000_000;

@@ -3,7 +3,7 @@ import { count, eq } from "drizzle-orm";
 import { listOutbox, recordConfirmedRemoteMerge, type Db } from "../src/db";
 import { recordItemDependenciesSteps } from "../src/intake";
 import { WAIT_KEEPALIVE_MS, type ItemWait } from "../src/scheduler";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { joinFakeWorkspacePg, workspaceDispatchPg } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

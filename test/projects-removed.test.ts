@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test("the Projects page and /api/projects are gone for a signed-in member", async () => {

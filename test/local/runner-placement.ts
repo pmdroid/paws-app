@@ -19,7 +19,7 @@ import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-p
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
 import { count, eq, isNotNull, ne, sql } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 export async function probeRunnerPlacement(

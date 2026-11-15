@@ -9,7 +9,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { forEachDialect, insertWorkItemSteps } from "./dialects";
+import { describePglite, insertWorkItemSteps } from "./pglite-fixtures";
 
 function* sessionWithItem(q: Q, sessionId: string, itemId: string) {
   yield* insertWorkItemSteps(q, itemId);
@@ -31,7 +31,7 @@ function* sessionWithItem(q: Q, sessionId: string, itemId: string) {
   );
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

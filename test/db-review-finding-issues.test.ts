@@ -10,7 +10,7 @@ import {
   type Db,
   type ReviewFindingIssue,
 } from "../src/db";
-import { forEachDialect, seed, withoutForeignKeys } from "./dialects";
+import { describePglite, seed, withoutForeignKeys } from "./pglite-fixtures";
 
 const finding = { repository: "o/r", location: "src/a.ts:3", text: "a bug" };
 
@@ -77,7 +77,7 @@ function seedSourcedFinding(db: Db, id: number, sourceKey: string, reviewState: 
   );
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

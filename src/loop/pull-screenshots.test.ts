@@ -12,8 +12,13 @@ import {
 } from "../github";
 import { EVIDENCE_INLINE_LIMITS } from "./artifacts";
 import { pullRequestScreenshots } from "./pull-screenshots";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
+
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
 
 const NOW = 1_700_000_000_000;
 const HEAD = "a".repeat(40);
@@ -26,7 +31,8 @@ afterEach(() => {
 async function setup() {
   const root = mkdtempSync(path.join(tmpdir(), "paws-pull-screenshots-"));
   roots.push(root);
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   const item = await insertQueuedItem(db, {
     id: "ENG-1129",
     sessionKey: "ses_1",

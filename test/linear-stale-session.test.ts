@@ -30,7 +30,7 @@ import { attachOrchestrator } from "../src/loop";
 import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { pawsPaths } from "../src/config";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { migratedHome } from "./helpers";
 
 const workItems = (db: Db, state?: string) =>

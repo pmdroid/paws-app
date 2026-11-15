@@ -28,7 +28,7 @@ import {
   requestWorkspaceSession,
   WORKSPACE_COOKIE,
 } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { createExecutionControlsFixturePg } from "./local/execution-controls";
 
 async function fixtureTest(

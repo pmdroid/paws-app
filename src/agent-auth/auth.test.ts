@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tempStore } from "../../test/pglite";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import {
   readAgentAuthSteps,
   writeAgentAuthSteps,

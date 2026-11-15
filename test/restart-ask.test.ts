@@ -39,7 +39,7 @@ import {
 import { itemReadiness } from "../src/intake";
 import { findOpenQuestion } from "../src/questions";
 import { answerPg, askPg } from "./questions";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceAdmission, workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";

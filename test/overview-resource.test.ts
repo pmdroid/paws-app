@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { insertQueuedItem, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test("the overview needs a Paws session, shows only the member's sessions and follows membership changes", async () => {

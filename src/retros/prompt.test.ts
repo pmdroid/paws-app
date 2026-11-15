@@ -34,7 +34,7 @@ import {
   type RetroDigest,
   type RetroDigestRecord,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const APP = "pmdroid/paws-app";

@@ -3,7 +3,7 @@ import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as migratePg } from "drizzle-orm/pglite/migrator";
 import { getConversation, PG_MIGRATIONS_FOLDER, postgresDb, saveConversation } from "../src/db";
-import { forEachDialect, insertWorkItem } from "./dialects";
+import { describePglite, insertWorkItem } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -52,7 +52,7 @@ describe("linear_conversation entries move into linear_conversation_entry", () =
   });
 });
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("appending and reading return the same entries in the same order", async () => {
     const { db, close } = await open();
     try {

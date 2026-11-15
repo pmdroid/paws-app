@@ -17,7 +17,7 @@ import {
   teamMemberDenialSteps,
   teamRepositoryDenial,
 } from "../src/loop";
-import { seed as insertRows } from "./dialects";
+import { seed as insertRows } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const MAPPED = { workspaceId: "ws", teamId: "mapped" };

@@ -8,9 +8,9 @@ import {
   storedCheckpointStart,
   type GitHubCommits,
 } from "../src/runner-backend";
-import { forEachDialect, insertWorkItem, type DialectDb } from "./dialects";
+import { describePglite, insertWorkItem, type PgliteTestDb } from "./pglite-fixtures";
 
-const opened: DialectDb[] = [];
+const opened: PgliteTestDb[] = [];
 afterEach(async () => {
   for (const handle of opened.splice(0)) await handle.close();
 });
@@ -109,7 +109,7 @@ test("a refused branch move fails the publication", async () => {
   await expect(publish(client, CANDIDATE)).rejects.toThrow(/push failed: moving paws\/acme-1/);
 });
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("candidate commits round-trip through the database", async () => {
     const handle = await open();
     opened.push(handle);

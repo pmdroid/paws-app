@@ -10,7 +10,7 @@ import {
 } from "../src/intake";
 import { createFakeTracker } from "../src/linear";
 import { implementPrompt, worktreeBranch } from "../src/loop";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const issue = {

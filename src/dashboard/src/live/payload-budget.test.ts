@@ -12,7 +12,7 @@ import {
   type Db,
 } from "../../../db";
 import { createLiveStatusProvider, handleStatusRequest } from "../engine";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 /** The budget in `docs/dashboard-payload.md`. */

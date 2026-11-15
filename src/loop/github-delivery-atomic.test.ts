@@ -18,7 +18,7 @@ import {
   type Job,
   type PgDb,
 } from "../db";
-import { githubDeliveryRows, seed } from "../../test/dialects";
+import { githubDeliveryRows, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { worktreeBranch } from "./sources";

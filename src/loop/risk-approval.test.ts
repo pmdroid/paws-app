@@ -48,7 +48,7 @@ import {
 } from "./risk-approval";
 
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { saveChangedPaths, seed } from "../../test/dialects";
+import { saveChangedPaths, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;

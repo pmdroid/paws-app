@@ -17,7 +17,7 @@ import {
   restartHold,
   saveCheckpoint,
 } from "./index";
-import { json, seed, withoutForeignKeys } from "../../test/dialects";
+import { json, seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_000_000;

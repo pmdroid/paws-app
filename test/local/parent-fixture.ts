@@ -18,7 +18,7 @@ import {
 } from "../../src/linear";
 import { createParentDelegations } from "../../src/intake";
 import { Orchestrator } from "../../src/loop";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 type ParentFixtureOptions = { authorizeEvents?: boolean; startSessions?: boolean };

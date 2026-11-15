@@ -22,7 +22,7 @@ import {
   type Db,
   type PgDb,
 } from "./index";
-import { seed, withoutForeignKeys } from "../../test/dialects";
+import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const START = 1_000_000;

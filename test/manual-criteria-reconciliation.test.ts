@@ -29,7 +29,7 @@ import {
 } from "../src/questions";
 import { answerQuestionPg, askPg } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

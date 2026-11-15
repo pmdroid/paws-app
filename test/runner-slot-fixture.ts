@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import {
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -13,7 +13,7 @@ import {
   type Db,
 } from "../src/db";
 import { eq } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { itemRunnerVerdictsSteps } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";

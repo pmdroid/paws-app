@@ -29,7 +29,7 @@ import {
   type Db,
 } from "./index";
 import { eq, sql, type SQL } from "drizzle-orm";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const MINUTE = 60_000;

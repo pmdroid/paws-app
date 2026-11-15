@@ -17,7 +17,7 @@ export function stressMatrix(root: string, base: string) {
   const files = [...new Set(diff.stdout.split("\0").filter((path) => existing.has(path)))].sort();
   const classifier = new RegExp(
     process.env.DATABASE_TESTS ??
-      "tempStore|serverPostgres|forEachDialect|pgliteServer|improvement-fixtures|decision-memory-fixture",
+      "tempStore|serverPostgres|describePglite|pgliteServer|improvement-fixtures|decision-memory-fixture",
   );
   const exclusions = join(root, "test/postgres-known-failures.txt");
   const excluded = new Set(

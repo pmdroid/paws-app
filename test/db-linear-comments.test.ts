@@ -11,7 +11,7 @@ import {
   type Db,
   type LinearCommentReceipt,
 } from "../src/db";
-import { forEachDialect } from "./dialects";
+import { describePglite } from "./pglite-fixtures";
 
 function receipt(commentId: string, overrides: Partial<LinearCommentReceipt> = {}) {
   return {
@@ -36,7 +36,7 @@ function receipt(commentId: string, overrides: Partial<LinearCommentReceipt> = {
 
 const route = { itemId: "item", sessionId: "session", generation: 2, authority: "person" } as const;
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

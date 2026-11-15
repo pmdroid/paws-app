@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +39,7 @@ import {
   type OnboardingReadiness,
   type WorkspacePrincipal,
 } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { requestTracker } from "./wait-for";
 

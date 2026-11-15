@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { checkGitHubSignature, handleGitHubWebhook } from "../src/github";
 import { startPaws } from "../src/index";
 import { migratedHome } from "./helpers";
-import { githubDeliveryRows } from "./dialects";
+import { githubDeliveryRows } from "./pglite-fixtures";
 
 const secret = "synthetic-github-webhook-secret";
 function request(payload: string, change: Record<string, string> = {}): Request {

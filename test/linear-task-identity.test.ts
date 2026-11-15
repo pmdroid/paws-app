@@ -23,7 +23,7 @@ import { createFakeTracker } from "../src/linear";
 import { intakeDelegatedIssue } from "../src/intake";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { systemClock } from "../src/core";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const setState = (db: Db, id: string, state: string) =>

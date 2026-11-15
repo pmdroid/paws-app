@@ -28,7 +28,7 @@ import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 import { openRunnerRuntime, type RunnerAgents } from "../src/runner-runtime";
 import type { RunnerWork } from "../src/runner-work";
 import { syncSteps } from "../src/db";
-import { withoutForeignKeys } from "./dialects";
+import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0 && process.getgid!() !== 0;

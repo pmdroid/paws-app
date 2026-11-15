@@ -28,7 +28,7 @@ import {
 } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { eq, inArray } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const SECRET = "sk-ant-oat01-PAS1021-planted-secret";

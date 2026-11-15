@@ -9,7 +9,7 @@ import {
 } from "../../../db";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 const NOW = 1_700_000_000_000;

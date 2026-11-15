@@ -1,5 +1,5 @@
 import { recordRunnerHostStatus } from "../db";
-import { bindFixtureAccounts } from "../../test/dialects";
+import { bindFixtureAccounts } from "../../test/pglite-fixtures";
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";

@@ -9,7 +9,7 @@ import {
   syncItemDependencies,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceDispatchPg } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

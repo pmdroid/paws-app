@@ -19,7 +19,7 @@ import {
   type Db,
   type NewOutbox,
 } from "../src/db";
-import { forEachDialect, insertWorkItem } from "./dialects";
+import { describePglite, insertWorkItem } from "./pglite-fixtures";
 
 function enqueue(db: Db, row: Omit<NewOutbox, "target"> & { target?: NewOutbox["target"] }) {
   return db.transaction((q) => enqueueOutboxSteps(q, { target: "linear", now: 1_000, ...row }));
@@ -34,7 +34,7 @@ function thought(idempotencyKey: string, body: string, extra: Record<string, unk
   };
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("a stored row reads back with its payload, in id order", async () => {
     const { db, close } = await open();
     try {

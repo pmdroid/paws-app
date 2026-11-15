@@ -12,7 +12,7 @@ import {
 import { publishingCloseoutProgress } from "../src/loop";
 import { createFakeRunFileObjects, withSealedRunFileObjects } from "../src/run-files";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const openStores: (() => Promise<void>)[] = [];

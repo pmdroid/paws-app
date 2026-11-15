@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import { enqueueJob, getJob, type Db } from "../src/db";
 import { jsonFromText } from "../src/db/json-text";
-import { forEachDialect, type DialectDb } from "./dialects";
+import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
 
 function jsonType(db: Db, id: number): Promise<string> {
   return db.run(function* (q) {
@@ -17,8 +17,8 @@ function jsonType(db: Db, id: number): Promise<string> {
   });
 }
 
-forEachDialect((open) => {
-  let handle: DialectDb;
+describePglite((open) => {
+  let handle: PgliteTestDb;
   beforeEach(async () => {
     handle = await open();
   });

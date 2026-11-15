@@ -10,7 +10,7 @@ import {
   loadRunnerTranscriptStores,
 } from "../src/runner-transcript-config";
 import { handleStorageSettingsRequest, type StorageSettingsOptions } from "../src/settings";
-import { forEachDialect } from "./dialects";
+import { describePglite } from "./pglite-fixtures";
 
 const NAMES = [
   "PAWS_S3_BUCKET",
@@ -110,7 +110,7 @@ async function roundTrip() {
 
 test("PUT then GET round-trips everything except the secrets", roundTrip);
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("the settings save to the database secret table", async () => {
     process.env.PAWS_SECRET_KEY = randomBytes(32).toString("base64");
     const handle = await connect();
@@ -185,7 +185,7 @@ test("members, a missing CSRF token and invalid values are refused", async () =>
   expect(audits).toEqual([]);
 });
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("Closeout log retention defaults to 14 days and saves without touching storage", async () => {
     const { db: store, close } = await connect();
     cleanup.push(close);
@@ -204,7 +204,7 @@ forEachDialect((connect) => {
   });
 });
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("rejected combined storage updates preserve retention", async () => {
     const { db: store, close } = await connect();
     cleanup.push(close);

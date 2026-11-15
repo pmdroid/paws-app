@@ -40,7 +40,7 @@ import { attachOrchestrator, itemPathId } from "../../src/loop";
 import { saveSchedulingContextSteps } from "../../src/scheduler";
 import { cloneRunnerPg, tickWithRestartsPg } from "../e2e-harness";
 import { tempStore } from "../pglite";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { workspaceAdmission } from "../fake-workspace";
 
 export const RUNNER_ORCHESTRATION_SCENARIOS = [

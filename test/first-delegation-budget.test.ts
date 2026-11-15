@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";

@@ -18,7 +18,7 @@ import {
   suggestDecisionsSteps,
 } from "../src/decisions";
 import { getQuestion, openQuestion } from "../src/questions";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import { answerQuestionPg } from "./questions";
 import { createExecutionControlsFixturePg } from "./local/execution-controls";
 import { pgliteServer } from "./pglite";

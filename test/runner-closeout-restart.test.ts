@@ -40,7 +40,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { seedCandidate } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { copyMigratedPglite } from "./pglite";
 
 const REMOTE = "https://github.com/acme/fixture.git";

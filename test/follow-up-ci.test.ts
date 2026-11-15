@@ -28,7 +28,7 @@ import { fakeMergeReadiness, type GitHubClient, type GitHubResponse } from "../s
 type GitHubRequest = Parameters<GitHubClient["request"]>[0];
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

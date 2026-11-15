@@ -3,7 +3,7 @@ import { count, eq, sql } from "drizzle-orm";
 import { bindLinearSessionTask, recordLinearInstallation, type Db } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const closers: (() => Promise<void>)[] = [];

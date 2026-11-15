@@ -35,7 +35,7 @@ import {
   type Db,
   type Q,
 } from "../../../db";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 import {
   type IssueCheckLogResponse,

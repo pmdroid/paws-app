@@ -11,7 +11,7 @@ import {
   type Db,
 } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 const T0 = Date.parse("2026-11-01T10:00:00.000Z");

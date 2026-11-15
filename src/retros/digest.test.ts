@@ -24,7 +24,7 @@ import {
   redactRetroText,
   type RetroDigest,
 } from "./index";
-import { json, seed } from "../../test/dialects";
+import { json, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const REPO = "pmdroid/paws-app";

@@ -7,7 +7,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { workspaceDispatchPg } from "./fake-workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_000;

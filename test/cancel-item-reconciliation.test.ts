@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { applyWorkItemEvent, type Db } from "../src/db";
 import { hasPendingDelegationChanges } from "../src/intake";
-import { seed as insert } from "./dialects";
+import { seed as insert } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function item(db: Db, id: string, state: string) {

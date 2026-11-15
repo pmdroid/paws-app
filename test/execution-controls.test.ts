@@ -19,7 +19,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import {
   createExecutionControlsFixturePg,
   probeExecutionControls,

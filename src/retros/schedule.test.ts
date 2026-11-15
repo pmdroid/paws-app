@@ -29,7 +29,7 @@ import {
   type RetroScheduleStatus,
 } from "./index";
 import { FIXTURE_REPO } from "./result.fixtures";
-import { seed, withoutForeignKeys } from "../../test/dialects";
+import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const BERLIN = "Europe/Berlin";

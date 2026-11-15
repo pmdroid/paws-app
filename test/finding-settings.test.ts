@@ -12,7 +12,7 @@ import {
   type Db,
 } from "../src/db";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 let db: Db;

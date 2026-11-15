@@ -23,7 +23,7 @@ import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS, createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function linearEvent(key: string, body: string | null): AcceptedLinearEvent {

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { RunnerCommand } from "../runner-protocol";
-import { seed as insert } from "../../test/dialects";
+import { seed as insert } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import {
   AgentAccountError,

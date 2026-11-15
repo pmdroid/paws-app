@@ -14,7 +14,7 @@ import { RUNNER_ONLINE_MS } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { startServer, type HealthReport } from "../src/server";
 import { startDashboardFixture } from "./dashboard-fixture";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 10 * 60 * 60_000;

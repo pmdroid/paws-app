@@ -18,7 +18,7 @@ import {
   type VisualReviewChanges,
 } from "../src/evidence";
 import { openVisualReviewSteps } from "../src/questions";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const HEAD = "a".repeat(40);

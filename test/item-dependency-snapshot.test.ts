@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { insertQueuedItem, type Db } from "../src/db";
 import { delegationSnapshotsComplete, readExternalBlockerEvidence } from "../src/intake";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function item(db: Db, id: string, delegationId: string, state: string, position: number) {

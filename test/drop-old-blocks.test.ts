@@ -18,7 +18,7 @@ import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear
 import { Orchestrator } from "../src/loop";
 import { eq } from "drizzle-orm";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { workspaceAdmission } from "./fake-workspace";
 

@@ -6,7 +6,7 @@ import { createRunnerWork } from "../src/runner-work";
 import { createRunnerLogin } from "../src/runner-login";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import type { RunnerCommand } from "../src/runner-protocol";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const stores: { close(): Promise<void> }[] = [];

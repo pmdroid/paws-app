@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
@@ -43,8 +43,13 @@ import { CI_REVIEW_WAIT_SOURCE } from "./pull-ci";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
 import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
+
+const closeStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closeStores.splice(0)) await close();
+});
 
 const HEAD = "a".repeat(40);
 const LOG = "bun test v1.4.2\n✗ ranks ties by name\n 1 fail";
@@ -70,7 +75,8 @@ const failing = (): Nodes => [
 ];
 
 async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closeStores.push(close);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",

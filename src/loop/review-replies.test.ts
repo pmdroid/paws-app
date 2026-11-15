@@ -17,7 +17,7 @@ import {
   type PullFeedbackWait,
   syncSteps,
 } from "../db";
-import { pullCommentOutcome } from "../../test/dialects";
+import { pullCommentOutcome } from "../../test/pglite-fixtures";
 import {
   commentOnPullRequest,
   createFakeMergeQueue,

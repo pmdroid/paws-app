@@ -19,7 +19,7 @@ import {
 import { LinearRateLimitError } from "../linear";
 import { getQuestion } from "../questions";
 import { GitHubInstallationCheck } from "./github-integration";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "../../test/pglite";
 
 function questions(db: Db) {

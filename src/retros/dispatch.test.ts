@@ -27,7 +27,7 @@ import { verifyRunnerRetroCommand, type RunnerRetroCommand } from "../runner-pro
 import { createRetroDispatcher, retroRetryDelayMs } from "./index";
 import { addRunnerPg as addRunner, trustedKeys, worldPg } from "./dispatch.fixtures";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START, fixturePattern } from "./result.fixtures";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "../../test/pglite";
 
 const listRetroDispatches = (db: Db, retroId: string) =>

@@ -8,7 +8,7 @@ import {
 } from "../../../db";
 import { parseQuestionDetailResponse, parseQuestionListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { queriesDuring } from "../../../../test/query-log";
 import { tempStore } from "../../../../test/pglite";
 

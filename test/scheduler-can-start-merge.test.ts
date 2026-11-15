@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { recordLinearInstallation, saveTaskMode, type Db } from "../src/db";
 import { createAdmission } from "../src/scheduler";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { confirmFakeMergePg, joinFakeWorkspacePg, workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

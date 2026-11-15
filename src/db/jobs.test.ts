@@ -27,7 +27,7 @@ import {
   postgresDb,
   type Db,
 } from "./index";
-import { json, seed } from "../../test/dialects";
+import { json, seed } from "../../test/pglite-fixtures";
 import { pgliteServer, tempStore } from "../../test/pglite";
 
 const stores: { close(): Promise<void> }[] = [];

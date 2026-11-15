@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { count, sql } from "drizzle-orm";
 import { openPglite, pgSchema, postgresDb, type Q } from "../src/db";
-import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
+import { describePglite, insertWorkItem, insertWorkItemSteps } from "./pglite-fixtures";
 
 function* itemCount(q: Q) {
   const row = yield* q.one(q.orm.select({ n: count() }).from(q.t.workItem));
   return row!.n;
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("a transaction commits all of its writes, and rolls all of them back when its body throws", async () => {
     const { db, close } = await open();
     try {

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import type { Q } from "../src/db";
 import { pruneRunnerEvents } from "../src/runner-work";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const DAY = 86_400_000;

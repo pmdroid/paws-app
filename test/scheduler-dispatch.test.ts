@@ -17,7 +17,7 @@ import {
 import { Orchestrator } from "../src/loop";
 import * as scheduler from "../src/scheduler";
 import type { SchedulerOptions } from "../src/scheduler";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { confirmFakeMergePg, workspaceDispatchPg } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

@@ -12,7 +12,7 @@ import { FakeClock } from "../src/core";
 import { createLinearClient, createLinearTracker, type LinearClient } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
 import { tempHome, withHomeStore } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function remote() {

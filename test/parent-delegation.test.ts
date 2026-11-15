@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { asc, eq } from "drizzle-orm";
 import { ensureLinearSession, listJobs, listOutbox } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { createParentFixturePg } from "./local/parent-fixture";
 
 type Fixture = Awaited<ReturnType<typeof createParentFixturePg>>;

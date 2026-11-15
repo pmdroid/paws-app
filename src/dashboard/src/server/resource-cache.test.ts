@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { createResourceCache, handleStatusRequest, RESOURCE_REUSE_MS } from "./handler";
 import { emptyOverview } from "../live/overview";
 import { recordPushOutage } from "../../../db";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 function poll(headers: Record<string, string> = {}) {

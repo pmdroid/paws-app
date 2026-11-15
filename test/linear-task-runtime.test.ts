@@ -29,7 +29,7 @@ import {
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { elicitationBody, findOpenQuestion, getQuestion } from "../src/questions";
 import { answerPg as answerAsked } from "./questions";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, tempStore } from "./pglite";

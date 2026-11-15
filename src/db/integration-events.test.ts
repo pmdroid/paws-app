@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { recordGitHubDelivery } from "./index";
-import { githubDeliveryRows } from "../../test/dialects";
+import { githubDeliveryRows } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const DAY = 24 * 60 * 60 * 1000;

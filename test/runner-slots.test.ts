@@ -12,7 +12,7 @@ import {
   type Db,
 } from "../src/db";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];

@@ -12,7 +12,7 @@ import {
 } from "../db";
 import { findOpenQuestion } from "../questions";
 import { mergeHarnessPg, pendingCi, type MergeHarnessPg } from "./advance-harness";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { MAX_REBASE_RETURNS } from "./budget";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";

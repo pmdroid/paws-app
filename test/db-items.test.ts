@@ -29,7 +29,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
+import { describePglite, insertWorkItem, insertWorkItemSteps } from "./pglite-fixtures";
 
 function json(q: Q, value: unknown): unknown {
   return value;
@@ -86,7 +86,7 @@ function insertEvents(db: Db, itemId: string, events: { kind: string; reason: st
   });
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("work items read back with their continuation, checkpoint and order", async () => {
     const { db, close } = await open();
     try {

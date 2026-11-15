@@ -38,7 +38,7 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
-import { seed as seedRows } from "./dialects";
+import { seed as seedRows } from "./pglite-fixtures";
 import { cloneRunner, runnerCheckout } from "./helpers";
 import { pgliteDb } from "./pglite";
 

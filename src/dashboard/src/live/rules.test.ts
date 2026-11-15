@@ -19,7 +19,7 @@ import {
 import { parseIssueDetailResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { createLiveStatusProvider } from "./provider";
-import { seed as insertRows } from "../../../../test/dialects";
+import { seed as insertRows } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 const open: (() => Promise<void>)[] = [];

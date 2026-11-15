@@ -25,7 +25,7 @@ import { createFakeTracker, type SessionUpdate } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
 import { eq } from "drizzle-orm";
-import { forEachDialect, insertWorkItem, seed } from "./dialects";
+import { describePglite, insertWorkItem, seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
@@ -367,7 +367,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
   }
 });
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("an item's wait starts once per version and clears", async () => {
     const { db, close } = await open();
     try {

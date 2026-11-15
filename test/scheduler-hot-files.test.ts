@@ -11,7 +11,7 @@ import {
 } from "../src/db";
 import { sql, type SQL } from "drizzle-orm";
 import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
-import { saveChangedPaths } from "./dialects";
+import { saveChangedPaths } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;

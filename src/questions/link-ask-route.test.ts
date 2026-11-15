@@ -3,7 +3,7 @@ import { like } from "drizzle-orm";
 import { insertQueuedItem, putWorkspaceUser, syncWorkspaceMember } from "../db";
 import { openLinkAsk } from "./link-ask";
 import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from "./link-ask-route";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;

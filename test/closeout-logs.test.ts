@@ -26,7 +26,7 @@ import {
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { createFakeRunFileObjects } from "../src/run-files";
 import { pruneCloseoutLogs } from "../src/runner-work";
-import { insertWorkItem } from "./dialects";
+import { insertWorkItem } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const DAY = 86_400_000;

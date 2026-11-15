@@ -10,7 +10,7 @@ import {
   listJobs,
   type Db,
 } from "../db";
-import { seed, withoutForeignKeys } from "../../test/dialects";
+import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { deleteEndedCheckpointRef, sweepCheckpointRefs } from "./checkpoint-ref";
 
