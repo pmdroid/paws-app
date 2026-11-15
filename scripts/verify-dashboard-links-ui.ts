@@ -9,13 +9,11 @@ const directory = await mkdtemp(join(tmpdir(), "paws-dashboard-links-"));
 const evidence = process.env.PAWS_UI_EVIDENCE_DIR ?? directory;
 const full = fullStatusFixture();
 full.source = "live";
-const requested: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     const url = new URL(request.url);
-    requested.push(url.pathname);
     if (url.pathname === "/api/auth/session") return new Response(null, { status: 404 });
     if (url.pathname === "/api/settings/agents")
       return Response.json({
@@ -56,45 +54,46 @@ try {
     await expect(page).toHaveURL(`${origin}/dashboard/?engine=live`);
     await expect(heading(page)).toHaveText("Overview");
 
-    await page.goto(`${origin}/status/issues/ENG-103?from=linear#closeout`);
+    await page.goto(`${origin}/dashboard/issues/ENG-103?from=linear#closeout`);
     await expect(page).toHaveURL(`${origin}/dashboard/issues/ENG-103?from=linear#closeout`);
     await expect(page.locator("#content")).toContainText("ENG-103");
-    await page.screenshot({ path: join(evidence, `legacy-issue-${width}.png`), fullPage: true });
+    await page.screenshot({ path: join(evidence, `issue-${width}.png`), fullPage: true });
 
-    await page.goto(`${origin}/status/#/settings/integrations`);
+    await page.goto(`${origin}/dashboard/settings/integrations`);
     await expect(page).toHaveURL(`${origin}/dashboard/settings/integrations`);
-    await expect(heading(page)).toHaveText("Integrations");
+    await expect(page.getByRole("region", { name: "Workspace settings" })).toContainText(
+      "Configure workspace sign-in",
+    );
     await page.reload();
     await expect(page).toHaveURL(`${origin}/dashboard/settings/integrations`);
-    await expect(heading(page)).toHaveText("Integrations");
+    await expect(page.getByRole("region", { name: "Workspace settings" })).toContainText(
+      "Configure workspace sign-in",
+    );
 
-    await page.goto(`${origin}/status/findings?status=all&severity=high#finding-1`);
+    await page.goto(`${origin}/dashboard/findings?status=all&severity=high#finding-1`);
     await expect(page).toHaveURL(`${origin}/dashboard/findings?status=all&severity=high#finding-1`);
     await expect(heading(page)).toHaveText("Findings");
 
-    await page.goto(`${origin}/status/sessions`);
+    await page.goto(`${origin}/dashboard/sessions`);
     await expect(page).toHaveURL(`${origin}/dashboard/issues`);
     await expect(heading(page)).toHaveText("Issues");
 
     await page.goto(`${origin}/dashboard/settings/unknown`);
-    await expect(heading(page)).toHaveText("Agents");
+    await expect(page.getByRole("button", { name: "Save settings", exact: true })).toBeVisible();
     await page.goto(`${origin}/dashboard/not-a-page`);
     await expect(heading(page)).toHaveText("Overview");
 
-    const removed = await page.goto(`${origin}/status/projects`);
+    const removed = await page.goto(`${origin}/dashboard/projects`);
     expect(removed?.status()).toBe(404);
     expect(page.url()).toBe(`${origin}/dashboard/projects`);
     expect((await page.request.get(`${origin}/dashboard/assets/missing.js`)).status()).toBe(404);
 
-    const transcript = await page.goto(`${origin}/status/runs/r-102/transcript`);
+    const transcript = await page.goto(`${origin}/dashboard/runs/r-102/transcript`);
     expect(transcript?.status()).toBe(200);
     expect(page.url()).toBe(`${origin}/dashboard/runs/r-102/transcript`);
     await expect(page).toHaveTitle("Transcript · r-102 · Paws");
-    await page.screenshot({ path: join(evidence, `legacy-transcript-${width}.png`) });
+    await page.screenshot({ path: join(evidence, `transcript-${width}.png`) });
   }
-  const legacyAssets = requested.filter((path) => path.startsWith("/status/assets/"));
-  if (legacyAssets.length > 0)
-    throw new Error(`Pages loaded assets from /status: ${legacyAssets.join(", ")}`);
   if (errors.length > 0) throw new Error(errors.join("\n"));
   console.log(`dashboard links verified; screenshots in ${evidence}`);
 } finally {

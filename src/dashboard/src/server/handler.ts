@@ -51,12 +51,7 @@ import { injectCsrf } from "./csrf";
 import { dashboardResponseSizes, type ResponseSizeJournal } from "./response-size";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
-import {
-  DASHBOARD_PATH,
-  dashboardPath,
-  isDashboardPath,
-  legacyDashboardLocation,
-} from "../../../dashboard-links";
+import { DASHBOARD_PATH, dashboardPath, isDashboardPath } from "../../../dashboard-links";
 
 export interface StatusProvider {
   /** One check's whole output. Null, or no reader, answers 404. */
@@ -164,14 +159,10 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
-  const legacy =
-    pathname === "/"
-      ? dashboardPath(`/${url.search}`)
-      : legacyDashboardLocation(pathname, url.search);
-  if (legacy !== null) {
+  if (pathname === "/") {
     if (request.method !== "GET" && request.method !== "HEAD")
       return text("Method not allowed", 405);
-    return redirect(legacy);
+    return redirect(dashboardPath(`/${url.search}`));
   }
   const evidence = /^\/evidence\/([0-9A-HJKMNP-TV-Z]{26})\/?$/.exec(pathname);
   if (evidence) {

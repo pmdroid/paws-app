@@ -230,69 +230,23 @@ describe("status HTTP stub", () => {
     const other = await fetch(`${base}/webhooks/github`, { method: "POST" });
     expect(other.status).toBe(404);
   });
-  test("redirects old /status page links to /dashboard with their queries", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "paws-status-"));
-    dirs.push(dir);
-    await writeFile(join(dir, "index.html"), "<!doctype html><p>status-dashboard</p>");
-    await writeFile(join(dir, "transcript.html"), "<!doctype html><p>transcript-page</p>");
-    const server = startStatusServer({ port: 0, hostname: "127.0.0.1", staticDir: dir });
+  test("old status paths return the same 404 as unknown paths", async () => {
+    const server = startStatusServer({ port: 0, hostname: "127.0.0.1" });
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
-    const moved: [string, string][] = [
-      ["/status", "/dashboard/"],
-      ["/status/", "/dashboard/"],
-      ["/status/?engine=demo", "/dashboard/?engine=demo"],
-      ["/status/overview", "/dashboard/overview"],
-      ["/status/queue", "/dashboard/queue"],
-      ["/status/epics", "/dashboard/epics"],
-      ["/status/issues", "/dashboard/issues"],
-      ["/status/issues/PAS-633?tab=1", "/dashboard/issues/PAS-633?tab=1"],
-      ["/status/issues/ENG%2F7", "/dashboard/issues/ENG%2F7"],
-      ["/status/questions/q-1", "/dashboard/questions/q-1"],
-      ["/status/merge-queue", "/dashboard/merge-queue"],
-      [
-        "/status/findings?repository=acme%2Fapp&severity=high&review=r&status=all&path=a.ts",
-        "/dashboard/findings?repository=acme%2Fapp&severity=high&review=r&status=all&path=a.ts",
-      ],
-      ["/status/evidence", "/dashboard/evidence"],
-      [
-        "/status/runners/01JRUNNER0000000000000000A",
-        "/dashboard/runners/01JRUNNER0000000000000000A",
-      ],
-      [
-        "/status/settings/integrations?connecting=1",
-        "/dashboard/settings/integrations?connecting=1",
-      ],
-      ["/status/runs", "/dashboard/runs"],
-      ["/status/runs/r-1", "/dashboard/runs/r-1"],
-      ["/status/runs/run_01-abc/transcript", "/dashboard/runs/run_01-abc/transcript"],
-      ["/status/sessions/s-1", "/dashboard/sessions/s-1"],
-      ["/status/verdicts/v-1", "/dashboard/verdicts/v-1"],
-      ["/status/assets/app.js", "/dashboard/assets/app.js"],
-      ["/status//evil.example/x", "/dashboard/evil.example/x"],
-    ];
-    for (const [from, to] of moved) {
-      for (const method of ["GET", "HEAD"]) {
-        const response = await fetch(`${base}${from}`, { method, redirect: "manual" });
-        expect([from, method, response.status]).toEqual([from, method, 307]);
-        expect(response.headers.get("location")).toBe(to);
-        expect(response.headers.get("cache-control")).toBe("no-store");
+    for (const path of [
+      "/status",
+      "/status/",
+      "/status/issues/PAS-1",
+      "/status/assets/app.js",
+      "/unknown",
+    ]) {
+      for (const method of ["GET", "HEAD", "POST"]) {
+        const response = await fetch(`${base}${path}`, { method, redirect: "manual" });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("location")).toBeNull();
       }
     }
-    const post = await fetch(`${base}/status/settings/agents`, {
-      method: "POST",
-      redirect: "manual",
-    });
-    expect(post.status).toBe(405);
-    expect(post.headers.get("location")).toBeNull();
-    expect((await fetch(`${base}/statuses`, { redirect: "manual" })).status).toBe(404);
-
-    const followed = await fetch(`${base}/status/runs/run_01-abc/transcript`);
-    expect(followed.url).toBe(`${base}/dashboard/runs/run_01-abc/transcript`);
-    expect(await followed.text()).toContain("transcript-page");
-    expect((await fetch(`${base}/status/projects`)).status).toBe(404);
-    expect((await fetch(`${base}/status/assets/missing.js`)).status).toBe(404);
-    expect((await fetch(`${base}/status/settings/unknown`)).status).toBe(200);
 
     const evidence = await fetch(`${base}/evidence/01JEV1DENCE0000000000000AB?t=3`, {
       redirect: "manual",
