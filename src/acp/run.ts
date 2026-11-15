@@ -46,7 +46,7 @@ import { installCloseoutStopHook, installCodexSkillsHome } from "./closeout-hook
 import { watchHookFailures } from "./workspace-hooks";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { sessionModel, selectSessionProfile, providerFor, standardWindowNotice } from "./model";
-import { minimalAgentEnv } from "./env";
+import { claudeAgentEnv, minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
 import { decidePermission, decideReadOnlyPermission, type GuardContext } from "./permissions";
 import { captureStderr, killTree, spawnAgent, stopChild, waitForExit } from "./process";
@@ -234,6 +234,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     adapter.args,
     {
       ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+      ...(profile.agent === "claude" && sourceEnv.HOME ? claudeAgentEnv(sourceEnv.HOME) : {}),
       ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
       ...attributionEnv,
       ...stopHook?.env,

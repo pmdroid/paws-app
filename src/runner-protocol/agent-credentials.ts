@@ -16,7 +16,7 @@ import type { RunnerAccount } from "./accounts";
 import type { RunnerCodingAgent } from "./agents";
 
 export const RUNNER_AGENT_CREDENTIAL_FILES: Record<RunnerCodingAgent, readonly string[]> = {
-  claude: [".claude/.credentials.json", ".claude/.claude.json"],
+  claude: [".claude/.credentials.json", ".claude/.claude.json", ".claude/paws-oauth.json"],
   codex: [".codex/auth.json"],
   grok: [".grok/auth.json"],
   opencode: [".local/share/opencode/auth.json"],
@@ -123,4 +123,15 @@ export function accessCredentialExpiry(files: RunnerAgentCredentialFiles): numbe
   );
   if (!Number.isFinite(claims.exp)) throw new Error("Missing access token expiry");
   return claims.exp * 1000;
+}
+
+export const ClaudeOAuthTokenSchema = z.strictObject({
+  kind: z.literal("oauth_token"),
+  token: z.string().regex(/^sk-ant-oat01-[A-Za-z0-9_-]+$/),
+  createdAt: z.number(),
+  expiresAt: z.number(),
+});
+
+export function claudeTokenHealth(expiresAt: number, now: number): "healthy" | "expiring" {
+  return expiresAt - now <= 14 * 86400000 ? "expiring" : "healthy";
 }

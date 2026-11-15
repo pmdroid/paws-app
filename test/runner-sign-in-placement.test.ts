@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../src/credentials";
 import { afterEach, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import {
@@ -5,6 +9,8 @@ import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   createAgentAccount,
+  createAgentAccountSteps,
+  ensureLegacyAgentBindingSteps,
   insertQueuedItem,
   legacyAgentAccountId,
   legacyAgentBindingId,
@@ -43,7 +49,7 @@ function setPolicy(db: Db, runnerId: string, set: Record<string, unknown>) {
 
 const HOUR = 3_600_000;
 
-async function acme() {
+async function acme(requiresOAuth = false) {
   const { db, close } = await tempStore();
   open.push(close);
   const now = Date.now();
@@ -93,7 +99,36 @@ async function acme() {
           { runnerId: id, agent: "codex", ready: 0 },
         ]),
     );
-  const placement = createRunnerPlacement({ store: db, now: () => now });
+  const secrets = mkdtempSync(join(tmpdir(), "paws-placement-credentials-"));
+  open.push(async () => {
+    rmSync(secrets, { recursive: true, force: true });
+  });
+  await db.transaction(function* (q) {
+    yield* ensureLegacyAgentBindingSteps(q, "acme-1", "claude", now);
+    yield* writeAgentCredentialSteps(q, secrets, {
+      accountId: legacyAgentAccountId(workspace.id, "claude"),
+      runnerId: "acme-1",
+      version: 1,
+      now,
+      blob: JSON.stringify([
+        {
+          path: requiresOAuth ? ".claude/paws-oauth.json" : ".claude/.credentials.json",
+          data: "e30=",
+        },
+      ]),
+    });
+  });
+  const placement = createRunnerPlacement({
+    store: db,
+    now: () => now,
+    requiresOAuthSteps: function* (q, accountId) {
+      return (
+        (yield* readAgentCredentialSteps(q, secrets, accountId))?.blob?.includes(
+          ".claude/paws-oauth.json",
+        ) ?? false
+      );
+    },
+  });
   const place = async (request: Partial<PlacementRequest> = {}) => {
     const rejected: { runnerId: string; reason: string; until?: number }[] = [];
     const placed = await placement.candidates({
@@ -107,7 +142,7 @@ async function acme() {
     });
     return { placed, rejected };
   };
-  return { db, now, workspaceId: workspace.id, item, placement, place };
+  return { db, secrets, now, workspaceId: workspace.id, item, placement, place };
 }
 
 test("two runners signed in to Claude, one with its 5-hour window spent: the implementer goes to the other", async () => {
@@ -225,3 +260,48 @@ test("a named account bound to a runner no longer stands in for that runner's ow
     ),
   ).toBe(false);
 });
+
+for (const oauth of [false, true]) {
+  test(`placement gates only the selected credential, OAuth=${oauth}`, async () => {
+    const f = await acme(oauth);
+    const central = await f.db.transaction((q) =>
+      createAgentAccountSteps(q, {
+        workspaceId: f.workspaceId,
+        agent: "claude",
+        label: "Unrelated account",
+        now: f.now,
+      }),
+    );
+    await f.db.transaction((q) =>
+      writeAgentCredentialSteps(q, f.secrets, {
+        accountId: central.id,
+        runnerId: "acme-1",
+        version: 1,
+        now: f.now,
+        blob: JSON.stringify([{ path: ".claude/paws-oauth.json", data: "e30=" }]),
+      }),
+    );
+    await seed(f.db, (q) =>
+      q.orm.insert(q.t.runnerHostStatus).values([
+        { runnerId: "acme-1", runnerVersion: "0.1.82", reportedAt: f.now },
+        { runnerId: "acme-2", runnerVersion: "0.1.83", reportedAt: f.now },
+      ]),
+    );
+    const { placed, rejected } = await f.place();
+    expect(placed.map((entry) => entry.id).sort()).toEqual(
+      oauth ? ["acme-2"] : ["acme-1", "acme-2"],
+    );
+    expect(
+      placed.every(
+        ({ account }) =>
+          account?.accountId === legacyAgentAccountId(f.workspaceId, "claude") &&
+          account.named === false,
+      ),
+    ).toBe(true);
+    expect(rejected).toEqual(
+      oauth
+        ? [{ runnerId: "acme-1", reason: "Claude OAuth credentials need runner 0.1.83 or later" }]
+        : [],
+    );
+  });
+}

@@ -79,11 +79,22 @@ input.on("line", (line) => {
 test("Claude receives terminal input and clears output after confirmed sign-in", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-terminal-login-"));
   const updates: RunnerLoginUpdate[] = [];
+  mkdirSync(join(home, ".claude"));
+  const legacy = join(home, ".claude/.credentials.json");
+  writeFileSync(legacy, "legacy-credential");
+  const active = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `process.stdin.once("data", () => process.exit(require("node:fs").readFileSync(${JSON.stringify(legacy)}, "utf8") === "legacy-credential" ? 0 : 1));`,
+    ],
+    { stdin: "pipe", stdout: "ignore", stderr: "ignore" },
+  );
   try {
     const path = join(home, "provider.js");
     writeFileSync(
       path,
-      `process.stdout.write("Paste provider code: "); process.stdin.once("data", () => { require("node:fs").writeFileSync(process.env.CLAUDE_CONFIG_DIR + "/.credentials.json", "{}"); process.exit(0); });`,
+      `process.stdout.write("Paste provider code: "); process.stdin.once("data", () => { process.stdout.write("sk-ant-oat01-test_token\\n"); setTimeout(() => process.exit(0), 50); });`,
     );
     let input = false;
     await runProviderLogin({
@@ -108,10 +119,22 @@ test("Claude receives terminal input and clears output after confirmed sign-in",
         return { exitCode: 0, stdout: JSON.stringify({ authMethod: "claude.ai" }), stderr: "" };
       },
     });
+    active.stdin.write("check");
+    await active.stdin.flush();
+    expect(await active.exited).toBe(0);
+    expect(readFileSync(legacy, "utf8")).toBe("legacy-credential");
     expect(input).toBe(true);
+    const credential = JSON.parse(readFileSync(join(home, ".claude/paws-oauth.json"), "utf8"));
+    expect(providerLoginCommand("claude")).toEqual(["/opt/paws-runner/bin/claude", "setup-token"]);
+    expect(credential.token).toBe("sk-ant-oat01-test_token");
+    expect(credential.kind).toBe("oauth_token");
+    expect(credential.expiresAt - credential.createdAt).toBe(365 * 86400000);
+    expect(updates.every((update) => !update.terminal.includes("sk-ant-oat01"))).toBe(true);
     expect(updates.at(-1)!.state).toBe("connected");
+    expect(updates.some((update) => update.terminal.includes("[masked]"))).toBe(true);
     expect(updates.at(-1)!.terminal).toBe("");
   } finally {
+    active.kill();
     rmSync(home, { recursive: true, force: true });
   }
 }, 10000);
@@ -270,7 +293,7 @@ test("a Claude sign-in keeps the live settings and moves only the account over",
     writeFileSync(
       path,
       `const fs = require("node:fs"); const dir = process.env.CLAUDE_CONFIG_DIR;
-fs.writeFileSync(dir + "/.credentials.json", '{"claudeAiOauth":"new"}');
+process.stdout.write("sk-ant-oat01-new_token\\n");
 fs.writeFileSync(dir + "/.claude.json", JSON.stringify({ firstStartTime: "now", oauthAccount: { emailAddress: "new" } }));
 process.exit(0);`,
     );
@@ -290,8 +313,8 @@ process.exit(0);`,
       },
     });
     expect(updates.at(-1)!.state).toBe("connected");
-    expect(readFileSync(join(home, ".claude", ".credentials.json"), "utf8")).toBe(
-      '{"claudeAiOauth":"new"}',
+    expect(JSON.parse(readFileSync(join(home, ".claude/paws-oauth.json"), "utf8")).token).toBe(
+      "sk-ant-oat01-new_token",
     );
     expect(JSON.parse(readFileSync(join(home, ".claude", ".claude.json"), "utf8"))).toEqual({
       hasCompletedOnboarding: true,

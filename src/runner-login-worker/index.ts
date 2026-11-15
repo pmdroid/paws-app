@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { journalCaught } from "../journal";
 import { runGrokLogin } from "./grok";
 import { discardLoginHome, publishCredentials, stageLoginHome } from "./credentials";
@@ -46,7 +47,7 @@ export async function runProviderLogin(options: {
 
 export function providerLoginCommand(agent: "claude" | "opencode") {
   return agent === "claude"
-    ? ["/opt/paws-runner/bin/claude", "auth", "login"]
+    ? ["/opt/paws-runner/bin/claude", "setup-token"]
     : [
         resolveOpencodeCommand().command,
         "auth",
@@ -81,6 +82,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     state.inputId = randomUUID();
     const decoder = new TextDecoder();
     let outputBytes = 0;
+    let rawOutput = "";
     const abort = new AbortController();
     const signal = AbortSignal.any([options.signal, abort.signal]);
     const terminal = new Bun.Terminal({
@@ -92,7 +94,18 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
           abort.abort();
           return;
         }
-        state.terminal = (state.terminal + decoder.decode(bytes, { stream: true })).slice(-32768);
+        rawOutput += decoder.decode(bytes, { stream: true });
+        let visible = rawOutput;
+        if (options.agent === "claude") {
+          const prefix = "sk-ant-oat01-";
+          for (let length = 1; length < prefix.length; length++)
+            if (visible.endsWith(prefix.slice(0, length))) {
+              visible = visible.slice(0, -length);
+              break;
+            }
+          visible = visible.replace(/sk-ant-oat01-[A-Za-z0-9_-]*/g, "[masked]");
+        }
+        state.terminal = visible.slice(-32768);
         options.emit({ ...state });
       },
     });
@@ -131,6 +144,21 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       });
       options.signal.throwIfAborted();
       if (code !== 0) throw new Error("Provider login did not complete");
+      if (options.agent === "claude") {
+        const token = rawOutput.match(/sk-ant-oat01-[A-Za-z0-9_-]+/)?.[0];
+        if (!token) throw new Error("Provider did not print an OAuth token");
+        const createdAt = Date.now();
+        writeFileSync(
+          `${options.home}/.claude/paws-oauth.json`,
+          JSON.stringify({
+            kind: "oauth_token",
+            token,
+            createdAt,
+            expiresAt: createdAt + 365 * 86400000,
+          }),
+          { mode: 0o600 },
+        );
+      }
     } finally {
       signal.removeEventListener("abort", kill);
       abort.abort();
@@ -224,7 +252,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       await exited;
     }
   }
-  if (options.agent !== "grok" && options.agent !== "opencode") {
+  if (options.agent === "codex") {
     const checked = await checkDeveloperLogin({
       cli: options.agent,
       env,

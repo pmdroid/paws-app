@@ -71,6 +71,7 @@ import {
   runAgent,
   runWithShellRecovery,
   accountAgentEnv,
+  claudeAgentEnv,
   minimalAgentEnv,
   reconstructAcpPrompt,
   currentRequest,
@@ -822,16 +823,21 @@ export async function executeRunnerCommand(
     if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
     try {
-      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
-        replaceOutputFile(
-          options,
-          "credentials.json",
-          sealForRunner(
-            recipient,
-            JSON.stringify(files),
-            agentCredentialReturnContext(job.executionId),
+      returnRunnerAgentCredentials(
+        home,
+        binding.agent,
+        job.executionId,
+        (files) =>
+          replaceOutputFile(
+            options,
+            "credentials.json",
+            sealForRunner(
+              recipient,
+              JSON.stringify(files),
+              agentCredentialReturnContext(job.executionId),
+            ),
           ),
-        ),
+        command.type === "login",
       );
     } catch (error) {
       journalCaught(
@@ -2245,12 +2251,13 @@ export async function executeRunnerCommand(
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
+      const loginEnv = { ...agentEnv, ...(command.agent === "claude" ? claudeAgentEnv(home) : {}) };
       const checked =
         command.agent === "claude" || command.agent === "codex"
           ? await checkDeveloperLogin({
               cli: command.agent,
               executable: providerCli(command.agent),
-              env: agentEnv,
+              env: loginEnv,
               run: options.loginCommand,
             })
           : null;
@@ -2272,7 +2279,7 @@ export async function executeRunnerCommand(
       if (authenticated && command.agent === "claude")
         agentLimits = claudeUsageLimits(
           await (options.claudeRateLimits ?? readClaudeRateLimits)(
-            agentEnv,
+            loginEnv,
             providerCli("claude"),
           ).catch((caughtError2) => {
             journalCaught(caughtError2, "runner-worker.executeRunnerCommand.claudeUsage", null);

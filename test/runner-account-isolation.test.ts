@@ -191,7 +191,7 @@ test("a credentials folder that links into another account fails the sign-in", a
 }, 20_000);
 
 let checks = 0;
-async function check(root: string, account?: RunnerAccount) {
+async function check(root: string, account?: RunnerAccount, agent: "codex" | "claude" = "codex") {
   const outputDirectory = temporary("paws-account-output-");
   const work = join(root, "work");
   mkdirSync(work, { recursive: true });
@@ -207,7 +207,7 @@ async function check(root: string, account?: RunnerAccount) {
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
       type: "login_check",
-      agent: "codex",
+      agent,
       ...(account ? { account } : {}),
     },
   };
@@ -231,8 +231,16 @@ async function check(root: string, account?: RunnerAccount) {
     },
     loginCommand: async (_command, _args, env) => {
       reads.push(env);
-      return { exitCode: 0, stdout: "Logged in", stderr: "" };
+      return {
+        exitCode: 0,
+        stdout:
+          agent === "claude"
+            ? JSON.stringify({ loggedIn: true, authMethod: "oauth_token" })
+            : "Logged in",
+        stderr: "",
+      };
     },
+    claudeRateLimits: async () => null,
     codexRateLimits: async () => ({ rateLimits: {} }),
   });
   const files = readdirSync(outputDirectory).map((name) =>
@@ -272,4 +280,22 @@ test("a named check for a binding this runner does not hold fails instead of usi
   mkdirSync(join(root, ".codex"));
   writeFileSync(join(root, ".codex", "auth.json"), JSON.stringify({ token: "synthetic-default" }));
   await expect(check(root, a)).rejects.toThrow(/not signed in/);
+});
+
+test("Claude token login checks receive the account credential", async () => {
+  const root = temporary("paws-claude-check-");
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  markRunnerAccountSignedIn(home, a, "claude");
+  writeFileSync(
+    join(home, ".claude/paws-oauth.json"),
+    JSON.stringify({
+      kind: "oauth_token",
+      token: "sk-ant-oat01-fixture",
+      createdAt: 1,
+      expiresAt: 9999999999999,
+    }),
+  );
+  const checked = await check(root, a, "claude");
+  expect(checked.reads[0]!.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-fixture");
+  expect(checked.result.login?.authenticated).toBe(true);
 });

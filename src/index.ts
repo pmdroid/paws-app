@@ -44,6 +44,7 @@ import {
   readSecretFile,
   storeSecretKeys,
   useDatabaseSecrets,
+  readAgentCredentialSteps,
 } from "./credentials";
 import {
   ArtifactRejectedError,
@@ -1229,6 +1230,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const placement = linear
     ? createRunnerPlacement({
         store,
+        requiresOAuthSteps: function* (q, accountId) {
+          const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
+          return stored?.blob?.includes(".claude/paws-oauth.json") ?? false;
+        },
         ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
       })
     : undefined;
@@ -1240,7 +1245,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     atStartup: true,
     run: () => agentAuth.tick(),
   });
-  const accountManagement = createAccountManagement({ store, agentAuth });
+  const accountManagement = createAccountManagement({
+    store,
+    agentAuth,
+    secretsDir: paths.secretsDir,
+  });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     store,

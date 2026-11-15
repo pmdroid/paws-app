@@ -2,6 +2,7 @@ import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
   AGENT_CREDENTIAL_RUNNER_VERSION,
+  CLAUDE_OAUTH_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
 } from "../runner-protocol";
@@ -252,7 +253,10 @@ export function* centralSignInTargetSteps(
       .orderBy(asc(runner.name), asc(runner.id)),
   );
   const target = online.find((row) =>
-    runnerReleaseAtLeast(row.version, AGENT_CREDENTIAL_RUNNER_VERSION),
+    runnerReleaseAtLeast(
+      row.version,
+      account.agent === "claude" ? CLAUDE_OAUTH_RUNNER_VERSION : AGENT_CREDENTIAL_RUNNER_VERSION,
+    ),
   );
   if (!target)
     throw new AgentAccountError(
