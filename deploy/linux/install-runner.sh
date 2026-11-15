@@ -191,5 +191,9 @@ if [ "$docker_access" = grant ] && [ -n "$docker_engine" ]; then
 fi
 package=paws-runner
 [ -z "$version" ] || package="paws-runner=$version"
-apt-get install -y "$package"
+if [ -n "$docker_access" ]; then
+  apt-get install --reinstall -y "$package"
+else
+  apt-get install -y "$package"
+fi
 printf '%s\n' "Installed paws-runner ${version}"

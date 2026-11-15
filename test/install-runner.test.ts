@@ -53,7 +53,7 @@ if [ "$1" = install ]; then
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      -y) shift ;;
+      -y|--reinstall) shift ;;
       rootlesskit|uidmap|slirp4netns|dbus-user-session) shift ;;
       paws-runner*) printf package > "$PAWS_INSTALLED_DEB"; exit 0 ;;
       *) exit 1 ;;
@@ -284,6 +284,7 @@ test("installer passes the Docker access choice to package configuration", async
       expect(choice()).toBe("unset");
       expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(choice()).toBe("grant");
+      expect(readFileSync(aptLog, "utf8")).toContain("install --reinstall -y paws-runner=1.2.3");
       expect((await install(["1.2.3", "--no-docker-access"], env)).code).toBe(0);
       expect(choice()).toBe("deny");
       const fromEnv = await install(
@@ -339,11 +340,11 @@ test("installer adds the rootless Docker tools before the package when Docker ac
       expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(2);
       expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns dbus-user-session");
-      expect(installs()[1]).toBe("install -y paws-runner=1.2.3");
+      expect(installs()[1]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(aptLog);
       expect((await install(["--no-docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(1);
-      expect(installs()[0]).toBe("install -y paws-runner=1.2.3");
+      expect(installs()[0]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(join(directory, "bin", "dockerd"));
       if (!existsSync("/usr/bin/dockerd") && !existsSync("/bin/dockerd")) {
         rmSync(aptLog);
