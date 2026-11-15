@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,6 +117,44 @@ test("device approval encrypts CLI credentials and refreshes once across concurr
   s.advance(1000);
   await Promise.all([s.auth.tick(), s.auth.tick()]);
   expect(s.fake.calls.filter((p) => p === "/oauth/token")).toHaveLength(2);
+});
+test("device sign-in binds the account to every active runner its owner has", async () => {
+  const s = await setup();
+  await seed(
+    s.db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "active",
+        workspaceId: "workspace",
+        ownerUserId: "user",
+        name: "Active",
+        status: "active",
+        createdAt: s.now(),
+      }),
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "revoked",
+        workspaceId: "workspace",
+        ownerUserId: "user",
+        name: "Revoked",
+        status: "active",
+        createdAt: s.now(),
+        revokedAt: s.now(),
+      }),
+  );
+  await s.auth.device("workspace", s.id, true);
+  s.fake.approve();
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "signed-in" });
+  const bindings = await s.db.run((q) =>
+    q.all(
+      q.orm
+        .select({ runnerId: q.t.agentAccountBinding.runnerId })
+        .from(q.t.agentAccountBinding)
+        .where(eq(q.t.agentAccountBinding.accountId, s.id)),
+    ),
+  );
+  expect(bindings).toEqual([{ runnerId: "active" }]);
 });
 for (const outcome of ["denied", "expired", "timeout"] as const)
   test(outcome + " stores no credential", async () => {

@@ -5,6 +5,7 @@ import {
   listAgentAuthSteps,
   readAgentAuthSteps,
   writeAgentAuthSteps,
+  bindToOwnerRunnersSteps,
   type Db,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
@@ -68,6 +69,7 @@ export function createAgentAuth(options: {
           now: now(),
         });
         if (result !== "written") throw new Error("Agent credential write conflicted");
+        yield* bindToOwnerRunnersSteps(q, id, now());
       }
       return state.state;
     });
