@@ -19,6 +19,8 @@ import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
+  RunnerAgentCredentialSchema,
+  accessCredentialExpiry,
   RunnerAgentCredentialFilesSchema,
   RunnerAgentCredentialReceiptSchema,
   agentCredentialContext,
@@ -433,15 +435,24 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const stored = q.select().from(agentCredential).where(where).get();
     if (stored && stored.accountId !== accountId) throw new Error("Agent account binding changed.");
     const moved = stored !== undefined && credential.version > stored.version;
-    const held = moved ? undefined : stored;
+    let held = moved ? undefined : stored;
     let written: RunnerAgentCredentialFiles = [];
     try {
-      if (held?.files) written = openHeld(bindingId, held.files);
-      else if (credential.sealed) {
+      if (credential.sealed) {
         const context = agentCredentialContext(command.id, accountId, credential.version);
         written = credentialFiles(
           openForRunner(localKey(options.root), credential.sealed, context),
         );
+      }
+      if (held?.files) {
+        const previous = openHeld(bindingId, held.files);
+        if (
+          written.length &&
+          accessCredentialExpiry(written) !== null &&
+          credential.version >= held.version
+        )
+          held = undefined;
+        else written = previous;
       }
       if (written.length) files.write(named.account, named.agent, written);
     } catch (error) {
@@ -511,6 +522,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
     );
     const where = eq(agentCredential.bindingId, row.bindingId);
+    if (row.files && accessCredentialExpiry(openHeld(row.bindingId, row.files)) !== null) {
+      q.update(agentCredential).set({ commands }).where(where).run();
+      return;
+    }
     let files: RunnerAgentCredentialFiles;
     try {
       if (returned === null) throw new Error("credentials.json is missing");
@@ -571,6 +586,44 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           for (;;) {
             const row = q.select().from(agentCredential).where(where).get();
             if (!row) break;
+            const held = row.files ? openHeld(bindingId, row.files) : [];
+            const expiry = accessCredentialExpiry(held);
+            if (expiry !== null) {
+              const account = { accountId: row.accountId, bindingId };
+              if (!(JSON.parse(row.commands) as string[]).some(waiting) && !files.busy(account)) {
+                files.remove(account, row.agent as RunnerCodingAgent);
+                q.delete(agentCredential).where(where).run();
+                break;
+              }
+              if (expiry > now() + 600_000) break;
+              const fresh = RunnerAgentCredentialSchema.parse(
+                await authenticated("/v1/agent-credentials/current", "POST", {
+                  accountId: row.accountId,
+                }),
+              );
+              if (!fresh.sealed || fresh.version < row.version) break;
+              const updated = credentialFiles(
+                openForRunner(
+                  localKey(options.root),
+                  fresh.sealed,
+                  agentCredentialContext("current", row.accountId, fresh.version),
+                ),
+              );
+              if (accessCredentialExpiry(updated) === null)
+                throw new Error("Invalid access credential");
+              files.write(account, row.agent as RunnerCodingAgent, updated);
+              q.update(agentCredential)
+                .set({
+                  version: fresh.version,
+                  files: sealHeld(bindingId, updated),
+                  digest: agentCredentialDigest(updated),
+                  upload: null,
+                  latest: null,
+                })
+                .where(where)
+                .run();
+              break;
+            }
             if (row.upload === null && row.latest !== null) {
               q.update(agentCredential)
                 .set({ upload: row.latest, latest: null })

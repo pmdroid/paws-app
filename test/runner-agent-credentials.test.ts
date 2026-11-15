@@ -20,6 +20,7 @@ import {
 } from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
+  accessCredentialFiles,
   agentCredentialContext,
   agentCredentialReturnContext,
   sealForRunner,
@@ -52,6 +53,9 @@ async function withRunner(
       commands: () => RunnerCommand[];
       version: number;
       sealed: boolean;
+      files: typeof stored;
+      now: number;
+      pulls: number;
     };
   }) => Promise<void>,
 ) {
@@ -67,6 +71,9 @@ async function withRunner(
   let certificate = "";
   const uploads: unknown[] = [];
   const plane = {
+    files: stored,
+    now: Date.now(),
+    pulls: 0,
     failUploads: false,
     receipt: "written",
     commands: (): RunnerCommand[] => [],
@@ -111,7 +118,7 @@ async function withRunner(
                 ? {
                     sealed: sealForRunner(
                       certificate,
-                      JSON.stringify(stored),
+                      JSON.stringify(plane.files),
                       agentCredentialContext(command.id, account.accountId, plane.version),
                     ),
                   }
@@ -120,6 +127,17 @@ async function withRunner(
           })),
         });
       if (path.endsWith("/ack")) return Response.json({ ok: true });
+      if (path === "/v1/agent-credentials/current") {
+        plane.pulls++;
+        return Response.json({
+          version: plane.version,
+          sealed: sealForRunner(
+            certificate,
+            JSON.stringify(plane.files),
+            agentCredentialContext("current", account.accountId, plane.version),
+          ),
+        });
+      }
       if (path === "/v1/agent-credentials") {
         if (plane.failUploads) return Response.json({ error: "busy" }, { status: 503 });
         uploads.push(await request.json());
@@ -136,6 +154,7 @@ async function withRunner(
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
     agentCredentials: runnerAgentCredentials(home),
+    now: () => Math.max(plane.now, Date.now()),
   });
   try {
     await daemon.enroll("credential-proof", "t".repeat(43));
@@ -421,3 +440,51 @@ test("after a sign-out moves the stored version on, the next sign-in uploads pas
     ]);
   });
 }, 30_000);
+
+test("central Codex credentials are access-only, replaced ten minutes before expiry, and never uploaded", async () => {
+  await withRunner(async ({ daemon, home, uploads, plane }) => {
+    const expiry = plane.now + 3_600_000;
+    const credential = (exp: number) =>
+      accessCredentialFiles(
+        JSON.stringify([
+          {
+            path: ".codex/auth.json",
+            data: Buffer.from(
+              JSON.stringify({
+                auth_mode: "chatgpt",
+                tokens: {
+                  access_token: `e30.${Buffer.from(JSON.stringify({ exp: exp / 1000 })).toString("base64url")}.sig`,
+                  id_token: "id",
+                  refresh_token: "secret",
+                  account_id: "account",
+                },
+                last_refresh: new Date(plane.now).toISOString(),
+              }),
+            ).toString("base64"),
+          },
+        ]),
+      );
+    plane.files = credential(expiry);
+    const run = {
+      ...command("codex-run", "login_check"),
+      agent: "codex" as const,
+      expiresAt: expiry + 3_600_000,
+    };
+    plane.commands = () => [run];
+    expect((await daemon.pollCommands()).rejected).toEqual([]);
+    const path = join(home, ".paws-accounts", account.bindingId, ".codex/auth.json");
+    expect(JSON.parse(readFileSync(path, "utf8")).tokens.refresh_token).toBe("");
+    plane.files = credential(expiry + 3_600_000);
+    plane.version++;
+    plane.now = expiry - 600_001;
+    await sync(daemon);
+    expect(plane.pulls).toBe(0);
+    plane.now++;
+    await sync(daemon);
+    expect(plane.pulls).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe(Buffer.from(plane.files[0]!.data, "base64").toString());
+    daemon.returnCredentials(run.id, EXECUTION, null);
+    await sync(daemon);
+    expect(uploads).toEqual([]);
+  });
+});

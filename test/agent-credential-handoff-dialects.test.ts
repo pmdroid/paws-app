@@ -4,7 +4,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../src/credentials";
-import { createAgentAccountSteps } from "../src/db";
+import {
+  createAgentAccountSteps,
+  writeAgentAuthSteps,
+  assignRunnerWorkSteps,
+  bindAgentAccountSteps,
+} from "../src/db";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
   agentCredentialContext,
@@ -12,9 +17,9 @@ import {
   signRunnerCommand,
   type RunnerCommand,
 } from "../src/runner-protocol";
-import { createRunnerWork } from "../src/runner-work";
+import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import { forEachDialect, seed, withoutForeignKeys, type DialectDb } from "./dialects";
-import { seedRunner } from "./runner-rows";
+import { seedRunner, seedCommand } from "./runner-rows";
 
 const NOW = 1_800_000_000_000;
 const open: DialectDb[] = [];
@@ -159,5 +164,173 @@ forEachDialect((connect) => {
     await expect(
       work.storeCredential("new", { accountId: foreign, version: 1, files }),
     ).rejects.toThrow();
+    await db.transaction((q) =>
+      writeAgentAuthSteps(q, stored, JSON.stringify({ state: "signed-in" })),
+    );
+    const http = createRunnerWorkHttp(work);
+    const upload = (accountId: string, version = 3) =>
+      new Request("https://runner/v1/agent-credentials", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId, version, files }),
+      });
+    expect((await http(upload(stored), "new"))?.status).toBe(409);
+    await expect(work.attachCredentials("old", [old])).rejects.toThrow();
+    await expect(
+      work.attachCredentials("new", [envelope("new", "login_check", "too-old")]),
+    ).rejects.toThrow();
+    const claude = await db.transaction((q) =>
+      createAgentAccountSteps(q, {
+        workspaceId: "acme",
+        agent: "claude",
+        label: "Claude",
+        now: NOW,
+      }),
+    );
+    expect((await http(upload(claude.id, 1), "new"))?.status).toBe(200);
+    await seed(db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion: "0.1.83" }));
+    const centralFiles = [
+      {
+        path: ".codex/auth.json",
+        data: Buffer.from(
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: { access_token: "access", refresh_token: "refresh" },
+          }),
+        ).toString("base64"),
+      },
+    ];
+    await db.transaction((q) =>
+      writeAgentCredentialSteps(q, secretsDir, {
+        accountId: stored,
+        runnerId: null,
+        version: 3,
+        blob: JSON.stringify(centralFiles),
+        now: NOW,
+      }),
+    );
+    const [central] = await work.attachCredentials("new", [
+      envelope("new", "login_check", "central"),
+    ]);
+    const decoded = JSON.parse(
+      openForRunner(
+        readFileSync(key.keyPath, "utf8"),
+        central!.credential!.sealed!,
+        agentCredentialContext("central", stored, 3),
+      ),
+    );
+    expect(JSON.parse(Buffer.from(decoded[0].data, "base64").toString()).tokens.refresh_token).toBe(
+      "",
+    );
+    await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    const binding = await db.transaction((q) =>
+      bindAgentAccountSteps(q, {
+        workspaceId: "acme",
+        accountId: stored,
+        runnerId: "new",
+        now: NOW,
+      }),
+    );
+    await seedCommand(db, "bound-run", {
+      runnerId: "new",
+      runId: "run",
+      kind: "run",
+      generation: 1,
+      expiresAt: NOW + 60_000,
+    });
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerCommandAccount).values({
+        commandId: "bound-run",
+        runnerId: "new",
+        workspaceId: "acme",
+        agent: "codex",
+        accountId: stored,
+        bindingId: binding.id,
+        named: 1,
+        recordedAt: NOW,
+      }),
+    );
+    await db.transaction((q) =>
+      assignRunnerWorkSteps(q, {
+        runId: "run",
+        runnerId: "new",
+        workspaceId: "acme",
+        generation: 1,
+        runnerFence: 0,
+        commandId: "bound-run",
+        leaseUntil: NOW + 60_000,
+      }),
+    );
+    expect(await db.run((q) => q.all(q.orm.select().from(q.t.agentAccountLease)))).toEqual([]);
+    expect(
+      (
+        await http(
+          new Request("https://runner/v1/agent-credentials/current", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ accountId: stored }),
+          }),
+          "new",
+        )
+      )?.status,
+    ).toBe(200);
+    const current = await work.currentCredential("new", stored);
+    expect(
+      JSON.parse(
+        openForRunner(
+          readFileSync(key.keyPath, "utf8"),
+          current.sealed,
+          agentCredentialContext("current", stored, 3),
+        ),
+      ),
+    ).toEqual(decoded);
+    await expect(work.currentCredential("old", stored)).rejects.toThrow();
+    expect((await db.run((q) => readAgentCredentialSteps(q, secretsDir, stored)))?.version).toBe(3);
+    await seed(db, (q) => q.orm.update(q.t.agentAccountBinding).set({ removedAt: NOW }));
+    await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    await seed(db, (q) => q.orm.update(q.t.agentAccountBinding).set({ removedAt: null }));
+    await seed(db, (q) => q.orm.update(q.t.runnerWork).set({ endedAt: NOW }));
+    await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    await seed(db, (q) => q.orm.update(q.t.runnerWork).set({ endedAt: null, leaseUntil: NOW - 1 }));
+    await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    await seed(db, (q) =>
+      q.orm.update(q.t.runnerWork).set({ leaseUntil: NOW + 60_000, runnerFence: 1 }),
+    );
+    await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerHelper).values({
+        id: "helper",
+        runnerId: "new",
+        workspaceId: "acme",
+        sessionId: "session",
+        sessionGeneration: 1,
+        runnerFence: 0,
+        envelope: {},
+        expiresAt: NOW + 60_000,
+      }),
+    );
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerCommandAccount).values({
+        commandId: "helper",
+        runnerId: "new",
+        workspaceId: "acme",
+        accountId: stored,
+        bindingId: binding.id,
+        agent: "codex",
+        named: 1,
+        recordedAt: NOW,
+      }),
+    );
+    expect((await work.currentCredential("new", stored)).version).toBe(3);
+    await expect(work.currentCredential("old", stored)).rejects.toThrow();
+    for (const denied of [
+      { endedAt: NOW },
+      { endedAt: null, result: {} },
+      { result: null, expiresAt: NOW - 1 },
+      { expiresAt: NOW + 60_000, runnerFence: 1 },
+    ]) {
+      await seed(db, (q) => q.orm.update(q.t.runnerHelper).set(denied));
+      await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    }
   }, 30_000);
 });

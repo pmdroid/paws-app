@@ -946,3 +946,69 @@ export async function bindingRunningCount(
 ): Promise<number> {
   return store.run((q) => bindingRunningCountSteps(q, bindingId, at));
 }
+
+export function* activeAccountRunnerWorkSteps(
+  q: Q,
+  runnerId: string,
+  accountId: string,
+  now: number,
+) {
+  const {
+    runnerCommandAccount: c,
+    runnerWork: w,
+    runnerHelper: h,
+    runner: r,
+    agentAccountBinding: b,
+    agentAccount: a,
+    runnerCommand: command,
+  } = q.t;
+  return (
+    (yield* q.one(
+      q.orm
+        .select({ commandId: c.commandId })
+        .from(c)
+        .innerJoin(r, eq(r.id, c.runnerId))
+        .innerJoin(
+          b,
+          and(eq(b.id, c.bindingId), eq(b.runnerId, r.id), eq(b.accountId, c.accountId)),
+        )
+        .innerJoin(a, eq(a.id, b.accountId))
+        .leftJoin(w, eq(w.commandId, c.commandId))
+        .leftJoin(command, eq(command.id, c.commandId))
+        .leftJoin(h, eq(h.id, c.commandId))
+        .where(
+          and(
+            eq(r.id, runnerId),
+            eq(c.accountId, accountId),
+            eq(c.workspaceId, r.workspaceId),
+            eq(a.workspaceId, r.workspaceId),
+            eq(a.enabled, 1),
+            isNull(a.removedAt),
+            isNull(b.removedAt),
+            isNull(r.revokedAt),
+            eq(r.status, "active"),
+            or(
+              and(
+                eq(w.runnerId, r.id),
+                eq(w.workspaceId, r.workspaceId),
+                eq(w.runnerFence, r.fence),
+                eq(command.generation, w.generation),
+                isNull(w.endedAt),
+                gt(w.leaseUntil, now),
+                gt(command.expiresAt, now),
+              ),
+              and(
+                eq(h.runnerId, r.id),
+                eq(h.workspaceId, r.workspaceId),
+                eq(h.runnerFence, r.fence),
+                isNull(h.endedAt),
+                isNull(h.result),
+                gt(h.expiresAt, now),
+              ),
+            ),
+          ),
+        )
+        .limit(1),
+    )) !== undefined
+  );
+}

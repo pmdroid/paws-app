@@ -197,6 +197,7 @@ export {
   CONTROL_PLANE_LEVEL_RUNNER_VERSION,
   CONVERSATION_TOOLS_RUNNER_VERSION,
   AGENT_CREDENTIAL_RUNNER_VERSION,
+  ACCESS_CREDENTIAL_RUNNER_VERSION,
   COMPLETE_CHECKS_RUNNER_VERSION,
 } from "./versions";
 export {
@@ -236,6 +237,9 @@ export {
 
 export {
   RUNNER_AGENT_CREDENTIAL_FILES,
+  RunnerAgentCredentialSchema,
+  accessCredentialFiles,
+  accessCredentialExpiry,
   RunnerAgentCredentialFilesSchema,
   RunnerAgentCredentialReceiptSchema,
   RunnerAgentCredentialUploadSchema,

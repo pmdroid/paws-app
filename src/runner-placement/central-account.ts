@@ -1,4 +1,6 @@
 import {
+  readAgentAuthSteps,
+  runnerHostVersionSteps,
   accountSlotsInUseSteps,
   centralAgentAccountsSteps,
   takeAgentAccountLeaseSteps,
@@ -6,7 +8,11 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import {
+  ACCESS_CREDENTIAL_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCodingAgent,
+} from "../runner-protocol";
 import type { PlacementReason } from "./index";
 
 export type CentralAccountChoice =
@@ -42,6 +48,16 @@ export function* leaseCentralAccountSteps(
   const extra = free.length === 0;
   const busy: string[] = [];
   for (const account of extra ? accounts.filter((entry) => entry.extraUsage) : free) {
+    if (
+      (yield* readAgentAuthSteps(q, account.id)) &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, input.runnerId),
+        ACCESS_CREDENTIAL_RUNNER_VERSION,
+      )
+    ) {
+      busy.push(account.id);
+      continue;
+    }
     if (
       account.concurrency !== null &&
       (yield* accountSlotsInUseSteps(q, account.id, input.now)) >= account.concurrency

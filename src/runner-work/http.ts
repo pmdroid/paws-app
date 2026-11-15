@@ -88,6 +88,12 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           ),
         );
       }
+      if (path === "/v1/agent-credentials/current" && request.method === "POST") {
+        const input = RunnerAgentCredentialUploadSchema.pick({ accountId: true }).parse(
+          await body(request),
+        );
+        return json(await work.currentCredential(runnerId, input.accountId));
+      }
       if (path === "/v1/agent-credentials" && request.method === "POST") {
         const upload = RunnerAgentCredentialUploadSchema.parse(await body(request, 1_310_720));
         return json({ result: await work.storeCredential(runnerId, upload) });

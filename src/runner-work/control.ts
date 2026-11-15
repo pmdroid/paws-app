@@ -1,4 +1,6 @@
 import {
+  readAgentAuthSteps,
+  activeAccountRunnerWorkSteps,
   extendStalledRunnerWorkSteps,
   acknowledgeRunnerCommandSteps,
   assignRunnerWorkSteps,
@@ -103,6 +105,8 @@ import {
   type SignedRunnerCommand,
   withoutJournalTime,
   AGENT_CREDENTIAL_RUNNER_VERSION,
+  ACCESS_CREDENTIAL_RUNNER_VERSION,
+  accessCredentialFiles,
   agentCredentialContext,
   runnerCommandAccount,
   sealForRunner,
@@ -684,9 +688,7 @@ export function createRunnerWork(options: {
       if (!secretsDir || envelopes.length === 0) return Promise.resolve(envelopes);
       return store.run(function* (q) {
         const version = yield* runnerHostVersionSteps(q, runnerId);
-        if (!runnerReleaseAtLeast(version, AGENT_CREDENTIAL_RUNNER_VERSION)) return envelopes;
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
-        if (!pem) return envelopes;
         const sent: SignedRunnerCommand[] = [];
         for (const envelope of envelopes) {
           const command = JSON.parse(
@@ -696,6 +698,13 @@ export function createRunnerWork(options: {
           const stored = named
             ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
             : null;
+          const central = named && (yield* readAgentAuthSteps(q, named.account.accountId));
+          if (central && (!pem || !runnerReleaseAtLeast(version, ACCESS_CREDENTIAL_RUNNER_VERSION)))
+            throw new RunnerWorkFencedError();
+          if (!pem || !runnerReleaseAtLeast(version, AGENT_CREDENTIAL_RUNNER_VERSION)) {
+            sent.push(envelope);
+            continue;
+          }
           if (
             !named ||
             (command.type !== "login" && (stored?.agent !== named.agent || stored.blob === null))
@@ -711,11 +720,39 @@ export function createRunnerWork(options: {
               version: at,
               ...(command.type === "login" || !stored?.blob
                 ? {}
-                : { sealed: sealForRunner(pem, stored.blob, context) }),
+                : {
+                    sealed: sealForRunner(
+                      pem,
+                      central ? JSON.stringify(accessCredentialFiles(stored.blob)) : stored.blob,
+                      context,
+                    ),
+                  }),
             },
           });
         }
         return sent;
+      });
+    },
+    currentCredential(runnerId: string, accountId: string) {
+      const { secretsDir } = options;
+      if (!secretsDir) throw new Error("Stored agent sign-ins are unavailable");
+      return store.run(function* (q) {
+        const runner = yield* runnerSteps(q, runnerId);
+        yield* getAgentAccountSteps(q, runner.workspaceId, accountId);
+        if (!(yield* activeAccountRunnerWorkSteps(q, runnerId, accountId, now())))
+          throw new RunnerWorkFencedError();
+        if (!(yield* readAgentAuthSteps(q, accountId))) throw new RunnerWorkFencedError();
+        const stored = yield* readAgentCredentialSteps(q, secretsDir, accountId);
+        const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
+        if (!stored?.blob || !pem) throw new RunnerWorkFencedError();
+        return {
+          version: stored.version,
+          sealed: sealForRunner(
+            pem,
+            JSON.stringify(accessCredentialFiles(stored.blob)),
+            agentCredentialContext("current", accountId, stored.version),
+          ),
+        };
       });
     },
     storeCredential(
@@ -727,6 +764,7 @@ export function createRunnerWork(options: {
       return store.transaction(function* (q) {
         const runner = yield* runnerSteps(q, runnerId);
         yield* getAgentAccountSteps(q, runner.workspaceId, input.accountId);
+        if (yield* readAgentAuthSteps(q, input.accountId)) throw new RunnerWorkFencedError();
         const blob = JSON.stringify(input.files);
         const result = yield* writeAgentCredentialSteps(q, secretsDir, {
           accountId: input.accountId,
