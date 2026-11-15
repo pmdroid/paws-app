@@ -12,18 +12,18 @@ test("runner package builds run only for published releases, and publication wai
   expect(workflow.on.release).toEqual({ types: ["published"] });
   expect(workflow.on.schedule).toBeUndefined();
   expect(workflow.on.workflow_dispatch.inputs.resign_only.default).toBe(false);
-  expect(workflow.jobs.build.if).toBe("github.event_name == 'release'");
+  expect(workflow.jobs.build.if).toContain("inputs.dry_run && !inputs.resign_only");
   expect(workflow.jobs["publish-apt"].if).toContain(
-    "inputs.resign_only && startsWith(github.ref, 'refs/tags/v')",
+    "inputs.resign_only && !inputs.dry_run && startsWith(github.ref, 'refs/tags/v')",
   );
   expect(workflow.jobs["publish-apt"].environment).toBe("release");
-  expect(workflow.jobs["publish-apt"].permissions).toEqual({ contents: "read" });
+  expect(workflow.jobs["publish-apt"].permissions).toEqual({ contents: "read", actions: "read" });
   expect(workflow.jobs.build.strategy.matrix.include).toEqual([
     { architecture: "amd64", platform: "linux-x64", runner: "ubuntu-24.04" },
     { architecture: "arm64", platform: "linux-arm64", runner: "ubuntu-24.04-arm" },
   ]);
   expect(workflow.jobs.publish.needs).toBe("build");
-  expect(workflow.permissions).toEqual({ contents: "read" });
+  expect(workflow.permissions).toEqual({});
   expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
 });
 
@@ -344,4 +344,31 @@ test("the release fails before building when a minimum runner version is above t
       );
   expect((await run(highest.join("."))).code).toBe(0);
   expect((await run([highest[0], highest[1]! + 1, 0].join("."))).code).toBe(0);
+});
+
+test("release actions are immutable and builds have no environment or secrets", () => {
+  for (const job of Object.values(workflow.jobs) as { steps: { uses?: string }[] }[]) {
+    for (const step of job.steps) {
+      if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    }
+  }
+  expect(workflow.on.pull_request_target).toBeUndefined();
+  expect(workflow.jobs.build.environment).toBeUndefined();
+  expect(JSON.stringify(workflow.jobs.build)).not.toContain("secrets.");
+  expect(workflow.jobs.build.permissions).toEqual({
+    contents: "read",
+    attestations: "write",
+    "id-token": "write",
+  });
+  expect(workflow.jobs.publish.if).toBe("github.event_name == 'release'");
+  const steps = workflow.jobs["publish-apt"].steps;
+  expect(steps[0].name).toBe("Gate tag on main and successful CI");
+  const verify = steps.findIndex(
+    (step: { name?: string }) => step.name === "Verify packages before repository signing",
+  );
+  const publish = steps.findIndex(
+    (step: { name?: string }) => step.name === "Publish or renew metadata",
+  );
+  expect(verify).toBeGreaterThan(0);
+  expect(verify).toBeLessThan(publish);
 });
