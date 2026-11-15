@@ -1090,7 +1090,6 @@ WantedBy=default.target
             mock.patch.object(installer, "docker_probe", self.docker_probe),
             mock.patch.object(installer, "RUNNER_CONFIG", self.path("/etc/paws-runner/config.json")),
             mock.patch.object(installer, "AGENT_DOCKER_UNIT", self.path("/etc/systemd/user/paws-agent-docker.service")),
-            mock.patch.object(installer, "LEGACY_AGENT_DOCKER_UNIT", self.path("/etc/systemd/system/paws-agent-docker.service")),
             mock.patch.object(installer, "AGENT_DOCKER_TMPFILES", self.path("/etc/tmpfiles.d/paws-agent-docker.conf")),
             mock.patch.object(installer, "USER_DELEGATE", self.path("/etc/systemd/system/user@.service.d/delegate.conf")),
             mock.patch.object(installer, "LOGINCTL", str(self.bin / "loginctl")),
@@ -1210,40 +1209,12 @@ class DockerAccess(unittest.TestCase):
         self.assertEqual(self.configure("deny")["status"], "declined")
         self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["user@.service.d"])
 
-    def test_an_upgrade_moves_paws_agent_docker_from_the_system_unit_to_its_user_manager_and_keeps_the_data(self):
-        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "upgrade", agent_user="paws-agent")
-        host.accounts["paws-agent"] = SimpleNamespace(pw_name="paws-agent", pw_uid=host.accounts["paws-runner"].pw_uid, pw_gid=host.accounts["paws-runner"].pw_gid)
-        legacy = host.path("/etc/systemd/system/paws-agent-docker.service")
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text(FakeDockerHost.UNIT)
-        image = host.path("/var/lib/paws-agent-docker/data/image")
-        image.parent.mkdir(parents=True)
-        host.path("/var/lib/paws-agent-docker").chmod(0o700)
-        image.write_text("layers")
-        host.path("/etc/subuid").write_text("paws-agent:100000:65536\n")
-        host.path("/etc/subgid").write_text("paws-agent:100000:65536\n")
-        report = self.configure(None, host)
-        self.assertEqual((report["status"], report["changed"], report["agentJobs"]["daemon"]), ("granted", True, "paws-agent-docker.service"), report)
-        self.assertFalse(legacy.exists())
-        self.assertEqual(host.path("/etc/systemd/user/paws-agent-docker.service").read_text(), FakeDockerHost.AGENT_UNIT)
-        self.assertEqual(image.read_text(), "layers")
-        self.assertEqual(host.commands(), ["systemctl disable --now -- paws-agent-docker.service", "systemctl daemon-reload", *host.agent_commands()])
-        host.log.write_text("")
-        again = self.configure(None, host)
-        self.assertEqual((again["status"], again["changed"]), ("ready", False))
-        commands = host.agent_commands()
-        self.assertEqual(host.commands(), [commands[1], commands[2], commands[3].replace("restart", "start"), commands[4], commands[5], commands[7].replace("restart", "start")])
-
-    def test_paws_agent_docker_needs_dbus_user_session_and_keeps_the_old_daemon_without_it(self):
+    def test_paws_agent_docker_needs_dbus_user_session(self):
         host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "nobus", agent_user="paws-agent")
-        legacy = host.path("/etc/systemd/system/paws-agent-docker.service")
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text(FakeDockerHost.UNIT)
         host.path("/usr/lib/systemd/user/dbus.socket").unlink()
         report = self.configure("grant", host)
         self.assertEqual(report["status"], "missing-prerequisites")
         self.assertIn("dbus-user-session", report["message"])
-        self.assertTrue(legacy.exists())
         self.assertEqual(host.commands(), [])
 
     def test_docker_check_reports_a_running_daemon_without_cgroups(self):

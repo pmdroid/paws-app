@@ -240,7 +240,6 @@ DOCKER_SUBORDINATE = {"uid": pathlib.Path("/etc/subuid"), "gid": pathlib.Path("/
 DOCKER_SUBORDINATE_COUNT = 65536
 AGENT_DOCKER_UNIT = pathlib.Path("/etc/systemd/user/paws-agent-docker.service")
 AGENT_DOCKER_DATA = pathlib.Path("/var/lib/paws-agent-docker")
-LEGACY_AGENT_DOCKER_UNIT = pathlib.Path("/etc/systemd/system/paws-agent-docker.service")
 AGENT_DOCKER_TMPFILES = pathlib.Path("/etc/tmpfiles.d/paws-agent-docker.conf")
 USER_DELEGATE = pathlib.Path("/etc/systemd/system/user@.service.d/delegate.conf")
 USER_DELEGATE_CONTENT = "[Service]\nDelegate=cpu cpuset io memory pids\n"
@@ -450,9 +449,8 @@ def user_systemctl(daemon, *arguments):
 
 
 def remove_rootless_docker(*names):
-    """Stop and remove these daemons, by default both, and paws-agent's old system unit. The data directories and subordinate ids stay."""
     daemons = [docker_daemons()[name] for name in names or docker_daemons()]
-    present = [unit for unit in [*(daemon["unit"] for daemon in daemons if daemon.get("manager") != "user"), LEGACY_AGENT_DOCKER_UNIT] if unit.exists() or unit.is_symlink()]
+    present = [unit for unit in (daemon["unit"] for daemon in daemons if daemon.get("manager") != "user") if unit.exists() or unit.is_symlink()]
     for unit in present:
         run_tool([SYSTEMCTL, "disable", "--now", "--", unit.name])
         unit.unlink()
@@ -509,7 +507,7 @@ def rootless_docker(choice, agent_user=None):
         owner = pwd.getpwnam(account)
     except KeyError:
         return docker_report("missing-account", f"The {account} service account does not exist; install the runner package first.")
-    configured = unit.exists() or other.exists() or LEGACY_AGENT_DOCKER_UNIT.exists()
+    configured = unit.exists() or other.exists()
     if shutil.which("dockerd", path=DOCKER_PATH) is None:
         removed = remove_rootless_docker()
         return docker_report("absent", "Docker Engine is not installed" + ("; removed the rootless Docker daemon for agent jobs." if removed else "; nothing changed."), removed)

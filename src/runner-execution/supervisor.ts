@@ -23,7 +23,6 @@ import type { RunnerSkillInstaller } from "./skills";
 import { openSharedDirectory } from "./shared";
 import {
   confirmRunnerAccountHold,
-  convertClaudeCredentials,
   holdRunnerAccountHome,
   openRunnerAccountHome,
   releaseRunnerAccountHome,
@@ -455,8 +454,6 @@ export function createDirectWorkerSupervisor(options: {
     );
     try {
       if (options.spool && options.results && recordedHome(executionId)) {
-        if (readRunnerJob(options.spool, executionId).command.type !== "login")
-          convertClaudeCredentials(home);
         holdRunnerAccountHome(
           home,
           executionId,

@@ -231,20 +231,6 @@ describe.each([
   });
 });
 
-test("a termination for a row with no run id is skipped, as INSERT OR IGNORE always did", () => {
-  const root = privateRoot();
-  const journal = openExecutionJournal(root);
-  expect(() =>
-    journal.confirmTermination({
-      id: "legacy-command",
-      runId: null as unknown as string,
-      generation: 1,
-    }),
-  ).not.toThrow();
-  expect(journal.pendingTerminations()).toEqual([]);
-  journal.close();
-});
-
 test("a crash between Paws's decision and the phase change is recovered on open", () => {
   const root = privateRoot();
   let journal = openExecutionJournal(root);

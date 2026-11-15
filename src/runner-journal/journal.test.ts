@@ -1,5 +1,4 @@
 import { test, expect } from "bun:test";
-import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -513,8 +512,8 @@ test("termination survives reopen and receipt replay cannot admit a canceled gen
   }
 });
 
-test("upgrade reconciles historical terminal executions through the broker contract", () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-legacy-cleanup-"));
+test("terminal executions reconcile through the broker contract", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-terminal-cleanup-"));
   let journal = openExecutionJournal(root);
   try {
     const execution = journal.admit(command, 1000)!;
@@ -534,31 +533,6 @@ test("upgrade reconciles historical terminal executions through the broker contr
   }
 });
 
-test("upgrade reconciles a terminal execution an older release stored in a shape this release rejects", () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-legacy-payload-"));
-  let journal = openExecutionJournal(root);
-  try {
-    const execution = journal.admit(command, 1000)!;
-    journal.phase(execution.id, "complete");
-    journal.close();
-    const legacy = { ...command, commitPolicy: { projectLead: "lead", taskSteerer: "steerer" } };
-    const db = new Database(join(root, "executions.db"));
-    db.run("UPDATE execution SET payload=? WHERE id=?", [JSON.stringify(legacy), execution.id]);
-    db.close();
-    journal = openExecutionJournal(root);
-    expect(journal.unconfirmedTerminations()).toEqual([
-      {
-        id: execution.id,
-        command: { id: command.id, runId: command.runId, generation: 1, itemId: command.itemId },
-      },
-    ]);
-    journal.confirmTermination(command);
-    expect(journal.unconfirmedTerminations()).toEqual([]);
-  } finally {
-    journal.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 test("journal lines with and without their write time deliver the same events", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-journal-time-"));
   const journal = openExecutionJournal(root);

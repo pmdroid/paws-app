@@ -87,24 +87,9 @@ export type TerminalExecution = {
   command: { id: string; runId: string; generation: number; itemId: string };
 };
 
-type TerminalRow = {
-  id: string;
-  commandId: string;
-  runId: string;
-  generation: number;
-  itemId: string;
-};
 const TERMINAL_PHASES = ["complete", "interrupted"];
-// Read only the identifiers, so an execution an older release journaled still lists.
 const payloadRunId = sql<string>`json_extract(${execution.payload},'$.runId')`;
 const payloadGeneration = sql<number>`json_extract(${execution.payload},'$.generation')`;
-const terminalColumns = {
-  id: execution.id,
-  commandId: execution.commandId,
-  runId: payloadRunId,
-  generation: payloadGeneration,
-  itemId: sql<string>`json_extract(${execution.payload},'$.itemId')`,
-};
 const awaitsAnswer = sql`json_extract(${delivery.payload},'$.type') IN ('question','artifact','closeout_policy','ci_rerun')`;
 const one = { one: sql`1` };
 
@@ -114,10 +99,6 @@ function rowid(table: SQLiteTable) {
 
 function changes(query: { run(): unknown }): number {
   return (query.run() as Changes).changes;
-}
-
-function terminalExecution({ id, commandId, runId, generation, itemId }: TerminalRow) {
-  return { id, command: { id: commandId, runId, generation, itemId } } satisfies TerminalExecution;
 }
 
 export function openExecutionJournal(root: string) {
@@ -154,9 +135,7 @@ export function openExecutionJournal(root: string) {
     orm.select(one).from(termination).where(eq(termination.commandId, execution.commandId)),
   );
   function parseExecution(row: { id: string; payload: string; phase: string }) {
-    const parsed = RunnerCommandSchema.safeParse(JSON.parse(row.payload));
-    if (!parsed.success) return undefined;
-    const command = parsed.data;
+    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
     if (command.type !== "run" && command.type !== "review" && command.type !== "task")
       throw new Error("Invalid persisted work command");
     return { id: row.id, command, phase: row.phase } satisfies Execution;
@@ -177,7 +156,7 @@ export function openExecutionJournal(root: string) {
       )
       .orderBy(rowid(execution))
       .all()
-      .flatMap((row) => parseExecution(row) ?? []);
+      .map(parseExecution);
   }
   function storedPublication(id: string) {
     const row = orm
@@ -221,26 +200,23 @@ export function openExecutionJournal(root: string) {
     executions,
     execution: readExecution,
     publication: storedPublication,
-    // Older releases could mark an execution interrupted before its broker stopped.
-    // Reconcile those rows through the same broker contract on upgrade.
     unconfirmedTerminations(): TerminalExecution[] {
       return orm
-        .select(terminalColumns)
+        .select(executionColumns)
         .from(execution)
         .where(and(inArray(execution.phase, TERMINAL_PHASES), unterminated))
         .orderBy(rowid(execution))
         .all()
-        .map(terminalExecution);
-    },
-    unreadableExecutions(): TerminalExecution[] {
-      return orm
-        .select({ ...terminalColumns, payload: execution.payload, phase: execution.phase })
-        .from(execution)
-        .where(and(notInArray(execution.phase, TERMINAL_PHASES), unterminated))
-        .orderBy(rowid(execution))
-        .all()
-        .filter((row) => !parseExecution(row))
-        .map(terminalExecution);
+        .map(parseExecution)
+        .map(({ id, command }) => ({
+          id,
+          command: {
+            id: command.id,
+            runId: command.runId,
+            generation: command.generation,
+            itemId: command.itemId,
+          },
+        }));
     },
     terminationPending(runId: string, generation: number) {
       return (
@@ -253,11 +229,11 @@ export function openExecutionJournal(root: string) {
       );
     },
     confirmTermination(command: { id: string; runId: string; generation: number }) {
-      // A row from an older release can lack these fields. OR IGNORE skips its NOT NULL failure,
-      // which the builder's ON CONFLICT DO NOTHING would raise.
-      orm.run(
-        sql`INSERT OR IGNORE INTO ${termination}(command_id,run_id,generation) VALUES(${command.id},${command.runId},${command.generation})`,
-      );
+      orm
+        .insert(termination)
+        .values({ commandId: command.id, runId: command.runId, generation: command.generation })
+        .onConflictDoNothing()
+        .run();
     },
     cleanupStarted(id: string, at: number) {
       orm.insert(cleanup).values({ executionId: id, startedAt: at }).onConflictDoNothing().run();
