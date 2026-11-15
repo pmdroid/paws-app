@@ -22,6 +22,8 @@ The release workflow builds the runner and control-plane Debian packages for amd
 
 Before publishing, the protected `release` environment job checks that the tag's commit is on `main` and its latest main push `ci` run succeeded. It checks each package's SHA-256 and verifies its attestation against this repository's release workflow before adding packages to apt. The GitHub release also carries `.deb` and `.sha256` assets for manual downloads.
 
+The publisher exports its public keyring to `paws.gpg` at the repository root before uploading `InRelease`, including during metadata renewal. The installer downloads that keyring over HTTPS and restricts the Paws apt source to it with `signed-by`.
+
 The apt signing subkey belongs in the `release` environment. Keep the primary key offline. Repository metadata includes a 90-day `Valid-Until`; renew it before expiry with the workflow's `resign_only` input. To exercise builds and attestation verification without publishing, dispatch the workflow at a `v*` tag with `dry_run` enabled.
 
 Verify a downloaded package with:
