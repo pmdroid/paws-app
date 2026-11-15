@@ -1,5 +1,7 @@
 import {
   accountAttemptsInFlightSteps,
+  readAgentAuthSteps,
+  runnerHostVersionSteps,
   accountSlotsInUseSteps,
   bindingAccountHealthSteps,
   bindingReadinessRowSteps,
@@ -9,7 +11,12 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerHelperResult, RunnerResult } from "../runner-protocol";
+import {
+  ACCESS_CREDENTIAL_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerHelperResult,
+  type RunnerResult,
+} from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "./eligible";
 import { quotaSignal, type QuotaSignal } from "../core";
 
@@ -104,6 +111,14 @@ export function* bindingReadinessSteps(
   if (binding.revokedAt !== null || binding.status === "revoked") return unavailable("revoked");
   if (binding.bindingRemoved !== null || binding.accountRemoved !== null)
     return unavailable("removed");
+  if (
+    (yield* readAgentAuthSteps(q, binding.accountId)) &&
+    !runnerReleaseAtLeast(
+      yield* runnerHostVersionSteps(q, binding.runnerId),
+      ACCESS_CREDENTIAL_RUNNER_VERSION,
+    )
+  )
+    return unavailable("disabled");
   if (binding.enabled !== 1) return unavailable("disabled");
   if ((binding.lastSeenAt ?? 0) <= input.now - RUNNER_ONLINE_MS) return unavailable("offline");
   if (binding.legacy === 1 && binding.authExpired === 1) return unavailable("auth-required");

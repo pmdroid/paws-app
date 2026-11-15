@@ -103,3 +103,24 @@ export function agentCredentialContext(commandId: string, accountId: string, ver
 export function agentCredentialReturnContext(executionId: string) {
   return `paws-agent-credential-return:${executionId}`;
 }
+
+export function accessCredentialFiles(blob: string): RunnerAgentCredentialFiles {
+  return RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)).map((file) => {
+    if (file.path !== ".codex/auth.json") throw new Error("Unsupported central credential");
+    const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
+    auth.tokens.refresh_token = "";
+    return { ...file, data: Buffer.from(JSON.stringify(auth)).toString("base64") };
+  });
+}
+
+export function accessCredentialExpiry(files: RunnerAgentCredentialFiles): number | null {
+  const file = files.find((entry) => entry.path === ".codex/auth.json");
+  if (!file) return null;
+  const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
+  if (auth.tokens?.refresh_token !== "") return null;
+  const claims = JSON.parse(
+    Buffer.from(auth.tokens.access_token.split(".")[1], "base64url").toString(),
+  );
+  if (!Number.isFinite(claims.exp)) throw new Error("Missing access token expiry");
+  return claims.exp * 1000;
+}
