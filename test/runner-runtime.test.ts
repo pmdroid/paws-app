@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openDatabase } from "../src/db";
+import { openDatabase } from "../src/runner-journal";
 import { openExecutionJournal } from "../src/runner-journal";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand } from "../src/runner-protocol";

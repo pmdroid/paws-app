@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDatabase } from "../src/db";
+import { openDatabase } from "../src/runner-journal";
 import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerHealthRuntime } from "../src/runner-health-runtime";
 import { RunnerHelperResultSchema, type RunnerCommand } from "../src/runner-protocol";

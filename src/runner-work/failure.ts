@@ -1,18 +1,10 @@
-import { SQLiteError } from "bun:sqlite";
 import { RunnerWorkFencedError } from "./control";
-
-/** SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR and SQLITE_FULL: Paws is busy, not refusing. */
-const UNAVAILABLE_SQLITE = [5, 6, 10, 13];
 
 /**
  * Whether a runner request failed because Paws could not answer it now: a busy or failing
  * database, a body that timed out, or a request aborted while it waited.
  */
 export function runnerRequestUnavailable(error: unknown): boolean {
-  if (error instanceof SQLiteError) return UNAVAILABLE_SQLITE.includes(error.errno & 255);
-  // Drizzle wraps the SQLiteError of a query it ran in its own error.
-  if (error instanceof Error && error.name === "DrizzleError" && error.cause instanceof SQLiteError)
-    return runnerRequestUnavailable(error.cause);
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 

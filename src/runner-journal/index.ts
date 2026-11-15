@@ -6,7 +6,10 @@ import { and, eq, gt, gte, inArray, isNull, lt, ne, notExists, notInArray, sql }
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
-import { openDatabase, sqliteDb } from "../db";
+import { openDatabase } from "./open";
+import { sqliteDb } from "./sqlite";
+export { openDatabase } from "./open";
+export { sqliteDb, type Q } from "./sqlite";
 import {
   RunnerArtifactSchema,
   RunnerActivitySchema,

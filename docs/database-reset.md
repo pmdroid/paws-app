@@ -2,15 +2,7 @@
 
 Paws runs on Postgres: PGlite in `~/.paws/pglite` by default, or the server named by `[database] url` ([Database](postgres.md)). The SQLite database of earlier releases is not carried over, and Paws starts fresh.
 
-## What happens at the first start
-
-If `~/.paws/paws.db` exists, Paws:
-
-1. Renames it to `paws.db.pre-postgres-<UTC time>` beside it, for example `paws.db.pre-postgres-20261111T030405Z`, with its `-wal` and `-shm` files. It never deletes or writes to the old file.
-2. Journals one line naming the renamed file.
-3. Opens the Postgres database, applies its migrations and starts on it.
-
-Later starts find no `paws.db` and rename nothing.
+Paws ignores any old SQLite database files. Remove them manually when no longer needed.
 
 ## What to set up again
 
@@ -30,7 +22,3 @@ Nothing in the old database is copied. Work items, questions, evidence, settings
 4. Delegate again any Linear issue that was in progress. Its open pull request stays on GitHub; close it or let the new run open its own.
 
 Secrets under `~/.paws/secrets`, `config.toml` and the environment file are not in the database and stay as they were.
-
-## Going back
-
-The renamed file is a complete database from the earlier release. To return to it, stop Paws, install the earlier release, and rename `paws.db.pre-postgres-<UTC time>` and its `-wal` and `-shm` files back to `paws.db`, `paws.db-wal` and `paws.db-shm`.

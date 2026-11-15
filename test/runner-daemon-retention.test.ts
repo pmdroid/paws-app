@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../src/db";
+import { openDatabase } from "../src/runner-journal";
 import { openRunnerDaemon } from "../src/runner-daemon";
 
 const DAY = 24 * 60 * 60_000;

@@ -3,7 +3,7 @@ import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
-import { openDatabase, sqliteDb, type Q } from "../db";
+import { openDatabase, sqliteDb, type Q } from "../runner-journal";
 import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";

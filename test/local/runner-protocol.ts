@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { join } from "node:path";
-import { openDatabase } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import {
   signRunnerCommand,
   verifyRunnerCommand,

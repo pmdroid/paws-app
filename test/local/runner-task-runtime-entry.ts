@@ -7,12 +7,12 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  openDatabase,
   openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
   saveTaskMode,
 } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import { createFakeGitHub } from "../../src/github";
 import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";

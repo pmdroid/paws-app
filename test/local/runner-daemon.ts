@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join } from "node:path";
-import { openDatabase } from "../../src/db";
+import { openDatabase } from "../../src/runner-journal";
 import { readSecretFile, writeSecretFile } from "../../src/credentials";
 import { openRunnerDaemon } from "../../src/runner-daemon";
 import {

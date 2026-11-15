@@ -285,6 +285,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "agent-catalog",
   ],
   "runner-daemon": [
+    "runner-journal",
     "journal",
     "db",
     "credentials",
@@ -323,7 +324,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
   ],
   "runner-results": ["journal", "db", "runner-work", "runner-protocol"],
-  "runner-journal": ["db", "runner-protocol"],
+  "runner-journal": ["db", "runner-protocol", "host-operation"],
   "runner-helpers": ["journal", "db", "runner-protocol", "runner-work", "workspace"],
   "runner-runtime": [
     "journal",
@@ -341,6 +342,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-health": ["journal", "db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": [
+    "runner-journal",
     "journal",
     "runner-answers",
     "db",
@@ -349,6 +351,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
   ],
   "runner-retro-runtime": [
+    "runner-journal",
     "journal",
     "db",
     "runner-daemon",
