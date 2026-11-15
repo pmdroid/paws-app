@@ -13,7 +13,7 @@ import { openPullRequest, publishedPullRequestBody, type GitHubBinding } from ".
 import { intakeDelegatedIssue } from "../intake";
 import { createFakeTracker } from "../linear";
 import { applyPullRequestDraft } from "./pull-request-text";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const EVIDENCE = "## Closeout\n\nAll checks passed at 474f2d1b.";

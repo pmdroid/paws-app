@@ -14,7 +14,7 @@ import {
 } from "../../../db";
 import { parseMergeQueueResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 import { queriesDuring } from "../../../../test/query-log";
 

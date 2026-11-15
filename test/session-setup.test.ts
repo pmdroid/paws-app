@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { putWorkspaceUser, replaceWorkspaceRepositories, syncWorkspaceMember } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test("the session reports setup progress from mapped repositories for every role", async () => {

@@ -52,7 +52,7 @@ jobs:
     env:
       PAWS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       # Test files whose database follows PAWS_TEST_DATABASE_URL (helpers in test/pglite.ts).
-      DATABASE_TESTS: &database-tests tempStore|serverPostgres|forEachDialect|pgliteServer|improvement-fixtures|decision-memory-fixture
+      DATABASE_TESTS: &database-tests tempStore|serverPostgres|describePglite|pgliteServer|improvement-fixtures|decision-memory-fixture
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

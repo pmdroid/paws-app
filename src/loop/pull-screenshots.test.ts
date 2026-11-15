@@ -12,7 +12,7 @@ import {
 } from "../github";
 import { EVIDENCE_INLINE_LIMITS } from "./artifacts";
 import { pullRequestScreenshots } from "./pull-screenshots";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;

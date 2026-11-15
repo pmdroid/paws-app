@@ -28,7 +28,7 @@ import {
   visualReviewApprovalsSteps,
 } from "./visual-review";
 import { eq } from "drizzle-orm";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const open: (() => Promise<void>)[] = [];

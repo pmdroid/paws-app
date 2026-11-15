@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { getWorkItem, insertRun, schedulerRunnerSlots } from "../../src/db";
 import { createRunnerPlacement } from "../../src/runner-placement";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";

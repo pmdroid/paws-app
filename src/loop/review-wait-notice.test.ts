@@ -21,7 +21,7 @@ import { createFakeTracker } from "../linear";
 import { mergeQueueTurn } from "../merge";
 import { deliverLinearOutbox } from "./dispatch";
 import { Orchestrator } from "./orchestrator";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const PULL_URL = "https://github.com/acme/app/pull/7";

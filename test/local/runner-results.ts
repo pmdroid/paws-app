@@ -23,7 +23,7 @@ import {
 import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;

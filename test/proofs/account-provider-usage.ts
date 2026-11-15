@@ -8,7 +8,7 @@ import {
 } from "../../src/db";
 import { leaseCentralAccount, UsageLimitPause } from "../../src/runner-backend";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import type { Proof } from "./harness";
 export default {
   covers: [

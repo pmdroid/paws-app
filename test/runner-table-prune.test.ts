@@ -9,12 +9,12 @@ import {
 } from "../src/db";
 import { pruneRunnerEvents, pruneRunnerTables } from "../src/runner-work";
 import {
-  forEachDialect,
+  describePglite,
   insertRunnerBindingSteps,
   json,
   seed,
   withoutForeignKeys,
-} from "./dialects";
+} from "./pglite-fixtures";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
@@ -109,7 +109,7 @@ function fixtures(db: Db) {
   return { run, command, result, commands };
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("the prune deletes answers and follow-ups a day after their run ends", async () => {
     const { db, close } = await open();
     await withoutForeignKeys(db);

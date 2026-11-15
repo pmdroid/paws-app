@@ -10,7 +10,7 @@ import {
   listOutbox,
   type Db,
 } from "../src/db";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const closes: (() => Promise<void>)[] = [];

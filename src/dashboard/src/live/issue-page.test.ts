@@ -23,7 +23,7 @@ import { openedView } from "../../test/fixtures";
 import { render } from "../client/render";
 import { issueListRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
-import { seed } from "../../../../test/dialects";
+import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 const ITEM = "01M5NDWPQZ0JQ91E1MFMVEY6EP";

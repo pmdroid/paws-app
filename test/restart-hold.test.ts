@@ -24,7 +24,7 @@ import { attachOrchestrator, questionEffects } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { answerPg as answer } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
-import { seed as seedRows } from "./dialects";
+import { seed as seedRows } from "./pglite-fixtures";
 import { tempHome, withHomeStore } from "./helpers";
 import { tempStore } from "./pglite";
 

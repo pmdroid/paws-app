@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { listPolicyRunnerWarnings, type Db } from "../db";
 import { setJournalSink } from "../journal";
 import { checkPolicyRunners } from "./policy-runners";
-import { seed, withoutForeignKeys } from "../../test/dialects";
+import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = Date.parse("2026-10-28T06:43:00.000Z");

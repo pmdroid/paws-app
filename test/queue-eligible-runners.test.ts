@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
@@ -20,7 +20,7 @@ import { Orchestrator } from "../src/loop";
 import { itemOwnerHasEligibleRunnerSteps } from "../src/runner-placement";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;

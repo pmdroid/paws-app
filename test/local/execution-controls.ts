@@ -35,7 +35,7 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 type ExecutionControlsFixtureOptions = {

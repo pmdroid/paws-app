@@ -24,7 +24,7 @@ import {
   runnerWorkHasResult,
   type Db,
 } from "./index";
-import { seed, withoutForeignKeys } from "../../test/dialects";
+import { seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { seedCommand, seedResult, seedRunner, seedWork } from "../../test/runner-rows";
 

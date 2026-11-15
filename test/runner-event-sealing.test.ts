@@ -7,7 +7,7 @@ import {
   encryptRunnerEvents,
   RUNNER_EVENT_ENCRYPT_JOB,
 } from "../src/runner-work";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];

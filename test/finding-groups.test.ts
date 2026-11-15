@@ -24,7 +24,7 @@ import {
 import { createFakeFindingIssueAdapter } from "../src/linear";
 import { handleFindingGroupsRequest } from "../src/dashboard";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { seed as write } from "./dialects";
+import { seed as write } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const epoch = Date.parse("2026-10-28T06:00:00Z");

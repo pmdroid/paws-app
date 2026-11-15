@@ -16,7 +16,7 @@ import {
   type StoredLinearToken,
 } from "../src/linear";
 import { sql } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite } from "./pglite";
 

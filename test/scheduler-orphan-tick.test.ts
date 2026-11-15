@@ -11,7 +11,7 @@ import {
 } from "../src/db";
 import { registerScheduler } from "../src/scheduler";
 import { workspaceDispatchPg } from "./fake-workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const GRACE_MS = 5 * 60_000;

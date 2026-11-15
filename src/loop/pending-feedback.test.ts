@@ -17,7 +17,7 @@ import {
   recordItemPullRequest,
   syncSteps,
 } from "../db";
-import { pullCommentOutcome } from "../../test/dialects";
+import { pullCommentOutcome } from "../../test/pglite-fixtures";
 import { REBASE_CONFLICT_INSTRUCTION, ciFixHandoff, returnToAgent } from "../merge";
 import { findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery } from "./merge-jobs";

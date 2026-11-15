@@ -6,7 +6,7 @@ import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { createRunnerModels } from "../src/runner-models";
 import { createRunnerPlacementBrowser } from "../src/runner-placement";
 import { workspaceId } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];

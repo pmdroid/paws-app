@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { bindLinearSessionTask, recordLinearInstallation } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, SWEEP_FULL_REFRESH_MS } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 async function sweepFixture() {

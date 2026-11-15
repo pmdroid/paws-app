@@ -26,7 +26,7 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
-import { withoutForeignKeys } from "./dialects";
+import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const roots: string[] = [];

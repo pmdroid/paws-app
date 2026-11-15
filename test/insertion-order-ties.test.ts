@@ -9,21 +9,26 @@ import {
   unacknowledgedRunnerHelpersSteps,
 } from "../src/db";
 import { openQuestion } from "../src/questions";
-import { forEachDialect, insertWorkItem, withoutForeignKeys, type DialectDb } from "./dialects";
+import {
+  describePglite,
+  insertWorkItem,
+  withoutForeignKeys,
+  type PgliteTestDb,
+} from "./pglite-fixtures";
 
-const open: DialectDb[] = [];
+const open: PgliteTestDb[] = [];
 afterEach(async () => {
   for (const handle of open.splice(0)) await handle.close();
 });
 
-async function connected(connect: () => Promise<DialectDb>) {
+async function connected(connect: () => Promise<PgliteTestDb>) {
   const handle = await connect();
   open.push(handle);
   await withoutForeignKeys(handle.db);
   return handle.db;
 }
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("answers with the same answer time hand off in the order they were asked", async () => {
     const db = await connected(connect);
     await insertWorkItem(db, "item");

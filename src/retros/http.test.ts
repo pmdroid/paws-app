@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { listWorkspaceAudit, putWorkspaceUser, syncWorkspaceMember } from "../db";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
 import {

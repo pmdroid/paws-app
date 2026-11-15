@@ -13,22 +13,22 @@ import {
   recordRunnerRuntimesSteps,
   type Q,
 } from "../src/db";
-import { forEachDialect, type DialectDb } from "./dialects";
+import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
 import { insertRunnerSteps } from "./runner-dialect-seed";
 
-const open: DialectDb[] = [];
+const open: PgliteTestDb[] = [];
 afterEach(async () => {
   for (const handle of open.splice(0)) await handle.close();
 });
 
-async function connected(connect: () => Promise<DialectDb>) {
+async function connected(connect: () => Promise<PgliteTestDb>) {
   const handle = await connect();
   open.push(handle);
   await handle.db.run((q) => insertRunnerSteps(q, "box"));
   return handle.db;
 }
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("a repeated runtime and agent report keeps each unchanged row as it was", async () => {
     const db = await connected(connect);
     const runtimes = (status: "installed" | "failed") => [

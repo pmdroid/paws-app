@@ -36,7 +36,7 @@ import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { githubClient } from "./e2e-harness";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 import { seedRunnerLease } from "./runner-lease-seed";

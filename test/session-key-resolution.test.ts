@@ -4,7 +4,7 @@ import { JobLoop, OutboxDispatcher, ensureLinearSession, listJobs } from "../src
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test("orchestrator resumes the session item through session_key alone", async () => {

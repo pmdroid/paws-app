@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { workItemForSession } from "../src/db";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 test("workItemForSession prefers the in-flight item over a newer queued or failed sibling", async () => {

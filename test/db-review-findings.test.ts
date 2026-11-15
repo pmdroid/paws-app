@@ -11,7 +11,7 @@ import {
   type Db,
   type ReviewFindingReport,
 } from "../src/db";
-import { forEachDialect, insertWorkItem } from "./dialects";
+import { describePglite, insertWorkItem } from "./pglite-fixtures";
 
 function finding(location: string, overrides: Partial<ReviewFindingReport> = {}) {
   return {
@@ -25,7 +25,7 @@ function finding(location: string, overrides: Partial<ReviewFindingReport> = {})
   } satisfies ReviewFindingReport;
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

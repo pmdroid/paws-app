@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Db, Q } from "../src/db";
 import { pruneLoopQueues } from "../src/runner-work";
-import { forEachDialect, json, seed, withoutForeignKeys } from "./dialects";
+import { describePglite, json, seed, withoutForeignKeys } from "./pglite-fixtures";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
@@ -19,7 +19,7 @@ function keys<T>(db: Db, read: (q: Q) => PromiseLike<T[]>, key: (row: T) => stri
   return db.run((q) => q.all(read(q))).then((rows) => rows.map(key).sort());
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("the prune deletes finished one-off jobs a week after they finish", async () => {
     const { db, close } = await open();
     await withoutForeignKeys(db);

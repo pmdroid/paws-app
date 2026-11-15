@@ -14,7 +14,7 @@ import { createEvidenceStore } from "../src/evidence";
 import type { LinearUsage } from "../src/linear";
 import { handleQuestionAnswer, type QuestionAnswer } from "../src/questions";
 import { startServer } from "../src/server";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { pgliteDb } from "./pglite";
 import { screenshotPng } from "./png";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";

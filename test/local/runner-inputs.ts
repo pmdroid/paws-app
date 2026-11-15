@@ -40,7 +40,7 @@ import { createRunnerInputStore } from "../../src/runner-inputs";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { pgliteServer } from "../pglite";
 import { and, eq } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 
 export async function probeRunnerInputs(
   root: string,

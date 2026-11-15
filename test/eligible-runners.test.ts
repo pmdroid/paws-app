@@ -15,7 +15,7 @@ import {
   type EligibleRunnersInput,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type Member = { role: "member" | "admin"; active: boolean; teamIds: string[] };

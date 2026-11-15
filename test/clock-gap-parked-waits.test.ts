@@ -23,7 +23,7 @@ import {
 } from "../src/db";
 import { HostSupervisor, WakeDetector } from "../src/host";
 import { dispatch } from "../src/scheduler";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const TWO_HOURS = 2 * 60 * 60_000;

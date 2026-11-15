@@ -14,7 +14,7 @@ import {
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { createAdmission } from "../../src/scheduler";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 export async function probeMergeDependencyYield(

@@ -41,7 +41,7 @@ import {
   TransitionRejectedError,
   type Db,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "../../test/pglite";
 
 const closes: (() => Promise<void>)[] = [];

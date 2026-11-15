@@ -12,7 +12,7 @@ import {
   setFindingGroupingSteps,
   type Db,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, json, seed, withoutForeignKeys } from "./dialects";
+import { describePglite, insertWorkItem, json, seed, withoutForeignKeys } from "./pglite-fixtures";
 
 type GroupSeed = {
   id: string;
@@ -50,7 +50,7 @@ function seedRun(db: Db, id: string, day: string, startedAt: number, status = "c
   );
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

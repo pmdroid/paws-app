@@ -37,7 +37,7 @@ import {
   type PullReviewCapabilities,
 } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const THREADS: FakeReviewThread[] = [

@@ -23,7 +23,7 @@ import {
 import { createRunnerWork, createRunnerWorkHttp, RunnerTeardownPending } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
-import { jsonValue, seed, withoutForeignKeys } from "./dialects";
+import { jsonValue, seed, withoutForeignKeys } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
 
 async function runnerWork(db: Db) {

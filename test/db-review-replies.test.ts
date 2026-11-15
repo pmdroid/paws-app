@@ -8,7 +8,7 @@ import {
   type Db,
   type NewReviewReply,
 } from "../src/db";
-import { forEachDialect, insertWorkItem } from "./dialects";
+import { describePglite, insertWorkItem } from "./pglite-fixtures";
 
 const reply = (number: number): NewReviewReply => ({
   number,
@@ -20,7 +20,7 @@ const reply = (number: number): NewReviewReply => ({
   excerpt: `comment ${number}`,
 });
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
     const opened = await open();
     try {

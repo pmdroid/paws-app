@@ -36,7 +36,7 @@ import { dispatch } from "../src/scheduler";
 import { workspaceAdmission } from "./fake-workspace";
 import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
 import { tempStore } from "./pglite";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 
 type Work = {
   runId: string;

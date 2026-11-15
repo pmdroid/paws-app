@@ -20,7 +20,7 @@ import {
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { emptyReview, githubClient, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 

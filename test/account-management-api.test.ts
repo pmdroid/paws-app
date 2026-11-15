@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { AGENT_ACCOUNTS_RETIRED, createAccountManagement } from "../src/account-management";
 import { centralAgentAccountsSteps, writeAgentCredentialCiphertextSteps } from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
-import { forEachDialect, seed, withoutForeignKeys } from "./dialects";
+import { describePglite, seed, withoutForeignKeys } from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
 
 const RUNNER = "01JRUNNER0000000000000000A";
@@ -59,7 +59,7 @@ type Answer = {
   accounts: Record<string, unknown>[];
 };
 
-forEachDialect((connect) => {
+describePglite((connect) => {
   test("admins add, order, sign out and toggle extra usage on workspace agent accounts", async () => {
     const handle = await connect();
     const { db } = handle;

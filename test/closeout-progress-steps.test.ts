@@ -19,7 +19,7 @@ import {
   type CloseoutStepWrite,
   type Db,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, seed } from "./dialects";
+import { describePglite, insertWorkItem, seed } from "./pglite-fixtures";
 
 const identity = (head: string, extra: Partial<CloseoutProgressIdentity> = {}) => ({
   taskId: "task",
@@ -67,7 +67,7 @@ function progress(db: Db, head: string) {
   return db.run((q) => getCloseoutProgressSteps(q, "item", head));
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   test("a run is stored once per candidate and a reset clears its decision", async () => {
     const { db, close } = await open();
     try {

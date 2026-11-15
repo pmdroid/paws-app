@@ -18,7 +18,7 @@ import {
   relationsPollIntervalMs,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const BLOCKED_BY_B = [{ blockerLinearIssueId: "acme-b", blockedLinearIssueId: "acme-child" }];

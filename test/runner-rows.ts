@@ -1,5 +1,5 @@
 import type { Db } from "../src/db";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 
 /** Rows the runner modules read, with defaults, seeded through Drizzle on either dialect. */
 export function seedRunner(

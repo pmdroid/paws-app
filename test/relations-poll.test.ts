@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { bindLinearSessionTask, listTaskBlockers, recordLinearInstallation } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 async function relationsFixture(options: { batched?: boolean } = {}) {

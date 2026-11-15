@@ -7,7 +7,7 @@ import {
   INTAKE_RETRY_MS,
   type AcceptedLinearEvent,
 } from "../../src/linear";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 import type { Proof } from "./harness";
 

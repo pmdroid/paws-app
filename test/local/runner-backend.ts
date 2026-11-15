@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "../dialects";
+import { bindFixtureAccounts } from "../pglite-fixtures";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { createAcpActivityReporter } from "../../src/loop";
@@ -64,7 +64,7 @@ import {
 import { openQuestionSteps } from "../../src/questions";
 import { answerQuestionPg as answerQuestion, askPg as askQuestion } from "../questions";
 import { tempStore } from "../pglite";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { applyWorkItemEvent, applyWorkItemEventSteps } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";

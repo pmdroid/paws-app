@@ -15,7 +15,7 @@ import { doingTimeLine, issueTimeLine, itemPill, itemTime } from "../client/doin
 import { createLiveStatusProvider } from "./provider";
 import { issueRecords } from "../../test/issue-records";
 import { STALL_MS } from "./doing";
-import { seed, withoutForeignKeys } from "../../../../test/dialects";
+import { seed, withoutForeignKeys } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 
 const MINUTE = 60_000;

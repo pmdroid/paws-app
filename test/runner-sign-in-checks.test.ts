@@ -19,7 +19,7 @@ import { createRunnerLogin } from "../src/runner-login";
 import { createRunnerHttp, type RunnerControl } from "../src/runner-control";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import { RunnerHealthResultSchema, type RunnerCommand } from "../src/runner-protocol";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const stores: { close(): Promise<void> }[] = [];

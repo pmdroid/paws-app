@@ -37,7 +37,7 @@ import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
 import { answerQuestionSteps, openQuestion } from "../../src/questions";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { pgliteServer } from "../pglite";
 import {
   issueWorkspaceBootstrap,

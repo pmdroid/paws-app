@@ -20,7 +20,7 @@ import { intakeDelegatedIssue, type IntakeResult } from "../src/intake";
 import { acknowledgeNewSession, createFakeTracker } from "../src/linear";
 import { systemClock } from "../src/core";
 import { attachOrchestrator } from "../src/loop";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const closers: (() => Promise<void>)[] = [];

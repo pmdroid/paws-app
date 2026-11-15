@@ -35,7 +35,7 @@ import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { tempStore } from "../pglite";
 import { eq } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 export async function probeRunnerArtifacts(root: string, observe: Observe) {

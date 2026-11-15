@@ -21,7 +21,7 @@ import {
   LINK_ASK_NEEDS_PUBLIC_URL,
   remindLinkAsk,
 } from "./link-ask";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;

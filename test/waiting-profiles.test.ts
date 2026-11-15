@@ -20,7 +20,7 @@ import { handleAgentSettingsRequest } from "../src/settings";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { answerQuestionSteps, findOpenQuestion } from "../src/questions";
-import { seed as seedRows, withoutForeignKeys } from "./dialects";
+import { seed as seedRows, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const oldProfiles = {

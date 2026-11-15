@@ -12,7 +12,7 @@ import {
   applyWorkItemEvent,
   type Db,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 type ItemChange = { state?: "merge_queue" | "running" | "verifying"; cancelRequested?: number };

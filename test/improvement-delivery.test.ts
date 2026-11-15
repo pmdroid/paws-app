@@ -28,7 +28,7 @@ import {
   improvementView,
 } from "../src/improvements";
 import { createFakeImprovementLinear } from "../src/linear";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const REPO = "acme/app";

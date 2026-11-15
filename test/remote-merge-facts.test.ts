@@ -8,7 +8,7 @@ import {
   recordConfirmedRemoteMerge,
   type ConfirmedRemoteMerge,
 } from "../src/db";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome, withHomeStore } from "./helpers";
 import { tempStore } from "./pglite";
 

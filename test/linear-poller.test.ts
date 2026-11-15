@@ -35,7 +35,7 @@ import {
   type Sleeper,
 } from "../src/linear";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { waitFor as waitForCondition } from "./wait-for";
 

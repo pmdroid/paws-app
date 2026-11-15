@@ -11,7 +11,7 @@ import {
   workspaceAdmission,
   workspaceDispatchPg,
 } from "./fake-workspace";
-import { seed, withoutForeignKeys } from "./dialects";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function item(db: Db, id: string, state = "queued", position = 0) {

@@ -17,7 +17,7 @@ import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
 import { LINK_ASK_ANCHORS } from "../client/link-ask";
 import { createLiveStatusProvider } from "./provider";
-import { seed, withoutForeignKeys } from "../../../../test/dialects";
+import { seed, withoutForeignKeys } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
 import { queriesDuring } from "../../../../test/query-log";
 

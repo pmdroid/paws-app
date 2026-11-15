@@ -10,7 +10,7 @@ import { createRunnerInputStore } from "../src/runner-inputs";
 import type { RunnerArtifact, RunnerCommand } from "../src/runner-protocol";
 import type { RunnerWork } from "../src/runner-work";
 import { eq } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;

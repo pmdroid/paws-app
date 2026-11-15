@@ -12,7 +12,7 @@ import {
 import { createRunnerWork, createRunnerWorkHttp, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type Live = { runId: string; generation: number }[];

@@ -12,7 +12,7 @@ import {
 } from "../src/db";
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { confirmFakeMergePg } from "./fake-workspace";
 import { tempStore } from "./pglite";
 import { probeDependencySnapshots } from "./local/intake-dependencies";

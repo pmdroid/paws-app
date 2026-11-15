@@ -28,7 +28,7 @@ import { findOpenQuestion } from "../src/questions";
 import { cloneRunnerPg, githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { runnerCheckout } from "./helpers";
-import { seed as seedRows } from "./dialects";
+import { seed as seedRows } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);

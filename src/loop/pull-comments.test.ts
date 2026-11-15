@@ -46,7 +46,7 @@ import {
 } from "./pull-reviews";
 import { readReviewChecks } from "./review-checks";
 import { worktreeBranch } from "./sources";
-import { pullCommentOutcome, seed } from "../../test/dialects";
+import { pullCommentOutcome, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const THREADS: FakeReviewThread[] = [

@@ -40,7 +40,7 @@ import {
 } from "./linear-comments";
 import { askSteps, restart } from "./operations";
 import { Orchestrator } from "./orchestrator";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const ORG = "org-1";

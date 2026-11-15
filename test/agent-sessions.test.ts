@@ -45,7 +45,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerWork, RunnerWorkFencedError, type RunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");

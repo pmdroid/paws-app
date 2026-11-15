@@ -9,7 +9,7 @@ import {
   teamRepositoryAllowed,
   type Db,
 } from "../src/db";
-import { seed as insert } from "./dialects";
+import { seed as insert } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

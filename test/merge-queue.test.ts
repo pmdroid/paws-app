@@ -15,7 +15,7 @@ import {
   restartedFromMergeQueue,
   type Db,
 } from "../src/db";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function setState(db: Db, id: string, state: WorkItemState) {

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import {
   applyWorkItemEvent,
   enqueueJob,

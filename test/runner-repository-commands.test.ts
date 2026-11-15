@@ -23,7 +23,7 @@ import {
 } from "../src/runner-repository-commands";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import { workspaceId } from "../src/workspace";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { pgliteServer, tempStore } from "./pglite";
 
 const bot = { appId: "99", login: "paws-test[bot]", id: 88 };

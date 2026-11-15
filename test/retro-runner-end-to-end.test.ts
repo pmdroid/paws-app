@@ -19,7 +19,7 @@ import { executeRetroCommand } from "../src/runner-worker";
 import type { createRetroDispatcher } from "../src/retros";
 import { addRunnerPg as addRunner, trustedKeys, worldPg } from "../src/retros/dispatch.fixtures";
 import { fixturePattern } from "../src/retros/result.fixtures";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
 
 const nonRootLinux = process.platform === "linux" && process.getuid!() > 0 && process.getgid!() > 0;

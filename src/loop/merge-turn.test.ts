@@ -18,7 +18,7 @@ import { createFakeTracker } from "../linear";
 import { mergeAcceptedWork } from "./accepted-work";
 import { MERGE_OWNER_POLL_MS } from "./merge-jobs";
 import { attachOrchestrator } from "./orchestrator";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { and, eq } from "drizzle-orm";
 import { tempStore } from "../../test/pglite";
 

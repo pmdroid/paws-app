@@ -22,7 +22,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { forEachDialect, insertWorkItemSteps, type DialectDb } from "./dialects";
+import { describePglite, insertWorkItemSteps, type PgliteTestDb } from "./pglite-fixtures";
 
 function* setItem(q: Q, id: string, values: Partial<Q["t"]["workItem"]["$inferInsert"]>) {
   yield* q.exec(q.orm.update(q.t.workItem).set(values).where(eq(q.t.workItem.id, id)));
@@ -41,9 +41,9 @@ function turn(eventKey: string, createdAtMs: number) {
   };
 }
 
-forEachDialect((open) => {
+describePglite((open) => {
   async function withDb(body: (db: Db) => Promise<void>) {
-    const opened: DialectDb = await open();
+    const opened: PgliteTestDb = await open();
     try {
       await body(opened.db);
     } finally {

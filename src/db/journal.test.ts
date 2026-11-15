@@ -17,7 +17,7 @@ import {
   setJournalSink,
   type Db,
 } from "./index";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 let lines: string[] = [];

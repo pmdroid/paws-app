@@ -13,7 +13,7 @@ import {
 import { findOpenQuestion, getQuestion, getVisualReview } from "../questions";
 import { reaskDeadQuestion } from "./dead-question";
 import { askSteps } from "./operations";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const open: (() => Promise<void>)[] = [];

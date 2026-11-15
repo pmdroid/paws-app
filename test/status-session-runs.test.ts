@@ -16,7 +16,7 @@ import { render } from "../src/dashboard/src/client/render";
 import { parseIssueDetailResponse } from "../src/dashboard/src/contract";
 import { parseRoute } from "../src/dashboard/src/client/route";
 
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;

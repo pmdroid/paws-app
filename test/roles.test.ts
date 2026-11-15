@@ -12,7 +12,7 @@ import {
 import { asc, eq, isNotNull, ne } from "drizzle-orm";
 import { pgliteServer, tempStore } from "./pglite";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;

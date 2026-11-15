@@ -23,7 +23,7 @@ import {
   openLinkAsk,
   openQuestion,
 } from "../src/questions";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;

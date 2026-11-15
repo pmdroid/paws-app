@@ -61,7 +61,7 @@ import {
 import { saveSchedulingContextSteps } from "../src/scheduler";
 import { githubClient } from "./e2e-harness";
 import { screenshotPng, type Rect } from "./png";
-import { jsonValue, seed } from "./dialects";
+import { jsonValue, seed } from "./pglite-fixtures";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 import { seedRunnerLease } from "./runner-lease-seed";

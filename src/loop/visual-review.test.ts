@@ -23,7 +23,7 @@ import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { askForVisualReviewSteps, VISUAL_REVIEW_NEEDS_LINK } from "./visual-review";
 import { and, eq } from "drizzle-orm";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const open: (() => Promise<void>)[] = [];

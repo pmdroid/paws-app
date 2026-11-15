@@ -1,8 +1,8 @@
-import { bindFixtureAccounts } from "../dialects";
+import { bindFixtureAccounts } from "../pglite-fixtures";
 import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

@@ -19,7 +19,7 @@ import {
   withDecisions,
   type OpenFinding,
 } from "../src/loop";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const HOUR = 3_600_000;

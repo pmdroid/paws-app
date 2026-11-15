@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readSetting } from "../db";
 import { setJournalSink } from "../journal";
 import { failingTest, mergeHarnessPg, pendingCi, type MergeHarnessPg } from "./advance-harness";
-import { saveChangedPaths } from "../../test/dialects";
+import { saveChangedPaths } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 let harness: MergeHarnessPg | undefined;

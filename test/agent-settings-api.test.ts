@@ -10,7 +10,7 @@ import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { workspaceId } from "../src/workspace";
 import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
 import { startServer } from "../src/server";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { FakeClock, JOB_KIND, RunnerCapacityWait } from "../src/core";
 import {
@@ -27,7 +27,7 @@ import {
   itemRepositoryAllowedOnSteps,
   itemRepositoryRefusalsSteps,
 } from "../src/runner-placement";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";

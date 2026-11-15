@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { getCandidateRisk, latestCandidateRisk, saveCandidateRiskSteps } from "../src/db";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const openStores: (() => Promise<void>)[] = [];

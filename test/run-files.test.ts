@@ -13,7 +13,7 @@ import {
   runFileKeyId,
 } from "../src/run-files";
 import type { Db, Q } from "../src/db";
-import { withoutForeignKeys } from "./dialects";
+import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 

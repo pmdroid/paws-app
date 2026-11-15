@@ -9,7 +9,7 @@ import {
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { seed as insert } from "./dialects";
+import { seed as insert } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const REPOSITORIES = ["fixture/team-a", "fixture/private-team-b", "Fixture/Catalog"];

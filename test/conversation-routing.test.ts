@@ -38,7 +38,7 @@ import { createConversationTurns } from "../src/runner-backend";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { RUNNER_CONVERSATION_MS } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const T0 = Date.parse("2026-11-07T20:00:00.000Z");

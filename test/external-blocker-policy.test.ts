@@ -4,7 +4,7 @@ import { bindLinearSessionTask, recordLinearInstallation, saveTaskMode, type Db 
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
 import { inspectPullRequestMerge } from "../src/github";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function setItem(

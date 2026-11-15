@@ -43,7 +43,7 @@ import { CI_REVIEW_WAIT_SOURCE } from "./pull-ci";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
 import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const HEAD = "a".repeat(40);

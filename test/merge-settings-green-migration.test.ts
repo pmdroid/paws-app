@@ -3,7 +3,7 @@ import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as migratePg } from "drizzle-orm/pglite/migrator";
 import { PG_MIGRATIONS_FOLDER, postgresDb } from "../src/db";
-import { insertWorkItem } from "./dialects";
+import { insertWorkItem } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 

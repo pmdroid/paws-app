@@ -22,7 +22,7 @@ import { verifyRunnerCommand, type SignedRunnerCommand } from "../../src/runner-
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { tempStore } from "../pglite";
 import { eq } from "drizzle-orm";
-import { seed } from "../dialects";
+import { seed } from "../pglite-fixtures";
 
 export async function probeRunnerCoordinator(
   root: string,

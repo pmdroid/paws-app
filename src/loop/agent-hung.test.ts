@@ -14,7 +14,7 @@ import { answerSteps } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const open: (() => Promise<void>)[] = [];

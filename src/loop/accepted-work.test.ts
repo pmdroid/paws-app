@@ -15,7 +15,7 @@ import {
   saveCheckpoint,
 } from "../db";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const ACCEPTED = "672c580b";

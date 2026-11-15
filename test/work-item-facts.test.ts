@@ -7,7 +7,7 @@ import {
   type Db,
 } from "../src/db";
 import { eq } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 function owner(db: Db, userId: string, id: string): Promise<void> {

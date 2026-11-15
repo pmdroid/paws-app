@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./dialects";
+import { bindFixtureAccounts } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../src/core";
@@ -31,7 +31,7 @@ import {
   itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
 import { and, eq } from "drizzle-orm";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";

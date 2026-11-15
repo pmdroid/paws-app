@@ -18,7 +18,7 @@ import {
   settleReviewEscapes,
   testOrDocPath,
 } from "./review-escapes";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const roots: string[] = [];

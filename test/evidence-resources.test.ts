@@ -12,7 +12,7 @@ import {
 import { createEvidenceStore, evidencePath } from "../src/evidence";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { json, seed } from "./dialects";
+import { json, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const HEAD = "c".repeat(40);

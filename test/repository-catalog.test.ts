@@ -18,7 +18,7 @@ import {
   type GitHubClient,
 } from "../src/github";
 import { tempHome } from "./helpers";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048 })

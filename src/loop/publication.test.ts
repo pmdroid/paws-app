@@ -15,7 +15,7 @@ import {
 } from "../linear";
 import { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {

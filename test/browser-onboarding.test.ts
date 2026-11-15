@@ -118,7 +118,7 @@ import {
   type Db,
 } from "../src/db";
 import { loadRuntime, pawsPaths } from "../src/config";
-import { seed } from "./dialects";
+import { seed } from "./pglite-fixtures";
 
 type Table = "workspace" | "workspaceOauthRequest" | "browserInstallationRequest" | "credential";
 

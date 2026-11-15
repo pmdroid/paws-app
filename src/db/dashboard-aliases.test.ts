@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { insertQueuedItem, insertRun, resolveDashboardAlias, type Db } from ".";
-import { seed } from "../../test/dialects";
+import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const open: { close(): Promise<void> }[] = [];
