@@ -1,4 +1,3 @@
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { expect, test } from "bun:test";
 import { sql, type SQL } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
@@ -63,7 +62,6 @@ async function seed() {
     sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)`,
   );
   await recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.53" }, now);
-  await boundPlacementAccounts(db);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({
     store: db,
@@ -96,7 +94,6 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
           const result = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit("runner", {
             commandId: result.command.id,
-            account: result.command.account,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
             stopReason: "end_turn",
@@ -195,7 +192,6 @@ test("grouping accepts a result after one minute, records usage, and rejects err
             f.advance(90000);
             void f.helpers.submit("runner", {
               commandId: dispatched.command.id,
-              account: dispatched.command.account,
               executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
               role: "implementer",
               stopReason: "end_turn",
@@ -223,12 +219,7 @@ test("grouping accepts a result after one minute, records usage, and rejects err
       expect(usage?.ended).not.toBeNull();
       if (failed)
         expect(
-          (
-            await one(
-              f.db,
-              sql`SELECT CASE WHEN state='auth_required' THEN 1 ELSE 0 END AS expired FROM agent_account_health WHERE kind='auth'`,
-            )
-          )?.expired,
+          (await one(f.db, sql`SELECT auth_expired AS expired FROM runner_agent_policy`))?.expired,
         ).toBe(1);
     } finally {
       await f.close();
@@ -248,7 +239,6 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
       sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)`,
     );
     await recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.53" }, f.now);
-    await boundPlacementAccounts(f.db);
     let attempts = 0;
     const helper = createFindingGroupHelper({
       store: f.db,
@@ -261,7 +251,6 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
           const result = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit(input.runnerId, {
             commandId: result.command.id,
-            account: result.command.account,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
             stopReason: "end_turn",
@@ -293,18 +282,15 @@ test("one-runner foreground placement preempts grouping and fences its old lease
   const f = await seed();
   try {
     const profile = { agent: "codex" as const, model: null };
-    await boundPlacementAccounts(f.db);
     const placement = createRunnerPlacement({ store: f.db, now: () => f.now });
-    const [candidate] = await placement.candidates({
+    await placement.candidates({
       sessionId: "reporting-session",
       findingGroups: true,
       profile,
       role: "implementer",
       purpose: "helper",
     });
-    const account = candidate!.account!;
     const maintenance = await f.helpers.dispatch({
-      account: { accountId: account.accountId, bindingId: account.bindingId },
       runnerId: "runner",
       sessionId: "reporting-session",
       purpose: "finding_groups",
@@ -313,7 +299,6 @@ test("one-runner foreground placement preempts grouping and fences its old lease
     });
     await f.db.transaction((q) =>
       placement.startedSteps(q, {
-        account,
         commandId: maintenance.command.id,
         runnerId: "runner",
         sessionId: "reporting-session",
@@ -482,7 +467,6 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       profile,
       prompt: "Group",
     });
-    await boundPlacementAccounts(f.db);
     const placement = createRunnerPlacement({ store: f.db, now: () => f.now });
     const request = {
       sessionId: "reporting-session",
@@ -517,7 +501,6 @@ test("a failed receipt completion is retried by cleanup before the original erro
   const { createRunnerPlacement } = await import("../src/runner-placement");
   const f = await seed();
   try {
-    await boundPlacementAccounts(f.db);
     const placement = createRunnerPlacement({ store: f.db });
     const original = new Error("Transient receipt failure");
     let attempts = 0;
@@ -537,7 +520,6 @@ test("a failed receipt completion is retried by cleanup before the original erro
           const issued = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit("runner", {
             commandId: issued.command.id,
-            account: issued.command.account,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
             stopReason: "end_turn",
@@ -596,7 +578,6 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
           const issued = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit(input.runnerId, {
             commandId: issued.command.id,
-            account: issued.command.account,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
             stopReason: "end_turn",

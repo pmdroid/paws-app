@@ -1,3 +1,5 @@
+import { recordRunnerHostStatus } from "../db";
+import { bindFixtureAccounts } from "../../test/dialects";
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
@@ -119,6 +121,7 @@ async function fixture(
     await helpers.submit(command.runnerId, {
       executionId: "01J00000000000000000000000",
       commandId: command.id,
+      account: command.account,
       role: "implementer",
       stopReason: "end_turn",
       cancelled: false,
@@ -1155,7 +1158,16 @@ async function answerTask() {
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
     );
     await sqlRun(db, "UPDATE runner SET name='agentbox' WHERE id='runner'");
-    for (const runnerId of ["runner", "goldbox"]) await recordRunnerCapacity(db, runnerId, 2, 2, 2);
+    for (const runnerId of ["runner", "goldbox"]) {
+      await recordRunnerCapacity(db, runnerId, 2, 2, 2);
+      await sqlRun(
+        db,
+        "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
+        [runnerId],
+      );
+      await recordRunnerHostStatus(db, runnerId, { runnerVersion: "0.1.82" }, now());
+    }
+    await bindFixtureAccounts(db);
     return createRunnerPlacement({ store: db, now });
   });
   const fill = async (runnerId: string) => {

@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -117,7 +114,6 @@ async function fixture() {
 
   const keys = generateKeyPairSync("ed25519");
   let downloads = 0;
-  await boundPlacementAccounts(db);
   function open() {
     const work = createRunnerWork({
       store: db,
@@ -125,15 +121,12 @@ async function fixture() {
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    boundHeartbeat(db, work);
     const results = createRunnerResults({ store: db, work });
-    const health = createRunnerHealth({ store: db, work });
-    boundResultSubmissions(db, results, health);
     const backend = createRemoteAgentRunner({
       store: db,
       work,
       results,
-      health,
+      health: createRunnerHealth({ store: db, work }),
       placement: createRunnerPlacement({ store: db }),
       pollIntervalMs: 5,
       async fetchCandidate() {

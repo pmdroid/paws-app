@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
-  bindAgentAccount,
-  createAgentAccount,
-  recordAccountObservation,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   putWorkspaceUser,
@@ -95,29 +92,6 @@ async function workspace(runners: Record<string, Runner>) {
           authExpired: runner.authExpired ?? 0,
         }),
     );
-    if (runner.ready !== 0 && runner.status !== "revoked") {
-      const account = await createAgentAccount(db, {
-        workspaceId: ws.id,
-        agent: "codex",
-        label: id,
-        now,
-      });
-      const binding = await bindAgentAccount(db, {
-        workspaceId: ws.id,
-        accountId: account.id,
-        runnerId: id,
-        now,
-      });
-      if (runner.authExpired === 1)
-        await recordAccountObservation(db, {
-          bindingId: binding.id,
-          state: "auth_required",
-          source: "result",
-          sourceId: id,
-          observedAt: now,
-          now,
-        });
-    }
   }
   return {
     db,
@@ -228,10 +202,10 @@ const CASES: {
     reason: "own",
   },
   {
-    name: "an own runner with no bound account for a helper",
+    name: "an own runner with no ready agent for a helper",
     runner: { owner: "me", ready: 0 },
     purpose: "helper",
-    reason: "agent-not-signed-in",
+    reason: "own",
   },
 ];
 

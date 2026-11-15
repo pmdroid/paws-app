@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -163,7 +160,6 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   );
 
   let workNow = Date.now;
-  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
@@ -171,7 +167,6 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     eventKey: Buffer.alloc(32, 7),
     now: () => workNow(),
   });
-  boundHeartbeat(db, work);
   workNow = () => now - 120_000;
   await work.enqueue({
     id: "cancel-other",
@@ -191,7 +186,6 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   await work.heartbeat(freeRunner, 8);
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
-  boundResultSubmissions(db, results, health);
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
   const placement = createRunnerPlacement({ store: db });

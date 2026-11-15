@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,14 +140,12 @@ test("with mirrors off a runner run starts from the stored candidate and never c
     return runnerId;
   };
   const runnerId = await pair("free");
-  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  boundHeartbeat(db, work);
   await work.heartbeat(runnerId, 8);
   const main = await git(["-C", source, "rev-parse", "HEAD"]);
   const refCalls: string[] = [];
@@ -185,7 +180,6 @@ test("with mirrors off a runner run starts from the stored candidate and never c
   };
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
-  boundResultSubmissions(db, results, health);
   const identifiers = ["ENG-1"];
   const placement = createRunnerPlacement({ store: db });
   const backend = createRemoteAgentRunner({

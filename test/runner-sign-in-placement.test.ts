@@ -6,9 +6,11 @@ import {
   consumeWorkspaceBootstrap,
   createAgentAccount,
   insertQueuedItem,
-  recordAccountObservation,
+  legacyAgentAccountId,
+  legacyAgentBindingId,
   putWorkspaceUser,
   recordLinearInstallation,
+  recordRunnerAccountCapability,
   type Db,
 } from "../src/db";
 import {
@@ -38,6 +40,8 @@ function setPolicy(db: Db, runnerId: string, set: Record<string, unknown>) {
       ),
   );
 }
+
+const HOUR = 3_600_000;
 
 async function acme() {
   const { db, close } = await tempStore();
@@ -106,77 +110,48 @@ async function acme() {
   return { db, now, workspaceId: workspace.id, item, placement, place };
 }
 
-test("healthy bindings work without local sign-in; expired and full accounts are refused", async () => {
+test("two runners signed in to Claude, one with its 5-hour window spent: the implementer goes to the other", async () => {
   const f = await acme();
-  const account = await createAgentAccount(f.db, {
-    workspaceId: f.workspaceId,
-    agent: "claude",
-    label: "Team",
-    now: f.now,
+  const reset = f.now + 5 * HOUR;
+  await setPolicy(f.db, "acme-1", {
+    quotaState: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
   });
-  const bindings = await Promise.all(
-    ["acme-1", "acme-2"].map((runnerId) =>
-      bindAgentAccount(f.db, {
-        workspaceId: f.workspaceId,
-        accountId: account.id,
-        runnerId,
-        now: f.now,
-      }),
-    ),
-  );
-  await recordAccountObservation(f.db, {
-    bindingId: bindings[0]!.id,
-    state: "auth_required",
-    source: "result",
-    sourceId: "expired",
-    observedAt: f.now,
-    now: f.now,
-  });
-  await seed(f.db, (q) => q.orm.update(q.t.agentAccount).set({ concurrency: 1 }));
-  const admission = createRunnerPlacement({ store: f.db, now: () => f.now });
-  const request = {
-    itemId: f.item.id,
-    profile: { agent: "claude" as const, model: "opus" },
-    role: "implementer" as const,
-    purpose: "work" as const,
-  };
-  await seed(f.db, (q) => q.orm.delete(q.t.runnerAgentPolicy));
   const { placed, rejected } = await f.place();
   expect(placed).toEqual([
     {
       id: "acme-2",
       workspaceId: f.workspaceId,
       account: {
-        accountId: account.id,
-        bindingId: bindings[1]!.id,
-        named: true,
+        accountId: legacyAgentAccountId(f.workspaceId, "claude"),
+        bindingId: legacyAgentBindingId("acme-2", "claude"),
+        named: false,
       },
     },
   ]);
-  expect(rejected).toEqual([{ runnerId: "acme-1", reason: "auth-expired" }]);
+  expect(rejected).toEqual([{ runnerId: "acme-1", reason: "agent quota cooldown", until: reset }]);
   await seed(f.db, (q) =>
     q.orm.insert(q.t.runnerCommand).values({
       id: "cmd",
       runnerId: "acme-2",
       kind: "run",
       envelope: {},
-      expiresAt: f.now + 3_600_000,
+      expiresAt: f.now + HOUR,
     }),
   );
-  const start = (placement = f.placement, commandId = "cmd") =>
-    f.db.transaction((q) =>
-      placement.startedSteps(q, {
-        commandId,
-        runnerId: "acme-2",
-        itemId: f.item.id,
-        profile: { agent: "claude", model: "opus" },
-        account: placed[0]!.account!,
-        role: "implementer",
-        purpose: "work",
-        startedAt: f.now,
-      }),
-    );
-  await start();
+  await f.db.transaction((q) =>
+    f.placement.startedSteps(q, {
+      commandId: "cmd",
+      runnerId: "acme-2",
+      itemId: f.item.id,
+      profile: { agent: "claude", model: "opus" },
+      account: placed[0]!.account!,
+      role: "implementer",
+      purpose: "work",
+      startedAt: f.now,
+    }),
+  );
   expect(
     await f.db.run((q) =>
       q.all(
@@ -190,50 +165,63 @@ test("healthy bindings work without local sign-in; expired and full accounts are
       ),
     ),
   ).toEqual([{ runnerId: "acme-2", revision: null, fallback: null }]);
-  await admission.candidates(request);
-  await seed(f.db, (q) =>
-    q.orm.insert(q.t.runnerCommandAccount).values({
-      commandId: "cmd",
-      workspaceId: f.workspaceId,
-      runnerId: "acme-2",
-      agent: "claude",
-      accountId: account.id,
-      bindingId: bindings[1]!.id,
-      named: 1,
-      recordedAt: f.now,
-    }),
-  );
-  expect((await f.place()).rejected).toContainEqual({
-    runnerId: "acme-2",
-    reason: "account at its concurrency limit",
-  });
-  await expect(start(admission, "blocked")).rejects.toThrow("concurrency");
 });
 
-test("runner-local sign-in alone requires adding or binding an account", async () => {
+test("no runner signed in to the reviewer's agent: placement offers none and waits for a sign-in", async () => {
   const f = await acme();
-  await setPolicy(f.db, "acme-1", { ready: 1 });
-  const result = await f.place();
-  expect(result.placed).toEqual([]);
-  expect(result.rejected).toEqual([
+  const reviewer = {
+    role: "reviewer" as const,
+    profile: { agent: "codex" as const, model: "gpt-5" },
+  };
+  const { placed, rejected } = await f.place(reviewer);
+  expect(placed).toEqual([]);
+  expect(rejected).toEqual([
     { runnerId: "acme-1", reason: "agent-not-signed-in" },
     { runnerId: "acme-2", reason: "agent-not-signed-in" },
   ]);
   expect(
-    await f.placement.setupNeed!({
-      itemId: f.item.id,
-      purpose: "work",
-      role: "implementer",
-      profile: { agent: "claude" },
-    }),
-  ).toMatchObject({ reason: "agent-not-signed-in", agent: "claude" });
+    await f.placement.setupNeed!({ itemId: f.item.id, purpose: "work", ...reviewer }),
+  ).toMatchObject({ reason: "agent-not-signed-in", runnerId: "acme-1", agent: "codex" });
   expect(
     await f.db.run((q) =>
-      itemOwnerHasEligibleRunnerSteps(q, {
-        itemId: f.item.id,
-        agent: "claude",
-        now: f.now,
-      }),
+      itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "codex", now: f.now }),
+    ),
+  ).toBe(false);
+});
+
+test("a named account bound to a runner no longer stands in for that runner's own sign-in", async () => {
+  const f = await acme();
+  const named = await createAgentAccount(f.db, {
+    workspaceId: f.workspaceId,
+    agent: "claude",
+    label: "Acme team Claude",
+    now: f.now,
+  });
+  const binding = await bindAgentAccount(f.db, {
+    workspaceId: f.workspaceId,
+    accountId: named.id,
+    runnerId: "acme-1",
+    now: f.now,
+  });
+  await seed(f.db, (q) =>
+    q.orm
+      .insert(q.t.runnerHostStatus)
+      .values({ runnerId: "acme-1", runnerVersion: "0.1.61", reportedAt: f.now }),
+  );
+  await recordRunnerAccountCapability(
+    f.db,
+    "acme-1",
+    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
+    f.now,
+  );
+  await setPolicy(f.db, "acme-1", { ready: 0 });
+  const { placed, rejected } = await f.place();
+  expect(placed.map((entry) => entry.id)).toEqual(["acme-2"]);
+  expect(rejected).toEqual([{ runnerId: "acme-1", reason: "agent-not-signed-in" }]);
+  await setPolicy(f.db, "acme-2", { ready: 0 });
+  expect(
+    await f.db.run((q) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "claude", now: f.now }),
     ),
   ).toBe(false);
 });

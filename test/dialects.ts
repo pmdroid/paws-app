@@ -1,6 +1,14 @@
 import { describe } from "bun:test";
 import { and, asc, eq, sql } from "drizzle-orm";
-import type { Db, Q } from "../src/db";
+import {
+  bindAgentAccount,
+  createAgentAccount,
+  listAgentBindings,
+  recordRunnerAccountCapability,
+  type Db,
+  type Q,
+} from "../src/db";
+import type { RunnerCodingAgent } from "../src/runner-protocol";
 import { rows, tempStore } from "./pglite";
 
 export type DialectDb = { db: Db; close(): Promise<void> };
@@ -133,4 +141,60 @@ export function githubDeliveryRows(db: Db) {
         .orderBy(asc(q.t.githubDelivery.receivedAt), asc(q.t.githubDelivery.deliveryId)),
     ),
   );
+}
+
+export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: string) {
+  const policies = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          workspaceId: q.t.runner.workspaceId,
+          runnerId: q.t.runner.id,
+          agent: q.t.runnerAgentPolicy.agent,
+          now: q.t.runner.createdAt,
+        })
+        .from(q.t.runner)
+        .innerJoin(q.t.runnerAgentPolicy, eq(q.t.runner.id, q.t.runnerAgentPolicy.runnerId))
+        .where(
+          and(
+            eq(q.t.runnerAgentPolicy.ready, 1),
+            runnerId === undefined ? undefined : eq(q.t.runner.id, runnerId),
+            agent === undefined ? undefined : eq(q.t.runnerAgentPolicy.agent, agent),
+          ),
+        ),
+    ),
+  );
+  for (const row of policies) {
+    const bindings = await listAgentBindings(db, row.workspaceId);
+    if (
+      !bindings.some(
+        (b) =>
+          b.runnerId === row.runnerId && b.agent === row.agent && !b.legacy && b.removedAt === null,
+      )
+    ) {
+      const account = await createAgentAccount(db, {
+        workspaceId: row.workspaceId,
+        agent: row.agent as RunnerCodingAgent,
+        label: row.runnerId + "-" + row.agent,
+        now: row.now,
+      });
+      await bindAgentAccount(db, {
+        workspaceId: row.workspaceId,
+        accountId: account.id,
+        runnerId: row.runnerId,
+        now: row.now,
+      });
+    }
+    await recordRunnerAccountCapability(
+      db,
+      row.runnerId,
+      {
+        protocol: 1,
+        bindings: (await listAgentBindings(db, row.workspaceId))
+          .filter((b) => b.runnerId === row.runnerId && !b.legacy && b.removedAt === null)
+          .map((b) => ({ bindingId: b.id, agent: b.agent })),
+      },
+      row.now,
+    );
+  }
 }

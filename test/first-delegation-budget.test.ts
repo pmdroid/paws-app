@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
@@ -288,6 +289,7 @@ async function addRunner(db: Db, id: string, ownerId: string, now: number) {
       db,
       sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${id},${agent},1)`,
     );
+  await bindFixtureAccounts(db, id);
   await enqueueRunnerSetupCheck(db, ownerId, now);
 }
 

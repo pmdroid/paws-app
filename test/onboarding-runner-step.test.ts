@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -458,6 +459,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
         }),
     );
   expect(await ready()).toBe(false);
+  await bindFixtureAccounts(f.db, vm.runnerId!);
   const placement = createRunnerPlacement({ store: f.db, now: () => f.clock.now() });
   const candidates = () =>
     placement.candidates({

@@ -3,7 +3,9 @@ import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } fr
 import {
   getRunnerSteps,
   getWorkItemRepositorySteps,
-  listAgentBindingsSteps,
+  legacyAgentAccountId,
+  legacyAgentBindingId,
+  legacyBindingAccountHealthSteps,
   runnerRepositoryRefusalSteps,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
@@ -12,19 +14,20 @@ import {
   type Steps,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import { bindingReadinessSteps, BINDING_REASON_TEXT } from "./account-health";
+import { accountHealthBlockSteps, BINDING_REASON_TEXT } from "./account-health";
 import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
 type AccountRefusal = { reason: string; until?: number };
 type AccountFit = { account: PlacementAccount; low: boolean };
-type SignInRunner = Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState">;
+type SignInRunner = Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & {
+  signedIn: boolean;
+};
 type SignInInput = {
   agent: RunnerCodingAgent;
   model: string | null | undefined;
   purpose: PlacementPurpose;
   at: number;
-  exceptCommandId?: string;
 };
 
 export function* repositoryRejectionSteps(
@@ -45,32 +48,29 @@ export function* signInFitSteps(
   workspaceId: string,
   input: SignInInput,
 ): Steps<AccountFit | AccountRefusal> {
-  const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
-    (binding) => binding.runnerId === runner.id && binding.agent === input.agent && !binding.legacy,
+  const { agent, at, purpose } = input;
+  if (!runner.signedIn) return { reason: "agent not signed in" };
+  if (runner.cooldownUntil > at)
+    return { reason: "agent quota cooldown", until: runner.cooldownUntil };
+  const bindingId = legacyAgentBindingId(runner.id, agent);
+  const health = yield* accountHealthBlockSteps(
+    q,
+    bindingId,
+    (yield* legacyBindingAccountHealthSteps(q, runner.id, agent, input.model)).filter(
+      (row) => row.kind !== "quota" && row.kind !== "auth",
+    ),
+    at,
+    purpose,
   );
-  let refusal: AccountRefusal = { reason: "agent not signed in" };
-  for (const binding of bindings) {
-    const readiness = yield* bindingReadinessSteps(q, {
-      bindingId: binding.id,
-      model: input.model,
-      now: input.at,
-      runnerCapacity: false,
-      exceptCommandId: input.exceptCommandId,
-    });
-    if (readiness.ready)
-      return {
-        account: { accountId: binding.accountId, bindingId: binding.id, named: true },
-        low: readiness.low,
-      };
-    refusal = {
-      reason:
-        readiness.reason === "busy"
-          ? "account at its concurrency limit"
-          : BINDING_REASON_TEXT[readiness.reason],
-      ...(readiness.until !== null ? { until: readiness.until } : {}),
+  if (health)
+    return {
+      reason: BINDING_REASON_TEXT[health.reason],
+      ...(health.until !== null ? { until: health.until } : {}),
     };
-  }
-  return refusal;
+  return {
+    account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
+    low: runner.quotaState === "low",
+  };
 }
 
 function* runnerVerdictsSteps(
@@ -119,7 +119,7 @@ function* runnerVerdictsSteps(
       );
       continue;
     }
-    const fit = yield* signInFitSteps(q, runner, scope.workspaceId, {
+    const fit = yield* signInFitSteps(q, { ...runner, signedIn: true }, scope.workspaceId, {
       agent: input.agent as RunnerCodingAgent,
       model: input.model,
       purpose: "work",

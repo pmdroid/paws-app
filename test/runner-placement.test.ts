@@ -1,12 +1,9 @@
-import { boundAccountSteps } from "./bound-runner-account";
-import { boundRunnerAccount } from "./bound-runner-account";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { eq, inArray, isNotNull, type SQL } from "drizzle-orm";
 import {
-  recordAccountObservation,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
@@ -47,8 +44,8 @@ type Runner = {
 };
 
 /** An active runner with a ready agent, plus its sharing policy and capacity when given. */
-async function insertRunner(db: Db, { agent = "codex", sharing, capacity, ...runner }: Runner) {
-  await seed(
+function insertRunner(db: Db, { agent = "codex", sharing, capacity, ...runner }: Runner) {
+  return seed(
     db,
     (q) => q.orm.insert(q.t.runner).values({ name: runner.id, status: "active", ...runner }),
     ...(sharing === undefined
@@ -59,7 +56,6 @@ async function insertRunner(db: Db, { agent = "codex", sharing, capacity, ...run
       ? []
       : [(q: Q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: runner.id, capacity })]),
   );
-  await boundRunnerAccount(db, runner.workspaceId, runner.id, agent, runner.createdAt);
 }
 
 type Work = {
@@ -109,36 +105,14 @@ type AgentPolicy = {
 };
 
 /** Updates the agent policy of the given runners, or of every runner when none are given. */
-async function setAgentPolicy(
-  db: Db,
-  runnerIds: string[] | string | undefined,
-  values: AgentPolicy,
-) {
+function setAgentPolicy(db: Db, runnerIds: string[] | string | undefined, values: AgentPolicy) {
   const ids = typeof runnerIds === "string" ? [runnerIds] : runnerIds;
-  await seed(db, (q) =>
+  return seed(db, (q) =>
     q.orm
       .update(q.t.runnerAgentPolicy)
       .set(values)
       .where(ids === undefined ? undefined : inArray(q.t.runnerAgentPolicy.runnerId, ids)),
   );
-  if (values.cooldownUntil || values.quotaState === "low") {
-    const bindings = await db.run((q) =>
-      q.all(
-        q.orm.select().from(q.t.agentAccountBinding).where(eq(q.t.agentAccountBinding.legacy, 0)),
-      ),
-    );
-    for (const b of bindings.filter((entry) => ids === undefined || ids.includes(entry.runnerId)))
-      await recordAccountObservation(db, {
-        bindingId: b.id,
-        ...(values.cooldownUntil
-          ? { state: "exhausted" as const, resetsAt: values.cooldownUntil }
-          : { state: "low" as const }),
-        source: "result",
-        sourceId: workspaceId(),
-        observedAt: Date.now(),
-        now: Date.now(),
-      });
-  }
 }
 
 function setSharing(db: Db, runnerId: string, sharing: number) {
@@ -327,12 +301,12 @@ test("a preflight never goes to a paused runner", async () => {
   }
 });
 
-test("a preflight ignores runner-local sign-in when accounts are bound", async () => {
+test("a preflight skips a runner whose agent is signed out while another is signed in", async () => {
   const placed = await placeItem();
   try {
     await setAgentPolicy(placed.db, "own", { ready: 0, authExpired: 1 });
     const prepare = { role: "reviewer", purpose: "prepare" } as const;
-    expect((await placed.ids(prepare)).toSorted()).toEqual(["own", "second"]);
+    expect(await placed.ids(prepare)).toEqual(["second"]);
     await setAgentPolicy(placed.db, "second", { ready: 0, authExpired: 1 });
     expect((await placed.ids(prepare)).toSorted()).toEqual(["own", "second"]);
   } finally {
@@ -787,9 +761,8 @@ test("a runner with quota left goes before one running on extra usage, which nam
       await pool.occupy("b");
       expect(await pool.ids()).toEqual(["b", "a"]);
       const profile = { agent: "codex" as const, model: "implementation-model" };
-      await pool.db.transaction(function* (q) {
-        return yield* pool.placement.startedSteps(q, {
-          account: yield* boundAccountSteps(q, "a"),
+      await pool.db.transaction((q) =>
+        pool.placement.startedSteps(q, {
           commandId: "command-a",
           runnerId: "a",
           itemId: "item",
@@ -797,8 +770,8 @@ test("a runner with quota left goes before one running on extra usage, which nam
           role: "implementer",
           purpose: "work",
           startedAt: pool.now(),
-        });
-      });
+        }),
+      );
       const response = await createRunnerPlacementBrowser({ store: pool.db })(
         new Request("http://127.0.0.1/api/runners/usage"),
         {
@@ -1071,13 +1044,13 @@ test("placement reports every rejected runner and capacity waits include their r
     ).toEqual([]);
     expect(rejected.toSorted()).toEqual([
       "api: no-project-lead",
-      "own: agent account quota cooldown",
+      "own: agent quota cooldown",
       "second: revoked",
       "shared: no-project-lead",
       "unshared: not-yours",
     ]);
     const error = new RunnerCapacityWait([], undefined, rejected);
-    expect(error.message).toContain("own: agent account quota cooldown");
+    expect(error.message).toContain("own: agent quota cooldown");
     expect(error.message).toContain("second: revoked");
   } finally {
     await placed.close();
@@ -1143,9 +1116,8 @@ test("a moved run goes to the idle runner that can continue its agent session", 
       restore,
     });
     for (const runnerId of ["second", "own"])
-      await placed.db.transaction(function* (q) {
-        return yield* placed.placement.startedSteps(q, {
-          account: yield* boundAccountSteps(q, runnerId),
+      await placed.db.transaction((q) =>
+        placed.placement.startedSteps(q, {
           commandId: `command-${runnerId}`,
           runnerId,
           itemId: "item",
@@ -1154,8 +1126,8 @@ test("a moved run goes to the idle runner that can continue its agent session", 
           role: "implementer",
           purpose: "work",
           startedAt: placed.now(),
-        });
-      });
+        }),
+      );
     const response = await createRunnerPlacementBrowser({ store: placed.db })(
       new Request("http://127.0.0.1/api/runners/usage"),
       {
@@ -1259,9 +1231,8 @@ test("two items admitted to the same runner at once both start there", async () 
         ).map((row) => row.id),
       ).toContain("own");
     for (const itemId of ["item", "sibling"])
-      await db.transaction(function* (q) {
-        return yield* placed.placement.startedSteps(q, {
-          account: yield* boundAccountSteps(q, "own"),
+      await db.transaction((q) =>
+        placed.placement.startedSteps(q, {
           commandId: `command-${itemId}`,
           runnerId: "own",
           itemId,
@@ -1269,8 +1240,8 @@ test("two items admitted to the same runner at once both start there", async () 
           role: "implementer",
           purpose: "work",
           startedAt: placed.now(),
-        });
-      });
+        }),
+      );
     const started = await db.run((q) =>
       q.all(
         q.orm

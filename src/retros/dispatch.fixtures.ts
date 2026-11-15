@@ -2,7 +2,14 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRetro, saveRetroSettingsRevision, type Db, type Q } from "../db";
+import {
+  bindAgentAccount,
+  createAgentAccount,
+  createRetro,
+  saveRetroSettingsRevision,
+  type Db,
+  type Q,
+} from "../db";
 import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { collectRetroDigest, createRetroDispatcher } from "./index";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
@@ -70,11 +77,11 @@ export function seedActivityPg(db: Db, identifier: string, answers: number) {
   );
 }
 
-export function addRunnerPg(
+export async function addRunnerPg(
   db: Db,
   input: { id: string; owner?: string; version?: string; capacity?: number; ready?: boolean },
 ) {
-  return seed(
+  await seed(
     db,
     (q) =>
       q.orm.insert(q.t.runner).values({
@@ -99,6 +106,20 @@ export function addRunnerPg(
         .insert(q.t.runnerCapacity)
         .values({ runnerId: input.id, capacity: input.capacity ?? 1 }),
   );
+  if (input.ready !== false) {
+    const account = await createAgentAccount(db, {
+      workspaceId: "ws",
+      agent: "codex",
+      label: input.id,
+      now: 0,
+    });
+    await bindAgentAccount(db, {
+      workspaceId: "ws",
+      accountId: account.id,
+      runnerId: input.id,
+      now: 0,
+    });
+  }
 }
 
 export function seedWorkspacePg(db: Db) {

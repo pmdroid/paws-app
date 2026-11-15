@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "../dialects";
 import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
@@ -318,6 +319,7 @@ let preparationGate: Promise<void> | undefined;
 let releaseCleanup: (() => void) | undefined;
 let cleanupGate: Promise<void> | undefined;
 let cleanupEntered = false;
+await bindFixtureAccounts(paws.store, runnerId);
 let heartbeats = 0;
 const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
   root: runnerRoot,

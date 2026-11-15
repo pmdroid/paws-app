@@ -1,8 +1,3 @@
-import {
-  boundPlacementAccounts,
-  boundHeartbeat,
-  boundResultSubmissions,
-} from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +6,6 @@ import { afterAll, expect, test } from "bun:test";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { PawsShutdown, usageLimitNotice } from "../src/core";
 import {
-  resumeAccountHealthNow,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -301,7 +295,6 @@ async function usageLimitScenario(
   let limitedCommand = "";
   let recoveredBeforePause = false;
   let limitedPlacementReads = 0;
-  await boundPlacementAccounts(db);
   function open() {
     const work = createRunnerWork({
       store: db,
@@ -309,10 +302,8 @@ async function usageLimitScenario(
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    boundHeartbeat(db, work);
     const results = createRunnerResults({ store: db, work });
     const health = createRunnerHealth({ store: db, work });
-    boundResultSubmissions(db, results, health);
     const placement = createRunnerPlacement({ store: db });
     const backend = createRemoteAgentRunner({
       store: db,
@@ -325,7 +316,9 @@ async function usageLimitScenario(
         async candidates(input) {
           if (limitedAt) limitedPlacementReads++;
           if (wake === "before-pause" && limitedPlacementReads === 2 && !recoveredBeforePause) {
-            await resumeAccountHealthNow(db, "claude", runnerId, Date.now());
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
+            );
             recoveredBeforePause = true;
           }
           return placement.candidates(input);
@@ -366,13 +359,12 @@ async function usageLimitScenario(
     (await db.run((q) =>
       q.one(
         q.orm
-          .select({ cooldownUntil: q.t.agentAccountHealth.resetsAt })
-          .from(q.t.agentAccountHealth)
+          .select()
+          .from(q.t.runnerAgentPolicy)
           .where(
             and(
-              eq(q.t.agentAccountHealth.runnerId, runnerId),
-              eq(q.t.agentAccountHealth.agent, "claude"),
-              eq(q.t.agentAccountHealth.kind, "quota"),
+              eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+              eq(q.t.runnerAgentPolicy.agent, "claude"),
             ),
           ),
       ),
@@ -411,7 +403,9 @@ async function usageLimitScenario(
           if (switchProfiles) selectedAgent = "codex";
           else if (wake === "resume") await resumeUsagePauseNow(db, pause.runId, Date.now());
           else if (wake === "cooldown")
-            await resumeAccountHealthNow(db, "claude", runnerId, Date.now());
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
+            );
         }
         if (foreignRunnerIds.length && pauseObservedAt) {
           const elapsed = Date.now() - pauseObservedAt;
@@ -421,7 +415,10 @@ async function usageLimitScenario(
             );
             foreignReady++;
           }
-          if (elapsed >= 900) await resumeAccountHealthNow(db, "claude", runnerId, Date.now());
+          if (elapsed >= 900)
+            await exec(
+              sql`UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=${runnerId} AND agent='claude'`,
+            );
         }
         for (const envelope of await work.commands(runnerId)) {
           const command = JSON.parse(

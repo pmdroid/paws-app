@@ -95,13 +95,7 @@ function* healthBlockSteps(
 
 export function* bindingReadinessSteps(
   q: Q,
-  input: {
-    bindingId: string;
-    model?: string | null;
-    now: number;
-    runnerCapacity?: boolean;
-    exceptCommandId?: string;
-  },
+  input: { bindingId: string; model?: string | null; now: number },
 ): Steps<BindingReadiness> {
   const binding = yield* bindingReadinessRowSteps(q, input.bindingId);
   const unavailable = (reason: BindingUnavailableReason, until: number | null = null) =>
@@ -117,15 +111,10 @@ export function* bindingReadinessSteps(
   const blocked = yield* healthBlockSteps(q, input.bindingId, rows, input.now);
   if (blocked) return unavailable(blocked.reason, blocked.until);
   if (binding.status !== "active") return unavailable("paused");
-  if (
-    input.runnerCapacity !== false &&
-    !(yield* runnerHasCapacitySteps(q, binding.runnerId, input.now))
-  )
-    return unavailable("busy");
+  if (!(yield* runnerHasCapacitySteps(q, binding.runnerId, input.now))) return unavailable("busy");
   if (
     binding.concurrency !== null &&
-    (yield* accountSlotsInUseSteps(q, binding.accountId, input.now, input.exceptCommandId)) >=
-      binding.concurrency
+    (yield* accountSlotsInUseSteps(q, binding.accountId, input.now)) >= binding.concurrency
   )
     return unavailable("busy");
   return {

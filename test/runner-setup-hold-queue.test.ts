@@ -1,3 +1,4 @@
+import { bindFixtureAccounts } from "./dialects";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../src/core";
@@ -94,8 +95,8 @@ async function workspace(db: Db) {
   return users;
 }
 
-function addRunner(db: Db, id: string, ownerId: string, seenAt: number, ready: number) {
-  return seed(
+async function addRunner(db: Db, id: string, ownerId: string, seenAt: number, ready: number) {
+  await seed(
     db,
     (q) =>
       q.orm.insert(q.t.runner).values({
@@ -113,6 +114,7 @@ function addRunner(db: Db, id: string, ownerId: string, seenAt: number, ready: n
         .insert(q.t.runnerAgentPolicy)
         .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready }))),
   );
+  await bindFixtureAccounts(db, id);
 }
 
 function seen(db: Db, lastSeenAt: number, id?: string) {
@@ -124,8 +126,8 @@ function seen(db: Db, lastSeenAt: number, id?: string) {
   );
 }
 
-function signIn(db: Db, runnerId: string, agent?: string) {
-  return seed(db, (q) =>
+async function signIn(db: Db, runnerId: string, agent?: string) {
+  await seed(db, (q) =>
     q.orm
       .update(q.t.runnerAgentPolicy)
       .set({ ready: 1 })
@@ -136,6 +138,7 @@ function signIn(db: Db, runnerId: string, agent?: string) {
         ),
       ),
   );
+  await bindFixtureAccounts(db, runnerId, agent);
 }
 
 function share(db: Db, runnerId: string, sharing: number) {

@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -97,7 +94,6 @@ async function replicas() {
   );
 
   const privateKey = generateKeyPairSync("ed25519").privateKey;
-  await boundPlacementAccounts(db);
   const instance = (instanceId: string) => {
     const work = createRunnerWork({
       store: db,
@@ -106,15 +102,11 @@ async function replicas() {
       eventKey: Buffer.alloc(32, 7),
       now: () => clock,
     });
-    boundHeartbeat(db, work);
-    const health = createRunnerHealth({ store: db, work });
-    const results = createRunnerResults({ store: db, work });
-    boundResultSubmissions(db, results, health);
     const backend = createRemoteAgentRunner({
       store: db,
       work,
-      results,
-      health,
+      results: createRunnerResults({ store: db, work }),
+      health: createRunnerHealth({ store: db, work }),
       now: () => clock,
       pollIntervalMs: 5,
       instanceId,

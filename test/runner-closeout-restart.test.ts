@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { createFakeGitHub } from "../src/github";
 import { createAgentReadAccess, createAgentReadTokens } from "../src/runner-repository-access";
 import { generateKeyPairSync } from "node:crypto";
@@ -154,7 +151,6 @@ async function fixture(agentRead?: AgentRead) {
   });
 
   const keys = generateKeyPairSync("ed25519");
-  await boundPlacementAccounts(db);
   function open() {
     const work = createRunnerWork({
       store: db,
@@ -162,15 +158,12 @@ async function fixture(agentRead?: AgentRead) {
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    boundHeartbeat(db, work);
     const results = createRunnerResults({ store: db, work });
-    const health = createRunnerHealth({ store: db, work });
-    boundResultSubmissions(db, results, health);
     const backend = createRemoteAgentRunner({
       store: db,
       work,
       results,
-      health,
+      health: createRunnerHealth({ store: db, work }),
       placement: createRunnerPlacement({ store: db }),
       pollIntervalMs: 5,
       ...(agentRead ? { agentRead } : {}),
@@ -628,10 +621,6 @@ test("a review command carries the brief and earlier findings only to a runner t
         ...options,
         reviewCommand: { base, brief: "Issue: PAS-1", earlier },
       });
-      if (Number(version.split(".")[0]) === 0 && Number(version.split(".")[2]) < 61) {
-        await expect(running).rejects.toThrow("Named agent accounts need runner 0.1.61");
-        continue;
-      }
       await f.until(() => f.placed.length === 1);
       const command = f.placed[0]!;
       expect(command.type === "review" && command.reviewCommand).toEqual(expected(base));
@@ -655,10 +644,6 @@ test("a checks run asks for rules first only on a runner that accepts it", async
         ...f.checks(new AbortController().signal),
         closeoutRulesFirst: true,
       });
-      if (Number(version.split(".")[0]) === 0 && Number(version.split(".")[2]) < 61) {
-        await expect(running).rejects.toThrow("Named agent accounts need runner 0.1.61");
-        continue;
-      }
       await f.until(() => f.placed.length === 1);
       const command = f.placed[0]!;
       expect(command.type === "run" && command.closeoutRulesFirst).toBe(expected);

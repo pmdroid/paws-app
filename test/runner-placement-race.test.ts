@@ -1,6 +1,3 @@
-import { boundResultSubmissions } from "./bound-runner-account";
-import { boundHeartbeat } from "./bound-runner-account";
-import { boundPlacementAccounts } from "./bound-runner-account";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,18 +139,15 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runnerId, agent: "claude", ready: 1 }),
   );
 
-  await boundPlacementAccounts(db);
   const work = createRunnerWork({
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  boundHeartbeat(db, work);
   await work.heartbeat(runnerId, 8);
   const results = createRunnerResults({ store: db, work });
   const health = createRunnerHealth({ store: db, work });
-  boundResultSubmissions(db, results, health);
   const backend = createRemoteAgentRunner({
     store: db,
     work,
