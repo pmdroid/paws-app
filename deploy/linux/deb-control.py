@@ -113,6 +113,55 @@ def restore():
     RESTART.unlink(missing_ok=True)
 
 
+
+def control_plane_scripts(root=""):
+    return {
+        "preinst": f"""#!/bin/sh
+set -eu
+if [ "$1" = upgrade ]; then
+  systemctl stop paws.service
+  PAWS_DATABASE_URL=
+  if [ -f {root}/etc/paws/control-plane.env ]; then
+    . {root}/etc/paws/control-plane.env
+  fi
+  if [ -z "$PAWS_DATABASE_URL" ] && [ -d {root}/var/lib/paws/pglite ]; then
+    backups={root}/var/lib/paws/backups
+    install -d -m 0700 "$backups"
+    destination="$backups/pglite-$2-$(date -u +%Y%m%dT%H%M%S%NZ)"
+    cp -a -- {root}/var/lib/paws/pglite "$destination"
+    touch "$destination"
+    find "$backups" -mindepth 1 -maxdepth 1 -type d -name 'pglite-*' -printf '%T@ %p\\n' |
+      sort -rn | tail -n +4 | cut -d ' ' -f 2- |
+      while IFS= read -r old; do rm -rf -- "$old"; done
+  fi
+fi
+""",
+        "postinst": f"""#!/bin/sh
+set -eu
+if [ "$1" = configure ]; then
+  systemd-sysusers {root}/usr/lib/sysusers.d/paws.conf
+  systemd-tmpfiles --create {root}/usr/lib/tmpfiles.d/paws.conf
+  chown root:paws {root}/etc/paws/control-plane.env
+  chmod 0600 {root}/etc/paws/control-plane.env
+  systemctl daemon-reload
+  if [ -z "${{2:-}}" ]; then systemctl enable paws.service; fi
+  systemctl start paws.service
+fi
+""",
+        "prerm": """#!/bin/sh
+set -eu
+if [ "$1" = remove ]; then systemctl disable --now paws.service; fi
+""",
+        "postrm": """#!/bin/sh
+set -eu
+case "$1" in
+  remove|purge) systemctl daemon-reload ;;
+  abort-upgrade) systemctl start paws.service ;;
+esac
+""",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=("admit", "configure", "stop", "restore"))

@@ -2220,5 +2220,70 @@ class AgentStateHandoverAsAgent(unittest.TestCase):
         return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
 
 
+
+class ControlPlaneDebTests(unittest.TestCase):
+    def test_unsigned_packages_and_layout(self):
+        package = load("deb-package")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            binary = root / "paws"
+            binary.write_bytes(b"compiled fixture")
+            for arch in ("amd64", "arm64"):
+                destination = package.build_control_plane(SimpleNamespace(binary=binary, version="1.2.3", architecture=arch, output=root / arch))
+                subprocess.run(["sha256sum", "-c", destination.with_suffix(".deb.sha256").name], cwd=destination.parent, check=True)
+                extracted = root / ("extracted-" + arch)
+                subprocess.run(["dpkg-deb", "-R", str(destination), str(extracted)], check=True)
+                self.assertEqual((extracted / "usr/lib/paws/paws").read_bytes(), binary.read_bytes())
+                self.assertEqual(os.readlink(extracted / "usr/bin/paws"), "../lib/paws/paws")
+                self.assertEqual((extracted / "DEBIAN/conffiles").read_text(), "/etc/paws/control-plane.env\n")
+                self.assertEqual(stat.S_IMODE((extracted / "etc/paws/control-plane.env").stat().st_mode), 0o600)
+                self.assertIn('u paws - "Paws control plane"', (extracted / "usr/lib/sysusers.d/paws.conf").read_text())
+                self.assertEqual((extracted / "usr/lib/tmpfiles.d/paws.conf").read_text(), "d /var/lib/paws 0700 paws paws -\n")
+                self.assertIn("ExecStart=/usr/lib/paws/paws\n", (extracted / "usr/lib/systemd/system/paws.service").read_text())
+                self.assertFalse(list(extracted.rglob("manifest*")))
+
+    def test_upgrade_backup_pruning_and_postgres_skip(self):
+        control = load("deb-control")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            home = root / "var/lib/paws"
+            (home / "pglite").mkdir(parents=True)
+            (home / "pglite/data").write_text("database")
+            config = root / "etc/paws/control-plane.env"
+            config.parent.mkdir(parents=True)
+            config.write_text("PAWS_DATABASE_URL=\nCUSTOM=preserved\n")
+            commands = root / "commands"
+            commands.mkdir()
+            log = root / "log"
+            for name in ("systemctl", "systemd-sysusers", "systemd-tmpfiles", "chown"):
+                fake = commands / name
+                fake.write_text(f'#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "{log}"\n')
+                fake.chmod(0o755)
+            environment = {**os.environ, "PATH": str(commands) + ":" + os.environ["PATH"]}
+            scripts = control.control_plane_scripts(str(root))
+            def run(name, *args):
+                script = root / name
+                script.write_text(scripts[name])
+                subprocess.run(["sh", str(script), *args], env=environment, check=True)
+            run("preinst", "install")
+            self.assertFalse((home / "backups").exists())
+            for version in ("1.0.0", "1.0.1", "1.0.2", "1.0.3"):
+                run("preinst", "upgrade", version)
+            backups = sorted((home / "backups").iterdir())
+            self.assertEqual(len(backups), 3)
+            self.assertFalse(any("1.0.0" in path.name for path in backups))
+            self.assertTrue(all((path / "data").read_text() == "database" for path in backups))
+            config.write_text("PAWS_DATABASE_URL=postgres://localhost/paws\nCUSTOM=preserved\n")
+            saved = config.read_bytes()
+            run("preinst", "upgrade", "1.0.4")
+            self.assertEqual(sorted((home / "backups").iterdir()), backups)
+            run("postinst", "configure", "1.0.3")
+            self.assertEqual(config.read_bytes(), saved)
+            self.assertNotIn("systemctl enable", log.read_text())
+            run("postinst", "configure")
+            self.assertIn("systemctl enable paws.service", log.read_text())
+            self.assertIn("systemctl start paws.service", log.read_text())
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)
