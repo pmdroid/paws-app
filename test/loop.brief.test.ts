@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { worktreePath } from "../src/acp";
+import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
 import { JobLoop, OutboxDispatcher, getWorkItem, listWorkItems, openPawsStore } from "../src/db";
 import { systemClock, defaultBriefTemplate } from "../src/core";
 import { writeBriefTemplates } from "../src/config";
@@ -224,15 +225,21 @@ test.each([
         expect(prompt).toContain(snapshot.linearIssueId);
         expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
       }
-      // The review runs the agent's own review command: no brief, skill or finding format.
       for (const { prompt } of prompts.filter((entry) => entry.purpose === "review")) {
         expect(prompt).toMatch(
-          /^Review [a-f0-9]{40}\.\.[a-f0-9]{40} with the agent's review command\.$/,
+          /^Review [a-f0-9]{40}\.\.[a-f0-9]{40} with the agent's review command\.\n\n# Issue brief\n/,
         );
-        for (const absent of [
+        for (const required of [
+          expected,
           "Initial mention request",
           childDescription,
+          parentDescription,
           snapshot.linearIssueId,
+          snapshot.subIssues[0]!.linearIssueId,
+          REVIEW_COMMAND_RULE,
+        ])
+          expect(prompt).toContain(required);
+        for (const absent of [
           "Reply with a JSON array of findings",
           "Review the change against the supplied task brief.",
         ])
