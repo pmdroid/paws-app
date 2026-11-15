@@ -21,6 +21,7 @@ import {
   runnerAccountUnsupportedSteps,
   setAgentAccountConcurrencySteps,
   setAgentAccountEnabledSteps,
+  writeAgentAuthSteps,
   type Db,
   type Q,
 } from "../src/db";
@@ -385,6 +386,54 @@ describePglite((connect) => {
     expect(await db.run((q) => commandAccountSteps(q, "unknown"))).toBeNull();
     await report(undefined);
     expect(await unsupported()).toBe("The runner has not reported agent account support");
+  });
+
+  test("a control-plane account needs no reported binding on a runner that takes access credentials", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await workspace(db);
+    const account = (label: string) =>
+      db.transaction((q) =>
+        createAgentAccountSteps(q, {
+          ownerUserId: "owner",
+          workspaceId: "acme",
+          agent: "codex",
+          label,
+          now: NOW,
+        }),
+      );
+    const bind = (accountId: string) =>
+      db.transaction((q) =>
+        bindAgentAccountSteps(q, {
+          userId: "owner",
+          workspaceId: "acme",
+          accountId,
+          runnerId: "R1",
+          now: NOW,
+        }),
+      );
+    const central = await account("Central");
+    const local = await account("Local");
+    await db.transaction((q) =>
+      writeAgentAuthSteps(q, central.id, JSON.stringify({ state: "signed-in" })),
+    );
+    const centralBinding = await bind(central.id);
+    const localBinding = await bind(local.id);
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId: "R1", runnerVersion: "0.1.84", reportedAt: NOW }),
+    );
+    await db.run((q) =>
+      recordRunnerAccountCapabilitySteps(q, "R1", { protocol: 1, bindings: [] }, NOW),
+    );
+    const unsupported = (bindingId: string) =>
+      db.run((q) => runnerAccountUnsupportedSteps(q, "R1", bindingId, "codex"));
+    expect(await unsupported(centralBinding.id)).toBeNull();
+    expect(await unsupported(localBinding.id)).toBe(
+      "The runner has not reported this account binding",
+    );
   });
 
   test("an account's slots count open commands and unreleased retro dispatches", async () => {

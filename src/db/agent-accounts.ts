@@ -1,3 +1,4 @@
+import { readAgentAuthSteps } from "./agent-auth";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import {
   aliasedTable,
@@ -16,6 +17,7 @@ import {
   sql,
 } from "drizzle-orm";
 import {
+  ACCESS_CREDENTIAL_RUNNER_VERSION,
   AGENT_ACCOUNTS_RUNNER_VERSION,
   LEGACY_ACCOUNT_PREFIX,
   RUNNER_ACCOUNT_PROTOCOL,
@@ -663,6 +665,14 @@ export async function recordRunnerAccountCapability(
   await store.run((q) => recordRunnerAccountCapabilitySteps(q, runnerId, capability, at));
 }
 
+function* bindingHasControlPlaneAuthSteps(q: Q, bindingId: string) {
+  const { agentAccountBinding: b } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ accountId: b.accountId }).from(b).where(eq(b.id, bindingId)),
+  );
+  return row !== undefined && (yield* readAgentAuthSteps(q, row.accountId)) !== null;
+}
+
 export function* runnerAccountUnsupportedSteps(
   q: Q,
   runnerId: string,
@@ -687,6 +697,11 @@ export function* runnerAccountUnsupportedSteps(
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
   if (agentUnsupported) return agentUnsupported;
   if (options.signIn) return null;
+  if (
+    runnerReleaseAtLeast(status?.version, ACCESS_CREDENTIAL_RUNNER_VERSION) &&
+    (yield* bindingHasControlPlaneAuthSteps(q, bindingId))
+  )
+    return null;
   const capability = RunnerAccountCapabilitySchema.safeParse({
     protocol: row.protocol,
     bindings: JSON.parse(row.bindings),
