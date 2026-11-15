@@ -580,6 +580,14 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       });
       return true;
     }
+    if (step.type === "turn_error") {
+      send({
+        jsonrpc: "2.0",
+        id: prompt,
+        error: { code: -32603, message: step.message, data: step.data },
+      });
+      return true;
+    }
     if (step.type === "end") {
       send({ jsonrpc: "2.0", id: prompt, result: { stopReason: step.stopReason ?? "end_turn" } });
       for (const update of step.updatesAfterResponse ?? [])

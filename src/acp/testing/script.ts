@@ -53,6 +53,7 @@ export type FakeStep =
   | { type: "run_closeout"; id: string; model?: string }
   | { type: "hang" }
   | { type: "auth_error" }
+  | { type: "turn_error"; message: string; data: Record<string, unknown> }
   | {
       type: "end";
       updatesAfterResponse?: Record<string, unknown>[];

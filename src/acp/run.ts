@@ -840,7 +840,9 @@ async function runPrompt(options: {
       authRequired = true;
       errorMessage = AUTH_REQUIRED_MESSAGE;
     } else if (!state.cancelling) {
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = [error instanceof Error ? error.message : String(error), agentErrorData(error)]
+        .filter(Boolean)
+        .join(": ");
     }
     if (state.cancelling) {
       await waitForExit(child, options.graceMs);
@@ -1014,4 +1016,16 @@ function claudeSkillsMeta(
       options: { ...claudeCode.options, additionalDirectories: [directory] },
     },
   };
+}
+
+function agentErrorData(error: unknown): string {
+  const data = (error as { data?: unknown } | null)?.data;
+  if (typeof data !== "object" || data === null) return "";
+  const { message, codexErrorInfo } = data as { message?: unknown; codexErrorInfo?: unknown };
+  return [
+    typeof message === "string" ? message.trim().slice(0, 2000) : "",
+    codexErrorInfo === "usageLimitExceeded" ? "usage limit exceeded" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
