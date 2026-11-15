@@ -4933,20 +4933,6 @@ export class Orchestrator {
       again?: boolean;
     },
   ): Promise<void> {
-    const activity = { since: this.now(), commands: new Set<string>() };
-    this.checksActivity.set(item.id, activity);
-    try {
-      await this.runRunnerCloseoutTurn(item, deps, input);
-    } finally {
-      this.checksActivity.delete(item.id);
-    }
-  }
-
-  private async runRunnerCloseoutTurn(
-    item: WorkItemRecord,
-    deps: AcpAgentDeps,
-    input: Parameters<Orchestrator["runRunnerCloseout"]>[2],
-  ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
     const short = head.slice(0, 7);
     const { attempts, delayMs } = this.options.remoteCloseoutRetry ?? {
@@ -4990,10 +4976,14 @@ export class Orchestrator {
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
         };
-        const result = await runner!({
-          ...options,
-          ...(await this.trustedRunInputs(item, options)),
-        });
+        const trusted = await this.trustedRunInputs(item, options);
+        this.checksActivity.set(item.id, { since: this.now(), commands: new Set<string>() });
+        let result: RunAgentResult;
+        try {
+          result = await runner!({ ...options, ...trusted });
+        } finally {
+          this.checksActivity.delete(item.id);
+        }
         await assertCurrent();
         const { ref } = await this.itemHead(item);
         const stored = this.storedCandidates();

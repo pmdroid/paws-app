@@ -20,11 +20,29 @@ import { questionEffects } from "../../src/loop/question-effects";
 import type { Proof } from "./harness";
 
 export default {
-  covers: ["src/loop/closeout-stall.ts"],
+  covers: [
+    "src/loop/closeout-stall.ts",
+    "src/loop/orchestrator.ts",
+    "test/closeout-rules-first.test.ts",
+  ],
   summary:
     "Idle remote checks retry at fifteen minutes, then ask a person; a twenty-minute command continues.",
   agent: () => [],
   async run(proof) {
+    const child = Bun.spawn(
+      ["bun", "test", "test/closeout-rules-first.test.ts", "--test-name-pattern", "idle checks"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    proof.expect(
+      "runner waits consume no retry and unfinished commands do not protect later attempts",
+      status === 0,
+      { stdout, stderr },
+    );
     const { db, close } = await tempStore();
     try {
       const clock = new FakeClock(Date.now() + 1000);
