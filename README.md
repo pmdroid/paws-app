@@ -21,6 +21,21 @@ Open your configured HTTPS address. A Linear workspace administrator signs in an
 
 Run `bun run paws doctor` to check setup. Paws starts work after the Linear workspace is configured.
 
+## Install the control plane from the package
+
+Download the `paws-control-plane_<version>_amd64.deb` and matching `.deb.sha256` from the GitHub release. Use `arm64` on an ARM host. In the download directory, run:
+
+```sh
+sha256sum -c paws-control-plane_<version>_amd64.deb.sha256
+sudo apt install ./paws-control-plane_<version>_amd64.deb
+sudoedit /etc/paws/control-plane.env
+sudo systemctl restart paws.service
+```
+
+The package enables and starts the service. Configure the public URL and TLS paths in the environment file before using it, then complete workspace access and GitHub App setup above. The service runs as `paws` with `PAWS_HOME=/var/lib/paws`. Upgrades preserve the environment file and stop the service before backing up local PGlite data, retaining the newest three copies in `/var/lib/paws/backups`. A configured `PAWS_DATABASE_URL` skips that copy.
+
+The source installation above remains available.
+
 ## Delegate work
 
 Delegate an issue to the Paws app in Linear. Follow progress in the issue's agent session or the Paws dashboard. When Paws asks a question, reply in Linear or the dashboard. Delegate a parent issue to run its sub-issues in dependency order.

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import pathlib
 import shutil
+import sys
 import subprocess
 import tempfile
 
@@ -139,8 +140,55 @@ def build(arguments):
         return destination
 
 
+
+def build_control_plane(arguments):
+    if not release.SEMVER.fullmatch(arguments.version):
+        raise ValueError("Invalid release version")
+    if arguments.architecture not in ("amd64", "arm64"):
+        raise ValueError("Invalid Debian architecture")
+    control_spec = importlib.util.spec_from_file_location("deb_control", ROOT / "deb-control.py")
+    control = importlib.util.module_from_spec(control_spec)
+    control_spec.loader.exec_module(control)
+    output = pathlib.Path(arguments.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="paws-control-plane-") as temporary:
+        package = pathlib.Path(temporary)
+        binary = package / "usr/lib/paws/paws"
+        binary.parent.mkdir(parents=True)
+        shutil.copyfile(arguments.binary, binary)
+        binary.chmod(0o755)
+        link = package / "usr/bin/paws"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("../lib/paws/paws")
+        unit = (ROOT / "paws.service").read_text()
+        unit = unit.replace("/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts", "/usr/lib/paws/paws")
+        write(package / "usr/lib/systemd/system/paws.service", unit)
+        write(package / "usr/lib/sysusers.d/paws.conf", (ROOT / "paws.sysusers").read_text())
+        write(package / "usr/lib/tmpfiles.d/paws.conf", "d /var/lib/paws 0700 paws paws -\n")
+        write(package / "etc/paws/control-plane.env", (ROOT / "control-plane.env.example").read_text(), 0o600)
+        write(package / "DEBIAN/conffiles", "/etc/paws/control-plane.env\n")
+        size = sum(path.stat().st_size for path in package.rglob("*") if path.is_file())
+        write(package / "DEBIAN/control", f"Package: paws-control-plane\nVersion: {arguments.version}\nArchitecture: {arguments.architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: systemd, coreutils, findutils, libc6, libstdc++6, libgcc-s1\nInstalled-Size: {(size + 1023) // 1024}\nDescription: Paws control plane\n Delegates Linear issues to paired Linux runners.\n")
+        for name, script in control.control_plane_scripts().items():
+            write(package / "DEBIAN" / name, script, 0o755)
+        for directory in [package, *[path for path in package.rglob("*") if path.is_dir()]]:
+            directory.chmod(0o755)
+        destination = output / f"paws-control-plane_{arguments.version}_{arguments.architecture}.deb"
+        subprocess.run(["dpkg-deb", "--root-owner-group", "--threads-max=2", "-Zgzip", "-z6", "--build", str(package), str(destination)], check=True)
+        with destination.open("rb") as completed:
+            digest = hashlib.file_digest(completed, "sha256").hexdigest()
+        write(destination.with_suffix(".deb.sha256"), f"{digest}  {destination.name}\n")
+        return destination
+
+
 def main():
     parser = argparse.ArgumentParser()
+    if "--control-plane" in sys.argv:
+        parser.add_argument("--control-plane", action="store_true")
+        for name in ("binary", "version", "architecture", "output"):
+            parser.add_argument("--" + name, required=True)
+        print(build_control_plane(parser.parse_args()))
+        return
     for name in ("manifest", "signature", "artifact", "release-key", "output"):
         parser.add_argument("--" + name, required=True)
     print(build(parser.parse_args()))
