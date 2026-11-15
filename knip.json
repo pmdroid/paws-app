@@ -4,14 +4,13 @@
     "src/runner-cli/main.ts",
     "src/dashboard/src/client/main.ts",
     "scripts/*.ts",
-    "scripts/codemods/*.ts",
     "test/**/*.test.ts",
     "test/local/*.ts",
     "test/proofs/*.ts",
     ".agents/probes/*.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "test/**/*.ts"],
-  "ignore": ["test/fixtures/**", "scripts/codemods/fixtures/**"],
+  "ignore": ["test/fixtures/**"],
   "ignoreDependencies": [
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
