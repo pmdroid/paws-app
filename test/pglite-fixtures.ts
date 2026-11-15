@@ -148,6 +148,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       q.orm
         .select({
           workspaceId: q.t.runner.workspaceId,
+          ownerUserId: q.t.runner.ownerUserId,
           runnerId: q.t.runner.id,
           agent: q.t.runnerAgentPolicy.agent,
           now: q.t.runner.createdAt,
@@ -172,14 +173,14 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       )
     ) {
       const account = await createAgentAccount(db, {
-        ownerUserId: "owner",
+        ownerUserId: row.ownerUserId,
         workspaceId: row.workspaceId,
         agent: row.agent as RunnerCodingAgent,
         label: row.runnerId + "-" + row.agent,
         now: row.now,
       });
       await bindAgentAccount(db, {
-        userId: "owner",
+        userId: row.ownerUserId,
         workspaceId: row.workspaceId,
         accountId: account.id,
         runnerId: row.runnerId,

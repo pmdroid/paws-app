@@ -189,9 +189,9 @@ describePglite((connect) => {
       expect((await send("GET", "", undefined, member)).body.accounts).toEqual([]);
       const mine = await send("POST", "", { agent: "codex", label: "Mine" }, member);
       expect(mine.status).toBe(201);
-      expect(
-        (await send("GET", "", undefined, member)).body.accounts.map((a) => a.id),
-      ).toEqual([mine.body.id]);
+      expect((await send("GET", "", undefined, member)).body.accounts.map((a) => a.id)).toEqual([
+        mine.body.id,
+      ]);
       for (const [method, path, body] of [
         ["PUT", "/order", { agent: "claude", ids: [work.id, home.id] }],
         ["PUT", `/${work.id}/extra-usage`, { extraUsage: false }],
