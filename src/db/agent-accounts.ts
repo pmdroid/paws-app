@@ -670,7 +670,13 @@ function* bindingHasControlPlaneAuthSteps(q: Q, bindingId: string) {
   const row = yield* q.one(
     q.orm.select({ accountId: b.accountId }).from(b).where(eq(b.id, bindingId)),
   );
-  return row !== undefined && (yield* readAgentAuthSteps(q, row.accountId)) !== null;
+  if (!row) return false;
+  if ((yield* readAgentAuthSteps(q, row.accountId)) !== null) return true;
+  const { agentAccountCredential: c } = q.t;
+  const stored = yield* q.one(
+    q.orm.select({ runnerId: c.runnerId }).from(c).where(eq(c.accountId, row.accountId)),
+  );
+  return stored !== undefined && stored.runnerId === null;
 }
 
 export function* runnerAccountUnsupportedSteps(

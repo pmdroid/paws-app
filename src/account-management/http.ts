@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   AgentAccountError,
+  agentCredentialCiphertextSteps,
+  bindToOwnerRunnersSteps,
   getAgentAccountSteps,
   agentAccountOverviewSteps,
   centralSignInTargetSteps,
@@ -11,7 +13,7 @@ import {
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import { readAgentCredentialSteps } from "../credentials";
+import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import {
   ClaudeOAuthTokenSchema,
   claudeTokenHealth,
@@ -21,7 +23,7 @@ import { type WorkspacePrincipal } from "../workspace";
 
 const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
-  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential|device))?$/;
+  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential|device|token))?$/;
 
 export const AGENT_ACCOUNTS_RETIRED = "This route was replaced by /api/runners/agent-accounts.";
 
@@ -29,6 +31,8 @@ const agent = z.enum(RUNNER_CODING_AGENTS);
 const Create = z.strictObject({ agent, label: z.string().trim().min(1).max(80) });
 const Order = z.strictObject({ agent, ids: z.array(z.string().min(1).max(128)).max(64) });
 const ExtraUsage = z.strictObject({ extraUsage: z.boolean() });
+const PastedToken = z.strictObject({ token: z.string().trim().min(1).max(512) });
+const TOKEN_DAYS = 365;
 
 const STATUS: Record<string, number> = {
   "not-your-account": 403,
@@ -50,6 +54,7 @@ export function createAccountManagement(
     secretsDir?: string;
     now?: () => number;
     agentAuth?: { device(workspaceId: string, id: string, start: boolean): Promise<unknown> };
+    checkClaudeToken?: (token: string) => Promise<boolean>;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -153,6 +158,42 @@ export function createAccountManagement(
             }),
           ),
         );
+      if (action === "token" && method === "PUT") {
+        const { secretsDir } = options;
+        if (!secretsDir || !options.checkClaudeToken)
+          return json({ error: "Token sign-in is unavailable." }, 503);
+        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
+        if (account.agent !== "claude")
+          return json({ error: "Only Claude accounts take a setup token." }, 400);
+        const createdAt = now();
+        const value = ClaudeOAuthTokenSchema.parse({
+          kind: "oauth_token",
+          token: PastedToken.parse(await request.json()).token,
+          createdAt,
+          expiresAt: createdAt + TOKEN_DAYS * 86_400_000,
+        });
+        if (!(await options.checkClaudeToken(value.token)))
+          return json({ error: "This token was not accepted by Claude." }, 400);
+        const blob = JSON.stringify([
+          {
+            path: ".claude/paws-oauth.json",
+            data: Buffer.from(JSON.stringify(value)).toString("base64"),
+          },
+        ]);
+        await store.transaction(function* (q) {
+          const previous = yield* agentCredentialCiphertextSteps(q, accountId!);
+          const written = yield* writeAgentCredentialSteps(q, secretsDir, {
+            accountId: accountId!,
+            runnerId: null,
+            version: (previous?.version ?? 0) + 1,
+            blob,
+            now: createdAt,
+          });
+          if (written !== "written") throw new Error("Agent credential write conflicted");
+          yield* bindToOwnerRunnersSteps(q, accountId!, createdAt);
+        });
+        return json({ ok: true });
+      }
       if (action === "credential" && method === "DELETE") {
         await store.transaction((q) =>
           signOutAgentAccountSteps(q, { workspaceId, accountId: accountId!, now: now() }),
