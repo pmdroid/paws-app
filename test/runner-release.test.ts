@@ -9,7 +9,15 @@ const workflow = parse(
 );
 
 test("runner package builds run only for published releases, and publication waits for both architectures", () => {
-  expect(workflow.on).toEqual({ release: { types: ["published"] } });
+  expect(workflow.on.release).toEqual({ types: ["published"] });
+  expect(workflow.on.schedule).toBeUndefined();
+  expect(workflow.on.workflow_dispatch.inputs.resign_only.default).toBe(false);
+  expect(workflow.jobs.build.if).toBe("github.event_name == 'release'");
+  expect(workflow.jobs["publish-apt"].if).toContain(
+    "inputs.resign_only && startsWith(github.ref, 'refs/tags/v')",
+  );
+  expect(workflow.jobs["publish-apt"].environment).toBe("release");
+  expect(workflow.jobs["publish-apt"].permissions).toEqual({ contents: "read" });
   expect(workflow.jobs.build.strategy.matrix.include).toEqual([
     { architecture: "amd64", platform: "linux-x64", runner: "ubuntu-24.04" },
     { architecture: "arm64", platform: "linux-arm64", runner: "ubuntu-24.04-arm" },

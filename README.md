@@ -52,3 +52,21 @@ systemctl --user restart paws.service
 ```
 
 The dashboard shows issues, runs, questions, evidence, runners and settings. Use it to answer questions, manage access and follow pull requests through verification and merging.
+
+## Install from the Paws apt repository
+
+Once the repository's first release is published:
+
+```sh
+curl -fsSL https://get.paws.boo/apt/paws.gpg | sudo tee /usr/share/keyrings/paws.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/paws.gpg] https://get.paws.boo/apt stable main" | sudo tee /etc/apt/sources.list.d/paws.list
+sudo apt-get update && sudo apt-get install paws-runner
+```
+
+The repository serves `amd64` and `arm64` packages in `stable main`, retaining the newest 10 versions per package. Pin an available version with `apt-get install paws-runner=0.1.83`. Runner installation procedures are unchanged.
+
+For publishing, Pascal creates the GitHub `release` environment with required reviewer Pascal and deployment tags `v*`. Store these only as environment secrets: `PAWS_APT_R2_ACCOUNT_ID`, `PAWS_APT_R2_ACCESS_KEY_ID`, `PAWS_APT_R2_SECRET_ACCESS_KEY`, `PAWS_APT_R2_BUCKET`, `PAWS_APT_SIGNING_KEY`, and `PAWS_APT_SIGNING_PASSPHRASE`. Scope the R2 token to the apt bucket. Without all six secrets, publication prints a skip message and succeeds. With secrets configured, publication requires runner packages for both architectures and fails before writing R2 if either is missing.
+
+Keep the OpenPGP primary key offline. Create a signing subkey with a one-year expiry using `gpg --edit-key <primary-fingerprint>`, then `addkey` and the signing-only option. Export only the secret subkey with `gpg --armor --export-secret-subkeys <signing-subkey-fingerprint>!` for `PAWS_APT_SIGNING_KEY`. Upload the public key exports once as `paws.gpg` from `gpg --export <primary-fingerprint>` and `paws.asc` from `gpg --armor --export <primary-fingerprint>` at the bucket root. Serve the bucket read-only at `https://get.paws.boo/apt`, with the requested object versioning configured before publishing.
+
+Publication uploads packages, immutable by-hash indexes, canonical indexes, then the signed `InRelease` object in separate phases. Only `InRelease` is published; there is no `Release` or `Release.gpg` fallback. After success, cleanup keeps three by-hash copies per index. Indexes list the newest ten versions in Debian version order; older package objects remain available for clients with cached indexes. Metadata expires after 90 days; every release renews its validity and signatures. For longer gaps between releases, manually run the `runner release` workflow, select the latest `v*` tag as the run ref, and set `resign_only=true`. After Pascal approves the `release` environment deployment, this verifies the existing `InRelease` and replaces only that signed object, leaving packages and package indexes unchanged. Dispatches on branches or with `resign_only=false` do not publish. There is no scheduled renewal.
