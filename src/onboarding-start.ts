@@ -1,24 +1,27 @@
-import { journalCaught } from "./journal";
+import { journal, journalCaught } from "./journal";
 import { ensureRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
+import { useDatabaseSecrets } from "./credentials";
 import type { PawsStore } from "./db";
 import { publicTlsProxy, type PublicTls } from "./deployment";
 import { createBrowserOnboarding } from "./onboarding";
 import { startServer } from "./server";
 import { isDashboardPage } from "./dashboard-links";
 
-export function startBrowserOnboarding(
+export async function startBrowserOnboarding(
   runtime: RuntimeConfig,
   tls: PublicTls | undefined,
   start: (server: Bun.Server<undefined>) => Promise<PawsProcess>,
   source: Record<string, string | undefined>,
   database: PawsStore,
   reconnect = false,
-): PawsProcess {
+  setupPending = false,
+): Promise<PawsProcess> {
   const paths = pawsPaths(runtime.env.home);
   ensureLayout(paths);
   const db = database.store;
+  let setupSecrets: Awaited<ReturnType<typeof useDatabaseSecrets>> | undefined;
   let active: PawsProcess | undefined;
   let stopping = false;
   let switching: Promise<void> | undefined;
@@ -28,14 +31,28 @@ export function startBrowserOnboarding(
   async function closeDatabase() {
     if (closed) return;
     closed = true;
+    await setupSecrets?.close();
     await database.close();
   }
+  const setupToken =
+    runtime.linearClientId === null || setupPending
+      ? crypto.randomUUID() + crypto.randomUUID()
+      : undefined;
+  if (setupToken) {
+    if (runtime.databaseUrl === null)
+      setupSecrets = await useDatabaseSecrets(db, paths.secretsDir, { copy: false });
+    const setupUrl = runtime.publicUrl + "/setup?token=" + setupToken;
+    journal(setupUrl);
+    console.log(setupUrl);
+  }
   const handle = createBrowserOnboarding({
+    setupToken,
     db,
     home: paths.home,
     origin: runtime.publicUrl!,
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
+    clientSecretOverride: source.LINEAR_CLIENT_SECRET?.trim() || undefined,
     expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,
     async prepare() {

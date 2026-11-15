@@ -1,4 +1,5 @@
 import { createAgentAuth } from "./agent-auth";
+import { browserSetupRuntime } from "./onboarding";
 import {
   createFindingGrouping,
   registerFindingGrouping,
@@ -523,6 +524,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       throw error;
     },
   );
+  const browserSetup = await browserSetupRuntime(database.store, runtime, envSource);
+  runtime = browserSetup.runtime;
   if (runnerConfig !== null) {
     const ensured = await ensureRunnerCoordinator(runnerConfig.root).catch(
       async (error: unknown) => {
@@ -556,7 +559,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     );
   if (
     publicDashboard &&
-    ((await linearRevoked()) ||
+    (browserSetup.pending ||
+      runtime.linearClientId === null ||
+      (await linearRevoked()) ||
       (runtime.linearAccessToken === null &&
         (await readStoredToken(store, paths.secretsDir)) === null))
   ) {
@@ -568,6 +573,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       envSource,
       database,
       reconnect,
+      browserSetup.pending,
     );
   }
   if (publicDashboard && runtime.linearClientId === null) {
@@ -589,7 +595,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     update: (change) =>
       store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
   });
-  runtime = loadRuntime(envSource);
+  runtime = (await browserSetupRuntime(store, loadRuntime(envSource), envSource)).runtime;
   const settingsTimer = setInterval(() => {
     void savedSettings
       .refresh()

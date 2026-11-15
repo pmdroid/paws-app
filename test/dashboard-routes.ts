@@ -373,6 +373,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       ...(typeof anonymous === "number" ? { anonymous } : {}),
     }),
   ),
+  api("GET POST", "/setup", "delegated", "src/onboarding"),
   api("GET", "/auth/linear", "delegated", "src/workspace"),
   api("GET", "/auth/linear/callback", "delegated", "src/workspace"),
   api("GET", "/auth/linear/install/callback", "delegated", "src/onboarding"),
@@ -390,7 +391,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/webhooks/slack", "preserved", "src/slack"),
 ];
 
-const ROUTE_ROOTS = "api|webhooks|auth|onboard|oauth|health|dashboard|status|evidence";
+const ROUTE_ROOTS = "api|webhooks|auth|onboard|setup|oauth|health|dashboard|status|evidence";
 const QUOTED = new RegExp(`(["'\`])\\^?(/(?:${ROUTE_ROOTS})(?:[/?#<$][^"'\`\\n]*?)?)\\1`, "g");
 const REGEX = new RegExp(`/\\^(\\\\/(?:${ROUTE_ROOTS})(?:[^/\\n\\\\]|\\\\.)*)/[gimsuy]*`, "g");
 

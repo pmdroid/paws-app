@@ -1,7 +1,9 @@
+import { webhookFileDigest } from "./setup-runtime";
+import { readWebhookBody } from "../webhook-body";
 import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
 import { join } from "node:path";
-import { saveSecret } from "../credentials";
+import { saveSecret, removeSecret } from "../credentials";
 import {
   consumeBrowserInstallation,
   consumeWorkspaceBootstrap,
@@ -35,10 +37,11 @@ import {
   type LinearBrowserIdentity,
   type WorkspaceClient,
 } from "../workspace";
-import { handleStatusRequest } from "../dashboard";
+import { linearSetupPage, handleStatusRequest } from "../dashboard";
 import { createLinearReconnect, type LinearReconnectSnapshot } from "./reconnect";
 import { dashboardPath, isDashboardPage } from "../dashboard-links";
 
+const SETUP_COOKIE = "__Host-paws-setup";
 const INSTALL_COOKIE = "__Host-paws-install";
 const CALLBACK = "/auth/linear/install/callback";
 
@@ -46,8 +49,10 @@ export function createBrowserOnboarding(options: {
   db: Db;
   home: string;
   origin: string;
+  setupToken?: string;
   clientId: string | null;
   clientSecret: string | null;
+  clientSecretOverride?: string;
   expectedOrganizationId?: string | null;
   installed: () => void;
   reconnect?: boolean;
@@ -60,6 +65,10 @@ export function createBrowserOnboarding(options: {
   const startsPerIp = createRateLimiter(ONBOARDING_RATE_LIMITS.startsPerIp, now);
   const fetchImpl = options.fetch ?? fetch;
   const secretsDir = join(home, "secrets");
+  const clientFile = join(
+    secretsDir,
+    options.setupToken ? "linear-browser-client.json" : "linear-client.json",
+  );
   const configuredOrganization = options.expectedOrganizationId?.trim() || null;
   function organizationFor(workspaces: string[]): string | null {
     if (workspaces.length === 0) return configuredOrganization;
@@ -73,7 +82,18 @@ export function createBrowserOnboarding(options: {
   async function installationOrganization(): Promise<string | null> {
     return organizationFor(await workspaceOrganizationIds(db, 2));
   }
+  async function organizationMatches(id: string): Promise<boolean> {
+    const workspaces = await workspaceOrganizationIds(db, 2);
+    return (
+      organizationFor(workspaces) === id ||
+      (!!options.setupToken && workspaces.length === 0 && configuredOrganization === null)
+    );
+  }
   let installing = false;
+  let setupConnected = false;
+  let saving = false;
+  const initialClientSecret = options.clientSecretOverride;
+  const setupBrowser = workspaceSecret();
   return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
     const url = new URL(request.url);
     if (
@@ -81,6 +101,69 @@ export function createBrowserOnboarding(options: {
       (request.headers.has("host") && request.headers.get("host") !== url.host)
     )
       return Response.json({ error: "Use the configured Paws origin." }, { status: 403 });
+    if (options.setupToken && !setupConnected) {
+      const authorized = url.searchParams.get("token") === options.setupToken;
+      if (url.pathname === "/setup") {
+        if (!authorized) return new Response("Forbidden", { status: 403 });
+        if (request.method === "GET") {
+          const response = linearSetupPage(origin, options.setupToken);
+          response.headers.append(
+            "set-cookie",
+            `${SETUP_COOKIE}=${setupBrowser}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+          );
+          return response;
+        }
+        if (request.method !== "POST") return new Response(null, { status: 405 });
+        if (request.headers.get("origin") !== origin)
+          return new Response("Forbidden", { status: 403 });
+        if (saving) return new Response("Setup is being saved.", { status: 409 });
+        saving = true;
+        try {
+          const body = await readWebhookBody(request, 16384);
+          if (body instanceof Response) return body;
+          const form = new URLSearchParams(body.toString("utf8"));
+          const values = ["clientId", "clientSecret", "webhookSecret"].map((key) =>
+            form.get(key)?.trim(),
+          );
+          if (values.some((value) => !value || value.length > 4096))
+            return new Response("Enter all three values.", { status: 400 });
+          await saveSecret(join(secretsDir, "linear-setup-pending"), "pending");
+          await saveSecret(
+            clientFile,
+            JSON.stringify({
+              clientId: values[0],
+              clientSecret: values[1],
+              webhookFileDigest: webhookFileDigest(secretsDir),
+            }),
+          );
+          await saveSecret(join(secretsDir, "linear-webhook"), values[2]!);
+          options.clientId = values[0]!;
+          options.clientSecret = initialClientSecret ?? values[1]!;
+          const response = await beginWorkspaceOAuth(db, {
+            clientId: options.clientId!,
+            origin,
+            now: now(),
+            bootstrap: null,
+          });
+          response.headers.append(
+            "set-cookie",
+            `${SETUP_COOKIE}=${setupBrowser}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+          );
+          return response;
+        } finally {
+          saving = false;
+        }
+      }
+      const oauth = ["/auth/linear", "/auth/linear/callback", CALLBACK].includes(url.pathname);
+      if (oauth && cookieValue(request, SETUP_COOKIE) !== setupBrowser)
+        return new Response("Forbidden", { status: 403 });
+      if (!oauth || !options.clientId || !options.clientSecret)
+        return new Response('Paws needs setup. <a href="/setup">Open setup</a>.', {
+          status: 503,
+          headers: { "content-type": "text/html", "cache-control": "no-store" },
+        });
+    }
+    if (url.pathname === "/setup") return new Response("Forbidden", { status: 403 });
     if (request.method !== "GET" && !(request.method === "HEAD" && isDashboardPage(url.pathname)))
       return Response.json({ error: "Method not allowed." }, { status: 405 });
     if (url.pathname === "/health") return Response.json({ ok: true, service: "paws" });
@@ -110,7 +193,10 @@ export function createBrowserOnboarding(options: {
             },
           },
         );
-      if ((await installationOrganization()) === null)
+      if (
+        (await installationOrganization()) === null &&
+        (!options.setupToken || (await workspaceOrganizationIds(db, 2)).length > 0)
+      )
         return Response.json(
           { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
           { status: 503, headers: { "cache-control": "no-store" } },
@@ -131,7 +217,7 @@ export function createBrowserOnboarding(options: {
           fetch: fetchImpl,
         });
         if (!identity.admin || !identity.active || identity.guest) return retry("admin-required");
-        if ((await installationOrganization()) !== identity.organizationId)
+        if (!(await organizationMatches(identity.organizationId)))
           return retry("workspace-mismatch");
         const state = workspaceSecret();
         const browser = workspaceSecret();
@@ -170,7 +256,8 @@ export function createBrowserOnboarding(options: {
     if (url.pathname !== CALLBACK)
       return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
     const stored = await readStoredToken(db, secretsDir);
-    if (installing || (stored !== null && !options.reconnect)) return retry("already-connected");
+    if (installing || (stored !== null && !options.reconnect && !options.setupToken))
+      return retry("already-connected");
     installing = true;
     try {
       const state = url.searchParams.get("state") ?? "";
@@ -191,8 +278,7 @@ export function createBrowserOnboarding(options: {
         reconnect: LinearReconnectSnapshot | null;
       };
       if (!!reconnect !== !!options.reconnect) return retry("failed");
-      if ((await installationOrganization()) !== identity.organizationId)
-        return retry("workspace-mismatch");
+      if (!(await organizationMatches(identity.organizationId))) return retry("workspace-mismatch");
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]);
       const token = await exchangeLinearCode({
         clientId: options.clientId!,
@@ -215,7 +301,7 @@ export function createBrowserOnboarding(options: {
       const organization = await memberships.installation(signal);
       if (
         organization.id !== identity.organizationId ||
-        (await installationOrganization()) !== organization.id
+        !(await organizationMatches(organization.id))
       )
         return retry("workspace-mismatch");
       const member = await memberships.member(organization.id, identity.userId, signal);
@@ -229,19 +315,20 @@ export function createBrowserOnboarding(options: {
         return retry("admin-required");
       await options.prepare?.();
       signal.throwIfAborted();
-      const bound = await installationOrganization();
+      const bound = await organizationMatches(organization.id);
       signal.throwIfAborted();
-      if (bound !== organization.id) return retry("workspace-mismatch");
-      await saveSecret(
-        join(home, "secrets", "linear-client.json"),
-        JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
-      );
+      if (!bound) return retry("workspace-mismatch");
+      if (!options.setupToken)
+        await saveSecret(
+          clientFile,
+          JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
+        );
       if (reconnect) {
         const restored = await (
           await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(db, home)
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
-      } else if (!(await writeStoredToken(db, secretsDir, token, true)))
+      } else if (!(await writeStoredToken(db, secretsDir, token, !options.setupToken)))
         return retry("already-connected");
       const timestamp = now();
       const userId = await putWorkspaceUser(db, {
@@ -285,6 +372,8 @@ export function createBrowserOnboarding(options: {
         "set-cookie",
         `${INSTALL_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
       );
+      if (options.setupToken) await removeSecret(join(secretsDir, "linear-setup-pending"));
+      setupConnected = true;
       options.installed();
       return new Response(null, { status: 303, headers });
     } catch (caughtError2) {
