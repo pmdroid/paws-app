@@ -1064,9 +1064,9 @@ function selectRules(rules: readonly ResolvedRule[], paths: readonly string[]): 
     }));
 }
 
-function matches(item: { paths?: string[] }, paths: readonly string[]): boolean {
+function matches(item: { paths?: string[]; except?: string[] }, paths: readonly string[]): boolean {
   if (item.paths === undefined || item.paths.length === 0) return true;
-  return anyPathMatches(item.paths, paths);
+  return anyPathMatches(item.paths, paths, item.except);
 }
 
 function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly string[]): Listed {
@@ -1124,13 +1124,18 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
   };
 }
 
-function matchedPaths(item: Pick<ResolvedItem, "paths">, paths: readonly string[]): string[] {
+function matchedPaths(
+  item: Pick<ResolvedItem, "paths" | "except">,
+  paths: readonly string[],
+): string[] {
   const patterns = item.paths;
   const matched =
     patterns === undefined || patterns.length === 0
       ? paths
       : paths.filter((path) => patterns.some((pattern) => pathsMatch(pattern, path)));
-  return [...matched].sort();
+  return [...matched]
+    .filter((path) => !item.except?.some((pattern) => pathsMatch(pattern, path)))
+    .sort();
 }
 
 async function changedPaths(

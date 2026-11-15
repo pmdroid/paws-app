@@ -6,13 +6,16 @@
  * across segments.
  */
 
-export function anyPathMatches(patterns: readonly string[], paths: readonly string[]): boolean {
-  for (const pattern of patterns) {
-    for (const path of paths) {
-      if (pathMatches(pattern, path)) return true;
-    }
-  }
-  return false;
+export function anyPathMatches(
+  patterns: readonly string[],
+  paths: readonly string[],
+  except: readonly string[] = [],
+): boolean {
+  return paths.some(
+    (path) =>
+      patterns.some((pattern) => pathMatches(pattern, path)) &&
+      !except.some((pattern) => pathMatches(pattern, path)),
+  );
 }
 
 export function pathMatches(pattern: string, path: string): boolean {

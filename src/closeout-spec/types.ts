@@ -86,6 +86,7 @@ export type PolicyCommand = {
   /** Integer from 1 to 86400. */
   timeoutSeconds: number;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
   /**
    * The GitHub check names that run the same command in CI, as one pattern where `*` matches
    * any text, such as `test (*)`. A merge-queue re-check takes the result from those checks.
@@ -114,6 +115,7 @@ export type PolicyReview = {
   parallel?: boolean;
   minChangedLines?: number;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
 };
@@ -145,6 +147,7 @@ export type PolicyEvidence = {
   /** Omitted means publishing is enough. */
   approval?: EvidenceApprovalMode;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
 };
@@ -156,6 +159,7 @@ export type PolicyPreview = {
   approval: EvidenceApprovalMode;
   hint?: string;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
   recheck?: boolean;
 };
 
@@ -176,6 +180,7 @@ export type PolicyRule = {
   /** One line shown to the agent by `get_closeout`. 1 to 200 characters. */
   summary: string;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
   failOn: Severity;
   /** Defaults to `fix`. */
   onFail?: RuleOnFail;
@@ -195,6 +200,7 @@ export type PolicySetupStep = {
   exec: string[];
   timeoutSeconds: number;
   paths?: PolicyPaths;
+  except?: PolicyPaths;
 };
 
 /**
@@ -259,6 +265,7 @@ export type ResolvedCommand = {
   exec: string[];
   timeoutSeconds: number;
   paths?: string[];
+  except?: string[];
   /** See {@link PolicyCommand.ci}. */
   ci?: string;
   /** See {@link PolicyCommand.recheck}. */
@@ -277,6 +284,7 @@ export type ResolvedReview = {
   parallel?: boolean;
   minChangedLines?: number;
   paths?: string[];
+  except?: string[];
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
 };
@@ -291,6 +299,7 @@ export type ResolvedEvidence = {
   hint?: string;
   approval?: EvidenceApprovalMode;
   paths?: string[];
+  except?: string[];
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
 };
@@ -302,6 +311,7 @@ export type ResolvedPreview = {
   approval: EvidenceApprovalMode;
   hint?: string;
   paths?: string[];
+  except?: string[];
   recheck?: boolean;
 };
 
@@ -342,6 +352,7 @@ export type ResolvedSetup = {
   exec: string[];
   timeoutSeconds: number;
   paths?: string[];
+  except?: string[];
 };
 
 /** A rule with its defaults applied and the SHA-256 of its probe's bytes. */
@@ -353,6 +364,7 @@ export type ResolvedRule = {
   exec: string[];
   summary: string;
   paths?: string[];
+  except?: string[];
   failOn: Severity;
   onFail: RuleOnFail;
   /** See {@link PolicyCommand.recheck}. */
@@ -378,6 +390,7 @@ export type ResolvedUnsupported = {
   gate: Gate;
   supported: false;
   paths?: string[];
+  except?: string[];
 };
 
 /** Every resolved requirement, including setup steps. */
