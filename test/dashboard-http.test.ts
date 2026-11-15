@@ -118,24 +118,10 @@ test("mutations need the session's CSRF token and the workspace origin", async (
   }
 });
 
-test("old links redirect to the same dashboard page and the page loads on a direct refresh", async () => {
+test("root and evidence links redirect to the dashboard and the page loads on a direct refresh", async () => {
   const links: Array<[string, string]> = [
     ["/", "/dashboard/"],
     ["/?engine=live", "/dashboard/?engine=live"],
-    ["/status", "/dashboard/"],
-    ["/status/", "/dashboard/"],
-    ["/status/issues/PAS-1?from=linear", "/dashboard/issues/PAS-1?from=linear"],
-    ["/status/questions/q-PAS-1", "/dashboard/questions/q-PAS-1"],
-    ["/status/runs/{run}", "/dashboard/runs/{run}"],
-    ["/status/sessions/session-mine", "/dashboard/sessions/session-mine"],
-    ["/status/verdicts/PAS-1", "/dashboard/verdicts/PAS-1"],
-    ["/status/runs/{run}/transcript", "/dashboard/runs/{run}/transcript"],
-    ["/status/merge-queue", "/dashboard/merge-queue"],
-    ["/status/queue", "/dashboard/queue"],
-    ["/status/epics", "/dashboard/epics"],
-    ["/status/evidence/{evidence}", "/dashboard/evidence/{evidence}"],
-    ["/status/settings/integrations", "/dashboard/settings/integrations"],
-    ["/status//evil.example/x", "/dashboard/evil.example/x"],
     ["/evidence/{evidence}?t=3", "/dashboard/evidence/{evidence}?t=3"],
   ];
   for (const [from, to] of links) {
@@ -156,8 +142,14 @@ test("old links redirect to the same dashboard page and the page loads on a dire
     expect([to, page.status]).toEqual([to, 200]);
     expect(await page.text()).toContain('<base href="/dashboard/" />');
   }
-  for (const path of ["/status/issues/PAS-1", "/evidence/{evidence}"])
+  for (const path of ["/evidence/{evidence}"])
     expect((await fetch(`${f.origin}${f.fill(path)}`, { method: "POST" })).status).toBe(405);
-  for (const path of ["/api/status", "/api/status?slices=items", "/api/status/items/PAS-1"])
+  for (const path of [
+    "/status",
+    "/status/issues/PAS-1",
+    "/api/status",
+    "/api/status?slices=items",
+    "/api/status/items/PAS-1",
+  ])
     expect([path, (await get(path)).status]).toEqual([path, 404]);
 });

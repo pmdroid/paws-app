@@ -115,9 +115,11 @@ describe("server", () => {
       expect(page.status).toBe(200);
       expect(await page.text()).toContain('<base href="/dashboard/"');
       const old = await get("/status/issues/PAS-1?x=1");
-      expect(old.status).toBe(307);
-      expect(old.headers.get("location")).toBe("/dashboard/issues/PAS-1?x=1");
-      expect((await get("/status/issues/PAS-1", "POST")).status).toBe(405);
+      expect(old.status).toBe((await get("/unknown")).status);
+      expect(old.headers.get("location")).toBeNull();
+      expect((await get("/status/issues/PAS-1", "POST")).status).toBe(
+        (await get("/unknown", "POST")).status,
+      );
       expect((await get("/api/issues")).status).toBe(503);
       expect((await get("/statuses")).status).toBe(503);
     } finally {

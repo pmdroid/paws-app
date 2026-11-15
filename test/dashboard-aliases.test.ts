@@ -122,18 +122,10 @@ test("run, session and verdict links resolve through stored records the signed-i
       body: JSON.stringify({ issueId: "PAS-2" }),
     });
 
-    for (const prefix of ["/status", "/dashboard"])
-      for (const path of [`/runs/${runs[0]}`, "/sessions/session-mine", "/verdicts/PAS-1"]) {
-        const page = await fetch(`${base}${prefix}${path}?tab=closeout`, { redirect: "manual" });
-        if (prefix === "/status") {
-          expect(page.status).toBe(307);
-          expect(page.headers.get("location")).toBe(`/dashboard${path}?tab=closeout`);
-        } else expect(page.status).toBe(200);
-      }
-    const transcript = await fetch(`${base}/status/runs/${runs[0]}/transcript`, {
-      redirect: "manual",
-    });
-    expect(transcript.headers.get("location")).toBe(`/dashboard/runs/${runs[0]}/transcript`);
+    for (const path of [`/runs/${runs[0]}`, "/sessions/session-mine", "/verdicts/PAS-1"]) {
+      const page = await fetch(`${base}/dashboard${path}?tab=closeout`, { redirect: "manual" });
+      expect(page.status).toBe(200);
+    }
   } finally {
     await server.stop(true);
     await close();

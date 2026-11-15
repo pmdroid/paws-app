@@ -71,10 +71,8 @@ import {
   takeSignInReturn,
   workspaceReader,
 } from "./workspace";
-import { legacyDashboardLocation } from "../../../dashboard-links";
 import { aliasApiPath, parseAliasResponse } from "../aliases";
 
-redirectLegacyHash();
 const shell = mountShell();
 const router = shell.router;
 
@@ -531,7 +529,7 @@ function source(): string {
 }
 
 function appPath(href: string): string | null {
-  const url = canonicalUrl(new URL(href, location.href));
+  const url = new URL(href, location.href);
   const base = routerBase(location.pathname);
   if (url.origin !== location.origin) return null;
   if (base && url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return null;
@@ -545,17 +543,6 @@ function signInReturn(): string | null {
   if (stored === null) return null;
   const path = appPath(stored);
   return path === null ? null : `${path}${new URL(stored, location.href).hash}`;
-}
-
-function canonicalUrl(url: URL): URL {
-  const canonical = legacyDashboardLocation(url.pathname, url.search);
-  return canonical === null ? url : new URL(`${canonical}${url.hash}`, url.origin);
-}
-
-function redirectLegacyHash(): void {
-  if (!location.hash.startsWith("#/")) return;
-  const path = `${routerBase(location.pathname)}${location.hash.slice(1)}`;
-  history.replaceState(null, "", `${path}${location.search}`);
 }
 
 function followLink(event: MouseEvent, target: Element): void {

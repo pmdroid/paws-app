@@ -81,8 +81,10 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
     const old = await paws.server.fetch(
       new Request("https://localhost:8787/status/settings/integrations?connecting=1", { method }),
     );
-    expect(old.status).toBe(307);
-    expect(old.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
+    expect(old.status).toBe(
+      (await paws.server.fetch(new Request("https://localhost:8787/unknown", { method }))).status,
+    );
+    expect(old.headers.get("location")).toBeNull();
   }
   const head = await paws.server.fetch(
     new Request("https://localhost:8787/dashboard/", { method: "HEAD" }),
@@ -91,7 +93,10 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
   const post = await paws.server.fetch(
     new Request("https://localhost:8787/status/settings", { method: "POST" }),
   );
-  expect(post.status).toBe(405);
+  expect(post.status).toBe(
+    (await paws.server.fetch(new Request("https://localhost:8787/unknown", { method: "POST" })))
+      .status,
+  );
 });
 
 test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {

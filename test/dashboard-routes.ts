@@ -120,24 +120,18 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     sample: "/dashboard/runs/{run}/transcript",
     member: 200,
   }),
-  api("GET", "/dashboard/settings/findings", "alias", "PAS-1828", {
-    via: "/dashboard",
-    sample: "/dashboard/settings/findings",
-    anonymous: 307,
-    member: 307,
-  }),
   api("GET", "/dashboard/assets/:file", "canonical", "PAS-895", { via: "/dashboard" }),
   api("GET", "/", "alias", "PAS-895", { via: null, sample: "/?from=linear", anonymous: 307 }),
-  api("GET", "/status", "alias", "PAS-895", { sample: "/status", anonymous: 307 }),
-  api("GET", "/status/:page", "alias", "PAS-895", {
-    via: "/status",
+  api("GET", "/status", "removed", "PAS-895", { via: null, sample: "/status", anonymous: 404 }),
+  api("GET", "/status/:page", "removed", "PAS-895", {
+    via: null,
     sample: "/status/issues/PAS-1?from=linear",
-    anonymous: 307,
+    anonymous: 404,
   }),
-  api("POST", "/status/:page", "alias", "PAS-895", {
-    via: "/status",
+  api("POST", "/status/:page", "removed", "PAS-895", {
+    via: null,
     sample: "/status/issues/PAS-1",
-    anonymous: 405,
+    anonymous: 404,
   }),
   api("GET", "/evidence/:id", "alias", "PAS-906", {
     sample: "/evidence/01JEV1DENCE0000000000000AB",

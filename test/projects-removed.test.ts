@@ -62,10 +62,11 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
     expect((await get("/dashboard/projects")).status).toBe(404);
     expect((await get("/dashboard/projects/approval")).status).toBe(404);
     expect((await get("/dashboard/assets/..%2f..%2fpackage.json")).status).toBe(404);
-    const legacy = await get("/status/projects/approval?x=1");
-    expect(legacy.status).toBe(307);
-    expect(legacy.headers.get("location")).toBe("/dashboard/projects/approval?x=1");
-    expect((await get("/status/issues")).headers.get("location")).toBe("/dashboard/issues");
+    for (const path of ["/status/projects/approval?x=1", "/status/issues"]) {
+      const removed = await get(path);
+      expect(removed.status).toBe(404);
+      expect(removed.headers.get("location")).toBeNull();
+    }
     expect((await get("/api/projects")).status).toBe(404);
   } finally {
     await server.stop(true);
