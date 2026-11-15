@@ -159,6 +159,44 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
   expect(opened.at(-1)?.[3]).toBe("B1");
 });
 
+test("a Claude account takes a pasted setup token and clears the field", async () => {
+  setSettingsAdmin(true);
+  const root = await mount();
+  const card = root.querySelector('[data-account-id="A1"]')!;
+  const form = card.querySelector("[data-account-token]")!;
+  const input = form.querySelector("input") as unknown as HTMLInputElement;
+  expect(input.type).toBe("password");
+  input.value = " sk-ant-oat01-abc ";
+  (form.querySelector("button") as unknown as HTMLButtonElement).click();
+  await settle();
+  expect(requests).toEqual([
+    {
+      method: "PUT",
+      path: "/api/runners/agent-accounts/A1/token",
+      body: { token: "sk-ant-oat01-abc" },
+    },
+  ]);
+  expect(
+    (
+      root.querySelector(
+        '[data-account-id="A1"] [data-account-token] input',
+      ) as unknown as HTMLInputElement
+    ).value,
+  ).toBe("");
+});
+
+test("only Claude accounts render a setup token field", () => {
+  const html = renderAgentAccountSettings({
+    canManage: true,
+    accounts: [account("A1", "Work"), { ...account("A2", "Codex"), agent: "codex" }],
+    runners: {},
+    busy: null,
+    error: null,
+    confirm: null,
+  });
+  expect(html.match(/data-account-token/g)).toHaveLength(1);
+});
+
 test("an admin sees the API's error message", async () => {
   setSettingsAdmin(true);
   const root = await mount();

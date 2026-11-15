@@ -89,7 +89,11 @@ function accountRow(account: CentralAccount, index: number, count: number, view:
     view.confirm === account.id
       ? `<p role="alert">Sign ${label} out on every runner? Runs using it stop at their next request.</p><button class="btn danger" type="button" data-account-action="sign-out-confirm"${busy}>Sign out everywhere</button><button class="btn" type="button" data-account-action="keep">Keep signed in</button>`
       : `<button class="btn" type="button" data-account-action="up" aria-label="Move ${label} up"${index === 0 ? " disabled" : busy}>Up</button><button class="btn" type="button" data-account-action="down" aria-label="Move ${label} down"${index === count - 1 ? " disabled" : busy}>Down</button><label class="row"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Extra usage</span></label><button class="btn primary" type="button" data-account-action="sign-in"${busy}>Sign in</button><button class="btn" type="button" data-account-action="sign-out"${busy || (account.credential ? "" : " disabled")}>Sign out everywhere</button>`;
-  return `<li class="settings-card" draggable="true" data-account-id="${esc(account.id)}"><strong>${label}</strong>${status}<div class="row">${controls}</div></li>`;
+  const paste =
+    account.agent === "claude" && view.confirm !== account.id
+      ? `<form class="row" data-account-token><label class="field"><span>Setup token</span><input type="password" name="token" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…"></label><button class="btn" type="submit"${busy}>Save token</button></form><p class="sub">Run <code>claude setup-token</code> on your own machine and paste the token here. No runner needed.</p>`
+      : "";
+  return `<li class="settings-card" draggable="true" data-account-id="${esc(account.id)}"><strong>${label}</strong>${status}<div class="row">${controls}</div>${paste}</li>`;
 }
 
 export function renderAgentAccountSettings(view: AccountsView): string {
@@ -236,6 +240,18 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
   };
   const submit = (event: Event) => {
     const form = event.target as HTMLFormElement;
+    if (form.matches("[data-account-token]")) {
+      event.preventDefault();
+      const id = form.closest<HTMLElement>("[data-account-id]")?.dataset.accountId;
+      const input = form.querySelector<HTMLInputElement>("input")!;
+      const token = input.value.trim();
+      input.value = "";
+      if (id && token)
+        void run("Checking the token…", () =>
+          request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/token`, "PUT", { token }),
+        );
+      return;
+    }
     if (!form.matches("[data-account-add]")) return;
     event.preventDefault();
     const agent = form.querySelector<HTMLSelectElement>("select")!.value;

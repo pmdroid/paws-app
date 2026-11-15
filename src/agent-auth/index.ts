@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createUsageReader, UsageAuthExpired } from "./usage";
 import {
   claimAgentAuthSteps,
   deviceAccountSteps,
@@ -179,3 +180,26 @@ export function createAgentAuth(options: {
 }
 export { createAccountUsage } from "./account-usage";
 export { createUsageReader } from "./usage";
+
+export async function checkClaudeToken(token: string, reader = createUsageReader()) {
+  const blob = JSON.stringify([
+    {
+      path: ".claude/paws-oauth.json",
+      data: Buffer.from(
+        JSON.stringify({
+          kind: "oauth_token",
+          token,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 86_400_000,
+        }),
+      ).toString("base64"),
+    },
+  ]);
+  try {
+    await reader("claude", blob);
+    return true;
+  } catch (error) {
+    if (error instanceof UsageAuthExpired) return false;
+    throw error;
+  }
+}

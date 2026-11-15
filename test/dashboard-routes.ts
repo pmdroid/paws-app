@@ -342,6 +342,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["POST", "/api/runners/agent-accounts/:id/sign-in"],
     ["GET POST", "/api/runners/agent-accounts/:id/device"],
     ["DELETE", "/api/runners/agent-accounts/:id/credential"],
+    ["PUT", "/api/runners/agent-accounts/:id/token"],
   ].map(([method, pattern]) =>
     api(method!, pattern!, "delegated", "src/account-management", {
       via: "/api/runners/agent-accounts",
