@@ -1,6 +1,7 @@
 import {
   and,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -54,6 +55,7 @@ function* stepOutputsSteps(q: Q, where: SQL | undefined, limit: number) {
       .from(s)
       .innerJoin(p, eq(p.id, s.progressId))
       .where(and(isNull(s.outputKey), or(ne(s.stdout, ""), ne(s.stderr, "")), where))
+      .orderBy(s.progressId, s.stepId)
       .limit(limit),
   );
   return rows.map(({ progressId, stepId, ...row }) => ({
@@ -73,8 +75,18 @@ export function* finishedStepOutputSteps(
   return (yield* stepOutputsSteps(q, and(where, unfinishedNot(q)), 1))[0] ?? null;
 }
 
-export function* pendingCloseoutOutputsSteps(q: Q): Steps<StoredCloseoutOutput[]> {
-  return yield* stepOutputsSteps(q, unfinishedNot(q), 100);
+export function* pendingCloseoutOutputsSteps(
+  q: Q,
+  after?: { progressId: string; stepId: string },
+): Steps<StoredCloseoutOutput[]> {
+  const s = q.t.closeoutStep;
+  const cursor =
+    after &&
+    or(
+      gt(s.progressId, after.progressId),
+      and(eq(s.progressId, after.progressId), gt(s.stepId, after.stepId)),
+    );
+  return yield* stepOutputsSteps(q, and(unfinishedNot(q), cursor), 100);
 }
 
 function unfinishedNot(q: Q) {

@@ -21,6 +21,7 @@ import {
   type Steps,
 } from "../db";
 
+import { journalCaught } from "../journal";
 import { moveCloseoutOutput, type EvidenceStorage } from "../evidence";
 
 export const RUNNER_EVENT_PRUNE_JOB = "runner-events.prune";
@@ -131,10 +132,23 @@ export async function pruneCloseoutLogs(
   const days = await closeoutLogRetentionDays(options.store);
   const now = options.now ?? Date.now();
   const cutoff = now - days * DAY;
-  const pending = await options.store.run((q) => pendingCloseoutOutputsSteps(q));
-  for (const row of pending) {
+  let after: { progressId: string; stepId: string } | undefined;
+  for (;;) {
     options.signal?.throwIfAborted();
-    await moveCloseoutOutput(options.store, options.storage, row, now);
+    const pending = await options.store.run((q) => pendingCloseoutOutputsSteps(q, after));
+    if (pending.length === 0) break;
+    for (const row of pending) {
+      options.signal?.throwIfAborted();
+      try {
+        await moveCloseoutOutput(options.store, options.storage, row, now);
+      } catch (error) {
+        journalCaught(error, "prune-closeout-logs.upload", row.itemId);
+      }
+    }
+    const last = pending.at(-1)!.ref;
+    if (last.table !== "closeout_step") throw new Error("Expected closeout step output");
+    after = last;
+    await yieldToLoop();
   }
   if (days === 0) return 0;
   let deleted = 0;
