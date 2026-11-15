@@ -431,6 +431,18 @@ describePglite((connect) => {
     const unsupported = (bindingId: string) =>
       db.run((q) => runnerAccountUnsupportedSteps(q, "R1", bindingId, "codex"));
     expect(await unsupported(centralBinding.id)).toBeNull();
+    const pasted = await account("Pasted");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.agentAccountCredential).values({
+        accountId: pasted.id,
+        agent: "codex",
+        ciphertext: "sealed",
+        version: 1,
+        updatedAt: NOW,
+        runnerId: null,
+      }),
+    );
+    expect(await unsupported((await bind(pasted.id)).id)).toBeNull();
     expect(await unsupported(localBinding.id)).toBe(
       "The runner has not reported this account binding",
     );

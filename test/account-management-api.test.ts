@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { AGENT_ACCOUNTS_RETIRED, createAccountManagement } from "../src/account-management";
-import { centralAgentAccountsSteps, writeAgentCredentialCiphertextSteps } from "../src/db";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readAgentCredentialSteps } from "../src/credentials";
+import {
+  agentCredentialCiphertextSteps,
+  centralAgentAccountsSteps,
+  listAgentBindingsSteps,
+  writeAgentCredentialCiphertextSteps,
+} from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
 import { describePglite, seed, withoutForeignKeys } from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
@@ -60,6 +69,75 @@ type Answer = {
 };
 
 describePglite((connect) => {
+  test("a pasted Claude setup token is checked, stored centrally and bound to the owner's runners", async () => {
+    const handle = await connect();
+    const { db } = handle;
+    const secretsDir = mkdtempSync(join(tmpdir(), "token-paste-"));
+    try {
+      await withoutForeignKeys(db);
+      await seed(db, (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "acme", linearOrganizationId: "org", name: "acme", createdAt: NOW }),
+      );
+      await seedRunner(db, "R1", { lastSeenAt: NOW - 5_000, ownerUserId: "ada" });
+      await seedRunner(db, "R0", { lastSeenAt: NOW - 5_000, ownerUserId: "bea" });
+      const accepted = new Set(["sk-ant-oat01-good"]);
+      const api = createAccountManagement({
+        store: db,
+        secretsDir,
+        now: () => NOW,
+        checkClaudeToken: async (token) => accepted.has(token),
+      });
+      const send = (method: string, path: string, body?: unknown) =>
+        api(
+          new Request(`http://127.0.0.1:8787/api/runners/agent-accounts${path}`, {
+            method,
+            ...(body === undefined
+              ? {}
+              : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+          }),
+          principal,
+        ).then(async (response) => ({
+          status: response!.status,
+          body: (await response!.json()) as Record<string, unknown>,
+        }));
+      const claude = (await send("POST", "", { agent: "claude", label: "Pasted" })).body;
+      const codex = (await send("POST", "", { agent: "codex", label: "Codex" })).body;
+      expect((await send("PUT", `/${claude.id}/token`, { token: "not-a-token" })).status).toBe(400);
+      expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-bad" })).toEqual({
+        status: 400,
+        body: { error: "This token was not accepted by Claude." },
+      });
+      expect((await send("PUT", `/${codex.id}/token`, { token: "sk-ant-oat01-good" })).status).toBe(
+        400,
+      );
+      expect(await db.run((q) => agentCredentialCiphertextSteps(q, String(claude.id)))).toBeNull();
+      expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-good" })).toEqual({
+        status: 200,
+        body: { ok: true },
+      });
+      const stored = await db.run((q) =>
+        readAgentCredentialSteps(q, secretsDir, String(claude.id)),
+      );
+      expect(stored?.runnerId).toBeNull();
+      const files = JSON.parse(stored!.blob!) as { path: string; data: string }[];
+      const token = JSON.parse(Buffer.from(files[0]!.data, "base64").toString());
+      expect(files[0]!.path).toBe(".claude/paws-oauth.json");
+      expect(token).toEqual({
+        kind: "oauth_token",
+        token: "sk-ant-oat01-good",
+        createdAt: NOW,
+        expiresAt: NOW + 365 * 86_400_000,
+      });
+      const bindings = await db.run((q) => listAgentBindingsSteps(q, "acme", String(claude.id)));
+      expect(bindings.map((binding) => binding.runnerId)).toEqual(["R1"]);
+    } finally {
+      rmSync(secretsDir, { recursive: true, force: true });
+      await handle.close();
+    }
+  });
+
   test("admins add, order, sign out and toggle extra usage on workspace agent accounts", async () => {
     const handle = await connect();
     const { db } = handle;
