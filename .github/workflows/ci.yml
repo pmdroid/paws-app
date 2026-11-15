@@ -146,3 +146,17 @@ jobs:
       - run: bun run graphql
       - run: bun run knip
       - run: bun scripts/check-runner-versions.ts --since-latest-release
+
+  binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/build-binary.ts x64
+        env:
+          PAWS_VERSION: ci-${{ github.sha }}
+      - run: bun scripts/smoke-binary.ts

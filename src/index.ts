@@ -1,3 +1,4 @@
+import { assetPath, buildVersion, compiled } from "./assets";
 import { createAccountUsage, createAgentAuth } from "./agent-auth";
 import { browserSetupRuntime } from "./onboarding";
 import {
@@ -1171,7 +1172,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       : {}),
     installer: () => {
       try {
-        return readFileSync(new URL("../deploy/linux/install-runner.sh", import.meta.url), "utf8");
+        return readFileSync(assetPath("deploy/linux/install-runner.sh"), "utf8");
       } catch (caughtError3) {
         journalCaught(
           caughtError3,
@@ -2443,6 +2444,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
 }
 
 function installedPawsVersion(): string | null {
+  if (buildVersion) return buildVersion;
   try {
     const release = releaseVersionFromPath(realpathSync(import.meta.dir));
     if (release !== null) return release;
@@ -3029,9 +3031,13 @@ async function probesMain(argv: string[]): Promise<number> {
   }
 }
 
-if (import.meta.main) {
+if (import.meta.main || compiled()) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "--version") {
+    console.log(installedPawsVersion() ?? "unknown");
+    process.exit(0);
+  }
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage" && argv[1] === "migrate")

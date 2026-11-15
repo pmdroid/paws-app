@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { assetPath } from "../assets";
 import { journal } from "../journal";
 
-export const PG_MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle-pg", import.meta.url));
+export const PG_MIGRATIONS_FOLDER = assetPath("src/db/drizzle-pg");
 
 export function migrationTags(migrationsFolder: string): string[] {
   const file = JSON.parse(readFileSync(`${migrationsFolder}/meta/_journal.json`, "utf8")) as {

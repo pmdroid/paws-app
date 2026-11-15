@@ -1,3 +1,4 @@
+import { childArgs } from "../assets";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Readable, Writable } from "node:stream";
@@ -36,8 +37,10 @@ export class OwnedProcess extends EventEmitter {
     this.anchor = spawn(
       process.execPath,
       [
-        "--no-env-file",
-        fileURLToPath(new URL("./process-anchor.ts", import.meta.url)),
+        ...childArgs(
+          "process-anchor",
+          fileURLToPath(new URL("./process-anchor.ts", import.meta.url)),
+        ),
         JSON.stringify([command, args, cwd ?? process.cwd()]),
       ],
       {
@@ -45,7 +48,7 @@ export class OwnedProcess extends EventEmitter {
         detached: true,
         stdio: ["pipe", "pipe", "pipe", "ipc"],
         serialization: "json",
-        cwd: fileURLToPath(new URL(".", import.meta.url)),
+        cwd: process.cwd(),
       },
     );
     this.pid = this.anchor.pid;

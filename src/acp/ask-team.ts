@@ -1,3 +1,4 @@
+import { childArgs } from "../assets";
 import { journal, journalCaught } from "../journal";
 import { parseRemainingParts, type RemainingPart } from "../core";
 import { createServer, type Server, type Socket } from "node:net";
@@ -166,11 +167,7 @@ export interface AskTeamBridge {
 export function askTeamMcpEntry(): { command: string; args: string[] } {
   return {
     command: process.execPath,
-    args: [
-      "--no-env-file",
-      "--config=/dev/null",
-      fileURLToPath(new URL("./ask-team-mcp.ts", import.meta.url)),
-    ],
+    args: childArgs("ask-team-mcp", fileURLToPath(new URL("./ask-team-mcp.ts", import.meta.url))),
   };
 }
 
