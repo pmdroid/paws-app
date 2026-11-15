@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
@@ -12,18 +12,18 @@ test("runner package builds run only for published releases, and publication wai
   expect(workflow.on.release).toEqual({ types: ["published"] });
   expect(workflow.on.schedule).toBeUndefined();
   expect(workflow.on.workflow_dispatch.inputs.resign_only.default).toBe(false);
-  expect(workflow.jobs.build.if).toBe("github.event_name == 'release'");
+  expect(workflow.jobs.build.if).toContain("inputs.dry_run && !inputs.resign_only");
   expect(workflow.jobs["publish-apt"].if).toContain(
-    "inputs.resign_only && startsWith(github.ref, 'refs/tags/v')",
+    "inputs.resign_only && !inputs.dry_run && startsWith(github.ref, 'refs/tags/v')",
   );
   expect(workflow.jobs["publish-apt"].environment).toBe("release");
-  expect(workflow.jobs["publish-apt"].permissions).toEqual({ contents: "read" });
+  expect(workflow.jobs["publish-apt"].permissions).toEqual({ contents: "read", actions: "read" });
   expect(workflow.jobs.build.strategy.matrix.include).toEqual([
     { architecture: "amd64", platform: "linux-x64", runner: "ubuntu-24.04" },
     { architecture: "arm64", platform: "linux-arm64", runner: "ubuntu-24.04-arm" },
   ]);
   expect(workflow.jobs.publish.needs).toBe("build");
-  expect(workflow.permissions).toEqual({ contents: "read" });
+  expect(workflow.permissions).toEqual({});
   expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
 });
 
@@ -313,7 +313,7 @@ print(json.dumps({"gh": {"mode": gh.mode, "uid": gh.uid, "content": archive.extr
 });
 
 test("the release fails before building when a minimum runner version is above the tag, and names it", async () => {
-  const steps: { name?: string; run?: string }[] = workflow.jobs.build.steps;
+  const steps: { name?: string; run?: string }[] = workflow.jobs.prepare.steps;
   const check = steps.findIndex((value) => value.name === "Check minimum runner versions");
   expect(check).toBeGreaterThan(
     steps.findIndex((value) => value.name === "Validate release version"),
@@ -344,4 +344,202 @@ test("the release fails before building when a minimum runner version is above t
       );
   expect((await run(highest.join("."))).code).toBe(0);
   expect((await run([highest[0], highest[1]! + 1, 0].join("."))).code).toBe(0);
+});
+
+test("release actions are immutable and builds have no environment or secrets", () => {
+  for (const job of Object.values(workflow.jobs) as { steps: { uses?: string }[] }[]) {
+    for (const step of job.steps) {
+      if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    }
+  }
+  expect(workflow.on.pull_request_target).toBeUndefined();
+  expect(workflow.jobs.build.environment).toBeUndefined();
+  expect(JSON.stringify(workflow.jobs.build)).not.toContain("secrets.");
+  expect(workflow.jobs.build.permissions).toEqual({
+    contents: "read",
+    attestations: "write",
+    "id-token": "write",
+  });
+  expect(workflow.jobs.publish.if).toBe("github.event_name == 'release'");
+  const steps = workflow.jobs["publish-apt"].steps;
+  expect(steps[0].name).toBe("Gate tag on main and successful CI");
+});
+
+test("dry-run dispatch builds but never publishes, and publications retain their queue", () => {
+  const evaluate = (expression: string, dry_run: boolean, resign_only: boolean) =>
+    new Function(
+      "github",
+      "inputs",
+      "needs",
+      "startsWith",
+      "always",
+      `return (${expression.replace(/^\$\{\{ | \}\}$/g, "")})`,
+    )(
+      { event_name: "workflow_dispatch", ref: "refs/tags/v1.2.3" },
+      { dry_run, resign_only },
+      { build: { result: "success" } },
+      (value: string, prefix: string) => value.startsWith(prefix),
+      () => true,
+    );
+  for (const resign of [false, true]) {
+    expect(evaluate(workflow.jobs.build.if, true, resign)).toBe(!resign);
+    expect(evaluate(workflow.jobs.publish.if, true, resign)).toBe(false);
+    expect(evaluate(workflow.jobs["publish-apt"].if, true, resign)).toBe(false);
+  }
+  expect(evaluate(workflow.jobs.build.if, false, true)).toBe(false);
+  expect(evaluate(workflow.jobs["publish-apt"].if, false, true)).toBe(true);
+  for (const concurrency of [workflow.concurrency, workflow.jobs["publish-apt"].concurrency]) {
+    expect(concurrency.queue).toBe("max");
+    expect(concurrency["cancel-in-progress"]).toBe(false);
+  }
+});
+
+test("the actual publication gate rejects off-main tags and unsuccessful CI", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-release-gate-"));
+  const run = async (script: string, env = {}) => {
+    const child = Bun.spawn(["bash", "-e", "-o", "pipefail", "-c", script], {
+      cwd: root,
+      env: { ...process.env, ...env },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(child.stderr).text();
+    return { code: await child.exited, stderr };
+  };
+  try {
+    expect(
+      (
+        await run(`
+      git init -b main origin
+      cd origin
+      git -c user.name=Test -c user.email=test@example.com commit --allow-empty -m initial
+      git -c user.name=Test -c user.email=test@example.com tag -a v1.2.3 -m release
+      git checkout -b outside
+      git -c user.name=Test -c user.email=test@example.com commit --allow-empty -m outside
+      git tag v1.2.4
+      git checkout main
+      mkdir ../bin
+    `)
+      ).code,
+    ).toBe(0);
+    writeFileSync(join(root, "bin/gh"), '#!/bin/sh\nprintf "%s\\n" "$CI_SUCCESS"\n', {
+      mode: 0o755,
+    });
+    const gate = workflow.jobs["publish-apt"].steps[0].run.replace(
+      '"https://github.com/$GITHUB_REPOSITORY.git"',
+      '"$TEST_ORIGIN"',
+    );
+    for (const [index, [tag, success, expected]] of (
+      [
+        ["v1.2.3", "true", 0],
+        ["v1.2.4", "true", 1],
+        ["v1.2.3", "false", 1],
+      ] as const
+    ).entries()) {
+      const result = await run(gate.replaceAll("/release-gate", `/gate-${index}`), {
+        PATH: `${join(root, "bin")}:${process.env.PATH}`,
+        RUNNER_TEMP: root,
+        GITHUB_REPOSITORY: "test/repository",
+        RELEASE_TAG: tag,
+        TEST_ORIGIN: join(root, "origin"),
+        CI_SUCCESS: success,
+      });
+      if (result.code !== expected) throw new Error(result.stderr);
+      expect(result.code).toBe(expected);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apt verification rejects an extra nested package before attestation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-extra-deb-"));
+  try {
+    const script = workflow.jobs["publish-apt"].steps.find(
+      (step: { name?: string }) => step.name === "Verify packages before repository signing",
+    ).run;
+    const child = Bun.spawn(
+      [
+        "bash",
+        "-e",
+        "-c",
+        `
+      mkdir -p "$RUNNER_TEMP/apt-packages/nested"
+      cd "$RUNNER_TEMP/apt-packages"
+      touch paws-{runner,control-plane}_1.2.3_{amd64,arm64}.deb nested/extra.deb
+      ${script}
+    `,
+      ],
+      { env: { ...process.env, RUNNER_TEMP: root }, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await new Response(child.stderr).text()).toBe("");
+    expect(await child.exited).not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("manifest handoffs reject tampering and preserve the signer key across builds", async () => {
+  const signer = workflow.jobs["sign-manifest"];
+  expect(signer.environment).toBe("release");
+  expect(signer.permissions).toEqual({ contents: "read" });
+  expect(JSON.stringify(signer)).not.toContain("actions/checkout");
+  expect(workflow.jobs.build.needs).toEqual(["prepare", "sign-manifest"]);
+  expect(JSON.stringify(workflow.jobs.prepare)).not.toContain("secrets.");
+  expect(JSON.stringify(workflow.jobs.build)).toContain("--release-key deploy/linux/release.pub");
+  const step = (job: string, name: string) =>
+    workflow.jobs[job].steps.find((value: { name?: string }) => value.name === name).run;
+  const root = mkdtempSync(join(tmpdir(), "paws-manifest-handoff-"));
+  try {
+    const child = Bun.spawn(
+      [
+        "bash",
+        "-e",
+        "-o",
+        "pipefail",
+        "-c",
+        `
+      mkdir -p "$RUNNER_TEMP"/{runner-archive,manifest,signature}
+      openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/test-key"
+      openssl pkey -in "$RUNNER_TEMP/test-key" -pubout -out "$RUNNER_TEMP/test-pub"
+      export PAWS_RUNNER_RELEASE_KEY="$(cat "$RUNNER_TEMP/test-key")"
+      for version in 1.2.3 1.2.4; do
+        printf '{"version":"%s"}' "$version" > "$RUNNER_TEMP/runner-archive/manifest.json"
+        bash -e -o pipefail -c "$HASH"
+        cp "$RUNNER_TEMP/runner-archive/"manifest.* "$RUNNER_TEMP/manifest/"
+        bash -e -o pipefail -c "$CHECK"
+        printf tampered >> "$RUNNER_TEMP/manifest/manifest.json"
+        if bash -e -o pipefail -c "$CHECK"; then exit 1; fi
+        cp "$RUNNER_TEMP/runner-archive/manifest.json" "$RUNNER_TEMP/manifest/"
+        bash -e -o pipefail -c "$SIGN"
+        test ! -e "$RUNNER_TEMP/paws-runner-release.pem"
+        cp "$RUNNER_TEMP/manifest/"manifest.{sha256,sig} "$RUNNER_TEMP/signature/"
+        bash -e -o pipefail -c "$HANDOFF"
+        openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/test-pub" -sigfile "$RUNNER_TEMP/runner-archive/manifest.sig" -in "$RUNNER_TEMP/runner-archive/manifest.json"
+        printf tampered >> "$RUNNER_TEMP/runner-archive/manifest.json"
+        if bash -e -o pipefail -c "$HANDOFF"; then exit 1; fi
+        cp "$RUNNER_TEMP/manifest/manifest.json" "$RUNNER_TEMP/runner-archive/"
+        printf tampered > "$RUNNER_TEMP/signature/manifest.sha256"
+        if bash -e -o pipefail -c "$HANDOFF"; then exit 1; fi
+      done
+    `,
+      ],
+      {
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          HASH: step("prepare", "Hash manifest"),
+          CHECK: step("sign-manifest", "Check manifest hash"),
+          SIGN: step("sign-manifest", "Sign runner manifest"),
+          HANDOFF: step("build", "Check signed manifest handoff"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const stderr = await new Response(child.stderr).text();
+    if ((await child.exited) !== 0) throw new Error(stderr);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

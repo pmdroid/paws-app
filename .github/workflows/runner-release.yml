@@ -5,13 +5,16 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: Build, attest and verify without publishing; select a v* tag as the run ref
+        type: boolean
+        default: false
       resign_only:
         description: Re-sign apt metadata without changing packages; select the latest v* tag as the run ref
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: runner-release-${{ github.event.release.tag_name }}
@@ -19,9 +22,9 @@ concurrency:
   queue: max
 
 jobs:
-  build:
-    if: github.event_name == 'release'
-    name: Debian package (${{ matrix.architecture }})
+  prepare:
+    if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
+    name: Runner archive (${{ matrix.architecture }})
     strategy:
       fail-fast: false
       matrix:
@@ -33,18 +36,19 @@ jobs:
             platform: linux-arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    environment: runner-release
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.4
       - name: Validate release version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
           version="${RELEASE_TAG#v}"
           python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",sys.argv[1]) else 1)' "$version"
@@ -57,16 +61,108 @@ jobs:
           RUNNER_PLATFORM: ${{ matrix.platform }}
         run: |
           python3 -I -B deploy/linux/package.py --source "$GITHUB_WORKSPACE" --bun "$(command -v bun)" --version "$RUNNER_VERSION" --platform "$RUNNER_PLATFORM" --output "$RUNNER_TEMP/runner-archive"
+      - name: Hash manifest
+        run: cd "$RUNNER_TEMP/runner-archive" && sha256sum manifest.json > manifest.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: archive-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/runner-archive/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manifest-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/runner-archive/manifest.json
+            ${{ runner.temp }}/runner-archive/manifest.sha256
+          if-no-files-found: error
+
+  sign-manifest:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        architecture: [amd64, arm64]
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: manifest-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/manifest
+      - name: Check manifest hash
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          sha256sum manifest.json | cmp - manifest.sha256
       - name: Sign runner manifest
         env:
           PAWS_RUNNER_RELEASE_KEY: ${{ secrets.PAWS_RUNNER_RELEASE_KEY }}
         run: |
+          set -euo pipefail
           umask 077
           key="$RUNNER_TEMP/paws-runner-release.pem"
           trap 'rm -f -- "$key"' EXIT
           printf '%s\n' "$PAWS_RUNNER_RELEASE_KEY" > "$key"
-          openssl pkey -in "$key" -pubout | cmp - deploy/linux/release.pub
-          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/runner-archive/manifest.json" -out "$RUNNER_TEMP/runner-archive/manifest.sig"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/manifest/manifest.json" -out "$RUNNER_TEMP/manifest/manifest.sig"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signature-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/manifest/manifest.sig
+            ${{ runner.temp }}/manifest/manifest.sha256
+          if-no-files-found: error
+
+  build:
+    needs: [prepare, sign-manifest]
+    if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
+    name: Debian package (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux-x64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",sys.argv[1]) else 1)' "$version"
+          echo "RUNNER_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check minimum runner versions
+        run: bun scripts/check-runner-versions.ts "$RUNNER_VERSION"
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: archive-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/runner-archive
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signature-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/signature
+      - name: Check signed manifest handoff
+        run: |
+          cd "$RUNNER_TEMP/runner-archive"
+          sha256sum manifest.json | cmp - manifest.sha256
+          cmp manifest.sha256 "$RUNNER_TEMP/signature/manifest.sha256"
+          cp "$RUNNER_TEMP/signature/manifest.sig" manifest.sig
       - name: Build Debian package
         run: |
           python3 -I -B deploy/linux/deb-package.py --artifact "$RUNNER_TEMP/runner-archive/artifact.tar" --manifest "$RUNNER_TEMP/runner-archive/manifest.json" --signature "$RUNNER_TEMP/runner-archive/manifest.sig" --release-key deploy/linux/release.pub --output dist
@@ -94,20 +190,43 @@ jobs:
           python3 -I -B "$payload/release.py" verify --artifact "$payload/artifact.tar" --manifest "$payload/manifest.json" --signature "$payload/manifest.sig" --release-key "$payload/release.pub"
           cd dist
           sha256sum --check *.sha256
-      - uses: actions/upload-artifact@v4
+      - name: Attest runner package
+        id: runner-attestation
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/paws-runner_*.deb
+      - name: Attest control-plane package
+        id: control-attestation
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/paws-control-plane_*.deb
+      - name: Preserve and verify bundles
+        env:
+          RUNNER_BUNDLE: ${{ steps.runner-attestation.outputs.bundle-path }}
+          CONTROL_BUNDLE: ${{ steps.control-attestation.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for package in dist/*.deb; do
+            bundle="$CONTROL_BUNDLE"
+            case "$package" in dist/paws-runner_*) bundle="$RUNNER_BUNDLE" ;; esac
+            cp "$bundle" "$package.sigstore.json"
+            gh attestation verify "$package" --bundle "$package.sigstore.json" --repo pmdroid/paws-app --signer-workflow pmdroid/paws-app/.github/workflows/runner-release.yml
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: paws-runner-${{ matrix.architecture }}
           path: dist/*
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'release'
     name: Attach Debian packages to release
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: paws-runner-*
           path: dist
@@ -115,33 +234,67 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" dist/*.deb dist/*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-apt:
     name: Publish signed apt repository
     needs: build
-    if: ${{ always() && ((github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && needs.build.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))) }}
+    if: ${{ always() && ((github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && needs.build.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.resign_only && !inputs.dry_run && startsWith(github.ref, 'refs/tags/v'))) }}
     runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
+      actions: read
     concurrency:
       group: apt-repository
       cancel-in-progress: false
       queue: max
     steps:
-      - uses: actions/checkout@v4
+      - name: Gate tag on main and successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == v* ]]
+          # Resolve annotated tags through git, rather than trusting the event's target_commitish.
+          git init "$RUNNER_TEMP/release-gate"
+          cd "$RUNNER_TEMP/release-gate"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" refs/heads/main:refs/remotes/origin/main
+          commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=push&per_page=100" --jq '[.workflow_runs[] | select(.head_branch == "main")] | sort_by(.run_number) | last | .conclusion == "success"' | grep -qx true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Install repository tools
         run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg awscli
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: github.event_name == 'release'
         with:
-          pattern: paws-*
+          pattern: paws-runner-*
           path: ${{ runner.temp }}/apt-packages
           merge-multiple: true
+      - name: Verify packages before repository signing
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/apt-packages"
+          mapfile -d '' packages < <(find . -type f -name '*.deb' -print0)
+          test "${#packages[@]}" -eq 4
+          for name in paws-runner paws-control-plane; do
+            for arch in amd64 arm64; do
+              packages=("${name}_"*"_${arch}.deb")
+              test "${#packages[@]}" -eq 1
+              package="${packages[0]}"
+              sha256sum --check "$package.sha256"
+              gh attestation verify "$package" --bundle "$package.sigstore.json" --repo pmdroid/paws-app --signer-workflow pmdroid/paws-app/.github/workflows/runner-release.yml
+            done
+          done
       - name: Publish or renew metadata
         env:
           PAWS_APT_R2_ACCOUNT_ID: ${{ secrets.PAWS_APT_R2_ACCOUNT_ID }}
