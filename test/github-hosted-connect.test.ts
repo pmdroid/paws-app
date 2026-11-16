@@ -549,10 +549,10 @@ test("GitHub setup discovers the approved installation and exposes status withou
     callback.searchParams.set("state", authorize.searchParams.get("state")!);
     callback.searchParams.set("code", "scripted-code");
     expect((await f.handler()(f.request("owner", callback.href)))?.status).toBe(303);
-    const connected = await f.handler()(automaticRequest(f, "GET", "member"));
+    const connected = await f.handler()(automaticRequest(f, "GET", "admin"));
     expect(await connected?.json()).toMatchObject({
       status: "connected",
-      canManage: false,
+      canManage: true,
       repositoryCount: 1,
       lastDelivery: null,
     });
@@ -658,6 +658,20 @@ test("an administrator signed in hours ago can still manage the connection", asy
     await f.close();
   }
 });
+
+for (const path of ["github-connect", "github-app"])
+  test(`members get 403 from /api/workspaces/${path} and admins get 200`, async () => {
+    const f = await fixture();
+    try {
+      const url = `https://paws.example/api/workspaces/${path}`;
+      const member = await f.handler()(f.request("member", url));
+      expect(member?.status).toBe(403);
+      expect(await member?.json()).toMatchObject({ code: "admin_required" });
+      expect((await f.handler()(f.request("admin", url)))?.status).toBe(200);
+    } finally {
+      await f.close();
+    }
+  });
 
 for (const change of ["logout", "demotion", "repositories", "credentials", "expiry"] as const) {
   test(`automatic installation discovery rejects ${change} during GitHub lookup`, async () => {

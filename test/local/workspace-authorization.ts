@@ -506,10 +506,13 @@ export async function probeWorkspaceAuthorization(
       headers: headers(member),
       body: JSON.stringify({ repositories: [] }),
     });
+    const adminRead = await fetch(`${origin}/api/workspaces/repositories`, {
+      headers: headers(admin),
+    });
     observe(
-      "a member reads the workspace repositories and gets 403 changing them",
-      memberRead.status === 200 && memberWrite.status === 403,
-      { read: memberRead.status, write: memberWrite.status },
+      "a member gets 403 reading or changing the workspace repositories and an admin reads them",
+      memberRead.status === 403 && memberWrite.status === 403 && adminRead.status === 200,
+      { read: memberRead.status, write: memberWrite.status, admin: adminRead.status },
     );
     const stale = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
