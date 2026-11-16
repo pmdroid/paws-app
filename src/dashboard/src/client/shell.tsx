@@ -19,9 +19,11 @@ import {
   Bug,
   Lightbulb,
   Settings,
+  Building2,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
+import { settingsAreEditable, shownSettingsPage } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { CommandPalette, shortcutLabel } from "./command-palette";
 import { createShortcuts, PAGE_SHORTCUTS } from "./shortcuts";
@@ -99,7 +101,7 @@ function ShortcutsHelp({
 /** Pages whose entry carries a count, such as the tasks waiting to merge. */
 export type NavigationCounts = Partial<Record<Route["view"], number>>;
 
-function Navigation({
+export function Navigation({
   route,
   counts,
   onNavigate,
@@ -146,13 +148,25 @@ function Navigation({
                 </li>
               );
             })}
+            {group.label === "Manage" && settingsAreEditable() && (
+              <li>
+                <SidebarMenuLink
+                  to={routePath({ view: "workspace" })}
+                  active={route.view === "workspace"}
+                  onClick={onNavigate}
+                >
+                  <Building2 className="size-4 shrink-0" aria-hidden="true" />
+                  <span>{PAGES.workspace.title}</span>
+                </SidebarMenuLink>
+              </li>
+            )}
           </SidebarMenu>
         </SidebarGroup>
       ))}
       <SidebarMenu className="mt-5">
         <li>
           <SidebarMenuLink
-            to={routePath({ view: "settings", page: "agents" })}
+            to={routePath({ view: "settings" })}
             active={route.view === "settings"}
             onClick={onNavigate}
           >
@@ -174,11 +188,11 @@ function Breadcrumb({
   route: Route;
   detail: { issueId: string | null; entityId: string } | null;
 }) {
-  const detail =
-    route.view === "settings" ? { issueId: null, entityId: route.page ?? "agents" } : shown;
+  const settingsPage = shownSettingsPage(route);
+  const detail = settingsPage ? { issueId: null, entityId: settingsPage } : shown;
   const current = "text-foreground";
   const slash = <span aria-hidden="true">/</span>;
-  const title = route.view === "settings" ? "settings" : PAGES[route.view].title;
+  const title = settingsPage ? route.view : PAGES[route.view].title;
   return (
     <nav
       aria-label="Breadcrumb"

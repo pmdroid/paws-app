@@ -68,8 +68,9 @@ afterEach(() => {
   void window.happyDOM.abort();
 });
 async function mount(page: "repositories" | "linear", admin = true) {
-  setSettingsAdmin(admin);
+  setSettingsAdmin(true);
   window.document.body.innerHTML = renderSettingsPage(page);
+  setSettingsAdmin(admin);
   mountRepositorySettings("http://localhost");
   await settleReactWork();
 }

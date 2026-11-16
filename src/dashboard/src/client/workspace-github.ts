@@ -99,7 +99,7 @@ function initializeConfiguredWorkspaceGitHub(
                   : "Install the App on your workspace repositories, then return here to finish connecting.";
     let primary =
       data.status === "needs_repositories" && canEditRepositories
-        ? `<a class="btn primary" href="${routeHref({ view: "settings", page: "workspace" })}">Add repositories</a>`
+        ? `<a class="btn primary" href="${routeHref({ view: "workspace", page: "workspace" })}">Add repositories</a>`
         : "";
     if (
       data.canManage &&
@@ -225,7 +225,7 @@ function initializeConfiguredWorkspaceGitHub(
     if (!target) return;
     if (target.hasAttribute("data-github-signin")) {
       try {
-        sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
+        sessionStorage.setItem("paws.settingsReturn", "/workspace/integrations");
       } catch (caughtError3) {
         journalCaught(caughtError3, "workspace-github.initializeWorkspaceGitHub.setItem", null);
       }

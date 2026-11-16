@@ -213,7 +213,7 @@ export function memberVmSizeMarkup(size: MemberVmSize | undefined): string {
     pool === undefined
       ? esc("the exe.dev team's default placement")
       : `exe.dev pool <b class="mono">${esc(pool)}</b>`;
-  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Admins change the defaults in <a href="${routeHref({ view: "settings", page: "member-vm" })}">Settings › Member VMs</a>.</p>`;
+  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Admins change the defaults in <a href="${routeHref({ view: "workspace", page: "member-vm" })}">Workspace › Member VMs</a>.</p>`;
 }
 
 function poolLabel(pool: ExeDevPool): string {
@@ -811,7 +811,7 @@ export function waitingLabel(tasks: number, runner: string): string {
 
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
   if (!skills.length)
-    return '<p class="muted">No skills registered. Admins add them in Settings → Agent instructions.</p>';
+    return '<p class="muted">No skills registered. Admins add them in Workspace → Agent instructions.</p>';
   const rows = skills
     .map((skill) => {
       const [tone, state] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;

@@ -3,7 +3,7 @@ import { esc } from "./format";
 
 /** Where each list is edited, as the card names it. */
 const LISTS: Record<RiskList, string> = {
-  settings: "Settings › Merging",
+  settings: "Workspace › Merging",
   file: ".paws/high-risk-paths",
 };
 

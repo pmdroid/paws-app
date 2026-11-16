@@ -52,7 +52,7 @@ Each stage has its own limit, and `0` means the stage's time is not counted. The
 - **Fixes**: turns for CI, review comments, Closeout findings and merge conflicts. Fix rounds are already limited by count (`ci_fix_attempts`), so by default their time is not counted.
 - **Closeout**: Closeout's checks of a head.
 
-The limits are global: every item uses the same `[time_limits]`. A missing `implementation_minutes` is `PAWS_MAX_AWAKE_MS` (milliseconds), or 3 hours when that is unset, and missing fixes or Closeout limits count nothing. `config.toml` `[caps] max_awake_ms` is no longer read: when it is set and no `implementation_minutes` is saved, startup saves it once as `implementation_minutes`, rounded up to whole minutes, and journals that it was copied. A value above the 7-day maximum is saved as 7 days, and the journal line says it was shortened. Limits are fixed when an item is delegated and when a person asks for more time. Settings › Queue and limits › Time limits reads and writes this table. An old `[time_limits.projects…]` table, in `config.toml` or saved by the Settings page, still loads; Paws ignores it, journals once at startup "time_limits.projects is no longer supported; using the global time limits", and the next save of time limits leaves it out.
+The limits are global: every item uses the same `[time_limits]`. A missing `implementation_minutes` is `PAWS_MAX_AWAKE_MS` (milliseconds), or 3 hours when that is unset, and missing fixes or Closeout limits count nothing. `config.toml` `[caps] max_awake_ms` is no longer read: when it is set and no `implementation_minutes` is saved, startup saves it once as `implementation_minutes`, rounded up to whole minutes, and journals that it was copied. A value above the 7-day maximum is saved as 7 days, and the journal line says it was shortened. Limits are fixed when an item is delegated and when a person asks for more time. Workspace › Queue and limits › Time limits reads and writes this table. An old `[time_limits.projects…]` table, in `config.toml` or saved by the Settings page, still loads; Paws ignores it, journals once at startup "time_limits.projects is no longer supported; using the global time limits", and the next save of time limits leaves it out.
 
 ### `[github_access]`
 
@@ -90,13 +90,13 @@ auto_approve_high_risk = false
 lane = "repository"
 ```
 
-Every item uses the `[merge]` choices. Paws still loads an `order` or `main_moved` under `[merge.projects.*]` and every `[[merge.rules]]` table, ignores them, and journals one line at startup; the next Settings › Merging save drops them.
+Every item uses the `[merge]` choices. Paws still loads an `order` or `main_moved` under `[merge.projects.*]` and every `[[merge.rules]]` table, ignores them, and journals one line at startup; the next Workspace › Merging save drops them.
 
 - **`order`**: how pull requests in one repository merge. `queue` (default) merges one at a time through the merge lane. `ci-green` merges each one on its own green CI. `github-queue` hands the merge to GitHub's merge queue.
-- **`main_moved`**: what the merge lane does when `main` moved before the merge. Set it in `[merge]` or in Settings › Merging as "When main moved before the merge".
+- **`main_moved`**: what the merge lane does when `main` moved before the merge. Set it in `[merge]` or in Workspace › Merging as "When main moved before the merge".
   - `"ci"` (default, and what a missing key means): rebase onto `main`, and the new head merges once its CI is green. Closeout does not run again; the new head carries Closeout's acceptance of the head it was rebased from.
   - `"overlap"`: when main's new commits touch none of the pull request's files, grouped by the repository's `packages` roots, merge without a rebase. When they do, or when GitHub requires branches to be up to date before merging, rebase and wait for CI as with `"ci"`.
-  - `"green"`: a pull request behind main merges once its own CI is green. Paws doesn't rebase it and doesn't compare main's new commits with its files. When GitHub requires branches to be up to date before merging, the branch is updated first, as with `"overlap"`. Main's new commits aren't tested together with the change before it merges; GitHub still refuses a pull request that conflicts. In Settings › Merging it is "Merge on green CI without updating the branch onto main".
+  - `"green"`: a pull request behind main merges once its own CI is green. Paws doesn't rebase it and doesn't compare main's new commits with its files. When GitHub requires branches to be up to date before merging, the branch is updated first, as with `"overlap"`. Main's new commits aren't tested together with the change before it merges; GitHub still refuses a pull request that conflicts. In Workspace › Merging it is "Merge on green CI without updating the branch onto main".
   - `"closeout"`: rebase and run Closeout again on the new head before it can merge.
 
   A changed Closeout policy sends a carried head back through Closeout under every value.
@@ -107,12 +107,12 @@ Every item uses the `[merge]` choices. Paws still loads an `order` or `main_move
 - **`no_project`**: where an item without a Linear project waits. `"own"` (default) gives it a lane of its own, so it never waits behind another item's merge; an overlap hold on shared files still applies. `"lane"` puts it in the lane without a project, split by person when `lanes` has `"person"`.
 - **`parallel`**: how many pull requests of one lane may merge at once, from 1 (default) to 5. The head of the lane goes as before. A task behind it in the lane's first `parallel` ready tasks merges alongside it only when its pull request is green on its own head and its latest candidate changes none of the files of the tasks ahead of it; one that shares a file waits as before. A batch member is not rebased onto the others: under `main_moved = "green"` or `"overlap"` it merges as it is. When two or more pull requests of a lane merged within 10 minutes of each other and main's CI then fails, the lane merges one at a time until main is green again, and the journal names the batch's pull requests.
 
-- **`auto_approve_high_risk`**: off by default. Settings › Merging offers "Let high-risk changes through when both reviews are clean". When on, a high-risk head needs no manual approval only if Closeout accepted that exact head under the current policy, both `security-review` and `independent-review` passed without P2-or-worse findings, including findings in pre-existing code, and no rule probe failed. Missing or unreadable evidence asks a person. Changes to `.paws/high-risk-paths`, any loaded Closeout policy input, `AGENTS.md`, `CLAUDE.md`, `.agents/**` or `.claude/**` always need a person. Review severities are stored with their exact Closeout attempt; the shared findings list cannot turn a P2 review into a clean review. Automatic approval is never stored and does not carry to a new or rebased head; both named reviews must run on that head. Manual approvals keep their existing carry-over behavior.
+- **`auto_approve_high_risk`**: off by default. Workspace › Merging offers "Let high-risk changes through when both reviews are clean". When on, a high-risk head needs no manual approval only if Closeout accepted that exact head under the current policy, both `security-review` and `independent-review` passed without P2-or-worse findings, including findings in pre-existing code, and no rule probe failed. Missing or unreadable evidence asks a person. Changes to `.paws/high-risk-paths`, any loaded Closeout policy input, `AGENTS.md`, `CLAUDE.md`, `.agents/**` or `.claude/**` always need a person. Review severities are stored with their exact Closeout attempt; the shared findings list cannot turn a P2 review into a clean review. Automatic approval is never stored and does not carry to a new or rebased head; both named reviews must run on that head. Manual approvals keep their existing carry-over behavior.
 
-- **`comment_quiet_seconds`**: how long Paws waits after the latest pull request comment or changes-requested review before it sends what it collected to the agent in one fix round. Default 60, from 0 to 3600. Settings › Merging › Pull request comments sets it as "Quiet time". A change applies to the next comment, without a restart.
-- **`comment_max_wait_seconds`**: the longest Paws keeps collecting while comments keep arriving, counted from the first one. Default 300, from 0 to 3600, and never below the quiet time. Settings › Merging calls it "Longest wait".
+- **`comment_quiet_seconds`**: how long Paws waits after the latest pull request comment or changes-requested review before it sends what it collected to the agent in one fix round. Default 60, from 0 to 3600. Workspace › Merging › Pull request comments sets it as "Quiet time". A change applies to the next comment, without a restart.
+- **`comment_max_wait_seconds`**: the longest Paws keeps collecting while comments keep arriving, counted from the first one. Default 300, from 0 to 3600, and never below the quiet time. Workspace › Merging calls it "Longest wait".
 - **`review_wait_max_seconds`**: the longest pull request comments and changes-requested reviews wait for review apps that are still checking the head, counted from the head's push (its first check suite's creation). While GitHub's checks can't be read, the wait holds until this long after the feedback arrived. Default 900, from 0 to 3600. Past it, Paws restarts with what has arrived.
-- **`ci_fix_attempts`**: legacy. Still read and shown in Settings › Merging › Pull request checks as "CI fix attempts", but it no longer sets a separate CI budget. Red CI on the pull request is a fix round and counts against the policy's `retry.fix_rounds_per_item`.
+- **`ci_fix_attempts`**: legacy. Still read and shown in Workspace › Merging › Pull request checks as "CI fix attempts", but it no longer sets a separate CI budget. Red CI on the pull request is a fix round and counts against the policy's `retry.fix_rounds_per_item`.
 - **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. With `main_moved = "overlap"`, a change anywhere under the same root on main counts as an overlap.
 - **`[merge.repositories."owner/repo"] review_apps`**: GitHub App slugs such as `acme-review` whose check runs comments wait for. Bots whose comments Paws has recorded on the repository's pull requests count as review apps without being listed.
 - **`[merge.repositories."owner/repo"] ignore_comment_bots`**: bot logins such as `codecov[bot]` whose pull request comments only report status, so they never restart the item. Replaces the default list (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets) for that repository; `[]` ignores no bot.
@@ -123,10 +123,10 @@ Every item uses the `[merge]` choices. Paws still loads an `order` or `main_move
   ignore_comment_markers = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]
   ```
 
-  Settings › Merging › Ignored PR comments edits both lists for each repository, one entry per line: **Bot accounts** (`ignore_comment_bots`) and **Comment markers** (`ignore_comment_markers`). An invalid entry is shown next to its field and nothing is saved. A saved change applies to the next comment, without a restart.
+  Workspace › Merging › Ignored PR comments edits both lists for each repository, one entry per line: **Bot accounts** (`ignore_comment_bots`) and **Comment markers** (`ignore_comment_markers`). An invalid entry is shown next to its field and nothing is saved. A saved change applies to the next comment, without a restart.
 
 - **`[merge.repositories."owner/repo"] suggested_findings`**: what Paws does with review findings below the review's `failOn` in code the pull request changed. `"off"` only lists them under the pull request's Open findings. `"next_turn"` (default) also hands them to the agent as suggestions in the next restart the item gets for any other reason. `"own_turn"` also starts one restart for them right after acceptance, once per item. A change applies to the next publication or restart, without a restart of Paws. [Suggested findings](improvement-review.md) has the details.
-- **`[merge.repositories."owner/repo"] parallel_files`**: exact paths of conflict-prone files Paws does not hold work for in that repository, such as `["src/index.ts"]`. A conflict-prone file is one that sent work back for a merge-queue conflict in the last 7 days; while a running or merge-queue item changes it, a queued item that changes it too waits. Settings › Merging › Conflict-prone files sets it with each file's **Hold work that changes this file** toggle; the file stays listed as Not held. Applies to the next scheduling pass.
+- **`[merge.repositories."owner/repo"] parallel_files`**: exact paths of conflict-prone files Paws does not hold work for in that repository, such as `["src/index.ts"]`. A conflict-prone file is one that sent work back for a merge-queue conflict in the last 7 days; while a running or merge-queue item changes it, a queued item that changes it too waits. Workspace › Merging › Conflict-prone files sets it with each file's **Hold work that changes this file** toggle; the file stays listed as Not held. Applies to the next scheduling pass.
 
 Paws merges after verification, required CI, reviews and branch protection permit it. Follow the dashboard's merge queue for the current reason work is waiting.
 
@@ -141,7 +141,7 @@ Grouping uses a paired runner owned by an active workspace owner or admin who ca
 - **`start_timeout_hours`**: how long an item may wait for a runner slot before Paws fails it. Default 24, from 1 to 720.
 - **`max_running_per_owner`**: how many items one owner may run at once. Missing means no cap; at most 1000.
 
-Settings › Queue and limits › Queue sets both.
+Workspace › Queue and limits › Queue sets both.
 
 ## Project skill roots
 
@@ -213,7 +213,7 @@ labels again. The agent session names a label's effect, for example
 An item about to wait for a runner has its labels read first when presets exist,
 so it waits for, or starts on, a runner with the labelled agent.
 
-The existing admin-protected `/api/settings/agents` endpoint reads and writes
+The existing admin-protected `/api/workspace/agents` endpoint reads and writes
 a `presets` object keyed by name alongside `defaults`.
 
 Agent profiles are global: every repository uses the same implementer and
@@ -224,7 +224,7 @@ leaves them out.
 
 ### Grok and OpenCode commands
 
-`/api/settings/agents` also reads and writes which commands start Grok and OpenCode:
+`/api/workspace/agents` also reads and writes which commands start Grok and OpenCode:
 
 ```json
 { "grok": { "path": "/opt/grok/bin/grok", "allowApiKey": false }, "opencode": { "path": null } }

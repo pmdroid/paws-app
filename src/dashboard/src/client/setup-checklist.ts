@@ -21,7 +21,7 @@ const STEPS: readonly Step[] = [
     done: (setup) => setup.github,
     action: {
       label: "Install the GitHub App",
-      href: routeHref({ view: "settings", page: "integrations" }),
+      href: routeHref({ view: "workspace", page: "integrations" }),
     },
   },
   {

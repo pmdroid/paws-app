@@ -10,7 +10,7 @@ import {
   riskGlobs,
 } from "./merge-settings";
 import { parseRoute } from "./route";
-import { SETTINGS_PAGES } from "./settings-pages";
+import { WORKSPACE_PAGES } from "./settings-pages";
 
 function data(): MergeSettingsView {
   return {
@@ -19,13 +19,9 @@ function data(): MergeSettingsView {
 }
 
 describe("Settings → Merging", () => {
-  test("is a settings page after Agents and Agent accounts", () => {
-    expect(SETTINGS_PAGES.map((page) => page.id).slice(0, 3)).toEqual([
-      "agents",
-      "agent-accounts",
-      "merging",
-    ]);
-    expect(parseRoute("/settings/merging")).toEqual({ view: "settings", page: "merging" });
+  test("is a workspace page after Agents", () => {
+    expect(WORKSPACE_PAGES.map((page) => page.id).slice(0, 2)).toEqual(["agents", "merging"]);
+    expect(parseRoute("/workspace/merging")).toEqual({ view: "workspace", page: "merging" });
   });
 
   test("shows one Merging section and no Projects or Issue rules", () => {

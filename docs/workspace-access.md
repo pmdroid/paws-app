@@ -30,7 +30,7 @@ If Linear revokes the app authorization, the dashboard offers **Reconnect Linear
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
-Paws has two workspace roles: `admin` and `member`. Admins assign roles on Settings > Members lists workspace members and lets administrators filter active or revoked access, change roles, revoke access and restore it. Before revoking someone, review the confirmation naming the runners and work it will stop. Changes appear in Settings > Audit history.
+Paws has two workspace roles: `admin` and `member`. Admins assign roles on Workspace > Members lists workspace members and lets administrators filter active or revoked access, change roles, revoke access and restore it. Before revoking someone, review the confirmation naming the runners and work it will stop. Changes appear in Workspace > Audit history.
 
 You cannot revoke yourself or remove the last active administrator. Restoring a member does not restore their runners; they must pair them again. Ask an administrator to change members or roles.
 

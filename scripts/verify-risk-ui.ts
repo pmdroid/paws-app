@@ -97,7 +97,7 @@ try {
       await expect(card.getByRole("heading", { name: "Risk" })).toBeVisible();
       await expect(card).toContainText("High");
       await expect(card).toContainText("changes 2 high-risk paths");
-      await expect(card).toContainText("Matched by Settings › Merging and .paws/high-risk-paths");
+      await expect(card).toContainText("Matched by Workspace › Merging and .paws/high-risk-paths");
       await expect(card).toContainText("Security review ran: passed.");
       await fits(page);
       await card.scrollIntoViewIfNeeded();

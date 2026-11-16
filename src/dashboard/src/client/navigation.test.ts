@@ -1,6 +1,6 @@
 import { fullStatusFixture, issueList, pageData } from "../../test/fixtures";
 import { beforeEach, expect, test } from "bun:test";
-import { SETTINGS_PAGES, setSettingsAdmin } from "./settings-pages";
+import { SETTINGS_PAGES, setSettingsAdmin, settingsPageRoute } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
   issueListRedirect,
@@ -24,9 +24,9 @@ const model = {
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
-  // Settings has its own menu, and an evidence page is opened from a run or a copied link.
+  // Settings and Workspace have their own entries, and an evidence page is opened from a run or a copied link.
   const linked = Object.keys(PAGES).filter(
-    (view) => !["settings", "evidence", "runs", "alias"].includes(view),
+    (view) => !["settings", "workspace", "evidence", "runs", "alias"].includes(view),
   );
   expect(new Set(views).size).toBe(linked.length);
   expect(views.length).toBe(linked.length);
@@ -35,7 +35,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
     expect(parseRoute(routeHref(route)).view).toBe(view);
   }
   for (const page of SETTINGS_PAGES) {
-    const route: Route = { view: "settings", page: page.id };
+    const route = settingsPageRoute(page.id);
     expect(parseRoute(routeHref(route))).toEqual(route);
     const result = render({ ...model, route });
     expect(result.content).toContain(`aria-current="page" class="settings-link">${page.name}</a>`);
