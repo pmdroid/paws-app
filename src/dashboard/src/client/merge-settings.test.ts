@@ -97,12 +97,6 @@ describe("Settings → Merging", () => {
     ).not.toContain("High-risk approval");
   });
 
-  test("members see why they cannot change it", () => {
-    expect(
-      renderMergeSettings({ data: null, busy: null, error: null, saved: false, denied: true }),
-    ).toContain("Only workspace admins can change merging settings.");
-  });
-
   test("saves project lanes but no retired rules, with the CSRF token", async () => {
     let sent: { url: string; init: RequestInit } | null = null;
     const fake = (async (url: URL, init: RequestInit) => {
@@ -434,17 +428,8 @@ describe("Conflict-prone files", () => {
     ).toEqual([{ repository: "acme/platform", paths: ["src/index.ts"] }]);
   });
 
-  test("members see no enabled toggle, and an engine without parallel files shows it disabled", () => {
+  test("an engine without parallel files shows the toggle disabled", () => {
     expect(render([file("src/index.ts", 1)])).toContain(" checked disabled> Hold work");
-    const denied = renderMergeSettings({
-      data: null,
-      busy: null,
-      error: null,
-      saved: false,
-      denied: true,
-    });
-    expect(denied).toContain("Only workspace admins can change merging settings.");
-    expect(denied).not.toContain('name="hot-hold"');
   });
 
   test("says nothing is held back without conflicts", () => {
@@ -472,7 +457,7 @@ test("Linear session controls render saved choices and save only applicable minu
   );
 });
 
-test("repository settings round trip and members see values without controls", () => {
+test("repository settings round trip and render as editable controls", () => {
   const value: MergeSettingsView = {
     ...data(),
     repositories: {
@@ -486,9 +471,10 @@ test("repository settings round trip and members see values without controls", (
     busy: null,
     error: null,
     saved: false,
-    editable: false,
   });
-  for (const text of ["apps/*", "review-bot", "Off", "abc", "repository"])
-    expect(html).toContain(text);
-  expect(html).not.toMatch(/<(input|textarea|select|button)\b/);
+  expect(html).toContain('name="repo-packages-0" rows="3" spellcheck="false">apps/*</textarea>');
+  expect(html).toContain('spellcheck="false">review-bot</textarea>');
+  expect(html).toContain('<option value="off" selected>Off</option>');
+  expect(html).toContain('<label for="project-lane-0">abc</label>');
+  expect(html).toContain('<option value="repository" selected>Repository lane</option>');
 });

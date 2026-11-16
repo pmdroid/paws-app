@@ -40,7 +40,6 @@ const saved = new Map<string, unknown>();
 const realFetch = globalThis.fetch;
 const GLOBALS = ["window", "document", "Element", "HTMLElement", "Event"] as const;
 let puts: unknown[];
-let status: number;
 let queueReady: Promise<unknown>;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -58,11 +57,9 @@ beforeEach(() => {
   }
   window.document.head.innerHTML = '<meta name="paws-csrf" content="token-1">';
   puts = [];
-  status = 200;
   queueReady = Promise.resolve();
   globalThis.fetch = (async (url: URL | string, init: RequestInit) => {
     const path = new URL(String(url)).pathname;
-    if (status !== 200) return Response.json({ error: "Workspace administration" }, { status });
     if (path === "/api/merge-queue") return queueReady.then(() => Response.json(QUEUE));
     if (path === "/api/settings/merging") {
       if (init.method !== "PUT") return Response.json(MERGING);
@@ -176,16 +173,6 @@ test("the preview arrives without discarding unsaved edits", async () => {
   await settle();
   expect(field(root, "#merge-lanes-preview").textContent).toStartWith("Lanes now: Billing");
   expect(field(root, '[name="merge-ci-fix-attempts"]').value).toBe("7");
-});
-
-test("members see no enabled controls", async () => {
-  status = 403;
-  const root = await mount();
-  expect(root.textContent).toContain("Only workspace admins can change merging settings.");
-  const enabled = [...root.querySelectorAll("input, select, textarea, button")].filter(
-    (control) => !(control as HTMLInputElement).disabled,
-  );
-  expect(enabled).toEqual([]);
 });
 
 test("at 375 px every lane label wraps inside the section instead of scrolling sideways", async () => {

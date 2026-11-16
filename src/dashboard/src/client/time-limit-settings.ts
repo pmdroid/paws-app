@@ -91,8 +91,7 @@ const intro =
   '<div class="settings-label"><h2>Time limits</h2><p class="sub">Paws asks whether to continue when a stage passes its limit. A stage that is not counted has no limit.</p></div>';
 
 export function renderTimeLimitSettings(view: TimeLimitView): string {
-  if (view.denied)
-    return `<section class="settings-section">${intro}<p class="sub">Only workspace admins can change time limits.</p></section>`;
+  if (view.denied) return "";
   const draft = view.draft;
   if (!draft)
     return `<section class="settings-section">${intro}<div class="col"><div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading time limits…")}</div>${view.error ? '<div class="row"><button class="btn" type="button" data-time-limits="reload">Try again</button></div>' : ""}</div></section>`;

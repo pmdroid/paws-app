@@ -27,8 +27,6 @@ const FILTERS: [MemberFilter, string][] = [
 
 const LAST_ADMIN = "The workspace must keep an active admin.";
 
-export const ASK_AN_ADMIN = "Ask an admin to change members or roles.";
-
 function memberStatus(member: WorkspaceMemberRow): "active" | "revoked" | "inactive" {
   if (member.revokedAt !== null) return "revoked";
   return member.active ? "active" : "inactive";
@@ -102,10 +100,7 @@ export function initializeWorkspaceMembers(
   const section = document.createElement("section");
   section.dataset.settingsPage = "members";
   root.append(section);
-  if (session.role !== "admin") {
-    renderMarkup(section, `<p class="sub">${ASK_AN_ADMIN}</p>`);
-    return;
-  }
+  if (session.role !== "admin") return;
   renderMarkup(
     section,
     `<div class="between"><div class="row" role="group" aria-label="Show members">${FILTERS.map(([filter, label]) => `<button class="btn" type="button" data-member-filter="${filter}" aria-pressed="${filter === "all"}">${label}</button>`).join("")}</div><button class="btn" type="button" data-members-refresh>Refresh members</button></div><p class="empty:hidden" role="status" data-members-feedback></p><div data-members-table></div><div data-members-dialog></div>`,

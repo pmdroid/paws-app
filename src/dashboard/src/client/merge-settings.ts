@@ -1,4 +1,3 @@
-import { settingsAreEditable } from "./settings-pages";
 import { journalCaught } from "../journal";
 import { MERGE_QUEUE_API_PATH, parseMergeQueueResponse } from "../contract";
 import { renderMarkup } from "./theme";
@@ -56,7 +55,6 @@ type View = {
   field?: string;
   saved: boolean;
   denied?: boolean;
-  editable?: boolean;
   ciFix?: { attempts: number; stored: number } | { error: string };
   queue?: LaneItem[];
 };
@@ -243,36 +241,33 @@ function ignoredSection(repositories: readonly IgnoredComments[], view: View): s
   return `<section class="settings-section" id="merge-ignored-comments"><div class="settings-label"><h2>Ignored PR comments</h2><p class="sub">Comments that only report status, so they never send the pull request back to the agent. One entry per line. Applies to the next comment.</p></div><div class="col">${body}</div></section>`;
 }
 
-function repositoryProjectSection(data: MergeSettingsView, editable = true): string {
+function repositoryProjectSection(data: MergeSettingsView): string {
   if (!data.repositories && !data.projects) return "";
   const list = (name: string, label: string, values: string[]) =>
     `<div class="settings-field"><label for="${name}">${label}</label><textarea id="${name}" name="${name}" rows="3" spellcheck="false">${esc(values.join("\n"))}</textarea></div>`;
   const repositories = Object.entries(data.repositories ?? {})
-    .map(([name, value], i) =>
-      editable
-        ? `<div class="settings-project"><h3>${esc(name)}</h3>${list(`repo-packages-${i}`, "Package roots, one per line", value.packages ?? [])}${list(`repo-apps-${i}`, "Review GitHub App slugs, one per line", value.reviewApps ?? [])}<div class="settings-field"><label for="repo-findings-${i}">Suggested findings</label><select id="repo-findings-${i}" name="repo-findings-${i}">${options({ default: "Default: include on the next turn", on: "Include on the next turn", off: "Off" }, value.suggestedFindings === undefined ? "default" : value.suggestedFindings ? "on" : "off")}</select></div></div>`
-        : `<div><h3>${esc(name)}</h3><p>Package roots: ${esc(value.packages?.join(", ") || "None")}</p><p>Review apps: ${esc(value.reviewApps?.join(", ") || "None")}</p><p>Suggested findings: ${value.suggestedFindings === false ? "Off" : "Include on the next turn"}</p></div>`,
+    .map(
+      ([name, value], i) =>
+        `<div class="settings-project"><h3>${esc(name)}</h3>${list(`repo-packages-${i}`, "Package roots, one per line", value.packages ?? [])}${list(`repo-apps-${i}`, "Review GitHub App slugs, one per line", value.reviewApps ?? [])}<div class="settings-field"><label for="repo-findings-${i}">Suggested findings</label><select id="repo-findings-${i}" name="repo-findings-${i}">${options({ default: "Default: include on the next turn", on: "Include on the next turn", off: "Off" }, value.suggestedFindings === undefined ? "default" : value.suggestedFindings ? "on" : "off")}</select></div></div>`,
     )
     .join("");
   const projects = Object.entries(data.projects ?? {})
-    .map(([id, value], i) =>
-      editable
-        ? `<div class="settings-field"><label for="project-lane-${i}">${esc(id)}</label><select id="project-lane-${i}" name="project-lane-${i}">${options({ default: "Use workspace lane settings", project: "Own project lane", repository: "Repository lane" }, value.lane ?? "default")}</select></div>`
-        : `<p>${esc(id)}: ${esc(value.lane ?? "Use workspace lane settings")}</p>`,
+    .map(
+      ([id, value], i) =>
+        `<div class="settings-field"><label for="project-lane-${i}">${esc(id)}</label><select id="project-lane-${i}" name="project-lane-${i}">${options({ default: "Use workspace lane settings", project: "Own project lane", repository: "Repository lane" }, value.lane ?? "default")}</select></div>`,
     )
     .join("");
   const add = (kind: string, label: string) =>
     `<div class="settings-field"><label for="new-${kind}">${label}</label><input id="new-${kind}" name="new-${kind}"><button class="btn" type="button" data-merge="add-${kind}">Add ${kind}</button></div>`;
-  return `<section class="settings-section" id="merge-repositories-projects"><div class="settings-label"><h2>Repositories and projects</h2><p class="sub">Package roots such as apps/* identify related changes. Review apps must approve before merging. Project overrides choose which lane a project uses.</p></div><div class="col min-w-0">${repositories || '<p class="sub">No repository overrides.</p>'}${editable && data.repositories ? add("repository", "Repository, owner/repo") : ""}${projects || '<p class="sub">No project overrides.</p>'}${editable && data.projects ? add("project", "Linear project ID") : ""}</div></section>`;
+  return `<section class="settings-section" id="merge-repositories-projects"><div class="settings-label"><h2>Repositories and projects</h2><p class="sub">Package roots such as apps/* identify related changes. Review apps must approve before merging. Project overrides choose which lane a project uses.</p></div><div class="col min-w-0">${repositories || '<p class="sub">No repository overrides.</p>'}${data.repositories ? add("repository", "Repository, owner/repo") : ""}${projects || '<p class="sub">No project overrides.</p>'}${data.projects ? add("project", "Linear project ID") : ""}</div></section>`;
 }
 
 export function renderMergeSettings(view: View): string {
-  if (view.denied) return '<p class="sub">Only workspace admins can change merging settings.</p>';
+  if (view.denied) return "";
   const intro = '<p class="sub">An item keeps the settings it had when it started.</p>';
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading merging settings…")}</div>${view.error ? '<button class="btn" type="button" data-merge="reload">Try again</button>' : ""}`;
   const data = view.data;
-  if (view.editable === false) return `${intro}${repositoryProjectSection(data, false)}`;
   const repos = { queues: data.githubQueue?.repositories ?? [], upToDate: data.upToDateRule ?? [] };
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.error)}</p>`
@@ -513,7 +508,7 @@ export function createMergeSettings(invalidate: () => void): {
             ? `[name="${active.getAttribute("name")}"]`
             : null
         : null;
-    renderMarkup(root, renderMergeSettings({ ...view, editable: settingsAreEditable() }));
+    renderMarkup(root, renderMergeSettings(view));
     if (held) root.querySelector<HTMLElement>(held)?.focus({ preventScroll: true });
   };
   const draft = () => {
@@ -668,7 +663,7 @@ export function createMergeSettings(invalidate: () => void): {
     });
   const click = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-merge]");
-    if (!button || view.busy || !engine || !settingsAreEditable()) return;
+    if (!button || view.busy || !engine) return;
     if (button.dataset.merge?.startsWith("add-")) {
       draft();
       const kind = button.dataset.merge.slice(4);
@@ -695,7 +690,7 @@ export function createMergeSettings(invalidate: () => void): {
   };
   const submit = (event: Event) => {
     event.preventDefault();
-    if (view.busy || !view.data || !engine || !settingsAreEditable()) return;
+    if (view.busy || !view.data || !engine) return;
     draft();
     const ciFix = view.ciFix && "attempts" in view.ciFix ? view.ciFix : null;
     const problem = ciFix ? ciFixProblem(ciFix.attempts) : null;

@@ -37,8 +37,7 @@ const intro =
   '<div class="settings-label"><h2>Queue</h2><p class="sub">While every runner slot is busy, a delegated item waits in line and Linear shows its place.</p></div>';
 
 export function renderQueueSettings(view: QueueView): string {
-  if (view.denied)
-    return `<section class="settings-section">${intro}<p class="sub">Only workspace admins can change queue settings.</p></section>`;
+  if (view.denied) return "";
   if (!view.queue)
     return `<section class="settings-section">${intro}<div class="col"><div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading queue settings…")}</div>${view.error ? '<div class="row"><button class="btn" type="button" data-queue-settings="reload">Try again</button></div>' : ""}</div></section>`;
   const hours = view.queue.startTimeoutHours;
