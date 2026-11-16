@@ -24,6 +24,11 @@ export function createUsageReader(
       );
     if (!file) throw new Error("Usage credential unavailable");
     const value = JSON.parse(Buffer.from(file.data, "base64").toString());
+    if (file.path === ".claude/paws-oauth.json") {
+      const oauth = ClaudeOAuthTokenSchema.parse(value);
+      if (oauth.expiresAt <= now()) throw new UsageCredentialExpired();
+      return await setupTokenLimits(origins.claude, oauth.token);
+    }
     let token: string;
     let expires: number;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -122,4 +127,48 @@ export function createUsageReader(
       ];
     });
   };
+}
+
+const SETUP_TOKEN_WINDOWS = [
+  ["5h", "5-hour"],
+  ["7d", "Weekly"],
+] as const;
+
+async function setupTokenLimits(origin: string, token: string): Promise<AgentLimit[]> {
+  const response = await fetch(new URL("v1/messages", origin + "/"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-5-5",
+      max_tokens: 1,
+      system: "You are Claude Code, Anthropic's official CLI for Claude.",
+      messages: [{ role: "user", content: "." }],
+    }),
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 401) throw new UsageAuthExpired();
+  const limits = SETUP_TOKEN_WINDOWS.flatMap(([key, label]) => {
+    const used = Number(response.headers.get(`anthropic-ratelimit-unified-${key}-utilization`));
+    const reset = Number(response.headers.get(`anthropic-ratelimit-unified-${key}-reset`));
+    if (
+      !response.headers.has(`anthropic-ratelimit-unified-${key}-utilization`) ||
+      !Number.isFinite(used)
+    )
+      return [];
+    return [
+      {
+        window: label,
+        usedPercent: Math.round(used * 100),
+        resetsAt: Number.isFinite(reset) && reset > 0 ? reset * 1000 : null,
+      },
+    ];
+  });
+  if (limits.length === 0) throw new Error("Provider usage unavailable");
+  return limits;
 }
