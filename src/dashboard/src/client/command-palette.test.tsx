@@ -44,6 +44,28 @@ test("a page name matches its item and a typed issue id comes first", async () =
   expect(paletteItems("").some((item) => item.issue)).toBe(false);
 });
 
+test("settings pages open in Settings and workspace pages in Workspace, for admins only", async () => {
+  installWindow();
+  const { paletteItems } = await import("./command-palette");
+  const pages = () =>
+    paletteItems("")
+      .filter((item) => /^(Settings|Workspace) · /.test(item.title))
+      .map((item) => [item.title, item.path]);
+  expect(pages()).toContainEqual(["Settings · Your account", "/settings/account"]);
+  expect(pages()).toContainEqual(["Settings · Agent accounts", "/settings/agent-accounts"]);
+  expect(pages()).toContainEqual(["Workspace · Merging", "/workspace/merging"]);
+  expect(pages()).toContainEqual(["Workspace · Member VMs", "/workspace/member-vm"]);
+  for (const [title, path] of pages())
+    expect(path!.startsWith(title!.startsWith("Workspace") ? "/workspace/" : "/settings/")).toBe(
+      true,
+    );
+  setSettingsAdmin(false);
+  expect(pages()).toEqual([
+    ["Settings · Your account", "/settings/account"],
+    ["Settings · Agent accounts", "/settings/agent-accounts"],
+  ]);
+});
+
 test("Ctrl K opens the palette, Down then Enter opens the second item and Escape closes", async () => {
   const window = installWindow();
   const { CommandPalette, paletteItems } = await import("./command-palette");

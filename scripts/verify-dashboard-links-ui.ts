@@ -60,12 +60,12 @@ try {
     await page.screenshot({ path: join(evidence, `issue-${width}.png`), fullPage: true });
 
     await page.goto(`${origin}/dashboard/settings/integrations`);
-    await expect(page).toHaveURL(`${origin}/dashboard/settings/integrations`);
+    await expect(page).toHaveURL(`${origin}/dashboard/workspace/integrations`);
     await expect(page.getByRole("region", { name: "Workspace settings" })).toContainText(
       "Configure workspace sign-in",
     );
     await page.reload();
-    await expect(page).toHaveURL(`${origin}/dashboard/settings/integrations`);
+    await expect(page).toHaveURL(`${origin}/dashboard/workspace/integrations`);
     await expect(page.getByRole("region", { name: "Workspace settings" })).toContainText(
       "Configure workspace sign-in",
     );

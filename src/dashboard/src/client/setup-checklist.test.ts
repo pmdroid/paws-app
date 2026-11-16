@@ -12,3 +12,14 @@ test("the next step adds an agent account in Settings until its binding is healt
   expect(done).toMatch(/data-setup-step="done">[\s\S]*?Add an agent account/);
   expect(done).not.toContain('href="/settings/agent-accounts"');
 });
+
+test("the GitHub App step links to Integrations in Workspace", () => {
+  const html = renderSetupChecklist({
+    github: false,
+    runner: false,
+    agent: false,
+    delegated: false,
+  });
+  expect(html).toContain('href="/workspace/integrations"');
+  expect(html).not.toContain('href="/settings/integrations"');
+});

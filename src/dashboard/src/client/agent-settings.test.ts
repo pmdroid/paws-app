@@ -74,11 +74,11 @@ describe("agent settings", () => {
     expect(renderSettingsPage("agents")).not.toContain('id="queue-settings"');
   });
 
-  test("settings remain reachable before any status items exist", () => {
-    expect(parseRoute("/settings")).toEqual({ view: "settings" });
-    expect(routeHref({ view: "settings" })).toBe("/settings");
+  test("workspace settings remain reachable before any status items exist", () => {
+    expect(parseRoute("/workspace")).toEqual({ view: "workspace" });
+    expect(routeHref({ view: "workspace" })).toBe("/workspace");
     const rendered = render({
-      route: { view: "settings" },
+      route: { view: "workspace" },
       phase: "loading",
       error: null,
       engineUrl: "http://localhost:8787",

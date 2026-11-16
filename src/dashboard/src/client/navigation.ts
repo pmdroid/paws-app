@@ -44,7 +44,11 @@ export const PAGES = {
   },
   settings: {
     title: "Settings",
-    description: "Configure agents, account connections, and workspace access.",
+    description: "Manage your sign-in and your agent accounts.",
+  },
+  workspace: {
+    title: "Workspace",
+    description: "Configure agents, merging, repositories, and workspace access.",
   },
 } satisfies Record<Route["view"], { title: string; description: string }>;
 

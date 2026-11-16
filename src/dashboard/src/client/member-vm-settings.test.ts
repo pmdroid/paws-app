@@ -83,7 +83,7 @@ test("a rejected size keeps the typed value and shows the server's message", asy
 
 test("Member VMs is an admin page", () => {
   setSettingsAdmin(false);
-  expect(shownSettingsPage("member-vm")).toBe("account");
+  expect(shownSettingsPage({ view: "workspace", page: "member-vm" })).toBe("account");
   setSettingsAdmin(true);
-  expect(shownSettingsPage("member-vm")).toBe("member-vm");
+  expect(shownSettingsPage({ view: "workspace", page: "member-vm" })).toBe("member-vm");
 });

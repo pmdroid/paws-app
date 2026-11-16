@@ -111,10 +111,10 @@ const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]
 
 export function render(model: RenderModel): Rendered {
   const route = model.route;
-  const pageTitle =
-    route.view === "settings"
-      ? SETTINGS_PAGES.find((page) => page.id === shownSettingsPage(route.page))!.name
-      : PAGES[model.route.view].title;
+  const settingsPage = shownSettingsPage(route);
+  const pageTitle = settingsPage
+    ? SETTINGS_PAGES.find((page) => page.id === settingsPage)!.name
+    : PAGES[model.route.view].title;
   const title = `Paws status · ${pageTitle}`;
   return {
     top: renderTop(model),
@@ -128,8 +128,8 @@ export function render(model: RenderModel): Rendered {
             ? FINDINGS_ROOT
             : model.route.view === "improvements"
               ? IMPROVEMENTS_ROOT
-              : model.route.view === "settings"
-                ? renderSettingsPage(model.route.page)
+              : settingsPage
+                ? renderSettingsPage(settingsPage)
                 : model.route.view === "questions"
                   ? renderQuestions({
                       selected: model.route.id,

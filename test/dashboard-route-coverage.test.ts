@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { ALIAS_KINDS } from "../src/dashboard/src/aliases";
-import { matchRoute } from "../src/dashboard/src/client/route";
-import { SETTINGS_PAGES } from "../src/dashboard/src/client/settings-pages";
+import { matchRoute, routePath } from "../src/dashboard/src/client/route";
+import {
+  SETTINGS_PAGES,
+  WORKSPACE_PAGES,
+  settingsPageRoute,
+} from "../src/dashboard/src/client/settings-pages";
 import { startDashboardFixture, type DashboardFixture } from "./dashboard-fixture";
 import {
   DASHBOARD_ROUTES,
@@ -65,10 +69,15 @@ describe("dashboard route coverage", () => {
   });
 
   test("settings entries are the settings registry", () => {
-    const mapped = DASHBOARD_ROUTES.filter((entry) => entry.surface === "settings").map(
-      (entry) => entry.pattern,
-    );
-    expect(mapped).toEqual(SETTINGS_PAGES.map((page) => `/settings/${page.id}`));
+    const entries = DASHBOARD_ROUTES.filter((entry) => entry.surface === "settings");
+    const mapped = entries
+      .filter((entry) => entry.disposition !== "alias")
+      .map((entry) => entry.pattern);
+    expect(mapped).toEqual(SETTINGS_PAGES.map((page) => routePath(settingsPageRoute(page.id))));
+    const moved = entries
+      .filter((entry) => entry.disposition === "alias")
+      .map((entry) => entry.pattern);
+    expect(moved).toEqual(WORKSPACE_PAGES.map((page) => `/settings/${page.id}`));
   });
 
   test("HTML entrypoints are mapped", () => {

@@ -51,7 +51,7 @@ describe("Risk card", () => {
       '<li><code>infra/main.tf</code><span class="muted">Matched by .paws/high-risk-paths</span></li>',
     );
     expect(html).toContain(
-      '<li><code>src/auth/session.ts</code><span class="muted">Matched by Settings › Merging and .paws/high-risk-paths</span></li>',
+      '<li><code>src/auth/session.ts</code><span class="muted">Matched by Workspace › Merging and .paws/high-risk-paths</span></li>',
     );
     expect(html).toContain("Security review ran: passed.");
   });
