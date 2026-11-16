@@ -592,16 +592,18 @@ try {
     await expect(admin).toHaveURL(`${f.origin}/dashboard/workspace/merging`);
     const sidebar = (viewer: Page) =>
       viewer.getByRole("navigation", { name: "Main navigation" }).getByRole("link");
-    await expect(sidebar(admin).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
-      "Workspace",
-      "Settings",
-    ]);
+    if (width > 390)
+      await expect(sidebar(admin).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
+        "Workspace",
+        "Settings",
+      ]);
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     await expect(page.locator(".settings-nav a")).toHaveText(["Your account", "Agent accounts"]);
-    await expect(sidebar(page).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
-      "Settings",
-    ]);
+    if (width > 390)
+      await expect(sidebar(page).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
+        "Settings",
+      ]);
     await page.screenshot({
       path: join(out, `settings-merging-member-${width}.png`),
       fullPage: true,

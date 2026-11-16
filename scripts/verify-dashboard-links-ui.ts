@@ -79,6 +79,8 @@ try {
     await expect(heading(page)).toHaveText("Issues");
 
     await page.goto(`${origin}/dashboard/settings/unknown`);
+    await expect(page.locator(".settings-link[aria-current]")).toHaveText("Your account");
+    await page.goto(`${origin}/dashboard/workspace/unknown`);
     await expect(page.getByRole("button", { name: "Save settings", exact: true })).toBeVisible();
     await page.goto(`${origin}/dashboard/not-a-page`);
     await expect(heading(page)).toHaveText("Overview");
