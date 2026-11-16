@@ -279,14 +279,16 @@ test("with no own runner, Add a runner first replaces the sign-in controls", asy
   const link = root.querySelector("[data-account-runnerless] a") as unknown as HTMLAnchorElement;
   expect(link.textContent).toBe("Add a runner first");
   expect(link.getAttribute("href")).toBe("/runners");
-  expect(
-    root.querySelectorAll('[data-account-action="sign-in"], [data-account-token]'),
-  ).toHaveLength(0);
+  expect(root.querySelectorAll('[data-account-action="sign-in"]')).toHaveLength(0);
+  expect(root.querySelectorAll('[data-account-id="A2"] [data-account-token]')).toHaveLength(1);
   expect(root.querySelector("[data-account-add]")).not.toBeNull();
 });
 
-for (const code of ["not-your-runner", "not-your-account"]) {
-  test(`a 403 ${code} shows inline on the account row`, async () => {
+for (const code of [
+  "Runner belongs to another member",
+  "Agent account belongs to another member",
+]) {
+  test(`a 403 "${code}" shows inline on the account row`, async () => {
     agent = "grok";
     const root = await mount();
     failure = code;
@@ -296,12 +298,22 @@ for (const code of ["not-your-runner", "not-your-account"]) {
       code,
     );
     expect(root.querySelector('[data-account-id="A2"] [data-account-error]')).toBeNull();
-    expect(root.querySelector(".settings-section > [role='alert']")).toBeNull();
+    expect(root.querySelector(".acct-page > [role='alert']")).toBeNull();
     failure = null;
     await click(root, "A1", "extra-usage");
     expect(root.querySelector("[data-account-error]")).toBeNull();
   });
 }
+
+test("any other 403 stays a page-level error", async () => {
+  agent = "grok";
+  const root = await mount();
+  failure = "Only workspace admins can do this.";
+  status = 403;
+  await click(root, "A1", "sign-in");
+  expect(root.querySelector("[data-account-error]")).toBeNull();
+  expect(root.querySelector(".acct-page > [role='alert']")?.textContent).toBe(failure);
+});
 
 test("a member sees the accounts read-only, with no controls", async () => {
   setSettingsAdmin(false);

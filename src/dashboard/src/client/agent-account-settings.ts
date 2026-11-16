@@ -34,6 +34,10 @@ export type AccountsView = {
 };
 
 const DAY = 86_400_000;
+const NOT_YOURS = new Set([
+  "Agent account belongs to another member",
+  "Runner belongs to another member",
+]);
 const CHEVRON = (path: string) =>
   `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"></path></svg>`;
 const UP = CHEVRON("m18 15-6-6-6 6");
@@ -156,7 +160,7 @@ function accountCard(account: CentralAccount, index: number, count: number, view
   const toggle = `<button class="btn" type="button" data-account-action="${account.enabled === false ? "enable" : "disable"}"${busy}>${account.enabled === false ? "Enable" : "Disable"}</button>`;
   const remove = `<button class="btn danger" type="button" data-account-action="remove"${busy}>Remove</button>`;
   const actions = `<div class="acct-actions">${signIn}${signOut}${toggle}${remove}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
-  const token = account.agent === "claude" && !runnerless ? tokenForm(account, busy) : "";
+  const token = account.agent === "claude" ? tokenForm(account, busy) : "";
   return `${open}${count > 1 ? ' draggable="true"' : ""}><div class="card acct-card">${head}${token}${actions}</div></li>`;
 }
 
@@ -258,7 +262,8 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     } catch (error) {
       journalCaught(error, "agent-account-settings.run", null);
       const message = error instanceof Error ? error.message : "Try again.";
-      if (id && (error as { status?: number }).status === 403) view.rowError = { id, message };
+      if (id && (error as { status?: number }).status === 403 && NOT_YOURS.has(message))
+        view.rowError = { id, message };
       else view.error = message;
     }
     view.busy = null;
