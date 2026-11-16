@@ -286,19 +286,23 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
   });
 });
 
-test("members read the workspace repositories but cannot change them", async () => {
+test("members cannot read or change the workspace repositories and admins can read them", async () => {
   await fixtureTest(async (f) => {
     const read = await fetch(`${f.origin}/api/workspaces/repositories`, {
       headers: f.headers("member"),
     });
-    expect(read.status).toBe(200);
-    expect(await read.json()).toEqual({ repositories: expect.any(Array) });
+    expect(read.status).toBe(403);
     const write = await fetch(`${f.origin}/api/workspaces/repositories`, {
       method: "PUT",
       headers: f.headers("member"),
       body: JSON.stringify({ repositories: [] }),
     });
     expect(write.status).toBe(403);
+    const admin = await fetch(`${f.origin}/api/workspaces/repositories`, {
+      headers: f.headers("admin"),
+    });
+    expect(admin.status).toBe(200);
+    expect(await admin.json()).toEqual({ repositories: expect.any(Array) });
   });
 });
 

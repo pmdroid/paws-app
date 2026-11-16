@@ -136,6 +136,7 @@ export function createHostedGitHubConnect(options: {
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
+    if (url.pathname !== CALLBACK && !(await administrator())) return denied();
     if (url.pathname === APP) {
       const configured = () =>
         Boolean(options.env.GITHUB_APP_ID || loadGitHubAppCredentials(options.home, options.env));
