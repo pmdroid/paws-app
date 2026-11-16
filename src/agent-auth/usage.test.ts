@@ -144,6 +144,6 @@ test("a setup token reads its limits from the rate-limit headers of a one-token 
     status = 401;
     await expect(read("claude", credential)).rejects.toBeInstanceOf(UsageAuthExpired);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
