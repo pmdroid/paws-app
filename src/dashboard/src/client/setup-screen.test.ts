@@ -117,10 +117,11 @@ test("a configured GitHub App checks GitHub only once Integrations is shown", as
   const requested = respondConfigured(session("admin", true));
   expect(await initializeWorkspaceAccess(() => null)).toBe(true);
   await settle();
-  expect(requested).toContain("/api/workspaces/github-app");
+  expect(requested).not.toContain("/api/workspaces/github-app");
   expect(requested).not.toContain("/api/workspaces/github-connect");
   showWorkspaceSettingsPage("integrations");
   await settle();
+  expect(requested).toContain("/api/workspaces/github-app");
   expect(requested).toContain("/api/workspaces/github-connect");
 });
 

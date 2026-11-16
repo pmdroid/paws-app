@@ -203,8 +203,8 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   );
   initializeWorkspaceMembers(root, session);
   initializeWorkspaceAttribution(root, session.csrfToken);
-  initializeWorkspaceGitHub(root, session.csrfToken, session.role === "admin");
   if (session.role === "admin") {
+    initializeWorkspaceGitHub(root, session.csrfToken, true);
     initializeWorkspaceAudit(root);
   }
   showWorkspaceSettingsPage(page());

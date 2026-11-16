@@ -28,8 +28,12 @@ export function initializeWorkspaceGitHub(
   csrfToken: string,
   canEditRepositories = false,
 ): void {
-  void initializeGitHubAppSetup(root, csrfToken, () =>
-    initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories),
+  loadWhenShown(
+    "integrations",
+    () =>
+      void initializeGitHubAppSetup(root, csrfToken, () =>
+        initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories),
+      ),
   );
 }
 
@@ -234,22 +238,24 @@ function initializeConfiguredWorkspaceGitHub(
     if (target.hasAttribute("data-github-refresh")) void load();
     if (target.hasAttribute("data-github-connect")) void connect();
   });
-  window.addEventListener("focus", () => {
-    if (!section.isConnected || section.hidden || root.hidden) return;
-    void load().then(() => {
-      if (
-        waitingForInstall &&
-        data?.status === "needs_connection" &&
-        data.canManage &&
-        !data.requiresSignIn
-      ) {
-        waitingForInstall = false;
-        void connect();
-      }
-    });
-  });
   document.addEventListener("paws:github-access-changed", () => {
     if (section.isConnected) void load();
   });
-  loadWhenShown("integrations", () => void load());
+  loadWhenShown("integrations", () => {
+    window.addEventListener("focus", () => {
+      if (!section.isConnected || section.hidden || root.hidden) return;
+      void load().then(() => {
+        if (
+          waitingForInstall &&
+          data?.status === "needs_connection" &&
+          data.canManage &&
+          !data.requiresSignIn
+        ) {
+          waitingForInstall = false;
+          void connect();
+        }
+      });
+    });
+    void load();
+  });
 }
