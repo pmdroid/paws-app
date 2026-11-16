@@ -24,7 +24,12 @@ export type AgentAccountOverview = {
   enabled: boolean;
   signingIn: boolean;
   credential: { refreshedAt: number; runner: string | null } | null;
-  usage: { limits: RunnerAgentLimit[]; observedAt: number; stale?: boolean } | null;
+  usage: {
+    limits: RunnerAgentLimit[];
+    observedAt: number;
+    stale?: boolean;
+    unavailable?: string;
+  } | null;
   lease: {
     runner: string;
     runId: string;

@@ -71,14 +71,28 @@ export function* saveProviderUsageSteps(
   );
 }
 
-export function* staleProviderUsageSteps(q: Q, id: string) {
-  const previous = yield* providerUsageSteps(q, id);
-  if (!previous?.limitsJson) return;
+export function* staleProviderUsageSteps(
+  q: Q,
+  account: { id: string; workspaceId: string; agent: string },
+  unavailable: string | null,
+  now: number,
+) {
+  const previous = yield* providerUsageSteps(q, account.id);
+  if (!previous?.limitsJson && !unavailable) return;
+  if (!previous?.limitsJson) yield* saveProviderUsageSteps(q, account, [], now);
   const h = q.t.agentAccountHealth;
   yield* q.exec(
     q.orm
       .update(h)
-      .set({ limitsJson: JSON.stringify({ ...JSON.parse(previous.limitsJson), stale: true }) })
-      .where(and(eq(h.scopeId, id), eq(h.kind, "quota"), eq(h.model, ""))),
+      .set({
+        limitsJson: JSON.stringify({
+          ...(previous?.limitsJson
+            ? JSON.parse(previous.limitsJson)
+            : { limits: [], observedAt: now }),
+          stale: true,
+          unavailable: unavailable ?? undefined,
+        }),
+      })
+      .where(and(eq(h.scopeId, account.id), eq(h.kind, "quota"), eq(h.model, ""))),
   );
 }

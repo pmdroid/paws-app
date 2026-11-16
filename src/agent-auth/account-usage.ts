@@ -7,7 +7,12 @@ import {
   type Db,
 } from "../db";
 import { readAgentCredentialSteps } from "../credentials";
-import { createUsageReader, UsageAuthExpired } from "./usage";
+import {
+  createUsageReader,
+  UsageAuthExpired,
+  UsageCredentialExpired,
+  UsageUnavailable,
+} from "./usage";
 export function createAccountUsage(options: {
   store: Db;
   secretsDir: string;
@@ -34,7 +39,16 @@ export function createAccountUsage(options: {
       await options.store.transaction(function* (q) {
         const current = yield* readAgentCredentialSteps(q, options.secretsDir, account.id);
         if (current?.version !== credential.version) return;
-        yield* staleProviderUsageSteps(q, account.id);
+        yield* staleProviderUsageSteps(
+          q,
+          account,
+          error instanceof UsageUnavailable
+            ? error.message
+            : error instanceof UsageAuthExpired || error instanceof UsageCredentialExpired
+              ? null
+              : "Usage unavailable",
+          now(),
+        );
         if (!(error instanceof UsageAuthExpired)) return;
         const raw = yield* readAgentAuthSteps(q, account.id);
         yield* writeAgentAuthSteps(
@@ -56,6 +70,7 @@ export function createAccountUsage(options: {
   }
   return {
     async tick(id?: string) {
+      const failures: unknown[] = [];
       for (const account of await accounts()) {
         if ((id && account.id !== id) || !["codex", "claude"].includes(account.agent)) continue;
         const previous = active.get(account.id);
@@ -67,10 +82,14 @@ export function createAccountUsage(options: {
         active.set(account.id, pending);
         try {
           await pending;
+        } catch (error) {
+          failures.push(error);
         } finally {
           if (active.get(account.id) === pending) active.delete(account.id);
         }
       }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "Provider usage poll failed");
     },
   };
 }

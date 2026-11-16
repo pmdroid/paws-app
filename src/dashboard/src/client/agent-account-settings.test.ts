@@ -354,6 +354,12 @@ for (const manage of [true, false]) {
     row.extraUsage = true;
     expect(render()).toContain("On extra usage");
     expect(render()).toContain("Running on extra usage");
+    row.usage.unavailable = "Usage unavailable (HTTP 429)";
+    expect(render()).toContain("Usage unavailable (HTTP 429)");
+    row.usage.limits = [];
+    row.usage.unavailable = "Usage not available for this sign-in";
+    expect(render()).toContain("Usage not available for this sign-in");
+    expect(render()).not.toContain("Usage may be out of date");
     row.usage = null;
     render();
     expect(window.document.querySelector("[data-account-usage]")).toBeNull();

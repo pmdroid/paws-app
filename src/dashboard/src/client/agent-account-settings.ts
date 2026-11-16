@@ -98,9 +98,11 @@ function accountUsage(account: CentralAccount): string {
     .join("");
   const reached = limitReached(account);
   const state = reached.length && account.extraUsage ? "Running on extra usage · " : "";
-  const freshness = usage.stale
-    ? "Usage may be out of date"
-    : `Updated ${Math.max(0, Math.floor((Date.now() - usage.observedAt) / 60000))} min ago`;
+  const freshness = usage.unavailable
+    ? usage.unavailable
+    : usage.stale
+      ? "Usage may be out of date"
+      : `Updated ${Math.max(0, Math.floor((Date.now() - usage.observedAt) / 60000))} min ago`;
   return `<div class="acct-usage" data-account-usage>${meters}<p class="sub">${esc(state + freshness)}</p></div>`;
 }
 

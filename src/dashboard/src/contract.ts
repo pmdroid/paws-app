@@ -2541,4 +2541,5 @@ export type AgentAccountUsage = {
   limits: { window: string; usedPercent: number; resetsAt: number | null }[];
   observedAt: number;
   stale?: boolean;
+  unavailable?: string;
 };
