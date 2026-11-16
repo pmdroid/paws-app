@@ -792,50 +792,18 @@ export function* endAgentWaitSteps(
   yield* q.exec(q.orm.delete(agentWait).where(eq(agentWait.runId, run.runId)));
   if (waitedMs === undefined) return jobReady;
   const counted = Math.max(0, item.waitingMs - open.waitingMs);
-  yield* agentTimeToWaitingSteps(q, item, waitedMs - counted);
-  return jobReady;
-}
-
-/** Moves agent time the item spent waiting into its waiting total. */
-function* agentTimeToWaitingSteps(q: Q, item: WorkItemRecord, waitedMs: number) {
-  const stage = yield* agentTurnStageSteps(q, item.id);
+  const stage = yield* agentTurnStageSteps(q, run.itemId);
   const moved = Math.min(
-    Math.max(0, waitedMs),
+    Math.max(0, waitedMs - counted),
     item.agentMs,
     stage === "implementation" ? item.implementMs : item.fixMs,
   );
   if (moved > 0)
-    yield* setItemSteps(q, item.id, {
+    yield* setItemSteps(q, run.itemId, {
       ...addedTo(q, ["awakeMs", "agentMs", STAGE_COLUMN[stage]], -moved),
       ...addedTo(q, ["waitingMs"], moved),
     });
-}
-
-/** Says whether the accrual inserted a job. */
-export function* settleHelperLaneWaitSteps(
-  q: Q,
-  id: string,
-  mono: number,
-  now: number,
-  waitedMs: number,
-): Steps<boolean> {
-  const { outcome, jobReady } = yield* accrueAwakeSteps(q, id, mono, now);
-  yield* agentTimeToWaitingSteps(q, outcome.item, waitedMs);
   return jobReady;
-}
-
-/** Settles an attempt that waited for a runner's helper lane, counting that wait as waiting. */
-export async function settleHelperLaneWait(
-  store: Db,
-  id: string,
-  mono: number,
-  now: number,
-  waitedMs: number,
-): Promise<void> {
-  const jobReady = await store.transaction((q) =>
-    settleHelperLaneWaitSteps(q, id, mono, now, waitedMs),
-  );
-  if (jobReady) emitJobReady(store);
 }
 
 export async function endAgentWait(

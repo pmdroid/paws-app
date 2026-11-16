@@ -116,15 +116,19 @@ test("repeated helper-lane deferrals count as waiting and leave the implementati
     },
   ]);
   const laneWaitMs = 20_000;
+  const workMs = 1_000;
   let intake = true;
-  const busyLane = async (_options: Parameters<typeof runAgent>[0]) => {
-    clock.advance(laneWaitMs);
-    const error = new RunnerSlotsBusyError(
-      "Queued: the runner's helper lane is busy. Paws retries when it frees.",
-    );
-    error.waitedMs = laneWaitMs;
-    throw error;
-  };
+  const busyLane =
+    (onLaneWait?: (waiting: boolean) => Promise<void>) =>
+    async (_options: Parameters<typeof runAgent>[0]) => {
+      clock.advance(workMs);
+      await onLaneWait?.(true);
+      clock.advance(laneWaitMs);
+      await onLaneWait?.(false);
+      throw new RunnerSlotsBusyError(
+        "Queued: the runner's helper lane is busy. Paws retries when it frees.",
+      );
+    };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
@@ -142,8 +146,8 @@ test("repeated helper-lane deferrals count as waiting and leave the implementati
     },
     remoteExecution: {
       slotFree: async () => !intake,
-      agentForSession: () => busyLane,
-      agentForItem: () => busyLane,
+      agentForSession: (_sessionId, _purpose, onLaneWait) => busyLane(onLaneWait),
+      agentForItem: () => busyLane(),
     },
   });
   const runnable = () =>
@@ -160,9 +164,9 @@ test("repeated helper-lane deferrals count as waiting and leave the implementati
     }
     const after = (await getWorkItem(db, itemId))!;
     expect(after.state).toBe("recovering");
-    expect(after.implementMs).toBe(0);
-    expect(after.agentMs).toBe(0);
-    expect(after.waitingMs).toBeGreaterThanOrEqual(3 * laneWaitMs);
+    expect(after.implementMs).toBe(4 * workMs);
+    expect(after.agentMs).toBe(4 * workMs);
+    expect(after.waitingMs).toBe(4 * laneWaitMs);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();

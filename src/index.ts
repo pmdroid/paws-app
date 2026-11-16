@@ -1352,12 +1352,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           input.signal?.throwIfAborted();
           return backend.agents.forItem(itemId)(input);
         },
-        agentForSession: (sessionId, purpose) => async (input) => {
+        agentForSession: (sessionId, purpose, onLaneWait) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
           const backend = await remote;
           input.signal?.throwIfAborted();
-          return backend.sessions.forSession(sessionId, purpose)(input);
+          return backend.sessions.forSession(sessionId, purpose, onLaneWait)(input);
         },
       }
     : unavailableRemoteExecution();
