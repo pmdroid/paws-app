@@ -679,6 +679,13 @@ function resumedSession(directory: string): string | undefined {
   return sessionId;
 }
 
+export function reviewCommandEnv(
+  agent: "claude" | "codex",
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return agent === "claude" && env.HOME ? { ...env, ...claudeAgentEnv(env.HOME) } : env;
+}
+
 /**
  * A reviewer turn as the agent's own review command of `base..HEAD`, run in the run's checkout
  * with the runner's login: `codex exec review --base` or Claude `/code-review`. The command's
@@ -1758,7 +1765,7 @@ export async function executeRunnerCommand(
                 ...(earlier ? { earlier } : {}),
                 worktree,
                 executable: providerCli(agentName),
-                env: input.env ?? agentEnv,
+                env: reviewCommandEnv(agentName, input.env ?? agentEnv),
                 // The runtime renews authority and aborts the worker when it ends.
                 timeoutMs: input.signal
                   ? 2_147_483_647
