@@ -35,7 +35,8 @@ import {
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
 const HELD_JOURNAL_INTERVAL_MS = 5 * 60_000;
-const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";
+export const HELPER_LANE_BUSY =
+  "Queued: the runner's helper lane is busy. Paws retries when it frees.";
 
 /** A placement rejection that only says the runner is full: a wait, not a cause. */
 const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
