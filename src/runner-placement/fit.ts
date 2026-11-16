@@ -1,3 +1,4 @@
+import { MINIMUM_RUNNER_VERSION } from "../runner-protocol";
 import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
@@ -129,7 +130,9 @@ function* runnerVerdictsSteps(
     if (!runner.eligible) {
       runners.push(
         verdict(
-          runner.reason,
+          runner.reason === "outdated"
+            ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
+            : runner.reason,
           runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"
             ? "sign-in"
             : null,

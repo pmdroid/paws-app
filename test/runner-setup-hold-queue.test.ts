@@ -30,7 +30,7 @@ import {
   itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
 import { and, eq } from "drizzle-orm";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
@@ -108,6 +108,7 @@ async function addRunner(db: Db, id: string, ownerId: string, seenAt: number, re
         lastSeenAt: seenAt,
       }),
     (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: id, capacity: 1 }),
+    (q) => currentRunnerHost(q, id),
     (q) =>
       q.orm
         .insert(q.t.runnerAgentPolicy)

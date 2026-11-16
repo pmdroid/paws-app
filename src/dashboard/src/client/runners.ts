@@ -623,7 +623,12 @@ type AccountSummary = {
   extraUsage: boolean;
   usage: { limits: AgentLimit[] } | null;
 };
-type RunnerListView = { now: number; serverVersion: string | null; accounts?: AccountSummary[] };
+type RunnerListView = {
+  now: number;
+  serverVersion: string | null;
+  minimumRunnerVersion?: string | null;
+  accounts?: AccountSummary[];
+};
 type RowTag = [tone: string, text: string];
 
 /** The Status and Agents cells of a runner's row, as tone and text. */
@@ -733,7 +738,7 @@ export function runnerRowMarkup(runner: Runner, view: RunnerListView): string {
       : `<a class="flex flex-wrap gap-1.5" href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">${tagsMarkup(agents) || '<span class="muted">No agents reported</span>'}</a>`;
   const cell = (body: string) =>
     `<td><div class="flex min-w-36 flex-wrap items-center gap-1.5 [overflow-wrap:normal]">${body}</div></td>`;
-  return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div></div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
+  return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div>${view.minimumRunnerVersion && (runner.version === null || (compareVersions(runner.version, view.minimumRunnerVersion) ?? -1) < 0) ? `<p>Upgrade this runner to ${esc(view.minimumRunnerVersion)}</p>` : ""}</div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
 }
 
 /** Online, slots in use and runners that need attention, from the loaded list alone. */
@@ -1452,6 +1457,7 @@ export function createRunners() {
   let loaded = false;
   let runners: Runner[] = [];
   let serverVersion: string | null = null;
+  let minimumRunnerVersion: string | null = null;
   let agentCatalog: AgentCatalogEntry[] = [];
   let accounts: AccountSummary[] | undefined;
   let policies = new Map<string, HostPolicy>();
@@ -1569,6 +1575,7 @@ export function createRunners() {
       const list = await api<{
         runners: Runner[];
         serverVersion?: string | null;
+        minimumRunnerVersion?: string;
         agentVersions?: AgentCatalogEntry[];
         setupRequired?: boolean;
         workspaceReady?: boolean;
@@ -1644,6 +1651,7 @@ export function createRunners() {
       runners = listedRunners(list.runners);
       loaded = true;
       serverVersion = list.serverVersion ?? null;
+      minimumRunnerVersion = list.minimumRunnerVersion ?? null;
       agentCatalog = list.agentVersions ?? [];
       policies = new Map(hosts.filter((entry) => entry !== null));
       session = identity;
@@ -1746,7 +1754,7 @@ export function createRunners() {
           )
           .join("")
       : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });

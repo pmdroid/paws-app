@@ -17,7 +17,11 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import { REPOSITORY_COMMAND_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  REPOSITORY_COMMAND_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+} from "../runner-protocol";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -56,6 +60,10 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         return "owner-not-in-team";
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS) return "offline";
       if (status !== "active") return "paused";
+      if (
+        !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), MINIMUM_RUNNER_VERSION)
+      )
+        return "outdated";
       if (input.purpose !== "prepare") {
         let expired = false;
         let healthy = false;

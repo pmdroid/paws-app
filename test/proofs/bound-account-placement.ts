@@ -1,3 +1,4 @@
+import { MINIMUM_RUNNER_VERSION } from "../../src/runner-protocol";
 import { probeRunnerPlacement } from "../local/runner-placement";
 import { eq } from "drizzle-orm";
 import { seed } from "../pglite-fixtures";
@@ -26,6 +27,22 @@ export default {
     const binding = (await data.listAgentBindings(db, workspace.id)).find(
       (b) => b.runnerId === runnerId && !b.legacy,
     )!;
+    for (const runnerVersion of [null, "0.1.83"]) {
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.runnerHostStatus)
+          .set({ runnerVersion })
+          .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
+      );
+      expect("outdated runner refuses work", (await placement.candidates(request)).length === 0);
+    }
+    await data.recordRunnerHostStatus(
+      db,
+      runnerId,
+      { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
+      NOW,
+    );
+    expect("minimum runner accepts work", (await placement.candidates(request)).length === 1);
     await probeRunnerPlacement(process.env.TMPDIR!, expect);
     for (const [index, source] of (["login_check", "sign_in"] as const).entries()) {
       await data.recordAccountObservation(db, {

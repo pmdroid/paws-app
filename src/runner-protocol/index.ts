@@ -147,6 +147,7 @@ export {
 } from "./agents";
 
 export {
+  MINIMUM_RUNNER_VERSION,
   type RunnerVersion,
   OPENCODE_RUNNER_VERSION,
   SKILL_HOOK_RUNNER_VERSION,

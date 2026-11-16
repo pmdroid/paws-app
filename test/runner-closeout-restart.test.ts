@@ -483,9 +483,6 @@ const ended = async (f: Fixture) => {
   return row?.endedAt ?? null;
 };
 
-const runnerVersion = (f: Fixture, version: string) =>
-  seed(f.db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion: version }));
-
 test("a Closeout review keeps running through a Paws restart and its result is used once", async () => {
   const f = await fixture();
   try {
@@ -640,7 +637,7 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
   }
 }, 60_000);
 
-test("a review command refuses runners that would discard the brief and earlier findings", async () => {
+test("a review command carries the brief and earlier findings", async () => {
   const earlier = [
     {
       severity: "P1" as const,
@@ -650,64 +647,42 @@ test("a review command refuses runners that would discard the brief and earlier 
       status: "open" as const,
     },
   ];
-  for (const version of ["0.1.54", "0.1.55"]) {
-    const f = await fixture();
-    try {
-      await runnerVersion(f, version);
-      const options = f.review(new AbortController().signal);
-      const base = options.reviewCommand!.base;
-      const running = f.services.backend.forItem(f.item.id)({
-        ...options,
-        reviewCommand: { base, brief: "Issue: PAS-1", earlier },
-      });
-      if (version === "0.1.54") {
-        await expect(running).rejects.toThrow("needs runner 0.1.55 or later");
-        expect(f.placed).toHaveLength(0);
-        continue;
-      }
-      if (Number(version.split(".")[0]) === 0 && Number(version.split(".")[2]) < 61) {
-        await expect(running).rejects.toThrow("Named agent accounts need runner 0.1.61");
-        continue;
-      }
-      await f.until(() => f.placed.length === 1);
-      const command = f.placed[0]!;
-      expect(command.type === "review" && command.reviewCommand).toEqual({
-        base,
-        brief: "Issue: PAS-1",
-        earlier,
-      });
-      await f.finish(command, { reviewText: REVIEW_TEXT });
-      expect(await running).toMatchObject({ stopReason: "end_turn" });
-    } finally {
-      await f.close();
-    }
+  const f = await fixture();
+  try {
+    const options = f.review(new AbortController().signal);
+    const base = options.reviewCommand!.base;
+    const running = f.services.backend.forItem(f.item.id)({
+      ...options,
+      reviewCommand: { base, brief: "Issue: PAS-1", earlier },
+    });
+    await f.until(() => f.placed.length === 1);
+    const command = f.placed[0]!;
+    expect(command.type === "review" && command.reviewCommand).toEqual({
+      base,
+      brief: "Issue: PAS-1",
+      earlier,
+    });
+    await f.finish(command, { reviewText: REVIEW_TEXT });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+  } finally {
+    await f.close();
   }
 }, 60_000);
 
-test("a checks run asks for rules first only on a runner that accepts it", async () => {
-  for (const [version, expected] of [
-    ["0.1.59", undefined],
-    ["0.1.60", true],
-  ] as const) {
-    const f = await fixture();
-    try {
-      await runnerVersion(f, version);
-      const running = f.services.backend.forItem(f.item.id)({
-        ...f.checks(new AbortController().signal),
-        closeoutRulesFirst: true,
-      });
-      if (Number(version.split(".")[0]) === 0 && Number(version.split(".")[2]) < 61) {
-        await expect(running).rejects.toThrow("Named agent accounts need runner 0.1.61");
-        continue;
-      }
-      await f.until(() => f.placed.length === 1);
-      const command = f.placed[0]!;
-      expect(command.type === "run" && command.closeoutRulesFirst).toBe(expected);
-      await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
-      expect(await running).toMatchObject({ stopReason: "end_turn" });
-    } finally {
-      await f.close();
-    }
+test("a checks run asks for rules first", async () => {
+  const f = await fixture();
+  try {
+    const running = f.services.backend.forItem(f.item.id)({
+      ...f.checks(new AbortController().signal),
+      closeoutRulesFirst: true,
+    });
+    await f.until(() => f.placed.length === 1);
+    const command = f.placed[0]!;
+    expect(command.type === "run" && command.closeoutRulesFirst).toBe(true);
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+  } finally {
+    await f.close();
   }
 }, 60_000);
 
@@ -730,49 +705,39 @@ function recordingAgentRead(minted = true) {
   return { agentRead, opened, closed };
 }
 
-test("a turn on a runner that takes it gets one read token and its prompt line; an older runner gets neither", async () => {
-  for (const [version, current] of [
-    ["0.1.67", false],
-    ["0.1.68", true],
-  ] as const) {
-    const read = recordingAgentRead();
-    const f = await fixture(read.agentRead);
-    try {
-      await runnerVersion(f, version);
-      const running = f.services.backend.forItem(f.item.id)({
-        ...f.checks(new AbortController().signal),
-        githubRead: { prompt: READ_PROMPT },
-      });
-      await f.until(() => f.placed.length === 1);
-      const command = f.placed[0]!;
-      expect(command.type === "run" && command.githubRead).toBe(current ? true : undefined);
-      expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(current);
-      await f.say(command, 1, `gh printed ${READ_TOKEN}`);
-      await f.until(async () => (await f.consumed()) === 1);
-      await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
-      expect(await running).toMatchObject({ stopReason: "end_turn" });
-      expect(read.opened).toEqual(
-        current
-          ? [
-              {
-                commandId: command.id,
-                itemId: f.item.id,
-                runId: command.runId,
-                repository: "acme/fixture",
-              },
-            ]
-          : [],
-      );
-      expect(read.closed).toEqual(current ? [command.id] : []);
-      const stored = readFileSync(
-        join(runDir(f.root, f.checks(new AbortController().signal).runId), "acp.jsonl"),
-        "utf8",
-      );
-      expect(stored.includes(READ_TOKEN)).toBe(!current);
-      expect(JSON.stringify(f.events).includes(READ_TOKEN)).toBe(!current);
-    } finally {
-      await f.close();
-    }
+test("a turn gets one read token and its prompt line", async () => {
+  const read = recordingAgentRead();
+  const f = await fixture(read.agentRead);
+  try {
+    const running = f.services.backend.forItem(f.item.id)({
+      ...f.checks(new AbortController().signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    await f.until(() => f.placed.length === 1);
+    const command = f.placed[0]!;
+    expect(command.type === "run" && command.githubRead).toBe(true);
+    expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(true);
+    await f.say(command, 1, `gh printed ${READ_TOKEN}`);
+    await f.until(async () => (await f.consumed()) === 1);
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+    expect(read.opened).toEqual([
+      {
+        commandId: command.id,
+        itemId: f.item.id,
+        runId: command.runId,
+        repository: "acme/fixture",
+      },
+    ]);
+    expect(read.closed).toEqual([command.id]);
+    const stored = readFileSync(
+      join(runDir(f.root, f.checks(new AbortController().signal).runId), "acp.jsonl"),
+      "utf8",
+    );
+    expect(stored.includes(READ_TOKEN)).toBe(false);
+    expect(JSON.stringify(f.events).includes(READ_TOKEN)).toBe(false);
+  } finally {
+    await f.close();
   }
 }, 60_000);
 

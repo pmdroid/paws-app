@@ -1,5 +1,5 @@
 import { recordRunnerHostStatus } from "../db";
-import { bindFixtureAccounts } from "../../test/pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "../../test/pglite-fixtures";
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
@@ -1173,7 +1173,7 @@ async function answerTask() {
         "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
         [runnerId],
       );
-      await recordRunnerHostStatus(db, runnerId, { runnerVersion: "0.1.82" }, now());
+      await recordRunnerHostStatus(db, runnerId, { runnerVersion: CURRENT_RUNNER_VERSION }, now());
     }
     await bindFixtureAccounts(db);
     return createRunnerPlacement({ store: db, now });

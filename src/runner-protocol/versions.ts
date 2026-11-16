@@ -139,3 +139,5 @@ export const CLAUDE_OAUTH_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
 export const APT_INSTALL_RUNNER_VERSION: RunnerVersion = [0, 1, 83];
 
 export const CLOSEOUT_EXCEPT_RUNNER_VERSION: RunnerVersion = [0, 1, 84];
+
+export const MINIMUM_RUNNER_VERSION: RunnerVersion = [0, 1, 84];

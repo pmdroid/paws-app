@@ -1,3 +1,4 @@
+import { MINIMUM_RUNNER_VERSION } from "../runner-protocol";
 import {
   agentCredentialCiphertextSteps,
   chargeRunnerAgentSteps,
@@ -397,7 +398,9 @@ export function createRunnerPlacement(options: {
         includeRevoked: true,
       })) {
         const reason = !runner.eligible
-          ? runner.reason
+          ? runner.reason === "outdated"
+            ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
+            : runner.reason
           : pinnedOnline && runner.id !== pinnedRunnerId
             ? PINNED_ELSEWHERE
             : null;

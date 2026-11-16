@@ -1,3 +1,4 @@
+import { currentRunnerHost } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { count, eq, inArray, ne } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
@@ -1309,6 +1310,7 @@ test("the runner step counts only the member's own runner, not a lead's or colle
         }),
       );
       await write(f.db, (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing }));
+      await write(f.db, (q) => currentRunnerHost(q, id, f.clock.now()));
     };
     // A colleague who does not lead the project shares a runner; it does not count.
     await addRunner("colleague-box", "colleague", 1);

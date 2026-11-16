@@ -19,7 +19,7 @@ import {
   type OnboardingReadiness,
   type OnboardingVmStep,
 } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_800_000_000_000;
@@ -90,6 +90,7 @@ async function runner(
         createdAt: NOW,
         lastSeenAt: NOW - (input.seenAgoMs ?? 0),
       }),
+    (q) => currentRunnerHost(q, id, NOW),
     ...(input.sharing === undefined
       ? []
       : [

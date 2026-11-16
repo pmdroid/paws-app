@@ -10,7 +10,11 @@ import {
   type Db,
   type Q,
 } from "../db";
-import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  signRunnerRetroCommand,
+  type RunnerRetroCommand,
+} from "../runner-protocol";
 import { collectRetroDigest, createRetroDispatcher } from "./index";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
 
@@ -94,9 +98,11 @@ export async function addRunnerPg(
         lastSeenAt: 0,
       }),
     (q) =>
-      q.orm
-        .insert(q.t.runnerHostStatus)
-        .values({ runnerId: input.id, runnerVersion: input.version ?? "0.1.63", reportedAt: 0 }),
+      q.orm.insert(q.t.runnerHostStatus).values({
+        runnerId: input.id,
+        runnerVersion: input.version ?? MINIMUM_RUNNER_VERSION.join("."),
+        reportedAt: 0,
+      }),
     (q) =>
       q.orm
         .insert(q.t.runnerAgentPolicy)

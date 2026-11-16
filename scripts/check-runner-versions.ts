@@ -59,7 +59,10 @@ export function newSinceRelease(
   return Object.entries(current)
     .map(([name, minimum]) => ({ name, version: minimum.join("."), minimum }))
     .filter(
-      ({ name, version, minimum }) => released[name] !== version && compare(minimum, shipped) <= 0,
+      ({ name, version, minimum }) =>
+        name !== "MINIMUM_RUNNER_VERSION" &&
+        released[name] !== version &&
+        compare(minimum, shipped) <= 0,
     )
     .map(({ name, version }) => ({ name, version }));
 }

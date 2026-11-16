@@ -21,6 +21,7 @@ export type EligibleRunnerReason =
   | "not-yours"
   | "not-shared"
   | "no-project-lead"
+  | "outdated"
   | "offline"
   | "paused"
   | "revoked"

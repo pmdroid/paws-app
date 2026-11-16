@@ -3,6 +3,7 @@ import {
   boundHeartbeat,
   boundResultSubmissions,
 } from "./bound-runner-account";
+import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -268,7 +269,7 @@ test("a hidden-ref checkpoint goes to a current runner to restore, leaving the P
   const result = await startScenario({
     local: [],
     push: "fails",
-    hiddenCheckpoint: { runnerVersion: "0.1.67" },
+    hiddenCheckpoint: {},
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
@@ -282,7 +283,7 @@ test("a checkpoint rebased onto an earlier main restores against that main after
   const result = await startScenario({
     local: [],
     push: "fails",
-    hiddenCheckpoint: { runnerVersion: "0.1.67", rebasedOnEarlierMain: true },
+    hiddenCheckpoint: { rebasedOnEarlierMain: true },
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
@@ -297,7 +298,7 @@ test("a checkpoint on neither the PR branch nor main starts from the branch head
   const result = await startScenario({
     local: [],
     push: "fails",
-    hiddenCheckpoint: { runnerVersion: "0.1.67", offBranch: true },
+    hiddenCheckpoint: { offBranch: true },
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.offersRestore, result.detail).toBe(false);
@@ -313,7 +314,7 @@ test("with mirrors off a failed ancestry read retries preparation and keeps the 
   const result = await startScenario({
     local: [],
     push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.67", stored: { ancestry: "fails-once" } },
+    hiddenCheckpoint: { stored: { ancestry: "fails-once" } },
   });
   expect(result.ancestryFailures).toBe(1);
   expect((result.firstError as Error | undefined)?.name, result.detail).toBe(
@@ -330,7 +331,7 @@ test("with mirrors off a hidden checkpoint whose ancestry reads invalid is dropp
   const result = await startScenario({
     local: [],
     push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.67", offBranch: true, stored: {} },
+    hiddenCheckpoint: { offBranch: true, stored: {} },
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.offersRestore, result.detail).toBe(false);
@@ -340,36 +341,16 @@ test("with mirrors off a hidden checkpoint whose ancestry reads invalid is dropp
   ]);
 });
 
-test("a runner older than the hidden checkpoint release gets a run command without restoreCheckpoint", async () => {
-  const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.66" });
-  expect(result.error, result.detail).toBeUndefined();
-  expect(result.offersRestore).toBe(false);
-  expect(result.baseSha).toBe(result.prHead);
-});
-
 test("a hidden checkpoint lookup that fails retries instead of starting without the saved work", async () => {
   const result = await startScenario({
     local: [],
     push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.67", lookup: "fails" },
+    hiddenCheckpoint: { lookup: "fails" },
   });
   expect((result.error as Error | undefined)?.name, result.detail).toBe("CheckpointLookupFailed");
   expect(isTransient(result.error)).toBe(true);
   expect(result.baseSha).toBeUndefined();
   expect(result.head).toBe(result.prHead);
-  expect(result.pushes).toBe(0);
-});
-
-test("a runner too old to restore a hidden-ref checkpoint is refused before Paws checks it out", async () => {
-  const result = await startScenario({
-    local: [],
-    push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.66" },
-  });
-  expect(String(result.error)).toContain("fixture: excluded after failed attempt");
-  expect(result.baseSha).toBeUndefined();
-  expect(result.head).toBe(result.prHead);
-  expect(result.remoteBranch).toBe(result.prHead);
   expect(result.pushes).toBe(0);
 });
 
@@ -389,13 +370,11 @@ async function startScenario(input: {
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
   hiddenCheckpoint?: {
-    runnerVersion: string;
     rebasedOnEarlierMain?: true;
     lookup?: "fails";
     offBranch?: true;
     stored?: { ancestry?: "fails-once" };
   };
-  runnerVersion?: string;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -570,10 +549,9 @@ async function startScenario(input: {
   });
   await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
   await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
-  if (input.hiddenCheckpoint || input.runnerVersion)
-    await exec(
-      sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${input.hiddenCheckpoint?.runnerVersion ?? input.runnerVersion!},${now})`,
-    );
+  await exec(
+    sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})`,
+  );
   await exec(
     sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',1)`,
   );

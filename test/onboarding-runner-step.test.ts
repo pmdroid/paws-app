@@ -39,7 +39,7 @@ import {
   type OnboardingReadiness,
   type WorkspacePrincipal,
 } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { requestTracker } from "./wait-for";
 
@@ -122,8 +122,10 @@ function load(html: string, fetch: (input: string, init?: RequestInit) => Promis
 }
 
 function heartbeat(db: Db, runnerId: string, at: number) {
-  return seed(db, (q) =>
-    q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+  return seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+    (q) => currentRunnerHost(q, runnerId, at),
   );
 }
 

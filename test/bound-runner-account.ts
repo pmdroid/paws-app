@@ -1,13 +1,18 @@
 import * as database from "../src/db";
 import { runnerHostVersionSteps } from "../src/db";
-import { runnerReleaseAtLeast, type RunnerCodingAgent } from "../src/runner-protocol";
-import { bindFixtureAccounts } from "./pglite-fixtures";
+import type { RunnerCodingAgent } from "../src/runner-protocol";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
 export async function boundPlacementAccounts(db: database.Db) {
   await bindFixtureAccounts(db);
   const rows = await db.run((q) => q.all(q.orm.select().from(q.t.runner)));
   for (const row of rows)
-    if (!runnerReleaseAtLeast(await db.run((q) => runnerHostVersionSteps(q, row.id)), [0, 1, 61]))
-      await database.recordRunnerHostStatus(db, row.id, { runnerVersion: "0.1.61" }, row.createdAt);
+    if ((await db.run((q) => runnerHostVersionSteps(q, row.id))) === null)
+      await database.recordRunnerHostStatus(
+        db,
+        row.id,
+        { runnerVersion: CURRENT_RUNNER_VERSION },
+        row.createdAt,
+      );
 }
 export function* boundAccountSteps(q: database.Q, runnerId: string) {
   const runner = yield* database.getRunnerSteps(q, runnerId);
