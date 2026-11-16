@@ -147,7 +147,7 @@ export type RunnerPlacement = {
   previewSteps?(q: Q, input: PlacementRequest): Steps<readonly PlacementCandidate[]>;
   /**
    * Why the person who owns the work has no runner Paws may use, or null when one is eligible
-   * (busy or not) or one of theirs is only offline or paused.
+   * (busy or not) or one of theirs is only offline, paused or outdated.
    */
   setupNeed?(input: PlacementRequest): Promise<RunnerSetupNeed | null>;
   repositoryRefusals?(

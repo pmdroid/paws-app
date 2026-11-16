@@ -49,6 +49,15 @@ export function releasedVersions(source: string): Record<string, string> {
   return released;
 }
 
+export function minimumAboveRelease(
+  latest: string,
+  minimum: Version = versions.MINIMUM_RUNNER_VERSION,
+): boolean {
+  const shipped = parse(latest);
+  if (!shipped) throw new Error(`Release tag ${JSON.stringify(latest)} is not vmajor.minor.patch.`);
+  return compare(minimum, shipped) > 0;
+}
+
 export function newSinceRelease(
   latest: string,
   released: Record<string, string>,
@@ -99,11 +108,16 @@ function checkSinceLatestRelease(): number {
   const next = parse(latest)!
     .map((part, index) => (index === 2 ? part + 1 : part))
     .join(".");
+  const unreleased = minimumAboveRelease(latest);
+  if (unreleased)
+    console.error(
+      `MINIMUM_RUNNER_VERSION names runner ${versions.MINIMUM_RUNNER_VERSION.join(".")}, above ${latest}, so every runner would be outdated. Set it to a released version.`,
+    );
   for (const { name, version } of slipped)
     console.error(
       `${name} names runner ${version}, but ${latest} has shipped without it. Set it to ${next}, the next release.`,
     );
-  return slipped.length ? 1 : 0;
+  return slipped.length || unreleased ? 1 : 0;
 }
 
 if (import.meta.main && process.argv[2] === "--since-latest-release") {

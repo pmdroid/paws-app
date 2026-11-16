@@ -13,6 +13,7 @@ import {
 } from "../src/db";
 import {
   eligibleRunnersSteps,
+  itemOwnerRunnerSetupNeedSteps,
   itemRepositoryRunnerSteps,
   RUNNER_ONLINE_MS,
   type EligibleRunnerReason,
@@ -170,6 +171,11 @@ const CASES: {
     name: "a runner without a version",
     runner: { owner: "me", version: null },
     reason: "outdated",
+  },
+  {
+    name: "an enrolled runner that has not reported yet",
+    runner: { owner: "me", version: null, seenAgoMs: RUNNER_ONLINE_MS },
+    reason: "offline",
   },
   { name: "the delegator's own runner", runner: { owner: "me" }, reason: "own" },
   {
@@ -411,6 +417,36 @@ test("a repository command goes to the item's last runner while it is eligible a
     expect((await repositoryRunner())?.id).toBe("first");
     await seed(db, version("0.1.62", "first"));
     expect(await repositoryRunner()).toBeNull();
+  } finally {
+    await w.close();
+  }
+});
+
+test("an owner whose only runner is outdated is not told to add a runner", async () => {
+  const w = await workspace({ old: { owner: "me", version: "0.1.83" } });
+  try {
+    const { db, now } = w;
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: "ses",
+        organizationId: "org",
+        teamId: "team",
+        createdAt: now,
+      }),
+    );
+    await insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ ownerUserId: w.users.me! })
+        .where(eq(q.t.workItem.id, "item")),
+    );
+    expect((await w.check()).map((runner) => runner.reason)).toEqual(["outdated"]);
+    expect(
+      await db.run((q) =>
+        itemOwnerRunnerSetupNeedSteps(q, { itemId: "item", agent: "codex", now }),
+      ),
+    ).toBeNull();
   } finally {
     await w.close();
   }

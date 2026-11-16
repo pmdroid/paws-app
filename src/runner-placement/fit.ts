@@ -1,4 +1,3 @@
-import { MINIMUM_RUNNER_VERSION } from "../runner-protocol";
 import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
@@ -19,7 +18,12 @@ import {
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { bindingReadinessSteps, BINDING_REASON_TEXT } from "./account-health";
-import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
+import {
+  eligibleReasonText,
+  eligibleRunnersSteps,
+  isInRunnerScope,
+  itemOwnerScopeSteps,
+} from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
 type AccountRefusal = { reason: string; until?: number; refusals?: AccountRefusal[] };
@@ -130,9 +134,7 @@ function* runnerVerdictsSteps(
     if (!runner.eligible) {
       runners.push(
         verdict(
-          runner.reason === "outdated"
-            ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
-            : runner.reason,
+          eligibleReasonText(runner.reason),
           runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"
             ? "sign-in"
             : null,

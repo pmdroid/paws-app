@@ -89,14 +89,21 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
   return runners;
 }
 
+/** A rejection reason as placement reports it: an outdated runner names the release it needs. */
+export function eligibleReasonText(reason: EligibleRunnerReason): string {
+  return reason === "outdated"
+    ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
+    : reason;
+}
+
 function* runnerNameOrIdSteps(q: Q, runnerId: string) {
   return (yield* runnerNameSteps(q, runnerId)) ?? runnerId;
 }
 
 /**
  * Why `ownerUserId` has no runner Paws may use for `agent`, from `eligibleRunners` with purpose
- * `work`. Null when a runner is eligible, busy or not, or one the owner may use is only offline
- * or paused and comes back on its own.
+ * `work`. Null when a runner is eligible, busy or not, or one the owner may use is only offline,
+ * paused or outdated, so placement waits and names it.
  */
 export function* runnerSetupNeedSteps(
   q: Q,
@@ -120,7 +127,11 @@ export function* runnerSetupNeedSteps(
   const usable = (runner: EligibleRunner) =>
     runner.ownerId === owner.ownerUserId ||
     (runner.sharing === 1 && owner.leadUserIds.includes(runner.ownerId));
-  if (runners.some((runner) => usable(runner) && ["offline", "paused"].includes(runner.reason)))
+  if (
+    runners.some(
+      (runner) => usable(runner) && ["offline", "paused", "outdated"].includes(runner.reason),
+    )
+  )
     return null;
   return { reason: "no-runner" };
 }
