@@ -14,6 +14,7 @@ export type CentralAccount = {
   agent: Agent;
   label: string;
   extraUsage: boolean;
+  enabled?: boolean;
   signingIn: boolean;
   health?: "healthy" | "expiring";
   credential: { refreshedAt: number; runner: string | null; expiresAt?: number } | null;
@@ -27,6 +28,7 @@ export type AccountsView = {
   busy: string | null;
   error: string | null;
   confirm: string | null;
+  removing?: string | null;
 };
 
 const DAY = 86_400_000;
@@ -48,6 +50,7 @@ function limitReached(account: CentralAccount) {
 }
 
 function accountBadge(account: CentralAccount): string {
+  if (account.enabled === false) return '<span class="pill">Disabled</span>';
   if (account.signingIn) return '<span class="pill running">Signing in</span>';
   if (!account.credential) return '<span class="pill warn">Signed out</span>';
   if (account.health === "expiring") return '<span class="pill warn">Token expiring</span>';
@@ -61,6 +64,7 @@ function accountBadge(account: CentralAccount): string {
 
 function accountStatus(account: CentralAccount, runners: Record<string, string>): string {
   const runner = (id: string | null) => (id ? (runners[id] ?? id) : "a runner");
+  if (account.enabled === false) return "Disabled · runs skip this account";
   const parts: string[] = [];
   if (account.credential?.expiresAt)
     parts.push(`Token valid until ${new Date(account.credential.expiresAt).toLocaleDateString()}`);
@@ -111,11 +115,24 @@ function accountCard(account: CentralAccount, index: number, count: number, view
   const label = esc(account.label);
   const busy = view.busy ? " disabled" : "";
   const status = accountStatus(account, view.runners);
-  const head = `<div class="acct-head"><div class="acct-title"><strong>${label}</strong><p class="sub" data-account-status>${esc(status)}</p></div>${accountBadge(account)}</div>${accountUsage(account)}`;
+  const rank =
+    count > 1
+      ? `<span class="cnt" data-account-rank aria-label="Priority ${index + 1} of ${count}">${index + 1}</span>`
+      : "";
+  const role =
+    count < 2
+      ? ""
+      : index === 0
+        ? "Used first"
+        : `Used when ${index === 1 ? "the account above can't" : "the accounts above can't"} run`;
+  const roleLine = role ? `<p class="sub" data-account-role>${esc(role)}</p>` : "";
+  const head = `<div class="acct-head"><div class="acct-name">${rank}<div class="acct-title"><strong>${label}</strong>${roleLine}<p class="sub" data-account-status>${esc(status)}</p></div></div>${accountBadge(account)}</div>${accountUsage(account)}`;
   const open = `<li class="acct-item" data-account-id="${esc(account.id)}"`;
   if (!view.canManage) return `${open}><div class="card acct-card">${head}</div></li>`;
   if (view.confirm === account.id)
     return `${open}><div class="card acct-card">${head}<div class="acct-confirm" role="alert"><p>Sign ${label} out on every runner? Runs using it stop at their next request.</p><div class="row"><button class="btn danger" type="button" data-account-action="sign-out-confirm"${busy}>Sign out everywhere</button><button class="btn" type="button" data-account-action="keep">Keep signed in</button></div></div></div></li>`;
+  if (view.removing === account.id)
+    return `${open}><div class="card acct-card">${head}<div class="acct-confirm" role="alert"><p>Remove ${label}? Paws stops using it and forgets its sign-in. Runs using it stop at their next request.</p><div class="row"><button class="btn danger" type="button" data-account-action="remove-confirm"${busy}>Remove account</button><button class="btn" type="button" data-account-action="keep">Keep account</button></div></div></div></li>`;
   const signIn =
     account.agent === "claude"
       ? ""
@@ -127,7 +144,9 @@ function accountCard(account: CentralAccount, index: number, count: number, view
     count > 1
       ? `<div class="acct-move"><button class="btn sm" type="button" data-account-action="up" aria-label="Move ${label} up"${index === 0 ? " disabled" : busy}>${UP}</button><button class="btn sm" type="button" data-account-action="down" aria-label="Move ${label} down"${index === count - 1 ? " disabled" : busy}>${DOWN}</button></div>`
       : "";
-  const actions = `<div class="acct-actions">${signIn}${signOut}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
+  const toggle = `<button class="btn" type="button" data-account-action="${account.enabled === false ? "enable" : "disable"}"${busy}>${account.enabled === false ? "Enable" : "Disable"}</button>`;
+  const remove = `<button class="btn danger" type="button" data-account-action="remove"${busy}>Remove</button>`;
+  const actions = `<div class="acct-actions">${signIn}${signOut}${toggle}${remove}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
   const token = account.agent === "claude" ? tokenForm(account, busy) : "";
   return `${open}${count > 1 ? ' draggable="true"' : ""}><div class="card acct-card">${head}${token}${actions}</div></li>`;
 }
@@ -143,7 +162,10 @@ export function renderAgentAccountSettings(view: AccountsView): string {
     .map((agent) => {
       const rows = view.accounts!.filter((account) => account.agent === agent);
       if (!rows.length) return "";
-      const order = rows.length > 1 ? '<p class="sub">Runs try these in order.</p>' : "";
+      const order =
+        rows.length > 1
+          ? '<p class="sub">Paws uses account 1 first. When it is busy, at its limit, signed out or disabled, the next one takes over. Drag a card or use the arrows to change the order.</p>'
+          : "";
       return `<section class="acct-group"><div class="acct-group-head"><h2>${AGENTS[agent]}</h2><span class="cnt">${rows.length}</span></div>${order}<ol class="acct-list" data-agent-group="${agent}">${rows.map((row, index) => accountCard(row, index, rows.length, view)).join("")}</ol></section>`;
     })
     .join("");
@@ -202,7 +224,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
   };
   const run = async (busy: string, change?: () => Promise<void>) => {
     if (!engine || (view.busy && change)) return;
-    Object.assign(view, { busy, error: null, confirm: null });
+    Object.assign(view, { busy, error: null, confirm: null, removing: null });
     paint();
     try {
       await change?.();
@@ -269,8 +291,23 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id));
     else if (action === "sign-out" || action === "keep") {
       view.confirm = action === "keep" ? null : id;
+      view.removing = null;
       paint();
-    } else if (action === "sign-out-confirm")
+    } else if (action === "remove") {
+      view.removing = id;
+      view.confirm = null;
+      paint();
+    } else if (action === "remove-confirm")
+      void run("Removing the account…", () =>
+        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}`, "DELETE"),
+      );
+    else if (action === "enable" || action === "disable")
+      void run(action === "enable" ? "Enabling the account…" : "Disabling the account…", () =>
+        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/enabled`, "PUT", {
+          enabled: action === "enable",
+        }),
+      );
+    else if (action === "sign-out-confirm")
       void run("Signing out everywhere…", () =>
         request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/credential`, "DELETE"),
       );

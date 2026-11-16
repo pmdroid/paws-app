@@ -617,6 +617,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("m-0 grid min-w-0 list-none grid-cols-1 gap-4 p-0 lg:grid-cols-2");
   if (has("acct-item")) return styled("flex min-w-0 [&>*]:w-full");
   if (has("acct-head")) return styled("flex min-w-0 items-start justify-between gap-3");
+  if (has("acct-name")) return styled("flex min-w-0 items-start gap-2.5");
   if (has("acct-title"))
     return styled("flex min-w-0 flex-col gap-1 [&>strong]:text-base [&>strong]:leading-tight");
   if (has("acct-usage")) return styled("flex min-w-0 flex-col gap-2");
