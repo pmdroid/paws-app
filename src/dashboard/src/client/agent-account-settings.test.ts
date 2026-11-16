@@ -21,6 +21,8 @@ let window: Window;
 let requests: { method: string; path: string; body: unknown }[];
 let canManage: boolean;
 let failure: string | null;
+let status: number;
+let runners: { id: string; name: string; ownerUserId: string }[] | null;
 let agent: CentralAccount["agent"];
 let deviceState: string;
 let polls: number;
@@ -36,6 +38,11 @@ beforeEach(() => {
   requests = [];
   canManage = true;
   failure = null;
+  status = 409;
+  runners = [
+    { id: "R1", name: "agentbox", ownerUserId: "U1" },
+    { id: "R2", name: "otherbox", ownerUserId: "U2" },
+  ];
   agent = "claude";
   deviceState = "pending";
   polls = 0;
@@ -54,9 +61,12 @@ beforeEach(() => {
       });
       expect(new Headers(init.headers).get("x-paws-csrf")).toBe("token-1");
     }
-    if (failure && method !== "GET") return Response.json({ error: failure }, { status: 409 });
+    if (failure && method !== "GET") return Response.json({ error: failure }, { status });
+    if (pathname === "/api/auth/session") return Response.json({ userId: "U1", role: "member" });
     if (pathname === "/api/runners")
-      return Response.json({ runners: [{ id: "R1", name: "agentbox" }] });
+      return runners
+        ? Response.json({ runners })
+        : Response.json({ error: "down" }, { status: 500 });
     if (pathname.endsWith("/device")) {
       if (agent !== "codex")
         return Response.json({ error: "Codex account is unavailable" }, { status: 404 });
@@ -222,7 +232,7 @@ test("only Claude accounts render a setup token field", () => {
   const html = renderAgentAccountSettings({
     canManage: true,
     accounts: [account("A1", "Work"), { ...account("A2", "Codex"), agent: "codex" }],
-    runners: {},
+    runners: { R1: "agentbox" },
     busy: null,
     error: null,
     confirm: null,
@@ -241,6 +251,57 @@ test("an admin sees the API's error message", async () => {
   expect(root.querySelector('[role="alert"]')?.textContent).toBe(failure);
   expect(opened).toHaveLength(0);
 });
+
+test("only the caller's own runners are offered for sign-in", async () => {
+  agent = "grok";
+  runners!.reverse();
+  const root = await mount();
+  expect(root.querySelector("[data-account-runnerless]")).toBeNull();
+  await click(root, "A1", "sign-in");
+  expect(opened[0]?.[0]).toEqual({ id: "R1", name: "agentbox" });
+});
+
+test("when runners cannot be loaded, the page says so and keeps sign-in", async () => {
+  agent = "grok";
+  runners = null;
+  const root = await mount();
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Your runners could not be loaded. Reload to try again.",
+  );
+  expect(root.querySelector("[data-account-runnerless]")).toBeNull();
+  expect(root.querySelector('[data-account-action="sign-in"]')).not.toBeNull();
+});
+
+test("with no own runner, Add a runner first replaces the sign-in controls", async () => {
+  agent = "grok";
+  runners = [{ id: "R2", name: "otherbox", ownerUserId: "U2" }];
+  const root = await mount();
+  const link = root.querySelector("[data-account-runnerless] a") as unknown as HTMLAnchorElement;
+  expect(link.textContent).toBe("Add a runner first");
+  expect(link.getAttribute("href")).toBe("/runners");
+  expect(
+    root.querySelectorAll('[data-account-action="sign-in"], [data-account-token]'),
+  ).toHaveLength(0);
+  expect(root.querySelector("[data-account-add]")).not.toBeNull();
+});
+
+for (const code of ["not-your-runner", "not-your-account"]) {
+  test(`a 403 ${code} shows inline on the account row`, async () => {
+    agent = "grok";
+    const root = await mount();
+    failure = code;
+    status = 403;
+    await click(root, "A1", "sign-in");
+    expect(root.querySelector('[data-account-id="A1"] [data-account-error]')?.textContent).toBe(
+      code,
+    );
+    expect(root.querySelector('[data-account-id="A2"] [data-account-error]')).toBeNull();
+    expect(root.querySelector(".settings-section > [role='alert']")).toBeNull();
+    failure = null;
+    await click(root, "A1", "extra-usage");
+    expect(root.querySelector("[data-account-error]")).toBeNull();
+  });
+}
 
 test("a member sees the accounts read-only, with no controls", async () => {
   setSettingsAdmin(false);
