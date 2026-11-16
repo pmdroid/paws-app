@@ -173,6 +173,12 @@ const CASES: {
     reason: "outdated",
   },
   {
+    name: "a runner without a version while preparing",
+    runner: { owner: "me", version: null },
+    purpose: "prepare",
+    reason: "own",
+  },
+  {
     name: "an enrolled runner that has not reported yet",
     runner: { owner: "me", version: null, seenAgoMs: RUNNER_ONLINE_MS },
     reason: "offline",

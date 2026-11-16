@@ -60,11 +60,11 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         return "owner-not-in-team";
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS) return "offline";
       if (status !== "active") return "paused";
-      if (
-        !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), MINIMUM_RUNNER_VERSION)
-      )
-        return "outdated";
       if (input.purpose !== "prepare") {
+        if (
+          !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), MINIMUM_RUNNER_VERSION)
+        )
+          return "outdated";
         let expired = false;
         let healthy = false;
         for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId)) {

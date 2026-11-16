@@ -103,3 +103,13 @@ test("the minimum runner version must name a runner that has shipped", () => {
   expect(minimumAboveRelease("v0.1.86", [0, 1, 84])).toBe(false);
   expect(minimumAboveRelease("v0.1.83", [0, 1, 84])).toBe(true);
 });
+
+test("lowering a released minimum runner version is a slip", () => {
+  const released = { MINIMUM_RUNNER_VERSION: "0.1.84" };
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 86] })).toEqual([]);
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 50] })).toEqual([
+    { name: "MINIMUM_RUNNER_VERSION", version: "0.1.50" },
+  ]);
+  expect(newSinceRelease("v0.1.86", {}, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
+});

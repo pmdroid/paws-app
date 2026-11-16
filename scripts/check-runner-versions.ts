@@ -67,11 +67,10 @@ export function newSinceRelease(
   if (!shipped) throw new Error(`Release tag ${JSON.stringify(latest)} is not vmajor.minor.patch.`);
   return Object.entries(current)
     .map(([name, minimum]) => ({ name, version: minimum.join("."), minimum }))
-    .filter(
-      ({ name, version, minimum }) =>
-        name !== "MINIMUM_RUNNER_VERSION" &&
-        released[name] !== version &&
-        compare(minimum, shipped) <= 0,
+    .filter(({ name, version, minimum }) =>
+      name === "MINIMUM_RUNNER_VERSION"
+        ? released[name] !== undefined && compare(minimum, parse(released[name])!) < 0
+        : released[name] !== version && compare(minimum, shipped) <= 0,
     )
     .map(({ name, version }) => ({ name, version }));
 }
