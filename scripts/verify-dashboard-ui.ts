@@ -44,6 +44,11 @@ async function open(width: number, cookie = f.cookie) {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   await context.setExtraHTTPHeaders({ cookie });
   const page = await context.newPage();
+  await page.route("**/api/workspaces/github-app", (route) =>
+    route.fulfill({
+      json: { configured: true, canManage: true, webhookUrl: "", permissions: {}, events: [] },
+    }),
+  );
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", async (response) => {
     const url = new URL(response.url());
@@ -668,26 +673,30 @@ try {
     current = `links@${width}`;
     await follow(
       page,
-      "/status/issues/PAS-1?from=linear#question",
+      "/dashboard/issues/PAS-1?from=linear#question",
       "/dashboard/issues/PAS-1?from=linear#question",
       "PAS-1",
     );
-    await follow(page, "/status/runs/{run}", "/dashboard/issues/PAS-1", "PAS-1");
+    await follow(page, "/dashboard/runs/{run}", "/dashboard/issues/PAS-1", "PAS-1");
     await follow(
       page,
-      "/status/sessions/session-mine#question",
+      "/dashboard/sessions/session-mine#question",
       "/dashboard/issues/PAS-1#question",
       "PAS-1",
     );
     await follow(page, "/dashboard/verdicts/PAS-1", "/dashboard/issues/PAS-1", "PAS-1");
-    await follow(page, "/dashboard/#/issues/PAS-1", "/dashboard/issues/PAS-1", "PAS-1");
-    await follow(page, "/status/questions/q-PAS-1", "/dashboard/questions/q-PAS-1", "Which way?");
-    await follow(page, "/evidence/{evidence}", "/dashboard/evidence/{evidence}", "PAS-1");
-    await follow(page, "/status/epics", "/dashboard/epics");
-    await follow(page, "/status/runs", "/dashboard/issues");
     await follow(
       page,
-      `/status/runs/${f.runs["PAS-2"]}`,
+      "/dashboard/questions/q-PAS-1",
+      "/dashboard/questions/q-PAS-1",
+      "Which way?",
+    );
+    await follow(page, "/evidence/{evidence}", "/dashboard/evidence/{evidence}", "PAS-1");
+    await follow(page, "/dashboard/epics", "/dashboard/epics");
+    await follow(page, "/dashboard/runs", "/dashboard/issues");
+    await follow(
+      page,
+      `/dashboard/runs/${f.runs["PAS-2"]}`,
       `/dashboard/runs/${f.runs["PAS-2"]}`,
       "Link not found",
     );
