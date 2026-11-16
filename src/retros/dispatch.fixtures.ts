@@ -114,6 +114,15 @@ export async function addRunnerPg(
       label: input.id,
       now: 0,
     });
+    await seed(db, (q) =>
+      q.orm.insert(q.t.agentAccountCredential).values({
+        accountId: account.id,
+        agent: "codex",
+        ciphertext: "sealed",
+        version: 1,
+        updatedAt: 0,
+      }),
+    );
     await bindAgentAccount(db, {
       userId: input.owner ?? "admin",
       workspaceId: "ws",
