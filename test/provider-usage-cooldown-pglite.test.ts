@@ -1,12 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   ACCOUNT_RESET_SLACK_MS,
+  bindAgentAccountSteps,
   createAgentAccountSteps,
   providerUsageSteps,
   saveProviderUsageSteps,
 } from "../src/db";
+import { bindingReadinessSteps } from "../src/runner-placement";
 import { tempStore } from "./pglite";
 import { seed } from "./pglite-fixtures";
+import { REPOSITORY, workspaceWithRunners } from "./runner-slot-fixture";
 
 const NOW = 1_800_000_000_000;
 const cleanup: (() => unknown)[] = [];
@@ -72,4 +75,44 @@ test("an account on extra usage stays available when a window is spent", async (
     ),
   );
   expect((await db.run((q) => providerUsageSteps(q, row.id)))?.state).toBe("ok");
+});
+
+test("placement holds a spent account until the reset, then offers it again", async () => {
+  const { db, close } = await tempStore();
+  cleanup.push(close);
+  const { pair, workspace, userId } = await workspaceWithRunners(db);
+  const runnerId = await pair("usage-runner", 1, [REPOSITORY]);
+  const spent = await db.transaction((q) =>
+    createAgentAccountSteps(q, {
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      agent: "codex",
+      label: "Spent",
+      now: NOW,
+    }),
+  );
+  const binding = await db.transaction((q) =>
+    bindAgentAccountSteps(q, {
+      userId,
+      workspaceId: workspace.id,
+      accountId: spent.id,
+      runnerId,
+      now: NOW,
+    }),
+  );
+  const resetsAt = NOW + 3_600_000;
+  await db.transaction((q) =>
+    saveProviderUsageSteps(q, spent, [{ window: "Weekly", usedPercent: 100, resetsAt }], NOW),
+  );
+  const ready = (now: number) =>
+    db.run((q) => bindingReadinessSteps(q, { bindingId: binding.id, now }));
+  await seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ lastSeenAt: resetsAt + ACCOUNT_RESET_SLACK_MS + 1 }),
+  );
+  expect(await ready(NOW + 1)).toEqual({
+    ready: false,
+    reason: "exhausted",
+    until: resetsAt + ACCOUNT_RESET_SLACK_MS,
+  });
+  expect((await ready(resetsAt + ACCOUNT_RESET_SLACK_MS + 1)).ready).toBe(true);
 });
