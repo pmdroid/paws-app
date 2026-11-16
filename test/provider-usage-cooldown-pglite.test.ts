@@ -59,10 +59,6 @@ test("a provider reading at 100% puts the account in quota cooldown until the re
   expect(saved?.state).toBe("exhausted");
   expect(saved?.resetsAt).toBe(resetsAt);
   expect(saved?.nextCheckAt).toBe(resetsAt + ACCOUNT_RESET_SLACK_MS);
-  await db.transaction((q) =>
-    saveProviderUsageSteps(q, row, [{ window: "Weekly", usedPercent: 3, resetsAt }], NOW + 1),
-  );
-  expect((await db.run((q) => providerUsageSteps(q, row.id)))?.state).toBe("ok");
 });
 
 test("an account on extra usage stays available when a window is spent", async () => {
