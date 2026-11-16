@@ -77,7 +77,7 @@ export type CloseoutSession = {
    * report ask for it. A result never changes `pending` or `blocked` unless `rulesFirst` is set.
    */
   report(options?: { progress?: boolean; probes?: boolean }): Promise<string>;
-  run(id: string, model?: string): Promise<string>;
+  run(id: string, model?: string, keepGoing?: boolean): Promise<string>;
   /**
    * The report from the policy and results this session already holds, without loading the
    * policy again. When the head or the changed files moved since then, checks that had passed
@@ -346,7 +346,7 @@ export function createCloseoutSession(
         last = { report: boundedReport(report), head: checkedHead };
         return last.report;
       }),
-    run: (id) => {
+    run: (id, _model, keepGoing = false) => {
       const since = halt.finished;
       const run = (async () => {
         const ready = await exclusive(async () => {
@@ -358,7 +358,7 @@ export function createCloseoutSession(
           return ruleBreak(prepared) ?? prepared;
         });
         if (typeof ready === "string") return ready;
-        return runId(workspace, ready, memory, id, options, once, { halt, since });
+        return runId(workspace, ready, memory, id, options, once, { halt, since, keepGoing });
       })();
       inFlight.add(run);
       return run.finally(() => inFlight.delete(run));
@@ -816,7 +816,7 @@ async function runId(
   id: string,
   options: CloseoutSessionOptions,
   once: Once,
-  { halt, since }: { halt: Halt; since: number },
+  { halt, since, keepGoing }: { halt: Halt; since: number; keepGoing: boolean },
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -865,7 +865,7 @@ async function runId(
     return result;
   };
   if (item.kind === "command") {
-    for (const phase of commandPhases(prepared, memory)) {
+    for (const phase of keepGoing ? [] : commandPhases(prepared, memory)) {
       if (phase.includes(item)) break;
       const stuck = phase.find((step) => statusOf(memory.get(step.id), max) === "exhausted");
       if (stuck)

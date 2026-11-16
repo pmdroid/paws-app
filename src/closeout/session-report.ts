@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  CommandWithheldError,
   writeProbeLog,
   type CommandRunResult,
   type LoggedCommandRequest,
@@ -120,6 +121,32 @@ export function missingResultReason(
   }
 }
 
+function withheldBy(report: string | undefined, request: LoggedCommandRequest): string | undefined {
+  try {
+    const parsed = JSON.parse(report ?? "null") as {
+      required?: {
+        id?: string;
+        kind?: string;
+        status?: string;
+        running?: boolean;
+        result?: SessionCommandResult;
+      }[];
+    } | null;
+    const entries = Array.isArray(parsed?.required) ? parsed.required : [];
+    const entry = entries.find((candidate) => candidate.id === request.itemId);
+    if (!entry || entry.result || entry.running || entry.status === "stale") return undefined;
+    return entries.find(
+      (candidate) =>
+        candidate.kind === "command" &&
+        candidate.result?.head === request.expectedHead &&
+        (candidate.result.exitCode !== 0 || candidate.result.timedOut),
+    )?.id;
+  } catch (caughtError) {
+    journalCaught(caughtError, "session-report.withheldBy.parse", request.itemId);
+    return undefined;
+  }
+}
+
 export function sessionCloseoutResult(
   report: string | undefined,
   request: LoggedCommandRequest,
@@ -209,8 +236,12 @@ export function loggedSessionCloseout(
   request: LoggedCommandRequest,
 ): CommandRunResult {
   const result = sessionCloseoutResult(report, request);
-  if (!result)
+  if (!result) {
+    const blocker = withheldBy(report, request);
+    if (blocker !== undefined && request.itemId !== undefined)
+      throw new CommandWithheldError(request.itemId, blocker);
     throw new CloseoutResultMissingError(request.itemId, missingResultReason(report, request));
+  }
   const { stdout, stderr } = result;
   const bytes = Buffer.from(`STDOUT\n${stdout}\nSTDERR\n${stderr}`, "utf8");
   mkdirSync(dirname(request.logFile), { recursive: true, mode: 0o700 });
