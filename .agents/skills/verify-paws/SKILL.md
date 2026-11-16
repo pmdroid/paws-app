@@ -35,6 +35,26 @@ Omit names and `--changed` to run every scenario. Each runs in a fresh disposabl
 
 For a focused regression, inspect the appropriate `test/local/` driver and its companion tests. Current examples include `current-run-startup.ts`, `linear-session-stop.ts` and `runner-public-activity.ts`. Derive arguments and expected observations from the selected driver's source instead of assuming every probe has the same interface.
 
+## Agent accounts and usage limits
+
+Agent accounts are signed in on the control plane and bound to the owner's runners. A change to accounts, credentials, usage readings or placement must still pause work when an account's quota is spent and resume it after the reset. Prove that through the path production uses: `bindingReadinessSteps` in `src/runner-placement`, which placement calls for every candidate runner. A helper that production no longer calls proves nothing, even when its test passes. Check with `git grep` that the function a test exercises has a production caller.
+
+Run the usage proof and the focused tests:
+
+```sh
+PAWS_EVIDENCE_DIR=/absolute/fresh/evidence bun --no-env-file scripts/verify-proof.ts account-provider-usage
+bun --no-env-file test test/provider-usage-cooldown-pglite.test.ts test/usage-pause-pglite.test.ts test/runner-cli-cause.test.ts src/agent-auth src/acp/acp.test.ts
+```
+
+Require each of these:
+
+- A provider reading with a window at 100% makes a bound account's readiness `exhausted` until the reset plus slack. After that the account is ready again.
+- An account with extra usage stays available while a window is spent.
+- A reading with nothing spent does not clear a cooldown that a failed run recorded.
+- A run that fails on quota is classified as a usage limit, not as `api_error: temporary provider failure`. That includes Codex's ACP `Internal error`, whose message travels in `error.data`.
+
+If a change removes or reroutes one of these signals, add a proof step for the new path. Confirm the step fails without the change, then keep it.
+
 ## Local integration audit
 
 ```sh
