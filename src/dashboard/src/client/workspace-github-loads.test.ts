@@ -94,11 +94,11 @@ test("an admin loads the GitHub section only on Workspace › Integrations", asy
   await settle();
   expect(requests).toContain("/api/workspaces/github-app");
   expect(requests).toContain("/api/workspaces/github-setup");
-  const section = window.document.querySelector<HTMLElement>("#workspace-github-integration");
-  expect(section?.hidden).toBe(false);
+  const section = window.document.querySelector("#workspace-github-integration");
+  expect(section?.hasAttribute("hidden")).toBe(false);
   expect(
-    [...window.document.querySelectorAll<HTMLInputElement>('input[name="mapping"]')].map(
-      (box) => box.dataset.repository,
+    [...window.document.querySelectorAll('input[name="mapping"]')].map((box) =>
+      box.getAttribute("data-repository"),
     ),
   ).toEqual(["acme/api"]);
 });
