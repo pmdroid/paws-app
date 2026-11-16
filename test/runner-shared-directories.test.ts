@@ -265,4 +265,20 @@ test("an account home is shared through the agent group with either user", () =>
   expect(accountHomeVerdict(directory(runner, agentGroup, 0o2700), owners, runner)).toMatch(
     /not shared/,
   );
+  const runnerGroup = 2004;
+  const own = (uid: number, mode: number) => directory(uid, runnerGroup, mode);
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, runner, runnerGroup)).toBe("repair");
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, agent, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o0777), owners, runner, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o2770), owners, runner, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, runner, 2005)).toMatch(/agent group/);
+  expect(accountHomeVerdict(own(1003, 0o0770), owners, runner, runnerGroup)).toMatch(
+    /another user/,
+  );
 });

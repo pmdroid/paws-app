@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   type Dirent,
   chmodSync,
+  chownSync,
   closeSync,
   constants,
   existsSync,
@@ -516,18 +517,26 @@ function privateDirectory(path: string, create: boolean, owners: RunnerAccountOw
   } catch (error) {
     if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     journalCaught(error, "accounts.privateDirectory", null, "path may not exist yet");
+    let made = false;
     try {
       mkdirSync(path, { mode: 0o770 });
-    } catch (made) {
-      if ((made as NodeJS.ErrnoException).code !== "EEXIST") throw made;
-      journalCaught(made, "accounts.privateDirectory.mkdirSync", null, "path may already exist");
+      made = true;
+    } catch (failed) {
+      if ((failed as NodeJS.ErrnoException).code !== "EEXIST") throw failed;
+      journalCaught(failed, "accounts.privateDirectory.mkdirSync", null, "path may already exist");
     }
     info = lstatSync(path);
+    if (made && info.isDirectory() && info.gid !== owners.agentGid) {
+      chownSync(path, -1, owners.agentGid);
+      info = lstatSync(path);
+    }
   }
   if (info.isSymbolicLink() || !info.isDirectory())
     throw new RunnerAccountHomeError("Agent account home path is not a private directory");
-  const verdict = accountHomeVerdict(info, owners, process.getuid?.() ?? info.uid);
-  if (verdict === "repair") chmodSync(path, 0o770);
+  const self = process.getuid?.() ?? info.uid;
+  const verdict = accountHomeVerdict(info, owners, self, process.getgid?.() ?? info.gid);
+  if (verdict === "repair" && info.gid !== owners.agentGid) chownSync(path, -1, owners.agentGid);
+  else if (verdict === "repair") chmodSync(path, 0o770);
   else if (verdict !== "shared") throw new RunnerAccountHomeError(verdict);
 }
 
@@ -535,10 +544,15 @@ export function accountHomeVerdict(
   info: { uid: number; gid: number; mode: number },
   owners: RunnerAccountOwners,
   self: number,
+  selfGid?: number,
 ): "shared" | "repair" | string {
   if (info.uid !== self && info.uid !== owners.runnerUid)
     return "Agent account home belongs to another user";
-  if (info.gid !== owners.agentGid) return "Agent account home is not in the agent group";
+  if (info.gid !== owners.agentGid) {
+    const runner = info.uid === self && self === owners.runnerUid && info.gid === selfGid;
+    if (runner && (info.mode & 0o7777) === 0o770) return "repair";
+    return "Agent account home is not in the agent group";
+  }
   if ((info.mode & 0o007) !== 0) return "Agent account home is open to other users";
   const rule = { owners: [self, owners.runnerUid], gid: owners.agentGid, mode: 0o770 };
   if (sharedDirectoryAllowed(info, rule)) return "shared";

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,6 +13,7 @@ import {
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setJournalSink } from "../src/journal";
 import { openRunnerDaemon } from "../src/runner-daemon";
 import {
   openRunnerAccountHome,
@@ -323,9 +325,33 @@ test("a command whose sign-in can't be written is refused and accepted when it c
   });
 }, 30_000);
 
+test("a sign-in the runner can't write is journaled once an hour for its binding", async () => {
+  await withRunner(async ({ daemon, home, plane }) => {
+    const issued = command("check-4", "login_check");
+    plane.commands = () => [{ ...issued, expiresAt: issued.issuedAt + 7_200_000 }];
+    mkdirSync(join(home, ".paws-accounts/binding-1"), { recursive: true });
+    chmodSync(join(home, ".paws-accounts/binding-1"), 0o777);
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    try {
+      for (let poll = 0; poll < 3; poll++)
+        expect((await daemon.pollCommands()).rejected).toEqual(["account_unavailable"]);
+      const logged = () => lines.filter((line) => line.includes("daemon.receiveCredential"));
+      expect(logged()).toHaveLength(1);
+      expect(logged()[0]).toContain("open to other users");
+      plane.now = Date.now() + 3_600_000;
+      await daemon.pollCommands();
+      expect(logged()).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+}, 30_000);
+
 test("an upload whose answer was lost is sent again unchanged, and the next command gets the newest refresh", async () => {
   await withRunner(async ({ daemon, home, root, uploads, plane }) => {
-    plane.commands = () => [command("check-4", "login_check")];
+    const issued = command("check-4", "login_check");
+    plane.commands = () => [{ ...issued, expiresAt: issued.issuedAt + 7_200_000 }];
     await daemon.pollCommands();
     const credentials = join(
       openRunnerAccountHome(home, account, "claude"),
