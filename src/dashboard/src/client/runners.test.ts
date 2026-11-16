@@ -208,6 +208,22 @@ describe("runner list rows", () => {
     expect(html).toContain("Never reported");
     expect(html).not.toContain("signed in");
   });
+  test("a runner below the minimum asks for an upgrade only while it is active and online", () => {
+    const outdated = { ...row, minimumRunnerVersion: "0.1.84" };
+    const upgrade = "Upgrade this runner to 0.1.84";
+    expect(runnerRowMarkup({ ...runner, version: "0.1.83" }, outdated)).toContain(upgrade);
+    expect(runnerRowMarkup({ ...runner, version: null }, outdated)).toContain(upgrade);
+    expect(runnerRowMarkup({ ...runner, version: "0.1.84" }, outdated)).not.toContain(upgrade);
+    expect(
+      runnerRowMarkup({ ...runner, status: "revoked", version: "0.1.83" }, outdated),
+    ).not.toContain(upgrade);
+    expect(
+      runnerRowMarkup({ ...runner, status: "paused", version: "0.1.83" }, outdated),
+    ).not.toContain(upgrade);
+    expect(
+      runnerRowMarkup({ ...runner, version: "0.1.83", metrics: null }, outdated),
+    ).not.toContain(upgrade);
+  });
 });
 
 describe("runner execution history", () => {

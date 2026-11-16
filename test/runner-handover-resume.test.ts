@@ -1,5 +1,5 @@
 import { boundHeartbeat, boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts } from "./pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -30,12 +30,7 @@ import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-con
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import {
-  QUESTION_ENDS_TURN_RUNNER_VERSION,
-  verifyRunnerCommand,
-  type RunnerCommand,
-  type RunnerEvent,
-} from "../src/runner-protocol";
+import { verifyRunnerCommand, type RunnerCommand, type RunnerEvent } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
@@ -444,10 +439,10 @@ async function setup() {
         yield* q.exec(
           q.orm
             .insert(q.t.runnerHostStatus)
-            .values({ runnerId, runnerVersion: "0.1.61", reportedAt: now })
+            .values({ runnerId, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt: now })
             .onConflictDoUpdate({
               target: q.t.runnerHostStatus.runnerId,
-              set: { runnerVersion: "0.1.61" },
+              set: { runnerVersion: CURRENT_RUNNER_VERSION },
             }),
         );
         yield* q.exec(
@@ -817,28 +812,21 @@ test("a session still waiting on its question keeps it and does not move", async
   expect(await context.next(runners.b, 50)).toBeNull();
 });
 
-test("only a runner that ends the turn at a question is told to; an older one keeps the question in the turn", async () => {
+test("a runner is told to end the turn at a question", async () => {
   const { db, runners } = context;
-  for (const [version, told] of [
-    ["0.1.73", undefined],
-    [QUESTION_ENDS_TURN_RUNNER_VERSION.join("."), true],
-  ] as const) {
-    const record = await context.item();
-    await setRunner(db, runners.b, { status: "paused" });
-    await setRunnerVersion(db, runners.a, version);
-    const { running } = context.turn(record, [], "open");
-    const onA = (await context.next(runners.a)) as RunCommand;
-    expect(onA.questionEndsTurn).toBe(told);
-    await context.submit(onA, runners.a, { candidateSha: context.base });
-    expect(await running).toMatchObject({ stopReason: "end_turn" });
-  }
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const { running } = context.turn(record, [], "open");
+  const onA = (await context.next(runners.a)) as RunCommand;
+  expect(onA.questionEndsTurn).toBe(true);
+  await context.submit(onA, runners.a, { candidateSha: context.base });
+  expect(await running).toMatchObject({ stopReason: "end_turn" });
 });
 
 test("a question that cannot be asked keeps the turn's work as a WIP commit before the cancel", async () => {
   const { db, runners } = context;
   const record = await context.item();
   await setRunner(db, runners.b, { status: "paused" });
-  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running } = context.turn(record, [], "stale");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [
@@ -857,7 +845,6 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   const { db, runners } = context;
   const record = await context.item();
   await setRunner(db, runners.b, { status: "paused" });
-  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running, stop } = context.turn(record, [], "waiting");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [

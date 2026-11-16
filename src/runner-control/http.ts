@@ -1,3 +1,4 @@
+import { MINIMUM_RUNNER_VERSION } from "../runner-protocol";
 import { journalCaught } from "../journal";
 import { z } from "zod";
 import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
@@ -101,6 +102,7 @@ export function createRunnerHttp(
               })),
             ),
             serverVersion: control.serverVersion(),
+            minimumRunnerVersion: MINIMUM_RUNNER_VERSION.join("."),
             agentVersions: await control.agentVersions(),
           });
         if (path === "/api/runners/enrollments" && request.method === "POST") {

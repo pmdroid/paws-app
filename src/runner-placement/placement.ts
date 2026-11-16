@@ -53,6 +53,7 @@ import type {
   RunnerPlacement,
 } from "./index";
 import {
+  eligibleReasonText,
   eligibleRunnersSteps,
   itemRepositoryRefusalsSteps,
   runnerSetupNeedSteps,
@@ -397,7 +398,7 @@ export function createRunnerPlacement(options: {
         includeRevoked: true,
       })) {
         const reason = !runner.eligible
-          ? runner.reason
+          ? eligibleReasonText(runner.reason)
           : pinnedOnline && runner.id !== pinnedRunnerId
             ? PINNED_ELSEWHERE
             : null;

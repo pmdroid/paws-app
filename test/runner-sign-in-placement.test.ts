@@ -17,7 +17,7 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];
@@ -88,6 +88,7 @@ async function acme() {
           { runnerId: id, agent: "claude", ready: 1 },
           { runnerId: id, agent: "codex", ready: 0 },
         ]),
+      (q) => currentRunnerHost(q, id, now),
     );
   const placement = createRunnerPlacement({ store: db, now: () => now });
   const place = async (request: Partial<PlacementRequest> = {}) => {
@@ -276,12 +277,6 @@ for (const oauth of [false, true])
     const selected = await f.createAccount("Selected");
     const unrelated = await f.createAccount("Unrelated");
     for (const id of ["acme-1", "acme-2"]) await f.bind(id, selected.id);
-    await seed(f.db, (q) =>
-      q.orm.insert(q.t.runnerHostStatus).values([
-        { runnerId: "acme-1", runnerVersion: "0.1.82", reportedAt: f.now },
-        { runnerId: "acme-2", runnerVersion: "0.1.83", reportedAt: f.now },
-      ]),
-    );
     const placement = createRunnerPlacement({
       store: f.db,
       now: () => f.now,
@@ -300,7 +295,7 @@ for (const oauth of [false, true])
         rejected.push(reason);
       },
     });
-    expect(placed.map((r) => r.id).sort()).toEqual(oauth ? ["acme-2"] : ["acme-1", "acme-2"]);
+    expect(placed.map((r) => r.id).sort()).toEqual(["acme-1", "acme-2"]);
     expect(placed.every((r) => r.account?.accountId === selected.id && r.account.named)).toBe(true);
-    expect(rejected).toEqual(oauth ? ["Claude OAuth credentials need runner 0.1.83 or later"] : []);
+    expect(rejected).toEqual([]);
   });

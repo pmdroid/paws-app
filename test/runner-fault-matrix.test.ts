@@ -35,11 +35,7 @@ import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import {
-  HIDDEN_CHECKPOINT_RUNNER_VERSION,
-  RUNNER_LEASE_GRACE_MS,
-  type RunnerCommand,
-} from "../src/runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { CHECKPOINT_COMMIT_MESSAGE } from "../src/runner-worker";
@@ -564,22 +560,6 @@ async function runRemoteFault(fault: Fault) {
   });
 
   if (fault === "unpaired") await db.run((q) => runnerRow(q, { status: "paused" }));
-  if (fault === "silent-hung-checkpoint")
-    await db.run((q) =>
-      q.exec(
-        q.orm
-          .insert(q.t.runnerHostStatus)
-          .values({
-            runnerId,
-            runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
-            reportedAt: clockNow(),
-          })
-          .onConflictDoUpdate({
-            target: q.t.runnerHostStatus.runnerId,
-            set: { runnerVersion: HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".") },
-          }),
-      ),
-    );
   let recovering: Promise<void> | null = null;
   function recover(): Promise<void> {
     recovering ??= recoverOnce().finally(() => {
