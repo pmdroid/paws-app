@@ -339,6 +339,8 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   ...[
     ["PUT", "/api/runners/agent-accounts/order"],
     ["PUT", "/api/runners/agent-accounts/:id/extra-usage"],
+    ["PUT", "/api/runners/agent-accounts/:id/enabled"],
+    ["DELETE", "/api/runners/agent-accounts/:id"],
     ["POST", "/api/runners/agent-accounts/:id/sign-in"],
     ["GET POST", "/api/runners/agent-accounts/:id/device"],
     ["DELETE", "/api/runners/agent-accounts/:id/credential"],

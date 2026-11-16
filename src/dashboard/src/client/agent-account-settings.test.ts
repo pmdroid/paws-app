@@ -153,6 +153,45 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
   ]);
 });
 
+test("accounts show their priority, and an admin disables, enables and removes one", async () => {
+  setSettingsAdmin(true);
+  const root = await mount();
+  expect([...root.querySelectorAll("[data-account-rank]")].map((node) => node.textContent)).toEqual(
+    ["1", "2"],
+  );
+  expect([...root.querySelectorAll("[data-account-role]")].map((node) => node.textContent)).toEqual(
+    ["Used first", "Used when the account above can't run"],
+  );
+  expect(root.querySelector(".acct-group .sub")?.textContent).toContain(
+    "Paws uses account 1 first",
+  );
+  await click(root, "A2", "disable");
+  await click(root, "A2", "remove");
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain("Remove Home?");
+  await click(root, "A2", "keep");
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  await click(root, "A2", "remove");
+  await click(root, "A2", "remove-confirm");
+  expect(requests).toEqual([
+    { method: "PUT", path: "/api/runners/agent-accounts/A2/enabled", body: { enabled: false } },
+    { method: "DELETE", path: "/api/runners/agent-accounts/A2", body: undefined },
+  ]);
+});
+
+test("a disabled account says runs skip it and offers Enable", () => {
+  const html = renderAgentAccountSettings({
+    canManage: true,
+    accounts: [{ ...account("A1", "Work"), enabled: false }],
+    runners: {},
+    busy: null,
+    error: null,
+    confirm: null,
+  });
+  expect(html).toContain("Disabled · runs skip this account");
+  expect(html).toContain('data-account-action="enable"');
+  expect(html).not.toContain("data-account-rank");
+});
+
 test("a Claude account takes a pasted setup token and clears the field", async () => {
   setSettingsAdmin(true);
   const root = await mount();
