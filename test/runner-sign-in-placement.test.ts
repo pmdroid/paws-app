@@ -299,3 +299,45 @@ for (const oauth of [false, true])
     expect(placed.every((r) => r.account?.accountId === selected.id && r.account.named)).toBe(true);
     expect(rejected).toEqual([]);
   });
+
+test("a Claude review with a setup token needs a runner that passes the token to the review command", async () => {
+  const f = await acme();
+  const selected = await f.createAccount("Selected");
+  for (const id of ["acme-1", "acme-2"]) await f.bind(id, selected.id);
+  for (const [runnerId, runnerVersion] of [
+    ["acme-1", "0.1.87"],
+    ["acme-2", "0.1.88"],
+  ] as const)
+    await seed(f.db, (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId, runnerVersion, reportedAt: f.now })
+        .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } }),
+    );
+  const placement = createRunnerPlacement({
+    store: f.db,
+    now: () => f.now,
+    requiresOAuthSteps: function* () {
+      yield* [];
+      return true;
+    },
+  });
+  const place = async (role: "implementer" | "reviewer") => {
+    const rejected: string[] = [];
+    const placed = await placement.candidates({
+      itemId: f.item.id,
+      profile: { agent: "claude" },
+      role,
+      purpose: "work",
+      onRejected: (_id, reason) => {
+        rejected.push(reason);
+      },
+    });
+    return { placed: placed.map((r) => r.id).sort(), rejected };
+  };
+  expect(await place("implementer")).toEqual({ placed: ["acme-1", "acme-2"], rejected: [] });
+  expect(await place("reviewer")).toEqual({
+    placed: ["acme-2"],
+    rejected: ["Claude OAuth credentials need runner 0.1.88 or later"],
+  });
+});

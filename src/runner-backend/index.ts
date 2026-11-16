@@ -119,6 +119,7 @@ import {
   redactedJson,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
+  withSignedOutAuth,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerResult,
@@ -620,7 +621,7 @@ export function createRemoteAgentRunner(options: {
         runnerOnlineSteps(q, placement.pinnedRunnerId!, now() - RUNNER_ONLINE_MS),
       )),
     );
-    if (pinnedOnline)
+    if (pinnedOnline && !(options.placement && placement.role === "reviewer"))
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     else if (placement.preferRunnerId)
       candidates = [
@@ -2047,7 +2048,7 @@ export function createRemoteAgentRunner(options: {
               results.read(assigned.runId, assigned.generation, assigned.id),
             );
             if (read === FENCED) continue;
-            complete = read;
+            complete = read && input.role === "reviewer" ? withSignedOutAuth(read) : read;
             if (complete && !disposition)
               disposition = await store.transaction(function* (q) {
                 return (

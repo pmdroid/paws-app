@@ -12,13 +12,16 @@ import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   bindAgentAccount,
+  bindingAccountHealthSteps,
   createAgentAccount,
+  removeAgentAccount,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   getWorkItem,
   insertQueuedItem,
+  listAgentBindings,
   listRunnerOverview,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -593,6 +596,8 @@ async function setup() {
     runners,
     backend,
     results,
+    work,
+    accountBindings,
     async answers(command: RunCommand, after = 0) {
       return results.answers({
         runnerId: runners.a,
@@ -1458,4 +1463,116 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
   expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
   expect(asks).toBe(0);
   expect(await questionAnswers(db, record.runId)).toEqual([]);
+});
+
+function startReview(record: { id: string }, attempt: number) {
+  const stop = new AbortController();
+  const running = context.backend
+    .forItem(record.id)({
+      profile: { agent: "claude", model: "reviewer-model" },
+      role: "reviewer",
+      readOnly: true,
+      itemId: `display-${record.id}`,
+      runId: `rev-${record.id}-${attempt}`,
+      prompt: "Review fixture",
+      worktreePath: join(context.root, "workspace"),
+      pawsRoot: context.root,
+      signal: stop.signal,
+    })
+    .catch((error: unknown) => error);
+  return { stop, running };
+}
+
+async function liveBinding(runnerId: string) {
+  const binding = (await listAgentBindings(context.db, context.workspaceId)).find(
+    (row) => row.runnerId === runnerId && !row.legacy && row.removedAt === null,
+  )!;
+  context.accountBindings.add(binding.id);
+  return { accountId: binding.accountId, bindingId: binding.id };
+}
+
+async function nextReview(runnerId: string) {
+  for (let index = 0; index < 50; index++) {
+    const command = await context.next(runnerId, 20);
+    if (command?.type === "review") return command;
+  }
+  return undefined;
+}
+
+test("a review after the session's account was removed starts fresh on the remaining account", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const implementing = context.turn(record, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  await context.submit(onA, runners.a, { candidateSha: context.base });
+  await implementing.running;
+  await setRunner(db, runners.b, { status: "active" });
+  const removed = await liveBinding(runners.a);
+  await removeAgentAccount(db, {
+    workspaceId: context.workspaceId,
+    accountId: removed.accountId,
+    now: context.now,
+  });
+  await bindFixtureAccounts(db, runners.b, "claude");
+  const remaining = await liveBinding(runners.b);
+  await context.work.heartbeat(runners.b);
+  const { stop, running } = startReview(record, 1);
+  const onB = await nextReview(runners.b);
+  stop.abort();
+  await running;
+  expect(onB).toBeDefined();
+  expect(onB?.account?.bindingId).toBe(remaining.bindingId);
+  expect(onB).not.toHaveProperty("resumeSessionId");
+  expect(onB).not.toHaveProperty("restoreSession");
+});
+
+test("a review that reports Not logged in marks its binding auth-required and moves to the other runner", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  const signedOut = await liveBinding(runners.a);
+  await liveBinding(runners.b);
+  await setRunner(db, runners.b, { status: "paused" });
+  const { stop, running } = startReview(record, 1);
+  const onA = await nextReview(runners.a);
+  expect(onA).toBeDefined();
+  await setRunner(db, runners.b, { status: "active" });
+  await context.results.submit({
+    runnerId: runners.a,
+    runId: onA!.runId,
+    generation: onA!.generation,
+    token: (
+      await context.work.issueGrant({
+        runnerId: runners.a,
+        runId: onA!.runId,
+        commandId: onA!.id,
+        generation: onA!.generation,
+      })
+    ).token,
+    result: {
+      executionId: workspaceId(),
+      commandId: onA!.id,
+      account: onA!.account,
+      role: "reviewer",
+      stopReason: "error",
+      errorMessage:
+        "/opt/paws-runner/bin/claude -p --resume exited 1: Not logged in · Please run /login",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+    },
+  });
+  const onB = await nextReview(runners.b);
+  stop.abort();
+  await running;
+  expect(onB).toBeDefined();
+  expect(onB?.account?.bindingId).not.toBe(signedOut.bindingId);
+  const health = await db.run((q) => bindingAccountHealthSteps(q, signedOut.bindingId));
+  expect(health.map((row) => row.state)).toContain("auth_required");
+  await removeAgentAccount(db, {
+    workspaceId: context.workspaceId,
+    accountId: signedOut.accountId,
+    now: context.now,
+  });
 });
