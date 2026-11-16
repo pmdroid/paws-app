@@ -953,6 +953,13 @@ export async function executeRunnerCommand(
     enterPhase("checkout");
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
+      if (binding && !job.credentials) {
+        emit({
+          type: "login",
+          update: { state: "failed", terminal: "", authorization: null, inputId: null },
+        });
+        throw new Error("Paws cannot receive this sign-in's credentials");
+      }
       await runProviderLogin({
         agent: command.agent,
         home,
@@ -967,8 +974,6 @@ export async function executeRunnerCommand(
                     home,
                     job.executionId,
                     () => {
-                      if (!job.credentials)
-                        throw new Error("Paws cannot receive this sign-in's credentials");
                       write();
                       markRunnerAccountSignedIn(
                         home,

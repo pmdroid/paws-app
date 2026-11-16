@@ -70,7 +70,11 @@ export function accountStatus(
 }
 
 function unstored(account: Account | null): boolean {
-  return account?.session?.state === "connected" && !account.connected;
+  return (
+    account?.session?.state === "connected" &&
+    !account.connected &&
+    Date.now() < account.session.expiresAt
+  );
 }
 
 /** Said before a sign-in starts while the agent is running tasks on the runner. */

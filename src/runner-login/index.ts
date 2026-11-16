@@ -85,11 +85,25 @@ export function createRunnerLogin(options: {
       throw new Error("Agent account access denied");
     return runner;
   }
+  function* retireSteps(q: Q, row: Row): Steps<void> {
+    const { bindingId, workspaceId } = row;
+    if (bindingId === null) return;
+    try {
+      yield* q.transaction(function* (tx) {
+        const binding = yield* getAgentBindingSteps(tx, workspaceId, bindingId);
+        if (binding.legacy || (yield* agentAccountSignedInSteps(tx, binding.accountId))) return;
+        yield* removeAgentBindingSteps(tx, { workspaceId, bindingId, now: now() });
+      });
+    } catch (error) {
+      journalCaught(error, "runner-login.retire", null);
+    }
+  }
   function* readSteps(q: Q, id: string): Steps<Row> {
     const row = yield* runnerLoginRowSteps(q, id);
     if (!row) throw new Error("Login session is unavailable");
     if (pending(row) && row.expiresAt <= now()) {
       yield* closeRunnerLoginSteps(q, id, "expired");
+      yield* retireSteps(q, row);
       inputs.delete(id);
       return {
         ...row,
@@ -319,15 +333,7 @@ export function createRunnerLogin(options: {
           updatedAt: now(),
         });
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
-        if (update.state === "failed" && row.bindingId !== null) {
-          const binding = yield* getAgentBindingSteps(q, row.workspaceId, row.bindingId);
-          if (!binding.legacy && !(yield* agentAccountSignedInSteps(q, binding.accountId)))
-            yield* removeAgentBindingSteps(q, {
-              workspaceId: row.workspaceId,
-              bindingId: binding.id,
-              now: now(),
-            });
-        }
+        if (update.state === "failed") yield* retireSteps(q, row);
         if (update.state === "connected" && row.bindingId === null) {
           yield* setRunnerAgentSignedInSteps(q, runnerId, row.agent, true, now());
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, now());
@@ -385,7 +391,11 @@ export function createRunnerLogin(options: {
         const row = await store.run((q) => ownSteps(q, principal, runnerId, agent, id));
         if (!match[4] && request.method === "GET") return json(snapshot(row));
         if (!match[4] && request.method === "DELETE") {
-          if (pending(row)) await store.run((q) => closeRunnerLoginSteps(q, id, "cancelled"));
+          if (pending(row))
+            await store.transaction(function* (q) {
+              yield* closeRunnerLoginSteps(q, id, "cancelled");
+              yield* retireSteps(q, row);
+            });
           inputs.delete(id);
           return json(snapshot(await store.run((q) => readSteps(q, id))));
         }

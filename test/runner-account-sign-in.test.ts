@@ -299,6 +299,31 @@ test("a named sign-in that fails without a stored credential leaves no usable bi
   ).toBeUndefined();
 });
 
+test("an expired or cancelled named sign-in without a stored credential leaves no binding", async () => {
+  const { runnerId, principal, login, clock, binding, db, account, workspace, now } =
+    await fixture();
+  await login.start(principal, runnerId, "codex", binding.id);
+  clock.at += 600_001;
+  await login.list(principal, runnerId);
+  expect((await login.list(principal, runnerId)).bindings).toEqual([]);
+  const again = await bindAgentAccount(db, {
+    userId: account.ownerUserId!,
+    workspaceId: workspace,
+    accountId: account.id,
+    runnerId,
+    now,
+  });
+  const started = await login.start(principal, runnerId, "codex", again.id);
+  const cancelled = await login.browser(
+    new Request(`https://paws.invalid/api/runners/${runnerId}/accounts/codex/login/${started.id}`, {
+      method: "DELETE",
+    }),
+    principal,
+  );
+  expect(((await cancelled!.json()) as { state: string }).state).toBe("cancelled");
+  expect((await login.list(principal, runnerId)).bindings).toEqual([]);
+});
+
 test("a named sign-in that reports connected before Paws stores its credential is not signed in", async () => {
   const { runnerId, principal, login, binding } = await fixture();
   const named = await login.start(principal, runnerId, "codex", binding.id);
