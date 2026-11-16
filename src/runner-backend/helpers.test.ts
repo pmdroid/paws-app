@@ -1345,3 +1345,19 @@ test("three undelivered helpers in a row show on the runner as not picking up he
   await f.helpers.acknowledge("runner", command.id);
   expect(await undelivered()).toBe(false);
 });
+
+test("helpers Paws ended before the acknowledgement window do not count as undelivered", async () => {
+  const f = await fixture();
+  const workspace = (
+    await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner")
+  )[0]!.id;
+  for (const session of ["first", "second", "third"]) {
+    await linearSession(f, session);
+    const { command } = await classifyOn(f, session);
+    await f.helpers.finish(command.id);
+    f.advance(RUNNER_LIVE_GRACE_MS);
+  }
+  expect((await listRunnerOverview(f.db, workspace, f.advance(0)))[0]!.helpersUndelivered).toBe(
+    false,
+  );
+});

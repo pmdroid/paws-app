@@ -70,7 +70,8 @@ export function* undeliveredHelperStreakSteps(
           or(
             isNotNull(runnerHelper.acknowledgedAt),
             sql.raw(
-              `${helperIssuedSql("runner_helper")}<=${Math.trunc(now) - RUNNER_LIVE_GRACE_MS}`,
+              `${helperIssuedSql("runner_helper")}<=${Math.trunc(now) - RUNNER_LIVE_GRACE_MS}
+              AND COALESCE(runner_helper.ended_at-(${helperIssuedSql("runner_helper")}),${RUNNER_LIVE_GRACE_MS})>=${RUNNER_LIVE_GRACE_MS}`,
             ),
           ),
         ),
