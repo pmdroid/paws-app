@@ -142,6 +142,7 @@ import {
   RunnerEventSchema,
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
+  AGENT_SIGNED_OUT,
   type RunnerArtifact,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -706,9 +707,24 @@ async function reviewCommandTurn(input: {
   signal?: AbortSignal;
   onText: (text: string) => void;
 }): Promise<RunAgentResult> {
+  let env: NodeJS.ProcessEnv;
+  try {
+    env = reviewCommandEnv(input.agent, input.env);
+  } catch (error) {
+    journalCaught(error, "runner-worker.reviewCommandTurn.token", null);
+    return {
+      role: "reviewer",
+      stopReason: "error",
+      errorMessage: `The account's Claude setup token file .claude/paws-oauth.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      timedOut: false,
+      cancelled: false,
+      authRequired: true,
+      agentExited: true,
+    };
+  }
   const outcome = await runReviewCommand(
     createReviewCommandRunner({
-      env: input.env,
+      env,
       timeoutMs: input.timeoutMs,
       ...(input.signal ? { signal: input.signal } : {}),
     }),
@@ -733,7 +749,7 @@ async function reviewCommandTurn(input: {
     ...(outcome.producer.session ? { sessionId: outcome.producer.session } : {}),
     timedOut: false,
     cancelled,
-    authRequired: false,
+    authRequired: !outcome.ok && AGENT_SIGNED_OUT.test(outcome.reason),
     agentExited: true,
   };
   if (cancelled) return { ...ended, stopReason: "cancelled", errorMessage: "Review cancelled" };
@@ -1773,7 +1789,7 @@ export async function executeRunnerCommand(
                 ...(earlier ? { earlier } : {}),
                 worktree,
                 executable: providerCli(agentName),
-                env: reviewCommandEnv(agentName, input.env ?? agentEnv),
+                env: input.env ?? agentEnv,
                 // The runtime renews authority and aborts the worker when it ends.
                 timeoutMs: input.signal
                   ? 2_147_483_647

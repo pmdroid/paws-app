@@ -61,6 +61,8 @@ export {
 } from "./events";
 
 export {
+  AGENT_SIGNED_OUT,
+  withSignedOutAuth,
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
   RunnerHelperResultSchema,
@@ -201,6 +203,7 @@ export {
   AGENT_CREDENTIAL_RUNNER_VERSION,
   ACCESS_CREDENTIAL_RUNNER_VERSION,
   CLAUDE_OAUTH_RUNNER_VERSION,
+  REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   COMPLETE_CHECKS_RUNNER_VERSION,
 } from "./versions";
 export {

@@ -43,7 +43,7 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import { REVIEW_COMMAND_OAUTH_RUNNER_VERSION, type RunnerCodingAgent } from "../runner-protocol";
 import type {
   EligibleRunner,
   PlacementAccount,
@@ -59,10 +59,18 @@ import {
   runnerSetupNeedSteps,
   RUNNER_ONLINE_MS,
 } from "./eligible";
-import { classifyAgentFailure } from "./account-health";
+import { BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
 import { repositoryRejectionSteps, signInFitSteps } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
+const UNUSABLE_PIN = new Set([
+  BINDING_REASON_TEXT.removed,
+  BINDING_REASON_TEXT.revoked,
+  BINDING_REASON_TEXT.disabled,
+  BINDING_REASON_TEXT["auth-required"],
+  `Claude OAuth credentials need runner ${REVIEW_COMMAND_OAUTH_RUNNER_VERSION.join(".")} or later`,
+]);
+
 const RETRYABLE_OUTCOMES = new Set([
   "heartbeat_lost",
   "auth_required",
@@ -322,6 +330,7 @@ export function createRunnerPlacement(options: {
         at: now(),
         exceptCommandId: input.commandId,
         bindingId: account.bindingId,
+        role: input.role,
       },
       options.requiresOAuthSteps,
     );
@@ -351,7 +360,7 @@ export function createRunnerPlacement(options: {
       pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
         ? yield* runnerIdentitySteps(q, pinnedRunnerId)
         : null;
-    const pinnedOnline =
+    const pinnedReachable =
       pinned !== null &&
       pinned.status === "active" &&
       pinned.revokedAt === null &&
@@ -388,6 +397,30 @@ export function createRunnerPlacement(options: {
           });
     } else scopes.push(yield* eligibilitySteps(q, current));
     const agent = input.profile.agent as RunnerCodingAgent;
+    const pinnedFit =
+      pinnedReachable && input.role === "reviewer"
+        ? yield* signInFitSteps(
+            q,
+            { id: pinnedRunnerId! },
+            current.workspace.id,
+            {
+              agent,
+              model: input.profile?.model,
+              purpose: input.purpose,
+              excludeBindingIds: input.excludeRunnerIds,
+              role: "reviewer",
+              at,
+            },
+            options.requiresOAuthSteps,
+          )
+        : null;
+    const pinnedOnline =
+      pinnedReachable &&
+      !(
+        pinnedFit &&
+        "reason" in pinnedFit &&
+        (pinnedFit.refusals ?? []).every((refusal) => UNUSABLE_PIN.has(refusal.reason))
+      );
     const rows: (EligibleRunner & { own: boolean })[] = [];
     for (const owner of scopes)
       for (const runner of yield* eligibleRunnersSteps(q, {
@@ -459,6 +492,7 @@ export function createRunnerPlacement(options: {
           model: input.profile?.model,
           purpose: input.purpose,
           excludeBindingIds: input.excludeRunnerIds,
+          role: input.role,
           at,
         },
         options.requiresOAuthSteps,
