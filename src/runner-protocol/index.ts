@@ -9,6 +9,7 @@ export {
 export {
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
+  RUNNER_LIVE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   RUNNER_HANDOVER_LIMIT_MS,
   RUNNER_CHECKPOINT_LIMIT_MS,
@@ -60,6 +61,8 @@ export {
 } from "./events";
 
 export {
+  AGENT_SIGNED_OUT,
+  withSignedOutAuth,
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
   RunnerHelperResultSchema,
@@ -148,6 +151,7 @@ export {
 } from "./agents";
 
 export {
+  MINIMUM_RUNNER_VERSION,
   type RunnerVersion,
   OPENCODE_RUNNER_VERSION,
   SKILL_HOOK_RUNNER_VERSION,
@@ -200,6 +204,7 @@ export {
   AGENT_CREDENTIAL_RUNNER_VERSION,
   ACCESS_CREDENTIAL_RUNNER_VERSION,
   CLAUDE_OAUTH_RUNNER_VERSION,
+  REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   COMPLETE_CHECKS_RUNNER_VERSION,
 } from "./versions";
 export {

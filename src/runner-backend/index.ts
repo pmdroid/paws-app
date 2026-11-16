@@ -52,7 +52,9 @@ import {
   pinnedSlotsReservedSteps,
   releasePinnedSlotSteps,
   recordFallbackAttemptSteps,
+  runnerCommandAcknowledgedBySteps,
   runnerHasCapacitySteps,
+  runnerLaneHelperWaitingSteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
@@ -117,6 +119,7 @@ import {
   redactedJson,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
+  withSignedOutAuth,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerResult,
@@ -124,11 +127,12 @@ import {
 } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
-import { fastForwardToBranchTip } from "./candidate";
+import { CandidateMismatch, fastForwardToBranchTip, restartCandidateFrom } from "./candidate";
 import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
+import { HELPER_LANE_BUSY } from "./helpers";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
@@ -167,6 +171,8 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
+  RunnerSlotsBusyError,
+  SavedWorkRewritten,
   WORKSPACE_HOOK_LIMIT,
   systemClock,
   type WorkspaceHook,
@@ -195,6 +201,9 @@ export class RemotePreparationTimeout extends Error {
 }
 
 const FENCED = Symbol("fenced");
+
+const PREPARATION_TIMEOUT_MS = 120_000;
+const PREPARATION_QUEUE_MS = 15 * 60_000;
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
 /** Above the longest silent tool call seen; a run this quiet must be confirmed by its runner. */
@@ -612,7 +621,7 @@ export function createRemoteAgentRunner(options: {
         runnerOnlineSteps(q, placement.pinnedRunnerId!, now() - RUNNER_ONLINE_MS),
       )),
     );
-    if (pinnedOnline)
+    if (pinnedOnline && !(options.placement && placement.role === "reviewer"))
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     else if (placement.preferRunnerId)
       candidates = [
@@ -996,7 +1005,7 @@ export function createRemoteAgentRunner(options: {
                   runnerId: selected.id,
                   workspaceId: selected.workspaceId,
                   issuedAt,
-                  expiresAt: issuedAt + 120_000,
+                  expiresAt: issuedAt + PREPARATION_QUEUE_MS,
                   type: "probe",
                   profile,
                   ...commandAccount(selected.account),
@@ -1019,7 +1028,23 @@ export function createRemoteAgentRunner(options: {
                 throw await placementRace(itemId, selected.id, error);
               throw error;
             }
-            while (now() < issuedAt + 120_000) {
+            let deadline = issuedAt + PREPARATION_TIMEOUT_MS;
+            let checked = issuedAt;
+            for (;;) {
+              const at = now();
+              if (
+                await store.run(function* (q) {
+                  return (
+                    !(yield* runnerCommandAcknowledgedBySteps(q, id, at)) &&
+                    (yield* runnerLaneHelperWaitingSteps(q, selected.id, at))
+                  );
+                })
+              )
+                deadline += at - checked;
+              checked = at;
+              if (at >= deadline) throw new RemotePreparationTimeout();
+              if (at >= issuedAt + PREPARATION_QUEUE_MS)
+                throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
               signal.throwIfAborted();
               if (taskScope)
                 await work.scopeTask(
@@ -1077,7 +1102,6 @@ export function createRemoteAgentRunner(options: {
               }
               await delay(interval, undefined, { signal });
             }
-            throw new RemotePreparationTimeout();
           }
           const importStoredCheckpoint = async (
             github: GitHubCommits,
@@ -1129,6 +1153,32 @@ export function createRemoteAgentRunner(options: {
                 scoped.repository,
               );
             const { mirror, ref } = itemCandidate(scoped.repository);
+            const saved = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint;
+            const branch = scoped.item.branchName;
+            if (saved?.restartFrom && branch) {
+              const { restartFrom: from, checkpointMain: _, lostCommits: __, ...rest } = saved;
+              const { start, base } = await restartCandidateFrom({
+                mirror,
+                ref,
+                branch,
+                remoteUrl: scoped.repository.remoteUrl,
+                from,
+                ...(saved.baseSha ? { base: saved.baseSha } : {}),
+                networkGit,
+                signal,
+              }).catch(async (error: unknown) => {
+                if (!(error instanceof CandidateMismatch)) throw error;
+                await saveCheckpoint(store, itemId, rest);
+                throw new SavedWorkRewritten(branch, saved.wipCommit ?? error.tip, error.tip);
+              });
+              await saveCheckpoint(store, itemId, {
+                ...rest,
+                phase: "running",
+                baseSha: base,
+                wipCommit: start,
+              });
+              return;
+            }
             if (scoped.item.branchName)
               await fastForwardToBranchTip({
                 mirror,
@@ -1196,6 +1246,8 @@ export function createRemoteAgentRunner(options: {
                 signal,
               });
             } catch (error) {
+              if (error instanceof CandidateMismatch && scoped.item.branchName)
+                throw new SavedWorkRewritten(scoped.item.branchName, wip, error.tip);
               throw new Error(
                 `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${scoped.item.branchName}: ${error instanceof Error ? error.message : String(error)}`,
                 { cause: error },
@@ -1996,7 +2048,7 @@ export function createRemoteAgentRunner(options: {
               results.read(assigned.runId, assigned.generation, assigned.id),
             );
             if (read === FENCED) continue;
-            complete = read;
+            complete = read && input.role === "reviewer" ? withSignedOutAuth(read) : read;
             if (complete && !disposition)
               disposition = await store.transaction(function* (q) {
                 return (
@@ -2904,7 +2956,7 @@ export function createConversationTurns(options: {
   return conversationTurns({ ...options, holder: sessionHolderSteps });
 }
 
-export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { fastForwardToBranchTip, fetchRunnerCandidate, restartCandidateFrom } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";
 export {
   ensureStartOnRemote,

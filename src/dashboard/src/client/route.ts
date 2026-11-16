@@ -1,5 +1,10 @@
 import { journalCaught } from "../journal";
-import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
+import {
+  isUserSettingsPage,
+  isWorkspacePage,
+  type UserSettingsPage,
+  type WorkspacePage,
+} from "./settings-pages";
 import { DASHBOARD_PATH, isDashboardPath } from "../../../dashboard-links";
 import { isAliasKind, type AliasKind } from "../aliases";
 
@@ -14,7 +19,8 @@ export type Route =
   | { view: "improvements"; tab: ImprovementTab; id: string | null }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
-  | { view: "settings"; page?: SettingsPage };
+  | { view: "settings"; page?: UserSettingsPage }
+  | { view: "workspace"; page?: WorkspacePage };
 
 export type ImprovementTab = "review" | "report" | "history" | "settings";
 
@@ -67,9 +73,9 @@ export function matchRoute(path: string): Route | null {
       return { view: "questions", id };
     case "settings":
       if (id === "findings") return { view: "findings" };
-      return SETTINGS_PAGES.some((entry) => entry.id === id)
-        ? { view: "settings", page: id as SettingsPage }
-        : { view: "settings" };
+      return isUserSettingsPage(id) ? { view: "settings", page: id } : { view: "settings" };
+    case "workspace":
+      return isWorkspacePage(id) ? { view: "workspace", page: id } : { view: "workspace" };
     default:
       return null;
   }
@@ -77,7 +83,8 @@ export function matchRoute(path: string): Route | null {
 
 export function routePath(route: Route): string {
   if (route.view === "overview") return "/";
-  if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
+  if (route.view === "settings" || route.view === "workspace")
+    return route.page ? `/${route.view}/${route.page}` : `/${route.view}`;
   if (route.view === "mergeQueue") return "/merge-queue";
   if (route.view === "findings") return "/findings";
   if (route.view === "improvements") {

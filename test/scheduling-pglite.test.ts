@@ -260,6 +260,7 @@ describePglite((connect) => {
       runnerFence: 0,
       envelope: json(db, {}),
       expiresAt: NOW + 1,
+      acknowledgedAt: NOW,
       purpose,
     });
     await seed(

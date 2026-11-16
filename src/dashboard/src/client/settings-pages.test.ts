@@ -4,20 +4,46 @@ import { createBriefSettings } from "./brief-settings";
 import { createHookSettings, type HookListing } from "./hooks";
 import { render } from "./render";
 import { parseRoute } from "./route";
-import { SETTINGS_PAGES, renderSettingsPage, setSettingsAdmin } from "./settings-pages";
+import {
+  SETTINGS_PAGES,
+  USER_SETTINGS_PAGES,
+  WORKSPACE_PAGES,
+  renderSettingsPage,
+  setSettingsAdmin,
+  settingsRedirect,
+} from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
 import { settleReactWork } from "./settle-react";
 import { initializeWorkspaceAccess } from "./workspace";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
 
-test("the settings navigation has no Decisions page and opens on Agents", () => {
+test("Settings opens on Your account and Workspace opens on Agents", () => {
+  setSettingsAdmin(true);
   expect(SETTINGS_PAGES.map((page) => page.id)).not.toContain("decisions");
   expect(SETTINGS_PAGES.map((page) => page.name)).not.toContain("Decisions");
-  expect(SETTINGS_PAGES[0]?.id).toBe("agents");
   expect(parseRoute("/settings")).toEqual({ view: "settings" });
   expect(parseRoute("/settings/decisions")).toEqual({ view: "settings" });
-  expect(renderSettingsPage()).toContain('aria-current="page" class="settings-link">Agents</a>');
+  expect(parseRoute("/workspace")).toEqual({ view: "workspace" });
+  expect(
+    render({ route: { view: "settings" }, phase: "ready", error: null, engineUrl: ENGINE }).content,
+  ).toContain('aria-current="page" class="settings-link">Your account</a>');
+  expect(
+    render({ route: { view: "workspace" }, phase: "ready", error: null, engineUrl: ENGINE })
+      .content,
+  ).toContain('aria-current="page" class="settings-link">Agents</a>');
+});
+
+test("an old settings link to a workspace page opens Workspace for admins and Your account for members", () => {
+  setSettingsAdmin(true);
+  expect(settingsRedirect("/settings/merging")).toBe("/workspace/merging");
+  expect(settingsRedirect("/settings/account")).toBeNull();
+  expect(settingsRedirect("/workspace/merging")).toBeNull();
+  setSettingsAdmin(false);
+  expect(settingsRedirect("/settings/merging")).toBe("/settings/account");
+  expect(settingsRedirect("/workspace/merging")).toBe("/settings/account");
+  expect(settingsRedirect("/workspace")).toBe("/settings/account");
+  expect(settingsRedirect("/settings/agent-accounts")).toBeNull();
 });
 
 test("Agent instructions holds the brief, then skills, then hooks", () => {
@@ -35,33 +61,48 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("settings shows one tab bar of thirteen pages in order, marking the current one", () => {
+test("Settings shows only its own two tabs, marking the current one", () => {
+  setSettingsAdmin(true);
   const doc = new Window().document;
-  doc.body.innerHTML = renderSettingsPage("merging");
+  doc.body.innerHTML = renderSettingsPage("agent-accounts");
   const navs = doc.querySelectorAll("nav");
   expect(navs.length).toBe(1);
   expect(navs[0]?.getAttribute("aria-label")).toBe("Settings pages");
   const links = [...navs[0]!.querySelectorAll("a")];
+  expect(links.map((link) => link.textContent)).toEqual(["Your account", "Agent accounts"]);
+  expect(
+    links.map((link) => parseRoute(new URL(link.getAttribute("href")!, ENGINE).pathname)),
+  ).toEqual(USER_SETTINGS_PAGES.map((page) => ({ view: "settings", page: page.id })));
+  expect(doc.querySelector("a[aria-current]")?.textContent).toBe("Agent accounts");
+});
+
+test("Workspace shows one tab bar of twelve pages in order, marking the current one", () => {
+  setSettingsAdmin(true);
+  const doc = new Window().document;
+  doc.body.innerHTML = renderSettingsPage("merging");
+  const navs = doc.querySelectorAll("nav");
+  expect(navs.length).toBe(1);
+  expect(navs[0]?.getAttribute("aria-label")).toBe("Workspace pages");
+  const links = [...navs[0]!.querySelectorAll("a")];
   expect(links.map((link) => link.textContent)).toEqual([
     "Agents",
-    "Agent accounts",
     "Merging",
     "Repositories",
     "Linear",
     "Storage",
     "Queue and limits",
+    "Member VMs",
     "Agent instructions",
     "Integrations",
     "Members",
     "Workspace access",
-    "Your account",
     "Audit history",
   ]);
   for (const [index, link] of links.entries()) {
-    const id = SETTINGS_PAGES[index]!.id;
-    expect(link.getAttribute("href")?.endsWith(`/settings/${id}`)).toBe(true);
+    const id = WORKSPACE_PAGES[index]!.id;
+    expect(link.getAttribute("href")?.endsWith(`/workspace/${id}`)).toBe(true);
     expect(parseRoute(new URL(link.getAttribute("href")!, ENGINE).pathname)).toEqual({
-      view: "settings",
+      view: "workspace",
       page: id,
     });
   }
@@ -74,29 +115,23 @@ test("settings shows one tab bar of thirteen pages in order, marking the current
   );
 });
 
-test("a member opening an admin settings page gets Your account, and Integrations stays open", () => {
+test("a member opening a workspace page gets Your account", () => {
   setSettingsAdmin(false);
-  for (const page of SETTINGS_PAGES.filter(
-    (entry) => !["agent-accounts", "repositories", "linear", "merging"].includes(entry.id),
-  )) {
+  const account = USER_SETTINGS_PAGES.find((entry) => entry.id === "account")!;
+  for (const page of WORKSPACE_PAGES) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
-    const shown =
-      page.id === "integrations" ? page : SETTINGS_PAGES.find((entry) => entry.id === "account")!;
-    expect(navLinks(doc)).toEqual([
-      "Agent accounts",
-      "Merging",
-      "Repositories",
-      "Linear",
-      "Integrations",
-      "Your account",
-    ]);
-    expect(doc.querySelector("a[aria-current]")?.textContent).toBe(shown.name);
+    expect(navLinks(doc)).toEqual(["Your account", "Agent accounts"]);
+    expect(doc.querySelector("a[aria-current]")?.textContent).toBe(account.name);
     expect(doc.querySelector(".settings-body")?.innerHTML).toBe(
-      `<p class="sub">${shown.description}</p>`,
+      `<p class="sub">${account.description}</p>`,
     );
   }
-  const route = { view: "settings", page: "merging" } as const;
+  const route = { view: "workspace", page: "merging" } as const;
+  expect(render({ route, phase: "ready", error: null, engineUrl: ENGINE }).title).toBe(
+    "Paws status · Your account",
+  );
+  setSettingsAdmin(true);
   expect(render({ route, phase: "ready", error: null, engineUrl: ENGINE }).title).toBe(
     "Paws status · Merging",
   );
@@ -181,28 +216,21 @@ function navLinks(doc: { querySelectorAll(selector: string): Iterable<Element> }
   return [...doc.querySelectorAll("nav a")].map((link) => link.textContent);
 }
 
-test("settings list the admin pages only once the session says admin", async () => {
+test("Workspace tabs show only once the session says admin", async () => {
   for (const role of ["admin", "member"]) {
     let respond = (_: Response) => {};
     globalThis.fetch = (() =>
       new Promise((resolve) => (respond = resolve))) as unknown as typeof fetch;
     const loaded = initializeWorkspaceAccess(() => null);
     window.document.body.innerHTML = renderSettingsPage("merging");
-    expect(navLinks(window.document)).toEqual([
-      "Agent accounts",
-      "Merging",
-      "Repositories",
-      "Linear",
-      "Integrations",
-      "Your account",
-    ]);
+    expect(navLinks(window.document)).toEqual(["Your account", "Agent accounts"]);
     respond(Response.json({ role, workspaceId: "w", csrfToken: "t", workspaces: [] }));
     expect(await loaded).toBe(true);
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual(
       role === "admin"
-        ? SETTINGS_PAGES.map((page) => page.name)
-        : ["Agent accounts", "Merging", "Repositories", "Linear", "Integrations", "Your account"],
+        ? WORKSPACE_PAGES.map((page) => page.name)
+        : ["Your account", "Agent accounts"],
     );
   }
 });

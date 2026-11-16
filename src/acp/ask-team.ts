@@ -376,7 +376,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
           for (const check of report.required) {
             if (check.kind === "command" && !check.result) {
               options.signal.throwIfAborted();
-              await closeout.run(check.id);
+              await closeout.run(check.id, undefined, true);
             }
           }
         }

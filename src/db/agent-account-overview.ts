@@ -21,9 +21,15 @@ export type AgentAccountOverview = {
   label: string;
   position: number;
   extraUsage: boolean;
+  enabled: boolean;
   signingIn: boolean;
   credential: { refreshedAt: number; runner: string | null } | null;
-  usage: { limits: RunnerAgentLimit[]; observedAt: number; stale?: boolean } | null;
+  usage: {
+    limits: RunnerAgentLimit[];
+    observedAt: number;
+    stale?: boolean;
+    unavailable?: string;
+  } | null;
   lease: {
     runner: string;
     runId: string;
@@ -50,6 +56,7 @@ export function* agentAccountOverviewSteps(
         label: a.label,
         position: a.position,
         extraUsage: a.extraUsage,
+        enabled: a.enabled,
         signedOut: c.ciphertext,
         refreshedAt: c.updatedAt,
         refreshedBy: c.runnerId,
@@ -126,6 +133,7 @@ export function* agentAccountOverviewSteps(
       label: row.label,
       position: row.position,
       extraUsage: row.extraUsage === 1,
+      enabled: row.enabled === 1,
       signingIn: signingIn.has(row.id),
       credential:
         row.refreshedAt === null || row.signedOut === "" || expired.has(row.id)

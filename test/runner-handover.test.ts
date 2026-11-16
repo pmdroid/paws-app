@@ -396,6 +396,7 @@ async function setup() {
     commands,
     runnerWork,
     work,
+    runnerId,
     async cleanup() {
       await close();
       rmSync(root, { recursive: true, force: true });
@@ -748,6 +749,56 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
   await expect(running).rejects.toThrow(`could not restore the saved work at ${lost.slice(0, 7)}`);
   expect(await context.commands(record.runId, "run")).toEqual([]);
   expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(lost);
+});
+
+test("a cancelled item's run cannot save work in progress once a newer item holds its branch", async () => {
+  const { db, work, runnerId } = context;
+  const older = await context.item();
+  const newer = `newer-${older.id}`;
+  const branch = (id: string, name: string) =>
+    seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ branchName: name }).where(eq(q.t.workItem.id, id)),
+    );
+  await branch(older.id, "paws/eng-7");
+  await context.release("0.1.46");
+  const stop = new AbortController();
+  try {
+    await context.turn(
+      older,
+      async (command) => {
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.workItem)
+            .set({ cancelRequested: 1 })
+            .where(eq(q.t.workItem.id, older.id)),
+        );
+        stop.abort();
+        expect(await context.next()).toMatchObject({ type: "checkpoint", runId: command.runId });
+        const { runId, generation } = command;
+        const { token } = await work.issueGrant({
+          runnerId,
+          runId,
+          commandId: command.id,
+          generation,
+        });
+        const access = { runnerId, runId, generation, token };
+        expect((await work.authorizeAsync(access)).branch).toBe("paws/eng-7");
+        await insertQueuedItem(db, { id: newer, now: Date.now(), sessionKey: `session-${newer}` });
+        await branch(newer, "paws/eng-7");
+        await expect(work.authorizeAsync(access)).rejects.toThrow("Run is no longer active.");
+        const saved = { type: "checkpoint", reason: "stop", sha: "c".repeat(40) } as const;
+        await expect(context.events(command, [saved])).rejects.toThrow("no longer active");
+        await branch(newer, "paws/eng-7-done");
+        await context.events(command, [{ type: "checkpoint", reason: "stop", dropped: "stopped" }]);
+        expect(await context.next()).toMatchObject({ type: "cancel", runId });
+      },
+      undefined,
+      stop.signal,
+      true,
+    );
+  } finally {
+    await context.release("0.1.44");
+  }
 });
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {

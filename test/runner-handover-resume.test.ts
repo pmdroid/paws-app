@@ -1,5 +1,5 @@
 import { boundHeartbeat, boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts, seedCredential } from "./pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION, seedCredential } from "./pglite-fixtures";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,13 +12,16 @@ import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   bindAgentAccount,
+  bindingAccountHealthSteps,
   createAgentAccount,
+  removeAgentAccount,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   getWorkItem,
   insertQueuedItem,
+  listAgentBindings,
   listRunnerOverview,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -30,12 +33,7 @@ import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-con
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import {
-  QUESTION_ENDS_TURN_RUNNER_VERSION,
-  verifyRunnerCommand,
-  type RunnerCommand,
-  type RunnerEvent,
-} from "../src/runner-protocol";
+import { verifyRunnerCommand, type RunnerCommand, type RunnerEvent } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
@@ -445,10 +443,10 @@ async function setup() {
         yield* q.exec(
           q.orm
             .insert(q.t.runnerHostStatus)
-            .values({ runnerId, runnerVersion: "0.1.61", reportedAt: now })
+            .values({ runnerId, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt: now })
             .onConflictDoUpdate({
               target: q.t.runnerHostStatus.runnerId,
-              set: { runnerVersion: "0.1.61" },
+              set: { runnerVersion: CURRENT_RUNNER_VERSION },
             }),
         );
         yield* q.exec(
@@ -599,6 +597,8 @@ async function setup() {
     runners,
     backend,
     results,
+    work,
+    accountBindings,
     async answers(command: RunCommand, after = 0) {
       return results.answers({
         runnerId: runners.a,
@@ -818,28 +818,21 @@ test("a session still waiting on its question keeps it and does not move", async
   expect(await context.next(runners.b, 50)).toBeNull();
 });
 
-test("only a runner that ends the turn at a question is told to; an older one keeps the question in the turn", async () => {
+test("a runner is told to end the turn at a question", async () => {
   const { db, runners } = context;
-  for (const [version, told] of [
-    ["0.1.73", undefined],
-    [QUESTION_ENDS_TURN_RUNNER_VERSION.join("."), true],
-  ] as const) {
-    const record = await context.item();
-    await setRunner(db, runners.b, { status: "paused" });
-    await setRunnerVersion(db, runners.a, version);
-    const { running } = context.turn(record, [], "open");
-    const onA = (await context.next(runners.a)) as RunCommand;
-    expect(onA.questionEndsTurn).toBe(told);
-    await context.submit(onA, runners.a, { candidateSha: context.base });
-    expect(await running).toMatchObject({ stopReason: "end_turn" });
-  }
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const { running } = context.turn(record, [], "open");
+  const onA = (await context.next(runners.a)) as RunCommand;
+  expect(onA.questionEndsTurn).toBe(true);
+  await context.submit(onA, runners.a, { candidateSha: context.base });
+  expect(await running).toMatchObject({ stopReason: "end_turn" });
 });
 
 test("a question that cannot be asked keeps the turn's work as a WIP commit before the cancel", async () => {
   const { db, runners } = context;
   const record = await context.item();
   await setRunner(db, runners.b, { status: "paused" });
-  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running } = context.turn(record, [], "stale");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [
@@ -858,7 +851,6 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   const { db, runners } = context;
   const record = await context.item();
   await setRunner(db, runners.b, { status: "paused" });
-  await setRunnerVersion(db, runners.a, "0.1.73");
   const { running, stop } = context.turn(record, [], "waiting");
   const onA = (await context.next(runners.a)) as RunCommand;
   await context.events(onA, runners.a, [
@@ -1472,4 +1464,116 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
   expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
   expect(asks).toBe(0);
   expect(await questionAnswers(db, record.runId)).toEqual([]);
+});
+
+function startReview(record: { id: string }, attempt: number) {
+  const stop = new AbortController();
+  const running = context.backend
+    .forItem(record.id)({
+      profile: { agent: "claude", model: "reviewer-model" },
+      role: "reviewer",
+      readOnly: true,
+      itemId: `display-${record.id}`,
+      runId: `rev-${record.id}-${attempt}`,
+      prompt: "Review fixture",
+      worktreePath: join(context.root, "workspace"),
+      pawsRoot: context.root,
+      signal: stop.signal,
+    })
+    .catch((error: unknown) => error);
+  return { stop, running };
+}
+
+async function liveBinding(runnerId: string) {
+  const binding = (await listAgentBindings(context.db, context.workspaceId)).find(
+    (row) => row.runnerId === runnerId && !row.legacy && row.removedAt === null,
+  )!;
+  context.accountBindings.add(binding.id);
+  return { accountId: binding.accountId, bindingId: binding.id };
+}
+
+async function nextReview(runnerId: string) {
+  for (let index = 0; index < 50; index++) {
+    const command = await context.next(runnerId, 20);
+    if (command?.type === "review") return command;
+  }
+  return undefined;
+}
+
+test("a review after the session's account was removed starts fresh on the remaining account", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const implementing = context.turn(record, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  await context.submit(onA, runners.a, { candidateSha: context.base });
+  await implementing.running;
+  await setRunner(db, runners.b, { status: "active" });
+  const removed = await liveBinding(runners.a);
+  await removeAgentAccount(db, {
+    workspaceId: context.workspaceId,
+    accountId: removed.accountId,
+    now: context.now,
+  });
+  await bindFixtureAccounts(db, runners.b, "claude");
+  const remaining = await liveBinding(runners.b);
+  await context.work.heartbeat(runners.b);
+  const { stop, running } = startReview(record, 1);
+  const onB = await nextReview(runners.b);
+  stop.abort();
+  await running;
+  expect(onB).toBeDefined();
+  expect(onB?.account?.bindingId).toBe(remaining.bindingId);
+  expect(onB).not.toHaveProperty("resumeSessionId");
+  expect(onB).not.toHaveProperty("restoreSession");
+});
+
+test("a review that reports Not logged in marks its binding auth-required and moves to the other runner", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  const signedOut = await liveBinding(runners.a);
+  await liveBinding(runners.b);
+  await setRunner(db, runners.b, { status: "paused" });
+  const { stop, running } = startReview(record, 1);
+  const onA = await nextReview(runners.a);
+  expect(onA).toBeDefined();
+  await setRunner(db, runners.b, { status: "active" });
+  await context.results.submit({
+    runnerId: runners.a,
+    runId: onA!.runId,
+    generation: onA!.generation,
+    token: (
+      await context.work.issueGrant({
+        runnerId: runners.a,
+        runId: onA!.runId,
+        commandId: onA!.id,
+        generation: onA!.generation,
+      })
+    ).token,
+    result: {
+      executionId: workspaceId(),
+      commandId: onA!.id,
+      account: onA!.account,
+      role: "reviewer",
+      stopReason: "error",
+      errorMessage:
+        "/opt/paws-runner/bin/claude -p --resume exited 1: Not logged in · Please run /login",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+    },
+  });
+  const onB = await nextReview(runners.b);
+  stop.abort();
+  await running;
+  expect(onB).toBeDefined();
+  expect(onB?.account?.bindingId).not.toBe(signedOut.bindingId);
+  const health = await db.run((q) => bindingAccountHealthSteps(q, signedOut.bindingId));
+  expect(health.map((row) => row.state)).toContain("auth_required");
+  await removeAgentAccount(db, {
+    workspaceId: context.workspaceId,
+    accountId: signedOut.accountId,
+    now: context.now,
+  });
 });

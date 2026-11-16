@@ -4,6 +4,64 @@ import { assertDescendsFromAny, git } from "../acp";
 
 const CANDIDATE_REF = /^refs\/paws\/candidates\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
+export class CandidateMismatch extends Error {
+  override readonly name = "CandidateMismatch";
+  constructor(readonly tip: string) {
+    super("Fetched runner candidate does not match.");
+  }
+}
+
+export async function restartCandidateFrom(input: {
+  mirror: string;
+  ref: string;
+  branch: string;
+  remoteUrl: string;
+  from: { tip: string } | "main";
+  base?: string;
+  networkGit: (args: string[]) => Promise<string>;
+  signal: AbortSignal;
+}): Promise<{ start: string; base: string }> {
+  input.signal.throwIfAborted();
+  if (!isAbsolute(input.mirror) || !CANDIDATE_REF.test(input.ref))
+    throw new Error("Runner candidate restart is invalid.");
+  const scratch = `refs/paws/imports/${randomUUID()}`;
+  const run = (args: string[]) =>
+    git(["--git-dir", input.mirror, ...args], { signal: input.signal }).then((out) => out.trim());
+  await run(["check-ref-format", `refs/heads/${input.branch}`]);
+  const net = (flags: string[], refspec: string) =>
+    input.networkGit(["-C", input.mirror, ...flags, "--", input.remoteUrl, refspec]);
+  try {
+    await net(
+      ["fetch", "--no-tags", "--no-write-fetch-head"],
+      `refs/heads/${input.branch}:${scratch}`,
+    );
+    const tip = await run(["rev-parse", "--verify", `${scratch}^{commit}`]);
+    const main = await run(["rev-parse", "--verify", "refs/paws/upstream-main^{commit}"]);
+    if (input.from !== "main") {
+      if (tip !== input.from.tip) throw new CandidateMismatch(tip);
+      const base = await assertDescendsFromAny(run, input.base ? [input.base] : [], tip).then(
+        () => input.base!,
+        () => run(["merge-base", tip, main]),
+      );
+      await run(["update-ref", input.ref, tip]);
+      return { start: tip, base };
+    }
+    if (tip !== main)
+      await net(
+        ["push", `--force-with-lease=refs/heads/${input.branch}:${tip}`],
+        `${main}:refs/heads/${input.branch}`,
+      ).catch((error: unknown) => {
+        throw /stale info|rejected/.test(String(error)) ? new CandidateMismatch(tip) : error;
+      });
+    await run(["update-ref", input.ref, main]);
+    return { start: main, base: main };
+  } finally {
+    await git(["--git-dir", input.mirror, "update-ref", "-d", scratch], {
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => undefined);
+  }
+}
+
 /**
  * Imports a runner's candidate into the bare mirror: fetches the branch under a scratch ref,
  * checks that it is `candidateSha` and descends from the base or main, then moves the item's
@@ -52,8 +110,8 @@ export async function fetchRunnerCandidate(input: {
       `refs/heads/${input.branch}:${scratch}`,
     ]);
     input.signal.throwIfAborted();
-    if ((await run(["rev-parse", "--verify", `${scratch}^{commit}`])).trim() !== input.candidateSha)
-      throw new Error("Fetched runner candidate does not match.");
+    const tip = (await run(["rev-parse", "--verify", `${scratch}^{commit}`])).trim();
+    if (tip !== input.candidateSha) throw new CandidateMismatch(tip);
     await assertDescendsFromAny(
       run,
       input.mainSha ? [input.baseSha, input.mainSha] : [input.baseSha],

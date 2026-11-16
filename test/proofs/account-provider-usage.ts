@@ -110,5 +110,39 @@ export default {
       !readiness.ready && readiness.reason === "exhausted",
       readiness,
     );
+    const spent = await db.transaction((q) =>
+      createAgentAccountSteps(q, {
+        ownerUserId: userId,
+        workspaceId: workspace.id,
+        agent: "claude",
+        label: "Spent",
+        now: NOW + 60004,
+      }),
+    );
+    const spentBinding = await db.transaction((q) =>
+      bindAgentAccountSteps(q, {
+        userId,
+        workspaceId: workspace.id,
+        accountId: spent.id,
+        runnerId,
+        now: NOW + 60004,
+      }),
+    );
+    await db.transaction((q) =>
+      saveProviderUsageSteps(
+        q,
+        spent,
+        [{ window: "Weekly", usedPercent: 100, resetsAt: NOW + 600000 }],
+        NOW + 60005,
+      ),
+    );
+    const placed = await db.run((q) =>
+      bindingReadinessSteps(q, { bindingId: spentBinding.id, now: NOW + 60005 }),
+    );
+    proof.expect(
+      "a spent provider reading keeps placement off the account until reset",
+      !placed.ready && placed.reason === "exhausted",
+      placed,
+    );
   },
 } satisfies Proof;

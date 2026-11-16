@@ -359,6 +359,7 @@ export async function runRunnerCli(
       agentCredentials: runnerAgentCredentials("/var/lib/paws-agent", {
         runnerUid: ids.runnerUid,
         agentGid: ids.agentGid,
+        agentUid: ids.pawsAgentUid,
       }),
     });
     try {

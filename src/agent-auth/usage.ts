@@ -3,6 +3,8 @@ import { ClaudeOAuthTokenSchema } from "../runner-protocol";
 import type { AgentLimit } from "../install";
 export class UsageAuthExpired extends Error {}
 export class UsageCredentialExpired extends Error {}
+export class UsageUnavailable extends Error {}
+const unavailable = (status: number) => new UsageUnavailable(`Usage unavailable (HTTP ${status})`);
 const window = z.object({
   used_percent: z.number().finite(),
   reset_at: z.number().finite().nullable(),
@@ -67,7 +69,7 @@ export function createUsageReader(
       { headers, redirect: "error", signal: AbortSignal.timeout(15_000) },
     );
     if (response.status === 401) throw new UsageAuthExpired();
-    if (!response.ok) throw new Error("Provider usage unavailable");
+    if (!response.ok) throw unavailable(response.status);
     const body = await response.json();
     if (agent === "codex") {
       const payload = z
@@ -169,6 +171,9 @@ async function setupTokenLimits(origin: string, token: string): Promise<AgentLim
       },
     ];
   });
-  if (limits.length === 0) throw new Error("Provider usage unavailable");
+  if (limits.length === 0)
+    throw response.ok
+      ? new UsageUnavailable("Usage not available for this sign-in")
+      : unavailable(response.status);
   return limits;
 }

@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import * as versions from "../src/runner-protocol/versions";
 import {
   latestRelease,
+  minimumAboveRelease,
   newSinceRelease,
   releasedVersions,
   versionsAbove,
@@ -95,4 +96,20 @@ test("lowering a released minimum to an older release is a slip too", () => {
 
 test("the current versions file has no minimum the latest release shipped without", () => {
   expect(newSinceRelease("v0.0.0", {})).toEqual([]);
+});
+
+test("the minimum runner version must name a runner that has shipped", () => {
+  expect(minimumAboveRelease("v0.1.84", [0, 1, 84])).toBe(false);
+  expect(minimumAboveRelease("v0.1.86", [0, 1, 84])).toBe(false);
+  expect(minimumAboveRelease("v0.1.83", [0, 1, 84])).toBe(true);
+});
+
+test("lowering a released minimum runner version is a slip", () => {
+  const released = { MINIMUM_RUNNER_VERSION: "0.1.84" };
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 86] })).toEqual([]);
+  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 50] })).toEqual([
+    { name: "MINIMUM_RUNNER_VERSION", version: "0.1.50" },
+  ]);
+  expect(newSinceRelease("v0.1.86", {}, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
 });

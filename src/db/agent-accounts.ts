@@ -679,6 +679,15 @@ function* bindingHasControlPlaneAuthSteps(q: Q, bindingId: string) {
   return stored !== undefined && stored.runnerId === null;
 }
 
+export function* agentAccountSignedInSteps(q: Q, accountId: string) {
+  if ((yield* readAgentAuthSteps(q, accountId)) !== null) return true;
+  const { agentAccountCredential: c } = q.t;
+  const stored = yield* q.one(
+    q.orm.select({ ciphertext: c.ciphertext }).from(c).where(eq(c.accountId, accountId)),
+  );
+  return stored !== undefined && stored.ciphertext !== "";
+}
+
 export function* runnerAccountUnsupportedSteps(
   q: Q,
   runnerId: string,

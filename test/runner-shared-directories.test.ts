@@ -242,6 +242,25 @@ test("after agentUser goes back to runner, results paws-agent wrote are still ac
   expect(sharedDirectoryAllowed(directory(1003, resultsGroup, 0o2750), job)).toBe(false);
 });
 
+test("an account home folder may belong to the agent user, but the home itself may not", () => {
+  const owners = { runnerUid: runner, agentGid: agentGroup, agentUid: agent };
+  const folder = directory(agent, agentGroup, 0o2770);
+  expect(accountHomeVerdict(folder, owners, runner, undefined, true)).toBe("shared");
+  expect(accountHomeVerdict(folder, owners, runner)).toMatch(/another user/);
+  expect(
+    accountHomeVerdict(directory(1003, agentGroup, 0o2770), owners, runner, undefined, true),
+  ).toMatch(/another user/);
+  expect(
+    accountHomeVerdict(directory(agent, agentGroup, 0o2777), owners, runner, undefined, true),
+  ).toMatch(/other users/);
+  expect(
+    accountHomeVerdict(directory(agent, 2004, 0o2770), owners, runner, undefined, true),
+  ).toMatch(/agent group/);
+  expect(
+    accountHomeVerdict(directory(agent, agentGroup, 0o2700), owners, runner, undefined, true),
+  ).toMatch(/not shared/);
+});
+
 test("an account home is shared through the agent group with either user", () => {
   const owners = { runnerUid: runner, agentGid: agentGroup };
   const shared = directory(runner, agentGroup, 0o2770);
@@ -264,5 +283,21 @@ test("an account home is shared through the agent group with either user", () =>
   );
   expect(accountHomeVerdict(directory(runner, agentGroup, 0o2700), owners, runner)).toMatch(
     /not shared/,
+  );
+  const runnerGroup = 2004;
+  const own = (uid: number, mode: number) => directory(uid, runnerGroup, mode);
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, runner, runnerGroup)).toBe("repair");
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, agent, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o0777), owners, runner, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o2770), owners, runner, runnerGroup)).toMatch(
+    /agent group/,
+  );
+  expect(accountHomeVerdict(own(runner, 0o0770), owners, runner, 2005)).toMatch(/agent group/);
+  expect(accountHomeVerdict(own(1003, 0o0770), owners, runner, runnerGroup)).toMatch(
+    /another user/,
   );
 });

@@ -47,6 +47,16 @@ export type LoggedCommandRequest = CommandRunRequest & {
   pullRequest?: PullRequestDraft;
 };
 
+export class CommandWithheldError extends Error {
+  constructor(
+    readonly itemId: string,
+    readonly blocker: string,
+  ) {
+    super(`not run: fix ${blocker} first`);
+    this.name = "CommandWithheldError";
+  }
+}
+
 export type PawsCommandRunner = CommandRunner & {
   runLogged(request: LoggedCommandRequest): Promise<CommandRunResult>;
 };

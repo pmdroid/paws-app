@@ -30,6 +30,7 @@ import { recheckDigest } from "../policy/canonical";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
+  CommandWithheldError,
   createCommandRunner,
   git,
   isSha,
@@ -297,7 +298,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
           );
           continue;
         }
-        let exec = await runOne(
+        const ran = await runOne(
           runner,
           input,
           action.item,
@@ -307,7 +308,25 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
           records,
           identity,
           ordinalOf(actions, action.item.id),
-        );
+        ).catch((error: unknown) => {
+          if (error instanceof CommandWithheldError) return error;
+          throw error;
+        });
+        if (ran instanceof CommandWithheldError) {
+          const skipped = {
+            id: action.item.id,
+            kind: action.item.kind,
+            state: "skipped" as const,
+            message: ran.message,
+          };
+          dispositions.push(skipped);
+          await input.progress?.step(
+            identity,
+            stepUpdate(action.item, skipped, ordinalOf(actions, action.item.id), null),
+          );
+          continue;
+        }
+        let exec = ran;
         if (
           action.item.kind === "setup" &&
           executionFailed(exec, true) &&

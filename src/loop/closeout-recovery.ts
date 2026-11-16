@@ -7,6 +7,7 @@ import {
   type Db,
 } from "../db";
 import type { CloseoutBypass } from "../closeout";
+import type { SavedWorkRewritten } from "../core";
 import { getQuestionSteps, type StoredQuestion } from "../questions";
 
 export const RETRY_CLOSEOUT = "Retry Closeout";
@@ -84,6 +85,29 @@ export async function recoveryOptions(
 /** Starts the summary of a preparation that kept failing before the agent started. */
 export const PREPARATION_FAILED = "Agent preparation failed";
 
+export const START_OVER_FROM_MAIN = "Start over from main";
+
+const REWRITTEN = new RegExp(
+  `^${PREPARATION_FAILED}: the saved work branch was rewritten at ([a-f0-9]{40})`,
+);
+
+export function rewrittenSummary(error: SavedWorkRewritten): string {
+  return `${PREPARATION_FAILED}: the saved work branch was rewritten at ${error.tip}.\n${error.message}`;
+}
+
+export function rewrittenOptions(summary: string): string[] | undefined {
+  const tip = REWRITTEN.exec(summary)?.[1];
+  return tip ? [`Continue from ${tip.slice(0, 7)}`, START_OVER_FROM_MAIN] : undefined;
+}
+
+export function rewrittenRestart(summary: string, answer: string | null) {
+  const [cont, main] = rewrittenOptions(summary) ?? [];
+  const choice = (answer ?? "").trim().toLowerCase();
+  const tip = REWRITTEN.exec(summary)?.[1];
+  if (tip && choice === cont?.toLowerCase()) return { tip };
+  return choice === main?.toLowerCase() ? ("main" as const) : undefined;
+}
+
 export function recoveryQuestion(
   recovery: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
   error?: string,
@@ -92,6 +116,13 @@ export function recoveryQuestion(
     /\.ya?ml: \S* ?must NOT have additional properties \('([^']+)' was unexpected\)/.exec(
       recovery.summary,
     )?.[1];
+  const rewritten = rewrittenOptions(recovery.summary);
+  if (rewritten)
+    return [
+      "The saved work branch was rewritten.",
+      recovery.summary.slice(recovery.summary.indexOf("\n") + 1),
+      `Choose **${rewritten[0]}** to keep the branch as it is now, or **${START_OVER_FROM_MAIN}** to reset it to main and start the task again.`,
+    ].join("\n\n");
   if (recovery.summary.startsWith(PREPARATION_FAILED))
     return [
       "Agent preparation needs your help.",

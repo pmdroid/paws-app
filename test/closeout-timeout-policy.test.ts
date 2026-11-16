@@ -124,3 +124,61 @@ test("a saved command result from a looser trusted timeout is run again under th
     rmSync(root, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("a command the runner withheld behind a failed check is skipped, and the gate reports the failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-withheld-"));
+  try {
+    const source = join(root, "source");
+    const origin = join(root, "origin.git");
+    git(root, "init", "-b", "main", source);
+    mkdirSync(join(source, ".agents"));
+    writeFileSync(
+      join(source, ".agents/closeout.yaml"),
+      JSON.stringify({
+        specVersion: "0.1",
+        items: [
+          ["lint", "false", 5],
+          ["test", "true", 30],
+        ].map(([id, exec, timeoutSeconds]) => ({
+          id,
+          kind: "command",
+          gate: "beforePR",
+          exec: [exec],
+          timeoutSeconds,
+        })),
+      }),
+    );
+    writeFileSync(join(source, "result.txt"), "base\n");
+    const base = commit(source, "Base policy");
+    git(root, "clone", "--bare", source, origin);
+    git(source, "remote", "add", "origin", origin);
+    git(source, "fetch", "origin");
+    writeFileSync(join(source, "result.txt"), "candidate\n");
+    const head = commit(source, "Candidate");
+
+    const session = createCloseoutSession(source, {
+      policy: async () => trustedPolicyFiles(source, root),
+    });
+    expect(await session.run("test")).toStartWith("test not run: fix lint first");
+    const report = await session.report();
+    const verdict = await createCloseoutGate({
+      candidate: { session: "candidate", model: "candidate-model", provider: "fixture" },
+      reviewer: { review: () => Promise.reject(new Error("Unexpected review")) },
+      fixer: { applyFix: () => Promise.reject(new Error("Unexpected fix")) },
+      home: root,
+      maxFixAttempts: 0,
+      pawsHome: join(root, "paws"),
+      commandRunner: {
+        async runLogged(request: LoggedCommandRequest) {
+          return loggedSessionCloseout(report, request);
+        },
+      },
+    }).run({ taskId: "withheld", worktree: source, baseSha: base, headSha: head, attempt: 1 });
+    expect(verdict.summary).not.toContain("could not run");
+    expect(verdict.result?.decision?.policy.digest).toBeTruthy();
+    const items = verdict.result?.decision?.items ?? [];
+    expect(items.find((item) => item.id === "lint")?.state).toBe("failed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);

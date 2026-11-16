@@ -48,6 +48,7 @@ import {
   runnerAgentTargetsSteps,
   runnerCancelPendingSteps,
   runnerCheckpointPendingSteps,
+  branchHeldByOtherItemSteps,
   runnerCommandAcknowledgedBySteps,
   runnerCommandAuthorityUntilSteps,
   runnerCommandEnvelopeSteps,
@@ -88,6 +89,7 @@ import {
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
+  RUNNER_LIVE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
   CONTROL_PLANE_LEVEL_RUNNER_VERSION,
@@ -141,12 +143,6 @@ type ResponseTask = {
   repository: { owner: string; repo: string; remoteUrl: string } | undefined;
 };
 
-/**
- * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
- * heartbeat sampled just before the runner acknowledged the command.
- */
-export const RUNNER_LIVE_GRACE_MS = 30_000;
-
 export class RunnerTeardownPending extends Error {
   override readonly name = "RunnerTeardownPending";
   constructor(readonly runnerIds: readonly string[]) {
@@ -192,7 +188,12 @@ export function createRunnerWork(options: {
     // A run Paws stops for a cap or a restart publishes its WIP commit first: until that
     // checkpoint request expires, its runner may still send the commit and push it.
     const checkpointing =
-      item?.currentRunId === runId && (yield* runnerCheckpointPendingSteps(q, runId, now()));
+      item?.currentRunId === runId &&
+      (yield* runnerCheckpointPendingSteps(q, runId, now())) &&
+      !(
+        (item.cancelRequested || item.state === "cancelled") &&
+        (yield* branchHeldByOtherItemSteps(q, item.branchName, item.id))
+      );
     if (
       !item ||
       item.currentRunId !== runId ||

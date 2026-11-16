@@ -33,7 +33,7 @@ Paws can also read these from `~/.paws/secrets/github-app.json` and `github-app.
 
 ## Integrations
 
-Start Paws, sign in with Linear as a workspace admin, and open **Settings > Integrations**.
+Start Paws, sign in with Linear as a workspace admin, and open **Workspace > Integrations**.
 
 1. Select **Continue with GitHub** and authorize the App.
 2. If the App needs repository access, choose **Choose repositories on GitHub**, select the repositories on GitHub, then return to Paws and refresh the list.
@@ -86,4 +86,4 @@ Pull requests include the latest images counted by Closeout, up to 20 images of 
 
 ## Webhook deliveries
 
-GitHub deliveries let Paws react to CI results and reviews promptly. Settings > Integrations shows the last delivery. If delivery stops, check the App's webhook configuration and the Paws service's reachability.
+GitHub deliveries let Paws react to CI results and reviews promptly. Workspace > Integrations shows the last delivery. If delivery stops, check the App's webhook configuration and the Paws service's reachability.

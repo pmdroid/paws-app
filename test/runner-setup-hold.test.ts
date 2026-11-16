@@ -1,4 +1,5 @@
 import { boundHeartbeat, boundResultSubmissions } from "./bound-runner-account";
+import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -187,10 +188,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
           accountId: id,
           enabled: false,
         });
-      await exec(
-        sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},'0.1.82',${now})`,
-      );
     }
+    await exec(
+      sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})`,
+    );
     return runnerId;
   };
   const work = createRunnerWork({

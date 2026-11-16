@@ -54,6 +54,7 @@ export type Runner = {
   version: string | null;
   agentUser?: "runner" | "paws-agent" | null;
   idle: boolean;
+  helpersUndelivered?: boolean;
   slots?: { used: number; total: number };
   /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
   concurrency?: { desired: number | null; applied: number; ceiling: number | null } | null;
@@ -213,7 +214,7 @@ export function memberVmSizeMarkup(size: MemberVmSize | undefined): string {
     pool === undefined
       ? esc("the exe.dev team's default placement")
       : `exe.dev pool <b class="mono">${esc(pool)}</b>`;
-  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Change the defaults under <span class="mono">[member_vm]</span> in config.toml.</p>`;
+  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Admins change the defaults in <a href="${routeHref({ view: "workspace", page: "member-vm" })}">Workspace › Member VMs</a>.</p>`;
 }
 
 function poolLabel(pool: ExeDevPool): string {
@@ -479,6 +480,7 @@ function updateAvailable(runner: Runner, serverVersion: string | null): boolean 
 function availability(runner: Runner, now: number): [string, string] {
   if (runner.status === "revoked") return ["bad", "Revoked"];
   if (!runnerOnline(runner, now)) return ["bad", "Offline"];
+  if (runner.helpersUndelivered) return ["bad", "Not picking up helper commands"];
   const running = runner.running?.length ?? 0;
   if (running) return ["running", `Running ${running}`];
   return runner.idle ? ["ok", "Idle"] : ["running", "Busy"];
@@ -623,7 +625,12 @@ type AccountSummary = {
   extraUsage: boolean;
   usage: { limits: AgentLimit[] } | null;
 };
-type RunnerListView = { now: number; serverVersion: string | null; accounts?: AccountSummary[] };
+type RunnerListView = {
+  now: number;
+  serverVersion: string | null;
+  minimumRunnerVersion?: string | null;
+  accounts?: AccountSummary[];
+};
 type RowTag = [tone: string, text: string];
 
 /** The Status and Agents cells of a runner's row, as tone and text. */
@@ -733,7 +740,7 @@ export function runnerRowMarkup(runner: Runner, view: RunnerListView): string {
       : `<a class="flex flex-wrap gap-1.5" href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">${tagsMarkup(agents) || '<span class="muted">No agents reported</span>'}</a>`;
   const cell = (body: string) =>
     `<td><div class="flex min-w-36 flex-wrap items-center gap-1.5 [overflow-wrap:normal]">${body}</div></td>`;
-  return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div></div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
+  return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div>${view.minimumRunnerVersion && runner.status === "active" && runnerOnline(runner, view.now) && (runner.version === null || (compareVersions(runner.version, view.minimumRunnerVersion) ?? -1) < 0) ? `<p class="mt-1 text-xs text-state-awaiting">Upgrade this runner to ${esc(view.minimumRunnerVersion)}</p>` : ""}</div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
 }
 
 /** Online, slots in use and runners that need attention, from the loaded list alone. */
@@ -811,7 +818,7 @@ export function waitingLabel(tasks: number, runner: string): string {
 
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
   if (!skills.length)
-    return '<p class="muted">No skills registered. Admins add them in Settings → Agent instructions.</p>';
+    return '<p class="muted">No skills registered. Admins add them in Workspace → Agent instructions.</p>';
   const rows = skills
     .map((skill) => {
       const [tone, state] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;
@@ -1452,6 +1459,7 @@ export function createRunners() {
   let loaded = false;
   let runners: Runner[] = [];
   let serverVersion: string | null = null;
+  let minimumRunnerVersion: string | null = null;
   let agentCatalog: AgentCatalogEntry[] = [];
   let accounts: AccountSummary[] | undefined;
   let policies = new Map<string, HostPolicy>();
@@ -1465,8 +1473,6 @@ export function createRunners() {
   let hostName = "";
   let dockerAccess = true;
   let enrollment: HostEnrollment | null = null;
-  let vmSize: MemberVmSize | null = null;
-  let vmSizeDraft: Record<string, string> | null = null;
   let memberVm: MemberVmState = { available: false };
   let pools: PoolList = { state: "loading" };
   let poolChoice = "";
@@ -1571,6 +1577,7 @@ export function createRunners() {
       const list = await api<{
         runners: Runner[];
         serverVersion?: string | null;
+        minimumRunnerVersion?: string;
         agentVersions?: AgentCatalogEntry[];
         setupRequired?: boolean;
         workspaceReady?: boolean;
@@ -1627,11 +1634,6 @@ export function createRunners() {
       );
       if (current !== generation) return;
       memberVm = vm;
-      vmSize =
-        identity.role === "admin"
-          ? await api<MemberVmSize>("/api/settings/member-vm").catch(() => vmSize)
-          : null;
-      if (current !== generation) return;
       // exe.dev's pool list is read once per page, for Create VM and Move to pool.
       if (vm.available && pools.state === "loading")
         pools = await api<{ available: boolean; pools?: ExeDevPool[] }>(
@@ -1651,6 +1653,7 @@ export function createRunners() {
       runners = listedRunners(list.runners);
       loaded = true;
       serverVersion = list.serverVersion ?? null;
+      minimumRunnerVersion = list.minimumRunnerVersion ?? null;
       agentCatalog = list.agentVersions ?? [];
       policies = new Map(hosts.filter((entry) => entry !== null));
       session = identity;
@@ -1706,25 +1709,6 @@ export function createRunners() {
       paint();
     }
   }
-  function vmSizeSettings(): string {
-    if (!manages() || vmSize === null) return "";
-    const fields = [
-      ["cpu", "CPUs"],
-      ["memoryGb", "Memory (GB)"],
-      ["diskGb", "Disk (GB)"],
-      ["image", "Image"],
-      ["pool", "Default pool"],
-    ] as const;
-    const values = fields
-      .map(([key, label]) => {
-        const value = vmSizeDraft?.[key] ?? String(vmSize?.[key] ?? "");
-        return manages()
-          ? `<div class="settings-field"><label for="vm-size-${key}">${label}</label><input id="vm-size-${key}" name="${key}" data-focus="vm-size:${key}" value="${esc(value)}"${busy ? " disabled" : ""}></div>`
-          : `<p>${label}: ${esc(String(vmSize?.[key] ?? "exe.dev default"))}</p>`;
-      })
-      .join("");
-    return `<section class="runner-section"><h2>Member VM size</h2><p class="muted">Applies to new VMs. Leave fields blank to use exe.dev defaults. Existing VMs keep their size.</p>${manages() ? `<form data-vm-size><div class="settings-grid">${values}</div><button class="btn" type="submit"${busy ? " disabled" : ""}>Save VM size</button></form>` : values}</section>`;
-  }
   function listView(now: number, disabled: string, status: string): string {
     const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
     const adding = addsHosts() && addingHost;
@@ -1772,7 +1756,7 @@ export function createRunners() {
           )
           .join("")
       : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSizeSettings()}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1867,31 +1851,6 @@ export function createRunners() {
     }, false);
   }
   function bind() {
-    const sizeForm = root!.querySelector<HTMLFormElement>("[data-vm-size]");
-    sizeForm?.addEventListener("input", () => {
-      vmSizeDraft = Object.fromEntries(
-        [...sizeForm.querySelectorAll<HTMLInputElement>("input")].map((input) => [
-          input.name,
-          input.value,
-        ]),
-      );
-    });
-    sizeForm?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const body: Record<string, string | number> = {};
-      for (const input of sizeForm.querySelectorAll<HTMLInputElement>("input")) {
-        const value = input.value.trim();
-        if (value)
-          body[input.name] = ["cpu", "memoryGb", "diskGb"].includes(input.name)
-            ? Number(value)
-            : value;
-      }
-      void change(async () => {
-        vmSize = await api<MemberVmSize>("/api/settings/member-vm", body, 15_000, "PUT");
-        vmSizeDraft = null;
-        feedback = "Member VM size saved.";
-      });
-    });
     root!.querySelector("[data-runners-setup]")?.addEventListener("click", () => void load());
     for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-sharing]"))
       box.addEventListener("change", () =>

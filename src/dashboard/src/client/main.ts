@@ -1,5 +1,6 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
+import { createMemberVmSettings } from "./member-vm-settings";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
@@ -41,7 +42,7 @@ import {
 } from "./route";
 import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
-import { shownSettingsPage, type SettingsPage } from "./settings-pages";
+import { settingsRedirect, shownSettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
@@ -82,6 +83,7 @@ const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
+const memberVmSettings = createMemberVmSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
 const agentAccountSettings = createAgentAccountSettings();
@@ -165,14 +167,14 @@ document.addEventListener("change", (event) => {
 void boot();
 
 async function boot(): Promise<void> {
-  workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
+  workspaceReady = await initializeWorkspaceAccess(() => shownSettingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
   shownReader = workspaceReader();
   if (!workspaceReady) return;
   try {
     const destination = sessionStorage.getItem("paws.settingsReturn");
     sessionStorage.removeItem("paws.settingsReturn");
-    if (["/settings/integrations", "/settings/account"].includes(destination ?? ""))
+    if (["/workspace/integrations", "/settings/account"].includes(destination ?? ""))
       await router.navigate(destination!, { replace: true });
     else {
       const back = signInReturn();
@@ -259,7 +261,7 @@ function openIssue(route: Route): string | null {
 /** False when the session ended and the reader still has to sign in again. */
 async function signedIn(response: Response): Promise<boolean> {
   if (response.status !== 401) return true;
-  workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
+  workspaceReady = await initializeWorkspaceAccess(() => shownSettingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
   readerChanged();
   return workspaceReady;
@@ -326,7 +328,7 @@ async function followAlias(route: Extract<Route, { view: "alias" }>): Promise<vo
 function followIssueRedirect(): boolean {
   const pathname = router.state.location.pathname;
   const path = pathname.slice(routerBase(pathname).length);
-  const retro = retroRedirect(path);
+  const retro = retroRedirect(path) ?? settingsRedirect(path);
   if (retro !== null) {
     void router.navigate(retro, { replace: true });
     return true;
@@ -441,18 +443,12 @@ function paint(): void {
         ? { issueId: null, entityId: model.route.id }
         : null,
   );
-  const showSettings = model.route.view === "settings";
+  const shownPage = shownSettingsPage(model.route);
   const access = document.querySelector<HTMLElement>("#workspace-access");
   if (access && access.dataset.loaded === "true")
     access.hidden =
-      !showSettings ||
-      model.route.view !== "settings" ||
-      ["agents", "agent-accounts", "merging", "limits"].includes(
-        shownSettingsPage(model.route.page),
-      );
-  showWorkspaceSettingsPage(
-    model.route.view === "settings" ? shownSettingsPage(model.route.page) : null,
-  );
+      shownPage === null || ["agents", "agent-accounts", "merging", "limits"].includes(shownPage);
+  showWorkspaceSettingsPage(shownPage);
   document.title = view.title;
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
@@ -477,6 +473,8 @@ function paint(): void {
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
   const storageRoot = document.querySelector<HTMLElement>("#storage-settings");
   if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
+  const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
+  if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
@@ -518,10 +516,6 @@ function drawsLocally(): boolean {
 function currentRoute(): Route {
   const pathname = router.state.location.pathname;
   return parseRoute(pathname.slice(routerBase(pathname).length));
-}
-
-function settingsPage(route: Route): SettingsPage | null {
-  return route.view === "settings" ? shownSettingsPage(route.page) : null;
 }
 
 function source(): string {

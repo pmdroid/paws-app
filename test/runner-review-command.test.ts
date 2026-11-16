@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/acp";
 import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
-import type { RunnerJob } from "../src/runner-execution";
+import {
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
+  type RunnerJob,
+} from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 
 const roots: string[] = [];
@@ -30,6 +34,8 @@ async function reviewOnRunner(input: {
   effort?: string;
   brief?: string;
   firstRound?: boolean;
+  oauthToken?: string;
+  requireToken?: boolean;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-review-"));
   roots.push(root);
@@ -57,6 +63,21 @@ async function reviewOnRunner(input: {
   const repositoryBundle = join(root, "source.bundle");
   await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
   chmodSync(repositoryBundle, 0o600);
+  const account = {
+    accountId: "01J00000000000000000000001",
+    bindingId: "01J00000000000000000000002",
+  };
+  if (input.oauthToken !== undefined) {
+    chmodSync(home, 0o700);
+    const accountHome = openRunnerAccountHome(home, account, "claude", { signIn: true });
+    markRunnerAccountSignedIn(accountHome, account, "claude");
+    writeFileSync(
+      join(accountHome, ".claude/paws-oauth.json"),
+      input.oauthToken.startsWith("sk-ant-")
+        ? JSON.stringify({ kind: "oauth_token", token: input.oauthToken, createdAt: 1 })
+        : input.oauthToken,
+    );
+  }
   const record = join(root, "record.json");
   const cli = join(root, input.agent);
   writeFileSync(
@@ -65,9 +86,15 @@ async function reviewOnRunner(input: {
       `const { execSync } = require("node:child_process");\n` +
       `require("node:fs").writeFileSync(${JSON.stringify(record)}, JSON.stringify({\n` +
       `  argv: process.argv.slice(2), cwd: process.cwd(), home: process.env.HOME,\n` +
-      `  codexHome: process.env.CODEX_HOME,\n` +
+      `  codexHome: process.env.CODEX_HOME, token: process.env.CLAUDE_CODE_OAUTH_TOKEN,\n` +
       `  head: execSync("git rev-parse HEAD", { encoding: "utf8" }).trim(),\n` +
       `}));\n` +
+      (input.requireToken
+        ? `if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {\n` +
+          `  console.log(JSON.stringify({ type: "result", is_error: true, result: "Not logged in · Please run /login" }));\n` +
+          `  process.exit(1);\n` +
+          `}\n`
+        : "") +
       `for (const event of ${JSON.stringify(input.events)}) console.log(JSON.stringify(event));\n`,
   );
   chmodSync(cli, 0o755);
@@ -80,6 +107,7 @@ async function reviewOnRunner(input: {
       workspaceId: "workspace",
       runId: "run",
       itemId: "item",
+      ...(input.oauthToken !== undefined ? { account } : {}),
       generation: 1,
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
@@ -131,6 +159,7 @@ async function reviewOnRunner(input: {
         cwd: string;
         home: string;
         codexHome: string;
+        token?: string;
         head: string;
       };
     } catch {
@@ -256,4 +285,29 @@ test("a second-round Claude review appends the first round's findings to its sys
   const appended = ran!.argv[ran!.argv.indexOf("--append-system-prompt") + 1]!;
   expect(appended).toStartWith("# Issue brief\nIssue: PAS-1\n\n# Review rule\n");
   expect(appended).toContain(`- open, P1 at app.txt:1 (head ${base.slice(0, 12)})`);
+}, 20_000);
+
+test("a Claude review on a central account with a setup token runs signed in with that token", async () => {
+  const { result, ran, home } = await reviewOnRunner({
+    agent: "claude",
+    oauthToken: "sk-ant-oat01-fixture",
+    requireToken: true,
+    events: [{ type: "result", session_id: "session-3", structured_output: [] }],
+  });
+  expect(ran?.home).toBe(join(home, ".paws-accounts", "01J00000000000000000000002"));
+  expect(ran?.token).toBe("sk-ant-oat01-fixture");
+  expect(result.run).toMatchObject({ stopReason: "end_turn", authRequired: false });
+  expect(result.reviewText).toBe("[]");
+}, 20_000);
+
+test("a Claude review with a corrupt token file names the file and reports that it needs sign-in", async () => {
+  const { result, ran } = await reviewOnRunner({
+    agent: "claude",
+    oauthToken: '{"kind":"oauth_tok',
+    requireToken: true,
+    events: [],
+  });
+  expect(ran).toBeUndefined();
+  expect(result.run).toMatchObject({ stopReason: "error", authRequired: true });
+  expect(result.run.errorMessage).toContain(".claude/paws-oauth.json is unreadable");
 }, 20_000);

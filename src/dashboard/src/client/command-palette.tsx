@@ -3,7 +3,12 @@ import { Search } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { NAVIGATION, PAGES } from "./navigation";
 import { routePath, type Route } from "./route";
-import { SETTINGS_PAGES, shownSettingsPage } from "./settings-pages";
+import {
+  USER_SETTINGS_PAGES,
+  WORKSPACE_PAGES,
+  settingsAreEditable,
+  settingsPageRoute,
+} from "./settings-pages";
 import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
 
@@ -20,11 +25,14 @@ const VIEW_ITEMS: PaletteItem[] = NAVIGATION.flatMap((group) => group.views).map
 function pageItems(): PaletteItem[] {
   return [
     ...VIEW_ITEMS,
-    ...SETTINGS_PAGES.filter((page) => shownSettingsPage(page.id) === page.id).map((page) => ({
-      title: `Settings · ${page.name}`,
-      path: routePath({ view: "settings", page: page.id }),
-      issue: null,
-    })),
+    ...[...USER_SETTINGS_PAGES, ...(settingsAreEditable() ? WORKSPACE_PAGES : [])].map((page) => {
+      const route = settingsPageRoute(page.id);
+      return {
+        title: `${PAGES[route.view].title} · ${page.name}`,
+        path: routePath(route),
+        issue: null,
+      };
+    }),
   ];
 }
 

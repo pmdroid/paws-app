@@ -19,7 +19,7 @@ import {
   type OnboardingReadiness,
   type OnboardingVmStep,
 } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 1_800_000_000_000;
@@ -74,6 +74,7 @@ async function runner(
     status?: string;
     seenAgoMs?: number;
     sharing?: number;
+    accountOwner?: string;
     agents?: Record<string, { ready: number; authExpired?: number }>;
   } = {},
 ) {
@@ -89,6 +90,7 @@ async function runner(
         createdAt: NOW,
         lastSeenAt: NOW - (input.seenAgoMs ?? 0),
       }),
+    (q) => currentRunnerHost(q, id, NOW),
     ...(input.sharing === undefined
       ? []
       : [
@@ -104,6 +106,7 @@ async function runner(
         q.orm.insert(q.t.agentAccount).values({
           id: accountId,
           workspaceId: "ws",
+          ownerUserId: input.accountOwner ?? input.owner ?? "me",
           agent,
           label: accountId,
           legacy: 0,
@@ -171,52 +174,40 @@ test("a member with no runner needs one, and another member's runner does not co
   expect(await w.read()).toEqual(NEEDED);
 });
 
-test("another member's runner never counts, shared or not, unless they lead the issue's project", async () => {
-  const w = await workspace();
-  await runner(w.db, "theirs", {
-    owner: "colleague",
-    sharing: 1,
-    agents: { claude: { ready: 1 } },
-  });
-  await runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
-  await runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
-  expect(await w.read()).toEqual(NEEDED);
-  // The lead's own unshared runner stays theirs, and the page says so.
-  expect(await w.read(["lead"])).toEqual({
-    ...NEEDED,
-    runner: { state: "needed", reason: "lead's runner isn't shared." },
-  });
-  // A colleague who does not lead the project lends nothing, even with sharing on.
-  expect(await w.read(["someone-else"])).toEqual(NEEDED);
-});
-
-test("a runner the issue's project lead shares makes the step ready, naming who shares it", async () => {
+test("a member whose only runner is the project lead's shared one still needs their own", async () => {
   const w = await workspace();
   await runner(w.db, "shared", {
     owner: "lead",
     sharing: 1,
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
   });
-  expect(await w.read(["lead"])).toEqual({
-    runner: { state: "ready", id: "shared", name: "shared-host", sharedBy: "lead" },
-    agents: { claude: "connected", codex: "connected" },
-    memberVm: false,
-  });
-  // The member's own runner wins when it is as far along.
-  await runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
+  expect(await w.read(["lead"])).toEqual(NEEDED);
+  await runner(w.db, "stopped", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
+  expect(await w.read(["lead"])).toEqual(NEEDED);
+  await runner(w.db, "mine");
   expect(await w.read(["lead"])).toEqual({
     runner: { state: "ready", id: "mine", name: "mine-host" },
-    agents: { claude: "connected", codex: "connected" },
+    agents: WAITING,
     memberVm: false,
   });
 });
 
-test("the lead's shared runner that is offline says so", async () => {
+test("the agent step counts only the member's own connected account on their runner", async () => {
   const w = await workspace();
-  await runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
-  expect(await w.read(["lead"])).toEqual({
-    ...NEEDED,
-    runner: { state: "offline", name: "shared-host", sharedBy: "lead" },
+  await runner(w.db, "mine", {
+    accountOwner: "colleague",
+    agents: { claude: { ready: 1 }, codex: { ready: 1 } },
+  });
+  expect(await w.read()).toEqual({
+    runner: { state: "ready", id: "mine", name: "mine-host" },
+    agents: WAITING,
+    memberVm: false,
+  });
+  await runner(w.db, "own", { agents: { claude: { ready: 1 } } });
+  expect(await w.read()).toEqual({
+    runner: { state: "ready", id: "own", name: "own-host" },
+    agents: { claude: "connected", codex: "waiting" },
+    memberVm: false,
   });
 });
 

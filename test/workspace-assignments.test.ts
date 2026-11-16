@@ -1,3 +1,4 @@
+import { currentRunnerHost } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { count, eq, inArray, ne } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
@@ -1277,7 +1278,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
   }
 });
 
-test("the runner step uses the issue's project lead's shared runner, never another member's", async () => {
+test("the runner step counts only the member's own runner, not a lead's or colleague's shared one", async () => {
   const f = await fixture({ projectLeadId: "lead" });
   try {
     for (const id of ["lead", "colleague"]) {
@@ -1309,6 +1310,7 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
         }),
       );
       await write(f.db, (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing }));
+      await write(f.db, (q) => currentRunnerHost(q, id, f.clock.now()));
     };
     // A colleague who does not lead the project shares a runner; it does not count.
     await addRunner("colleague-box", "colleague", 1);
@@ -1322,14 +1324,23 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
       ).text();
     const needed = await open();
     expect(needed).toMatch(
-      /<h2>Runner<\/h2><p class="detail">You have no runner Paws can use for this task\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
+      /<h2>Runner<\/h2><p class="detail">You need a runner of your own\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
     );
     expect(needed).not.toContain("colleague-box");
-    // The lead shares a runner: the step is ready on the next load, without restarting anything.
-    const outbox = (await listOutbox(f.db)).length;
     await addRunner("lead-box", "lead", 1);
+    expect(await open()).toContain("You need a runner of your own.");
+    const outbox = (await listOutbox(f.db)).length;
+    const [me] = await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ id: q.t.workspaceUser.id })
+          .from(q.t.workspaceUser)
+          .where(eq(q.t.workspaceUser.linearUserId, "member")),
+      ),
+    );
+    await addRunner("my-box", me!.id, 0);
     expect(await open()).toMatch(
-      /<h2>Runner<\/h2><p class="detail">Lena Lead&#39;s shared runner lead-box-host will run this task\.<\/p><\/div><span class="label">Ready<\/span>/,
+      /<h2>Runner<\/h2><p class="detail">my-box-host will run this task\.<\/p><\/div><span class="label">Ready<\/span>/,
     );
     expect(await listOutbox(f.db)).toHaveLength(outbox);
   } finally {

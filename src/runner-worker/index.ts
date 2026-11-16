@@ -142,6 +142,7 @@ import {
   RunnerEventSchema,
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
+  AGENT_SIGNED_OUT,
   type RunnerArtifact,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -679,6 +680,13 @@ function resumedSession(directory: string): string | undefined {
   return sessionId;
 }
 
+export function reviewCommandEnv(
+  agent: "claude" | "codex",
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return agent === "claude" && env.HOME ? { ...env, ...claudeAgentEnv(env.HOME) } : env;
+}
+
 /**
  * A reviewer turn as the agent's own review command of `base..HEAD`, run in the run's checkout
  * with the runner's login: `codex exec review --base` or Claude `/code-review`. The command's
@@ -699,9 +707,24 @@ async function reviewCommandTurn(input: {
   signal?: AbortSignal;
   onText: (text: string) => void;
 }): Promise<RunAgentResult> {
+  let env: NodeJS.ProcessEnv;
+  try {
+    env = reviewCommandEnv(input.agent, input.env);
+  } catch (error) {
+    journalCaught(error, "runner-worker.reviewCommandTurn.token", null);
+    return {
+      role: "reviewer",
+      stopReason: "error",
+      errorMessage: `The account's Claude setup token file .claude/paws-oauth.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      timedOut: false,
+      cancelled: false,
+      authRequired: true,
+      agentExited: true,
+    };
+  }
   const outcome = await runReviewCommand(
     createReviewCommandRunner({
-      env: input.env,
+      env,
       timeoutMs: input.timeoutMs,
       ...(input.signal ? { signal: input.signal } : {}),
     }),
@@ -726,7 +749,7 @@ async function reviewCommandTurn(input: {
     ...(outcome.producer.session ? { sessionId: outcome.producer.session } : {}),
     timedOut: false,
     cancelled,
-    authRequired: false,
+    authRequired: !outcome.ok && AGENT_SIGNED_OUT.test(outcome.reason),
     agentExited: true,
   };
   if (cancelled) return { ...ended, stopReason: "cancelled", errorMessage: "Review cancelled" };
@@ -818,7 +841,7 @@ export async function executeRunnerCommand(
       })
     : options.home;
   let credentialsReturned = false;
-  const returnCredentials = () => {
+  const returnCredentials = (signingIn = false) => {
     const recipient = job.credentials?.certificate;
     if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
@@ -840,6 +863,7 @@ export async function executeRunnerCommand(
         command.type === "login",
       );
     } catch (error) {
+      if (signingIn) throw error;
       journalCaught(
         error,
         "runner-worker.returnCredentials",
@@ -952,6 +976,13 @@ export async function executeRunnerCommand(
     enterPhase("checkout");
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
+      if (binding && !job.credentials) {
+        emit({
+          type: "login",
+          update: { state: "failed", terminal: "", authorization: null, inputId: null },
+        });
+        throw new Error("Paws cannot receive this sign-in's credentials");
+      }
       await runProviderLogin({
         agent: command.agent,
         home,
@@ -973,7 +1004,7 @@ export async function executeRunnerCommand(
                         binding.agent,
                         options.owners,
                       );
-                      returnCredentials();
+                      returnCredentials(true);
                     },
                     options.owners,
                   ),

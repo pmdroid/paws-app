@@ -39,7 +39,7 @@ import {
   type OnboardingReadiness,
   type WorkspacePrincipal,
 } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { requestTracker } from "./wait-for";
 
@@ -122,8 +122,10 @@ function load(html: string, fetch: (input: string, init?: RequestInit) => Promis
 }
 
 function heartbeat(db: Db, runnerId: string, at: number) {
-  return seed(db, (q) =>
-    q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+  return seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+    (q) => currentRunnerHost(q, runnerId, at),
   );
 }
 
@@ -298,7 +300,7 @@ const render = async (input: Partial<OnboardingPageInput>, readiness?: Onboardin
   return load(await onboardingPage(page).text(), async () => new Response(null, { status: 404 }));
 };
 
-test("the member's own runner, a lead's shared runner, and none render the runner step", async () => {
+test("the member's own runner and none render the runner step", async () => {
   const own = await render(
     {},
     {
@@ -313,53 +315,23 @@ test("the member's own runner, a lead's shared runner, and none render the runne
   );
   expect(own.buttons()).toEqual([]);
 
-  const shared = await render(
-    {},
-    {
-      runner: { state: "ready", id: "R2", name: "lead-box", sharedBy: "Lena Lead" },
-      agents: { claude: "connected", codex: "connected" },
-      memberVm: false,
-    },
-  );
-  expect(shared.detail()).toBe("Lena Lead's shared runner lead-box will run this task.");
-
   const none = await render({});
   expect(none.detail()).toBe(
-    "You have no runner Paws can use for this task. Create a VM, or add a host with an enrollment token. This step completes when the runner is ready.",
+    "You need a runner of your own. Create a VM, or add a host with an enrollment token. This step completes when the runner is ready.",
   );
   expect(none.buttons()).toEqual(["create-vm", "add-host"]);
 
-  const unshared = await render(
-    { createVm: false },
-    {
-      runner: { state: "needed", reason: "Lena Lead's runner isn't shared." },
-      agents: WAITING,
-      memberVm: false,
-    },
-  );
-  expect(unshared.detail()).toBe(
-    "Lena Lead's runner isn't shared. Add a host with an enrollment token. This step completes when it pairs.",
+  const hostOnly = await render({ createVm: false });
+  expect(hostOnly.detail()).toBe(
+    "You need a runner of your own. Add a host with an enrollment token. This step completes when it pairs.",
   );
   // Create VM is shown only when exe.dev is available.
-  expect(unshared.buttons()).toEqual(["add-host"]);
-
-  const offline = await render(
-    {},
-    {
-      runner: { state: "offline", name: "lead-box", sharedBy: "Lena Lead" },
-      agents: WAITING,
-      memberVm: false,
-    },
-  );
-  expect(offline.detail()).toBe(
-    "Lena Lead's shared runner lead-box is offline. Ask Lena Lead to start it, or set up a runner of your own.",
-  );
-  expect(offline.buttons()).toEqual(["create-vm", "add-host"]);
+  expect(hostOnly.buttons()).toEqual(["add-host"]);
 
   const mineOffline = await render(
     {},
     {
-      runner: { state: "offline", name: "mia-box" },
+      runner: { state: "offline", id: "R1", name: "mia-box" },
       agents: WAITING,
       memberVm: true,
     },
@@ -371,7 +343,7 @@ test("the member's own runner, a lead's shared runner, and none render the runne
   expect(mineOffline.buttons()).toEqual(["add-host"]);
 });
 
-test("a missing account links to Agent accounts for own and shared runners", async () => {
+test("a missing account links to Agent accounts", async () => {
   const own = await render(
     {},
     {
@@ -387,21 +359,6 @@ test("a missing account links to Agent accounts for own and shared runners", asy
   const link = agents.querySelector("a.action");
   expect(link?.getAttribute("href")).toBe("/dashboard/settings/agent-accounts");
   expect(link?.textContent).toBe("Open Agent accounts");
-  const shared = await render(
-    {},
-    {
-      runner: { state: "ready", id: "R2", name: "lead-box", sharedBy: "Lena Lead" },
-      agents: { claude: "waiting", codex: "connected" },
-      memberVm: false,
-    },
-  );
-  const sharedAgents = shared.document.querySelectorAll("#steps > li")[3]!;
-  expect(sharedAgents.querySelector(".detail")?.textContent).toBe(
-    "Ask a workspace admin to add or reconnect Claude in Settings › Agent accounts for lead-box.",
-  );
-  expect(sharedAgents.querySelector("a")?.getAttribute("href")).toBe(
-    "/dashboard/settings/agent-accounts",
-  );
 });
 
 test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {

@@ -191,6 +191,7 @@ export type {
 } from "./review/index";
 
 export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";
+export { CommandWithheldError } from "./run/exec";
 export {
   PROBE_TIMEOUT_SECONDS,
   executeProbe,

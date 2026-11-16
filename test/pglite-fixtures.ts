@@ -8,7 +8,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import type { RunnerCodingAgent } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, type RunnerCodingAgent } from "../src/runner-protocol";
 import { rows, tempStore } from "./pglite";
 
 export type PgliteTestDb = { db: Db; close(): Promise<void> };
@@ -151,6 +151,15 @@ export function seedCredential(db: Db, accountId: string, agent: string, now = 0
   );
 }
 
+export const CURRENT_RUNNER_VERSION = MINIMUM_RUNNER_VERSION.join(".");
+
+export function currentRunnerHost(q: Q, runnerId: string, reportedAt = 0) {
+  return q.orm
+    .insert(q.t.runnerHostStatus)
+    .values({ runnerId, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt })
+    .onConflictDoNothing();
+}
+
 export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: string) {
   const policies = await db.run((q) =>
     q.all(
@@ -174,6 +183,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
     ),
   );
   for (const row of policies) {
+    await seed(db, (q) => currentRunnerHost(q, row.runnerId, row.now));
     const bindings = await listAgentBindings(db, row.workspaceId);
     if (
       !bindings.some(

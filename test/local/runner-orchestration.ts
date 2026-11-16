@@ -590,6 +590,7 @@ export async function probeRunnerOrchestration(
                   closeoutReport: JSON.stringify({
                     required: ["prepare", "check"].map((id) => ({
                       id,
+                      kind: id === "prepare" ? "setup" : "command",
                       status:
                         missing && id === "check"
                           ? "missing"

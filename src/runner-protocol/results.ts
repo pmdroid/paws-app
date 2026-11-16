@@ -75,6 +75,16 @@ export const RunnerResultSchema = z.strictObject({
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;
 
+export const AGENT_SIGNED_OUT = /(?:Not logged in|Invalid API key) · Please run \/login/;
+
+export function withSignedOutAuth<T extends { authRequired: boolean; errorMessage?: string }>(
+  result: T,
+): T {
+  return !result.authRequired && AGENT_SIGNED_OUT.test(result.errorMessage ?? "")
+    ? { ...result, authRequired: true }
+    : result;
+}
+
 export const RunnerHelperResultSchema = RunnerResultSchema.omit({
   candidateSha: true,
   reviewText: true,

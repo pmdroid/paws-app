@@ -84,3 +84,27 @@ test("a dialog opened for a binding follows that binding's sign-in, not the runn
   expect(dialogAccount(result, "claude", "B1")).toEqual({ ...bound, connected: false });
   expect(dialogAccount({ accounts: [idle] }, "claude", "B1")).toBeNull();
 });
+
+test("a bound account whose sign-in finished without a stored credential shows as not signed in", () => {
+  const session = {
+    id: "b",
+    agent: "claude" as const,
+    state: "connected" as const,
+    startedAt: 0,
+    expiresAt: 1,
+    terminal: "",
+    authorization: null,
+  };
+  const bound = { bindingId: "B1", agent: "claude" as const, signedIn: false, session };
+  const account = dialogAccount({ accounts: [idle], bindings: [bound] }, "claude", "B1")!;
+  expect(account.connected).toBe(false);
+  expect(accountStatus(account, undefined, "agentbox", 0)).toBe(
+    "Not signed in. Paws has not stored this sign-in yet.",
+  );
+  const stored = dialogAccount(
+    { accounts: [idle], bindings: [{ ...bound, signedIn: true }] },
+    "claude",
+    "B1",
+  )!;
+  expect(accountStatus(stored, undefined, "agentbox", 0)).toBe("Connected to your account");
+});

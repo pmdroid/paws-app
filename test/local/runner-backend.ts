@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "../pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "../pglite-fixtures";
 import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -2555,7 +2555,7 @@ export async function probeRunnerBackend(
           await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
-      for (const host of hostIds) await reportRunnerVersion(host, "0.1.61", now);
+      for (const host of hostIds) await reportRunnerVersion(host, CURRENT_RUNNER_VERSION, now);
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
         const record = await item();
         const affinityNotices: string[] = [];
@@ -3475,7 +3475,7 @@ export async function probeRunnerBackend(
       observe("runners receive the task's main commit and checkpoint opt-out", true, {
         current: current.repository.mainSha,
       });
-      await reportVersion("0.1.61");
+      await reportVersion(CURRENT_RUNNER_VERSION);
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)

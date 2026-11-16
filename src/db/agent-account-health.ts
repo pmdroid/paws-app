@@ -3,6 +3,7 @@ import { agentAuthFailureSteps } from "./agent-auth";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
+import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
 import { type Q, type Db } from "./db";
 
 export type AccountHealthKind = "quota" | "auth" | "provider" | "model";
@@ -263,7 +264,13 @@ export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: stri
       scopeOf(binding, kind).scopeId,
       kind === "model" ? model! : "",
     );
-    if (health) found.push(health);
+    if (!health) continue;
+    if (kind === "auth" && health.state === "auth_required") {
+      const credential = yield* agentCredentialCiphertextSteps(q, binding.accountId);
+      if (credential && credential.ciphertext !== "" && credential.updatedAt > health.observedAt)
+        continue;
+    }
+    found.push(health);
   }
   return found;
 }

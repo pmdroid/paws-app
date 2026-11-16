@@ -8,6 +8,11 @@ import { RunnerLivePreviewSchema } from "./preview";
 export const RUNNER_LEASE_MS = 60_000;
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
 /**
+ * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
+ * heartbeat sampled just before the runner acknowledged the command.
+ */
+export const RUNNER_LIVE_GRACE_MS = 30_000;
+/**
  * How much time Paws is unreachable does not count against a runner lease. `creditedLeaseUntil`
  * adds it, capped by this budget and the command's `expiresAt`. Only a runner at
  * `OFFLINE_LEASE_RUNNER_VERSION` or newer is told the budget and has its stored lease moved.

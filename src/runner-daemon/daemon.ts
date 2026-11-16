@@ -426,6 +426,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     sealForRunner(paired().certificate, JSON.stringify(files), heldContext(bindingId));
   const openHeld = (bindingId: string, sealed: string) =>
     credentialFiles(openForRunner(localKey(options.root), sealed, heldContext(bindingId)));
+  const credentialFailures = new Map<string, number>();
   function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
     const named = runnerCommandAccount(command);
     const files = options.agentCredentials;
@@ -456,7 +457,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       }
       if (written.length) files.write(named.account, named.agent, written);
     } catch (error) {
-      journalCaught(error, "daemon.receiveCredential", null);
+      const logged = credentialFailures.get(bindingId);
+      if (logged === undefined || now() - logged >= 3_600_000) {
+        credentialFailures.set(bindingId, now());
+        journalCaught(error, "daemon.receiveCredential", null);
+      }
       if (!held) files.remove(named.account, named.agent);
       throw new CredentialUnavailable();
     }

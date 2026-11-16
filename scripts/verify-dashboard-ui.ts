@@ -44,6 +44,11 @@ async function open(width: number, cookie = f.cookie) {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   await context.setExtraHTTPHeaders({ cookie });
   const page = await context.newPage();
+  await page.route("**/api/workspaces/github-app", (route) =>
+    route.fulfill({
+      json: { configured: true, canManage: true, webhookUrl: "", permissions: {}, events: [] },
+    }),
+  );
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", async (response) => {
     const url = new URL(response.url());
@@ -121,7 +126,7 @@ try {
             },
           }),
     );
-    for (const path of ["/dashboard", "/dashboard/settings/merging", "/dashboard/runners"]) {
+    for (const path of ["/dashboard", "/dashboard/workspace/merging", "/dashboard/runners"]) {
       await page.goto(f.origin + path);
       await expect(page.locator("#content")).toContainText(text);
       await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(0);
@@ -200,6 +205,8 @@ try {
       await route.fulfill({ json: vmSize });
     });
     await visit(admin, width, "runners-editable", "/dashboard/runners", "Runners");
+    await expect(admin.locator("[data-vm-size]")).toHaveCount(0);
+    await visit(admin, width, "member-vm", "/dashboard/workspace/member-vm", "Member VMs");
     await admin.locator("#vm-size-cpu").fill("6");
     await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
     await expect(admin.locator("#content")).toContainText("Member VM size saved.");
@@ -207,7 +214,7 @@ try {
     await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
     await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
     await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
-    await admin.screenshot({ path: join(out, `runners-editable-${width}.png`), fullPage: true });
+    await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
 
     let merging = {
       default: { order: "queue", mainMoved: "overlap" },
@@ -227,7 +234,7 @@ try {
         merging = { ...merging, ...route.request().postDataJSON() };
       await route.fulfill({ json: merging });
     });
-    await visit(admin, width, "settings-merging", "/dashboard/settings/merging", "Merging");
+    await visit(admin, width, "settings-merging", "/dashboard/workspace/merging", "Merging");
     await expect(admin.locator("#repo-packages-0")).toHaveValue("apps/*");
     await admin.locator("#repo-apps-0").fill("updated-review");
     await admin.locator("#project-lane-0").selectOption("project");
@@ -294,7 +301,7 @@ try {
     await admin.route("**/api/settings/storage/check", (route) =>
       route.fulfill({ json: { ok: true } }),
     );
-    await visit(admin, width, "storage-local", "/dashboard/settings/storage", "Storage");
+    await visit(admin, width, "storage-local", "/dashboard/workspace/storage", "Storage");
     await expect(admin.locator("#storage-kind")).toHaveValue("local");
     await admin.locator("#storage-days").fill("14");
     await admin.getByRole("button", { name: "Save storage settings" }).click();
@@ -373,10 +380,10 @@ try {
         },
       }),
     );
-    await visit(admin, width, "settings-agents", "/dashboard/settings/agents", "Agents");
+    await visit(admin, width, "settings-agents", "/dashboard/workspace/agents", "Agents");
     await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
-    await expect(admin.locator(".settings-nav a")).toHaveCount(13);
+    await expect(admin.locator(".settings-nav a")).toHaveCount(12);
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -476,7 +483,7 @@ try {
       ["repositories", "Repositories"],
       ["linear", "Linear"],
     ] as const) {
-      await visit(admin, width, `settings-${name}`, `/dashboard/settings/${name}`, heading);
+      await visit(admin, width, `settings-${name}`, `/dashboard/workspace/${name}`, heading);
       await expect(admin.locator(`#${name}-settings [role="alert"]`)).toHaveCount(0);
       if (name === "repositories") {
         await admin.getByLabel("Use local mirrors").check();
@@ -505,16 +512,18 @@ try {
         await expect(admin.getByText("Settings saved.", { exact: true })).toBeVisible();
       }
       await admin.screenshot({ path: join(out, `settings-${name}-${width}.png`), fullPage: true });
-      await visit(page, width, `settings-${name}-member`, `/dashboard/settings/${name}`, heading);
-      await expect(
-        page.locator(
-          `#${name}-settings input, #${name}-settings textarea, #${name}-settings button`,
-        ),
-      ).toHaveCount(0);
+      await visit(
+        page,
+        width,
+        `settings-${name}-member`,
+        `/dashboard/workspace/${name}`,
+        "Your account",
+      );
+      await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     }
     for (const [name, path, heading] of [
-      ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
-      ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
+      ["settings-brief", "/dashboard/workspace/brief", "Agent instructions"],
+      ["settings-workspace", "/dashboard/workspace/workspace", "Workspace access"],
     ] as const)
       await visit(admin, width, name, path, heading);
     await admin.route("**/api/settings/skills", (route) =>
@@ -578,38 +587,43 @@ try {
       fullPage: true,
     });
     await admin.unroute("**/api/settings/skills");
-    await page.route("**/api/settings/merging", (route) => route.fulfill({ json: merging }));
-    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Merging");
-    await expect(page.locator(".settings-nav a")).toHaveText([
-      "Agent accounts",
+    await visit(
+      admin,
+      width,
+      "settings-merging-old-link",
+      "/dashboard/settings/merging",
       "Merging",
-      "Repositories",
-      "Linear",
-      "Integrations",
-      "Your account",
-    ]);
-    await expect(
-      page.locator(
-        "#merge-settings input, #merge-settings select, #merge-settings textarea, #merge-settings button",
-      ),
-    ).toHaveCount(0);
-    await expect(page.locator("#merge-settings")).toContainText("updated-review");
+    );
+    await expect(admin).toHaveURL(`${f.origin}/dashboard/workspace/merging`);
+    const sidebar = (viewer: Page) =>
+      viewer.getByRole("navigation", { name: "Main navigation" }).getByRole("link");
+    if (width > 390)
+      await expect(sidebar(admin).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
+        "Workspace",
+        "Settings",
+      ]);
+    await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
+    await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
+    await expect(page.locator(".settings-nav a")).toHaveText(["Your account", "Agent accounts"]);
+    if (width > 390)
+      await expect(sidebar(page).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
+        "Settings",
+      ]);
     await page.screenshot({
       path: join(out, `settings-merging-member-${width}.png`),
       fullPage: true,
     });
-    for (const viewer of [admin, page])
-      await viewer.route("**/api/workspaces/github-connect", (route) =>
-        route.fulfill({
-          json: {
-            status: "connected",
-            canManage: viewer === admin,
-            requiresSignIn: false,
-            repositoryCount: 1,
-            lastDelivery: { event: "check_suite", receivedAt: Date.now() },
-          },
-        }),
-      );
+    await admin.route("**/api/workspaces/github-connect", (route) =>
+      route.fulfill({
+        json: {
+          status: "connected",
+          canManage: true,
+          requiresSignIn: false,
+          repositoryCount: 1,
+          lastDelivery: { event: "check_suite", receivedAt: Date.now() },
+        },
+      }),
+    );
     await admin.route("**/api/workspaces/github-setup*", (route) =>
       route.fulfill({
         json: {
@@ -626,27 +640,21 @@ try {
         },
       }),
     );
-    for (const [viewer, name] of [
-      [admin, "integrations-admin"],
-      [page, "integrations-member"],
-    ] as const) {
-      await visit(viewer, width, name, "/dashboard/settings/integrations", "Integrations");
-      const github = viewer.locator("#workspace-github-integration");
-      await expect(github.locator(".pill")).toHaveText("Connected");
-      await expect(github).toContainText("acme");
-      await expect(github.getByRole("button", { name: /Sign in|Refresh/ })).toHaveCount(0);
-      if (viewer === admin) {
-        await expect(github.getByLabel("Match acme/app to Team")).toBeChecked();
-        await expect(github.getByLabel("Match acme/site to Team")).not.toBeChecked();
-        await expect(github.getByRole("button", { name: "Save repository access" })).toBeVisible();
-      } else {
-        await expect(github.getByRole("list", { name: "Mapped repositories" })).toHaveText(
-          "acme/app",
-        );
-        await expect(github.locator("input, select")).toHaveCount(0);
-      }
-      await viewer.unroute("**/api/workspaces/github-connect");
-    }
+    await visit(
+      admin,
+      width,
+      "integrations-admin",
+      "/dashboard/workspace/integrations",
+      "Integrations",
+    );
+    const github = admin.locator("#workspace-github-integration");
+    await expect(github.locator(".pill")).toHaveText("Connected");
+    await expect(github).toContainText("acme");
+    await expect(github.getByRole("button", { name: /Sign in|Refresh/ })).toHaveCount(0);
+    await expect(github.getByLabel("Match acme/app to Team")).toBeChecked();
+    await expect(github.getByLabel("Match acme/site to Team")).not.toBeChecked();
+    await expect(github.getByRole("button", { name: "Save repository access" })).toBeVisible();
+    await admin.unroute("**/api/workspaces/github-connect");
     await admin.unroute("**/api/workspaces/github-setup*");
     for (const [reader, name, canManage] of [
       [admin, "settings-agent-accounts", true],
@@ -658,7 +666,7 @@ try {
       await visit(reader, width, name, "/dashboard/settings/agent-accounts", "Agent accounts");
       await expect(reader.locator("#agent-account-settings li")).toHaveCount(3);
       await expect(reader.locator("#agent-account-settings button")).toHaveCount(
-        canManage ? 13 : 0,
+        canManage ? 10 : 0,
       );
       await reader.unroute("**/api/runners/agent-accounts");
     }
@@ -668,26 +676,30 @@ try {
     current = `links@${width}`;
     await follow(
       page,
-      "/status/issues/PAS-1?from=linear#question",
+      "/dashboard/issues/PAS-1?from=linear#question",
       "/dashboard/issues/PAS-1?from=linear#question",
       "PAS-1",
     );
-    await follow(page, "/status/runs/{run}", "/dashboard/issues/PAS-1", "PAS-1");
+    await follow(page, "/dashboard/runs/{run}", "/dashboard/issues/PAS-1", "PAS-1");
     await follow(
       page,
-      "/status/sessions/session-mine#question",
+      "/dashboard/sessions/session-mine#question",
       "/dashboard/issues/PAS-1#question",
       "PAS-1",
     );
     await follow(page, "/dashboard/verdicts/PAS-1", "/dashboard/issues/PAS-1", "PAS-1");
-    await follow(page, "/dashboard/#/issues/PAS-1", "/dashboard/issues/PAS-1", "PAS-1");
-    await follow(page, "/status/questions/q-PAS-1", "/dashboard/questions/q-PAS-1", "Which way?");
-    await follow(page, "/evidence/{evidence}", "/dashboard/evidence/{evidence}", "PAS-1");
-    await follow(page, "/status/epics", "/dashboard/epics");
-    await follow(page, "/status/runs", "/dashboard/issues");
     await follow(
       page,
-      `/status/runs/${f.runs["PAS-2"]}`,
+      "/dashboard/questions/q-PAS-1",
+      "/dashboard/questions/q-PAS-1",
+      "Which way?",
+    );
+    await follow(page, "/evidence/{evidence}", "/dashboard/evidence/{evidence}", "PAS-1");
+    await follow(page, "/dashboard/epics", "/dashboard/epics");
+    await follow(page, "/dashboard/runs", "/dashboard/issues");
+    await follow(
+      page,
+      `/dashboard/runs/${f.runs["PAS-2"]}`,
       `/dashboard/runs/${f.runs["PAS-2"]}`,
       "Link not found",
     );

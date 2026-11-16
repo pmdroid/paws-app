@@ -329,6 +329,7 @@ describePglite((connect) => {
         runnerFence: 0,
         envelope: jsonValue(q, {}),
         expiresAt: NOW + 1_000,
+        acknowledgedAt: NOW,
         purpose,
       });
       yield* q.exec(

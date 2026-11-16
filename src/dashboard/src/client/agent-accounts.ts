@@ -22,13 +22,19 @@ type Account = {
   running?: number;
   session: Login | null;
 };
-type Bound = { bindingId: string; agent: Agent; running?: number; session: Login | null };
+type Bound = {
+  bindingId: string;
+  agent: Agent;
+  running?: number;
+  signedIn?: boolean;
+  session: Login | null;
+};
 type RunnerAccounts = { accounts: Account[]; bindings?: Bound[] };
 
 export function dialogAccount(result: RunnerAccounts, agent: string, binding?: string) {
   if (!binding) return result.accounts.find((entry) => entry.agent === agent) ?? null;
   const bound = result.bindings?.find((b) => b.bindingId === binding && b.agent === agent);
-  return bound ? { ...bound, connected: bound.session?.state === "connected" } : null;
+  return bound ? { ...bound, connected: bound.signedIn === true } : null;
 }
 
 type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
@@ -55,11 +61,20 @@ export function accountStatus(
       ? `Waiting for ${runnerName} to start the sign-in (it's finishing a check). ${durationLabel(Math.floor((now - login.startedAt) / 1000) * 1000)} since you asked.`
       : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`;
   if (account.connected) return "Connected to your account";
+  if (login?.state === "connected") return "Not signed in. Paws has not stored this sign-in yet.";
   if (runnerStatus === "signed_in") return "Signed in on this runner";
   if (login?.state === "expired") return "Sign-in expired. Start again to connect.";
   if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
   if (login?.state === "cancelled") return "Sign-in cancelled";
   return "Not connected";
+}
+
+function unstored(account: Account | null): boolean {
+  return (
+    account?.session?.state === "connected" &&
+    !account.connected &&
+    Date.now() < account.session.expiresAt
+  );
 }
 
 /** Said before a sign-in starts while the agent is running tasks on the runner. */
@@ -223,7 +238,7 @@ export function openAgentAccounts(
   function schedule() {
     window.clearTimeout(timer);
     if (!dialog.isConnected) return;
-    if (pending(account?.session ?? null))
+    if (pending(account?.session ?? null) || unstored(account))
       timer = window.setTimeout(() => {
         if (document.visibilityState === "visible") void load();
         else schedule();
@@ -285,7 +300,7 @@ export function openAgentAccounts(
       if (current !== generation) return;
       if (JSON.stringify(login) !== awaitingSession) clearProgress();
       account.session = login;
-      account.connected = login.state === "connected";
+      if (!binding) account.connected = login.state === "connected";
       paint();
     } catch (error) {
       clearProgress();

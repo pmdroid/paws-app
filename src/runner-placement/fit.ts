@@ -14,11 +14,17 @@ import {
 } from "../db";
 import {
   CLAUDE_OAUTH_RUNNER_VERSION,
+  REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { bindingReadinessSteps, BINDING_REASON_TEXT } from "./account-health";
-import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
+import {
+  eligibleReasonText,
+  eligibleRunnersSteps,
+  isInRunnerScope,
+  itemOwnerScopeSteps,
+} from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
 type AccountRefusal = { reason: string; until?: number; refusals?: AccountRefusal[] };
@@ -32,6 +38,7 @@ type SignInInput = {
   exceptCommandId?: string;
   excludeBindingIds?: readonly string[];
   bindingId?: string;
+  role?: "implementer" | "reviewer";
 };
 
 export function* repositoryRejectionSteps(
@@ -57,6 +64,8 @@ export function* signInFitSteps(
     (binding) => binding.runnerId === runner.id && binding.agent === input.agent && !binding.legacy,
   );
   const refusals: AccountRefusal[] = [];
+  const oauthVersion =
+    input.role === "reviewer" ? REVIEW_COMMAND_OAUTH_RUNNER_VERSION : CLAUDE_OAUTH_RUNNER_VERSION;
   for (const binding of bindings) {
     if (
       input.excludeBindingIds?.includes(binding.id) ||
@@ -67,13 +76,10 @@ export function* signInFitSteps(
       input.agent === "claude" &&
       requiresOAuthSteps &&
       (yield* requiresOAuthSteps(q, binding.accountId)) &&
-      !runnerReleaseAtLeast(
-        yield* runnerHostVersionSteps(q, runner.id),
-        CLAUDE_OAUTH_RUNNER_VERSION,
-      )
+      !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), oauthVersion)
     ) {
       refusals.push({
-        reason: `Claude OAuth credentials need runner ${CLAUDE_OAUTH_RUNNER_VERSION.join(".")} or later`,
+        reason: `Claude OAuth credentials need runner ${oauthVersion.join(".")} or later`,
       });
       continue;
     }
@@ -129,7 +135,7 @@ function* runnerVerdictsSteps(
     if (!runner.eligible) {
       runners.push(
         verdict(
-          runner.reason,
+          eligibleReasonText(runner.reason),
           runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"
             ? "sign-in"
             : null,

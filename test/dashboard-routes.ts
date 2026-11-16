@@ -33,21 +33,36 @@ const api = (
   extra: Partial<RouteEntry> = {},
 ): RouteEntry => ({ surface: "http", method, pattern, disposition, owner, ...extra });
 
-export const SETTINGS_PAGE_IDS = [
+const USER_SETTINGS_PAGE_IDS = ["account", "agent-accounts"];
+
+const WORKSPACE_PAGE_IDS = [
   "agents",
-  "agent-accounts",
   "merging",
   "repositories",
   "linear",
   "storage",
   "limits",
+  "member-vm",
   "brief",
   "integrations",
   "members",
   "workspace",
-  "account",
   "audit",
 ];
+
+const settingsPage = (
+  area: "settings" | "workspace",
+  id: string,
+  disposition: Disposition,
+  owner: string,
+): RouteEntry => ({
+  surface: "settings",
+  method: "GET",
+  pattern: `/${area}/${id}`,
+  view: area,
+  disposition,
+  owner,
+});
 
 export const DASHBOARD_ROUTES: RouteEntry[] = [
   spa("/", "overview", "canonical", "PAS-903"),
@@ -79,14 +94,10 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   spa("/retros", "improvements", "alias", "PAS-918"),
   spa("/retros/:id", "improvements", "alias", "PAS-918"),
   spa("/settings", "settings", "preserved", "src/settings"),
-  ...SETTINGS_PAGE_IDS.map((id): RouteEntry => ({
-    surface: "settings",
-    method: "GET",
-    pattern: `/settings/${id}`,
-    view: "settings",
-    disposition: "preserved",
-    owner: "src/settings",
-  })),
+  ...USER_SETTINGS_PAGE_IDS.map((id) => settingsPage("settings", id, "preserved", "src/settings")),
+  spa("/workspace", "workspace", "canonical", "PAS-2086"),
+  ...WORKSPACE_PAGE_IDS.map((id) => settingsPage("workspace", id, "canonical", "PAS-2086")),
+  ...WORKSPACE_PAGE_IDS.map((id) => settingsPage("settings", id, "alias", "PAS-2086")),
   {
     surface: "html",
     method: "GET",
@@ -339,6 +350,8 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   ...[
     ["PUT", "/api/runners/agent-accounts/order"],
     ["PUT", "/api/runners/agent-accounts/:id/extra-usage"],
+    ["PUT", "/api/runners/agent-accounts/:id/enabled"],
+    ["DELETE", "/api/runners/agent-accounts/:id"],
     ["POST", "/api/runners/agent-accounts/:id/sign-in"],
     ["GET POST", "/api/runners/agent-accounts/:id/device"],
     ["DELETE", "/api/runners/agent-accounts/:id/credential"],

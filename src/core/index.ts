@@ -162,6 +162,7 @@ export {
   isTransientGitError,
   retryNote,
   retryAfterMs,
+  SavedWorkRewritten,
   transientRetryDelayMs,
 } from "./failure";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";

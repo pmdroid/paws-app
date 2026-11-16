@@ -1,7 +1,7 @@
 import { initializeGitHubAppSetup } from "./github-app-setup";
 import { journalCaught } from "../journal";
 import { routeHref } from "./route";
-import { settingsPageShown, loadWhenShown } from "./settings-loads";
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { initializeGitHubRepositorySetup } from "./github-repository-setup";
@@ -28,10 +28,13 @@ export function initializeWorkspaceGitHub(
   csrfToken: string,
   canEditRepositories = false,
 ): void {
-  void initializeGitHubAppSetup(root, csrfToken, () => {
-    initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories);
-    settingsPageShown("integrations");
-  });
+  loadWhenShown(
+    "integrations",
+    () =>
+      void initializeGitHubAppSetup(root, csrfToken, () =>
+        initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories),
+      ),
+  );
 }
 
 function initializeConfiguredWorkspaceGitHub(
@@ -100,7 +103,7 @@ function initializeConfiguredWorkspaceGitHub(
                   : "Install the App on your workspace repositories, then return here to finish connecting.";
     let primary =
       data.status === "needs_repositories" && canEditRepositories
-        ? `<a class="btn primary" href="${routeHref({ view: "settings", page: "workspace" })}">Add repositories</a>`
+        ? `<a class="btn primary" href="${routeHref({ view: "workspace", page: "workspace" })}">Add repositories</a>`
         : "";
     if (
       data.canManage &&
@@ -226,7 +229,7 @@ function initializeConfiguredWorkspaceGitHub(
     if (!target) return;
     if (target.hasAttribute("data-github-signin")) {
       try {
-        sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
+        sessionStorage.setItem("paws.settingsReturn", "/workspace/integrations");
       } catch (caughtError3) {
         journalCaught(caughtError3, "workspace-github.initializeWorkspaceGitHub.setItem", null);
       }
@@ -235,22 +238,24 @@ function initializeConfiguredWorkspaceGitHub(
     if (target.hasAttribute("data-github-refresh")) void load();
     if (target.hasAttribute("data-github-connect")) void connect();
   });
-  window.addEventListener("focus", () => {
-    if (!section.isConnected || section.hidden || root.hidden) return;
-    void load().then(() => {
-      if (
-        waitingForInstall &&
-        data?.status === "needs_connection" &&
-        data.canManage &&
-        !data.requiresSignIn
-      ) {
-        waitingForInstall = false;
-        void connect();
-      }
-    });
-  });
   document.addEventListener("paws:github-access-changed", () => {
     if (section.isConnected) void load();
   });
-  loadWhenShown("integrations", () => void load());
+  loadWhenShown("integrations", () => {
+    window.addEventListener("focus", () => {
+      if (!section.isConnected || section.hidden || root.hidden) return;
+      void load().then(() => {
+        if (
+          waitingForInstall &&
+          data?.status === "needs_connection" &&
+          data.canManage &&
+          !data.requiresSignIn
+        ) {
+          waitingForInstall = false;
+          void connect();
+        }
+      });
+    });
+    void load();
+  });
 }

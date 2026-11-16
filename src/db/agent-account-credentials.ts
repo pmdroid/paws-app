@@ -227,9 +227,13 @@ export function* centralAgentAccountsSteps(
   for (const row of rows) {
     if (yield* agentAuthFailureSteps(q, row.id)) continue;
     const usage = yield* providerUsageSteps(q, row.id);
+    const stored = usage?.limitsJson ? JSON.parse(usage.limitsJson) : null;
     eligible.push({
       ...row,
-      limits: usage?.limitsJson ? JSON.stringify(JSON.parse(usage.limitsJson).limits) : row.limits,
+      limits:
+        stored && (stored.limits.length || !stored.unavailable)
+          ? JSON.stringify(stored.limits)
+          : row.limits,
     });
   }
   return eligible.map((row) => ({

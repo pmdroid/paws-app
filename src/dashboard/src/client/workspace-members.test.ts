@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { settingsPageShown } from "./settings-loads";
-import {
-  ASK_AN_ADMIN,
-  initializeWorkspaceMembers,
-  type WorkspaceMemberRow,
-} from "./workspace-members";
+import { initializeWorkspaceMembers, type WorkspaceMemberRow } from "./workspace-members";
 
 const realFetch = globalThis.fetch;
 const DOM_GLOBALS = [
@@ -228,12 +224,4 @@ test("the last admin's role and revoke are disabled with a reason", async () => 
   expect(reason.textContent).toBe("The workspace must keep an active admin.");
   expect(select.getAttribute("aria-describedby")).toBe(reason.id);
   expect(revoke.getAttribute("aria-describedby")).toBe(reason.id);
-});
-
-test("a member sees the ask-an-admin text and loads nothing", async () => {
-  const root = await open("member", "bo");
-  expect(root.textContent).toBe(ASK_AN_ADMIN);
-  expect(ASK_AN_ADMIN).toBe("Ask an admin to change members or roles.");
-  expect(root.querySelector("table")).toBeNull();
-  expect(requests).toEqual([]);
 });

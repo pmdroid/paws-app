@@ -250,7 +250,13 @@ export async function retroRunnerCandidates(
       }),
     );
     for (const runner of runners) {
-      if (!runner.eligible || runner.ownerId !== admin.id || seen.has(runner.id)) continue;
+      if (runner.ownerId !== admin.id || seen.has(runner.id)) continue;
+      if (runner.reason === "outdated") {
+        seen.add(runner.id);
+        incompatible += 1;
+        continue;
+      }
+      if (!runner.eligible) continue;
       seen.add(runner.id);
       const version = await store.run((q) => runnerHostVersionSteps(q, runner.id));
       if (!runnerAcceptsRetro(version)) {

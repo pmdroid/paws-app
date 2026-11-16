@@ -56,9 +56,13 @@ function listsRepository(repositories: string): boolean {
   }
 }
 
-export function* onboardingAccountStatesSteps(q: Q, workspaceId: string) {
+export function* onboardingAccountStatesSteps(q: Q, workspaceId: string, ownerUserId?: string) {
   const accounts = (yield* listAgentAccountsSteps(q, workspaceId)).filter(
-    (row) => !row.legacy && row.enabled && row.removedAt === null,
+    (row) =>
+      !row.legacy &&
+      row.enabled &&
+      row.removedAt === null &&
+      (ownerUserId === undefined || row.ownerUserId === ownerUserId),
   );
   const bindings = yield* listAgentBindingsSteps(q, workspaceId);
   const states = new Map<string, Record<string, "connected" | "expired" | "waiting">>();

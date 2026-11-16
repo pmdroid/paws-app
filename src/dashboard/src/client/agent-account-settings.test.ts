@@ -21,6 +21,8 @@ let window: Window;
 let requests: { method: string; path: string; body: unknown }[];
 let canManage: boolean;
 let failure: string | null;
+let status: number;
+let runners: { id: string; name: string; ownerUserId: string }[] | null;
 let agent: CentralAccount["agent"];
 let deviceState: string;
 let polls: number;
@@ -36,6 +38,11 @@ beforeEach(() => {
   requests = [];
   canManage = true;
   failure = null;
+  status = 409;
+  runners = [
+    { id: "R1", name: "agentbox", ownerUserId: "U1" },
+    { id: "R2", name: "otherbox", ownerUserId: "U2" },
+  ];
   agent = "claude";
   deviceState = "pending";
   polls = 0;
@@ -54,9 +61,12 @@ beforeEach(() => {
       });
       expect(new Headers(init.headers).get("x-paws-csrf")).toBe("token-1");
     }
-    if (failure && method !== "GET") return Response.json({ error: failure }, { status: 409 });
+    if (failure && method !== "GET") return Response.json({ error: failure }, { status });
+    if (pathname === "/api/auth/session") return Response.json({ userId: "U1", role: "member" });
     if (pathname === "/api/runners")
-      return Response.json({ runners: [{ id: "R1", name: "agentbox" }] });
+      return runners
+        ? Response.json({ runners })
+        : Response.json({ error: "down" }, { status: 500 });
     if (pathname.endsWith("/device")) {
       if (agent !== "codex")
         return Response.json({ error: "Codex account is unavailable" }, { status: 404 });
@@ -120,9 +130,7 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
     "Work",
     "Home",
   ]);
-  expect(root.querySelector("[data-account-status]")?.textContent).toContain(
-    "by agentbox · Extra usage off",
-  );
+  expect(root.querySelector("[data-account-status]")?.textContent).toContain("by agentbox");
   const form = root.querySelector("[data-account-add]")!;
   (form.querySelector("select") as unknown as HTMLSelectElement).value = "codex";
   (form.querySelector("input") as unknown as HTMLInputElement).value = " Team ";
@@ -155,6 +163,45 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
   ]);
 });
 
+test("accounts show their priority, and an admin disables, enables and removes one", async () => {
+  setSettingsAdmin(true);
+  const root = await mount();
+  expect([...root.querySelectorAll("[data-account-rank]")].map((node) => node.textContent)).toEqual(
+    ["1", "2"],
+  );
+  expect([...root.querySelectorAll("[data-account-role]")].map((node) => node.textContent)).toEqual(
+    ["Used first", "Used when the account above can't run"],
+  );
+  expect(root.querySelector(".acct-group .sub")?.textContent).toContain(
+    "Paws uses account 1 first",
+  );
+  await click(root, "A2", "disable");
+  await click(root, "A2", "remove");
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain("Remove Home?");
+  await click(root, "A2", "keep");
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  await click(root, "A2", "remove");
+  await click(root, "A2", "remove-confirm");
+  expect(requests).toEqual([
+    { method: "PUT", path: "/api/runners/agent-accounts/A2/enabled", body: { enabled: false } },
+    { method: "DELETE", path: "/api/runners/agent-accounts/A2", body: undefined },
+  ]);
+});
+
+test("a disabled account says runs skip it and offers Enable", () => {
+  const html = renderAgentAccountSettings({
+    canManage: true,
+    accounts: [{ ...account("A1", "Work"), enabled: false }],
+    runners: {},
+    busy: null,
+    error: null,
+    confirm: null,
+  });
+  expect(html).toContain("Disabled · runs skip this account");
+  expect(html).toContain('data-account-action="enable"');
+  expect(html).not.toContain("data-account-rank");
+});
+
 test("a Claude account takes a pasted setup token and clears the field", async () => {
   setSettingsAdmin(true);
   const root = await mount();
@@ -185,7 +232,7 @@ test("only Claude accounts render a setup token field", () => {
   const html = renderAgentAccountSettings({
     canManage: true,
     accounts: [account("A1", "Work"), { ...account("A2", "Codex"), agent: "codex" }],
-    runners: {},
+    runners: { R1: "agentbox" },
     busy: null,
     error: null,
     confirm: null,
@@ -203,6 +250,69 @@ test("an admin sees the API's error message", async () => {
   await click(root, "A1", "sign-in");
   expect(root.querySelector('[role="alert"]')?.textContent).toBe(failure);
   expect(opened).toHaveLength(0);
+});
+
+test("only the caller's own runners are offered for sign-in", async () => {
+  agent = "grok";
+  runners!.reverse();
+  const root = await mount();
+  expect(root.querySelector("[data-account-runnerless]")).toBeNull();
+  await click(root, "A1", "sign-in");
+  expect(opened[0]?.[0]).toEqual({ id: "R1", name: "agentbox" });
+});
+
+test("when runners cannot be loaded, the page says so and keeps sign-in", async () => {
+  agent = "grok";
+  runners = null;
+  const root = await mount();
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Your runners could not be loaded. Reload to try again.",
+  );
+  expect(root.querySelector("[data-account-runnerless]")).toBeNull();
+  expect(root.querySelector('[data-account-action="sign-in"]')).not.toBeNull();
+});
+
+test("with no own runner, Add a runner first replaces the sign-in controls", async () => {
+  agent = "grok";
+  runners = [{ id: "R2", name: "otherbox", ownerUserId: "U2" }];
+  const root = await mount();
+  const link = root.querySelector("[data-account-runnerless] a") as unknown as HTMLAnchorElement;
+  expect(link.textContent).toBe("Add a runner first");
+  expect(link.getAttribute("href")).toBe("/runners");
+  expect(root.querySelectorAll('[data-account-action="sign-in"]')).toHaveLength(0);
+  expect(root.querySelectorAll('[data-account-id="A2"] [data-account-token]')).toHaveLength(1);
+  expect(root.querySelector("[data-account-add]")).not.toBeNull();
+});
+
+for (const code of [
+  "Runner belongs to another member",
+  "Agent account belongs to another member",
+]) {
+  test(`a 403 "${code}" shows inline on the account row`, async () => {
+    agent = "grok";
+    const root = await mount();
+    failure = code;
+    status = 403;
+    await click(root, "A1", "sign-in");
+    expect(root.querySelector('[data-account-id="A1"] [data-account-error]')?.textContent).toBe(
+      code,
+    );
+    expect(root.querySelector('[data-account-id="A2"] [data-account-error]')).toBeNull();
+    expect(root.querySelector(".acct-page > [role='alert']")).toBeNull();
+    failure = null;
+    await click(root, "A1", "extra-usage");
+    expect(root.querySelector("[data-account-error]")).toBeNull();
+  });
+}
+
+test("any other 403 stays a page-level error", async () => {
+  agent = "grok";
+  const root = await mount();
+  failure = "Only workspace admins can do this.";
+  status = 403;
+  await click(root, "A1", "sign-in");
+  expect(root.querySelector("[data-account-error]")).toBeNull();
+  expect(root.querySelector(".acct-page > [role='alert']")?.textContent).toBe(failure);
 });
 
 test("a member sees the accounts read-only, with no controls", async () => {
@@ -297,24 +407,32 @@ for (const manage of [true, false]) {
       });
       return window.document.body.textContent;
     };
-    expect(render()).toContain("5-hour 62% · resets");
-    expect(render()).toContain("Weekly 30% · resets");
+    expect(render()).toContain("5-hour62%resets");
+    expect(render()).toContain("Weekly30%resets");
     expect(render()).toContain(
-      new Date(reset).toLocaleString([], {
+      new Date(reset + 86400000).toLocaleString([], {
         weekday: "short",
         hour: "2-digit",
         minute: "2-digit",
       }),
     );
-    expect(render()).toContain("updated 3 min ago");
+    expect(render()).toContain("Updated 3 min ago");
     expect(window.document.querySelectorAll("progress")).toHaveLength(2);
     expect(window.document.querySelector("progress")?.value).toBe(62);
     row.usage.stale = true;
     row.usage.limits[0]!.usedPercent = 100;
-    expect(render()).toContain("stale");
-    expect(render()).toContain("Limit reached until");
+    expect(render()).toContain("Usage may be out of date");
+    expect(render()).toContain("Limit reached");
+    expect(window.document.querySelector("progress")?.className).toContain("full");
     row.extraUsage = true;
-    expect(render()).toContain("Using extra usage");
+    expect(render()).toContain("On extra usage");
+    expect(render()).toContain("Running on extra usage");
+    row.usage.unavailable = "Usage unavailable (HTTP 429)";
+    expect(render()).toContain("Usage unavailable (HTTP 429)");
+    row.usage.limits = [];
+    row.usage.unavailable = "Usage not available for this sign-in";
+    expect(render()).toContain("Usage not available for this sign-in");
+    expect(render()).not.toContain("Usage may be out of date");
     row.usage = null;
     render();
     expect(window.document.querySelector("[data-account-usage]")).toBeNull();

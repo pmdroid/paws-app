@@ -268,7 +268,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     if (!target) return;
     if (target.hasAttribute("data-signin")) {
       try {
-        sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
+        sessionStorage.setItem("paws.settingsReturn", "/workspace/integrations");
       } catch (caughtError3) {
         journalCaught(
           caughtError3,

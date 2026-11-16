@@ -14,6 +14,7 @@ import {
   runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
+  undeliveredHelperStreakSteps,
   workspaceSessionIdsSteps,
   type Db,
 } from "../db";
@@ -35,7 +36,8 @@ import {
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
 const HELD_JOURNAL_INTERVAL_MS = 5 * 60_000;
-const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";
+export const HELPER_LANE_BUSY =
+  "Queued: the runner's helper lane is busy. Paws retries when it frees.";
 
 /** A placement rejection that only says the runner is full: a wait, not a cause. */
 const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
@@ -160,6 +162,14 @@ export function createRemoteSessionAgentRunner(options: {
                   },
                 })
               : await store.run((q) => recentRunnersSteps(q, now() - 60_000));
+          const missed = new Set<string>();
+          for (const runner of runners)
+            if (await store.run((q) => undeliveredHelperStreakSteps(q, runner.id, now(), 1)))
+              missed.add(runner.id);
+          runners = [
+            ...runners.filter((runner) => !missed.has(runner.id)),
+            ...runners.filter((runner) => missed.has(runner.id)),
+          ];
           for (const runnerId of full)
             if (
               (

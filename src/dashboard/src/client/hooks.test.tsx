@@ -111,18 +111,6 @@ describe("hooks section", () => {
     for (const button of classNames(html, "btn")) expect(button).toContain("whitespace-normal");
   });
 
-  test("members see why they cannot change hooks", () => {
-    const denied = renderHookSettings({
-      data: null,
-      busy: null,
-      error: null,
-      notice: null,
-      denied: true,
-    });
-    expect(denied).toContain("Only workspace admins can change hooks.");
-    expect(denied).not.toContain("hook-add-form");
-  });
-
   test("an empty list says Closeout still runs, and errors are announced", () => {
     const empty = renderHookSettings({
       data: { ...listing, hooks: [] },
