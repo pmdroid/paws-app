@@ -29,14 +29,14 @@ export const SETTINGS_PAGES = [
     description: "Configure object storage and Closeout log retention.",
   },
   {
-    id: "member-vm",
-    name: "Member VMs",
-    description: "The size and pool exe.dev gives each new member VM.",
-  },
-  {
     id: "limits",
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
+  },
+  {
+    id: "member-vm",
+    name: "Member VMs",
+    description: "The size and pool exe.dev gives each new member VM.",
   },
   {
     id: "brief",
