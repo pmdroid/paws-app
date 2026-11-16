@@ -163,6 +163,19 @@ export class RunnerRepositoryRefused extends Error {
   }
 }
 
+export class SavedWorkRewritten extends Error {
+  override readonly name = "SavedWorkRewritten";
+  constructor(
+    readonly branch: string,
+    readonly saved: string,
+    readonly tip: string,
+  ) {
+    super(
+      `${branch} was rewritten after Paws saved the work at ${saved.slice(0, 7)}: it now ends at ${tip.slice(0, 7)}.`,
+    );
+  }
+}
+
 /**
  * Why the person who delegated a task has no runner Paws may start it on. `no-runner` means no
  * runner of theirs, or shared with them, could take the work. `agent-not-signed-in` names their

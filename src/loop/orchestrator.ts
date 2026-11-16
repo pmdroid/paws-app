@@ -277,6 +277,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
+  SavedWorkRewritten,
   type RunnerRepositoryRefusal,
   type RunnerSetupNeed,
   placementWaitMs,
@@ -635,7 +636,12 @@ import {
   publicToolText,
   type ActivityOrigin,
 } from "./activity";
-import { NO_SESSION_MODEL, PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
+import {
+  NO_SESSION_MODEL,
+  PREPARATION_FAILED,
+  recoveryOptions,
+  rewrittenSummary,
+} from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
@@ -4213,6 +4219,7 @@ export class Orchestrator {
         !current.cancelRequested
       ) {
         const message = error instanceof Error ? error.message : String(error);
+        const rewritten = savedWorkRewrittenIn(error);
         if (
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(message)) &&
           (current.state === "running" || current.state === "verifying")
@@ -4227,6 +4234,9 @@ export class Orchestrator {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
+        } else if (rewritten) {
+          await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
+          await this.askPreparationHelp(current, rewrittenSummary(rewritten));
         } else await this.fail(current, "run_error", message, error);
       }
 
@@ -11878,6 +11888,14 @@ function profileLabelQuestion(
 function repositoryRefusedIn(error: unknown): RunnerRepositoryRefused | null {
   for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
     if (current instanceof RunnerRepositoryRefused) return current;
+    current = current.cause;
+  }
+  return null;
+}
+
+function savedWorkRewrittenIn(error: unknown): SavedWorkRewritten | null {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
+    if (current instanceof SavedWorkRewritten) return current;
     current = current.cause;
   }
   return null;
