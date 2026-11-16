@@ -573,3 +573,46 @@ test.skipIf(process.geteuid!() === 0)("a work root the runner cannot list is not
     chmodSync(work, 0o700);
   }
 });
+
+const folderOwnerChangeAllowed =
+  process.geteuid!() === 0 &&
+  permitted((probe) => {
+    chownSync(probe, anotherUser, process.getgid!());
+    chownSync(probe, anotherUser + 1, process.getgid!());
+  });
+
+function claudeFolderOwnedBy(uid: number) {
+  const root = agentHome();
+  const owners = {
+    runnerUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    agentUid: anotherUser,
+  };
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true, owners });
+  markRunnerAccountSignedIn(home, a, "claude", owners);
+  chownSync(join(home, ".claude"), uid, process.getgid!());
+  chmodSync(join(home, ".claude"), 0o2770);
+  const write = () =>
+    runnerAgentCredentials(root, owners).write(a, "claude", [
+      { path: ".claude/paws-oauth.json", data: Buffer.from("{}").toString("base64") },
+    ]);
+  return { home, write };
+}
+
+test.skipIf(!folderOwnerChangeAllowed)(
+  "a central credential lands in a .claude folder the agent user owns in the agent group",
+  () => {
+    const { home, write } = claudeFolderOwnedBy(anotherUser);
+    write();
+    expect(readFileSync(join(home, ".claude/paws-oauth.json"), "utf8")).toBe("{}");
+  },
+);
+
+test.skipIf(!folderOwnerChangeAllowed)(
+  "a central credential is refused for a .claude folder an unrelated user owns",
+  () => {
+    const { home, write } = claudeFolderOwnedBy(anotherUser + 1);
+    expect(write).toThrow(/belongs to another user/);
+    expect(() => statSync(join(home, ".claude/paws-oauth.json"))).toThrow();
+  },
+);
