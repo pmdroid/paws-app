@@ -419,19 +419,27 @@ export function createRemoteSessionAgentRunner(options: {
           }
         }
       };
-      return (input: RunAgentOptions) =>
-        purpose === "finding_groups"
-          ? attempt(input, [])
-          : runWithFailover(
-              { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
-              attempt,
-              async () => {},
-              usageLimitWait(
-                { store, now, mono, interval: options.pollIntervalMs ?? 250 },
-                () => sessionRun(sessionId),
-                input,
-              ),
-            );
+      return async (input: RunAgentOptions) => {
+        const started = mono();
+        try {
+          return await (purpose === "finding_groups"
+            ? attempt(input, [])
+            : runWithFailover(
+                { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
+                attempt,
+                async () => {},
+                usageLimitWait(
+                  { store, now, mono, interval: options.pollIntervalMs ?? 250 },
+                  () => sessionRun(sessionId),
+                  input,
+                ),
+              ));
+        } catch (error) {
+          if (error instanceof RunnerSlotsBusyError)
+            error.waitedMs = Math.max(error.waitedMs, mono() - started);
+          throw error;
+        }
+      };
     },
   };
 }

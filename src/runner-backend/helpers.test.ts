@@ -87,6 +87,7 @@ async function fixture(
     store: db,
     helpers,
     now: () => now,
+    mono: () => now,
     pollIntervalMs: 1,
     placement: await placement?.(db, () => now),
     journal: (line) => journaled.push(line),
@@ -330,7 +331,9 @@ test("a helper slot still busy at the deadline is a wait, not a failure", async 
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   f.advance(60_000);
-  await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+  const error = await pending.catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(RunnerSlotsBusyError);
+  expect((error as RunnerSlotsBusyError).waitedMs).toBe(60_000);
 });
 
 test("a helper that times out while other starts queue on its slot is a wait", async () => {

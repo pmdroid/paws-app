@@ -4,6 +4,9 @@ export class UserFacingError extends Error {
 }
 
 export class RunnerSlotsBusyError extends UserFacingError {
+  /** How long the attempt waited for the lane before giving up: waiting, not implementation. */
+  waitedMs = 0;
+
   constructor(
     message = "Queued: every runner slot is busy. Paws starts this issue when a slot frees.",
   ) {

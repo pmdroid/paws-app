@@ -294,6 +294,7 @@ import {
   completeAnswerTaskSteps,
   completeArtifactTaskSteps,
   accrueAwake,
+  settleHelperLaneWait,
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
@@ -2738,8 +2739,10 @@ export class Orchestrator {
         );
         return;
       }
-      if (slotsBusy(error)) {
-        await this.settleItemAwake(item.id);
+      const busy = slotsBusyIn(error);
+      if (busy) {
+        const clock = this.options.clock ?? systemClock;
+        await settleHelperLaneWait(this.store, item.id, clock.mono(), clock.now(), busy.waitedMs);
         await deferWorkItem(this.store, item, {
           retry: retryCount(job.payload),
           delayMs: SLOTS_BUSY_RETRY_MS,
@@ -4230,7 +4233,7 @@ export class Orchestrator {
           );
         else if (error instanceof AgentHungError) {
           if (current.state === "running") await this.askAgentHung(current, run.id, error);
-        } else if (isTransient(error) || slotsBusy(error)) {
+        } else if (isTransient(error) || slotsBusyIn(error) !== null) {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
@@ -11921,12 +11924,12 @@ const VERIFICATION_OWNER_POLL_MS = 5_000;
 
 const SLOTS_BUSY_RETRY_MS = 60_000;
 
-function slotsBusy(error: unknown): boolean {
+function slotsBusyIn(error: unknown): RunnerSlotsBusyError | null {
   for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
-    if (current instanceof RunnerSlotsBusyError) return true;
+    if (current instanceof RunnerSlotsBusyError) return current;
     current = current.cause;
   }
-  return false;
+  return null;
 }
 
 function usageResetAt(error: unknown): number | null {
