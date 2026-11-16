@@ -118,3 +118,42 @@ for (const refused of [false, true]) {
     }
   });
 }
+
+test("checks turn runs a later command after an earlier one failed", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeFileSync(
+    join(repo, ".agents", "closeout.yaml"),
+    `specVersion: "0.1"
+items:
+  - { id: lint, kind: command, gate: beforePR, exec: ["false"], timeoutSeconds: 5 }
+  - { id: test, kind: command, gate: beforePR, exec: ["true"], timeoutSeconds: 30 }
+`,
+  );
+  const bridge = await startAskTeamBridge({
+    socketPath: join(root, "ask.sock"),
+    context: {
+      itemId: "ENG-1",
+      runId: "checks-ENG-1-head-1",
+      role: "implementer",
+      worktreePath: repo,
+    },
+    commandGuard: {
+      worktree: repo,
+      home: join(root, "home"),
+      pawsRoot: join(root, "paws"),
+      hostAccess: true,
+    },
+    signal: new AbortController().signal,
+  });
+  try {
+    const report = JSON.parse((await bridge.closeoutReport())!);
+    const result = (id: string) =>
+      report.required.find((check: { id: string }) => check.id === id).result;
+    expect(result("lint").exitCode).toBe(1);
+    expect(result("test").exitCode).toBe(0);
+  } finally {
+    await bridge.close();
+  }
+});

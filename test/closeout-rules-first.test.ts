@@ -171,6 +171,127 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   }
 }, 90_000);
 
+for (const unavailable of [false, true])
+  for (const recover of [true, false])
+    test(`incomplete checks retry once before asking, unavailable=${unavailable}, recover=${recover}`, async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "paws-unstarted-"));
+      const bare = await originWithChecks(root);
+      const pawsRoot = path.join(root, "paws");
+      const home = path.join(root, "home");
+      await mkdir(pawsRoot, { recursive: true });
+      await mkdir(home, { recursive: true });
+      const { db, close } = await tempStore();
+      const clock: Clock = { now: () => Date.now(), mono: () => Math.floor(performance.now()) };
+      const jobs = new JobLoop(db, clock);
+      const outbox = new OutboxDispatcher(db, clock);
+      const tracker = createFakeTracker([
+        {
+          linearIssueId: "issue",
+          identifier: "ENG-7",
+          title: "Settings screen",
+          description: null,
+          subIssues: [],
+        },
+      ]);
+      let checksRuns = 0;
+      const repository = { owner: "pmdroid", repo: "paws-demo" };
+      const runner = cloneRunnerPg(
+        repository,
+        async (options: RunAgentOptions): Promise<RunAgentResult> => {
+          if (options.checkpoint !== false) return runAgent(options);
+          checksRuns++;
+          const complete = recover && checksRuns === 2;
+          const session = createCloseoutSession(options.worktreePath, {
+            policy: async () => workspacePolicyFiles(options.worktreePath),
+          });
+          const listed = JSON.parse(await session.report()) as { pending: string[] };
+          if (complete) for (const id of listed.pending) await session.run(id);
+          else if (!unavailable) await session.run(listed.pending[0]!);
+          return {
+            role: "implementer",
+            stopReason: "end_turn",
+            timedOut: false,
+            cancelled: false,
+            authRequired: false,
+            agentExited: true,
+            closeoutReport:
+              unavailable && !complete
+                ? JSON.stringify({
+                    required: [],
+                    pending: [],
+                    blocked: "origin/main is unavailable",
+                  })
+                : await session.report({ probes: true }),
+          };
+        },
+        db,
+      );
+      const launch: AgentLaunch = (input) => {
+        const scriptPath = path.join(root, `script-${crypto.randomUUID()}.json`);
+        writeFileSync(
+          scriptPath,
+          JSON.stringify({
+            steps: [
+              {
+                type: "fs_write",
+                path: path.join(runnerCheckout(pawsRoot, input.itemId), "feature.txt"),
+                content: "new\n",
+              },
+              { type: "end", stopReason: "end_turn" },
+            ],
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+      };
+      const github = createFakeGitHub();
+      const orchestrator = attachOrchestrator({
+        store: db,
+        admission: workspaceAdmission(db),
+        jobs,
+        outbox,
+        clock,
+        pawsRoot,
+        home,
+        tracker,
+        publicUrl: "https://paws.example",
+        remoteCloseoutRetry: { attempts: 3, delayMs: 0 },
+        repositories: [{ ...repository, remoteUrl: bare }],
+        githubForRepository: () => ({
+          appId: "1",
+          installationId: "2",
+          privateKeyPem: privateKey as string,
+          client: githubClient(bare, github),
+        }),
+        launch,
+        remoteExecution: { agentForItem: () => runner, agentForSession: () => runAgent },
+      });
+      try {
+        await orchestrator.onLinearEvent(created());
+        const turn = jobs.tick();
+        await attachRunnerLease(db);
+        await turn;
+        for (let round = 0; round < 20; round++) {
+          const claimed = await outbox.tick();
+          await outbox.idle();
+          if (claimed.length === 0) break;
+        }
+        const item = (await listWorkItems(db))[0]!;
+        expect(checksRuns).toBe(2);
+        expect((await getWorkItem(db, item.id))?.state).toBe(
+          recover ? "merge_queue" : "awaiting_input",
+        );
+        expect(Boolean(await findOpenQuestion(db, "ses_1"))).toBe(!recover);
+        if (!recover)
+          expect(tracker.questions.at(-1)?.body).toContain(
+            unavailable ? "the policy was unavailable" : "no result for test (it never started)",
+          );
+      } finally {
+        await orchestrator.shutdown();
+        await close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 90_000);
+
 test("idle checks resume once at fifteen minutes and a twenty-minute command keeps running", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-remote-steps-"));
   const bare = await originWithChecks(root);
