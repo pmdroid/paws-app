@@ -3,6 +3,7 @@ import { z } from "zod";
 /** The coding agents the runner installer installs into `/opt/paws-runner/agents/<agent>`. */
 export const RUNNER_CODING_AGENTS = ["claude", "codex", "grok", "opencode"] as const;
 export type RunnerCodingAgent = (typeof RUNNER_CODING_AGENTS)[number];
+export const CENTRAL_CREDENTIAL_AGENTS: readonly string[] = ["claude", "codex"];
 
 const agent = z.enum(RUNNER_CODING_AGENTS);
 /** An exact npm version, the same rule as `EXACT_VERSION` in `deploy/linux/release.py`. */

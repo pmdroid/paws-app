@@ -53,6 +53,23 @@ async function setup(connect: () => Promise<PgliteTestDb>) {
   return { db, secrets, first: (await account("First")).id, second: (await account("Second")).id };
 }
 
+const signIn = (db: Db, accountId: string, ciphertext = "sealed") =>
+  seed(db, (q) =>
+    q.orm
+      .insert(q.t.agentAccountCredential)
+      .values({ accountId, agent: "claude", ciphertext, version: 1, updatedAt: NOW }),
+  );
+
+const place = (db: Db, runId: string) =>
+  leaseCentralAccount(db, {
+    workspaceId: "acme",
+    agent: "claude",
+    runnerId: "R1",
+    runId,
+    until: NOW,
+    now: NOW,
+  });
+
 const lease = (db: Db, accountId: string, runnerId: string, runId: string, now = NOW) =>
   db.transaction((q) =>
     takeAgentAccountLeaseSteps(q, { accountId, runnerId, runId, until: now, now }),
@@ -93,15 +110,8 @@ describePglite((connect) => {
 
   test("placement leases the next free account and waits when all are leased or paused", async () => {
     const { db, first, second } = await setup(connect);
-    const place = (runId: string) =>
-      leaseCentralAccount(db, {
-        workspaceId: "acme",
-        agent: "claude",
-        runnerId: "R1",
-        runId,
-        until: NOW,
-        now: NOW,
-      });
+    await signIn(db, first);
+    await signIn(db, second);
     await db.run((q) =>
       recordAgentAccountUsageSteps(q, {
         accountId: first,
@@ -110,8 +120,8 @@ describePglite((connect) => {
         observedAt: NOW,
       }),
     );
-    expect(await place("run-1")).toEqual({ accountId: second, reason: null });
-    await expect(place("run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
+    expect(await place(db, "run-1")).toEqual({ accountId: second, reason: null });
+    await expect(place(db, "run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
 
     await db.run((q) =>
       recordAgentAccountUsageSteps(q, {
@@ -121,8 +131,8 @@ describePglite((connect) => {
         observedAt: NOW + 1,
       }),
     );
-    expect(await place("run-2")).toEqual({ accountId: first, reason: null });
-    await expect(place("run-3")).rejects.toBeInstanceOf(RunnerCapacityWait);
+    expect(await place(db, "run-2")).toEqual({ accountId: first, reason: null });
+    await expect(place(db, "run-3")).rejects.toBeInstanceOf(RunnerCapacityWait);
 
     for (const accountId of [first, second])
       await db.run((q) =>
@@ -133,7 +143,7 @@ describePglite((connect) => {
           observedAt: NOW + 2,
         }),
       );
-    const paused = await place("run-3").catch((error: unknown) => error);
+    const paused = await place(db, "run-3").catch((error: unknown) => error);
     expect(paused).toBeInstanceOf(UsageLimitPause);
     expect((paused as UsageLimitPause).resetsAt).toBe(NOW + 120_000);
 
@@ -143,6 +153,15 @@ describePglite((connect) => {
     await db.run((q) =>
       releaseAgentAccountLeaseSteps(q, { accountId: second, runnerId: "R1", runId: "run-1" }),
     );
-    expect(await place("run-3")).toEqual({ accountId: second, reason: "extra_usage" });
+    expect(await place(db, "run-3")).toEqual({ accountId: second, reason: "extra_usage" });
+  });
+
+  test("placement skips a Claude account with no stored credential or an empty one", async () => {
+    const { db, first, second } = await setup(connect);
+    expect(await place(db, "run-0")).toBeNull();
+    await signIn(db, first, "");
+    await signIn(db, second);
+    expect(await place(db, "run-1")).toEqual({ accountId: second, reason: null });
+    await expect(place(db, "run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
   });
 });

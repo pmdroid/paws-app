@@ -13,6 +13,7 @@ import {
 } from "../db";
 import {
   ACCESS_CREDENTIAL_RUNNER_VERSION,
+  CENTRAL_CREDENTIAL_AGENTS,
   runnerReleaseAtLeast,
   type RunnerHelperResult,
   type RunnerResult,
@@ -129,6 +130,12 @@ export function* bindingReadinessSteps(
   if (binding.enabled !== 1) return unavailable("disabled");
   if ((binding.lastSeenAt ?? 0) <= input.now - RUNNER_ONLINE_MS) return unavailable("offline");
   if (binding.legacy === 1 && binding.authExpired === 1) return unavailable("auth-required");
+  if (
+    binding.legacy === 0 &&
+    CENTRAL_CREDENTIAL_AGENTS.includes(binding.agent) &&
+    !binding.credential
+  )
+    return unavailable("auth-required");
   const rows = yield* bindingAccountHealthSteps(q, input.bindingId, input.model);
   const blocked = yield* accountHealthBlockSteps(
     q,

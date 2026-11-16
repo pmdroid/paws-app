@@ -137,6 +137,7 @@ export {
 export {
   RUNNER_CODING_AGENTS,
   RunnerAgentTargetSchema,
+  CENTRAL_CREDENTIAL_AGENTS,
   RunnerAgentTargetsSchema,
   RunnerAgentVersionSchema,
   RunnerInstalledAgentSchema,
