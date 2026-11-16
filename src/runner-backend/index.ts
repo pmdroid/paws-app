@@ -126,7 +126,7 @@ import {
 } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
-import { fastForwardToBranchTip } from "./candidate";
+import { CandidateMismatch, fastForwardToBranchTip, restartCandidateFrom } from "./candidate";
 import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
@@ -171,6 +171,7 @@ import {
   RunnerSetupRequired,
   RunnerRepositoryRefused,
   RunnerSlotsBusyError,
+  SavedWorkRewritten,
   WORKSPACE_HOOK_LIMIT,
   systemClock,
   type WorkspaceHook,
@@ -1151,6 +1152,35 @@ export function createRemoteAgentRunner(options: {
                 scoped.repository,
               );
             const { mirror, ref } = itemCandidate(scoped.repository);
+            const saved = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint;
+            if (saved?.restartFrom && scoped.item.branchName) {
+              const { restartFrom: from, checkpointMain: _, lostCommits: __, ...rest } = saved;
+              await saveCheckpoint(store, itemId, rest);
+              const start = await restartCandidateFrom({
+                mirror,
+                ref,
+                branch: scoped.item.branchName,
+                remoteUrl: scoped.repository.remoteUrl,
+                from,
+                networkGit,
+                signal,
+              }).catch((error: unknown) => {
+                if (error instanceof CandidateMismatch)
+                  throw new SavedWorkRewritten(
+                    scoped.item.branchName!,
+                    from === "main" ? (saved.wipCommit ?? error.tip) : from.tip,
+                    error.tip,
+                  );
+                throw error;
+              });
+              await saveCheckpoint(store, itemId, {
+                ...rest,
+                phase: "running",
+                baseSha: from === "main" ? start : (saved.baseSha ?? start),
+                wipCommit: start,
+              });
+              return;
+            }
             if (scoped.item.branchName)
               await fastForwardToBranchTip({
                 mirror,
@@ -1218,6 +1248,8 @@ export function createRemoteAgentRunner(options: {
                 signal,
               });
             } catch (error) {
+              if (error instanceof CandidateMismatch && scoped.item.branchName)
+                throw new SavedWorkRewritten(scoped.item.branchName, wip, error.tip);
               throw new Error(
                 `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${scoped.item.branchName}: ${error instanceof Error ? error.message : String(error)}`,
                 { cause: error },
@@ -2926,7 +2958,7 @@ export function createConversationTurns(options: {
   return conversationTurns({ ...options, holder: sessionHolderSteps });
 }
 
-export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { fastForwardToBranchTip, fetchRunnerCandidate, restartCandidateFrom } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";
 export {
   ensureStartOnRemote,

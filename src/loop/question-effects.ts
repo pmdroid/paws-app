@@ -53,7 +53,7 @@ import {
   planEditHandoff,
   planOptions,
 } from "./plan-proposal";
-import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
+import { RETRY_CLOSEOUT, retriesCloseout, rewrittenRestart } from "./closeout-recovery";
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
@@ -184,6 +184,13 @@ export function questionEffects(
       yield* retryCloseoutSteps(q, question, { now: input.now });
       return;
     }
+    const restartFrom = rewrittenRestart(recovery.summary, question.answer);
+    const item = restartFrom ? yield* getWorkItemSteps(q, question.itemId) : null;
+    if (restartFrom && item)
+      yield* saveCheckpointSteps(q, item.id, {
+        ...(item.checkpoint ?? { phase: "running" }),
+        restartFrom,
+      });
     yield* consumeTurn(q, question);
     if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
     yield* restartWithAnswers(

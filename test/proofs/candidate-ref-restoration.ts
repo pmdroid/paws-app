@@ -3,11 +3,12 @@ import type { Proof } from "./harness";
 export default {
   covers: [
     "src/loop/orchestrator.ts",
+    "src/runner-backend/candidate.ts",
     "test/candidate-head-replica.test.ts",
     "test/local/runner-orchestration.ts",
   ],
   summary:
-    "After approval on another instance, missing and stale mirrored candidate refs are restored from the recorded SHA before verification and publication, and the recorded candidate merges.",
+    "After approval on another instance, missing and stale mirrored candidate refs are restored from the recorded SHA before verification and publication, and the recorded candidate merges. A rewritten work branch asks how to continue and restores the chosen tree.",
   agent: () => [],
   async run(proof) {
     const child = Bun.spawn(
@@ -17,6 +18,7 @@ export default {
         "test/candidate-head-replica.test.ts",
         "test/runner-orchestration.test.ts",
         "test/merge-dependency-yield.test.ts",
+        "test/rewritten-branch.test.ts",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );

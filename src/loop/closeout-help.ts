@@ -17,6 +17,7 @@ import {
   RESTART_IMPLEMENTATION,
   RETRY_CLOSEOUT,
   recoveryQuestion,
+  rewrittenOptions,
 } from "./closeout-recovery";
 import { askWithLinkSteps, linkAskAvailable } from "./link-ask";
 import type { MainPolicyError } from "./policy-outage";
@@ -121,11 +122,13 @@ export async function askCloseoutHelp(
           {
             now: input.now,
             reason: input.reason ?? "closeout_help",
-            ...(retry
-              ? { options: [RETRY_CLOSEOUT] }
-              : fresh
-                ? { options: [RESTART_IMPLEMENTATION] }
-                : {}),
+            ...(rewrittenOptions(help.summary)
+              ? { options: rewrittenOptions(help.summary)! }
+              : retry
+                ? { options: [RETRY_CLOSEOUT] }
+                : fresh
+                  ? { options: [RESTART_IMPLEMENTATION] }
+                  : {}),
           },
         )).question;
     yield* saveCloseoutRecoverySteps(q, { ...help, questionId: question.id });

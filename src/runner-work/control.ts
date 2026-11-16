@@ -48,6 +48,7 @@ import {
   runnerAgentTargetsSteps,
   runnerCancelPendingSteps,
   runnerCheckpointPendingSteps,
+  branchHeldByOtherItemSteps,
   runnerCommandAcknowledgedBySteps,
   runnerCommandAuthorityUntilSteps,
   runnerCommandEnvelopeSteps,
@@ -192,7 +193,12 @@ export function createRunnerWork(options: {
     // A run Paws stops for a cap or a restart publishes its WIP commit first: until that
     // checkpoint request expires, its runner may still send the commit and push it.
     const checkpointing =
-      item?.currentRunId === runId && (yield* runnerCheckpointPendingSteps(q, runId, now()));
+      item?.currentRunId === runId &&
+      (yield* runnerCheckpointPendingSteps(q, runId, now())) &&
+      !(
+        (item.cancelRequested || item.state === "cancelled") &&
+        (yield* branchHeldByOtherItemSteps(q, item.branchName, item.id))
+      );
     if (
       !item ||
       item.currentRunId !== runId ||
