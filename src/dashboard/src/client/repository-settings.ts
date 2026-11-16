@@ -1,7 +1,6 @@
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
-import { settingsAreEditable } from "./settings-pages";
 
 type Access = {
   agentRead: boolean;
@@ -16,7 +15,6 @@ export function mountRepositorySettings(engine: string | null): void {
   if (!root || root.dataset.mounted) return;
   root.dataset.mounted = "true";
   const linear = root.id === "linear-settings";
-  const admin = settingsAreEditable();
   let access: Access = { agentRead: true, mirrors: false };
   let policies: Policies = { projects: {} };
   let agents: string[] = [];
@@ -45,23 +43,22 @@ export function mountRepositorySettings(engine: string | null): void {
   const paint = () => {
     if (!root.isConnected) return;
     const controls = linear
-      ? `<section class="settings-section"><div class="settings-label"><h2>Comment agents</h2><p class="sub">Linear app user IDs, one per line.</p></div><div class="settings-field">${admin ? `<label for="linear-comment-agents">Agents</label><textarea id="linear-comment-agents" name="agents" rows="6">${esc(agents.join("\n"))}</textarea>` : `<pre>${esc(agents.join("\n") || "No comment agents configured.")}</pre>`}</div></section>`
+      ? `<section class="settings-section"><div class="settings-label"><h2>Comment agents</h2><p class="sub">Linear app user IDs, one per line.</p></div><div class="settings-field"><label for="linear-comment-agents">Agents</label><textarea id="linear-comment-agents" name="agents" rows="6">${esc(agents.join("\n"))}</textarea></div></section>`
       : `<section class="settings-section"><div class="settings-label"><h2>GitHub access</h2></div><div class="col">${[
           ["agentRead", "Agents may read the repository"],
           ["mirrors", "Use local mirrors"],
         ]
-          .map(([key, label]) =>
-            admin
-              ? `<label class="settings-inherit"><input type="checkbox" name="${key}" ${access[key as "agentRead" | "mirrors"] ? "checked" : ""}>${label}</label>`
-              : `<p>${label}: ${access[key as "agentRead" | "mirrors"] ? "On" : "Off"}</p>`,
+          .map(
+            ([key, label]) =>
+              `<label class="settings-inherit"><input type="checkbox" name="${key}" ${access[key as "agentRead" | "mirrors"] ? "checked" : ""}>${label}</label>`,
           )
           .join(
             "",
-          )}${access.agentReadOff?.length ? `<p class="sub">Legacy read exclusions: ${access.agentReadOff.map(esc).join(", ")}</p>` : ""}${access.restartRequired ? '<p role="status">Restart Paws for Closeout policy reads to use the new mirrors setting.</p>' : ""}${admin ? '<button class="btn primary" type="submit" name="section" value="access">Save GitHub access</button>' : ""}</div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Closeout policy roots</h2><p class="sub">Absolute directories on the Paws host, per repository.</p></div><div class="col">${rows.map(([repo, path], i) => (admin ? `<div class="settings-project"><div class="settings-field"><label for="policy-repo-${i}">Repository</label><input id="policy-repo-${i}" name="repo-${i}" value="${esc(repo)}" placeholder="owner/repo"></div><div class="settings-field"><label for="policy-root-${i}">Policy root</label><input id="policy-root-${i}" name="root-${i}" value="${esc(path)}" placeholder="/path/to/policy"></div><button class="btn" type="button" data-remove="${i}">Remove repository</button></div>` : `<p><b>${esc(repo)}</b>: ${esc(path)}</p>`)).join("")}${!rows.length ? '<p class="sub">No local policy roots configured.</p>' : ""}${admin ? '<button class="btn" type="button" data-add>Add repository</button><button class="btn primary" type="submit" name="section" value="policies">Save policy roots</button>' : ""}</div></section>`;
+          )}${access.agentReadOff?.length ? `<p class="sub">Legacy read exclusions: ${access.agentReadOff.map(esc).join(", ")}</p>` : ""}${access.restartRequired ? '<p role="status">Restart Paws for Closeout policy reads to use the new mirrors setting.</p>' : ""}<button class="btn primary" type="submit" name="section" value="access">Save GitHub access</button></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Closeout policy roots</h2><p class="sub">Absolute directories on the Paws host, per repository.</p></div><div class="col">${rows.map(([repo, path], i) => `<div class="settings-project"><div class="settings-field"><label for="policy-repo-${i}">Repository</label><input id="policy-repo-${i}" name="repo-${i}" value="${esc(repo)}" placeholder="owner/repo"></div><div class="settings-field"><label for="policy-root-${i}">Policy root</label><input id="policy-root-${i}" name="root-${i}" value="${esc(path)}" placeholder="/path/to/policy"></div><button class="btn" type="button" data-remove="${i}">Remove repository</button></div>`).join("")}${!rows.length ? '<p class="sub">No local policy roots configured.</p>' : ""}<button class="btn" type="button" data-add>Add repository</button><button class="btn primary" type="submit" name="section" value="policies">Save policy roots</button></div></section>`;
     renderMarkup(
       root,
-      `<form><fieldset class="settings-fields" ${busy ? "disabled" : ""}>${loaded ? controls : ""}${loaded && linear && admin ? '<button class="btn primary" type="submit">Save settings</button>' : ""}</fieldset>${busy ? '<p role="status">Loading settings…</p>' : ""}${error ? `<p class="err" role="alert">${esc(error)}</p>` : message ? `<p role="status">${esc(message)}</p>` : ""}</form>`,
+      `<form><fieldset class="settings-fields" ${busy ? "disabled" : ""}>${loaded ? controls : ""}${loaded && linear ? '<button class="btn primary" type="submit">Save settings</button>' : ""}</fieldset>${busy ? '<p role="status">Loading settings…</p>' : ""}${error ? `<p class="err" role="alert">${esc(error)}</p>` : message ? `<p role="status">${esc(message)}</p>` : ""}</form>`,
     );
   };
   const draft = () => {
@@ -81,7 +78,7 @@ export function mountRepositorySettings(engine: string | null): void {
     }
   };
   root.addEventListener("click", (event) => {
-    if (!admin || busy) return;
+    if (busy) return;
     const button = (event.target as Element).closest<HTMLButtonElement>(
       "[data-add], [data-remove]",
     );
@@ -93,7 +90,7 @@ export function mountRepositorySettings(engine: string | null): void {
   });
   root.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!admin || busy || !loaded) return;
+    if (busy || !loaded) return;
     draft();
     const section = (event as SubmitEvent).submitter?.getAttribute("value");
     if (section === "access" && access.agentReadOff?.length) {

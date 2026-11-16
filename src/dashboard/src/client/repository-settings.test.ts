@@ -67,10 +67,9 @@ afterEach(() => {
   for (const key of globals) (globalThis as Record<string, unknown>)[key] = saved.get(key);
   void window.happyDOM.abort();
 });
-async function mount(page: "repositories" | "linear", admin = true) {
+async function mount(page: "repositories" | "linear") {
   setSettingsAdmin(true);
   window.document.body.innerHTML = renderSettingsPage(page);
-  setSettingsAdmin(admin);
   mountRepositorySettings("http://localhost");
   await settleReactWork();
 }
@@ -134,16 +133,6 @@ for (const page of ["repositories", "linear"] as const) {
       "Server says this value is invalid",
     );
     expect(window.document.querySelector("textarea, input")?.getAttribute("name")).toBeTruthy();
-  });
-  test(`${page} is read-only for members`, async () => {
-    await mount(page, false);
-    expect(window.document.querySelector("input, textarea, select, button")).toBeNull();
-    expect(window.document.body.textContent).toContain(
-      page === "repositories" ? "/policy" : "app_1",
-    );
-    submit();
-    await settleReactWork();
-    expect(calls.every((call) => call.method === "GET")).toBe(true);
   });
 }
 test("Linear comment agents save and clear through their route", async () => {

@@ -151,18 +151,6 @@ describe("skills section", () => {
     for (const button of classNames(html, "btn")) expect(button).toContain("whitespace-normal");
   });
 
-  test("members see why they cannot change skills", () => {
-    const denied = renderSkillSettings({
-      data: null,
-      busy: null,
-      error: null,
-      notice: null,
-      denied: true,
-    });
-    expect(denied).toContain("Only workspace admins can change skills.");
-    expect(denied).not.toContain("skill-add-form");
-  });
-
   test("errors and progress are announced", () => {
     const failed = renderSkillSettings({
       data: listing,
