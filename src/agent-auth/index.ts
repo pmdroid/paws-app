@@ -184,16 +184,16 @@ export async function checkClaudeToken(
   token: string,
   request: (url: string, init?: RequestInit) => Promise<Response> = fetch,
 ) {
-  const response = await request("https://api.anthropic.com/api/oauth/usage", {
+  const response = await request("https://api.anthropic.com/v1/models", {
     headers: {
       Authorization: `Bearer ${token}`,
       "anthropic-beta": "oauth-2025-04-20",
-      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
     },
     redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
   if (response.status === 401) return false;
-  if (response.ok || response.status === 403 || response.status === 429) return true;
+  if (response.ok) return true;
   throw new Error(`Claude token check failed with status ${response.status}`);
 }
