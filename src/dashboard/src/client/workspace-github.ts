@@ -1,7 +1,7 @@
 import { initializeGitHubAppSetup } from "./github-app-setup";
 import { journalCaught } from "../journal";
 import { routeHref } from "./route";
-import { settingsPageShown, loadWhenShown } from "./settings-loads";
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { initializeGitHubRepositorySetup } from "./github-repository-setup";
@@ -28,10 +28,9 @@ export function initializeWorkspaceGitHub(
   csrfToken: string,
   canEditRepositories = false,
 ): void {
-  void initializeGitHubAppSetup(root, csrfToken, () => {
-    initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories);
-    settingsPageShown("integrations");
-  });
+  void initializeGitHubAppSetup(root, csrfToken, () =>
+    initializeConfiguredWorkspaceGitHub(root, csrfToken, canEditRepositories),
+  );
 }
 
 function initializeConfiguredWorkspaceGitHub(
