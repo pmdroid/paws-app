@@ -1,5 +1,6 @@
 import {
   AgentAccountError,
+  agentAccountSignedInSteps,
   auditWorkspaceAccessSteps,
   bindingRunningCountSteps,
   cancelPendingRunnerLoginsSteps,
@@ -16,6 +17,7 @@ import {
   pendingRunnerLoginCountSteps,
   pendingRunnerLoginIdSteps,
   recordAccountObservationSteps,
+  removeAgentBindingSteps,
   runnerAccountUnsupportedSteps,
   runnerAgentOpenWorkCountSteps,
   runnerAgentPolicyStateSteps,
@@ -196,6 +198,7 @@ export function createRunnerLogin(options: {
           bindings.push({
             ...binding,
             enabled: binding.enabled === 1,
+            signedIn: yield* agentAccountSignedInSteps(q, binding.accountId),
             held:
               (yield* runnerAccountUnsupportedSteps(
                 q,
@@ -316,6 +319,15 @@ export function createRunnerLogin(options: {
           updatedAt: now(),
         });
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
+        if (update.state === "failed" && row.bindingId !== null) {
+          const binding = yield* getAgentBindingSteps(q, row.workspaceId, row.bindingId);
+          if (!binding.legacy && !(yield* agentAccountSignedInSteps(q, binding.accountId)))
+            yield* removeAgentBindingSteps(q, {
+              workspaceId: row.workspaceId,
+              bindingId: binding.id,
+              now: now(),
+            });
+        }
         if (update.state === "connected" && row.bindingId === null) {
           yield* setRunnerAgentSignedInSteps(q, runnerId, row.agent, true, now());
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, now());
