@@ -17,9 +17,10 @@ export async function restartCandidateFrom(input: {
   branch: string;
   remoteUrl: string;
   from: { tip: string } | "main";
+  base?: string;
   networkGit: (args: string[]) => Promise<string>;
   signal: AbortSignal;
-}): Promise<string> {
+}): Promise<{ start: string; base: string }> {
   input.signal.throwIfAborted();
   if (!isAbsolute(input.mirror) || !CANDIDATE_REF.test(input.ref))
     throw new Error("Runner candidate restart is invalid.");
@@ -27,36 +28,33 @@ export async function restartCandidateFrom(input: {
   const run = (args: string[]) =>
     git(["--git-dir", input.mirror, ...args], { signal: input.signal }).then((out) => out.trim());
   await run(["check-ref-format", `refs/heads/${input.branch}`]);
+  const net = (flags: string[], refspec: string) =>
+    input.networkGit(["-C", input.mirror, ...flags, "--", input.remoteUrl, refspec]);
   try {
-    await input.networkGit([
-      "-C",
-      input.mirror,
-      "fetch",
-      "--no-tags",
-      "--no-write-fetch-head",
-      "--",
-      input.remoteUrl,
+    await net(
+      ["fetch", "--no-tags", "--no-write-fetch-head"],
       `refs/heads/${input.branch}:${scratch}`,
-    ]);
+    );
     const tip = await run(["rev-parse", "--verify", `${scratch}^{commit}`]);
+    const main = await run(["rev-parse", "--verify", "refs/paws/upstream-main^{commit}"]);
     if (input.from !== "main") {
       if (tip !== input.from.tip) throw new CandidateMismatch(tip);
+      const base = await assertDescendsFromAny(run, input.base ? [input.base] : [], tip).then(
+        () => input.base!,
+        () => run(["merge-base", tip, main]),
+      );
       await run(["update-ref", input.ref, tip]);
-      return tip;
+      return { start: tip, base };
     }
-    const main = await run(["rev-parse", "--verify", "refs/paws/upstream-main^{commit}"]);
     if (tip !== main)
-      await input.networkGit([
-        "-C",
-        input.mirror,
-        "push",
-        `--force-with-lease=refs/heads/${input.branch}:${tip}`,
-        "--",
-        input.remoteUrl,
+      await net(
+        ["push", `--force-with-lease=refs/heads/${input.branch}:${tip}`],
         `${main}:refs/heads/${input.branch}`,
-      ]);
+      ).catch((error: unknown) => {
+        throw /stale info|rejected/.test(String(error)) ? new CandidateMismatch(tip) : error;
+      });
     await run(["update-ref", input.ref, main]);
-    return main;
+    return { start: main, base: main };
   } finally {
     await git(["--git-dir", input.mirror, "update-ref", "-d", scratch], {
       signal: AbortSignal.timeout(5_000),

@@ -101,9 +101,11 @@ export function rewrittenOptions(summary: string): string[] | undefined {
 }
 
 export function rewrittenRestart(summary: string, answer: string | null) {
+  const [cont, main] = rewrittenOptions(summary) ?? [];
+  const choice = (answer ?? "").trim().toLowerCase();
   const tip = REWRITTEN.exec(summary)?.[1];
-  const choice = /^\s*(start over|continue)\b/i.exec(answer ?? "")?.[1]?.toLowerCase();
-  return !tip || !choice ? undefined : choice === "continue" ? { tip } : ("main" as const);
+  if (tip && choice === cont?.toLowerCase()) return { tip };
+  return choice === main?.toLowerCase() ? ("main" as const) : undefined;
 }
 
 export function recoveryQuestion(

@@ -1153,30 +1153,27 @@ export function createRemoteAgentRunner(options: {
               );
             const { mirror, ref } = itemCandidate(scoped.repository);
             const saved = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint;
-            if (saved?.restartFrom && scoped.item.branchName) {
+            const branch = scoped.item.branchName;
+            if (saved?.restartFrom && branch) {
               const { restartFrom: from, checkpointMain: _, lostCommits: __, ...rest } = saved;
-              await saveCheckpoint(store, itemId, rest);
-              const start = await restartCandidateFrom({
+              const { start, base } = await restartCandidateFrom({
                 mirror,
                 ref,
-                branch: scoped.item.branchName,
+                branch,
                 remoteUrl: scoped.repository.remoteUrl,
                 from,
+                ...(saved.baseSha ? { base: saved.baseSha } : {}),
                 networkGit,
                 signal,
-              }).catch((error: unknown) => {
-                if (error instanceof CandidateMismatch)
-                  throw new SavedWorkRewritten(
-                    scoped.item.branchName!,
-                    from === "main" ? (saved.wipCommit ?? error.tip) : from.tip,
-                    error.tip,
-                  );
-                throw error;
+              }).catch(async (error: unknown) => {
+                if (!(error instanceof CandidateMismatch)) throw error;
+                await saveCheckpoint(store, itemId, rest);
+                throw new SavedWorkRewritten(branch, saved.wipCommit ?? error.tip, error.tip);
               });
               await saveCheckpoint(store, itemId, {
                 ...rest,
                 phase: "running",
-                baseSha: from === "main" ? start : (saved.baseSha ?? start),
+                baseSha: base,
                 wipCommit: start,
               });
               return;

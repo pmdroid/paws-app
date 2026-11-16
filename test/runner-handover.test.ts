@@ -781,14 +781,11 @@ test("a cancelled item's run cannot save work in progress once a newer item hold
           commandId: command.id,
           generation,
         });
-        expect((await work.authorizeAsync({ runnerId, runId, generation, token })).branch).toBe(
-          "paws/eng-7",
-        );
+        const access = { runnerId, runId, generation, token };
+        expect((await work.authorizeAsync(access)).branch).toBe("paws/eng-7");
         await insertQueuedItem(db, { id: newer, now: Date.now(), sessionKey: `session-${newer}` });
         await branch(newer, "paws/eng-7");
-        await expect(work.authorizeAsync({ runnerId, runId, generation, token })).rejects.toThrow(
-          "Run is no longer active.",
-        );
+        await expect(work.authorizeAsync(access)).rejects.toThrow("Run is no longer active.");
         const saved = { type: "checkpoint", reason: "stop", sha: "c".repeat(40) } as const;
         await expect(context.events(command, [saved])).rejects.toThrow("no longer active");
         await branch(newer, "paws/eng-7-done");

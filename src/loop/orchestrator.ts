@@ -636,8 +636,12 @@ import {
   publicToolText,
   type ActivityOrigin,
 } from "./activity";
-import { NO_SESSION_MODEL, PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
-import { rewrittenSummary } from "./closeout-recovery";
+import {
+  NO_SESSION_MODEL,
+  PREPARATION_FAILED,
+  recoveryOptions,
+  rewrittenSummary,
+} from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
@@ -4215,6 +4219,7 @@ export class Orchestrator {
         !current.cancelRequested
       ) {
         const message = error instanceof Error ? error.message : String(error);
+        const rewritten = savedWorkRewrittenIn(error);
         if (
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(message)) &&
           (current.state === "running" || current.state === "verifying")
@@ -4229,9 +4234,9 @@ export class Orchestrator {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
-        } else if (savedWorkRewrittenIn(error)) {
+        } else if (rewritten) {
           await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
-          await this.askPreparationHelp(current, rewrittenSummary(savedWorkRewrittenIn(error)!));
+          await this.askPreparationHelp(current, rewrittenSummary(rewritten));
         } else await this.fail(current, "run_error", message, error);
       }
 

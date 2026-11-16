@@ -88,6 +88,7 @@ export async function askCloseoutHelp(
     const retryNote = `Choose ${RETRY_CLOSEOUT}, or reply retry, to run Closeout again on this head without the agent.`;
     // Without a session model there is nothing for Closeout to retry: only a fresh implementation helps.
     const fresh = help.summary.startsWith(NO_SESSION_MODEL);
+    const rewritten = rewrittenOptions(help.summary);
     const freshNote = `Choose ${RESTART_IMPLEMENTATION}, or reply with guidance, to start a fresh implementation turn.`;
     const link =
       linkAskAvailable(input.publicUrl) &&
@@ -122,8 +123,8 @@ export async function askCloseoutHelp(
           {
             now: input.now,
             reason: input.reason ?? "closeout_help",
-            ...(rewrittenOptions(help.summary)
-              ? { options: rewrittenOptions(help.summary)! }
+            ...(rewritten
+              ? { options: rewritten }
               : retry
                 ? { options: [RETRY_CLOSEOUT] }
                 : fresh

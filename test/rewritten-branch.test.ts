@@ -15,6 +15,7 @@ import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const tip = "b".repeat(40);
+const issue = { linearIssueId: "issue", identifier: "ENG-7", title: "Ok", description: null };
 
 for (const [answer, restartFrom] of [
   [`Continue from ${tip.slice(0, 7)}`, { tip }],
@@ -23,15 +24,7 @@ for (const [answer, restartFrom] of [
   test(`a rewritten work branch asks instead of failing, and ${answer} restarts from it`, async () => {
     const layout = await repoLayout("paws-rewritten-");
     const { db, close } = await tempStore();
-    const tracker = createFakeTracker([
-      {
-        linearIssueId: "issue",
-        identifier: "ENG-7",
-        title: "Ok",
-        description: null,
-        subIssues: [],
-      },
-    ]);
+    const tracker = createFakeTracker([{ ...issue, subIssues: [] }]);
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     let restarted: unknown;
@@ -71,13 +64,8 @@ for (const [answer, restartFrom] of [
           input.purpose === "review"
             ? emptyReview().steps
             : [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }];
-        writeFileSync(
-          script,
-          JSON.stringify({
-            model: `test-${input.role === "reviewer" ? "codex" : "claude"}-model`,
-            steps,
-          }),
-        );
+        const model = `test-${input.role === "reviewer" ? "codex" : "claude"}-model`;
+        writeFileSync(script, JSON.stringify({ model, steps }));
         return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
       },
     });
@@ -140,12 +128,14 @@ test("each answer restores the matching tree", async () => {
       signal: new AbortController().signal,
     };
     git("--git-dir", mirror, "update-ref", ref, main);
-    expect(await restartCandidateFrom({ ...input, from: { tip: rewritten } })).toBe(rewritten);
+    const restart = (from: { tip: string } | "main") =>
+      restartCandidateFrom({ ...input, from, base: main });
+    expect(await restart({ tip: rewritten })).toEqual({ start: rewritten, base: main });
     expect(git("--git-dir", mirror, "ls-tree", "--name-only", ref)).toBe("a.txt\nc.txt");
-    await expect(restartCandidateFrom({ ...input, from: { tip: main } })).rejects.toThrow(
+    await expect(restart({ tip: main })).rejects.toThrow(
       "Fetched runner candidate does not match.",
     );
-    expect(await restartCandidateFrom({ ...input, from: "main" })).toBe(main);
+    expect(await restart("main")).toEqual({ start: main, base: main });
     expect(git("--git-dir", mirror, "ls-tree", "--name-only", ref)).toBe("a.txt");
     expect(git("--git-dir", github, "rev-parse", "refs/heads/paws/eng-7")).toBe(main);
   } finally {

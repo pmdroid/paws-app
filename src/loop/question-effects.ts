@@ -187,10 +187,7 @@ export function questionEffects(
     const restartFrom = rewrittenRestart(recovery.summary, question.answer);
     const item = restartFrom ? yield* getWorkItemSteps(q, question.itemId) : null;
     if (restartFrom && item)
-      yield* saveCheckpointSteps(q, item.id, {
-        ...(item.checkpoint ?? { phase: "running" }),
-        restartFrom,
-      });
+      yield* saveCheckpointSteps(q, item.id, { phase: "running", ...item.checkpoint, restartFrom });
     yield* consumeTurn(q, question);
     if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
     yield* restartWithAnswers(
