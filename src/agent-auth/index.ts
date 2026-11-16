@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createUsageReader, UsageAuthExpired } from "./usage";
 import {
   claimAgentAuthSteps,
   deviceAccountSteps,
@@ -181,25 +180,20 @@ export function createAgentAuth(options: {
 export { createAccountUsage } from "./account-usage";
 export { createUsageReader } from "./usage";
 
-export async function checkClaudeToken(token: string, reader = createUsageReader()) {
-  const blob = JSON.stringify([
-    {
-      path: ".claude/paws-oauth.json",
-      data: Buffer.from(
-        JSON.stringify({
-          kind: "oauth_token",
-          token,
-          createdAt: Date.now(),
-          expiresAt: Date.now() + 86_400_000,
-        }),
-      ).toString("base64"),
+export async function checkClaudeToken(
+  token: string,
+  request: (url: string, init?: RequestInit) => Promise<Response> = fetch,
+) {
+  const response = await request("https://api.anthropic.com/api/oauth/usage", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      "Content-Type": "application/json",
     },
-  ]);
-  try {
-    await reader("claude", blob);
-    return true;
-  } catch (error) {
-    if (error instanceof UsageAuthExpired) return false;
-    throw error;
-  }
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 401) return false;
+  if (response.ok || response.status === 403) return true;
+  throw new Error(`Claude token check failed with status ${response.status}`);
 }
