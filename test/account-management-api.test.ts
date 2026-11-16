@@ -221,6 +221,7 @@ describePglite((connect) => {
           label: "Home",
           position: 1,
           extraUsage: false,
+          enabled: true,
           signingIn: false,
           credential: { refreshedAt: NOW - 60_000, runner: "R2" },
           usage: null,
@@ -232,6 +233,7 @@ describePglite((connect) => {
           label: "Work",
           position: 2,
           extraUsage: true,
+          enabled: true,
           signingIn: false,
           credential: null,
           usage: {
@@ -241,6 +243,10 @@ describePglite((connect) => {
           lease: null,
         },
       ]);
+      expect((await send("PUT", `/${work.id}/enabled`, { enabled: false })).status).toBe(200);
+      expect((await send("GET", "")).body.accounts[1]?.enabled).toBe(false);
+      expect((await send("PUT", `/${work.id}/enabled`, { enabled: true })).status).toBe(200);
+      expect((await send("GET", "")).body.accounts[1]?.enabled).toBe(true);
       expect((await send("DELETE", `/${home.id}/credential`)).status).toBe(200);
       expect((await send("GET", "")).body.accounts[0]?.credential).toBeNull();
       const candidates = () =>
@@ -278,8 +284,13 @@ describePglite((connect) => {
         ["PUT", `/${work.id}/extra-usage`, { extraUsage: false }],
         ["POST", `/${work.id}/sign-in`, undefined],
         ["DELETE", `/${work.id}/credential`, undefined],
+        ["PUT", `/${work.id}/enabled`, { enabled: false }],
+        ["DELETE", `/${work.id}`, undefined],
       ] as const)
         expect((await send(method, path, body, member)).status).toBe(403);
+      expect((await send("DELETE", `/${work.id}`)).status).toBe(200);
+      expect((await send("GET", "")).body.accounts.map((a) => a.id)).toEqual([home.id]);
+      expect(await candidates()).toEqual([home.id]);
     } finally {
       await handle.close();
     }

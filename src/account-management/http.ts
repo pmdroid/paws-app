@@ -8,7 +8,9 @@ import {
   centralSignInTargetSteps,
   createAgentAccountSteps,
   orderAgentAccountsSteps,
+  setAgentAccountEnabledSteps,
   setAgentAccountExtraUsageSteps,
+  removeAgentAccountSteps,
   signOutAgentAccountSteps,
   type Db,
 } from "../db";
@@ -23,7 +25,7 @@ import { type WorkspacePrincipal } from "../workspace";
 
 const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
-  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(extra-usage|sign-in|credential|device|token))?$/;
+  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?:\/(extra-usage|enabled|sign-in|credential|device|token))?)?$/;
 
 export const AGENT_ACCOUNTS_RETIRED = "This route was replaced by /api/runners/agent-accounts.";
 
@@ -31,6 +33,7 @@ const agent = z.enum(RUNNER_CODING_AGENTS);
 const Create = z.strictObject({ agent, label: z.string().trim().min(1).max(80) });
 const Order = z.strictObject({ agent, ids: z.array(z.string().min(1).max(128)).max(64) });
 const ExtraUsage = z.strictObject({ extraUsage: z.boolean() });
+const Enabled = z.strictObject({ enabled: z.boolean() });
 const PastedToken = z.strictObject({ token: z.string().trim().min(1).max(512) });
 const TOKEN_DAYS = 365;
 
@@ -144,6 +147,24 @@ export function createAccountManagement(
             extraUsage,
             now: now(),
           }),
+        );
+        return json({ ok: true });
+      }
+      if (action === "enabled" && method === "PUT") {
+        const { enabled } = Enabled.parse(await request.json());
+        await store.transaction((q) =>
+          setAgentAccountEnabledSteps(q, {
+            workspaceId,
+            accountId: accountId!,
+            enabled,
+            now: now(),
+          }),
+        );
+        return json({ ok: true });
+      }
+      if (accountId && !action && method === "DELETE") {
+        await store.transaction((q) =>
+          removeAgentAccountSteps(q, { workspaceId, accountId, now: now() }),
         );
         return json({ ok: true });
       }
