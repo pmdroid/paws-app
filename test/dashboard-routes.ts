@@ -40,6 +40,7 @@ export const SETTINGS_PAGE_IDS = [
   "repositories",
   "linear",
   "storage",
+  "member-vm",
   "limits",
   "brief",
   "integrations",

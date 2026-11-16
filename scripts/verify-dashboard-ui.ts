@@ -200,6 +200,8 @@ try {
       await route.fulfill({ json: vmSize });
     });
     await visit(admin, width, "runners-editable", "/dashboard/runners", "Runners");
+    await expect(admin.locator("[data-vm-size]")).toHaveCount(0);
+    await visit(admin, width, "member-vm", "/dashboard/settings/member-vm", "Member VMs");
     await admin.locator("#vm-size-cpu").fill("6");
     await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
     await expect(admin.locator("#content")).toContainText("Member VM size saved.");
@@ -207,7 +209,7 @@ try {
     await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
     await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
     await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
-    await admin.screenshot({ path: join(out, `runners-editable-${width}.png`), fullPage: true });
+    await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
 
     let merging = {
       default: { order: "queue", mainMoved: "overlap" },
