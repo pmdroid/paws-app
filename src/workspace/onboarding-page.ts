@@ -9,14 +9,14 @@ export type OnboardingVmStep = {
 
 /** The runner that will run the task, or why there is none yet. */
 export type OnboardingRunner =
-  /** An eligible runner. `sharedBy` names the project lead who shares it, when it is not the member's. */
-  | { state: "ready"; id: string; name: string; sharedBy?: string }
-  /** The member's own runner, or the lead's shared one when `sharedBy` is set, is not reachable. */
-  | { state: "offline" | "paused"; id?: string; name: string; sharedBy?: string }
+  /** The member's own eligible runner. */
+  | { state: "ready"; id: string; name: string }
+  /** The member's own runner is not reachable. */
+  | { state: "offline" | "paused"; id: string; name: string }
   | { state: "setting-up"; name: string; steps: OnboardingVmStep[] }
   | { state: "failed"; name: string; failure: string; steps: OnboardingVmStep[] }
-  /** Nothing is eligible. `reason` says why when Paws knows, such as an unshared lead runner. */
-  | { state: "needed"; reason?: string };
+  /** The member has no runner of their own. */
+  | { state: "needed" };
 
 export type OnboardingAgent = "connected" | "expired" | "waiting";
 
@@ -363,44 +363,25 @@ function runnerStep(input: OnboardingPageInput): Step {
         title,
         state: "done",
         label: "Ready",
-        detail:
-          runner.sharedBy === undefined
-            ? `${runner.name} will run this task.`
-            : `${runner.sharedBy}'s shared runner ${runner.name} will run this task.`,
+        detail: `${runner.name} will run this task.`,
       };
     case "offline":
     case "paused": {
-      if (runner.state === "paused" && runner.sharedBy === undefined)
+      const page = `${RUNNERS_PAGE}/${encodeURIComponent(runner.id)}`;
+      if (runner.state === "paused")
         return {
           title,
           state: "needed",
           label: "Ready (paused)",
           detail: `${runner.name} is paused. Turn it on so Paws can use your agent accounts.`,
-          actions: [
-            {
-              href: runner.id ? `${RUNNERS_PAGE}/${encodeURIComponent(runner.id)}` : RUNNERS_PAGE,
-              label: "Open Runners",
-            },
-          ],
+          actions: [{ href: page, label: "Open Runners" }],
         };
-      const which =
-        runner.sharedBy === undefined
-          ? runner.name
-          : `${runner.sharedBy}'s shared runner ${runner.name}`;
-      const verb = runner.state === "offline" ? "start" : "resume";
-      const fix =
-        runner.sharedBy === undefined
-          ? `${verb === "start" ? "Start" : "Resume"} it so Paws can use it`
-          : `Ask ${runner.sharedBy} to ${verb} it`;
       return {
         title,
         state: "needed",
-        label: runner.state === "offline" ? "Offline" : "Paused",
-        detail: `${which} is ${runner.state}. ${fix}, or set up a runner of your own.`,
-        actions: [
-          ...setupActions(input),
-          ...(runner.sharedBy === undefined ? [{ href: RUNNERS_PAGE, label: "Open Runners" }] : []),
-        ],
+        label: "Offline",
+        detail: `${runner.name} is offline. Start it so Paws can use it, or set up a runner of your own.`,
+        actions: [...setupActions(input), { href: RUNNERS_PAGE, label: "Open Runners" }],
       };
     }
     case "setting-up":
@@ -425,7 +406,7 @@ function runnerStep(input: OnboardingPageInput): Step {
         title,
         state: "needed",
         label: "Needed",
-        detail: `${runner.reason ?? "You have no runner Paws can use for this task."} ${setupHint(input)}`,
+        detail: `You need a runner of your own. ${setupHint(input)}`,
         actions: setupActions(input),
       };
   }
