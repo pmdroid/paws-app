@@ -145,7 +145,7 @@ export function createHostedGitHubConnect(options: {
       if (request.method === "GET")
         return reply({
           configured: configured(),
-          canManage: await permitted(),
+          canManage: true,
           webhookUrl: origin + "/webhooks/github",
           permissions: INSTALLATION_PERMISSIONS,
           events: GITHUB_APP_EVENTS,
@@ -244,7 +244,7 @@ export function createHostedGitHubConnect(options: {
         return Response.json(
           {
             status: "setup_required",
-            canManage: await administrator(),
+            canManage: true,
             requiresSignIn: !(await permitted()),
           },
           { headers: { "cache-control": "no-store" } },
@@ -263,7 +263,7 @@ export function createHostedGitHubConnect(options: {
         Response.json(
           {
             ...github,
-            canManage: await administrator(),
+            canManage: true,
             requiresSignIn: !(await permitted()),
             lastDelivery: await store.run(latestGitHubDeliverySteps),
           },
