@@ -727,12 +727,12 @@ describe("runner details", () => {
     expect(html).not.toContain("data-runner-signin");
   });
 
-  test("only the host owner signs in to the agents from the runner card", () => {
-    expect(runnerDetailMarkup(runner, view)).toContain(`data-runner-signin="${runner.id}"`);
-    for (const role of ["admin", "member"])
-      expect(runnerDetailMarkup(runner, { ...view, userId: "someone", role })).not.toContain(
-        "data-runner-signin",
-      );
+  test("the runner card has no agent sign-in controls, even for its owner", () => {
+    for (const role of ["admin", "member"]) {
+      const html = runnerDetailMarkup(runner, { ...view, role });
+      expect(html).not.toContain("data-runner-signin");
+      expect(html).not.toContain(">Sign in</button>");
+    }
   });
 
   describe("repositories", () => {
@@ -941,7 +941,7 @@ describe("simpler runner card", () => {
     expect(html).not.toContain("Agent sign-in and usage");
   });
 
-  test("Claude at 62% and Codex not signed in: a Sign in button only on the Codex row", () => {
+  test("Claude at 62% and Codex not signed in: usage and status, with no sign-in button", () => {
     const html = runnerDetailMarkup(
       {
         ...runner,
@@ -963,12 +963,8 @@ describe("simpler runner card", () => {
     const [claude, codex] = agentRows(html);
     expect(agentRows(html)).toHaveLength(2);
     expect(claude!.html).toContain(`5-hour 62% · resets ${clock(now + 3_600_000)} · weekly 3%<`);
-    expect(claude!.html).toContain(">Sign in again</button>");
-    expect(claude!.html).not.toContain(">Sign in</button>");
     expect(codex!.html).toContain('<span class="tag bad">Signed out</span>');
-    expect(codex!.html).toContain(
-      `data-runner-signin="${runner.id}" data-signin-agent="codex" data-focus="signin:${runner.id}:codex" aria-label="Sign in to Codex on build-box">Sign in</button>`,
-    );
+    for (const row of [claude!, codex!]) expect(row.html).not.toContain("<button");
   });
 
   test("a spent window reads as running on extra usage with the switch on, and Usage limit with it off", () => {
@@ -1097,9 +1093,8 @@ describe("simpler runner card", () => {
     expect(agentRows(html)[2]!.html).toContain("Extra usage on");
   });
 
-  test("an admin who does not own the runner gets the extra usage switch but not sign-in", () => {
+  test("an admin who does not own the runner gets the extra usage switch", () => {
     const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "admin" });
-    expect(html).not.toContain("data-runner-signin");
     expect(html).toContain('data-extra-agent="claude"');
   });
 
@@ -1474,10 +1469,10 @@ describe("member VM", () => {
 test("a new paused runner tells its member owner to sign in and turn it on", () => {
   const fresh = { ...runner, status: "paused" as const, hasRunWork: false };
   const html = runnerDetailMarkup(fresh, { ...view, role: "member" });
-  expect(html).toContain("Sign in the coding agents this runner should use, then turn it on.");
+  expect(html).toContain("Add agent accounts in Settings › Agent accounts, then turn it on.");
   expect(html).toContain('data-runner-status="active"');
   expect(html).toContain(">Turn on</button>");
-  expect(html).toContain("data-runner-signin");
+  expect(html).not.toContain("data-runner-signin");
   const used = runnerDetailMarkup({ ...fresh, hasRunWork: true }, view);
   expect(used).toContain(">Resume</button>");
   expect(used).not.toContain("then turn it on.");

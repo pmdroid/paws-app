@@ -2,7 +2,6 @@ import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import { legacyAgentBindingId } from "./agent-accounts";
 import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
 import { type Q, type Db } from "./db";
 
@@ -281,34 +280,6 @@ export async function bindingAccountHealth(
   model?: string | null,
 ): Promise<AccountHealth[]> {
   return store.run((q) => bindingAccountHealthSteps(q, bindingId, model));
-}
-
-export function* legacyBindingAccountHealthSteps(
-  q: Q,
-  runnerId: string,
-  agent: string,
-  model?: string | null,
-) {
-  const id = legacyAgentBindingId(runnerId, agent as RunnerCodingAgent);
-  const { agentAccountBinding: b, runner } = q.t;
-  if (yield* q.one(q.orm.select({ id: b.id }).from(b).where(eq(b.id, id))))
-    return yield* bindingAccountHealthSteps(q, id, model);
-  const workspace = yield* q.one(
-    q.orm.select({ id: runner.workspaceId }).from(runner).where(eq(runner.id, runnerId)),
-  );
-  const provider = workspace
-    ? yield* rowSteps(q, "provider", `${workspace.id}:${agent}`, "")
-    : null;
-  return provider ? [provider] : [];
-}
-
-export async function legacyBindingAccountHealth(
-  store: Db,
-  runnerId: string,
-  agent: string,
-  model?: string | null,
-): Promise<AccountHealth[]> {
-  return store.run((q) => legacyBindingAccountHealthSteps(q, runnerId, agent, model));
 }
 
 /** Attempts still running on the binding's account (or the binding itself) that began at or after `since`. */

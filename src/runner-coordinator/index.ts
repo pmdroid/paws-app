@@ -164,17 +164,7 @@ export async function openRunnerCoordinator(options: {
   });
   const results = createRunnerResults({ store: options.db, work, now: options.now });
   const health = createRunnerHealth({ store: options.db, work, now: options.now });
-  const login = createRunnerLogin({
-    store: options.db,
-    work,
-    now: options.now,
-    onSignedIn: ({ runnerId, agent }) => {
-      health.afterSignIn(runnerId, agent).catch((error: unknown) => {
-        journalCaught(error, "runner-coordinator.onSignedIn.afterSignIn", null);
-        options.onError(error);
-      });
-    },
-  });
+  const login = createRunnerLogin({ store: options.db, work, now: options.now });
   const http = createRunnerHttp(control, {
     agents: (principal, runnerId) => health.agents(principal, runnerId),
     ...(options.hostWarnings ? { hostWarnings: options.hostWarnings } : {}),

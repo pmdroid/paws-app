@@ -14,7 +14,6 @@ import {
   insertRunnerExecutionUsageSteps,
   itemOwnerUserIdSteps,
   lastSuccessfulImplementationSteps,
-  legacyAgentBindingId,
   linearSessionInstallationSteps,
   pinnedSlotsReservedSteps,
   quotaRecheckAtSteps,
@@ -646,14 +645,7 @@ export function createRunnerPlacement(options: {
     }));
   }
   function* startedSteps(q: Q, input: Parameters<RunnerPlacement["startedSteps"]>[1]) {
-    const key = admissionKey(
-      input.runnerId,
-      input,
-      input.account?.bindingId ??
-        (input.profile
-          ? legacyAgentBindingId(input.runnerId, input.profile.agent as RunnerCodingAgent)
-          : null),
-    );
+    const key = admissionKey(input.runnerId, input, input.account?.bindingId ?? null);
     const admission = admissions.get(key);
     if (
       !admission ||

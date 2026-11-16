@@ -137,10 +137,6 @@ export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAge
   return `${LEGACY_ACCOUNT_PREFIX}${agent}_${workspaceId}`;
 }
 
-export function legacyAgentBindingId(runnerId: string, agent: RunnerCodingAgent): string {
-  return `${LEGACY_ACCOUNT_PREFIX}${agent}_${runnerId}`;
-}
-
 function* accountRowSteps(q: Q, id: string) {
   const { agentAccount } = q.t;
   const row = yield* q.one(
@@ -255,7 +251,7 @@ export function* ensureLegacyAgentBindingSteps(
   const { agentAccount, agentAccountBinding } = q.t;
   const { workspaceId } = yield* runnerWorkspaceSteps(q, runnerId);
   const accountId = legacyAgentAccountId(workspaceId, agent);
-  const id = legacyAgentBindingId(runnerId, agent);
+  const id = `${LEGACY_ACCOUNT_PREFIX}${agent}_${runnerId}`;
   yield* q.exec(
     q.orm
       .insert(agentAccount)

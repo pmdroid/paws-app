@@ -45,12 +45,14 @@ const GITHUB_URL = "https://github.com/acme/fixture.git";
 const BRANCH = "paws/item";
 const REF = "refs/paws/candidates/item";
 
-test("a head that is already on GitHub starts as before, with no push", async () => {
+test("a head already on GitHub starts on its bound account with no push and no login command", async () => {
   const result = await startScenario({ local: [], push: "works" });
   expect(result.pushes, result.detail).toBe(0);
   expect(result.baseSha, result.detail).toBe(result.prHead);
   expect(result.prompt, result.detail).toBe("Write output");
   expect(result.thoughts, result.detail).toEqual([]);
+  expect(result.account?.bindingId, result.detail).toBeString();
+  expect(result.received, result.detail).not.toContain("login");
 });
 
 test("a head missing on GitHub is pushed before the run when the push works", async () => {
@@ -634,6 +636,7 @@ async function startScenario(input: {
   });
 
   let assigned: Extract<RunnerCommand, { type: "run" }> | undefined;
+  const received = new Set<string>();
   let pendingAtAssignment: string | undefined;
   let executions = 0;
   const sim = { stopped: false };
@@ -644,6 +647,7 @@ async function startScenario(input: {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
+        received.add(command.type);
         if (command.type !== "run" || assigned) continue;
         assigned = command;
         pendingAtAssignment = (await getWorkItem(db, item.id))?.checkpoint?.lostCommits;
@@ -752,6 +756,8 @@ async function startScenario(input: {
       earlierMain,
       movedMain,
       prompt: assigned?.prompt,
+      account: assigned?.account,
+      received: [...received],
       remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]).catch(
         () => undefined,
       ),

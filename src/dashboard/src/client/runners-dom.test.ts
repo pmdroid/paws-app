@@ -84,7 +84,7 @@ test("the extra usage switch posts the runner agent's extra-usage route", async 
     'tr[data-agent="claude"] input[data-runner-extra-usage]',
   )!;
   expect(box).not.toBeNull();
-  expect(root.querySelector('tr[data-agent="codex"] button[data-runner-signin]')).not.toBeNull();
+  expect(root.querySelector("button[data-runner-signin]")).toBeNull();
   box.checked = true;
   box.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
   await settle();

@@ -2,7 +2,6 @@ import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";
-import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
 import { livePoll } from "./poll";
 
@@ -1244,7 +1243,7 @@ export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
 export function runnerAgentsMarkup(
   runner: Pick<Runner, "id" | "name">,
   agents: readonly AgentSignIn[],
-  view: { now: number; signs: boolean; switches: boolean; busy: boolean },
+  view: { now: number; switches: boolean; busy: boolean },
 ): string {
   const id = esc(runner.id);
   const name = esc(runner.name);
@@ -1253,10 +1252,6 @@ export function runnerAgentsMarkup(
     const agent = esc(entry.agent);
     const label = esc(AGENT_LABELS[entry.agent] ?? entry.agent);
     const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-    const again = SIGNED_IN.has(entry.status);
-    const signIn = view.signs
-      ? `<button class="btn" type="button" data-runner-signin="${id}" data-signin-agent="${agent}" data-focus="signin:${id}:${agent}" aria-label="Sign in to ${label}${again ? " again" : ""} on ${name}">${again ? "Sign in again" : "Sign in"}</button>`
-      : "";
     const usage = agentUsageMarkup(entry, view.now);
     const on = entry.extraUsage === true || entry.status === "extra_usage";
     const extra = !view.switches
@@ -1264,7 +1259,7 @@ export function runnerAgentsMarkup(
       : entry.status === "unknown" && !on
         ? '<span class="muted">Sign in first</span>'
         : `<label class="runner-consent"><input type="checkbox" data-runner-extra-usage="${id}" data-extra-agent="${agent}" data-focus="extra:${id}:${agent}"${on ? " checked" : ""}${disabled}><span>Keep running on extra usage</span></label>`;
-    return `<tr data-agent="${agent}"><td><b>${label}</b></td><td><span class="runner-agent-cell"><span class="tag ${tone}">${text}</span>${signIn}</span></td><td>${usage ? `<span class="runner-agent-cell">${usage}</span>` : ""}</td><td>${extra}</td></tr>`;
+    return `<tr data-agent="${agent}"><td><b>${label}</b></td><td><span class="runner-agent-cell"><span class="tag ${tone}">${text}</span></span></td><td>${usage ? `<span class="runner-agent-cell">${usage}</span>` : ""}</td><td>${extra}</td></tr>`;
   });
   return `<table class="runner-agents" aria-label="Agents on ${name}"><thead><tr><th scope="col">Agent</th><th scope="col">Sign-in</th><th scope="col">Usage</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows.join("")}</tbody></table><p class="muted">Keep running on extra usage: when a usage window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage.</p>`;
 }
@@ -1374,7 +1369,7 @@ export function runnerDetailMarkup(
             : "",
           runnerRuntimesMarkup(runner.runtimes),
         );
-  const card = `<section class="flex min-w-0 flex-col gap-4" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${hostWarnings}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
+  const card = `<section class="flex min-w-0 flex-col gap-4" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${hostWarnings}${firstActivation(runner) ? "<p>Add agent accounts in Settings › Agent accounts, then turn it on.</p>" : ""}${
     revoked
       ? ""
       : block(
@@ -1398,7 +1393,6 @@ export function runnerDetailMarkup(
           "",
           runnerAgentsMarkup(runner, signIns, {
             now: view.now,
-            signs: owns,
             switches: owns || manages,
             busy: view.busy,
           }),
@@ -2052,14 +2046,6 @@ export function createRunners() {
             },
           )
           .finally(paint);
-      });
-    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-signin]"))
-      button.addEventListener("click", () => {
-        const runner = runners.find((entry) => entry.id === button.dataset.runnerSignin);
-        if (!runner) return;
-        const agent = button.dataset.signinAgent!;
-        refocus(`signin:${runner.id}:${agent}`);
-        openAgentAccounts(runner, agent, () => void load(true));
       });
     for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-extra-usage]"))
       box.addEventListener("change", () => {

@@ -88,10 +88,10 @@ try {
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners/${runner.id}`);
     await expect(
-      page.getByText("Sign in the coding agents this runner should use, then turn it on."),
+      page.getByText("Add agent accounts in Settings › Agent accounts, then turn it on."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Turn on", exact: true })).toBeEnabled();
-    await expect(page.getByRole("button", { name: /^Sign in to Claude/ })).toBeEnabled();
+    await expect(page.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

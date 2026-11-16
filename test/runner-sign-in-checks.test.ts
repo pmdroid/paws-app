@@ -2,10 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import {
-  legacyAgentBindingId,
+  bindAgentAccount,
+  createAgentAccount,
   putWorkspaceUser,
   recordAccountObservation,
   recordLinearInstallation,
+  recordRunnerAccountCapability,
   recordRunnerCapacity,
   recordRunnerAgentUsage,
   runnerAgentUsage,
@@ -568,37 +570,6 @@ test("an older usage reading never replaces a newer one", async () => {
   expect(await runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
 });
 
-test("a completed sign-in queues one login check for that agent", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  const login = createRunnerLogin({
-    store: f.db,
-    work: f.work,
-    now: f.now,
-    onSignedIn: (signedIn) => f.health.afterSignIn(signedIn.runnerId, signedIn.agent),
-  });
-  const session = await login.start(f.owner, runnerId, "claude");
-  expect(await f.checks()).toHaveLength(0);
-  await login.exchange(runnerId, session.id, {
-    state: "connected",
-    terminal: "",
-    authorization: null,
-    inputId: null,
-  });
-  expect((await f.checks()).map(({ agent, memberId }) => [agent, memberId])).toEqual([
-    ["claude", undefined],
-  ]);
-  expect(await f.health.afterSignIn(runnerId, "claude")).toBe(false);
-  expect(
-    (await f.health.agents(f.owner, runnerId)).map(({ agent, status }) => [agent, status]),
-  ).toEqual([
-    ["claude", "checking"],
-    ["codex", "unknown"],
-    ["grok", "unknown"],
-    ["opencode", "unknown"],
-  ]);
-});
-
 test("a sign-in goes to the runner before sign-in checks queued ahead of it", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
@@ -613,7 +584,27 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
       issuedAt: f.now(),
       expiresAt: f.now() + 120_000,
     });
-  const session = await login.start(f.owner, runnerId, "claude");
+  const account = await createAgentAccount(f.db, {
+    workspaceId: f.owner.workspaceId,
+    ownerUserId: f.owner.userId,
+    agent: "claude",
+    label: "Claude",
+    now: f.now(),
+  });
+  const binding = await bindAgentAccount(f.db, {
+    workspaceId: f.owner.workspaceId,
+    userId: f.owner.userId,
+    accountId: account.id,
+    runnerId,
+    now: f.now(),
+  });
+  await recordRunnerAccountCapability(
+    f.db,
+    runnerId,
+    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
+    f.now(),
+  );
+  const session = await login.start(f.owner, runnerId, "claude", binding.id);
   const delivered = async () =>
     (await f.work.commands(runnerId)).map((envelope) => {
       const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
@@ -675,7 +666,7 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
   f.advance(10_000);
   await f.setPolicy(runnerId, "claude", { ready: 0, authExpired: 1 });
   await recordAccountObservation(f.db, {
-    bindingId: legacyAgentBindingId(runnerId, "claude"),
+    bindingId: `legacy_claude_${runnerId}`,
     source: "result",
     sourceId: "failed-run",
     observedAt: f.now(),

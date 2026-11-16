@@ -34,21 +34,14 @@ beforeEach(() => {
   };
   session = login("");
   fail = false;
-  globalThis.fetch = (async (path, init) => {
+  globalThis.fetch = (async (_path, init) => {
     if (init?.method === "POST") {
       if (fail) return Response.json({ error: "Runner disconnected" }, { status: 503 });
       return new Promise<Response>((resolve) => {
         release = resolve;
       });
     }
-    return Response.json(
-      String(path) === "/api/runners"
-        ? { runners: [] }
-        : {
-            accounts: [{ agent: "claude", connected: false, session }],
-            bindings: [{ bindingId: "binding", agent: "claude", session }],
-          },
-    );
+    return Response.json({ bindings: [{ bindingId: "binding", agent: "claude", session }] });
   }) as typeof fetch;
 });
 afterEach(() => {
@@ -57,7 +50,7 @@ afterEach(() => {
   for (const key of globals) Object.assign(globalThis, { [key]: saved.get(key) });
 });
 
-test("account sign-in names the account and explains runner sharing; runner sign-in keeps its title", async () => {
+test("account sign-in names the account and explains runner sharing", async () => {
   openAgentAccounts(
     { id: "runner", name: "goldbox" },
     "claude",
@@ -70,15 +63,10 @@ test("account sign-in names the account and explains runner sharing; runner sign
   expect(window.document.body.textContent).toContain(
     "Paws runs the sign-in on goldbox; the account is saved for all your runners.",
   );
-  window.document.body.innerHTML = "";
-  openAgentAccounts({ id: "runner", name: "goldbox" }, "claude", () => {});
-  await settle();
-  expect(query("h2").textContent).toBe("Sign in to Claude on goldbox");
-  expect(window.document.body.textContent).not.toContain("saved for all your runners");
 });
 
 test("reply progress survives an unchanged response until a session update; failures show feedback", async () => {
-  openAgentAccounts({ id: "runner", name: "goldbox" }, "claude", () => {});
+  openAgentAccounts({ id: "runner", name: "goldbox" }, "claude", () => {}, "binding", "Team");
   await settle();
   const submit = () => {
     (query("input") as unknown as HTMLInputElement).value = "code";
