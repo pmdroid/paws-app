@@ -26,6 +26,7 @@ import {
   releaseRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  runnerAgentCredentials,
   shareRunnerAgentState,
   shareRunnerWorkRoot,
 } from "./accounts";
@@ -505,6 +506,33 @@ test.skipIf(!groupChangeAllowed)(
     prepareRunnerWorkRoot(work, owners);
     expect(statSync(join(work, ".paws")).mode & 0o777).toBe(0o770);
     expect(statSync(join(work, ".paws")).gid).toBe(sharedGroup);
+  },
+);
+
+test.skipIf(!groupChangeAllowed || sharedGroup === process.getgid!())(
+  "a new account home made in the runner's own group is moved to the agent group and stores the sign-in",
+  () => {
+    const root = agentHome();
+    chownSync(root, -1, sharedGroup);
+    chmodSync(root, 0o770);
+    const owners = { runnerUid: process.getuid!(), agentGid: sharedGroup };
+    const data = Buffer.from('{"claudeAiOauth":{}}').toString("base64");
+    runnerAgentCredentials(root, owners).write(a, "claude", [
+      { path: ".claude/.credentials.json", data },
+    ]);
+    const home = runnerAccountHome(root, a);
+    expect(statSync(join(root, ".paws-accounts")).gid).toBe(sharedGroup);
+    expect(statSync(home).gid).toBe(sharedGroup);
+    expect(statSync(home).mode & 0o7777).toBe(0o770);
+    expect(readFileSync(join(home, ".claude/.credentials.json"), "base64")).toBe(data);
+
+    const stale = runnerAccountHome(root, b);
+    mkdirSync(stale);
+    chownSync(stale, -1, process.getgid!());
+    chmodSync(stale, 0o770);
+    openRunnerAccountHome(root, b, "claude", { signIn: true, owners });
+    expect(statSync(stale).gid).toBe(sharedGroup);
+    expect(statSync(stale).mode & 0o7777).toBe(0o770);
   },
 );
 
