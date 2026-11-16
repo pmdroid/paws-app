@@ -182,8 +182,13 @@ export function createAccountManagement(
           createdAt,
           expiresAt: createdAt + TOKEN_DAYS * 86_400_000,
         });
-        if (!(await options.checkClaudeToken(value.token)))
-          return json({ error: "This token was not accepted by Claude." }, 400);
+        const accepted = await options.checkClaudeToken(value.token).catch((error: unknown) => {
+          journalCaught(error, "account-management.checkClaudeToken", null);
+          return null;
+        });
+        if (accepted === null)
+          return json({ error: "Claude could not be reached to check the token. Try again." }, 503);
+        if (!accepted) return json({ error: "This token was not accepted by Claude." }, 400);
         const blob = JSON.stringify([
           {
             path: ".claude/paws-oauth.json",
