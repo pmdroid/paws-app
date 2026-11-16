@@ -208,7 +208,6 @@ import {
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
-  missingResultReason,
   readSessionCloseout,
   sessionCloseoutPath,
   sessionCloseoutResult,
@@ -4726,12 +4725,10 @@ export class Orchestrator {
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
-    const rerunHeads = new Set<string>();
-    const runnerResults = (commit: string, stepId: string | undefined, again = false) => {
+    const runnerResults = (commit: string, stepId: string | undefined) => {
       let checks = runnerChecks.get(commit);
       if (!checks) {
         checks = this.runRunnerCloseout(item, deps, {
-          again,
           worktree,
           base,
           head: commit,
@@ -4763,18 +4760,6 @@ export class Orchestrator {
             ) {
               stoppedOnRule = broken;
               throw new Error(`Rule ${broken} broke before the checks ran.`);
-            }
-            if (
-              !rerunHeads.has(commit) &&
-              !sessionCloseoutResult(await savedReport(commit, request.argv), request)
-            ) {
-              rerunHeads.add(commit);
-              report(
-                `Closeout has no result for ${request.itemId ?? "a check"} on ${commit.slice(0, 7)}: ${missingResultReason(await savedReport(commit, request.argv), request)}. Running the checks once more.`,
-              );
-              runnerChecks.delete(commit);
-              await runnerResults(commit, request.itemId, true);
-              await assertCurrent();
             }
             const result = loggedSessionCloseout(await savedReport(commit, request.argv), request);
             await assertCurrent();
@@ -4929,7 +4914,6 @@ export class Orchestrator {
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
       rulesFirst: boolean;
-      again?: boolean;
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -4940,6 +4924,7 @@ export class Orchestrator {
     };
     const runner = deps.agentRunner;
     let reason = "remote execution is unavailable";
+    let incomplete = 0;
     const rateLimitDeadline = this.now() + CHECKS_RATE_LIMIT_WAIT_MS;
     for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
       await assertCurrent();
@@ -4955,7 +4940,7 @@ export class Orchestrator {
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
       const draft = await this.savedDraft(item.id);
-      const checksRunId = `checks-${itemPathId(item)}-${short}-${input.again ? "again-" : ""}${attempt}`;
+      const checksRunId = `checks-${itemPathId(item)}-${short}-${attempt}`;
       try {
         const options: RunAgentOptions = {
           repository: deps.repository,
@@ -5012,9 +4997,14 @@ export class Orchestrator {
         else if (result.stopReason !== "end_turn" || result.errorMessage)
           reason = result.errorMessage ?? `the run stopped (${result.stopReason})`;
         else if (!result.closeoutReport) reason = "the runner returned no Closeout report";
-        else if (!listsChecks(result.closeoutReport))
-          reason = "the runner's Closeout listed no checks";
-        else {
+        else if (
+          !(input.rulesFirst && brokenRuleOf(result.closeoutReport)) &&
+          incompleteReport(result.closeoutReport, input.fromCi ?? [])
+        ) {
+          reason = incompleteReport(result.closeoutReport, input.fromCi ?? [])!;
+          incomplete += 1;
+          if (incomplete >= 2) break;
+        } else {
           writeSessionCloseout(
             input.sessionPath,
             head,
@@ -11828,16 +11818,26 @@ function brokenRuleOf(report: string | undefined): string | undefined {
   }
 }
 
-function listsChecks(report: string): boolean {
+function incompleteReport(report: string, fromCi: readonly string[]): string | undefined {
   try {
-    const parsed = JSON.parse(report) as { required?: unknown; rules?: unknown };
-    return (
-      (Array.isArray(parsed.required) && parsed.required.length > 0) ||
-      (Array.isArray(parsed.rules) && parsed.rules.length > 0)
+    const parsed = JSON.parse(report) as {
+      required?: { id?: string; kind?: string; result?: { exitCode?: unknown } }[];
+      rules?: unknown[];
+      blocked?: unknown;
+    };
+    const required = Array.isArray(parsed.required) ? parsed.required : [];
+    if (required.length === 0 && !(Array.isArray(parsed.rules) && parsed.rules.length > 0))
+      return typeof parsed.blocked === "string"
+        ? `the policy was unavailable: ${parsed.blocked}`
+        : "the runner's Closeout listed no checks";
+    if (required.some((entry) => entry.result && entry.result.exitCode !== 0)) return undefined;
+    const unstarted = required.find(
+      (entry) => entry.kind === "command" && !entry.result && !fromCi.includes(entry.id ?? ""),
     );
+    return unstarted ? `no result for ${unstarted.id} (it never started)` : undefined;
   } catch (caughtError18) {
-    journalCaught(caughtError18, "orchestrator.listsChecks.parse", null);
-    return false;
+    journalCaught(caughtError18, "orchestrator.incompleteReport.parse", null);
+    return "the runner's Closeout report is unreadable";
   }
 }
 
