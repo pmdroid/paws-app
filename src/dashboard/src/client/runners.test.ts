@@ -209,13 +209,13 @@ describe("runner list rows", () => {
     expect(html).not.toContain("signed in");
   });
   test("a runner below the minimum asks for an upgrade unless it is revoked", () => {
-    const view = { ...row, minimumRunnerVersion: "0.1.84" };
+    const outdated = { ...row, minimumRunnerVersion: "0.1.84" };
     const upgrade = "Upgrade this runner to 0.1.84";
-    expect(runnerRowMarkup({ ...runner, version: "0.1.83" }, view)).toContain(upgrade);
-    expect(runnerRowMarkup({ ...runner, version: null }, view)).toContain(upgrade);
-    expect(runnerRowMarkup({ ...runner, version: "0.1.84" }, view)).not.toContain(upgrade);
+    expect(runnerRowMarkup({ ...runner, version: "0.1.83" }, outdated)).toContain(upgrade);
+    expect(runnerRowMarkup({ ...runner, version: null }, outdated)).toContain(upgrade);
+    expect(runnerRowMarkup({ ...runner, version: "0.1.84" }, outdated)).not.toContain(upgrade);
     expect(
-      runnerRowMarkup({ ...runner, status: "revoked", version: "0.1.83" }, view),
+      runnerRowMarkup({ ...runner, status: "revoked", version: "0.1.83" }, outdated),
     ).not.toContain(upgrade);
   });
 });
