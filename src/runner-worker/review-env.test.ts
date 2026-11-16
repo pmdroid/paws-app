@@ -6,7 +6,7 @@ import { reviewCommandEnv } from ".";
 
 const homes: string[] = [];
 afterEach(() => {
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+  for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 function home(token?: string) {
