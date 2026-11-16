@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createUsageReader } from "./index";
-import { UsageAuthExpired, UsageCredentialExpired } from "./usage";
+import { UsageAuthExpired, UsageCredentialExpired, UsageUnavailable } from "./usage";
 for (const format of ["claude", "codex"])
   test(`${format} reads provider windows without refreshing credentials`, async () => {
     const agent = format === "claude-oauth" ? "claude" : format;
@@ -76,11 +76,17 @@ for (const format of ["claude", "codex"])
         { window: "5-hour", usedPercent: 45, resetsAt: 2000000000000 },
         { window: "Weekly", usedPercent: 100, resetsAt: 2000100000000 },
       ]);
+      for (const refused of [403, 429]) {
+        status = refused;
+        const error = await read(agent, credential).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(UsageUnavailable);
+        expect((error as Error).message).toBe(`Usage unavailable (HTTP ${refused})`);
+      }
       status = 401;
       await expect(read(agent, credential)).rejects.toBeInstanceOf(UsageAuthExpired);
       time = 1900000000000;
       await expect(read(agent, credential)).rejects.toBeInstanceOf(UsageCredentialExpired);
-      expect(calls).toBe(2);
+      expect(calls).toBe(4);
     } finally {
       await server.stop(true);
     }
@@ -89,6 +95,7 @@ for (const format of ["claude", "codex"])
 test("a setup token reads its limits from the rate-limit headers of a one-token message", async () => {
   let seen: { path: string; headers: Headers; body: Record<string, unknown> } | undefined;
   let status = 200;
+  let headers = true;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -102,12 +109,14 @@ test("a setup token reads its limits from the rate-limit headers of a one-token 
         {},
         {
           status,
-          headers: {
-            "anthropic-ratelimit-unified-5h-utilization": "0.42",
-            "anthropic-ratelimit-unified-5h-reset": "2000000000",
-            "anthropic-ratelimit-unified-7d-utilization": "1",
-            "anthropic-ratelimit-unified-7d-reset": "2000100000",
-          },
+          headers: headers
+            ? {
+                "anthropic-ratelimit-unified-5h-utilization": "0.42",
+                "anthropic-ratelimit-unified-5h-reset": "2000000000",
+                "anthropic-ratelimit-unified-7d-utilization": "1",
+                "anthropic-ratelimit-unified-7d-reset": "2000100000",
+              }
+            : {},
         },
       );
     },
@@ -143,6 +152,16 @@ test("a setup token reads its limits from the rate-limit headers of a one-token 
     expect(await read("claude", credential)).toEqual(limits);
     status = 401;
     await expect(read("claude", credential)).rejects.toBeInstanceOf(UsageAuthExpired);
+    headers = false;
+    for (const [code, reason] of [
+      [200, "Usage not available for this sign-in"],
+      [429, "Usage unavailable (HTTP 429)"],
+    ] as const) {
+      status = code;
+      const error = await read("claude", credential).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UsageUnavailable);
+      expect((error as Error).message).toBe(reason);
+    }
   } finally {
     await server.stop(true);
   }

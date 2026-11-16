@@ -24,7 +24,7 @@ import {
   createAgentAuth,
   createCodexProvider,
 } from "./index";
-import { UsageAuthExpired } from "./usage";
+import { UsageAuthExpired, UsageUnavailable } from "./usage";
 import { fakeCodexOAuth } from "./fake";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
@@ -447,4 +447,74 @@ test("every scheduled poll reads later accounts despite changing latency", async
   s.advance(299000);
   await usage.tick();
   expect(calls).toBe(4);
+});
+test("a refused read stores the reason and the poll still reads the other account", async () => {
+  const s = await setup(true);
+  const other = await s.db.transaction((q) =>
+    createAgentAccountSteps(q, {
+      ownerUserId: "user",
+      workspaceId: "workspace",
+      agent: "codex",
+      label: "Second",
+      now: s.now(),
+    }),
+  );
+  const credential = (await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id)))!;
+  await s.db.transaction((q) =>
+    writeAgentCredentialSteps(q, s.dir, {
+      accountId: other.id,
+      runnerId: null,
+      version: 1,
+      blob: credential.blob!,
+      now: s.now(),
+    }),
+  );
+  let calls = 0;
+  let refuse = true;
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: async () => {
+      if (++calls === 1 && refuse) throw new UsageUnavailable("Usage unavailable (HTTP 429)");
+      return [{ window: "5-hour", usedPercent: 10, resetsAt: null }];
+    },
+  });
+  await usage.tick();
+  expect(calls).toBe(2);
+  const stored = async () =>
+    (
+      await Promise.all([s.id, other.id].map((id) => s.db.run((q) => providerUsageSteps(q, id))))
+    ).map((row) => JSON.parse(row!.limitsJson!));
+  const [refused, read] = (await stored()).sort((a, b) => a.limits.length - b.limits.length);
+  expect(refused).toEqual({
+    limits: [],
+    observedAt: s.now(),
+    stale: true,
+    unavailable: "Usage unavailable (HTTP 429)",
+  });
+  expect(read.limits).toEqual([{ window: "5-hour", usedPercent: 10, resetsAt: null }]);
+  expect(read.unavailable).toBeUndefined();
+  refuse = false;
+  calls = 0;
+  await usage.tick();
+  for (const reading of await stored()) {
+    expect(reading.limits).toHaveLength(1);
+    expect(reading.unavailable).toBeUndefined();
+  }
+});
+test("a read that fails without an HTTP status still stores that usage is unavailable", async () => {
+  const s = await setup(true);
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: async () => {
+      throw new Error("The operation timed out.");
+    },
+  });
+  await usage.tick();
+  expect(
+    JSON.parse((await s.db.run((q) => providerUsageSteps(q, s.id)))!.limitsJson!).unavailable,
+  ).toBe("Usage unavailable");
 });
