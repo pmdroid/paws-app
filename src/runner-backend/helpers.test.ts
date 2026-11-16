@@ -14,6 +14,8 @@ import {
   recordRunnerAccountCapability,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
+  listRunnerOverview,
+  runnerHelperAvailability,
   usagePause,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -24,6 +26,7 @@ import {
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
 import { createRunnerHelpers } from "../runner-helpers";
+import { RUNNER_LIVE_GRACE_MS } from "../runner-protocol";
 import { workspaceId, workspaceTokenHash, issueWorkspaceBootstrap } from "../workspace";
 import { createRemoteSessionAgentRunner } from "./helpers";
 import {
@@ -1278,5 +1281,83 @@ test("a dispatch the runner refuses is named in the failure", async () => {
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     "right now: Fixture: Runner selection authority changed before assignment.",
+  );
+});
+
+const classifyOn = (f: Awaited<ReturnType<typeof fixture>>, sessionId: string) =>
+  f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId,
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: "Classify this request",
+  });
+
+test("a helper the runner never acknowledges frees the lane and the next helper goes to another runner", async () => {
+  const f = await fixture();
+  await secondRunner(f);
+  await linearSession(f, "other");
+  await classifyOn(f, "session");
+  expect((await runnerHelperAvailability(f.db, "runner", f.advance(0), true)).held).toBe(true);
+  f.advance(RUNNER_LIVE_GRACE_MS);
+  expect(await runnerHelperAvailability(f.db, "runner", f.advance(0), true)).toMatchObject({
+    available: true,
+    held: false,
+  });
+  await sqlRun(f.db, "UPDATE runner SET last_seen_at=?", [f.advance(0)]);
+  const next = f.backend.forSession("other", "classify")(f.input);
+  await f.dispatched();
+  const placed = await sqlRows<{ id: string; runnerId: string }>(
+    f.db,
+    "SELECT id,runner_id AS \"runnerId\" FROM runner_helper WHERE session_id='other'",
+  );
+  expect(placed.map((row) => row.runnerId)).toEqual(["second"]);
+  await f.helpers.submit("second", helperResult(placed[0]!.id));
+  expect((await next).stopReason).toBe("end_turn");
+});
+
+test("an acknowledged helper still running keeps the lane past the acknowledgement window", async () => {
+  const f = await fixture();
+  const { command } = await classifyOn(f, "session");
+  await f.helpers.acknowledge("runner", command.id);
+  f.advance(RUNNER_LIVE_GRACE_MS + 1_000);
+  expect(await runnerHelperAvailability(f.db, "runner", f.advance(0), true)).toMatchObject({
+    available: false,
+    held: true,
+  });
+});
+
+test("three undelivered helpers in a row show on the runner as not picking up helper commands", async () => {
+  const f = await fixture();
+  const workspace = (
+    await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner")
+  )[0]!.id;
+  const undelivered = async () =>
+    (await listRunnerOverview(f.db, workspace, f.advance(0)))[0]!.helpersUndelivered;
+  for (const session of ["first", "second", "third"]) {
+    await linearSession(f, session);
+    await classifyOn(f, session);
+    f.advance(RUNNER_LIVE_GRACE_MS);
+    expect(await undelivered()).toBe(session === "third");
+  }
+  await linearSession(f, "fourth");
+  const { command } = await classifyOn(f, "fourth");
+  await f.helpers.acknowledge("runner", command.id);
+  expect(await undelivered()).toBe(false);
+});
+
+test("helpers Paws ended before the acknowledgement window do not count as undelivered", async () => {
+  const f = await fixture();
+  const workspace = (
+    await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner")
+  )[0]!.id;
+  for (const session of ["first", "second", "third"]) {
+    await linearSession(f, session);
+    const { command } = await classifyOn(f, session);
+    await f.helpers.finish(command.id);
+    f.advance(RUNNER_LIVE_GRACE_MS);
+  }
+  expect((await listRunnerOverview(f.db, workspace, f.advance(0)))[0]!.helpersUndelivered).toBe(
+    false,
   );
 });

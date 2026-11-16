@@ -4,7 +4,7 @@ import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
 import { type Q, type Db } from "./db";
 import { jsonItemId } from "./jobs";
 import { jsonField, jsonText, jsonValue } from "./json-text";
-import { ciWaitingSql, workHelperSql } from "./runner-capacity";
+import { ciWaitingSql, laneHelperSql } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
 
 export type SchedulerItem = {
@@ -300,7 +300,7 @@ export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
         ),
         used: num(sql`(SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning') AND NOT ${ciWaitingSql(q, "held")}))) +
           (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>${now}
-            AND ${workHelperSql(q, "x")}) +
+            AND ${laneHelperSql(q, "x", now)}) +
           (SELECT count(*) FROM runner_reservation v WHERE v.runner_id=r.id AND v.expires_at>${now}
             AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=v.run_id AND w.runner_id=v.runner_id))`),
       })

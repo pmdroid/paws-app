@@ -1,10 +1,10 @@
 export {
   createRunnerWork,
-  RUNNER_LIVE_GRACE_MS,
   RunnerEventSchema,
   RunnerTeardownPending,
   RunnerWorkFencedError,
 } from "./control";
+export { RUNNER_LIVE_GRACE_MS } from "../runner-protocol";
 export type { RunnerWork, RunnerEvent } from "./control";
 export { createRunnerWorkHttp } from "./http";
 export { runnerFailureStatus, runnerRequestUnavailable } from "./failure";
