@@ -29,71 +29,107 @@ export type AccountsView = {
   confirm: string | null;
 };
 
+const DAY = 86_400_000;
+const CHEVRON = (path: string) =>
+  `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"></path></svg>`;
+const UP = CHEVRON("m18 15-6-6-6 6");
+const DOWN = CHEVRON("m6 9 6 6 6-6");
+
+function when(time: number, withDay: boolean): string {
+  return new Date(time).toLocaleString([], {
+    ...(withDay ? { weekday: "short" } : {}),
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function limitReached(account: CentralAccount) {
+  return (account.usage?.limits ?? []).filter((limit) => limit.usedPercent >= 100);
+}
+
+function accountBadge(account: CentralAccount): string {
+  if (account.signingIn) return '<span class="pill running">Signing in</span>';
+  if (!account.credential) return '<span class="pill warn">Signed out</span>';
+  if (account.health === "expiring") return '<span class="pill warn">Token expiring</span>';
+  if (limitReached(account).length)
+    return account.extraUsage
+      ? '<span class="pill warn">On extra usage</span>'
+      : '<span class="pill err">Limit reached</span>';
+  if (account.lease) return '<span class="pill running">In use</span>';
+  return '<span class="pill ok">Signed in</span>';
+}
+
 function accountStatus(account: CentralAccount, runners: Record<string, string>): string {
   const runner = (id: string | null) => (id ? (runners[id] ?? id) : "a runner");
-  const parts = [
-    account.signingIn
-      ? "Signing in"
-      : account.credential
-        ? `Signed in, refreshed ${new Date(account.credential.refreshedAt).toLocaleString()} by ${runner(account.credential.runner)}`
-        : "Signed out",
-  ];
+  const parts: string[] = [];
   if (account.credential?.expiresAt)
-    parts.push(`Token expires ${new Date(account.credential.expiresAt).toLocaleDateString()}`);
-  if (account.health === "expiring") parts.push("Sign in again to renew the token");
+    parts.push(`Token valid until ${new Date(account.credential.expiresAt).toLocaleDateString()}`);
+  else if (account.credential)
+    parts.push(
+      `Refreshed ${when(account.credential.refreshedAt, true)}${account.credential.runner ? ` by ${runner(account.credential.runner)}` : ""}`,
+    );
+  else if (!account.signingIn)
+    parts.push(
+      account.agent === "claude" ? "Paste a setup token to sign in" : "Sign in to use this account",
+    );
+  if (account.health === "expiring") parts.push("paste a new token to renew it");
   if (account.lease)
     parts.push(
-      `In use by ${account.lease.issue?.identifier ?? "a run"} on ${runner(account.lease.runner)}`,
+      `in use by ${account.lease.issue?.identifier ?? "a run"} on ${runner(account.lease.runner)}`,
     );
-  parts.push(account.extraUsage ? "Extra usage on" : "Extra usage off");
   return parts.join(" · ");
 }
 
 function accountUsage(account: CentralAccount): string {
   const usage = account.usage;
-  if (!usage) return "";
-  const reset = (time: number) =>
-    new Date(time).toLocaleString([], {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  const windows = usage.limits
+  if (!usage) return account.credential ? '<p class="sub">Usage not reported yet</p>' : "";
+  const soon = (time: number) => when(time, time - Date.now() > DAY / 2);
+  const meters = usage.limits
     .map((limit) => {
-      const label = `${limit.window} ${limit.usedPercent}%${limit.resetsAt === null ? "" : ` · resets ${reset(limit.resetsAt)}`}`;
-      return `<div class="col"><span class="sub">${esc(label)}</span><progress max="100" value="${Math.min(100, Math.max(0, limit.usedPercent))}" aria-label="${esc(limit.window)} usage"></progress></div>`;
+      const used = Math.min(100, Math.max(0, Math.round(limit.usedPercent)));
+      const level = used >= 100 ? "full" : used >= 80 ? "high" : "low";
+      const reset = limit.resetsAt === null ? "" : `resets ${soon(limit.resetsAt)}`;
+      return `<div class="meter-row"><span class="meter-name">${esc(limit.window)}</span><progress class="meter ${level}" max="100" value="${used}" aria-label="${esc(limit.window)} usage ${used}%"></progress><span class="meter-value">${used}%</span><span class="meter-reset">${esc(reset)}</span></div>`;
     })
     .join("");
-  const reached = usage.limits.filter((limit) => limit.usedPercent >= 100);
-  const resets = reached.flatMap((limit) => (limit.resetsAt === null ? [] : [limit.resetsAt]));
-  const state = reached.length
-    ? account.extraUsage
-      ? "Using extra usage"
-      : resets.length === reached.length
-        ? `Limit reached until ${reset(Math.max(...resets))}`
-        : "Limit reached"
-    : "";
+  const reached = limitReached(account);
+  const state = reached.length && account.extraUsage ? "Running on extra usage · " : "";
   const freshness = usage.stale
-    ? "stale"
-    : `updated ${Math.max(0, Math.floor((Date.now() - usage.observedAt) / 60000))} min ago`;
-  return `<div class="col" data-account-usage>${windows}<p class="sub">${esc([state, freshness].filter(Boolean).join(" · "))}</p></div>`;
+    ? "Usage may be out of date"
+    : `Updated ${Math.max(0, Math.floor((Date.now() - usage.observedAt) / 60000))} min ago`;
+  return `<div class="acct-usage" data-account-usage>${meters}<p class="sub">${esc(state + freshness)}</p></div>`;
 }
 
-function accountRow(account: CentralAccount, index: number, count: number, view: AccountsView) {
+function tokenForm(account: CentralAccount, busy: string): string {
+  const fields = `<form class="acct-token-form" data-account-token><label class="field"><span>Setup token</span><input type="password" name="token" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…"></label><button class="btn primary" type="submit"${busy}>Save token</button></form><p class="sub">Run <code>claude setup-token</code> on your own machine and paste the token. No runner needed.</p>`;
+  return account.credential
+    ? `<details class="acct-token"><summary>Replace setup token</summary>${fields}</details>`
+    : `<div class="acct-token">${fields}</div>`;
+}
+
+function accountCard(account: CentralAccount, index: number, count: number, view: AccountsView) {
   const label = esc(account.label);
   const busy = view.busy ? " disabled" : "";
-  const status = `<p class="sub" data-account-status>${esc(accountStatus(account, view.runners))}</p>${accountUsage(account)}`;
-  if (!view.canManage)
-    return `<li class="settings-card" data-account-id="${esc(account.id)}"><strong>${label}</strong>${status}</li>`;
-  const controls =
-    view.confirm === account.id
-      ? `<p role="alert">Sign ${label} out on every runner? Runs using it stop at their next request.</p><button class="btn danger" type="button" data-account-action="sign-out-confirm"${busy}>Sign out everywhere</button><button class="btn" type="button" data-account-action="keep">Keep signed in</button>`
-      : `<button class="btn" type="button" data-account-action="up" aria-label="Move ${label} up"${index === 0 ? " disabled" : busy}>Up</button><button class="btn" type="button" data-account-action="down" aria-label="Move ${label} down"${index === count - 1 ? " disabled" : busy}>Down</button><label class="row"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Extra usage</span></label>${account.agent === "claude" ? "" : `<button class="btn primary" type="button" data-account-action="sign-in"${busy}>Sign in</button>`}<button class="btn" type="button" data-account-action="sign-out"${busy || (account.credential ? "" : " disabled")}>Sign out everywhere</button>`;
-  const paste =
-    account.agent === "claude" && view.confirm !== account.id
-      ? `<form class="row" data-account-token><label class="field"><span>Setup token</span><input type="password" name="token" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…"></label><button class="btn" type="submit"${busy}>Save token</button></form><p class="sub">Run <code>claude setup-token</code> on your own machine and paste the token here. No runner needed.</p>`
+  const status = accountStatus(account, view.runners);
+  const head = `<div class="acct-head"><div class="acct-title"><strong>${label}</strong><p class="sub" data-account-status>${esc(status)}</p></div>${accountBadge(account)}</div>${accountUsage(account)}`;
+  const open = `<li class="acct-item" data-account-id="${esc(account.id)}"`;
+  if (!view.canManage) return `${open}><div class="card acct-card">${head}</div></li>`;
+  if (view.confirm === account.id)
+    return `${open}><div class="card acct-card">${head}<div class="acct-confirm" role="alert"><p>Sign ${label} out on every runner? Runs using it stop at their next request.</p><div class="row"><button class="btn danger" type="button" data-account-action="sign-out-confirm"${busy}>Sign out everywhere</button><button class="btn" type="button" data-account-action="keep">Keep signed in</button></div></div></div></li>`;
+  const signIn =
+    account.agent === "claude"
+      ? ""
+      : `<button class="btn${account.credential ? "" : " primary"}" type="button" data-account-action="sign-in"${busy}>${account.credential ? "Sign in again" : "Sign in"}</button>`;
+  const signOut = account.credential
+    ? `<button class="btn" type="button" data-account-action="sign-out"${busy}>Sign out</button>`
+    : "";
+  const move =
+    count > 1
+      ? `<div class="acct-move"><button class="btn sm" type="button" data-account-action="up" aria-label="Move ${label} up"${index === 0 ? " disabled" : busy}>${UP}</button><button class="btn sm" type="button" data-account-action="down" aria-label="Move ${label} down"${index === count - 1 ? " disabled" : busy}>${DOWN}</button></div>`
       : "";
-  return `<li class="settings-card" draggable="true" data-account-id="${esc(account.id)}"><strong>${label}</strong>${status}<div class="row">${controls}</div>${paste}</li>`;
+  const actions = `<div class="acct-actions">${signIn}${signOut}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
+  const token = account.agent === "claude" ? tokenForm(account, busy) : "";
+  return `${open}${count > 1 ? ' draggable="true"' : ""}><div class="card acct-card">${head}${token}${actions}</div></li>`;
 }
 
 export function renderAgentAccountSettings(view: AccountsView): string {
@@ -102,21 +138,22 @@ export function renderAgentAccountSettings(view: AccountsView): string {
     : view.busy
       ? `<p class="settings-message" role="status">${esc(view.busy)}</p>`
       : "";
-  if (!view.accounts) return `<section class="settings-section">${message}</section>`;
+  if (!view.accounts) return `<section class="acct-page">${message}</section>`;
   const groups = (Object.keys(AGENTS) as Agent[])
     .map((agent) => {
       const rows = view.accounts!.filter((account) => account.agent === agent);
       if (!rows.length) return "";
-      return `<div class="col"><h2>${AGENTS[agent]}</h2><ol class="col" data-agent-group="${agent}">${rows.map((row, index) => accountRow(row, index, rows.length, view)).join("")}</ol></div>`;
+      const order = rows.length > 1 ? '<p class="sub">Runs try these in order.</p>' : "";
+      return `<section class="acct-group"><div class="acct-group-head"><h2>${AGENTS[agent]}</h2><span class="cnt">${rows.length}</span></div>${order}<ol class="acct-list" data-agent-group="${agent}">${rows.map((row, index) => accountCard(row, index, rows.length, view)).join("")}</ol></section>`;
     })
     .join("");
   const options = Object.entries(AGENTS).map(
     ([id, name]) => `<option value="${id}">${name}</option>`,
   );
   const add = view.canManage
-    ? `<form data-account-add class="row"><label class="field"><span>Agent</span><select name="agent">${options.join("")}</select></label><label class="field"><span>Account name</span><input name="label" required maxlength="80" autocomplete="off"></label><button class="btn" type="submit"${view.busy ? " disabled" : ""}>Add account</button></form>`
+    ? `<div class="card acct-add"><h2>Add an account</h2><form data-account-add class="acct-add-form"><label class="field"><span>Agent</span><select name="agent">${options.join("")}</select></label><label class="field"><span>Account name</span><input name="label" required maxlength="80" autocomplete="off" placeholder="Work"></label><button class="btn primary" type="submit"${view.busy ? " disabled" : ""}>Add account</button></form></div>`
     : "";
-  return `<section class="settings-section">${message}${groups || '<p class="sub">No agent accounts yet.</p>'}${add}</section>`;
+  return `<section class="acct-page">${message}${groups || '<p class="empty">No agent accounts yet. Add one below.</p>'}${add}</section>`;
 }
 
 export function createAgentAccountSettings(open = openAgentAccounts): {

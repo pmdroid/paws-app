@@ -120,9 +120,7 @@ test("an admin adds, reorders, toggles extra usage, signs out and signs in", asy
     "Work",
     "Home",
   ]);
-  expect(root.querySelector("[data-account-status]")?.textContent).toContain(
-    "by agentbox · Extra usage off",
-  );
+  expect(root.querySelector("[data-account-status]")?.textContent).toContain("by agentbox");
   const form = root.querySelector("[data-account-add]")!;
   (form.querySelector("select") as unknown as HTMLSelectElement).value = "codex";
   (form.querySelector("input") as unknown as HTMLInputElement).value = " Team ";
@@ -297,24 +295,26 @@ for (const manage of [true, false]) {
       });
       return window.document.body.textContent;
     };
-    expect(render()).toContain("5-hour 62% · resets");
-    expect(render()).toContain("Weekly 30% · resets");
+    expect(render()).toContain("5-hour62%resets");
+    expect(render()).toContain("Weekly30%resets");
     expect(render()).toContain(
-      new Date(reset).toLocaleString([], {
+      new Date(reset + 86400000).toLocaleString([], {
         weekday: "short",
         hour: "2-digit",
         minute: "2-digit",
       }),
     );
-    expect(render()).toContain("updated 3 min ago");
+    expect(render()).toContain("Updated 3 min ago");
     expect(window.document.querySelectorAll("progress")).toHaveLength(2);
     expect(window.document.querySelector("progress")?.value).toBe(62);
     row.usage.stale = true;
     row.usage.limits[0]!.usedPercent = 100;
-    expect(render()).toContain("stale");
-    expect(render()).toContain("Limit reached until");
+    expect(render()).toContain("Usage may be out of date");
+    expect(render()).toContain("Limit reached");
+    expect(window.document.querySelector("progress")?.className).toContain("full");
     row.extraUsage = true;
-    expect(render()).toContain("Using extra usage");
+    expect(render()).toContain("On extra usage");
+    expect(render()).toContain("Running on extra usage");
     row.usage = null;
     render();
     expect(window.document.querySelector("[data-account-usage]")).toBeNull();

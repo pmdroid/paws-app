@@ -658,7 +658,7 @@ try {
       await visit(reader, width, name, "/dashboard/settings/agent-accounts", "Agent accounts");
       await expect(reader.locator("#agent-account-settings li")).toHaveCount(3);
       await expect(reader.locator("#agent-account-settings button")).toHaveCount(
-        canManage ? 13 : 0,
+        canManage ? 10 : 0,
       );
       await reader.unroute("**/api/runners/agent-accounts");
     }

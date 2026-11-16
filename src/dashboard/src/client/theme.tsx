@@ -610,6 +610,59 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "rounded-base border border-current/35 px-3 py-2 text-sm leading-relaxed text-state-failed",
     );
+  if (has("acct-page")) return styled("flex min-w-0 max-w-5xl flex-col gap-10");
+  if (has("acct-group")) return styled("flex min-w-0 flex-col gap-3");
+  if (has("acct-group-head")) return styled("flex items-center gap-2 [&>h2]:text-lg");
+  if (name === "ol" && has("acct-list"))
+    return styled("m-0 grid min-w-0 list-none grid-cols-1 gap-4 p-0 lg:grid-cols-2");
+  if (has("acct-item")) return styled("flex min-w-0 [&>*]:w-full");
+  if (has("acct-head")) return styled("flex min-w-0 items-start justify-between gap-3");
+  if (has("acct-title"))
+    return styled("flex min-w-0 flex-col gap-1 [&>strong]:text-base [&>strong]:leading-tight");
+  if (has("acct-usage")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("meter-row"))
+    return styled(
+      "grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)_2.75rem] items-center gap-x-3 gap-y-0.5 text-sm",
+    );
+  if (has("meter-name")) return styled("font-medium");
+  if (has("meter-value")) return styled("text-right font-mono text-xs tabular-nums");
+  if (has("meter-reset")) return styled("col-start-2 col-span-2 text-xs text-muted-foreground");
+  if (name === "progress")
+    return styled(
+      cn(
+        "block h-2 w-full appearance-none overflow-hidden rounded-full border-0 bg-accent [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-accent [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:rounded-full",
+        has("full")
+          ? "[&::-webkit-progress-value]:bg-state-failed [&::-moz-progress-bar]:bg-state-failed"
+          : has("high")
+            ? "[&::-webkit-progress-value]:bg-state-warn [&::-moz-progress-bar]:bg-state-warn"
+            : "[&::-webkit-progress-value]:bg-foreground [&::-moz-progress-bar]:bg-foreground",
+      ),
+    );
+  if (has("acct-token"))
+    return styled(
+      name === "details"
+        ? "flex min-w-0 flex-col gap-3 rounded-base text-sm [&[open]]:bg-background [&[open]]:p-3"
+        : "flex min-w-0 flex-col gap-3 rounded-base bg-background p-3",
+    );
+  if (has("acct-token-form"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto] [&>button]:justify-self-start",
+    );
+  if (has("acct-actions"))
+    return styled(
+      "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4",
+    );
+  if (has("acct-extra"))
+    return styled("flex items-center gap-2 text-sm font-normal text-muted-foreground");
+  if (has("acct-move")) return styled("ml-auto flex items-center gap-1");
+  if (has("acct-confirm"))
+    return styled(
+      "flex min-w-0 flex-col gap-3 rounded-base border border-current/35 p-3 text-sm text-state-failed [&_button]:text-foreground",
+    );
+  if (has("acct-add-form"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-[12rem_minmax(0,1fr)_auto] [&>button]:justify-self-start",
+    );
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))
