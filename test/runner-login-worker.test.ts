@@ -139,6 +139,34 @@ test("Claude receives terminal input and clears output after confirmed sign-in",
   }
 }, 10000);
 
+test("a Claude setup-token that exits without printing a token fails and publishes nothing", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-no-token-login-"));
+  const updates: RunnerLoginUpdate[] = [];
+  try {
+    await runProviderLogin({
+      agent: "claude",
+      home,
+      signal: AbortSignal.timeout(5000),
+      command: [process.execPath, "-e", "process.stdout.write('Login successful')"],
+      emit: (update) => updates.push(update),
+      answer: (_id, signal) =>
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        ),
+      account: {
+        publish() {
+          throw new Error("A sign-in without a token must not publish");
+        },
+      },
+    });
+    expect(updates.at(-1)!.state).toBe("failed");
+    expect(updates.some((update) => update.state === "connected")).toBe(false);
+    expect(readdirSync(home)).toEqual([]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 10000);
+
 test("aborting an interactive provider kills its process and never reports connected", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-cancel-login-"));
   const updates: RunnerLoginUpdate[] = [];

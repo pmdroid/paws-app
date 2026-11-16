@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, eq, isNull, sql } from "drizzle-orm";
 import {
   bindAgentAccount,
   bindingAccountHealth,
@@ -226,6 +226,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
       agent: "codex",
       label: "Second",
       enabled: true,
+      signedIn: false,
       held: expect.any(Boolean),
       running: 0,
       session: expect.objectContaining({ id: again.id, bindingId: binding.id, state: "starting" }),
@@ -264,6 +265,81 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
   expect(await auth(binding.id)).toBe("ok");
   expect(await auth(other.id)).toBe("auth_required");
   expect(await policy(db, runnerId)).toBeNull();
+});
+
+test("a named sign-in that fails without a stored credential leaves no usable binding", async () => {
+  const { db, runnerId, principal, login, account, binding } = await fixture();
+  const named = await login.start(principal, runnerId, "codex", binding.id);
+  await login.exchange(runnerId, named.id, {
+    state: "failed",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  const failed = await login.browser(
+    new Request(`https://paws.invalid/api/runners/${runnerId}/accounts/codex/login/${named.id}`),
+    principal,
+  );
+  expect(((await failed!.json()) as { state: string }).state).toBe("failed");
+  expect((await login.list(principal, runnerId)).bindings).toEqual([]);
+  expect(
+    await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ one: sql`1` })
+          .from(q.t.agentAccountBinding)
+          .where(
+            and(
+              eq(q.t.agentAccountBinding.accountId, account.id),
+              isNull(q.t.agentAccountBinding.removedAt),
+            ),
+          ),
+      ),
+    ),
+  ).toBeUndefined();
+});
+
+test("an expired or cancelled named sign-in without a stored credential leaves no binding", async () => {
+  const { runnerId, principal, login, clock, binding, db, account, workspace, now } =
+    await fixture();
+  await login.start(principal, runnerId, "codex", binding.id);
+  clock.at += 600_001;
+  await login.list(principal, runnerId);
+  expect((await login.list(principal, runnerId)).bindings).toEqual([]);
+  const again = await bindAgentAccount(db, {
+    userId: account.ownerUserId!,
+    workspaceId: workspace,
+    accountId: account.id,
+    runnerId,
+    now,
+  });
+  const started = await login.start(principal, runnerId, "codex", again.id);
+  const cancelled = await login.browser(
+    new Request(`https://paws.invalid/api/runners/${runnerId}/accounts/codex/login/${started.id}`, {
+      method: "DELETE",
+    }),
+    principal,
+  );
+  expect(((await cancelled!.json()) as { state: string }).state).toBe("cancelled");
+  expect((await login.list(principal, runnerId)).bindings).toEqual([]);
+});
+
+test("a named sign-in that reports connected before Paws stores its credential is not signed in", async () => {
+  const { runnerId, principal, login, binding } = await fixture();
+  const named = await login.start(principal, runnerId, "codex", binding.id);
+  await login.exchange(runnerId, named.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  expect((await login.list(principal, runnerId)).bindings).toEqual([
+    expect.objectContaining({
+      bindingId: binding.id,
+      signedIn: false,
+      session: expect.objectContaining({ state: "connected" }),
+    }),
+  ]);
 });
 
 test("a disabled account can still sign in; a foreign or removed binding cannot", async () => {

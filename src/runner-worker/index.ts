@@ -825,7 +825,7 @@ export async function executeRunnerCommand(
       })
     : options.home;
   let credentialsReturned = false;
-  const returnCredentials = () => {
+  const returnCredentials = (signingIn = false) => {
     const recipient = job.credentials?.certificate;
     if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
@@ -847,6 +847,7 @@ export async function executeRunnerCommand(
         command.type === "login",
       );
     } catch (error) {
+      if (signingIn) throw error;
       journalCaught(
         error,
         "runner-worker.returnCredentials",
@@ -959,6 +960,13 @@ export async function executeRunnerCommand(
     enterPhase("checkout");
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
+      if (binding && !job.credentials) {
+        emit({
+          type: "login",
+          update: { state: "failed", terminal: "", authorization: null, inputId: null },
+        });
+        throw new Error("Paws cannot receive this sign-in's credentials");
+      }
       await runProviderLogin({
         agent: command.agent,
         home,
@@ -980,7 +988,7 @@ export async function executeRunnerCommand(
                         binding.agent,
                         options.owners,
                       );
-                      returnCredentials();
+                      returnCredentials(true);
                     },
                     options.owners,
                   ),
