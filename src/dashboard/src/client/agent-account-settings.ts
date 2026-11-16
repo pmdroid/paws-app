@@ -4,6 +4,7 @@ import { openAgentAccounts } from "./agent-accounts";
 import { openAgentDeviceDialog } from "./agent-device-dialog";
 import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
+import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
 
 const AGENTS = { claude: "Claude", codex: "Codex", grok: "Grok", opencode: "OpenCode" } as const;
@@ -24,14 +25,19 @@ export type CentralAccount = {
 export type AccountsView = {
   canManage: boolean;
   accounts: CentralAccount[] | null;
-  runners: Record<string, string>;
+  runners: Record<string, string> | null;
   busy: string | null;
   error: string | null;
+  rowError?: { id: string; message: string } | null;
   confirm: string | null;
   removing?: string | null;
 };
 
 const DAY = 86_400_000;
+const NOT_YOURS = new Set([
+  "Agent account belongs to another member",
+  "Runner belongs to another member",
+]);
 const CHEVRON = (path: string) =>
   `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"></path></svg>`;
 const UP = CHEVRON("m18 15-6-6-6 6");
@@ -62,8 +68,8 @@ function accountBadge(account: CentralAccount): string {
   return '<span class="pill ok">Signed in</span>';
 }
 
-function accountStatus(account: CentralAccount, runners: Record<string, string>): string {
-  const runner = (id: string | null) => (id ? (runners[id] ?? id) : "a runner");
+function accountStatus(account: CentralAccount, runners: Record<string, string> | null): string {
+  const runner = (id: string | null) => (id ? (runners?.[id] ?? id) : "a runner");
   if (account.enabled === false) return "Disabled · runs skip this account";
   const parts: string[] = [];
   if (account.credential?.expiresAt)
@@ -128,7 +134,12 @@ function accountCard(account: CentralAccount, index: number, count: number, view
         ? "Used first"
         : `Used when ${index === 1 ? "the account above can't" : "the accounts above can't"} run`;
   const roleLine = role ? `<p class="sub" data-account-role>${esc(role)}</p>` : "";
-  const head = `<div class="acct-head"><div class="acct-name">${rank}<div class="acct-title"><strong>${label}</strong>${roleLine}<p class="sub" data-account-status>${esc(status)}</p></div></div>${accountBadge(account)}</div>${accountUsage(account)}`;
+  const error =
+    view.rowError?.id === account.id
+      ? `<p class="settings-message err" role="alert" data-account-error>${esc(view.rowError.message)}</p>`
+      : "";
+  const runnerless = view.runners !== null && !Object.keys(view.runners).length;
+  const head = `<div class="acct-head"><div class="acct-name">${rank}<div class="acct-title"><strong>${label}</strong>${roleLine}<p class="sub" data-account-status>${esc(status)}</p></div></div>${accountBadge(account)}</div>${accountUsage(account)}${error}`;
   const open = `<li class="acct-item" data-account-id="${esc(account.id)}"`;
   if (!view.canManage) return `${open}><div class="card acct-card">${head}</div></li>`;
   if (view.confirm === account.id)
@@ -136,7 +147,7 @@ function accountCard(account: CentralAccount, index: number, count: number, view
   if (view.removing === account.id)
     return `${open}><div class="card acct-card">${head}<div class="acct-confirm" role="alert"><p>Remove ${label}? Paws stops using it and forgets its sign-in. Runs using it stop at their next request.</p><div class="row"><button class="btn danger" type="button" data-account-action="remove-confirm"${busy}>Remove account</button><button class="btn" type="button" data-account-action="keep">Keep account</button></div></div></div></li>`;
   const signIn =
-    account.agent === "claude"
+    account.agent === "claude" || runnerless
       ? ""
       : `<button class="btn${account.credential ? "" : " primary"}" type="button" data-account-action="sign-in"${busy}>${account.credential ? "Sign in again" : "Sign in"}</button>`;
   const signOut = account.credential
@@ -177,7 +188,11 @@ export function renderAgentAccountSettings(view: AccountsView): string {
   const add = view.canManage
     ? `<div class="card acct-add"><h2>Add an account</h2><form data-account-add class="acct-add-form"><label class="field"><span>Agent</span><select name="agent">${options.join("")}</select></label><label class="field"><span>Account name</span><input name="label" required maxlength="80" autocomplete="off" placeholder="Work"></label><button class="btn primary" type="submit"${view.busy ? " disabled" : ""}>Add account</button></form></div>`
     : "";
-  return `<section class="acct-page">${message}${groups || '<p class="empty">No agent accounts yet. Add one below.</p>'}${add}</section>`;
+  const runnerless =
+    view.canManage && view.runners !== null && !Object.keys(view.runners).length
+      ? `<p class="sub" data-account-runnerless><a href="${routeHref({ view: "runners", id: null })}">Add a runner first</a> to sign in to your agent accounts.</p>`
+      : "";
+  return `<section class="acct-page">${message}${runnerless}${groups || '<p class="empty">No agent accounts yet. Add one below.</p>'}${add}</section>`;
 }
 
 export function createAgentAccountSettings(open = openAgentAccounts): {
@@ -189,7 +204,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
   let view: AccountsView = {
     canManage: false,
     accounts: null,
-    runners: {},
+    runners: null,
     busy: null,
     error: null,
     confirm: null,
@@ -209,31 +224,47 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result)
-      throw new Error(result?.error ?? "Agent accounts could not be reached. Try again.");
+      throw Object.assign(
+        new Error(result?.error ?? "Agent accounts could not be reached. Try again."),
+        { status: response.status },
+      );
     return result as T;
   };
   const load = async () => {
     const [listing, listed] = await Promise.all([
       request<{ canManage: boolean; accounts: CentralAccount[] }>("/api/runners/agent-accounts"),
-      request<{ runners: { id: string; name: string }[] }>("/api/runners").catch((error) => {
+      Promise.all([
+        request<{ userId: string }>("/api/auth/session"),
+        request<{ runners: { id: string; name: string; ownerUserId: string }[] }>("/api/runners"),
+      ]).catch((error) => {
         journalCaught(error, "agent-account-settings.load.runners", null);
-        return { runners: [] };
+        return null;
       }),
     ]);
     view.canManage = listing.canManage;
     view.accounts = listing.accounts;
-    view.runners = Object.fromEntries(listed.runners.map((runner) => [runner.id, runner.name]));
+    view.runners = listed
+      ? Object.fromEntries(
+          listed[1].runners.flatMap((runner) =>
+            runner.ownerUserId === listed[0].userId ? [[runner.id, runner.name]] : [],
+          ),
+        )
+      : null;
+    if (!listed) view.error = "Your runners could not be loaded. Reload to try again.";
   };
-  const run = async (busy: string, change?: () => Promise<void>) => {
+  const run = async (busy: string, change?: () => Promise<void>, id?: string) => {
     if (!engine || (view.busy && change)) return;
-    Object.assign(view, { busy, error: null, confirm: null, removing: null });
+    Object.assign(view, { busy, error: null, confirm: null, removing: null, rowError: null });
     paint();
     try {
       await change?.();
       await load();
     } catch (error) {
       journalCaught(error, "agent-account-settings.run", null);
-      view.error = error instanceof Error ? error.message : "Try again.";
+      const message = error instanceof Error ? error.message : "Try again.";
+      if (id && (error as { status?: number }).status === 403 && NOT_YOURS.has(message))
+        view.rowError = { id, message };
+      else view.error = message;
     }
     view.busy = null;
     paint();
@@ -248,8 +279,10 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     if (target < 0 || target >= ids.length) return;
     ids.splice(ids.indexOf(id), 1);
     ids.splice(target, 0, id);
-    void run("Saving the order…", () =>
-      request("/api/runners/agent-accounts/order", "PUT", { agent: account.agent, ids }),
+    void run(
+      "Saving the order…",
+      () => request("/api/runners/agent-accounts/order", "PUT", { agent: account.agent, ids }),
+      id,
     );
   };
   const signIn = async (id: string) => {
@@ -270,7 +303,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
       "POST",
     );
     open(
-      { id: target.runnerId, name: view.runners[target.runnerId] ?? target.runnerId },
+      { id: target.runnerId, name: view.runners?.[target.runnerId] ?? target.runnerId },
       target.agent,
       () => void run("Loading agent accounts…"),
       target.bindingId,
@@ -285,12 +318,15 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
     if (action === "up" || action === "down")
       reorder(id, (ids) => ids.indexOf(id) + (action === "up" ? -1 : 1));
     else if (action === "extra-usage")
-      void run("Saving extra usage…", () =>
-        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/extra-usage`, "PUT", {
-          extraUsage: (control as HTMLInputElement).checked,
-        }),
+      void run(
+        "Saving extra usage…",
+        () =>
+          request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/extra-usage`, "PUT", {
+            extraUsage: (control as HTMLInputElement).checked,
+          }),
+        id,
       );
-    else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id));
+    else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id), id);
     else if (action === "sign-out" || action === "keep") {
       view.confirm = action === "keep" ? null : id;
       view.removing = null;
@@ -300,18 +336,25 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
       view.confirm = null;
       paint();
     } else if (action === "remove-confirm")
-      void run("Removing the account…", () =>
-        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}`, "DELETE"),
+      void run(
+        "Removing the account…",
+        () => request(`/api/runners/agent-accounts/${encodeURIComponent(id)}`, "DELETE"),
+        id,
       );
     else if (action === "enable" || action === "disable")
-      void run(action === "enable" ? "Enabling the account…" : "Disabling the account…", () =>
-        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/enabled`, "PUT", {
-          enabled: action === "enable",
-        }),
+      void run(
+        action === "enable" ? "Enabling the account…" : "Disabling the account…",
+        () =>
+          request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/enabled`, "PUT", {
+            enabled: action === "enable",
+          }),
+        id,
       );
     else if (action === "sign-out-confirm")
-      void run("Signing out everywhere…", () =>
-        request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/credential`, "DELETE"),
+      void run(
+        "Signing out everywhere…",
+        () => request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/credential`, "DELETE"),
+        id,
       );
   };
   const submit = (event: Event) => {
@@ -323,8 +366,13 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
       const token = input.value.trim();
       input.value = "";
       if (id && token)
-        void run("Checking the token…", () =>
-          request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/token`, "PUT", { token }),
+        void run(
+          "Checking the token…",
+          () =>
+            request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/token`, "PUT", {
+              token,
+            }),
+          id,
         );
       return;
     }
