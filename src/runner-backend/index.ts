@@ -52,7 +52,9 @@ import {
   pinnedSlotsReservedSteps,
   releasePinnedSlotSteps,
   recordFallbackAttemptSteps,
+  runnerCommandAcknowledgedBySteps,
   runnerHasCapacitySteps,
+  runnerLaneHelperWaitingSteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
@@ -129,6 +131,7 @@ import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
+import { HELPER_LANE_BUSY } from "./helpers";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
@@ -167,6 +170,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
+  RunnerSlotsBusyError,
   WORKSPACE_HOOK_LIMIT,
   systemClock,
   type WorkspaceHook,
@@ -195,6 +199,9 @@ export class RemotePreparationTimeout extends Error {
 }
 
 const FENCED = Symbol("fenced");
+
+const PREPARATION_TIMEOUT_MS = 120_000;
+const PREPARATION_QUEUE_MS = 15 * 60_000;
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
 /** Above the longest silent tool call seen; a run this quiet must be confirmed by its runner. */
@@ -996,7 +1003,7 @@ export function createRemoteAgentRunner(options: {
                   runnerId: selected.id,
                   workspaceId: selected.workspaceId,
                   issuedAt,
-                  expiresAt: issuedAt + 120_000,
+                  expiresAt: issuedAt + PREPARATION_QUEUE_MS,
                   type: "probe",
                   profile,
                   ...commandAccount(selected.account),
@@ -1019,7 +1026,23 @@ export function createRemoteAgentRunner(options: {
                 throw await placementRace(itemId, selected.id, error);
               throw error;
             }
-            while (now() < issuedAt + 120_000) {
+            let deadline = issuedAt + PREPARATION_TIMEOUT_MS;
+            let checked = issuedAt;
+            for (;;) {
+              const at = now();
+              if (
+                await store.run(function* (q) {
+                  return (
+                    !(yield* runnerCommandAcknowledgedBySteps(q, id, at)) &&
+                    (yield* runnerLaneHelperWaitingSteps(q, selected.id, at))
+                  );
+                })
+              )
+                deadline += at - checked;
+              checked = at;
+              if (at >= deadline) throw new RemotePreparationTimeout();
+              if (at >= issuedAt + PREPARATION_QUEUE_MS)
+                throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
               signal.throwIfAborted();
               if (taskScope)
                 await work.scopeTask(
@@ -1077,7 +1100,6 @@ export function createRemoteAgentRunner(options: {
               }
               await delay(interval, undefined, { signal });
             }
-            throw new RemotePreparationTimeout();
           }
           const importStoredCheckpoint = async (
             github: GitHubCommits,
