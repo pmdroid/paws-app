@@ -6,6 +6,7 @@ const answering = (status: number) => async () => new Response("{}", { status })
 test("a setup token is refused only when Claude rejects it", async () => {
   expect(await checkClaudeToken("sk-ant-oat01-a", answering(200))).toBe(true);
   expect(await checkClaudeToken("sk-ant-oat01-a", answering(403))).toBe(true);
+  expect(await checkClaudeToken("sk-ant-oat01-a", answering(429))).toBe(true);
   expect(await checkClaudeToken("sk-ant-oat01-a", answering(401))).toBe(false);
   await expect(checkClaudeToken("sk-ant-oat01-a", answering(503))).rejects.toThrow();
 });

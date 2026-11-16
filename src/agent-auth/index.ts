@@ -194,6 +194,6 @@ export async function checkClaudeToken(
     signal: AbortSignal.timeout(15_000),
   });
   if (response.status === 401) return false;
-  if (response.ok || response.status === 403) return true;
+  if (response.ok || response.status === 403 || response.status === 429) return true;
   throw new Error(`Claude token check failed with status ${response.status}`);
 }
