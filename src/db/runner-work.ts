@@ -15,7 +15,7 @@ import {
 } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText, jsonValue } from "./json-text";
-import { runnerSignInWaitingSteps, workHelperSql } from "./runner-capacity";
+import { laneHelperSql, runnerSignInWaitingSteps } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 
@@ -377,7 +377,7 @@ export function* runnerLaneHelperWaitingSteps(q: Q, runnerId: string, now: numbe
           isNull(runnerHelper.endedAt),
           isNull(runnerHelper.result),
           gt(runnerHelper.expiresAt, now),
-          workHelperSql(q, "runner_helper"),
+          laneHelperSql(q, "runner_helper", now),
         ),
       )
       .limit(1),

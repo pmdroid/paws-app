@@ -14,6 +14,7 @@ import {
   runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
+  undeliveredHelperStreakSteps,
   workspaceSessionIdsSteps,
   type Db,
 } from "../db";
@@ -160,6 +161,14 @@ export function createRemoteSessionAgentRunner(options: {
                   },
                 })
               : await store.run((q) => recentRunnersSteps(q, now() - 60_000));
+          const missed = new Set<string>();
+          for (const runner of runners)
+            if (await store.run((q) => undeliveredHelperStreakSteps(q, runner.id, now(), 1)))
+              missed.add(runner.id);
+          runners = [
+            ...runners.filter((runner) => !missed.has(runner.id)),
+            ...runners.filter((runner) => missed.has(runner.id)),
+          ];
           for (const runnerId of full)
             if (
               (

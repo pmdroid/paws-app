@@ -24,8 +24,9 @@ import { emitJobReady } from "./jobs";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import {
   conversationsInUseSteps,
+  laneHelperSql,
+  undeliveredHelperStreakSteps,
   wakeRunnerSlotWaitsSteps,
-  workHelperSql,
 } from "./runner-capacity";
 import {
   AGENT_USER_RUNNER_VERSION,
@@ -135,6 +136,8 @@ type RunnerOverview = RunnerRecord & {
   version: string | null;
   agentUser: RunnerAgentUser | null;
   idle: boolean;
+  /** Its last 3 helper commands went unacknowledged past the acknowledgement window. */
+  helpersUndelivered: boolean;
   slots: { used: number; total: number };
   /** Desired is set in Paws; applied and ceiling are what the runner last reported. */
   concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
@@ -389,7 +392,7 @@ export function* listRunnerOverviewSteps(
         helperOnRunner,
         isNull(helper.endedAt),
         gt(helper.expiresAt, now),
-        workHelperSql(q, "runner_helper"),
+        laneHelperSql(q, "runner_helper", now),
       ),
     );
   const least = sql`LEAST`;
@@ -505,6 +508,7 @@ export function* listRunnerOverviewSteps(
           ? "runner"
           : null),
       idle: row.busy === 0,
+      helpersUndelivered: yield* undeliveredHelperStreakSteps(q, row.id, now, 3),
       slots: { used: row.used, total: row.total },
       conversations:
         row.conversation === null

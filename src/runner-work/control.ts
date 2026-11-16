@@ -88,6 +88,7 @@ import {
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
+  RUNNER_LIVE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
   CONTROL_PLANE_LEVEL_RUNNER_VERSION,
@@ -140,12 +141,6 @@ type ResponseTask = {
   purpose: string | null;
   repository: { owner: string; repo: string; remoteUrl: string } | undefined;
 };
-
-/**
- * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
- * heartbeat sampled just before the runner acknowledged the command.
- */
-export const RUNNER_LIVE_GRACE_MS = 30_000;
 
 export class RunnerTeardownPending extends Error {
   override readonly name = "RunnerTeardownPending";

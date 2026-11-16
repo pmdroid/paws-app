@@ -1,9 +1,15 @@
 import type { RunnerCapacityWaitState } from "./items";
-import { CONVERSATION_TOOLS_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
+import {
+  CONVERSATION_TOOLS_RUNNER_VERSION,
+  RUNNER_LIVE_GRACE_MS,
+  runnerHelperLifetime,
+  runnerReleaseAtLeast,
+} from "../runner-protocol";
 import {
   and,
   asc,
   count,
+  desc,
   eq,
   exists,
   gt,
@@ -34,6 +40,46 @@ export const ciWaitingSql = (q: Q, run: string): SQL =>
 
 export const workHelperSql = (q: Q, helper: string): SQL =>
   sql.raw(`${helper}.purpose IS DISTINCT FROM 'conversation'`);
+
+const helperIssuedSql = (helper: string) =>
+  `${helper}.expires_at - CASE WHEN ${helper}.purpose='finding_groups' THEN ${runnerHelperLifetime("finding_groups")} ELSE ${runnerHelperLifetime("classify")} END`;
+
+/** Work helpers in the lane: acknowledged, or issued within the runner acknowledgement window. */
+export const laneHelperSql = (q: Q, helper: string, now: number): SQL =>
+  sql.raw(
+    `(${helper}.purpose IS DISTINCT FROM 'conversation' AND (${helper}.acknowledged_at IS NOT NULL
+      OR ${helperIssuedSql(helper)}>${Math.trunc(now) - RUNNER_LIVE_GRACE_MS}))`,
+  );
+
+/** Whether the runner's latest `length` settled work helpers all went unacknowledged. */
+export function* undeliveredHelperStreakSteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+  length: number,
+): Steps<boolean> {
+  const { runnerHelper } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ acknowledgedAt: runnerHelper.acknowledgedAt })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.runnerId, runnerId),
+          workHelperSql(q, "runner_helper"),
+          or(
+            isNotNull(runnerHelper.acknowledgedAt),
+            sql.raw(
+              `${helperIssuedSql("runner_helper")}<=${Math.trunc(now) - RUNNER_LIVE_GRACE_MS}`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(desc(runnerHelper.id))
+      .limit(length),
+  );
+  return rows.length === length && rows.every((row) => row.acknowledgedAt === null);
+}
 
 export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
@@ -91,7 +137,7 @@ export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, exclu
           num(sql`(SELECT count(*) FROM runner_work w WHERE w.runner_id=${runnerId} AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)} AND w.run_id<>${excludeRunId})
             OR ${teardownUnresolved})) +
           (SELECT count(*) FROM runner_helper h WHERE h.runner_id=${runnerId} AND h.ended_at IS NULL AND h.expires_at>${now}
-            AND ${workHelperSql(q, "h")}) +
+            AND ${laneHelperSql(q, "h", now)}) +
           (SELECT count(*) FROM retro_dispatch WHERE runner_id=${runnerId} AND released_at IS NULL)`),
       })
       .from(sql`(SELECT 1) AS occupancy`),
@@ -712,7 +758,7 @@ export function* runnerHelperAvailabilitySteps(
           eq(runnerHelper.runnerId, runnerId),
           isNull(runnerHelper.endedAt),
           gt(runnerHelper.expiresAt, now),
-          workHelperSql(q, "runner_helper"),
+          laneHelperSql(q, "runner_helper", now),
         ),
       ),
   );
