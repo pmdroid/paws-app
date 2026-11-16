@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { settleReactWork } from "./settle-react";
-import { initializeWorkspaceAccess } from "./workspace";
+import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
 
 const GLOBALS = ["window", "document", "location", "sessionStorage", "HTMLElement", "Event"];
 const saved = new Map<string, unknown>();
@@ -84,4 +84,49 @@ test("the sign-in page states both roles before sign-in", async () => {
   expect(window.document.querySelector("#page-content")?.textContent).toContain(
     "To set up Paws you need to be an admin of your Linear workspace. Paws's GitHub App must be installed on the GitHub organization or account whose repositories it will work on; installing it needs an owner of that organization. After setup, other people only need to sign in with Linear.",
   );
+});
+
+function respondConfigured(response: Response) {
+  const requested: string[] = [];
+  globalThis.fetch = (async (url: URL | string) => {
+    requested.push(String(url));
+    if (String(url) === "/api/auth/session") return response.clone();
+    if (String(url) === "/api/workspaces/github-app")
+      return Response.json({
+        configured: true,
+        canManage: true,
+        webhookUrl: "",
+        permissions: {},
+        events: [],
+      });
+    return Response.json({ error: "unavailable" }, { status: 503 });
+  }) as typeof fetch;
+  return requested;
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+test("a configured GitHub App loads repository setup on the setup screen", async () => {
+  const requested = respondConfigured(session("admin", false));
+  expect(await initializeWorkspaceAccess(() => null)).toBe(false);
+  await settle();
+  expect(requested).toContain("/api/workspaces/github-connect");
+});
+
+test("a configured GitHub App checks GitHub only once Integrations is shown", async () => {
+  const requested = respondConfigured(session("admin", true));
+  expect(await initializeWorkspaceAccess(() => null)).toBe(true);
+  await settle();
+  expect(requested).toContain("/api/workspaces/github-app");
+  expect(requested).not.toContain("/api/workspaces/github-connect");
+  showWorkspaceSettingsPage("integrations");
+  await settle();
+  expect(requested).toContain("/api/workspaces/github-connect");
+});
+
+test("a configured GitHub App checks GitHub at once when Integrations is already shown", async () => {
+  const requested = respondConfigured(session("admin", true));
+  expect(await initializeWorkspaceAccess(() => "integrations")).toBe(true);
+  await settle();
+  expect(requested).toContain("/api/workspaces/github-connect");
 });
