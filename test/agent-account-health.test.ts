@@ -33,6 +33,7 @@ import {
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
+import { currentRunnerHost } from "./pglite-fixtures";
 
 const NOW = 1_800_000_000_000;
 const bindingReadiness = (db: Db, input: Parameters<typeof bindingReadinessSteps>[1]) =>
@@ -429,6 +430,8 @@ test("a central Claude account without a stored credential needs sign-in; Grok s
         now: NOW,
       }),
     );
+  for (const runnerId of ["R1", "R2", "R3"])
+    await write(db, (q) => currentRunnerHost(q, runnerId, NOW));
   const credential = (q: Q) => q.t.agentAccountCredential;
   await write(db, (q) =>
     q.orm.delete(credential(q)).where(eq(credential(q).accountId, accounts.a)),
