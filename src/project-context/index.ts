@@ -49,7 +49,43 @@ export type {
   ContextSourceRevision,
 } from "../db";
 export {
+  createFakeContextSummarizer,
   createFakeProjectContextReads,
+  type FakeContextSummarizer,
   type FakeProjectContextReads,
   type FakeProjectDocument,
 } from "./fake";
+export {
+  CONTEXT_BUDGET_DEFAULTS,
+  CONTEXT_TOKEN_ESTIMATE,
+  estimateContextTokens,
+  validateContextBudget,
+  type ContextBudgetSettings,
+  type ContextBudgetValidation,
+  type ContextModelBudget,
+} from "./budget";
+export {
+  CONTEXT_PACK_HEADER,
+  CONTEXT_SELECTION_LIMITS,
+  retrieveContextDetail,
+  selectContext,
+  type ContextDetail,
+  type ContextManifest,
+  type ContextManifestReference,
+  type ContextManifestSource,
+  type ContextRecentEntry,
+  type ContextSelection,
+  type ContextSelectionRequest,
+} from "./select";
+export {
+  CONTEXT_COMPACTION_LIMITS,
+  compactContext,
+  createContextCapacity,
+  extractiveContextSummarizer,
+  type ContextCapacity,
+  type ContextCompactionOutcome,
+  type ContextCompactionRequestInput,
+  type ContextCompactionRun,
+  type ContextSummarizer,
+  type ContextSummarizerInput,
+} from "./compact";

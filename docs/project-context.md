@@ -36,3 +36,37 @@ Retention defaults:
 | Source text per source        | 20,000 bytes                                     |
 
 Over a cap, Paws clears the least important, oldest records first. Records removed by expiry or a cap come back the next time Paws reads their unchanged source. A short audit trail of who stored, corrected, forgot or re-added a source is kept without any record text.
+
+## Selecting context for a prompt
+
+Paws chooses a small, sourced selection from a project's context. It never sends the whole history. The selection is evidence, not an instruction, and it never approves an action. Agent sessions do not receive it yet.
+
+Paws first sets aside room for the instructions, the current request, the tools and the response, then for recent working context. Memory gets what remains, up to its own budget. Paws counts with the model's tokenizer when it has one. Otherwise it estimates one token per two bytes of UTF-8 text plus four per piece of text. That estimate overcounts typical English text by about half, so a prompt stays within the cap. If the request alone does not fit, Paws returns no context instead of trimming the request.
+
+Records a person can no longer read are never candidates. Half of the candidate reads go to corrections, open questions, decisions and inferences, so newer facts can't crowd them out. Records already covered by a summary in use are skipped. Records tied to a different repository or ref than the task are left out. Among the rest, Paws ranks corrections by people first, then unresolved questions, decisions and inferences, then reported facts, adjusted for relevance to the request, importance and age. Each kind keeps its own label, so an open question never reads as settled. Records that don't fit are listed by record id, and anyone who can still read a record can fetch it on its own.
+
+Each selection comes with a manifest. It lists the scope and audience version, the records used with their source and revision, counts of selected and left-out records, the token accounting and the summary used. It never mentions records the reader can't see.
+
+| Setting                   | Default | Rule                                                   |
+| ------------------------- | ------- | ------------------------------------------------------ |
+| Hard prompt cap           | 200,000 | Lowered to the model's context window when smaller     |
+| Response reserve          | 8,000   | Raised to the model's output limit when larger         |
+| Memory                    | 6,000   | Memory, recent context and response stay below the cap |
+| Recent working context    | 4,000   | Newest first, at most 20 entries                       |
+| Compaction soft threshold | 4,500   | Below the memory budget                                |
+| Candidates read           | 200     | At most 200                                            |
+| Omitted records listed    | 20      | At most 50                                             |
+| Summarizer input          | 12,000  |                                                        |
+| Summary size              | 1,500   | Below the soft threshold                               |
+| Summarizer timeout        | 60 s    | 1 s to 5 min                                           |
+| Retry after a failure     | 10 min  | 1 min to 1 day                                         |
+
+Token values are tokens. Paws rejects a setting outside its range or one that breaks a rule.
+
+## Rolling summaries
+
+When summarizable facts would push memory past the soft threshold, Paws queues one compaction for that part of the project. A second request while one is pending is merged with it. Compaction folds new reported and verified facts into a rolling summary. Decisions, unresolved questions, inferences and corrections never go into a summary. Paws always keeps them as separate records, so a summary can't resolve them or change them.
+
+A summary records which version of each record it covers, and only records whose text made it into the summary count as covered. The rest stay individual records until a later compaction. Before Paws calls the summarizer, before it saves the result and before it uses a summary, it checks that every covered record is still current and readable. Forgetting, deleting, revoking, expiring or evicting a source clears every summary built from it in the same database change. When a person corrects a record, Paws stops using the old summary until it builds a new one. A compaction that started earlier can't overwrite a newer summary. A crashed compaction gives up its claim after two minutes.
+
+Compaction uses at most two slots in the Paws process. It does not use runner capacity. If the summarizer fails, times out or returns too much text, or the covered records change while it runs, Paws drops the request and doesn't compact that part of the project again until the retry interval has passed. It keeps the previous state and selects individual records and record ids within the budget. It never falls back to a stale summary. Compacting a session's transcript is separate: it changes nothing stored here.

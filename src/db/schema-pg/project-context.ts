@@ -155,3 +155,55 @@ export const contextAudit = pgTable(
   },
   (table) => [index("context_audit_scope").on(table.workspaceId, table.scopeKind, table.scopeId)],
 );
+
+export const contextSummary = pgTable(
+  "context_summary",
+  {
+    id: text().primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id").notNull(),
+    partition: text().notNull(),
+    audience: text().notNull(),
+    audienceLineage: text("audience_lineage").notNull(),
+    restriction: jsonb().notNull(),
+    version: integer().notNull(),
+    status: text().notNull(),
+    body: text().notNull(),
+    bodyBytes: integer("body_bytes").notNull(),
+    covered: integer().notNull(),
+    watermark: bigint({ mode: "number" }),
+    generation: bigint({ mode: "number" }),
+    requestedAt: bigint("requested_at", { mode: "number" }),
+    leaseToken: text("lease_token"),
+    leaseUntil: bigint("lease_until", { mode: "number" }),
+    claimedAt: bigint("claimed_at", { mode: "number" }),
+    attempts: integer().notNull(),
+    failure: text(),
+    builtAt: bigint("built_at", { mode: "number" }),
+    changedAt: bigint("changed_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("context_summary_partition").on(
+      table.workspaceId,
+      table.scopeKind,
+      table.scopeId,
+      table.partition,
+    ),
+    index("context_summary_requested").on(table.requestedAt),
+    check("context_summary_status", sql`status IN ('empty','current','invalidated')`),
+  ],
+);
+
+export const contextSummarySource = pgTable(
+  "context_summary_source",
+  {
+    summaryId: text("summary_id").notNull(),
+    recordId: text("record_id").notNull(),
+    recordVersion: integer("record_version").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.summaryId, table.recordId], name: "context_summary_source_pk" }),
+    index("context_summary_source_record").on(table.recordId),
+  ],
+);
