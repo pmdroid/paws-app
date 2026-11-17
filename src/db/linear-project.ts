@@ -1,4 +1,4 @@
-import { eq, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql, type SQL } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 
 /** The Linear project an issue belongs to. A null name means the read did not include it. */
@@ -63,4 +63,19 @@ export async function applyLinearIssueProject(
   project: WorkItemLinearProject | null,
 ): Promise<number> {
   return store.run((q) => applyLinearIssueProjectSteps(q, linearIssueId, project));
+}
+
+export async function linearProjectName(store: Db, projectId: string): Promise<string | null> {
+  return store.run(function* (q) {
+    const { workItem } = q.t;
+    const row = yield* q.one(
+      q.orm
+        .select({ name: workItem.linearProjectName })
+        .from(workItem)
+        .where(and(eq(workItem.linearProjectId, projectId), isNotNull(workItem.linearProjectName)))
+        .orderBy(desc(workItem.createdAt))
+        .limit(1),
+    );
+    return row?.name ?? null;
+  });
 }

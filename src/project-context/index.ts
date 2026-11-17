@@ -107,3 +107,18 @@ export {
   type SessionContextInspection,
   type WorkItemContextEntry,
 } from "./session";
+export {
+  CONTEXT_VIEW_LIMITS,
+  CONTEXT_VIEW_SCOPES,
+  contextViewSupported,
+  readContextRecord,
+  readContextView,
+  type ContextView,
+  type ContextViewDetail,
+  type ContextViewPage,
+  type ContextViewRecord,
+  type ContextViewScopeKind,
+  type ContextViewSource,
+  type ContextViewSummary,
+} from "./view";
+export { createProjectContextHttp } from "./http";
