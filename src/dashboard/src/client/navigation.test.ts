@@ -24,9 +24,9 @@ const model = {
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
-  // Settings and Workspace have their own entries, and an evidence page is opened from a run or a copied link.
+  // Settings and Workspace have their own entries, an evidence page is opened from a run or a copied link, and project context from an issue's project.
   const linked = Object.keys(PAGES).filter(
-    (view) => !["settings", "workspace", "evidence", "runs", "alias"].includes(view),
+    (view) => !["settings", "workspace", "evidence", "runs", "alias", "context"].includes(view),
   );
   expect(new Set(views).size).toBe(linked.length);
   expect(views.length).toBe(linked.length);

@@ -18,8 +18,11 @@ import {
   type ContextRequester,
   type ContextView,
   type ContextViewDetail,
-  type FakeContextAccess,
 } from "../src/project-context";
+import type {
+  ContextView as ClientContextView,
+  ContextViewDetail as ClientContextViewDetail,
+} from "../src/dashboard/src/project-context";
 import { tempStore } from "./pglite";
 
 const T0 = Date.parse("2026-11-17T12:00:00Z");
@@ -152,7 +155,8 @@ test("an authorized project shows its summary, open items and paginated records 
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toContain("no-store");
   const view = viewOf(response.text);
-  expect(view.scope).toMatchObject({ kind: "project", id: projectId });
+  const read: ClientContextView = view;
+  expect(read.scope).toMatchObject({ kind: "project", id: projectId });
   expect(view.scope.url).toBe(`https://linear.app/acme/${projectId}`);
   expect(view.decisions.some((record) => record.text.includes("ship project scope first"))).toBe(
     true,
@@ -193,7 +197,8 @@ test("an authorized project shows its summary, open items and paginated records 
       (await get(alice, `/api/context/project/${projectId}/records/${corrected2.id}`)).text,
     ) as { detail: ContextViewDetail }
   ).detail;
-  expect(detail.record.correctedBy).toBe(alice.userId);
+  const shown: ClientContextViewDetail = detail;
+  expect(shown.record.correctedBy).toBe(alice.userId);
   expect(detail.record.supersedes).toBe(target.id);
   expect(detail.versions.map((version) => version.status)).toEqual(["current", "superseded"]);
 });

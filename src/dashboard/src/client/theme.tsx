@@ -359,6 +359,14 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 md:grid-cols-[minmax(16rem,2fr)_minmax(0,3fr)] [&>*]:min-w-0",
     );
+  if (has("context-layout"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-start gap-6 md:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)] [&>*]:min-w-0",
+    );
+  if (has("context-record"))
+    return styled(
+      "flex min-w-0 flex-col gap-2 rounded-base border border-border bg-secondary-background p-3 aria-[current=true]:border-foreground",
+    );
   if (has("improvement-list-pane"))
     return styled("flex min-w-0 flex-col gap-3 md:max-h-[80vh] md:overflow-y-auto md:p-1");
   if (has("segmented"))

@@ -65,7 +65,7 @@ export async function applyLinearIssueProject(
   return store.run((q) => applyLinearIssueProjectSteps(q, linearIssueId, project));
 }
 
-export async function linearProjectName(store: Db, projectId: string): Promise<string | null> {
+export async function readLinearProjectName(store: Db, projectId: string): Promise<string | null> {
   return store.run(function* (q) {
     const { workItem } = q.t;
     const row = yield* q.one(

@@ -2,7 +2,7 @@ import {
   contextSourceRestriction,
   contextSummaryLineage,
   currentContextRecords,
-  linearProjectName,
+  readLinearProjectName,
   listContextPage,
   listContextSummaries,
   type ContextClassification,
@@ -219,7 +219,7 @@ export async function readContextView(
     scope: {
       kind: "project",
       id: namespace.scopeId,
-      name: await linearProjectName(db, namespace.scopeId),
+      name: await readLinearProjectName(db, namespace.scopeId),
       url: description?.source.url ?? null,
     },
     updatedAt: latest?.observedAt ?? null,

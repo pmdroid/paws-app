@@ -105,6 +105,7 @@ export interface Rendered {
 /** The Findings page loads its own data into this root. */
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
 const IMPROVEMENTS_ROOT = `${pageHeading("improvements")}<div id="improvements-page"></div>`;
+const CONTEXT_ROOT = `${pageHeading("context")}<div id="context-page"></div>`;
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
@@ -127,36 +128,39 @@ export function render(model: RenderModel): Rendered {
             ? FINDINGS_ROOT
             : model.route.view === "improvements"
               ? IMPROVEMENTS_ROOT
-              : settingsPage
-                ? renderSettingsPage(settingsPage)
-                : model.route.view === "questions"
-                  ? renderQuestions({
-                      selected: model.route.id,
-                      list: model.questions ?? null,
-                      detail:
-                        model.question?.question.id === model.route.id ? model.question : null,
-                      missing: model.route.id !== null && model.missingQuestion === model.route.id,
-                      error: model.phase === "error" ? model.error : null,
-                    })
-                  : model.route.view === "evidence"
-                    ? renderEvidence(model)
-                    : model.route.view === "overview"
-                      ? model.overview
-                        ? viewOverview(model.overview)
-                        : renderPending(model)
-                      : model.route.view === "mergeQueue"
-                        ? viewMergeQueue(model)
-                        : model.phase !== "loading" && openDetail(model)
-                          ? issuePage(
-                              model.issue!,
-                              model.closeout ?? emptyCloseoutView(),
-                              model.engineUrl,
-                            )
-                          : model.phase !== "loading" &&
-                              model.issues &&
-                              (route.view === "issues" || route.view === "runs")
-                            ? viewIssues(model.issues, route.id)
-                            : renderPending(model),
+              : model.route.view === "context"
+                ? CONTEXT_ROOT
+                : settingsPage
+                  ? renderSettingsPage(settingsPage)
+                  : model.route.view === "questions"
+                    ? renderQuestions({
+                        selected: model.route.id,
+                        list: model.questions ?? null,
+                        detail:
+                          model.question?.question.id === model.route.id ? model.question : null,
+                        missing:
+                          model.route.id !== null && model.missingQuestion === model.route.id,
+                        error: model.phase === "error" ? model.error : null,
+                      })
+                    : model.route.view === "evidence"
+                      ? renderEvidence(model)
+                      : model.route.view === "overview"
+                        ? model.overview
+                          ? viewOverview(model.overview)
+                          : renderPending(model)
+                        : model.route.view === "mergeQueue"
+                          ? viewMergeQueue(model)
+                          : model.phase !== "loading" && openDetail(model)
+                            ? issuePage(
+                                model.issue!,
+                                model.closeout ?? emptyCloseoutView(),
+                                model.engineUrl,
+                              )
+                            : model.phase !== "loading" &&
+                                model.issues &&
+                                (route.view === "issues" || route.view === "runs")
+                              ? viewIssues(model.issues, route.id)
+                              : renderPending(model),
     title,
   };
 }
@@ -688,7 +692,12 @@ function issueFacts(
   blocked: readonly string[],
 ): Array<[string, string]> {
   const facts: Array<[string, string]> = [
-    ["Project", esc(item.project?.name ?? "No project")],
+    [
+      "Project",
+      item.project
+        ? `<a href="${routeHref({ view: "context", kind: "project", id: item.project.id })}" title="Read the context Paws keeps for this project">${esc(item.project.name)}</a>`
+        : "No project",
+    ],
     ["Runner", esc(run?.runner ?? "Not placed yet")],
     ["Agent", esc(run?.agent ?? item.agent)],
   ];

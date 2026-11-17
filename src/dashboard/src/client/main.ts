@@ -56,6 +56,7 @@ import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
 import { createImprovements } from "./improvements-page";
+import { createProjectContext } from "./project-context";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -90,6 +91,9 @@ const agentAccountSettings = createAgentAccountSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
+const projectContext = createProjectContext({
+  go: (search) => void router.navigate(`${routePath(currentRoute())}${search}`),
+});
 const improvements = createImprovements({
   counted: (total) => shell.setCounts({ improvements: total }),
   go: (route) => void router.navigate(routePath(route)),
@@ -505,6 +509,10 @@ function paint(): void {
   if (improvementsRoot && model.route.view === "improvements")
     improvements.mount(improvementsRoot, currentEngine(), model.route, workspaceReader());
   else improvements.leave();
+  const contextRoot = document.querySelector<HTMLElement>("#context-page");
+  if (contextRoot && model.route.view === "context")
+    projectContext.mount(contextRoot, currentEngine(), model.route);
+  else projectContext.leave();
   if (loadOpenLogs()) paint();
 }
 
