@@ -261,7 +261,6 @@ describePglite((connect) => {
         leaseUntil: NOW + 60_000,
       }),
     );
-    expect(await db.run((q) => q.all(q.orm.select().from(q.t.agentAccountLease)))).toEqual([]);
     expect(
       (
         await http(

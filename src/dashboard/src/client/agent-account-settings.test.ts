@@ -10,7 +10,7 @@ import { settleReactWork } from "./settle-react";
 
 const ENGINE = "http://127.0.0.1:8787";
 const account = (id: string, label: string): CentralAccount => ({
-  ...{ id, label, agent: "claude", extraUsage: false, signingIn: false, lease: null },
+  ...{ id, label, agent: "claude", extraUsage: false, signingIn: false },
   credential: { refreshedAt: 0, runner: "R1" },
   usage: { limits: [{ window: "5h", usedPercent: 40, resetsAt: null }], observedAt: 0 },
 });

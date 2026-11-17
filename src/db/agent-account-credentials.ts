@@ -1,84 +1,11 @@
 import { providerUsageSteps } from "./account-provider-usage";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
-import { and, asc, eq, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { CENTRAL_CREDENTIAL_AGENTS, type RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
 import { type Q, type Steps } from "./db";
 import type { RunnerAgentLimit } from "./runners";
-
-export const AGENT_ACCOUNT_LEASE_GRACE_MS = 10 * 60_000;
-
-export type AgentAccountLease = {
-  accountId: string;
-  runnerId: string;
-  runId: string;
-  expiresAt: number;
-};
-
-type LeaseHolder = { accountId: string; runnerId: string; runId: string };
-
-export function* agentAccountLeaseSteps(q: Q, accountId: string): Steps<AgentAccountLease | null> {
-  const { agentAccountLease: lease } = q.t;
-  const row = yield* q.one(q.orm.select().from(lease).where(eq(lease.accountId, accountId)));
-  return row ?? null;
-}
-
-export function* takeAgentAccountLeaseSteps(
-  q: Q,
-  input: LeaseHolder & { until: number; now: number },
-): Steps<boolean> {
-  const { agentAccountLease: lease } = q.t;
-  const expiresAt = input.until + AGENT_ACCOUNT_LEASE_GRACE_MS;
-  const rows = yield* q.all(
-    q.orm
-      .insert(lease)
-      .values({
-        accountId: input.accountId,
-        runnerId: input.runnerId,
-        runId: input.runId,
-        expiresAt,
-      })
-      .onConflictDoUpdate({
-        target: lease.accountId,
-        set: { runnerId: input.runnerId, runId: input.runId, expiresAt },
-        setWhere: or(
-          lte(lease.expiresAt, input.now),
-          and(eq(lease.runnerId, input.runnerId), eq(lease.runId, input.runId)),
-        ),
-      })
-      .returning({ accountId: lease.accountId }),
-  );
-  return rows.length > 0;
-}
-
-export function* renewAgentAccountLeaseSteps(
-  q: Q,
-  input: LeaseHolder & { until: number },
-): Steps<boolean> {
-  const { agentAccountLease: lease } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .update(lease)
-      .set({ expiresAt: input.until + AGENT_ACCOUNT_LEASE_GRACE_MS })
-      .where(holder(q, input))
-      .returning({ accountId: lease.accountId }),
-  );
-  return rows.length > 0;
-}
-
-export function* releaseAgentAccountLeaseSteps(q: Q, input: LeaseHolder): Steps<void> {
-  yield* q.exec(q.orm.delete(q.t.agentAccountLease).where(holder(q, input)));
-}
-
-function holder(q: Q, input: LeaseHolder) {
-  const { agentAccountLease: lease } = q.t;
-  return and(
-    eq(lease.accountId, input.accountId),
-    eq(lease.runnerId, input.runnerId),
-    eq(lease.runId, input.runId),
-  );
-}
 
 export type AgentCredentialCiphertext = {
   agent: RunnerCodingAgent;
@@ -108,7 +35,7 @@ export function* agentCredentialCiphertextSteps(
   return row ? { ...row, agent: row.agent as RunnerCodingAgent } : null;
 }
 
-export type AgentCredentialWrite = "written" | "not_holder" | "stale_version";
+export type AgentCredentialWrite = "written" | "stale_version";
 
 export function* writeAgentCredentialCiphertextSteps(
   q: Q,
@@ -128,14 +55,6 @@ export function* writeAgentCredentialCiphertextSteps(
       .where(eq(agentAccount.id, input.accountId)),
   );
   if (!account) throw new AgentAccountError("not_found", "Agent account is unavailable");
-  const lease = yield* agentAccountLeaseSteps(q, input.accountId);
-  if (
-    input.runnerId !== null &&
-    lease &&
-    lease.expiresAt > input.now &&
-    lease.runnerId !== input.runnerId
-  )
-    return "not_holder";
   const stored = yield* agentCredentialCiphertextSteps(q, input.accountId);
   if ((stored?.version ?? 0) + 1 !== input.version) return "stale_version";
   const written = {

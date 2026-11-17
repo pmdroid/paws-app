@@ -204,11 +204,6 @@ describePglite((connect) => {
           NOW,
         ),
       );
-      await seed(db, (q) =>
-        q.orm
-          .insert(q.t.agentAccountLease)
-          .values({ accountId: home.id, runnerId: "R2", runId: "run-1", expiresAt: NOW + 60_000 }),
-      );
       const listed = await send("GET", "");
       expect(listed.body.canManage).toBe(true);
       expect(listed.body.accounts).toEqual([
@@ -222,7 +217,6 @@ describePglite((connect) => {
           signingIn: false,
           credential: { refreshedAt: NOW - 60_000, runner: "R2" },
           usage: null,
-          lease: { runner: "R2", runId: "run-1", startedAt: null, issue: null },
         },
         {
           id: work.id,
@@ -238,7 +232,6 @@ describePglite((connect) => {
             observedAt: NOW,
             stale: false,
           },
-          lease: null,
         },
       ]);
       expect((await send("PUT", `/${work.id}/enabled`, { enabled: false })).status).toBe(200);

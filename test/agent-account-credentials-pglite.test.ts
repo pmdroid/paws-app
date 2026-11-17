@@ -1,20 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunnerCapacityWait } from "../src/core";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../src/credentials";
 import {
-  AGENT_ACCOUNT_LEASE_GRACE_MS,
   agentCredentialCiphertextSteps,
+  centralAgentAccountsSteps,
   createAgentAccountSteps,
-  releaseAgentAccountLeaseSteps,
-  saveProviderUsageSteps,
-  takeAgentAccountLeaseSteps,
   type Db,
 } from "../src/db";
-import { leaseCentralAccount, UsageLimitPause } from "../src/runner-backend";
 import { describePglite, seed, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
 
@@ -60,23 +54,13 @@ const signIn = (db: Db, accountId: string, ciphertext = "sealed") =>
       .values({ accountId, agent: "claude", ciphertext, version: 1, updatedAt: NOW }),
   );
 
-const place = (db: Db, runId: string) =>
-  leaseCentralAccount(db, {
-    workspaceId: "acme",
-    agent: "claude",
-    runnerId: "R1",
-    runId,
-    until: NOW,
-    now: NOW,
-  });
-
-const lease = (db: Db, accountId: string, runnerId: string, runId: string, now = NOW) =>
-  db.transaction((q) =>
-    takeAgentAccountLeaseSteps(q, { accountId, runnerId, runId, until: now, now }),
-  );
+const candidates = (db: Db) =>
+  db
+    .run((q) => centralAgentAccountsSteps(q, "acme", "claude"))
+    .then((rows) => rows.map((row) => row.id));
 
 describePglite((connect) => {
-  test("a sign-in round-trips encrypted and only the lease holder writes the next version", async () => {
+  test("a sign-in round-trips encrypted and only the next version is written", async () => {
     const { db, secrets, first } = await setup(connect);
     const write = (runnerId: string, version: number, blob: string, now = NOW) =>
       db.transaction((q) =>
@@ -94,74 +78,19 @@ describePglite((connect) => {
       runnerId: "R1",
     });
 
-    expect(await lease(db, first, "R1", "run-1")).toBe(true);
-    expect(await lease(db, first, "R2", "run-2")).toBe(false);
-    expect(await write("R2", 2, "stolen")).toBe("not_holder");
     expect(await write("R1", 1, "old")).toBe("stale_version");
     expect(await write("R1", 3, "skipped")).toBe("stale_version");
     expect(await write("R1", 2, "rotated")).toBe("written");
 
-    const later = NOW + AGENT_ACCOUNT_LEASE_GRACE_MS;
-    expect(await lease(db, first, "R2", "run-2", later)).toBe(true);
-    expect(await write("R1", 3, "stale runner", later)).toBe("not_holder");
-    expect(await write("R2", 3, "fresh", later)).toBe("written");
+    expect(await write("R2", 3, "fresh")).toBe("written");
     expect((await db.run((q) => readAgentCredentialSteps(q, secrets, first)))?.blob).toBe("fresh");
-  });
-
-  test("placement leases the next free account and waits when all are leased or paused", async () => {
-    const { db, first, second } = await setup(connect);
-    await signIn(db, first);
-    await signIn(db, second);
-    await db.run((q) =>
-      saveProviderUsageSteps(
-        q,
-        { id: first, workspaceId: "acme", agent: "claude" },
-        [{ window: "5h", usedPercent: 100, resetsAt: NOW + 60_000 }],
-        NOW,
-      ),
-    );
-    expect(await place(db, "run-1")).toEqual({ accountId: second, reason: null });
-    await expect(place(db, "run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
-
-    await db.run((q) =>
-      saveProviderUsageSteps(
-        q,
-        { id: first, workspaceId: "acme", agent: "claude" },
-        [{ window: "5h", usedPercent: 40, resetsAt: NOW + 60_000 }],
-        NOW + 1,
-      ),
-    );
-    expect(await place(db, "run-2")).toEqual({ accountId: first, reason: null });
-    await expect(place(db, "run-3")).rejects.toBeInstanceOf(RunnerCapacityWait);
-
-    for (const accountId of [first, second])
-      await db.run((q) =>
-        saveProviderUsageSteps(
-          q,
-          { id: accountId, workspaceId: "acme", agent: "claude" },
-          [{ window: "week", usedPercent: 100, resetsAt: NOW + 120_000 }],
-          NOW + 2,
-        ),
-      );
-    const paused = await place(db, "run-3").catch((error: unknown) => error);
-    expect(paused).toBeInstanceOf(UsageLimitPause);
-    expect((paused as UsageLimitPause).resetsAt).toBe(NOW + 120_000);
-
-    await seed(db, (q) =>
-      q.orm.update(q.t.agentAccount).set({ extraUsage: 1 }).where(eq(q.t.agentAccount.id, second)),
-    );
-    await db.run((q) =>
-      releaseAgentAccountLeaseSteps(q, { accountId: second, runnerId: "R1", runId: "run-1" }),
-    );
-    expect(await place(db, "run-3")).toEqual({ accountId: second, reason: "extra_usage" });
   });
 
   test("placement skips a Claude account with no stored credential or an empty one", async () => {
     const { db, first, second } = await setup(connect);
-    expect(await place(db, "run-0")).toBeNull();
+    expect(await candidates(db)).toEqual([]);
     await signIn(db, first, "");
     await signIn(db, second);
-    expect(await place(db, "run-1")).toEqual({ accountId: second, reason: null });
-    await expect(place(db, "run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
+    expect(await candidates(db)).toEqual([second]);
   });
 });

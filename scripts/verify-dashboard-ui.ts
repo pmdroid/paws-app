@@ -36,7 +36,7 @@ const AGENT_ACCOUNTS = [
   ["A2", "claude", "Personal", false, null],
   ["A3", "codex", "Team", false, { refreshedAt: Date.now() - 60_000, runner: null }],
 ].map(([id, agent, label, extraUsage, credential], index) => ({
-  ...{ id, agent, label, extraUsage, credential, signingIn: false, lease: null },
+  ...{ id, agent, label, extraUsage, credential, signingIn: false },
   usage: index === 0 ? { limits: [{ window: "5h", usedPercent: 62 }] } : null,
 }));
 

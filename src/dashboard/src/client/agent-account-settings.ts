@@ -20,7 +20,6 @@ export type CentralAccount = {
   health?: "healthy" | "expiring";
   credential: { refreshedAt: number; runner: string | null; expiresAt?: number } | null;
   usage: AgentAccountUsage | null;
-  lease: { runner: string; issue: { identifier: string } | null } | null;
 };
 export type AccountsView = {
   canManage: boolean;
@@ -64,7 +63,6 @@ function accountBadge(account: CentralAccount): string {
     return account.extraUsage
       ? '<span class="pill warn">On extra usage</span>'
       : '<span class="pill err">Limit reached</span>';
-  if (account.lease) return '<span class="pill running">In use</span>';
   return '<span class="pill ok">Signed in</span>';
 }
 
@@ -83,10 +81,6 @@ function accountStatus(account: CentralAccount, runners: Record<string, string> 
       account.agent === "claude" ? "Paste a setup token to sign in" : "Sign in to use this account",
     );
   if (account.health === "expiring") parts.push("paste a new token to renew it");
-  if (account.lease)
-    parts.push(
-      `in use by ${account.lease.issue?.identifier ?? "a run"} on ${runner(account.lease.runner)}`,
-    );
   return parts.join(" · ");
 }
 
