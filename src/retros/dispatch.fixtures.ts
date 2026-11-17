@@ -6,12 +6,14 @@ import {
   bindAgentAccount,
   createAgentAccount,
   createRetro,
+  recordRunnerAccountCapability,
   saveRetroSettingsRevision,
   type Db,
   type Q,
 } from "../db";
 import {
   MINIMUM_RUNNER_VERSION,
+  RUNNER_ACCOUNT_PROTOCOL,
   signRunnerRetroCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
@@ -30,6 +32,12 @@ function seed(db: Db, ...inserts: ((q: Q) => PromiseLike<unknown>)[]): Promise<v
 }
 
 type Store = { db: Db; close(): Promise<void> };
+
+const held = new Map<string, Set<string>>();
+
+export function heldAccountBindings(runnerId: string): ReadonlySet<string> {
+  return held.get(runnerId) ?? new Set();
+}
 
 export function seedActivityPg(db: Db, identifier: string, answers: number) {
   const id = `item-${identifier}`;
@@ -126,14 +134,23 @@ export async function addRunnerPg(
         updatedAt: 0,
       }),
     );
-    await bindAgentAccount(db, {
+    const binding = await bindAgentAccount(db, {
       userId: input.owner ?? "admin",
       workspaceId: "ws",
       accountId: account.id,
       runnerId: input.id,
       now: 0,
     });
+    await recordRunnerAccountCapability(
+      db,
+      input.id,
+      { protocol: RUNNER_ACCOUNT_PROTOCOL, bindings: [{ bindingId: binding.id, agent: "codex" }] },
+      0,
+    );
+    held.set(input.id, new Set([...heldAccountBindings(input.id), binding.id]));
+    return { accountId: account.id, bindingId: binding.id };
   }
+  return null;
 }
 
 export function seedWorkspacePg(db: Db) {

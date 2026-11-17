@@ -9,14 +9,14 @@ import {
   closeRetro,
   createRetro,
   freezeRetroInput,
-  ensureLegacyAgentBinding,
   getRetro,
   getRetroDispatch,
-  legacyAgentAccountId,
   listRetroAttempts,
   listRetroItems,
   readRetroArtifact,
   recordAccountObservation,
+  recordRunnerAccountCapability,
+  writeAgentAuthSteps,
   retroWatermarks,
   runnerOccupancy,
   openPawsStore,
@@ -25,7 +25,12 @@ import {
 } from "../db";
 import { verifyRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { createRetroDispatcher, retroRetryDelayMs } from "./index";
-import { addRunnerPg as addRunner, trustedKeys, worldPg } from "./dispatch.fixtures";
+import {
+  addRunnerPg as addRunner,
+  heldAccountBindings,
+  trustedKeys,
+  worldPg,
+} from "./dispatch.fixtures";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START, fixturePattern } from "./result.fixtures";
 import { seed } from "../../test/pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "../../test/pglite";
@@ -133,7 +138,7 @@ function holdAccountSlot(
         agent: "codex",
         accountId,
         bindingId,
-        named: 0,
+        named: 1,
         recordedAt: at,
       }),
   );
@@ -179,6 +184,7 @@ function fakeRunner(runnerId: string, clock: { now: number }) {
           runnerId,
           workspaceId: "ws",
           now: clock.now,
+          accountBindings: heldAccountBindings(runnerId),
           latestAttempt: () => undefined,
           claimCommand: (id) => !claimed.has(id) && Boolean(claimed.add(id)),
         });
@@ -257,7 +263,7 @@ function occupyWithHelper(db: Db, runnerId: string, until: number) {
 describe("retro dispatch, composed with a fake runner", () => {
   test("waits for capacity, dispatches once, survives a restart and publishes one report despite a duplicate", async () => {
     const { db, clock, open, restart, digestSha256 } = await world({ restartable: true });
-    await addRunner(db, { id: "R1" });
+    const account = await addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     await runner.seen(db);
     await occupyWithHelper(db, "R1", clock.now + 600_000);
@@ -304,6 +310,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     expect(command).toMatchObject({
       id: dispatch!.commandId,
       attempt: 1,
+      account: account!,
       profile: { agent: "codex", model: "gpt-x" },
       executionLimit: { activeMinutes: 15 },
       output: { maxItems: 5, workedWell: 3 },
@@ -831,12 +838,10 @@ describe("recovery", () => {
 });
 
 describe("agent account admission", () => {
-  test("a disabled default account dispatches nothing", async () => {
+  test("a disabled account dispatches nothing", async () => {
     const { db, clock, open } = await world();
-    await addRunner(db, { id: "R1" });
+    const { accountId } = (await addRunner(db, { id: "R1" }))!;
     await online(db, clock.now);
-    const accountId = legacyAgentAccountId("ws", "codex");
-    await ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
     await seed(db, (q) =>
       q.orm.update(q.t.agentAccount).set({ enabled: 0 }).where(eq(q.t.agentAccount.id, accountId)),
     );
@@ -850,13 +855,27 @@ describe("agent account admission", () => {
     });
   });
 
+  test("a runner that has not reported its binding is passed over, even for a central account", async () => {
+    const { db, clock, open } = await world();
+    const central = (await addRunner(db, { id: "R1" }))!;
+    const binding = (await addRunner(db, { id: "R2" }))!;
+    await recordRunnerAccountCapability(db, "R1", { protocol: 1, bindings: [] }, clock.now);
+    await db.transaction((q) =>
+      writeAgentAuthSteps(q, central.accountId, JSON.stringify({ state: "signed-in" })),
+    );
+    await online(db, clock.now);
+    const dispatcher = open(db);
+    await dispatcher.tick();
+    expect(await listRetroDispatches(db, "r1")).toMatchObject([{ runnerId: "R2" }]);
+    expect(await fakeRunner("R2", clock).poll(dispatcher)).toMatchObject([{ account: binding }]);
+  });
+
   test("a persisted provider or model hold blocks dispatch while the runner has no cooldown", async () => {
     const { db, clock, open } = await world();
-    await addRunner(db, { id: "R1" });
+    const binding = (await addRunner(db, { id: "R1" }))!;
     await online(db, clock.now);
-    const binding = await ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
     await recordAccountObservation(db, {
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       source: "result",
       sourceId: "model-hold",
       observedAt: clock.now,
@@ -875,7 +894,7 @@ describe("agent account admission", () => {
     expect((await dispatcher.generation("r1"))!.detail).toContain("model unavailable");
 
     await recordAccountObservation(db, {
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       source: "result",
       sourceId: "provider-hold",
       observedAt: clock.now + 1,
@@ -892,7 +911,7 @@ describe("agent account admission", () => {
     });
 
     await recordAccountObservation(db, {
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       source: "result",
       sourceId: "provider-ok",
       observedAt: clock.now,
@@ -907,12 +926,11 @@ describe("agent account admission", () => {
 
   test("an open retro reservation fences quota revalidation for further attempts", async () => {
     const { db, clock, open } = await world();
-    await addRunner(db, { id: "R1", capacity: 4 });
+    const binding = (await addRunner(db, { id: "R1", capacity: 4 }))!;
+    const { accountId } = binding;
     await online(db, clock.now);
-    const accountId = legacyAgentAccountId("ws", "codex");
-    const binding = await ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
     await recordAccountObservation(db, {
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       source: "result",
       sourceId: "quota-hold",
       observedAt: clock.now,
@@ -938,7 +956,7 @@ describe("agent account admission", () => {
     await holdAccountSlot(db, {
       commandId: "probe",
       accountId,
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       at: clock.now,
     });
     const dispatcher = open(db);
@@ -956,10 +974,9 @@ describe("agent account admission", () => {
 
   test("the account concurrency limit counts retro turns and holds further work", async () => {
     const { db, clock, open } = await world();
-    await addRunner(db, { id: "R1", capacity: 4 });
+    const binding = (await addRunner(db, { id: "R1", capacity: 4 }))!;
+    const { accountId } = binding;
     await online(db, clock.now);
-    const accountId = legacyAgentAccountId("ws", "codex");
-    const binding = await ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
     await seed(db, (q) =>
       q.orm
         .update(q.t.agentAccount)
@@ -978,7 +995,7 @@ describe("agent account admission", () => {
     await holdAccountSlot(db, {
       commandId: "other",
       accountId,
-      bindingId: binding.id,
+      bindingId: binding.bindingId,
       at: clock.now,
     });
     expect(await accountSlotsInUse(db, accountId, clock.now)).toBe(1);

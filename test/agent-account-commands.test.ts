@@ -112,15 +112,11 @@ async function fixture() {
   return { db, now, runnerId, userId, workspace: workspace.id, heartbeat, check, queued };
 }
 
-test("an old runner keeps running the default sign-in and never receives a named account", async () => {
+test("an old runner keeps running checks without an account and never receives a named account", async () => {
   const { db, now, runnerId, userId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
   const legacy = await check();
-  expect(await commandAccount(db, legacy)).toMatchObject({
-    bindingId: `legacy_claude_${runnerId}`,
-    accountId: `legacy_claude_${workspace}`,
-    named: false,
-  });
+  expect(await commandAccount(db, legacy)).toBeNull();
 
   const account = await createAgentAccount(db, {
     ownerUserId: userId,

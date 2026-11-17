@@ -11,7 +11,6 @@ import {
   bindAgentAccount,
   bindingAccountHealth,
   createAgentAccount,
-  ensureLegacyAgentBinding,
   openPawsStore,
   insertQueuedItem,
   holdForRunnerSetup,
@@ -227,19 +226,6 @@ test("the same account on two runners shares a quota cooldown; other accounts an
     });
   for (const bindingId of [bindings.b1, bindings.c2])
     expect(await bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({ ready: true });
-});
-
-test("a runner's default sign-in keeps its quota to that runner", async () => {
-  const { db } = await fixture();
-  const r1 = (await ensureLegacyAgentBinding(db, "R1", "claude", NOW)).id;
-  const r2 = (await ensureLegacyAgentBinding(db, "R2", "claude", NOW)).id;
-  await exhaust(db, r1, "cmd-1", NOW);
-  expect(await bindingReadiness(db, { bindingId: r1, now: NOW + 1 })).toMatchObject({
-    reason: "exhausted",
-  });
-  expect(await bindingReadiness(db, { bindingId: r2, now: NOW + 1 })).toMatchObject({
-    ready: true,
-  });
 });
 
 test("a sign-in failure disables only its binding until a successful repair", async () => {

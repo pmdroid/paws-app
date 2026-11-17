@@ -2,12 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import {
   AgentAccountError,
   accountSlotsInUseSteps,
-  admitAgentAccountsSteps,
   agentAccountConcurrencySteps,
   bindAgentAccountSteps,
   commandAccountSteps,
   createAgentAccountSteps,
-  ensureLegacyAgentBindingSteps,
   getAgentAccountSteps,
   getAgentBindingSteps,
   listAgentAccountsSteps,
@@ -51,6 +49,40 @@ async function workspace(db: Db) {
   await seedRunner(db, "R1");
   await seedRunner(db, "R2");
   await seedRunner(db, "R3", { revokedAt: NOW });
+}
+
+async function legacyBinding(db: Db, runnerId: string, agent: "claude" | "codex", at: number) {
+  const accountId = `legacy_${agent}_acme`;
+  const id = `legacy_${agent}_${runnerId}`;
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.agentAccount)
+        .values({
+          id: accountId,
+          workspaceId: "acme",
+          agent,
+          label: `${agent} default sign-in`,
+          legacy: 1,
+          enabled: 1,
+          createdAt: at,
+          updatedAt: at,
+        })
+        .onConflictDoNothing(),
+    (q) =>
+      q.orm.insert(q.t.agentAccountBinding).values({
+        id,
+        workspaceId: "acme",
+        accountId,
+        agent,
+        runnerId,
+        legacy: 1,
+        quotaScope: "unknown",
+        createdAt: at,
+      }),
+  );
+  return db.run((q) => getAgentBindingSteps(q, "acme", id));
 }
 
 async function code(run: Promise<unknown>) {
@@ -198,18 +230,13 @@ describePglite((connect) => {
       "foreign_workspace",
     );
 
-    await db.transaction((q) => ensureLegacyAgentBindingSteps(q, "R1", "claude", NOW + 5));
+    await legacyBinding(db, "R1", "claude", NOW + 5);
     const legacy = "legacy_claude_acme";
     expect((await db.run((q) => listAgentAccountsSteps(q, "acme"))).map((row) => row.id)).toEqual([
       legacy,
       a.id,
       b.id,
     ]);
-    expect(await db.run((q) => admitAgentAccountsSteps(q, "acme", "claude"))).toEqual({
-      agent: "claude",
-      eligible: [legacy],
-      skipped: [],
-    });
     expect(
       await code(
         db.transaction((q) =>
@@ -276,13 +303,8 @@ describePglite((connect) => {
     expect(await code(bind("R3"))).toBe("removed");
     expect(await code(bind("missing"))).toBe("not_found");
     const r2 = await bind("R2", NOW + 1);
-    const legacy = await db.transaction((q) =>
-      ensureLegacyAgentBindingSteps(q, "R1", "codex", NOW),
-    );
+    const legacy = await legacyBinding(db, "R1", "codex", NOW);
     expect(legacy).toMatchObject({ id: "legacy_codex_R1", legacy: true, quotaScope: "unknown" });
-    expect(
-      await db.transaction((q) => ensureLegacyAgentBindingSteps(q, "R1", "codex", NOW + 9)),
-    ).toEqual(legacy);
 
     expect((await db.run((q) => listAgentBindingsSteps(q, "acme", a.id))).map((b) => b.id)).toEqual(
       [r1.id, r2.id],
@@ -320,23 +342,15 @@ describePglite((connect) => {
     });
   });
 
-  test("a command records its account once the runner reports the binding", async () => {
+  test("a command without an account records none, and a named one records once the runner reports the binding", async () => {
     const handle = await connect();
     open.push(handle);
     const { db } = handle;
     await workspace(db);
     const record = (command: RunnerCommand) =>
       db.transaction((q) => recordCommandAccountSteps(q, command, NOW));
-    expect(await record(probe("C1"))).toEqual({
-      commandId: "C1",
-      workspaceId: "acme",
-      runnerId: "R1",
-      agent: "claude",
-      accountId: "legacy_claude_acme",
-      bindingId: "legacy_claude_R1",
-      named: false,
-      recordedAt: NOW,
-    });
+    expect(await record(probe("C1"))).toBeNull();
+    expect(await db.run((q) => commandAccountSteps(q, "C1"))).toBeNull();
 
     const a = await db.transaction((q) =>
       createAgentAccountSteps(q, {
