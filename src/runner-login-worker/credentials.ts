@@ -16,19 +16,10 @@ import {
 } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
-type Agent = "claude" | "codex" | "grok" | "opencode";
+type Agent = "grok" | "opencode";
 
-/**
- * Files a sign-in writes, relative to the home. `merge` files hold the agent's own state too,
- * so only the account keys move over to the live file.
- */
-const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> = {
-  claude: [
-    { path: ".claude/paws-oauth.json" },
-    { path: ".claude/.credentials.json" },
-    { path: ".claude/.claude.json", merge: ["oauthAccount"] },
-  ],
-  codex: [{ path: ".codex/auth.json" }],
+/** Files a sign-in writes, relative to the home. */
+const CREDENTIALS: Record<Agent, { path: string }[]> = {
   grok: [{ path: ".grok/auth.json" }],
   opencode: [{ path: ".local/share/opencode/auth.json" }],
 };
@@ -40,16 +31,7 @@ const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> 
 export function stageLoginHome(home: string): string {
   const staged = join(home, `.paws-login-${randomUUID()}`);
   mkdirSync(staged, { mode: 0o700 });
-  for (const directory of [
-    ".claude",
-    ".codex",
-    ".grok",
-    ".config",
-    ".local",
-    ".local/share",
-    ".local/state",
-    ".cache",
-  ])
+  for (const directory of [".grok", ".config", ".local", ".local/share", ".local/state", ".cache"])
     mkdirSync(join(staged, directory), { mode: 0o700 });
   return staged;
 }
@@ -63,21 +45,14 @@ export function discardLoginHome(staged: string): void {
  * beside its target and renamed over it, so a reader sees the old file or the new one.
  */
 export function publishCredentials(agent: Agent, staged: string, home: string): void {
-  const oauth = agent === "claude" && read(join(staged, ".claude/paws-oauth.json")) !== null;
   let published = 0;
   for (const file of CREDENTIALS[agent]) {
-    if (oauth && file.path === ".claude/.credentials.json") continue;
     const source = read(join(staged, file.path));
     if (source === null) continue;
     const target = join(home, file.path);
     privateParents(home, dirname(target));
     const existing = liveFile(target);
-    let data = source;
-    if (file.merge && existing) {
-      const live = read(target);
-      if (live !== null) data = mergeKeys(live, source, file.merge);
-    }
-    replaceFile(target, data, existing ? (existing.mode & 0o660) | 0o400 : 0o600);
+    replaceFile(target, source, existing ? (existing.mode & 0o660) | 0o400 : 0o600);
     published += 1;
   }
   if (published === 0) throw new Error("Provider did not write credentials");
@@ -135,28 +110,6 @@ function privateParents(home: string, directory: string): void {
       continue;
     }
     if (part && (info.mode & 0o007) !== 0) chmodSync(current, info.mode & 0o770);
-  }
-}
-
-function mergeKeys(live: Buffer, staged: Buffer, keys: readonly string[]): Buffer {
-  const current = object(live);
-  const next = object(staged);
-  if (!current || !next) return staged;
-  for (const key of keys) {
-    if (key in next) current[key] = next[key];
-    else delete current[key];
-  }
-  return Buffer.from(`${JSON.stringify(current, null, 2)}\n`);
-}
-
-function object(data: Buffer): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(data.toString("utf8"));
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
   }
 }
 

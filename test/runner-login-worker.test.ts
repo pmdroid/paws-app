@@ -14,97 +14,43 @@ import { join } from "node:path";
 import { providerLoginCommand, runProviderLogin } from "../src/runner-login-worker";
 import type { RunnerLoginUpdate } from "../src/runner-protocol";
 
-test("Claude receives terminal input and clears output after confirmed sign-in", async () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-terminal-login-"));
+test("a Claude login on the runner is refused and spawns nothing", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-claude-refused-"));
   const updates: RunnerLoginUpdate[] = [];
-  mkdirSync(join(home, ".claude"));
-  const legacy = join(home, ".claude/.credentials.json");
-  writeFileSync(legacy, "legacy-credential");
-  const active = Bun.spawn(
-    [
-      process.execPath,
-      "-e",
-      `process.stdin.once("data", () => process.exit(require("node:fs").readFileSync(${JSON.stringify(legacy)}, "utf8") === "legacy-credential" ? 0 : 1));`,
-    ],
-    { stdin: "pipe", stdout: "ignore", stderr: "ignore" },
-  );
+  const marker = join(home, "spawned");
   try {
-    const path = join(home, "provider.js");
-    writeFileSync(
-      path,
-      `process.stdout.write("Paste provider code: "); process.stdin.once("data", () => { process.stdout.write("sk-ant-oat01-test_token\\n"); setTimeout(() => process.exit(0), 50); });`,
-    );
-    let input = false;
     await runProviderLogin({
       agent: "claude",
       home,
       signal: AbortSignal.timeout(5000),
-      command: [process.execPath, path],
+      command: [
+        process.execPath,
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`,
+      ],
       emit: (update) => updates.push(update),
-      async answer(_id, signal) {
-        if (!input) {
-          input = true;
-          return { answer: JSON.stringify({ text: "synthetic-code\r" }) };
-        }
-        return new Promise((_, reject) =>
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-        );
+      async answer() {
+        throw new Error("A refused login asks for no input");
       },
-    });
-    active.stdin.write("check");
-    await active.stdin.flush();
-    expect(await active.exited).toBe(0);
-    expect(readFileSync(legacy, "utf8")).toBe("legacy-credential");
-    expect(input).toBe(true);
-    const credential = JSON.parse(readFileSync(join(home, ".claude/paws-oauth.json"), "utf8"));
-    expect(providerLoginCommand("claude")).toEqual(["/opt/paws-runner/bin/claude", "setup-token"]);
-    expect(credential.token).toBe("sk-ant-oat01-test_token");
-    expect(credential.kind).toBe("oauth_token");
-    expect(credential.expiresAt - credential.createdAt).toBe(365 * 86400000);
-    expect(updates.every((update) => !update.terminal.includes("sk-ant-oat01"))).toBe(true);
-    expect(updates.at(-1)!.state).toBe("connected");
-    expect(updates.some((update) => update.terminal.includes("[masked]"))).toBe(true);
-    expect(updates.at(-1)!.terminal).toBe("");
-  } finally {
-    active.kill();
-    rmSync(home, { recursive: true, force: true });
-  }
-}, 10000);
-
-test("a Claude setup-token that exits without printing a token fails and publishes nothing", async () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-no-token-login-"));
-  const updates: RunnerLoginUpdate[] = [];
-  try {
-    await runProviderLogin({
-      agent: "claude",
-      home,
-      signal: AbortSignal.timeout(5000),
-      command: [process.execPath, "-e", "process.stdout.write('Login successful')"],
-      emit: (update) => updates.push(update),
-      answer: (_id, signal) =>
-        new Promise((_, reject) =>
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-        ),
       account: {
         publish() {
-          throw new Error("A sign-in without a token must not publish");
+          throw new Error("A refused login must not publish");
         },
       },
     });
-    expect(updates.at(-1)!.state).toBe("failed");
-    expect(updates.some((update) => update.state === "connected")).toBe(false);
+    expect(updates.map((update) => update.state)).toEqual(["failed"]);
     expect(readdirSync(home)).toEqual([]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
-}, 10000);
+});
 
 test("aborting an interactive provider kills its process and never reports connected", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-cancel-login-"));
   const updates: RunnerLoginUpdate[] = [];
   try {
     await runProviderLogin({
-      agent: "claude",
+      agent: "opencode",
       home,
       signal: AbortSignal.timeout(100),
       command: [process.execPath, "-e", "setInterval(() => {},1000)"],
@@ -221,48 +167,6 @@ const file = process.env.HOME + "/.grok/auth.json";
     expect(statSync(live).mode & 0o777).toBe(0o660);
     expect(readdirSync(join(home, ".grok"))).toEqual(["auth.json"]);
     expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-}, 10000);
-
-test("a Claude sign-in keeps the live settings and moves only the account over", async () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-claude-switch-"));
-  try {
-    mkdirSync(join(home, ".claude"));
-    writeFileSync(join(home, ".claude", ".credentials.json"), '{"claudeAiOauth":"old"}');
-    writeFileSync(
-      join(home, ".claude", ".claude.json"),
-      JSON.stringify({ hasCompletedOnboarding: true, oauthAccount: { emailAddress: "old" } }),
-    );
-    const path = join(home, "provider.js");
-    writeFileSync(
-      path,
-      `const fs = require("node:fs"); const dir = process.env.CLAUDE_CONFIG_DIR;
-process.stdout.write("sk-ant-oat01-new_token\\n");
-fs.writeFileSync(dir + "/.claude.json", JSON.stringify({ firstStartTime: "now", oauthAccount: { emailAddress: "new" } }));
-process.exit(0);`,
-    );
-    const updates: RunnerLoginUpdate[] = [];
-    await runProviderLogin({
-      agent: "claude",
-      home,
-      signal: AbortSignal.timeout(5000),
-      command: [process.execPath, path],
-      emit: (update) => updates.push(update),
-      answer: (_id, signal) =>
-        new Promise((_, reject) =>
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-        ),
-    });
-    expect(updates.at(-1)!.state).toBe("connected");
-    expect(JSON.parse(readFileSync(join(home, ".claude/paws-oauth.json"), "utf8")).token).toBe(
-      "sk-ant-oat01-new_token",
-    );
-    expect(JSON.parse(readFileSync(join(home, ".claude", ".claude.json"), "utf8"))).toEqual({
-      hasCompletedOnboarding: true,
-      oauthAccount: { emailAddress: "new" },
-    });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
