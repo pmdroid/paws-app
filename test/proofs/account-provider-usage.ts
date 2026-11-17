@@ -119,6 +119,7 @@ export default {
         now: NOW + 60004,
       }),
     );
+    await seedCredential(db, spent.id, "claude", NOW + 60004);
     const spentBinding = await db.transaction((q) =>
       bindAgentAccountSteps(q, {
         userId,
