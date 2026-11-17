@@ -190,14 +190,3 @@ export const agentAccountLease = pgTable("agent_account_lease", {
   runId: text("run_id").notNull(),
   expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
 });
-
-export const agentAccountUsage = pgTable("agent_account_usage", {
-  accountId: text("account_id")
-    .primaryKey()
-    .references(() => agentAccount.id),
-  runnerId: text("runner_id")
-    .notNull()
-    .references(() => runner.id),
-  limitsJson: text("limits_json").notNull(),
-  observedAt: bigint("observed_at", { mode: "number" }).notNull(),
-});

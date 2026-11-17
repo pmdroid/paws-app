@@ -41,7 +41,7 @@ export function* agentAccountOverviewSteps(
   now: number,
   ownerUserId?: string,
 ): Steps<AgentAccountOverview[]> {
-  const { agentAccount: a, agentAccountCredential: c, agentAccountUsage: u } = q.t;
+  const { agentAccount: a, agentAccountCredential: c } = q.t;
   const { agentAccountLease: l, agentAccountBinding: b, runner, runnerLogin, run, workItem } = q.t;
   const accounts = yield* q.all(
     q.orm
@@ -55,12 +55,9 @@ export function* agentAccountOverviewSteps(
         signedOut: c.ciphertext,
         refreshedAt: c.updatedAt,
         refreshedBy: c.runnerId,
-        limits: u.limitsJson,
-        observedAt: u.observedAt,
       })
       .from(a)
       .leftJoin(c, eq(c.accountId, a.id))
-      .leftJoin(u, eq(u.accountId, a.id))
       .where(
         and(
           eq(a.workspaceId, workspaceId),
@@ -136,11 +133,7 @@ export function* agentAccountOverviewSteps(
               refreshedAt: row.refreshedAt,
               runner: row.refreshedBy === null ? null : (runners.get(row.refreshedBy) ?? null),
             },
-      usage:
-        providerUsage.get(row.id) ??
-        (row.limits === null || row.observedAt === null
-          ? null
-          : { limits: JSON.parse(row.limits) as RunnerAgentLimit[], observedAt: row.observedAt }),
+      usage: providerUsage.get(row.id) ?? null,
       lease: lease
         ? {
             runner: runners.get(lease.runnerId) ?? lease.runnerId,
