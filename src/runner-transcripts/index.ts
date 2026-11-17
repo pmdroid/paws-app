@@ -19,13 +19,11 @@ export {
 import { transcriptPrefix } from "./store";
 export {
   createRunnerTranscripts,
-  runnerTranscriptsEncrypted,
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   type RunnerTranscripts,
 } from "./store";
 export { encryptRunnerTranscripts } from "./encrypt";
 export { createRunnerTranscriptsHttp } from "./http";
-export { withLocalRunFileFallback as withLocalRunnerTranscriptFallback } from "../run-files";
 
 // Transcripts are the `transcript` kind of run file; these name its key and objects.
 export type RunnerTranscriptObjects = RunFileObjects;

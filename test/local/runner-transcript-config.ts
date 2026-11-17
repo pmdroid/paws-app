@@ -18,7 +18,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   configureRunnerTranscriptStorage,
@@ -393,39 +392,32 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
         },
         stream() {
           downloads++;
-          assert(uploaded.has(key));
+          if (!uploaded.has(key)) throw Object.assign(new Error("missing"), { code: "NoSuchKey" });
           return new Blob([uploaded.get(key)!]).stream();
         },
       });
     };
     const text = async (key: string) => Buffer.from(await remote.read(key)).toString();
-    assert.equal(await text("restart"), "persistent transcript");
-    assert.equal(downloads, 0);
     const files = readdirSync(join(localHome, "runner-transcripts"));
+    await assert.rejects(text("restart"), /missing/);
+    assert.equal(downloads, 1);
     await remote.write("remote-only", Buffer.from("S3 transcript"));
     assert.deepEqual(readdirSync(join(localHome, "runner-transcripts")), files);
-    assert.equal(await text("remote-only"), "S3 transcript");
-    // An unsafe local directory or file fails closed instead of falling back to S3.
     chmodSync(join(localHome, "runner-transcripts"), 0o755);
-    await assert.rejects(text("remote-only"), /Unsafe transcript directory/);
-    await assert.rejects(text("restart"), /Unsafe transcript directory/);
+    assert.equal(await text("remote-only"), "S3 transcript");
     chmodSync(join(localHome, "runner-transcripts"), 0o700);
-    const restart = createHash("sha256").update("restart").digest("hex");
-    chmodSync(join(localHome, "runner-transcripts", `${restart}.jsonl`), 0o644);
-    await assert.rejects(text("restart"), /Unsafe transcript file/);
-    assert.equal(downloads, 1);
+    assert.equal(downloads, 2);
   } finally {
     S3Client.prototype.file = nativeFile;
   }
   observe(
-    "missing configuration defaults to local and S3 replaces new writes while preserving local history",
+    "missing configuration defaults to local and S3 replaces reads and writes without the local directory",
     true,
     {
       missingLayouts: 3,
       remoteUploads: uploaded.size,
       remoteDownloads: downloads,
-      localHistoryReadable: true,
-      unsafeLocalHistoryRejected: true,
+      localHistoryReadable: false,
     },
   );
 }

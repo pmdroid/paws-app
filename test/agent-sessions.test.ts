@@ -21,7 +21,6 @@ import {
   createLocalAgentSessionObjects,
   createS3AgentSessionObjects,
   loadAgentSessionKey,
-  withLocalAgentSessionFallback,
   type AgentSessionFinish,
   type AgentSessionObjects,
 } from "../src/agent-sessions";
@@ -841,37 +840,10 @@ describe("agent session storage in S3", () => {
     ).toThrow();
   });
 
-  test("writes go to S3 and chunks stored locally before S3 still read", async () => {
-    const local = createLocalAgentSessionObjects(join(root, "agent-sessions"));
-    const objects = withLocalAgentSessionFallback(local, s3());
-    const remote = randomBytes(64);
-    await objects.write("remote", remote);
-    expect(stored.has("/fixture-sessions/remote")).toBe(true);
-    expect(Buffer.from(await objects.read("remote"))).toEqual(remote);
-
-    const earlier = randomBytes(64);
-    await local.write("earlier", earlier);
-    requests.length = 0;
-    expect(Buffer.from(await objects.read("earlier"))).toEqual(earlier);
-    expect(requests).toEqual([]);
-
-    await objects.delete("earlier");
-    await objects.delete("remote");
-    await objects.delete("never-written");
-    expect(stored.has("/fixture-sessions/remote")).toBe(false);
-    await expect(local.read("earlier")).rejects.toThrow();
-
-    chmodSync(join(root, "agent-sessions"), 0o755);
-    await expect(objects.read("earlier")).rejects.toThrow("Unsafe agent session directory");
-  });
-
   test("a snapshot sealed through S3 stores only ciphertext there and reads back", async () => {
     const f = await fixture(root);
     try {
-      const objects = withLocalAgentSessionFallback(
-        createLocalAgentSessionObjects(join(root, "agent-sessions")),
-        s3(),
-      );
+      const objects = s3();
       const sessions = createAgentSessions({
         db: f.db,
         work: f.work,

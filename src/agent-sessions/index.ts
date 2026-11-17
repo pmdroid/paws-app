@@ -26,10 +26,7 @@ export {
   type AgentSessionSnapshot,
 } from "./store";
 export { createAgentSessionsHttp } from "./http";
-export {
-  RunFileStorageError as AgentSessionStorageError,
-  withLocalRunFileFallback as withLocalAgentSessionFallback,
-} from "../run-files";
+export { RunFileStorageError as AgentSessionStorageError } from "../run-files";
 
 // Snapshots are the `agent_session` kind of run file; these name its key and objects.
 export type AgentSessionObjects = RunFileObjects;

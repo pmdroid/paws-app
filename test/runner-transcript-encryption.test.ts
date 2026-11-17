@@ -9,7 +9,6 @@ import {
   createLocalRunnerTranscriptObjects,
   encryptRunnerTranscripts,
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
-  runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
 import type { Db } from "../src/db";
 import { seed, withoutForeignKeys } from "./pglite-fixtures";
@@ -94,25 +93,15 @@ describe("encrypting runner transcripts stored before encryption", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  /** Reads through the local directory, then S3, as Paws does with a bucket configured. */
-  const fallback: RunFileObjects = {
-    write: (name, bytes) => remote.write(name, bytes),
-    read: (name) => local.read(name).catch(() => remote.read(name)),
-    delete: async (name) => {
-      await local.delete(name);
-      await remote.delete(name);
-    },
-  };
   async function read(runId: string) {
     const files = createRunFileChunks({
       store: db,
       kind: "transcript",
-      objects: fallback,
+      objects: runId === "run-c" ? remote : local,
       key,
       refused: () => {
         throw new Refused();
       },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
     });
     const parts: Uint8Array[] = [];
     for await (const part of files.read(
@@ -148,12 +137,9 @@ describe("encrypting runner transcripts stored before encryption", () => {
     );
   }
 
-  test("plaintext reads until the job is done", async () => {
-    expect(await runnerTranscriptsEncrypted(db)).toBe(false);
-    expect(await read("run-a")).toEqual(whole);
-    await finish();
-    expect(await runnerTranscriptsEncrypted(db)).toBe(true);
-    await expect(read("run-a")).rejects.toThrow("Runner transcript storage is unavailable");
+  test("a chunk without a key ID is refused before the job converts it", async () => {
+    for (const runId of RUNS)
+      await expect(read(runId)).rejects.toThrow("Runner transcript storage is unavailable");
   });
 
   test("plaintext chunks are converted, local and S3, and no plaintext is left on disk", async () => {
@@ -173,10 +159,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
   });
 
-  test("an interrupted conversion resumes and the transcript reads the same throughout", async () => {
-    const before = await Promise.all(RUNS.map(read));
-    expect(before.every((bytes) => bytes.equals(whole))).toBe(true);
-
+  test("an interrupted conversion resumes and the transcript reads once it is done", async () => {
     // The process stops after the third object is sealed, before its key ID is recorded.
     let writes = 0;
     const stopping: RunFileObjects = {
@@ -192,7 +175,6 @@ describe("encrypting runner transcripts stored before encryption", () => {
       encryptRunnerTranscripts({ store: db, stores: [stopping, remote], key }),
     ).rejects.toThrow("Paws stopped");
     expect(await unconverted()).toBe(4);
-    for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
 
     // A stop requested between chunks also leaves the rest for the next run.
     const abort = new AbortController();
@@ -215,33 +197,8 @@ describe("encrypting runner transcripts stored before encryption", () => {
     expect(result).toEqual({ converted: 4, skipped: 0 });
     expect(await unconverted()).toBe(0);
     expect(plaintextOnDisk()).toEqual([]);
-    for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
     await finish();
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
-  });
-
-  test("a read that began before its chunk was sealed still returns the transcript", async () => {
-    const files = createRunFileChunks({
-      store: db,
-      kind: "transcript",
-      objects: local,
-      key,
-      refused: () => {
-        throw new Refused();
-      },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
-    });
-    const reading = files.read(
-      { runId: "run-a", generation: 1, prefix: prefix("run-a") },
-      whole.length,
-      sha(whole),
-    );
-    // The reader has its chunk rows, without key IDs, when the job seals the objects.
-    const parts = [(await reading.next()).value!];
-    await encryptRunnerTranscripts({ store: db, stores: [local], key });
-    expect(await unconverted()).toBe(2);
-    for await (const part of reading) parts.push(part);
-    expect(Buffer.concat(parts)).toEqual(whole);
   });
 
   test("after the job is done, a chunk without a key ID is refused", async () => {

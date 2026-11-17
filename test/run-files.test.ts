@@ -57,7 +57,7 @@ describe("run file store", () => {
   afterEach(() => close());
 
   const file = (runId: string) => ({ runId, generation: 1, prefix: `paws/test/${runId}` });
-  const store = (storeKey = key, plaintext?: () => Promise<boolean>) =>
+  const store = (storeKey = key) =>
     createRunFileChunks({
       store: db,
       kind: "transcript",
@@ -66,7 +66,6 @@ describe("run file store", () => {
       refused: () => {
         throw new Refused();
       },
-      plaintext,
     });
   const state = (runId: string) =>
     function* (q: Q) {
@@ -153,20 +152,15 @@ describe("run file store", () => {
     expect(runFileKeyId("transcript", key)).not.toBe(runFileKeyId("agent_session", key));
   });
 
-  test("a chunk stored before encryption reads only while the store allows it", async () => {
+  test("a chunk without a key ID is refused, sealed or not", async () => {
     await upload("run-a");
+    await setKeyId(null);
+    await expect(collect(store(), "run-a")).rejects.toThrow(RunFileStorageError);
     for (const [offset, bytes] of [
       [0, first],
       [RUN_FILE_CHUNK_BYTES, second],
     ] as const)
       objects.objects.set(`${file("run-a").prefix}/${offset}-${sha(bytes)}`, bytes);
-    await setKeyId(null);
-    expect(
-      await collect(
-        store(key, async () => true),
-        "run-a",
-      ),
-    ).toEqual(whole);
     await expect(collect(store(), "run-a")).rejects.toThrow(RunFileStorageError);
   });
 

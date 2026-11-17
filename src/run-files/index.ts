@@ -10,7 +10,6 @@ export {
   createS3RunFileObjects,
   createS3RunnerFileObjects,
   missingRunFileObject,
-  withLocalRunFileFallback,
   withSealedRunFileObjects,
   createFakeRunFileObjects,
   type RunFileObjects,

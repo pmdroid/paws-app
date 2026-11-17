@@ -1,6 +1,5 @@
 import {
   insertRunnerTranscriptSteps,
-  jobStatusByKeySteps,
   runnerTranscriptSteps,
   sealRunnerTranscriptSteps,
   setRunnerTranscriptUriSteps,
@@ -23,15 +22,6 @@ type Access = { runnerId: string; runId: string; token: string };
 
 /** The one-time job, enqueued by a migration, that seals chunks stored before encryption. */
 export const RUNNER_TRANSCRIPT_ENCRYPT_JOB = "runner-transcripts.encrypt";
-
-/**
- * True once the job is done, or when the migration found nothing to convert. From then on a chunk
- * without a key ID is refused instead of read as plaintext.
- */
-export async function runnerTranscriptsEncrypted(store: Db) {
-  const status = await store.run((q) => jobStatusByKeySteps(q, RUNNER_TRANSCRIPT_ENCRYPT_JOB));
-  return status === null || status === "done";
-}
 
 /** Where a transcript's chunk objects live. Chunks stored before encryption keep this key. */
 export function transcriptPrefix(row: {
@@ -60,7 +50,6 @@ export function createRunnerTranscripts(options: {
     objects: options.objects,
     key: options.key,
     refused: denied,
-    plaintext: async () => !(await runnerTranscriptsEncrypted(store)),
   });
   function* authorizeSteps(q: Q, access: Access, generation: number) {
     const { command } = yield* work.authorizeSteps(q, { ...access, generation });
