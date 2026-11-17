@@ -27,7 +27,6 @@ import {
   bindingReadinessSteps,
   classifyAgentFailure,
   eligibleRunnersSteps,
-  leaseCentralAccountSteps,
   createRunnerPlacement,
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
@@ -456,18 +455,6 @@ test("a central Claude account without a stored credential needs sign-in; Grok s
   expect(await bindingReadiness(db, { bindingId: g3.id, now: NOW })).toMatchObject({
     ready: true,
   });
-  expect(
-    await db.transaction((q) =>
-      leaseCentralAccountSteps(q, {
-        workspaceId: "W1",
-        agent: "grok",
-        runnerId: "R3",
-        runId: "run-grok",
-        until: NOW,
-        now: NOW,
-      }),
-    ),
-  ).toEqual({ kind: "leased", accountId: grok.id, reason: null });
 });
 
 test("a provider restriction cannot be bypassed by rotating to another account", async () => {

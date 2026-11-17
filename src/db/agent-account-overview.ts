@@ -25,12 +25,6 @@ export type AgentAccountOverview = {
     stale?: boolean;
     unavailable?: string;
   } | null;
-  lease: {
-    runner: string;
-    runId: string;
-    startedAt: number | null;
-    issue: { itemId: string; identifier: string } | null;
-  } | null;
 };
 
 const ONLINE_MS = 60_000;
@@ -42,7 +36,7 @@ export function* agentAccountOverviewSteps(
   ownerUserId?: string,
 ): Steps<AgentAccountOverview[]> {
   const { agentAccount: a, agentAccountCredential: c } = q.t;
-  const { agentAccountLease: l, agentAccountBinding: b, runner, runnerLogin, run, workItem } = q.t;
+  const { agentAccountBinding: b, runner, runnerLogin } = q.t;
   const accounts = yield* q.all(
     q.orm
       .select({
@@ -77,23 +71,6 @@ export function* agentAccountOverviewSteps(
         .where(eq(runner.workspaceId, workspaceId)),
     )).map((row) => [row.id, row.name]),
   );
-  const leases = new Map(
-    (yield* q.all(
-      q.orm
-        .select({
-          accountId: l.accountId,
-          runnerId: l.runnerId,
-          runId: l.runId,
-          startedAt: run.createdAt,
-          itemId: workItem.id,
-          identifier: workItem.linearIdentifier,
-        })
-        .from(l)
-        .leftJoin(run, eq(run.id, l.runId))
-        .leftJoin(workItem, eq(workItem.id, run.itemId))
-        .where(and(inArray(l.accountId, ids), gt(l.expiresAt, now))),
-    )).map((row) => [row.accountId, row]),
-  );
   const signingIn = new Set(
     (yield* q.all(
       q.orm
@@ -116,37 +93,23 @@ export function* agentAccountOverviewSteps(
   }
   const expired = new Set<string>();
   for (const row of accounts) if (yield* agentAuthFailureSteps(q, row.id)) expired.add(row.id);
-  return accounts.map((row) => {
-    const lease = leases.get(row.id);
-    return {
-      id: row.id,
-      agent: row.agent as RunnerCodingAgent,
-      label: row.label,
-      position: row.position,
-      extraUsage: row.extraUsage === 1,
-      enabled: row.enabled === 1,
-      signingIn: signingIn.has(row.id),
-      credential:
-        row.refreshedAt === null || row.signedOut === "" || expired.has(row.id)
-          ? null
-          : {
-              refreshedAt: row.refreshedAt,
-              runner: row.refreshedBy === null ? null : (runners.get(row.refreshedBy) ?? null),
-            },
-      usage: providerUsage.get(row.id) ?? null,
-      lease: lease
-        ? {
-            runner: runners.get(lease.runnerId) ?? lease.runnerId,
-            runId: lease.runId,
-            startedAt: lease.startedAt,
-            issue:
-              lease.itemId && lease.identifier
-                ? { itemId: lease.itemId, identifier: lease.identifier }
-                : null,
-          }
-        : null,
-    };
-  });
+  return accounts.map((row) => ({
+    id: row.id,
+    agent: row.agent as RunnerCodingAgent,
+    label: row.label,
+    position: row.position,
+    extraUsage: row.extraUsage === 1,
+    enabled: row.enabled === 1,
+    signingIn: signingIn.has(row.id),
+    credential:
+      row.refreshedAt === null || row.signedOut === "" || expired.has(row.id)
+        ? null
+        : {
+            refreshedAt: row.refreshedAt,
+            runner: row.refreshedBy === null ? null : (runners.get(row.refreshedBy) ?? null),
+          },
+    usage: providerUsage.get(row.id) ?? null,
+  }));
 }
 
 function* liveCentralAccountSteps(q: Q, workspaceId: string, accountId: string) {

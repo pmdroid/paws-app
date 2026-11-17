@@ -179,14 +179,3 @@ export const agentAccountCredential = pgTable("agent_account_credential", {
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
   runnerId: text("runner_id").references(() => runner.id),
 });
-
-export const agentAccountLease = pgTable("agent_account_lease", {
-  accountId: text("account_id")
-    .primaryKey()
-    .references(() => agentAccount.id),
-  runnerId: text("runner_id")
-    .notNull()
-    .references(() => runner.id),
-  runId: text("run_id").notNull(),
-  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
-});

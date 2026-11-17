@@ -11,7 +11,6 @@ import {
   providerUsageSteps,
   agentCredentialCiphertextSteps,
   createAgentAccountSteps,
-  takeAgentAccountLeaseSteps,
   bindAgentAccountSteps,
   bindingAccountHealthSteps,
   centralAgentAccountsSteps,
@@ -168,7 +167,7 @@ for (const outcome of ["denied", "expired", "timeout"] as const)
     });
     expect(await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id))).toBeNull();
   });
-test("refresh persists rotated tokens under a runner lease and health gates every reader", async () => {
+test("refresh persists rotated tokens from a bound runner and health gates every reader", async () => {
   const s = await setup();
   await seed(
     s.db,
@@ -202,9 +201,6 @@ test("refresh persists rotated tokens under a runner lease and health gates ever
   const holder = { workspaceId: "workspace", accountId: s.id, runnerId: "runner", now: s.now() };
   const binding = await s.db.transaction((q) =>
     bindAgentAccountSteps(q, { userId: "user", ...holder }),
-  );
-  await s.db.transaction((q) =>
-    takeAgentAccountLeaseSteps(q, { ...holder, runId: "run", until: s.now() + 10_000_000 }),
   );
   await s.auth.device("workspace", s.id, true);
   s.fake.approve();
