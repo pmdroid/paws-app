@@ -9,8 +9,8 @@ import {
   AGENT_ACCOUNT_LEASE_GRACE_MS,
   agentCredentialCiphertextSteps,
   createAgentAccountSteps,
-  recordAgentAccountUsageSteps,
   releaseAgentAccountLeaseSteps,
+  saveProviderUsageSteps,
   takeAgentAccountLeaseSteps,
   type Db,
 } from "../src/db";
@@ -113,35 +113,35 @@ describePglite((connect) => {
     await signIn(db, first);
     await signIn(db, second);
     await db.run((q) =>
-      recordAgentAccountUsageSteps(q, {
-        accountId: first,
-        runnerId: "R2",
-        limits: [{ window: "5h", usedPercent: 100, resetsAt: NOW + 60_000 }],
-        observedAt: NOW,
-      }),
+      saveProviderUsageSteps(
+        q,
+        { id: first, workspaceId: "acme", agent: "claude" },
+        [{ window: "5h", usedPercent: 100, resetsAt: NOW + 60_000 }],
+        NOW,
+      ),
     );
     expect(await place(db, "run-1")).toEqual({ accountId: second, reason: null });
     await expect(place(db, "run-2")).rejects.toBeInstanceOf(RunnerCapacityWait);
 
     await db.run((q) =>
-      recordAgentAccountUsageSteps(q, {
-        accountId: first,
-        runnerId: "R2",
-        limits: [{ window: "5h", usedPercent: 40, resetsAt: NOW + 60_000 }],
-        observedAt: NOW + 1,
-      }),
+      saveProviderUsageSteps(
+        q,
+        { id: first, workspaceId: "acme", agent: "claude" },
+        [{ window: "5h", usedPercent: 40, resetsAt: NOW + 60_000 }],
+        NOW + 1,
+      ),
     );
     expect(await place(db, "run-2")).toEqual({ accountId: first, reason: null });
     await expect(place(db, "run-3")).rejects.toBeInstanceOf(RunnerCapacityWait);
 
     for (const accountId of [first, second])
       await db.run((q) =>
-        recordAgentAccountUsageSteps(q, {
-          accountId,
-          runnerId: "R1",
-          limits: [{ window: "week", usedPercent: 100, resetsAt: NOW + 120_000 }],
-          observedAt: NOW + 2,
-        }),
+        saveProviderUsageSteps(
+          q,
+          { id: accountId, workspaceId: "acme", agent: "claude" },
+          [{ window: "week", usedPercent: 100, resetsAt: NOW + 120_000 }],
+          NOW + 2,
+        ),
       );
     const paused = await place(db, "run-3").catch((error: unknown) => error);
     expect(paused).toBeInstanceOf(UsageLimitPause);

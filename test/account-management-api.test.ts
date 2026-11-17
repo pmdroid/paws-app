@@ -8,6 +8,7 @@ import {
   agentCredentialCiphertextSteps,
   centralAgentAccountsSteps,
   listAgentBindingsSteps,
+  saveProviderUsageSteps,
   writeAgentCredentialCiphertextSteps,
 } from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
@@ -195,15 +196,13 @@ describePglite((connect) => {
           runnerId: "R2",
         }),
       );
-      await seed(db, (q) =>
-        q.orm.insert(q.t.agentAccountUsage).values({
-          accountId: work.id,
-          runnerId: "R1",
-          limitsJson: JSON.stringify([
-            { window: "5h", usedPercent: 100, resetsAt: NOW + 3_600_000 },
-          ]),
-          observedAt: NOW,
-        }),
+      await db.transaction((q) =>
+        saveProviderUsageSteps(
+          q,
+          { id: work.id, workspaceId: "acme", agent: "claude" },
+          [{ window: "5h", usedPercent: 100, resetsAt: NOW + 3_600_000 }],
+          NOW,
+        ),
       );
       await seed(db, (q) =>
         q.orm
@@ -237,6 +236,7 @@ describePglite((connect) => {
           usage: {
             limits: [{ window: "5h", usedPercent: 100, resetsAt: NOW + 3_600_000 }],
             observedAt: NOW,
+            stale: false,
           },
           lease: null,
         },

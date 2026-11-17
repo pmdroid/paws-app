@@ -1,7 +1,7 @@
 import { providerUsageSteps } from "./account-provider-usage";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
-import { and, asc, eq, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
 import { CENTRAL_CREDENTIAL_AGENTS, type RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
 import { type Q, type Steps } from "./db";
@@ -163,28 +163,6 @@ export function* writeAgentCredentialCiphertextSteps(
   return "written";
 }
 
-export function* recordAgentAccountUsageSteps(
-  q: Q,
-  usage: { accountId: string; runnerId: string; limits: RunnerAgentLimit[]; observedAt: number },
-): Steps<void> {
-  const { agentAccountUsage: stored } = q.t;
-  const set = {
-    runnerId: usage.runnerId,
-    limitsJson: JSON.stringify(usage.limits),
-    observedAt: usage.observedAt,
-  };
-  yield* q.exec(
-    q.orm
-      .insert(stored)
-      .values({ accountId: usage.accountId, ...set })
-      .onConflictDoUpdate({
-        target: stored.accountId,
-        set,
-        setWhere: sql`excluded.observed_at>=${stored.observedAt}`,
-      }),
-  );
-}
-
 export type CentralAgentAccount = {
   id: string;
   concurrency: number | null;
@@ -197,17 +175,15 @@ export function* centralAgentAccountsSteps(
   workspaceId: string,
   agent: RunnerCodingAgent,
 ): Steps<CentralAgentAccount[]> {
-  const { agentAccount: a, agentAccountUsage: u, agentAccountCredential: c } = q.t;
+  const { agentAccount: a, agentAccountCredential: c } = q.t;
   const rows = yield* q.all(
     q.orm
       .select({
         id: a.id,
         concurrency: a.concurrency,
         extraUsage: a.extraUsage,
-        limits: u.limitsJson,
       })
       .from(a)
-      .leftJoin(u, eq(u.accountId, a.id))
       .leftJoin(c, eq(c.accountId, a.id))
       .where(
         and(
@@ -222,23 +198,16 @@ export function* centralAgentAccountsSteps(
       )
       .orderBy(asc(a.position), asc(a.createdAt), asc(a.id)),
   );
-  const eligible = [];
+  const eligible: CentralAgentAccount[] = [];
   for (const row of rows) {
     if (yield* agentAuthFailureSteps(q, row.id)) continue;
     const usage = yield* providerUsageSteps(q, row.id);
-    const stored = usage?.limitsJson ? JSON.parse(usage.limitsJson) : null;
     eligible.push({
-      ...row,
-      limits:
-        stored && (stored.limits.length || !stored.unavailable)
-          ? JSON.stringify(stored.limits)
-          : row.limits,
+      id: row.id,
+      concurrency: row.concurrency,
+      extraUsage: row.extraUsage === 1,
+      limits: usage?.limitsJson ? (JSON.parse(usage.limitsJson).limits as RunnerAgentLimit[]) : [],
     });
   }
-  return eligible.map((row) => ({
-    id: row.id,
-    concurrency: row.concurrency,
-    extraUsage: row.extraUsage === 1,
-    limits: row.limits === null ? [] : (JSON.parse(row.limits) as RunnerAgentLimit[]),
-  }));
+  return eligible;
 }
