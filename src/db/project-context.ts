@@ -1,7 +1,24 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, exists, gt, isNull, lt, or, inArray, lte, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { type Db, type Q } from "./db";
+import { clearDependentContextSummariesSteps } from "./project-context-summary";
 import { ulid } from "./ulid";
 
 export type ContextScopeKind = "linear_project" | "slack_channel" | "user_private";
@@ -251,6 +268,11 @@ function* invalidateRowsSteps(
         version: contextRecord.version,
         sourceRevisionAt: contextRecord.sourceRevisionAt,
       }),
+  );
+  yield* clearDependentContextSummariesSteps(
+    q,
+    rows.map((row) => row.id),
+    now,
   );
   return rows;
 }
@@ -518,7 +540,7 @@ export async function ingestContextSource(
   return store.transaction((q) => ingestContextSourceSteps(q, input));
 }
 
-const recordColumns = (q: Q) => {
+export const contextRecordColumns = (q: Q) => {
   const r = q.t.contextRecord;
   return {
     id: r.id,
@@ -550,7 +572,7 @@ const recordColumns = (q: Q) => {
   };
 };
 
-type RawRecord = Omit<
+export type RawContextRecord = Omit<
   ContextRecordRow,
   "namespace" | "layer" | "classification" | "restriction" | "status"
 > & {
@@ -563,7 +585,7 @@ type RawRecord = Omit<
   status: string;
 };
 
-function recordRow(row: RawRecord): ContextRecordRow {
+export function contextRecordRow(row: RawContextRecord): ContextRecordRow {
   const { workspaceId, scopeKind, scopeId, ...rest } = row;
   return {
     ...rest,
@@ -594,7 +616,7 @@ export function* getCurrentContextRecordSteps(
   const { contextRecord } = q.t;
   const row = yield* q.one(
     q.orm
-      .select(recordColumns(q))
+      .select(contextRecordColumns(q))
       .from(contextRecord)
       .where(
         and(
@@ -605,7 +627,7 @@ export function* getCurrentContextRecordSteps(
         ),
       ),
   );
-  return row ? recordRow(row) : null;
+  return row ? contextRecordRow(row) : null;
 }
 
 export function* correctContextRecordSteps(q: Q, input: ContextCorrection) {
@@ -699,16 +721,17 @@ export type ContextCandidateRead = {
   readonly visibility: ContextVisibility;
   readonly now: number;
   readonly candidates: number;
+  readonly preservedOnly?: boolean;
+  readonly excludeCoveredBy?: readonly string[];
 };
 
-function visibleTo(q: Q, visibility: ContextVisibility) {
-  const { contextRecord } = q.t;
+export function restrictionVisibleTo(
+  visibility: Pick<ContextVisibility, "userId" | "teamIds" | "repositories" | "channelIds">,
+) {
   const teams = JSON.stringify(visibility.teamIds);
   const repositories = JSON.stringify(visibility.repositories);
   const channels = JSON.stringify(visibility.channelIds);
   return and(
-    eq(contextRecord.audience, visibility.audience),
-    eq(contextRecord.audienceLineage, visibility.audienceLineage),
     sql`(restriction->'teamIds' IS NOT NULL OR restriction->>'repository' IS NOT NULL OR restriction->>'userId' IS NOT NULL OR restriction->>'channelId' IS NOT NULL)`,
     sql`(restriction->'teamIds' IS NULL OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(restriction->'teamIds') AS stored(id) JOIN jsonb_array_elements_text(${teams}::text::jsonb) AS granted(id) ON stored.id = granted.id))`,
     sql`(restriction->>'repository' IS NULL OR restriction->>'repository' IN (SELECT jsonb_array_elements_text(${repositories}::text::jsonb)))`,
@@ -717,7 +740,16 @@ function visibleTo(q: Q, visibility: ContextVisibility) {
   )!;
 }
 
-function sourceVerified(q: Q) {
+function visibleTo(q: Q, visibility: ContextVisibility) {
+  const { contextRecord } = q.t;
+  return and(
+    eq(contextRecord.audience, visibility.audience),
+    eq(contextRecord.audienceLineage, visibility.audienceLineage),
+    restrictionVisibleTo(visibility),
+  )!;
+}
+
+export function contextSourceVerified(q: Q) {
   const { contextRecord, contextSource } = q.t;
   return exists(
     q.orm
@@ -743,7 +775,7 @@ export function* listContextCandidatesSteps(q: Q, input: ContextCandidateRead) {
   const { contextRecord } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select(recordColumns(q))
+      .select(contextRecordColumns(q))
       .from(contextRecord)
       .where(
         and(
@@ -751,7 +783,30 @@ export function* listContextCandidatesSteps(q: Q, input: ContextCandidateRead) {
           eq(contextRecord.status, "current"),
           gt(contextRecord.expiresAt, input.now),
           visibleTo(q, input.visibility),
-          sourceVerified(q),
+          contextSourceVerified(q),
+          input.preservedOnly
+            ? or(
+                isNotNull(contextRecord.correctedBy),
+                inArray(contextRecord.classification, [
+                  "decision",
+                  "unresolved_question",
+                  "inference",
+                ]),
+              )
+            : undefined,
+          input.excludeCoveredBy?.length
+            ? notExists(
+                q.orm
+                  .select({ one: q.t.contextSummarySource.recordId })
+                  .from(q.t.contextSummarySource)
+                  .where(
+                    and(
+                      inArray(q.t.contextSummarySource.summaryId, [...input.excludeCoveredBy]),
+                      eq(q.t.contextSummarySource.recordId, contextRecord.id),
+                    ),
+                  ),
+              )
+            : undefined,
         ),
       )
       .orderBy(
@@ -761,7 +816,7 @@ export function* listContextCandidatesSteps(q: Q, input: ContextCandidateRead) {
       )
       .limit(input.candidates),
   );
-  return { generation: scope.generation, records: rows.map(recordRow) };
+  return { generation: scope.generation, records: rows.map(contextRecordRow) };
 }
 
 export async function listContextCandidates(store: Db, input: ContextCandidateRead) {
@@ -778,7 +833,7 @@ export function* contextRecordHistorySteps(
   const { contextRecord } = q.t;
   const target = yield* q.one(
     q.orm
-      .select(recordColumns(q))
+      .select(contextRecordColumns(q))
       .from(contextRecord)
       .where(
         and(
@@ -786,14 +841,14 @@ export function* contextRecordHistorySteps(
           eq(contextRecord.id, recordId),
           ne(contextRecord.status, "invalidated"),
           gt(contextRecord.expiresAt, now),
-          sourceVerified(q),
+          contextSourceVerified(q),
         ),
       ),
   );
   if (!target) return null;
   const versions = yield* q.all(
     q.orm
-      .select(recordColumns(q))
+      .select(contextRecordColumns(q))
       .from(contextRecord)
       .where(
         and(
@@ -808,7 +863,7 @@ export function* contextRecordHistorySteps(
       .orderBy(desc(contextRecord.version))
       .limit(max),
   );
-  return { record: recordRow(target), versions: versions.map(recordRow) };
+  return { record: contextRecordRow(target), versions: versions.map(contextRecordRow) };
 }
 
 export async function contextRecordHistory(

@@ -78,7 +78,7 @@ export type ContextRecordView = {
   status: ContextRecordRow["status"];
 };
 
-function view(row: ContextRecordRow): ContextRecordView {
+export function view(row: ContextRecordRow): ContextRecordView {
   return {
     id: row.id,
     version: row.version,
@@ -101,7 +101,7 @@ function view(row: ContextRecordRow): ContextRecordView {
   };
 }
 
-function disclosable(
+export function disclosable(
   row: ContextRecordRow,
   access: ContextRequesterAccess,
   audience: ContextAudience,
