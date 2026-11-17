@@ -3,11 +3,8 @@ import { z } from "zod";
 import { journalCaught } from "../journal";
 import {
   workspaceMemberUsable,
-  accountSlotsInUseSteps,
   acknowledgeRetroDispatchSteps,
-  admitAgentAccountsSteps,
   AgentAccountError,
-  agentAccountConcurrencySteps,
   closeRetroSteps,
   deliverableRetroDispatchesSteps,
   failRetroAttemptSteps,
@@ -17,7 +14,7 @@ import {
   retroGenerationSteps,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
-  liveAccountBindingSteps,
+  listAgentBindingsSteps,
   markRetroDispatchFetchedSteps,
   newRetroCommandId,
   openRetroDispatchSteps,
@@ -33,6 +30,7 @@ import {
   RETRO_WAIT_DIAGNOSTICS,
   retroArtifactSteps,
   retroDispatchesNotStartedSteps,
+  runnerAccountUnsupportedSteps,
   runnerHasCapacitySteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
@@ -287,21 +285,60 @@ const HEALTH_HOLDS: ReadonlySet<BindingUnavailableReason> = new Set([
   "auth-required",
 ]);
 
-type HealthHold = { reason: BindingUnavailableReason; until: number | null } | null;
+type HealthHold = { reason: BindingUnavailableReason; until: number | null };
+type RetroAccount = { accountId: string; bindingId: string };
+type BindingPick = {
+  account: RetroAccount | null;
+  busy: boolean;
+  hold: HealthHold | null;
+  refusal: string | null;
+};
 
-function* accountHealthHoldSteps(
+function* retroBindingSteps(
   q: Q,
-  runnerId: string,
-  accountId: string,
-  model: string | null | undefined,
-  now: number,
-): Steps<HealthHold> {
-  const binding = yield* liveAccountBindingSteps(q, runnerId, accountId);
-  if (binding === null) return null;
-  const readiness = yield* bindingReadinessSteps(q, { bindingId: binding.id, model, now });
-  return !readiness.ready && HEALTH_HOLDS.has(readiness.reason)
-    ? { reason: readiness.reason, until: readiness.until }
-    : null;
+  input: {
+    workspaceId: string;
+    runnerId: string;
+    agent: RunnerCodingAgent;
+    model: string;
+    now: number;
+  },
+): Steps<BindingPick> {
+  const pick: BindingPick = { account: null, busy: false, hold: null, refusal: null };
+  for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId)) {
+    if (
+      binding.runnerId !== input.runnerId ||
+      binding.agent !== input.agent ||
+      binding.legacy ||
+      binding.removedAt !== null
+    )
+      continue;
+    const unsupported = yield* runnerAccountUnsupportedSteps(
+      q,
+      input.runnerId,
+      binding.id,
+      input.agent,
+      { reported: true },
+    );
+    if (unsupported) {
+      pick.refusal ??= unsupported;
+      continue;
+    }
+    const readiness = yield* bindingReadinessSteps(q, {
+      bindingId: binding.id,
+      model: input.model,
+      now: input.now,
+      runnerCapacity: false,
+    });
+    const account = { accountId: binding.accountId, bindingId: binding.id };
+    if (readiness.ready) return { ...pick, account, busy: false };
+    if (readiness.reason === "busy") {
+      if (pick.account === null) Object.assign(pick, { account, busy: true });
+    } else if (HEALTH_HOLDS.has(readiness.reason))
+      pick.hold ??= { reason: readiness.reason, until: readiness.until };
+    else pick.refusal ??= BINDING_REASON_TEXT[readiness.reason];
+  }
+  return pick;
 }
 
 function profileOf(retro: Retro): RetroAgentProfile {
@@ -583,23 +620,27 @@ export function createRetroDispatcher(options: {
           : `No online paired admin runner has ${profile.agent} signed in.`,
       );
     const agent = profile.agent as RunnerCodingAgent;
-    const accountId = (await store.run((q) => admitAgentAccountsSteps(q, retro.workspaceId, agent)))
-      .eligible[0];
-    if (accountId === undefined)
-      return note(
-        retro.id,
-        "no_runner",
-        `The workspace's default ${profile.agent} account is not enabled.`,
+    const model = profile.model;
+    const picks = new Map<string, BindingPick>();
+    for (const runner of candidates)
+      picks.set(
+        runner.id,
+        await store.run((q) =>
+          retroBindingSteps(q, {
+            workspaceId: retro.workspaceId,
+            runnerId: runner.id,
+            agent,
+            model,
+            now: at,
+          }),
+        ),
       );
-    const heldSteps = (q: Q, runnerId: string) =>
-      accountHealthHoldSteps(q, runnerId, accountId, profile.model, at);
-    const holds: HealthHold[] = [];
-    for (const runner of candidates) holds.push(await store.run((q) => heldSteps(q, runner.id)));
-    const healthy = candidates.filter((_, index) => holds[index] === null);
+    const healthy = candidates.filter((runner) => picks.get(runner.id)!.account !== null);
     if (healthy.length === 0) {
-      const blocks = holds.filter((hold) => hold !== null);
-      if (blocks.every((hold) => hold.reason === "exhausted")) {
-        const until = Math.min(...blocks.map((hold) => hold.until ?? Number.MAX_SAFE_INTEGER));
+      const blocks = [...picks.values()];
+      const holds = blocks.flatMap((pick) => (pick.hold ? [pick.hold] : []));
+      if (holds.length > 0 && holds.every((hold) => hold.reason === "exhausted")) {
+        const until = Math.min(...holds.map((hold) => hold.until ?? Number.MAX_SAFE_INTEGER));
         await note(
           retro.id,
           "quota_cooldown",
@@ -608,12 +649,17 @@ export function createRetroDispatcher(options: {
             until: until === Number.MAX_SAFE_INTEGER ? null : until,
           },
         );
-      } else
+      } else {
+        const held = holds.find((hold) => hold.reason !== "exhausted");
+        const reason = held
+          ? BINDING_REASON_TEXT[held.reason]
+          : (blocks.find((pick) => pick.refusal !== null)?.refusal ?? "no agent account bound");
         await note(
           retro.id,
           "no_runner",
-          `The ${profile.agent} account cannot run here: ${BINDING_REASON_TEXT[blocks.find((hold) => hold.reason !== "exhausted")!.reason]}.`,
+          `The ${profile.agent} account cannot run here: ${reason}.`,
         );
+      }
       return;
     }
     const available = healthy.filter((runner) => runner.cooldownUntil <= at);
@@ -640,11 +686,8 @@ export function createRetroDispatcher(options: {
         "capacity_wait",
         `${available.length} compatible runner${available.length === 1 ? " is" : "s are"} busy. Waiting for a free slot.`,
       );
-    function* accountFullSteps(q: Q) {
-      const limit = yield* agentAccountConcurrencySteps(q, accountId!);
-      return limit !== null && (yield* accountSlotsInUseSteps(q, accountId!, now())) >= limit;
-    }
-    if (await store.run(accountFullSteps))
+    const ready = free.filter((runner) => !picks.get(runner.id)!.busy);
+    if (ready.length === 0)
       return note(
         retro.id,
         "capacity_wait",
@@ -659,7 +702,8 @@ export function createRetroDispatcher(options: {
       oversizedInput("prompt", promptBytes.byteLength, RUNNER_RETRO_LIMITS.promptBytes),
     ].filter((message) => message !== null);
     if (oversized.length > 0) return abandon(retro, "abandoned", oversized.join(" "), at);
-    const runner = free[0]!;
+    const runner = ready[0]!;
+    const account = picks.get(runner.id)!.account!;
     const commandId = newRetroCommandId(at);
     const leaseMs =
       RETRO_DISPATCH_TIMING.commandTtlMs + activeExecutionMs + RETRO_DISPATCH_TIMING.outcomeGraceMs;
@@ -684,8 +728,12 @@ export function createRetroDispatcher(options: {
         identity === null ||
         identity.workspaceId !== retro.workspaceId ||
         !(yield* runnerHasWorkspaceAuthoritySteps(q, identity)) ||
-        (yield* heldSteps(q, runnerId)) !== null ||
-        (yield* accountFullSteps(q)) ||
+        !(yield* bindingReadinessSteps(q, {
+          bindingId: account.bindingId,
+          model,
+          now: at,
+          runnerCapacity: false,
+        })).ready ||
         !(yield* runnerHasCapacitySteps(
           q,
           runnerId,
@@ -716,6 +764,7 @@ export function createRetroDispatcher(options: {
         retroId: retro.id,
         attempt,
         settingsRevision: retro.settingsRevision,
+        account,
         profile: {
           agent: profile.agent,
           model: profile.model,
@@ -742,9 +791,7 @@ export function createRetroDispatcher(options: {
           sizeBytes: promptBytes.byteLength,
         },
       };
-      const account = yield* recordCommandAccountSteps(q, command, at);
-      if (account?.accountId !== accountId)
-        throw new AgentAccountError("binding_mismatch", "The command ran under another account");
+      yield* recordCommandAccountSteps(q, command, at);
       yield* recordRetroDispatchSteps(q, {
         commandId,
         retroId: retro.id,

@@ -2,16 +2,11 @@ import { expect, test } from "bun:test";
 import { accountAgentEnv } from "../src/acp";
 import {
   AgentAccountError,
-  admitAgentAccounts,
   bindAgentAccount,
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   createAgentAccount,
-  ensureLegacyAgentBinding,
   insertQueuedItem,
-  legacyAgentAccountId,
-  listAgentAccounts,
-  listAgentBindings,
   putWorkspaceUser,
   recordCommandAccount,
   recordLinearInstallation,
@@ -95,7 +90,6 @@ async function fixture() {
   const accounts = {
     a: await named("A"),
     b: await named("B"),
-    legacy: legacyAgentAccountId(workspace.id, "claude"),
   };
   const bind = async (accountId: string, runnerId: string) =>
     (
@@ -199,7 +193,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
   expect(RunnerAccountSchema.safeParse({ ...a, bindingId: "../R2" }).success).toBe(false);
   expect(
     RunnerAccountSchema.safeParse({
-      accountId: f.accounts.legacy,
+      accountId: "legacy_claude_ws",
       bindingId: "legacy_claude_R1",
     }).success,
   ).toBe(false);
@@ -236,37 +230,4 @@ test("every advertised adapter isolates a binding's config, sessions and caches 
   );
   expect(Object.keys(first!)).not.toContain("XAI_API_KEY");
   expect(runnerAccountAgentUnsupported("gemini" as never)).not.toBeNull();
-});
-
-test("a runner's default sign-in is a legacy account beside named ones and is admitted by default", async () => {
-  const f = await fixture();
-  const legacy = await ensureLegacyAgentBinding(f.db, "R1", "claude", f.now());
-  await ensureLegacyAgentBinding(f.db, "R1", "claude", f.now());
-  await ensureLegacyAgentBinding(f.db, "R2", "codex", f.now());
-  expect(legacy).toMatchObject({
-    id: "legacy_claude_R1",
-    accountId: f.accounts.legacy,
-    quotaScope: "unknown",
-    legacy: true,
-  });
-  expect((await listAgentAccounts(f.db, f.workspaceId)).map((row) => row.id).sort()).toEqual(
-    [
-      f.accounts.legacy,
-      legacyAgentAccountId(f.workspaceId, "codex"),
-      f.accounts.a,
-      f.accounts.b,
-    ].sort(),
-  );
-  expect(
-    (await listAgentAccounts(f.db, f.workspaceId)).find((row) => row.id === f.accounts.legacy),
-  ).toMatchObject({ legacy: true, enabled: true });
-  expect(
-    (await listAgentBindings(f.db, f.workspaceId)).filter((row) => row.legacy).map((row) => row.id),
-  ).toEqual(expect.arrayContaining(["legacy_claude_R1", "legacy_codex_R2"]));
-  expect(await admitAgentAccounts(f.db, f.workspaceId, "claude")).toEqual({
-    agent: "claude",
-    eligible: [f.accounts.legacy],
-    skipped: [],
-  });
-  await f.close();
 });

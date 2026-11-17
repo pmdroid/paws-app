@@ -306,24 +306,10 @@ test("the schema keeps each binding to one workspace, account and agent", async 
   ]);
 });
 
-test("commands without an account record the runner's legacy identity", async () => {
+test("a command without an account records none", async () => {
   const db = await fresh();
-  expect(await recordCommandAccount(db, loginCheck("C1", "R1", "W1"), NOW)).toEqual({
-    commandId: "C1",
-    workspaceId: "W1",
-    runnerId: "R1",
-    agent: "claude",
-    accountId: "legacy_claude_W1",
-    bindingId: "legacy_claude_R1",
-    named: false,
-    recordedAt: NOW,
-  });
-  await recordCommandAccount(db, probe("C2", "R2", "W1"), NOW);
-  expect(await commandAccount(db, "C2")).toMatchObject({
-    bindingId: "legacy_claude_R2",
-    named: false,
-  });
-  expect(await commandAccount(db, "unknown")).toBeNull();
+  expect(await recordCommandAccount(db, loginCheck("C1", "R1", "W1"), NOW)).toBeNull();
+  expect(await recordCommandAccount(db, probe("C2", "R2", "W1"), NOW)).toBeNull();
   expect(
     await recordCommandAccount(
       db,
@@ -339,12 +325,7 @@ test("commands without an account record the runner's legacy identity", async ()
       NOW,
     ),
   ).toBeNull();
-  expect(await code(async () => await recordCommandAccount(db, probe("C4", "R3", "W1"), NOW))).toBe(
-    "foreign_workspace",
-  );
-  await expect(recordCommandAccount(db, probe("C1", "R1", "W1"), NOW)).rejects.toMatchObject(
-    refused("duplicate key"),
-  );
+  for (const id of ["C1", "C2", "C3", "unknown"]) expect(await commandAccount(db, id)).toBeNull();
 });
 
 test("a named account is refused unless the runner reports the binding", async () => {
@@ -392,6 +373,9 @@ test("a named account is refused unless the runner reports the binding", async (
     bindingId: bound.id,
     named: true,
   });
+  await expect(recordCommandAccount(db, probe("N6", "R1", "W1", named), NOW)).rejects.toMatchObject(
+    refused("duplicate key"),
+  );
   expect(await attempt("N7", { ...named, accountId: "OTHER" })).toBe("binding_mismatch");
   expect(await attempt("N8", named, "R2")).toBe("binding_mismatch");
   expect(await attempt("N9", named, "R3", "W2")).toBe("foreign_workspace");
@@ -472,16 +456,18 @@ test("identity stays attached after an account is disabled or removed", async ()
     ).label,
   ).toBe("A");
 
-  await recordCommandAccount(db, loginCheck("LEGACY_CHECK", "R2", "W1"), NOW);
-  await setAgentAccountEnabled(db, {
-    workspaceId: "W1",
-    accountId: "legacy_claude_W1",
-    enabled: false,
-    now: NOW,
-  });
-  expect(
-    await code(async () => await recordCommandAccount(db, probe("LEGACY", "R2", "W1"), NOW)),
-  ).toBe("disabled");
+  await insert(db, (q) =>
+    q.orm.insert(q.t.agentAccount).values({
+      id: "legacy_claude_W1",
+      workspaceId: "W1",
+      agent: "claude",
+      label: "Claude default sign-in",
+      legacy: 1,
+      enabled: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }),
+  );
   expect(
     await code(
       async () =>

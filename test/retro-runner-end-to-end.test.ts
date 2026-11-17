@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { getRetro, listRetroItems, openPawsStore, type Db } from "../src/db";
 import { RunnerRequestError } from "../src/runner-daemon";
-import { readRunnerJob, readRunnerJobInputs } from "../src/runner-execution";
+import {
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
+  readRunnerJob,
+  readRunnerJobInputs,
+} from "../src/runner-execution";
 import {
   verifyRunnerRetroCommand,
+  type RunnerAccount,
   type RunnerRetroCommand,
   type RunnerRetroInputRequest,
   type RunnerRetroResult,
@@ -17,7 +23,12 @@ import {
 import { openRunnerRetroRuntime, type RunnerRetroDaemon } from "../src/runner-retro-runtime";
 import { executeRetroCommand } from "../src/runner-worker";
 import type { createRetroDispatcher } from "../src/retros";
-import { addRunnerPg as addRunner, trustedKeys, worldPg } from "../src/retros/dispatch.fixtures";
+import {
+  addRunnerPg as addRunner,
+  heldAccountBindings,
+  trustedKeys,
+  worldPg,
+} from "../src/retros/dispatch.fixtures";
 import { fixturePattern } from "../src/retros/result.fixtures";
 import { seed } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
@@ -98,6 +109,7 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
           runnerId: "R1",
           workspaceId: "ws",
           now: clock.now,
+          accountBindings: heldAccountBindings("R1"),
           latestAttempt: (retroId) => attempts.get(retroId),
           claimCommand: (id) => !claimed.has(id) && Boolean(claimed.add(id)),
         });
@@ -140,6 +152,7 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
 
 function runnerHost(
   root: string,
+  account: RunnerAccount,
   options: { crash?: boolean; failStart?: boolean; stopFailures?: number } = {},
 ) {
   const spool = {
@@ -161,6 +174,11 @@ function runnerHost(
     mkdirSync(path, { recursive: true, mode });
     chmodSync(path, mode);
   }
+  markRunnerAccountSignedIn(
+    openRunnerAccountHome(join(root, "home"), account, "codex", { signIn: true }),
+    account,
+    "codex",
+  );
   const script = join(root, "script.json");
   writeFileSync(
     script,
@@ -256,7 +274,7 @@ test.skipIf(!nonRootLinux)(
       state: "waiting_for_runner",
     });
 
-    await addRunner(db, { id: "R1" });
+    const account = (await addRunner(db, { id: "R1" }))!;
     await seen(db, w.clock.now);
     await control.dispatcher.tick();
     expect(await control.dispatcher.generation("r1")).toMatchObject({
@@ -264,7 +282,7 @@ test.skipIf(!nonRootLinux)(
       diagnostic: "dispatched",
     });
 
-    const host = runnerHost(root);
+    const host = runnerHost(root, account);
     const { daemon, calls } = runnerDaemon(control, w.clock);
     const open = () =>
       openRunnerRetroRuntime({
@@ -314,11 +332,11 @@ test.skipIf(!nonRootLinux)(
     const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
-    await addRunner(w.db, { id: "R1" });
+    const account = (await addRunner(w.db, { id: "R1" }))!;
     await seen(w.db, w.clock.now);
     const control = { dispatcher: w.open(w.db) };
     await control.dispatcher.tick();
-    const host = runnerHost(root, { crash: true });
+    const host = runnerHost(root, account, { crash: true });
     const { daemon, calls } = runnerDaemon(control, w.clock);
     const runtime = await openRunnerRetroRuntime({
       root: join(root, "retro"),
@@ -349,11 +367,11 @@ test.skipIf(!nonRootLinux)(
     const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
-    await addRunner(w.db, { id: "R1" });
+    const account = (await addRunner(w.db, { id: "R1" }))!;
     await seen(w.db, w.clock.now);
     const control = { dispatcher: w.open(w.db) };
     await control.dispatcher.tick();
-    const host = runnerHost(root, { failStart: true, stopFailures: 1 });
+    const host = runnerHost(root, account, { failStart: true, stopFailures: 1 });
     const { daemon, calls } = runnerDaemon(control, w.clock);
     const errors: string[] = [];
     const runtime = await openRunnerRetroRuntime({

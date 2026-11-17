@@ -20,7 +20,6 @@ import {
 import {
   ACCESS_CREDENTIAL_RUNNER_VERSION,
   AGENT_ACCOUNTS_RUNNER_VERSION,
-  LEGACY_ACCOUNT_PREFIX,
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   runnerAccountAgentUnsupported,
@@ -134,10 +133,6 @@ const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccou
 
 const added = (q: Q, id: AnyColumn) => asc(id);
 
-export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAgent): string {
-  return `${LEGACY_ACCOUNT_PREFIX}${agent}_${workspaceId}`;
-}
-
 function* accountRowSteps(q: Q, id: string) {
   const { agentAccount } = q.t;
   const row = yield* q.one(
@@ -241,58 +236,6 @@ export async function listAgentBindings(
   accountId?: string,
 ): Promise<AgentAccountBinding[]> {
   return store.run((q) => listAgentBindingsSteps(q, workspaceId, accountId));
-}
-
-export function* ensureLegacyAgentBindingSteps(
-  q: Q,
-  runnerId: string,
-  agent: RunnerCodingAgent,
-  at: number,
-) {
-  const { agentAccount, agentAccountBinding } = q.t;
-  const { workspaceId } = yield* runnerWorkspaceSteps(q, runnerId);
-  const accountId = legacyAgentAccountId(workspaceId, agent);
-  const id = `${LEGACY_ACCOUNT_PREFIX}${agent}_${runnerId}`;
-  yield* q.exec(
-    q.orm
-      .insert(agentAccount)
-      .values({
-        id: accountId,
-        workspaceId,
-        agent,
-        label: `${AGENT_NAMES[agent]} default sign-in`,
-        legacy: 1,
-        enabled: 1,
-        createdAt: at,
-        updatedAt: at,
-      })
-      .onConflictDoNothing(),
-  );
-  yield* q.exec(
-    q.orm
-      .insert(agentAccountBinding)
-      .values({
-        id,
-        workspaceId,
-        accountId,
-        agent,
-        runnerId,
-        legacy: 1,
-        quotaScope: "unknown",
-        createdAt: at,
-      })
-      .onConflictDoNothing(),
-  );
-  return (yield* bindingRowSteps(q, id))!;
-}
-
-export async function ensureLegacyAgentBinding(
-  store: Db,
-  runnerId: string,
-  agent: RunnerCodingAgent,
-  at: number,
-): Promise<AgentAccountBinding> {
-  return store.transaction((q) => ensureLegacyAgentBindingSteps(q, runnerId, agent, at));
 }
 
 function parseLabel(value: string): string {
@@ -690,7 +633,7 @@ export function* runnerAccountUnsupportedSteps(
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
-  options: { signIn?: boolean } = {},
+  options: { signIn?: boolean; reported?: boolean } = {},
 ) {
   const { runnerAccountCapability: c, runnerHostStatus: h } = q.t;
   const status = yield* q.one(
@@ -710,6 +653,7 @@ export function* runnerAccountUnsupportedSteps(
   if (agentUnsupported) return agentUnsupported;
   if (options.signIn) return null;
   if (
+    !options.reported &&
     runnerReleaseAtLeast(status?.version, ACCESS_CREDENTIAL_RUNNER_VERSION) &&
     (yield* bindingHasControlPlaneAuthSteps(q, bindingId))
   )
@@ -752,29 +696,22 @@ export function* recordCommandAccountSteps(
   const agent = commandAgent(command);
   if (!agent) return null;
   const named = "account" in command ? command.account : undefined;
-  let row: AgentAccountBinding;
-  if (!named) {
-    const { workspaceId } = yield* runnerWorkspaceSteps(q, command.runnerId);
-    if (workspaceId !== command.workspaceId)
-      throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
-    row = yield* ensureLegacyAgentBindingSteps(q, command.runnerId, agent, at);
-  } else {
-    row = yield* getAgentBindingSteps(q, command.workspaceId, named.bindingId);
-    if (
-      row.legacy ||
-      row.accountId !== named.accountId ||
-      row.runnerId !== command.runnerId ||
-      row.agent !== agent
-    )
-      throw new AgentAccountError(
-        "binding_mismatch",
-        "Agent account binding does not match the command",
-      );
-    const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent, {
-      signIn: command.type === "login",
-    });
-    if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
-  }
+  if (!named) return null;
+  const row = yield* getAgentBindingSteps(q, command.workspaceId, named.bindingId);
+  if (
+    row.legacy ||
+    row.accountId !== named.accountId ||
+    row.runnerId !== command.runnerId ||
+    row.agent !== agent
+  )
+    throw new AgentAccountError(
+      "binding_mismatch",
+      "Agent account binding does not match the command",
+    );
+  const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent, {
+    signIn: command.type === "login",
+  });
+  if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
   const owner = (yield* accountRowSteps(q, row.accountId))!;
   if (row.removedAt !== null || owner.removedAt !== null)
     throw new AgentAccountError("removed", "Agent account was removed");
@@ -788,7 +725,7 @@ export function* recordCommandAccountSteps(
       agent,
       accountId: row.accountId,
       bindingId: row.id,
-      named: named ? 1 : 0,
+      named: 1,
       recordedAt: at,
     }),
   );
@@ -811,45 +748,6 @@ export function* commandAccountSteps(q: Q, commandId: string) {
 
 export async function commandAccount(store: Db, commandId: string): Promise<CommandAccount | null> {
   return store.run((q) => commandAccountSteps(q, commandId));
-}
-
-type AccountAdmission = {
-  agent: RunnerCodingAgent;
-  eligible: string[];
-  skipped: { accountId: string; reason: AgentAccountErrorCode }[];
-};
-
-export function* admitAgentAccountsSteps(q: Q, workspaceId: string, agent: RunnerCodingAgent) {
-  const ids = [legacyAgentAccountId(workspaceId, agent)];
-  const eligible: string[] = [];
-  const skipped: AccountAdmission["skipped"] = [];
-  for (const id of ids) {
-    const row = yield* accountRowSteps(q, id);
-    const reason: AgentAccountErrorCode | null = !row
-      ? id === legacyAgentAccountId(workspaceId, agent)
-        ? null
-        : "not_found"
-      : row.workspaceId !== workspaceId
-        ? "foreign_workspace"
-        : row.agent !== agent
-          ? "binding_mismatch"
-          : row.removedAt !== null
-            ? "removed"
-            : !row.enabled
-              ? "disabled"
-              : null;
-    if (reason) skipped.push({ accountId: id, reason });
-    else eligible.push(id);
-  }
-  return { agent, eligible, skipped };
-}
-
-export async function admitAgentAccounts(
-  store: Db,
-  workspaceId: string,
-  agent: RunnerCodingAgent,
-): Promise<AccountAdmission> {
-  return store.run((q) => admitAgentAccountsSteps(q, workspaceId, agent));
 }
 
 export function* liveAccountBindingSteps(q: Q, runnerId: string, accountId: string) {
