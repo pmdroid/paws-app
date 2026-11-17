@@ -43,7 +43,7 @@ export const RunnerAgentCredentialUploadSchema = z.strictObject({
 });
 
 export const RunnerAgentCredentialReceiptSchema = z.strictObject({
-  result: z.enum(["written", "not_holder", "stale_version"]),
+  result: z.enum(["written", "stale_version"]),
 });
 
 export type RunnerAgentCredentialFiles = z.infer<typeof RunnerAgentCredentialFilesSchema>;
