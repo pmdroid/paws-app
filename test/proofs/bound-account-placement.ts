@@ -1,7 +1,7 @@
 import { MINIMUM_RUNNER_VERSION } from "../../src/runner-protocol";
 import { probeRunnerPlacement } from "../local/runner-placement";
 import { eq } from "drizzle-orm";
-import { seed } from "../pglite-fixtures";
+import { seed, seedCredential } from "../pglite-fixtures";
 import * as data from "../../src/db";
 import { createRunnerPlacement } from "../../src/runner-placement";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
@@ -87,6 +87,7 @@ export default {
       agent: "claude",
       label: "alternate",
     });
+    await seedCredential(db, a.id, "claude", NOW);
     const alternate = await data.bindAgentAccount(db, {
       userId: userId,
       ...at,

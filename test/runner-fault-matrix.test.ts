@@ -940,7 +940,12 @@ async function runRemoteFault(fault: Fault) {
         ),
       ),
       pendingJobs: (await listJobs(db))
-        .filter((job) => job.status === "pending" && job.queue !== JOB_KIND.reverify)
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            job.queue !== JOB_KIND.reverify &&
+            job.queue !== "agent.usage.after-run",
+        )
         .map((job) => job.queue),
       detail: JSON.stringify({
         state: (await getWorkItem(db, item.id))?.state,

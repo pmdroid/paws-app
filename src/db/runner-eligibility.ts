@@ -182,12 +182,20 @@ export function* runnerAgentPoliciesSteps(q: Q, runnerId: string) {
 }
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
-  const { agentAccountBinding: b, agentAccount: a, runner: r, runnerAgentPolicy: p } = q.t;
+  const {
+    agentAccountBinding: b,
+    agentAccount: a,
+    agentAccountCredential: c,
+    runner: r,
+    runnerAgentPolicy: p,
+  } = q.t;
   return yield* q.one(
     q.orm
       .select({
         runnerId: b.runnerId,
         accountId: b.accountId,
+        agent: a.agent,
+        credential: c.ciphertext,
         bindingRemoved: b.removedAt,
         accountRemoved: a.removedAt,
         enabled: a.enabled,
@@ -202,6 +210,7 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
       .innerJoin(a, eq(a.id, b.accountId))
       .innerJoin(r, eq(r.id, b.runnerId))
       .leftJoin(p, and(eq(p.runnerId, b.runnerId), eq(p.agent, b.agent)))
+      .leftJoin(c, eq(c.accountId, b.accountId))
       .where(eq(b.id, bindingId)),
   );
 }

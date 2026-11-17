@@ -17,7 +17,7 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { currentRunnerHost, seed } from "./pglite-fixtures";
+import { currentRunnerHost, seed, seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];
@@ -104,14 +104,17 @@ async function acme() {
     });
     return { placed, rejected };
   };
-  const createAccount = (label: string) =>
-    createAgentAccount(db, {
+  const createAccount = async (label: string) => {
+    const account = await createAgentAccount(db, {
       ownerUserId: ada,
       workspaceId: workspace.id,
       agent: "claude",
       label,
       now,
     });
+    await seedCredential(db, account.id, "claude", now);
+    return account;
+  };
   const bind = (runnerId: string, accountId: string) =>
     bindAgentAccount(db, { userId: ada, workspaceId: workspace.id, runnerId, accountId, now });
   return { db, now, workspaceId: workspace.id, item, placement, place, createAccount, bind };

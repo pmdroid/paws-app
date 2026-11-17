@@ -260,7 +260,7 @@ describePglite((connect) => {
         db
           .run((q) => centralAgentAccountsSteps(q, "acme", "claude"))
           .then((rows) => rows.map((row) => row.id));
-      expect(await candidates()).toEqual([work.id]);
+      expect(await candidates()).toEqual([]);
       const upload = (version: number) =>
         db.transaction((q) =>
           writeAgentCredentialCiphertextSteps(q, {
@@ -273,7 +273,7 @@ describePglite((connect) => {
         );
       expect(await upload(2)).toBe("stale_version");
       expect(await upload(3)).toBe("written");
-      expect(await candidates()).toEqual([home.id, work.id]);
+      expect(await candidates()).toEqual([home.id]);
       expect((await send("GET", "")).body.accounts[0]?.credential).toEqual({
         refreshedAt: NOW,
         runner: "R2",

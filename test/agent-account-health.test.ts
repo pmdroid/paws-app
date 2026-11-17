@@ -27,10 +27,13 @@ import {
 import {
   bindingReadinessSteps,
   classifyAgentFailure,
+  eligibleRunnersSteps,
+  leaseCentralAccountSteps,
   createRunnerPlacement,
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
+import { currentRunnerHost } from "./pglite-fixtures";
 
 const NOW = 1_800_000_000_000;
 const bindingReadiness = (db: Db, input: Parameters<typeof bindingReadinessSteps>[1]) =>
@@ -104,6 +107,16 @@ async function seed(db: Db) {
     label: "C",
     now: NOW,
   });
+  for (const account of [a, b, c])
+    await write(db, (q) =>
+      q.orm.insert(q.t.agentAccountCredential).values({
+        accountId: account.id,
+        agent: account.agent,
+        ciphertext: "sealed",
+        version: 1,
+        updatedAt: NOW,
+      }),
+    );
   const bind = async (accountId: string, runnerId: string) =>
     (await bindAgentAccount(db, { userId: "U1", workspaceId: "W1", accountId, runnerId, now: NOW }))
       .id;
@@ -401,6 +414,74 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
   });
   expect(await reason(r3)).toBe("provider-restricted");
   expect(await reason(bindings.b1, "sonnet-9")).toBe("ready");
+});
+
+test("a central Claude account without a stored credential needs sign-in; Grok still places", async () => {
+  const { db, accounts, bindings } = await fixture();
+  const runners = () =>
+    db.run((q) =>
+      eligibleRunnersSteps(q, {
+        workspaceId: "W1",
+        teamId: "T1",
+        ownerUserId: "U1",
+        leadUserIds: [],
+        agent: "claude",
+        purpose: "work",
+        now: NOW,
+      }),
+    );
+  for (const runnerId of ["R1", "R2", "R3"])
+    await write(db, (q) => currentRunnerHost(q, runnerId, NOW));
+  const credential = (q: Q) => q.t.agentAccountCredential;
+  await write(db, (q) =>
+    q.orm.delete(credential(q)).where(eq(credential(q).accountId, accounts.a)),
+  );
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: NOW })).toEqual({
+    ready: false,
+    reason: "auth-required",
+    until: null,
+  });
+  expect(await bindingReadiness(db, { bindingId: bindings.b1, now: NOW })).toMatchObject({
+    ready: true,
+  });
+  expect((await runners()).map((runner) => [runner.id, runner.eligible, runner.reason])).toEqual([
+    ["R1", true, "own"],
+    ["R2", false, "auth-expired"],
+    ["R3", false, "agent-not-signed-in"],
+  ]);
+  await write(db, (q) =>
+    q.orm.delete(credential(q)).where(eq(credential(q).accountId, accounts.b)),
+  );
+  expect((await runners()).some((runner) => runner.eligible)).toBe(false);
+  const grok = await createAgentAccount(db, {
+    ownerUserId: "U1",
+    workspaceId: "W1",
+    agent: "grok",
+    label: "G",
+    now: NOW,
+  });
+  const g3 = await bindAgentAccount(db, {
+    userId: "U1",
+    workspaceId: "W1",
+    accountId: grok.id,
+    runnerId: "R3",
+    now: NOW,
+  });
+  expect(await bindingReadiness(db, { bindingId: g3.id, now: NOW })).toMatchObject({
+    ready: true,
+  });
+  expect(
+    await db.transaction((q) =>
+      leaseCentralAccountSteps(q, {
+        workspaceId: "W1",
+        agent: "grok",
+        runnerId: "R3",
+        runId: "run-grok",
+        until: NOW,
+        now: NOW,
+      }),
+    ),
+  ).toEqual({ kind: "leased", accountId: grok.id, reason: null });
 });
 
 test("a provider restriction cannot be bypassed by rotating to another account", async () => {

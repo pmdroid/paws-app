@@ -1,8 +1,8 @@
 import { providerUsageSteps } from "./account-provider-usage";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { agentAuthFailureSteps } from "./agent-auth";
-import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import { and, asc, eq, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { CENTRAL_CREDENTIAL_AGENTS, type RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
 import { type Q, type Steps } from "./db";
 import type { RunnerAgentLimit } from "./runners";
@@ -211,7 +211,9 @@ export function* centralAgentAccountsSteps(
       .leftJoin(c, eq(c.accountId, a.id))
       .where(
         and(
-          or(isNull(c.ciphertext), ne(c.ciphertext, "")),
+          CENTRAL_CREDENTIAL_AGENTS.includes(agent)
+            ? and(isNotNull(c.accountId), ne(c.ciphertext, ""))
+            : or(isNull(c.ciphertext), ne(c.ciphertext, "")),
           eq(a.workspaceId, workspaceId),
           eq(a.agent, agent),
           eq(a.legacy, 0),

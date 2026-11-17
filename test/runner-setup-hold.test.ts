@@ -43,6 +43,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
@@ -179,6 +180,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         agent: "claude",
         label: name,
       });
+      await seedCredential(db, id, "claude", now);
       await bindAgentAccount(db, { userId: userId, ...common, accountId: id, runnerId });
       if (!ready)
         await setAgentAccountEnabled(db, {

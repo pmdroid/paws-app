@@ -142,6 +142,15 @@ export function githubDeliveryRows(db: Db) {
   );
 }
 
+/** A placeholder stored sign-in, so a central Claude or Codex account is placeable. */
+export function seedCredential(db: Db, accountId: string, agent: string, now = 0) {
+  return seed(db, (q) =>
+    q.orm
+      .insert(q.t.agentAccountCredential)
+      .values({ accountId, agent, ciphertext: "sealed", version: 1, updatedAt: now }),
+  );
+}
+
 export const CURRENT_RUNNER_VERSION = MINIMUM_RUNNER_VERSION.join(".");
 
 export function currentRunnerHost(q: Q, runnerId: string, reportedAt = 0) {
@@ -189,6 +198,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
         label: row.runnerId + "-" + row.agent,
         now: row.now,
       });
+      await seedCredential(db, account.id, row.agent, row.now);
       await bindAgentAccount(db, {
         userId: row.ownerUserId,
         workspaceId: row.workspaceId,

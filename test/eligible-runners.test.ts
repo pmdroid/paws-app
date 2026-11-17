@@ -20,7 +20,7 @@ import {
   type EligibleRunnersInput,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { seed, seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type Member = { role: "member" | "admin"; active: boolean; teamIds: string[] };
@@ -114,6 +114,7 @@ async function workspace(runners: Record<string, Runner>) {
         label: id,
         now,
       });
+      await seedCredential(db, account.id, "codex", now);
       const binding = await bindAgentAccount(db, {
         userId: users[runner.owner]!,
         workspaceId: ws.id,

@@ -8,7 +8,7 @@ import {
 } from "../src/db";
 import { bindingReadinessSteps } from "../src/runner-placement";
 import { tempStore } from "./pglite";
-import { seed } from "./pglite-fixtures";
+import { seed, seedCredential } from "./pglite-fixtures";
 import { REPOSITORY, workspaceWithRunners } from "./runner-slot-fixture";
 
 const NOW = 1_800_000_000_000;
@@ -91,6 +91,7 @@ test("placement holds a spent account until the reset, then offers it again", as
       now: NOW,
     }),
   );
+  await seedCredential(db, spent.id, "codex", NOW);
   const binding = await db.transaction((q) =>
     bindAgentAccountSteps(q, {
       userId,

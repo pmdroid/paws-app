@@ -1,5 +1,5 @@
 import { boundHeartbeat, boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_VERSION, seedCredential } from "./pglite-fixtures";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -209,6 +209,7 @@ async function setup() {
     label: "Shared",
     now,
   });
+  await seedCredential(db, account.id, "claude", now);
   const runners: Record<"a" | "b", string> = { a: "", b: "" };
   for (const name of ["a", "b"] as const) {
     const key = await createRunnerKey(join(root, `client-${name}`));
