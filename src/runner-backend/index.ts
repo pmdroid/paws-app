@@ -85,9 +85,8 @@ import {
   type AcpEventOrigin,
   type RunAgentOptions,
   type RunAgentResult,
-  encodePolicyFiles,
-  encodePolicyChunk,
 } from "../acp";
+import { answerPolicyRequest } from "./closeout-policy";
 import { RunnerTeardownPending, RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
@@ -2083,10 +2082,7 @@ export function createRemoteAgentRunner(options: {
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
-                  answer:
-                    event.offset === undefined
-                      ? encodePolicyFiles(policy)
-                      : encodePolicyChunk(policy, event.offset, event.hash),
+                  answer: answerPolicyRequest(policy, event),
                 });
               }
               if (event.type === "ci_rerun" && !answered) {
