@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { AGENT_ACCOUNTS_RETIRED, createAccountManagement } from "../src/account-management";
+import { createAccountManagement } from "../src/account-management";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,21 +32,12 @@ const call = (method: string, path: string) =>
     principal,
   );
 
-test("every named-account and account-order route answers 410 with where sign-in moved", async () => {
-  expect(AGENT_ACCOUNTS_RETIRED).toBe("This route was replaced by /api/runners/agent-accounts.");
+test("the retired named-account routes are not handled", async () => {
   for (const [method, path] of [
     ["GET", "/api/runners/accounts"],
-    ["POST", "/api/runners/accounts"],
-    ["GET", "/api/runners/accounts/preview?role=reviewerFallback"],
-    ["POST", "/api/runners/accounts/01JACCOUNT000000000000000A"],
     ["POST", "/api/runners/accounts/01JACCOUNT000000000000000A/remove"],
-    ["POST", "/api/runners/accounts/01JACCOUNT000000000000000A/bindings"],
-    ["POST", "/api/runners/accounts/01JACCOUNT000000000000000A/bindings/B1/remove"],
   ]) {
-    const response = await call(method!, path!);
-    expect(response?.status).toBe(410);
-    expect(response?.headers.get("cache-control")).toBe("no-store");
-    expect(await response!.json()).toEqual({ error: AGENT_ACCOUNTS_RETIRED });
+    expect(await call(method!, path!)).toBeNull();
   }
 });
 
