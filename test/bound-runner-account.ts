@@ -1,7 +1,7 @@
 import * as database from "../src/db";
 import { runnerHostVersionSteps } from "../src/db";
 import type { RunnerCodingAgent } from "../src/runner-protocol";
-import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE } from "./pglite-fixtures";
 export async function boundPlacementAccounts(db: database.Db) {
   await bindFixtureAccounts(db);
   const rows = await db.run((q) => q.all(q.orm.select().from(q.t.runner)));
@@ -10,7 +10,7 @@ export async function boundPlacementAccounts(db: database.Db) {
       await database.recordRunnerHostStatus(
         db,
         row.id,
-        { runnerVersion: CURRENT_RUNNER_VERSION },
+        { runnerVersion: CURRENT_RUNNER_RELEASE },
         row.createdAt,
       );
 }

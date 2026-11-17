@@ -1,4 +1,4 @@
-import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "../pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE } from "../pglite-fixtures";
 import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -763,7 +763,7 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
     const stopped = await item();
-    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_RELEASE, Date.now());
     const stoppedAgent = backend.forItem(stopped.id);
     const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
@@ -931,7 +931,7 @@ export async function probeRunnerBackend(
       "limited-session",
     );
     const tooLong = await stoppedWith("Prompt is too long", "too-long-session");
-    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_RELEASE, Date.now());
     const continued: Record<string, string | null> = {};
     for (const [name, record] of [
       ["ended", first],
@@ -987,7 +987,7 @@ export async function probeRunnerBackend(
     let runtimeCommand: unknown = null;
     const runtimeLines: string[] = [];
     {
-      await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
+      await reportRunnerVersion(runnerId, CURRENT_RUNNER_RELEASE, Date.now());
       const record = await item();
       const stop = new AbortController();
       const sent = backend.forItem(record.id)(
@@ -1042,7 +1042,7 @@ export async function probeRunnerBackend(
       },
       Date.now(),
     );
-    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_RELEASE, Date.now());
     const hookRun = await item();
     const hookStop = new AbortController();
     const hooked = backend.forItem(hookRun.id)(
@@ -1383,7 +1383,7 @@ export async function probeRunnerBackend(
         .forItem(record.id)(input(record, { ...overrides, reviewCommand: { base: reviewBase } }))
         .catch((error: Error) => refusedReviews.push(error.message));
     }
-    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_RELEASE, Date.now());
     const commandReviewer = await item();
     let commandText = "";
     const commandReviewed = backend.forItem(commandReviewer.id)({
@@ -2550,7 +2550,7 @@ export async function probeRunnerBackend(
           await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
-      for (const host of hostIds) await reportRunnerVersion(host, CURRENT_RUNNER_VERSION, now);
+      for (const host of hostIds) await reportRunnerVersion(host, CURRENT_RUNNER_RELEASE, now);
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
         const record = await item();
         const affinityNotices: string[] = [];
@@ -3439,14 +3439,14 @@ export async function probeRunnerBackend(
         return command;
       };
       await git(["-C", source, "reset", "--hard", head]);
-      const current = await sent(CURRENT_RUNNER_VERSION);
+      const current = await sent(CURRENT_RUNNER_RELEASE);
       const moved = (
         await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
       ).trim();
       await git(["-C", source, "update-ref", "refs/paws/upstream-main", moved]);
-      const rebasing = await sent(CURRENT_RUNNER_VERSION);
+      const rebasing = await sent(CURRENT_RUNNER_RELEASE);
       await git(["-C", source, "update-ref", "refs/paws/upstream-main", base]);
-      const stale = await sent(CURRENT_RUNNER_VERSION, head);
+      const stale = await sent(CURRENT_RUNNER_RELEASE, head);
       await git(["-C", source, "update-ref", "-d", "refs/paws/upstream-main"]);
       await git(["-C", source, "reset", "--hard", base]);
       if (rebasing.type !== "run" || stale.type !== "run") throw new Error("Expected run commands");
@@ -3466,7 +3466,7 @@ export async function probeRunnerBackend(
       observe("runners receive the task's main commit and checkpoint opt-out", true, {
         current: current.repository.mainSha,
       });
-      await reportVersion(CURRENT_RUNNER_VERSION);
+      await reportVersion(CURRENT_RUNNER_RELEASE);
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)

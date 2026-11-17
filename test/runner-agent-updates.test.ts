@@ -193,10 +193,8 @@ async function fixture() {
   };
 }
 
-// Older runners also report the version they ran before; Paws accepts it and shows only `current`.
 const installed = [
   { agent: "claude", version: "2.0.0", status: "current" },
-  { agent: "claude", version: "1.8.0", status: "previous" },
   { agent: "codex", version: "0.9.0", status: "current" },
 ] as const;
 
@@ -288,7 +286,6 @@ test("Update sends the eligible version with its integrity, and the card follows
   const done = await runner.heartbeat({
     agents: [
       { agent: "claude", version: "2.1.0", status: "current" },
-      { agent: "claude", version: "2.0.0", status: "previous" },
       { agent: "codex", version: "0.9.0", status: "current" },
     ],
   });

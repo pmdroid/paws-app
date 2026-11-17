@@ -2,12 +2,10 @@ import { expect, test } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   RUNNER_RETRO_LIMITS,
-  RETRO_RUNNER_VERSION,
   RunnerRetroCommandSchema,
   RunnerRetroResultSchema,
   acceptRetroResult,
   authorizeRetroInput,
-  runnerAcceptsRetro,
   runnerRetroInputGrant,
   runnerRetroSlot,
   runnerRetroSlotKey,
@@ -235,15 +233,6 @@ test("a work runner and a retro runner each refuse the other's command", () => {
     ok: false,
     reason: "invalid_payload",
   });
-});
-
-test("only runners at the retro release accept the command", () => {
-  const [major, minor, patch] = RETRO_RUNNER_VERSION;
-  expect(runnerAcceptsRetro(`${major}.${minor}.${patch}`)).toBe(true);
-  expect(runnerAcceptsRetro(`${major}.${minor}.${patch + 1}-beta.1`)).toBe(true);
-  expect(runnerAcceptsRetro(`${major}.${minor}.${patch - 1}`)).toBe(false);
-  expect(runnerAcceptsRetro(null)).toBe(false);
-  expect(runnerAcceptsRetro("unknown")).toBe(false);
 });
 
 test("results carry the command identities and reject stale or malformed data", () => {

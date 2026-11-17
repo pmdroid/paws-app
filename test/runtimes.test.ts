@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createFakeGitReader, loadOriginMainRootFiles } from "../src/closeout-spec/policy";
-import { legacyRuntimeTool, RunnerCommandSchema } from "../src/runner-protocol";
+import { RunnerCommandSchema } from "../src/runner-protocol";
 import { RUNTIME_FILES, runtimeList } from "../src/runtimes";
 
 const encoder = new TextEncoder();
@@ -170,13 +170,9 @@ describe("runner command runtimes", () => {
     runtimes,
   });
 
-  test("accepts any mise backend, and only core and aqua: tools are legacy", () => {
+  test("accepts any mise backend", () => {
     for (const tool of ["cargo:ripgrep", "npm:@biomejs/biome", "uv", "go:github.com/a/b/cmd/c"])
       expect(RunnerCommandSchema.safeParse(command([{ tool, version: "1" }])).success).toBe(true);
-    expect(legacyRuntimeTool("node")).toBe(true);
-    expect(legacyRuntimeTool("aqua:cli/cli")).toBe(true);
-    expect(legacyRuntimeTool("uv")).toBe(false);
-    expect(legacyRuntimeTool("cargo:ripgrep")).toBe(false);
   });
 
   test("accepts core tools and aqua: tools", () => {

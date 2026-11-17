@@ -118,7 +118,7 @@ Database access goes through Drizzle in `src/db`; new raw SQL is refused by `bun
 
 External adapters are async. Database helpers return promises through `db.run()` and `db.transaction()`. Keep transactions short.
 
-A new runner feature declares its minimum runner version in `src/runner-protocol/versions.ts` as the next release (one patch above the latest `v*` tag). The `runner release` workflow fails when the tag is below any constant there, and CI fails when a constant added or changed since the latest `v*` tag names that release or an earlier one (`bun scripts/check-runner-versions.ts --since-latest-release`). Check `git ls-remote --tags origin` before choosing the version: a release can ship while a branch is open.
+Paws places work only on runners at `MINIMUM_RUNNER_VERSION` in `src/runner-protocol/versions.ts` or newer; there are no per-feature runner versions. When Paws starts relying on a runner feature, raise the minimum to a release that ships it. The `runner release` workflow fails when the tag is below the minimum, and CI fails when the minimum names an unreleased runner or drops below the latest release's minimum (`bun scripts/check-runner-versions.ts --since-latest-release`). Check `git ls-remote --tags origin` for the latest release.
 
 Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not return 200 for an unverified body.
 

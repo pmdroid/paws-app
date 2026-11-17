@@ -40,7 +40,7 @@ export type RunnerStrayProcess = z.infer<typeof RunnerStrayProcessSchema>;
 export const RUNNER_AGENT_USERS = ["runner", "paws-agent"] as const;
 export type RunnerAgentUser = (typeof RUNNER_AGENT_USERS)[number];
 
-/** Host sample a runner sends with its heartbeat. Every field is optional so older runners stay valid. */
+/** Host sample a runner sends with its heartbeat. The runner leaves out each field it cannot read. */
 export const RunnerHostStatusSchema = z.strictObject({
   cpuPercent: z.number().min(0).max(100).optional(),
   /** Online CPUs, so load can be read against the core count. */

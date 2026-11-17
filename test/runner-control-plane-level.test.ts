@@ -9,7 +9,6 @@ import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-id
 import {
   CONTROL_PLANE_PROTOCOL_LEVEL,
   RunnerHelperResultSchema,
-  resultForControlPlane,
   signRunnerCommand,
   takeRejectedFields,
   withRejectedFields,
@@ -19,7 +18,6 @@ import {
 import { serverIdentity } from "./local/runner-daemon";
 
 /** b2fe062c (Nov 7): before `interrupted`, `replies` and `startWork`, and still strict. */
-const NOV_7_LEVEL = "0.1.73";
 const NOV_7 = RunnerHelperResultSchema.omit({ interrupted: true, replies: true, startWork: true });
 const HELPER_ID = "b6b0a3f2-3f5f-4f5e-9f7a-1c2d3e4f5a6b";
 const result: RunnerHelperResult = {
@@ -131,15 +129,6 @@ async function withControlPlane(
   }
 }
 
-for (const level of [NOV_7_LEVEL, undefined])
-  test(`a helper result completes on a control plane at level ${level}`, async () => {
-    await withControlPlane(level, async ({ daemon, accepted }) => {
-      expect(await daemon.postHelperResult(result)).toEqual({ duplicate: false });
-      const { interrupted: _i, replies: _r, startWork: _s, ...known } = result;
-      expect(accepted).toEqual([known]);
-    });
-  }, 30_000);
-
 test("the listener's 403 line names the schema paths that failed", async () => {
   await withControlPlane(CONTROL_PLANE_PROTOCOL_LEVEL, async ({ daemon, logged }) => {
     const error = await daemon.postHelperResult(result).catch((caught) => caught);
@@ -148,18 +137,3 @@ test("the listener's 403 line names the schema paths that failed", async () => {
     for (const field of ["interrupted", "replies", "startWork"]) expect(line).toContain(field);
   });
 }, 30_000);
-
-test("each result reads the level again, so a rolled-back control plane accepts it", async () => {
-  await withControlPlane(CONTROL_PLANE_PROTOCOL_LEVEL, async (plane) => {
-    await plane.daemon.heartbeat();
-    plane.level = NOV_7_LEVEL;
-    expect(await plane.daemon.postHelperResult(result)).toEqual({ duplicate: false });
-    expect(plane.accepted).toHaveLength(1);
-  });
-}, 30_000);
-
-test("`interrupted` is kept only for a level that knows it", () => {
-  const body: Record<string, unknown> = { commandId: "command", interrupted: true };
-  expect(resultForControlPlane(body, "0.1.75")).toEqual(body);
-  expect(resultForControlPlane(body, "0.1.74")).toEqual({ commandId: "command" });
-});

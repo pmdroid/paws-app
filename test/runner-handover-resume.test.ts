@@ -1,5 +1,5 @@
 import { boundHeartbeat, boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts, CURRENT_RUNNER_VERSION, seedCredential } from "./pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE, seedCredential } from "./pglite-fixtures";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -432,10 +432,10 @@ async function setup() {
         yield* q.exec(
           q.orm
             .insert(q.t.runnerHostStatus)
-            .values({ runnerId, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt: now })
+            .values({ runnerId, runnerVersion: CURRENT_RUNNER_RELEASE, reportedAt: now })
             .onConflictDoUpdate({
               target: q.t.runnerHostStatus.runnerId,
-              set: { runnerVersion: CURRENT_RUNNER_VERSION },
+              set: { runnerVersion: CURRENT_RUNNER_RELEASE },
             }),
         );
         yield* q.exec(

@@ -10,7 +10,7 @@ import {
   recordLinearInstallation,
 } from "../src/db";
 import { createRunnerWork, createRunnerWorkHttp, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
-import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -76,7 +76,7 @@ async function fixture() {
     eventKey: Buffer.alloc(32, 7),
     now: () => clock.now,
   });
-  const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
+  const host = { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") };
   const command = (generation: number): Extract<RunnerCommand, { type: "run" }> => ({
     id: `work-${generation}`,
     type: "run",

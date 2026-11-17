@@ -28,7 +28,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { CURRENT_RUNNER_VERSION, seed } from "./pglite-fixtures";
+import { CURRENT_RUNNER_RELEASE, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
@@ -132,7 +132,7 @@ async function setup() {
           .where(eq(q.t.runnerWork.runId, runId)),
       ),
     ))!;
-  await release(CURRENT_RUNNER_VERSION);
+  await release(CURRENT_RUNNER_RELEASE);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     store: db,

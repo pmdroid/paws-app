@@ -40,7 +40,6 @@ import {
   previousRetroResultDispatchSteps,
   retroDispatchReleaseReasonSteps,
   retrosToAdvanceSteps,
-  runnerHostVersionSteps,
   runnerIdentitySteps,
   type Db,
   type Q,
@@ -64,7 +63,6 @@ import {
   RUNNER_RETRO_CAPABILITY,
   RUNNER_RETRO_LIMITS,
   RunnerRetroCommandSchema,
-  runnerAcceptsRetro,
   runnerRetroInputGrant,
   type RunnerCodingAgent,
   type RunnerRetroCommand,
@@ -256,11 +254,6 @@ export async function retroRunnerCandidates(
       }
       if (!runner.eligible) continue;
       seen.add(runner.id);
-      const version = await store.run((q) => runnerHostVersionSteps(q, runner.id));
-      if (!runnerAcceptsRetro(version)) {
-        incompatible += 1;
-        continue;
-      }
       const held =
         (await store.run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runner.id, input.now))) +
         (await store.run((q) => pinnedSlotsReservedSteps(q, runner.id, "", input.now)));

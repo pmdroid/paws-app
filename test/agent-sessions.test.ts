@@ -45,7 +45,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerWork, RunnerWorkFencedError, type RunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempHome } from "./helpers";
-import { CURRENT_RUNNER_VERSION, seed } from "./pglite-fixtures";
+import { CURRENT_RUNNER_RELEASE, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -684,7 +684,7 @@ describe("agent session snapshots", () => {
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)
-          .values({ runnerId: runnerB, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt: at }),
+          .values({ runnerId: runnerB, runnerVersion: CURRENT_RUNNER_RELEASE, reportedAt: at }),
       (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runnerB, agent: "claude" }),
       (q) =>
         q.orm.insert(q.t.runnerAgent).values({

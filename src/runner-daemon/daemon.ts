@@ -72,7 +72,6 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
-  resultForControlPlane,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -198,15 +197,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let closed = false;
   let observedAt = 0;
   let rejection: { error: RunnerRequestError; attemptAt: number } | null = null;
-  /** The result Paws accepts now. The level is read per result: a redeploy or restart moves it. */
-  async function acceptedResult<Result extends object>(result: Result): Promise<Result> {
-    const { protocolLevel } = await api.heartbeat();
-    const accepted = resultForControlPlane(result, protocolLevel);
-    const dropped = Object.keys(result).filter((field) => !(field in accepted));
-    if (dropped.length)
-      journal(`runner.result.fields_dropped level=${protocolLevel} fields=${dropped.join(",")}`);
-    return accepted;
-  }
   if (
     state &&
     (state.controlPlaneUrl !== origins.controlPlaneUrl ||
@@ -1212,7 +1202,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       identifier.parse(runId);
       const body = RunnerResultDeliverySchema.parse({ generation, result });
       RunnerGrantTokenSchema.parse(grantToken);
-      body.result = await acceptedResult(body.result);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/runs/${encodeURIComponent(runId)}/result`,
@@ -1409,12 +1398,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async postHelperResult(result: RunnerHelperResult) {
       const valid = RunnerHelperResultSchema.parse(result);
       helperCommand(valid.commandId, true);
-      const body = await acceptedResult(valid);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
-          `/v1/helper-commands/${encodeURIComponent(body.commandId)}/result`,
+          `/v1/helper-commands/${encodeURIComponent(valid.commandId)}/result`,
           "POST",
-          body,
+          valid,
         ),
       );
     },

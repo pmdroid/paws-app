@@ -21,7 +21,7 @@ import {
   type Db,
 } from "../src/db";
 import { createRunnerWork, createRunnerWorkHttp, RunnerTeardownPending } from "../src/runner-work";
-import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { jsonValue, seed, withoutForeignKeys } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
@@ -155,7 +155,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     expect(await runnerCancelPending(db, "box")).toBe(true);
     now = cancel.expiresAt + 1;
     const report = [{ runId: run.id, generation: 1 }];
-    const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
+    const host = { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") };
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, report);
     expect(await runnerSlotFree(db, ["box"], now, run.id)).toBe(false);
     await store.close();

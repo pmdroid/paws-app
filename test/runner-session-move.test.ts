@@ -28,7 +28,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
-import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
+import { CURRENT_RUNNER_RELEASE } from "./pglite-fixtures";
 
 type Setup = Awaited<ReturnType<typeof setup>>;
 
@@ -217,7 +217,7 @@ async function setup() {
         sql`UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=${userId} WHERE id=${runnerId}`,
       );
       await work.heartbeat(runnerId);
-      await exec(sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})
+      await exec(sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_RELEASE},${now})
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`);
       await exec(sql`DELETE FROM runner_agent_policy WHERE runner_id=${runnerId}`);
       await exec(sql`DELETE FROM runner_agent WHERE runner_id=${runnerId}`);

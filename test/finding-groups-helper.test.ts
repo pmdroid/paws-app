@@ -1,5 +1,5 @@
 import { boundPlacementAccounts } from "./bound-runner-account";
-import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
+import { CURRENT_RUNNER_RELEASE } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { sql, type SQL } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
@@ -60,7 +60,7 @@ async function seed() {
     sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','admin','Runner','active',${now},${now})`,
   );
   await exec(db, sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES('runner','codex')`);
-  await recordRunnerHostStatus(db, "runner", { runnerVersion: CURRENT_RUNNER_VERSION }, now);
+  await recordRunnerHostStatus(db, "runner", { runnerVersion: CURRENT_RUNNER_RELEASE }, now);
   await boundPlacementAccounts(db);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({
@@ -245,7 +245,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
       f.db,
       sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES('runner2','codex')`,
     );
-    await recordRunnerHostStatus(f.db, "runner2", { runnerVersion: CURRENT_RUNNER_VERSION }, f.now);
+    await recordRunnerHostStatus(f.db, "runner2", { runnerVersion: CURRENT_RUNNER_RELEASE }, f.now);
     await boundPlacementAccounts(f.db);
     let attempts = 0;
     const helper = createFindingGroupHelper({
