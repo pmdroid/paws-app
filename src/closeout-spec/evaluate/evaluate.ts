@@ -250,6 +250,9 @@ function judgeItem(
       return row(item, "skipped", "no changed path matches");
     }
   }
+  if (isReview(item) && request.base === request.head) {
+    return row(item, "skipped", "no commits beyond base");
+  }
   if (
     isReview(item) &&
     item.minChangedLines !== undefined &&
