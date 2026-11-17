@@ -1,5 +1,6 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
 import { FakeClock, systemClock } from "../core";
 import { sampleHostOperations } from "../host-operation";
 import {
@@ -358,6 +359,118 @@ test("a job enqueued while the loop sleeps starts without waiting for the poll",
   await enqueueJob(db, { queue: "work", now: Date.now() });
   await eventually(() => started);
   expect(started).toBe(true);
+  controller.abort();
+  await running;
+  await close();
+});
+
+type Listens = { listen(...args: unknown[]): Promise<unknown> };
+
+function watchListen(db: Db): { listening(): boolean } {
+  const client = (db.orm as unknown as { $client: Listens }).$client;
+  const listen = client.listen.bind(client);
+  let listening = false;
+  client.listen = async (...args) => {
+    const handle = await listen(...args);
+    listening = true;
+    return handle;
+  };
+  return { listening: () => listening };
+}
+
+async function sleepingLoop(db: Db, ready: () => boolean) {
+  const loop = new JobLoop(db, systemClock, { pollMs: 60_000 });
+  let started = false;
+  loop.register("work", () => {
+    started = true;
+  });
+  let sleeps = 0;
+  const untilAborted = (_ms: number, signal?: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      sleeps += 1;
+      signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal, untilAborted);
+  await eventually(() => ready() && sleeps > 0);
+  return {
+    started: () => started,
+    stop: async () => {
+      controller.abort();
+      await running;
+    },
+  };
+}
+
+test("a job inserted by raw SQL while the loop sleeps starts without waiting for the poll", async () => {
+  const { db, close } = await tempStore();
+  const watch = watchListen(db);
+  const loop = await sleepingLoop(db, watch.listening);
+  const now = Date.now();
+  await db.orm.execute(
+    sql`insert into job (queue, run_at, created_at) values ('work', ${now}, ${now})`,
+  );
+  await eventually(loop.started);
+  expect(loop.started()).toBe(true);
+  await loop.stop();
+  await close();
+});
+
+test("a job whose run_at moves to now starts without waiting for the poll", async () => {
+  const { db, close } = await tempStore();
+  const id = await enqueueJob(db, {
+    queue: "work",
+    now: Date.now(),
+    runAt: Date.now() + 3_600_000,
+  });
+  const watch = watchListen(db);
+  const loop = await sleepingLoop(db, watch.listening);
+  expect(loop.started()).toBe(false);
+  await db.orm.execute(sql`update job set run_at = ${Date.now()} where id = ${id}`);
+  await eventually(loop.started);
+  expect(loop.started()).toBe(true);
+  await loop.stop();
+  await close();
+});
+
+test("a store whose listen throws still claims on the poll", async () => {
+  const { db, close } = await tempStore();
+  const client = (db.orm as unknown as { $client: Listens }).$client;
+  client.listen = () => Promise.reject(new Error("listen refused"));
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  const loop = new JobLoop(db, systemClock, { pollMs: 10 });
+  let started = false;
+  loop.register("work", () => {
+    started = true;
+  });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal);
+  try {
+    await eventually(() => lines.some((line) => line.includes("listen refused")));
+    const now = Date.now();
+    await db.orm.execute(
+      sql`insert into job (queue, run_at, created_at) values ('work', ${now}, ${now})`,
+    );
+    await eventually(() => started);
+    expect(started).toBe(true);
+    expect(lines.filter((line) => line.includes("listen refused"))).toHaveLength(1);
+  } finally {
+    controller.abort();
+    await running;
+    restore();
+    await close();
+  }
+});
+
+test("a listen that never settles does not hold up stopping the loop", async () => {
+  const { db, close } = await tempStore();
+  const client = (db.orm as unknown as { $client: Listens }).$client;
+  client.listen = () => new Promise(() => {});
+  const loop = new JobLoop(db, systemClock, { pollMs: 10 });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal);
+  await eventually(() => loop.liveness().polling);
   controller.abort();
   await running;
   await close();

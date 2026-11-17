@@ -9,7 +9,8 @@ import { openPawsStore, PG_MIGRATIONS_FOLDER, pgSchema, UnknownDatabaseError } f
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const BASELINE = readMigrationFiles({ migrationsFolder: PG_MIGRATIONS_FOLDER })[0]!;
+const MIGRATIONS = readMigrationFiles({ migrationsFolder: PG_MIGRATIONS_FOLDER });
+const BASELINE = MIGRATIONS[0]!;
 const OLDER = "This database was created by an older Paws. Reset it to start this version.";
 const NEWER = "This database was created by a newer Paws. Start that version or reset it.";
 
@@ -94,13 +95,13 @@ async function spawnPaws(home: string, args: string[]) {
 }
 
 describe("Postgres drizzle-kit migrations", () => {
-  test("a fresh database migrates to the single baseline with every table", async () => {
+  test("a fresh database applies every migration and has every table", async () => {
     const pgliteDir = join(tempHome(), "pglite");
     const opened = await openPawsStore({ url: null, pgliteDir });
     await opened.close();
     await withPglite(pgliteDir, async (client) => {
       const applied = await client.query("SELECT hash FROM drizzle.__drizzle_migrations");
-      expect(applied.rows).toEqual([{ hash: BASELINE.hash }]);
+      expect(applied.rows).toEqual(MIGRATIONS.map(({ hash }) => ({ hash })));
       const tables = await client.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
       );
@@ -113,6 +114,10 @@ describe("Postgres drizzle-kit migrations", () => {
         "runner_setup_hold_ends",
         "runner_setup_resume_ends",
       ]);
+      const jobTriggers = await client.query<{ tgname: string }>(
+        "SELECT tgname FROM pg_trigger WHERE tgrelid = 'job'::regclass AND NOT tgisinternal",
+      );
+      expect(jobTriggers.rows.map((row) => row.tgname)).toEqual(["job_ready_notifies"]);
       const sequence = await client.query("SELECT nextval('job_activation_seq') AS n");
       expect(sequence.rows).toHaveLength(1);
       const equal = await client.query("SELECT 'Org/Repo'::citext = 'org/repo' AS equal");
@@ -121,7 +126,8 @@ describe("Postgres drizzle-kit migrations", () => {
   }, 30_000);
 
   test("the Postgres schema has no change without a migration", () => {
-    expect(drizzleKit(tempHome())).toEqual(["0000_baseline.sql"]);
+    const shipped = readdirSync(PG_MIGRATIONS_FOLDER).filter((name) => name.endsWith(".sql"));
+    expect(drizzleKit(tempHome())).toEqual(shipped.sort());
   });
 
   for (const [name, createdAt, message] of [
