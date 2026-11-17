@@ -44,18 +44,33 @@ function journal(sha: string): Entry[] {
   return (JSON.parse(ran.out) as { entries: Entry[] }).entries;
 }
 
+const shipped = journal(base);
+const after = journal(head);
+const changed = changes();
+const squash =
+  shipped.length > 0 &&
+  after.length > 0 &&
+  after[0]!.when !== shipped[0]!.when &&
+  changed.some(([status, path]) => status !== "D" && path === `${DRIZZLE}${after[0]!.tag}.sql`);
+const before = squash ? [] : shipped;
+
+const files = (tag: string) => [
+  `${DRIZZLE}${tag}.sql`,
+  `${DRIZZLE}meta/${tag.split("_")[0]}_snapshot.json`,
+];
+const rewritten = new Set(squash ? files(after[0]!.tag) : []);
+const retired = new Set(squash ? shipped.flatMap((entry) => files(entry.tag)) : []);
+
 const problems: string[] = [];
 const added = new Set<string>();
-for (const [status, path] of changes()) {
-  if (status === "A") added.add(path);
-  else if (path !== JOURNAL)
+for (const [status, path] of changed) {
+  if (status === "A" || (status === "M" && rewritten.has(path))) added.add(path);
+  else if (path !== JOURNAL && !(status === "D" && retired.has(path)))
     problems.push(
       `${path} is a shipped drizzle-kit migration and ${status === "M" ? "was edited" : status === "D" ? "was deleted or renamed" : `changed (${status})`}. Shipped migrations never change: generate a new one.`,
     );
 }
 
-const before = journal(base);
-const after = journal(head);
 before.forEach((entry, index) => {
   if (JSON.stringify(after[index]) !== JSON.stringify(entry))
     problems.push(
