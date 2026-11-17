@@ -15,7 +15,6 @@ export function* deviceAccountSteps(q: Q, workspaceId: string, id: string): Step
           eq(a.id, id),
           eq(a.workspaceId, workspaceId),
           eq(a.agent, "codex"),
-          eq(a.legacy, 0),
           isNull(a.removedAt),
         ),
       ),

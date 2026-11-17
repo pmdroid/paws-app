@@ -64,7 +64,6 @@ export function* agentAccountOverviewSteps(
       .where(
         and(
           eq(a.workspaceId, workspaceId),
-          eq(a.legacy, 0),
           isNull(a.removedAt),
           ownerUserId === undefined ? undefined : eq(a.ownerUserId, ownerUserId),
         ),
@@ -163,14 +162,7 @@ function* liveCentralAccountSteps(q: Q, workspaceId: string, accountId: string) 
     q.orm
       .select({ id: a.id, agent: a.agent, ownerUserId: a.ownerUserId })
       .from(a)
-      .where(
-        and(
-          eq(a.id, accountId),
-          eq(a.workspaceId, workspaceId),
-          eq(a.legacy, 0),
-          isNull(a.removedAt),
-        ),
-      ),
+      .where(and(eq(a.id, accountId), eq(a.workspaceId, workspaceId), isNull(a.removedAt))),
   );
   if (!row) throw new AgentAccountError("not_found", "Agent account is unavailable");
   return row;
@@ -186,12 +178,7 @@ export function* orderAgentAccountsSteps(
       .select({ id: a.id })
       .from(a)
       .where(
-        and(
-          eq(a.workspaceId, input.workspaceId),
-          eq(a.agent, input.agent),
-          eq(a.legacy, 0),
-          isNull(a.removedAt),
-        ),
+        and(eq(a.workspaceId, input.workspaceId), eq(a.agent, input.agent), isNull(a.removedAt)),
       ),
   );
   const known = new Set(current.map((row) => row.id));

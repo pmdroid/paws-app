@@ -64,8 +64,7 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         let expired = false;
         let healthy = false;
         for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId)) {
-          if (binding.runnerId !== runner.id || binding.agent !== input.agent || binding.legacy)
-            continue;
+          if (binding.runnerId !== runner.id || binding.agent !== input.agent) continue;
           const readiness = yield* bindingReadinessSteps(q, { bindingId: binding.id, now: at });
           if (
             readiness.ready ||

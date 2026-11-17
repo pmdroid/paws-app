@@ -1470,7 +1470,7 @@ function startReview(record: { id: string }, attempt: number) {
 
 async function liveBinding(runnerId: string) {
   const binding = (await listAgentBindings(context.db, context.workspaceId)).find(
-    (row) => row.runnerId === runnerId && !row.legacy && row.removedAt === null,
+    (row) => row.runnerId === runnerId && row.removedAt === null,
   )!;
   context.accountBindings.add(binding.id);
   return { accountId: binding.accountId, bindingId: binding.id };

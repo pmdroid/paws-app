@@ -357,7 +357,7 @@ export async function probeRunnerBackend(
           allowedRepositories: ["fixture/repository"],
           accountBindings: new Set(
             (await listAgentBindings(db, workspace.id))
-              .filter((binding) => binding.runnerId === selectedRunnerId && !binding.legacy)
+              .filter((binding) => binding.runnerId === selectedRunnerId)
               .map((binding) => binding.id),
           ),
           claimCommand: (id) => {
@@ -3256,7 +3256,7 @@ export async function probeRunnerBackend(
       const coolDown = async (until: number) => {
         if (!until) now++;
         for (const binding of await listAgentBindings(db, workspace.id))
-          if (!binding.legacy && binding.agent === "codex")
+          if (binding.agent === "codex")
             await recordAccountObservation(db, {
               bindingId: binding.id,
               source: "result",

@@ -252,7 +252,7 @@ describePglite((open) => {
   test("model sources need an enabled account bound to the agent and a usable owner", async () => {
     const db = await opened(open);
     await seedOwnerMember(db);
-    const bound = (agent: string, row: { enabled?: number; legacy?: number } = {}) => [
+    const bound = (agent: string, row: { enabled?: number } = {}) => [
       (q: Q) =>
         q.orm.insert(q.t.agentAccount).values({
           id: `account-${agent}`,
@@ -272,7 +272,6 @@ describePglite((open) => {
           runnerId: "box",
           quotaScope: "unknown",
           createdAt: NOW,
-          legacy: row.legacy ?? 0,
         }),
     ];
     await seed(
@@ -287,7 +286,6 @@ describePglite((open) => {
       ...bound("codex"),
       ...bound("grok"),
       ...bound("claude", { enabled: 0 }),
-      ...bound("opencode", { legacy: 1 }),
     );
     const codex = {
       runnerId: "box",
@@ -420,15 +418,13 @@ describePglite((open) => {
       agentAccount("A", "first"),
       agentAccount("B", "second", { createdAt: NOW + 1, enabled: 0 }),
       agentAccount("gone", "gone", { removedAt: NOW }),
-      agentAccount("legacy", "legacy"),
       agentAccount("dropped", "dropped"),
       binding("b-later", "B"),
       binding("b-first", "A"),
-      binding("b-legacy", "legacy", { legacy: 1 }),
       binding("b-removed", "dropped", { removedAt: NOW }),
       binding("b-gone-account", "gone"),
     );
-    expect(await db.run((q) => storedAgentBindingIdSteps(q, "b-legacy"))).toBe("b-legacy");
+    expect(await db.run((q) => storedAgentBindingIdSteps(q, "b-first"))).toBe("b-first");
     expect(await db.run((q) => storedAgentBindingIdSteps(q, "missing"))).toBeNull();
     expect(await db.run((q) => runnerNamedBindingsSteps(q, "box", "acme"))).toEqual([
       {

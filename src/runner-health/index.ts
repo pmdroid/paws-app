@@ -19,8 +19,8 @@ import {
   runnerAgentUsageSteps,
   runnerLaneHelperWaitingSteps,
   runnerLastSeenSteps,
+  settleRunnerAgentSteps,
   seenMemberRunnersSteps,
-  setLegacyAgentQuotaSteps,
   touchRunnerSeenSteps,
   workspaceMemberSteps,
   type Q,
@@ -361,7 +361,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           return { duplicate: true };
         }
         yield* insertHealthResultSteps(q, result.commandId, runnerId, value, at);
-        const legacy = !assigned.account;
+        const runnerWide = !assigned.account;
         const owner =
           assigned.type === "login_check" ? yield* commandAccountSteps(q, assigned.id) : null;
         function* observe(
@@ -395,7 +395,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           result.login.authenticated
         )
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
-        if (legacy && result.agentLimits)
+        if (runnerWide && result.agentLimits)
           yield* recordRunnerAgentUsageSteps(q, {
             runnerId,
             agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
@@ -414,12 +414,18 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           const cools = spent.length > 0 && !extraUsage;
           if (
             (yield* observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt)) &&
-            legacy
+            runnerWide
           )
-            yield* setLegacyAgentQuotaSteps(q, runnerId, assigned.agent, {
-              state: cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
-              resetsAt: until,
-              cooldownUntil: cools ? until! : 0,
+            yield* settleRunnerAgentSteps(q, {
+              runnerId,
+              agent: assigned.agent,
+              quota: {
+                state: cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
+                resetsAt: until,
+                cooldownUntil: cools ? until! : 0,
+              },
+              clearQuota: false,
+              model: null,
             });
         }
         yield* touchRunnerSeenSteps(q, runnerId, at);

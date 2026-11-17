@@ -682,7 +682,7 @@ test("admission fails over from a busy session runner once session grace ends", 
     teardownConfirmedAt: NOW,
   });
   const binding = (await listAgentBindings(db, workspace.id)).find(
-    (row) => row.runnerId === holder && !row.legacy,
+    (row) => row.runnerId === holder,
   )!;
   const payload = Buffer.from(
     JSON.stringify({
