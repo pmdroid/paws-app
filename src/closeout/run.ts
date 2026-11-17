@@ -2,7 +2,8 @@ import { journalCaught } from "../journal";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isTransient, isTransientGitError } from "../core";
+import { ZodError } from "zod";
+import { isTransient, isTransientGitError, RunnerCommandRejectedError } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -1019,7 +1020,8 @@ async function addReviewEvidence(
         },
       );
       const blocked = failure("blocked", null, detail, input.head);
-      return reviewerThrew ? { ...blocked, reviewerFault: detail } : blocked;
+      const refused = error instanceof RunnerCommandRejectedError || error instanceof ZodError;
+      return reviewerThrew && !refused ? { ...blocked, reviewerFault: detail } : blocked;
     }
     metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {
