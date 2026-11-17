@@ -1,9 +1,9 @@
 import { trackHostOperation } from "../host-operation";
 import { journalCaught, journalItemId } from "../journal";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
-import { SQL } from "bun";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
 import { type Db, type Q, type Steps } from "./db";
+import { idleBackstopMs, listenForNotify } from "./notify";
 import { jobInstanceElsewhereSteps } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -23,16 +23,13 @@ export const JOB_IDLE_CLAIM_MS = 1_000;
 
 const JOB_READY_CHANNEL = "paws_job_ready";
 
-type ListenClient = {
-  listen(
-    channel: string,
-    onnotify: (payload: string) => void,
-  ): Promise<(() => Promise<void>) | { unlisten(): Promise<void> }>;
-};
+export function jobIdleClaimMs(store: Db): number {
+  return idleBackstopMs(store, JOB_IDLE_CLAIM_MS);
+}
 
 /**
  * A due job older than this, with a worker free and no recent claim, is the stall signal.
- * Busy timeout is 5s and the idle claim is 1s, so a live loop claims well inside the minute.
+ * Busy timeout is 5s and the idle claim is at most 10s, so a live loop claims well inside the minute.
  */
 export const JOB_PROGRESS_STALE_MS = 60_000;
 
@@ -200,7 +197,12 @@ export class JobLoop {
     const stopWake = onJobReady((db) => {
       if (db === this.db || db === this.store) this.wake();
     });
-    const stopListening = this.listenForJobs();
+    const stopListening = listenForNotify(
+      this.store,
+      JOB_READY_CHANNEL,
+      () => this.wake(),
+      "loop.run",
+    );
     try {
       while (!signal.aborted) {
         const generation = this.readyGeneration;
@@ -213,46 +215,6 @@ export class JobLoop {
     } finally {
       stopWake();
       await stopListening();
-    }
-  }
-
-  private listenForJobs(): () => Promise<void> {
-    let unlisten: (() => Promise<void>) | undefined;
-    let stopped = false;
-    void this.subscribeJobReady().then((stop) => {
-      if (stopped) return stop();
-      unlisten = stop;
-    });
-    return async () => {
-      stopped = true;
-      await unlisten?.();
-    };
-  }
-
-  private async subscribeJobReady(): Promise<() => Promise<void>> {
-    const client = (this.store.orm as { $client?: Partial<ListenClient> }).$client;
-    if (typeof client?.listen !== "function") return async () => {};
-    const wake = () => this.wake();
-    let subscribed = false;
-    const relisten = () => {
-      if (subscribed) wake();
-      subscribed = true;
-    };
-    try {
-      const handle =
-        client instanceof SQL
-          ? await client.listen(JOB_READY_CHANNEL, wake, relisten)
-          : await (client as ListenClient).listen(JOB_READY_CHANNEL, wake);
-      return async () => {
-        try {
-          await (typeof handle === "function" ? handle() : handle.unlisten());
-        } catch (error) {
-          journalCaught(error, "loop.run.unlisten", null);
-        }
-      };
-    } catch (error) {
-      journalCaught(error, "loop.run.listen", null);
-      return async () => {};
     }
   }
 

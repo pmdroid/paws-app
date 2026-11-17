@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { idleBackstopMs, listenForNotify, type Db } from "../db";
 import { linearCommentOf } from "./comments";
 import { journalCaught } from "../journal";
 import { acknowledgeNewSession } from "./acknowledge";
@@ -14,6 +15,15 @@ export const INTAKE_CONCURRENCY = 2;
 export const INTAKE_LEASE_MS = 2 * 60_000;
 
 export const INTAKE_POLL_MS = 1_000;
+
+export function intakePollMs(store: Db): number {
+  return idleBackstopMs(store, INTAKE_POLL_MS);
+}
+
+export function wakeIntakeOnInsert(store: Db, queue: IntakeQueue): () => Promise<void> {
+  const wake = () => queue.wake();
+  return listenForNotify(store, "paws_inbox_ready", wake, "linear.intake", wake);
+}
 
 /** Wait after the 1st, 2nd, 3rd, 4th failed attempt, then the last entry from then on. */
 export const INTAKE_RETRY_MS = [30_000, 60_000, 120_000, 5 * 60_000, 10 * 60_000] as const;
@@ -252,6 +262,7 @@ export function createLinearIntake(options: {
   ledger?: LinearLedger;
   concurrency?: number;
   owner?: string;
+  pollMs?: number;
   now?: () => number;
   log?: (line: string) => void;
 }): { onEvent: LinearEventDelivery; queue: IntakeQueue } {
@@ -341,6 +352,7 @@ export function createLinearIntake(options: {
     ledger: options.ledger,
     concurrency: options.concurrency,
     owner: options.owner,
+    pollMs: options.pollMs,
     now: options.now,
     log: options.log,
   });

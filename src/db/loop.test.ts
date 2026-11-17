@@ -1,5 +1,6 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import { FakeClock, systemClock } from "../core";
 import { sampleHostOperations } from "../host-operation";
@@ -8,6 +9,7 @@ import {
   JobLoop,
   claimNextJob,
   getJob,
+  jobIdleClaimMs,
   listJobs,
   setJournalSink,
   type Db,
@@ -329,6 +331,14 @@ test("a job enqueued after the loop read its next run time wakes it before the p
   expect(started).toBe(true);
   controller.abort();
   await running;
+  await close();
+});
+
+test("the job loop backstop is 10 s on Postgres and 1 s on SQLite", async () => {
+  const { db, close } = await tempStore();
+  expect(jobIdleClaimMs(db)).toBe(10_000);
+  const sqlite = { orm: { $client: new Database(":memory:") } } as unknown as Db;
+  expect(jobIdleClaimMs(sqlite)).toBe(1_000);
   await close();
 });
 

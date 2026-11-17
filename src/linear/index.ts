@@ -78,6 +78,8 @@ export {
   INTAKE_RETRY_MS,
   createIntakeQueue,
   createLinearIntake,
+  intakePollMs,
+  wakeIntakeOnInsert,
   intakeRetryMs,
   isQueuedIntake,
 } from "./intake-queue";

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { asc, count, eq } from "drizzle-orm";
+import { Database } from "bun:sqlite";
+import { asc, count, eq, sql } from "drizzle-orm";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, type Db } from "../src/db";
 import {
@@ -11,6 +12,8 @@ import {
   createIntakeQueue,
   createLinearIntake,
   createLinearLedger,
+  intakePollMs,
+  wakeIntakeOnInsert,
   LinearRateLimitError,
   type AcceptedLinearEvent,
   type TrackerAdapter,
@@ -398,6 +401,56 @@ test("every arrival posts its first activity at once while both intake slots are
     release();
     await queue.stop();
     await onEvent.close();
+    await close();
+  }
+});
+
+test("the intake backstop is 10 s on Postgres and 1 s on SQLite", async () => {
+  const { db, close } = await tempStore();
+  expect(intakePollMs(db)).toBe(10_000);
+  const sqlite = { orm: { $client: new Database(":memory:") } } as unknown as Db;
+  expect(intakePollMs(sqlite)).toBe(1_000);
+  await close();
+});
+
+async function until(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !check(); attempt++) await Bun.sleep(10);
+}
+
+test("an inbox event inserted by raw SQL while the queue sleeps is taken without waiting for the poll", async () => {
+  const { db, close } = await tempStore();
+  const delivered: string[] = [];
+  const queue = createIntakeQueue({
+    store: createInboxStore(db),
+    arrive: async () => {},
+    deliver: async (event) => {
+      delivered.push(event.dedupeKey);
+    },
+    pollMs: 60_000,
+    log: () => {},
+  });
+  let wakes = 0;
+  const unlisten = wakeIntakeOnInsert(db, {
+    ...queue,
+    wake: () => {
+      wakes += 1;
+      queue.wake();
+    },
+  });
+  try {
+    await until(() => wakes > 0);
+    await queue.idle();
+    expect(delivered).toEqual([]);
+    const event = created(1);
+    await db.orm.execute(
+      sql`insert into inbox_event (dedupe_key, source, action, session_id, issue_id, updated_at_ms, payload, received_at)
+        values (${event.dedupeKey}, 'webhook', 'created', ${event.sessionId}, ${event.issueId}, 1, ${event.payload}::jsonb, ${Date.now()})`,
+    );
+    await until(() => delivered.length > 0);
+    expect(delivered).toEqual([event.dedupeKey]);
+  } finally {
+    await unlisten();
+    await queue.stop();
     await close();
   }
 });
