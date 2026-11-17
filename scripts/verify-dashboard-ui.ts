@@ -464,7 +464,7 @@ try {
     await page.unroute("**/api/runners/agent-accounts");
     for (const viewer of [admin, page]) {
       for (const [path, initial] of [
-        ["github-access", { agentRead: true, mirrors: false, agentReadOff: ["private/repo"] }],
+        ["github-access", { agentRead: true, mirrors: false }],
         ["closeout", { projects: { "pmdroid/paws-app": { policyRoot: "/srv/paws/policy" } } }],
         ["linear-comments", { agents: ["app_kyoto"] }],
       ] as const) {

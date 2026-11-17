@@ -11046,7 +11046,7 @@ export class Orchestrator {
       ...runtimes,
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(failed.length ? { reviewFindings: failed } : {}),
-      ...(!input.readOnly && this.agentReadAllowed(item, `${repository.owner}/${repository.repo}`)
+      ...(!input.readOnly && this.agentReadAllowed(item)
         ? { githubRead: { prompt: GITHUB_READ_PROMPT } }
         : {}),
       ...(pull && github && !input.readOnly
@@ -11091,12 +11091,9 @@ export class Orchestrator {
     }
   }
 
-  private agentReadAllowed(item: WorkItemRecord, repository: string): boolean {
+  private agentReadAllowed(item: WorkItemRecord): boolean {
     try {
-      return agentReadAllowed(
-        loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-        repository,
-      );
+      return agentReadAllowed(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
     } catch (error) {
       journalCaught(
         error,

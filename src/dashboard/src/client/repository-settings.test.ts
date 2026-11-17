@@ -18,9 +18,6 @@ const originalFetch = globalThis.fetch;
 let window: Window;
 let calls: { path: string; method: string; body: unknown; csrf: unknown }[];
 let invalid = false;
-let legacy: string[] = [];
-let confirmed = false;
-let confirmations: string[] = [];
 beforeEach(() => {
   window = new Window({ url: "http://localhost/dashboard" });
   for (const key of globals) {
@@ -31,15 +28,6 @@ beforeEach(() => {
   setSettingsAdmin(true);
   calls = [];
   invalid = false;
-  legacy = [];
-  confirmed = false;
-  confirmations = [];
-  Object.defineProperty(window, "confirm", {
-    value: (message?: string) => {
-      confirmations.push(message ?? "");
-      return confirmed;
-    },
-  });
   globalThis.fetch = (async (url: URL, init: RequestInit) => {
     const path = url.pathname;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
@@ -55,7 +43,7 @@ beforeEach(() => {
         : Response.json({ ...body, restartRequired: true });
     return Response.json(
       path.endsWith("github-access")
-        ? { agentRead: legacy.length > 0, mirrors: true, agentReadOff: legacy }
+        ? { agentRead: false, mirrors: true }
         : path.endsWith("closeout")
           ? { projects: { "owner/repo": { policyRoot: "/policy" } } }
           : { agents: ["app_1", "app_2"] },
@@ -147,53 +135,4 @@ test("Linear comment agents save and clear through their route", async () => {
   submit();
   await settleReactWork();
   expect(calls.at(-1)?.body).toEqual({ agents: [] });
-});
-
-for (const agentRead of [true, false]) {
-  test(`legacy exclusions require confirmation before saving agentRead=${agentRead}`, async () => {
-    legacy = ["private/one", "private/two"];
-    await mount("repositories");
-    window.document.querySelector<HTMLInputElement>('[name="agentRead"]')!.checked = agentRead;
-    window.document.querySelector<HTMLInputElement>('[name="mirrors"]')!.checked = false;
-    submit("access");
-    await settleReactWork();
-    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
-    expect(confirmations[0]).toContain("private/one, private/two");
-    expect(confirmations[0]).toContain(
-      agentRead ? "allowed to read every repository" : "denied read access to every repository",
-    );
-    expect(window.document.querySelector<HTMLInputElement>('[name="mirrors"]')!.checked).toBe(
-      false,
-    );
-    confirmed = true;
-    submit("access");
-    await settleReactWork();
-    expect(calls.at(-1)?.body).toEqual({ agentRead, mirrors: false });
-    submit("access");
-    await settleReactWork();
-    expect(confirmations).toHaveLength(2);
-  });
-}
-test("policy-only saves leave legacy access exclusions alone", async () => {
-  legacy = ["private/one"];
-  await mount("repositories");
-  submit("policies");
-  await settleReactWork();
-  expect(confirmations).toHaveLength(0);
-  expect(calls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
-    "/api/settings/closeout",
-  ]);
-});
-test("a failed migration save still requires confirmation on retry", async () => {
-  legacy = ["private/one"];
-  await mount("repositories");
-  confirmed = true;
-  invalid = true;
-  submit("access");
-  await settleReactWork();
-  confirmed = false;
-  submit("access");
-  await settleReactWork();
-  expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
-  expect(confirmations).toHaveLength(2);
 });
