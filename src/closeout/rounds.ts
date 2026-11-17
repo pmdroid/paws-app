@@ -30,8 +30,9 @@ export function bugClass(explanation: string): string {
 
 /**
  * Groups review records into rounds, one per head in the order they were
- * written. A head reviewed more than once counts its latest attempt of each
- * review. The open findings are the last round's.
+ * written, or by `order` when given: a larger number is a later round.
+ * A head reviewed more than once counts its latest attempt of each review.
+ * The open findings are the last round's.
  */
 export function summarizeReviewRounds(
   records: readonly {
@@ -40,6 +41,7 @@ export function summarizeReviewRounds(
     attempt: number;
     findings: readonly Finding[];
   }[],
+  order?: (head: string) => number,
 ): ReviewRounds {
   const heads: string[] = [];
   const latest = new Map<string, Map<string, { attempt: number; findings: readonly Finding[] }>>();
@@ -53,6 +55,7 @@ export function summarizeReviewRounds(
     if (prior === undefined || prior.attempt <= record.attempt)
       byItem.set(record.itemId, { attempt: record.attempt, findings: record.findings });
   }
+  if (order) heads.sort((left, right) => order(left) - order(right));
   const findingsAt = (head: string) =>
     [...latest.get(head)!.values()].flatMap((entry) => entry.findings);
   const counts = new Map<string, { count: number; last: number }>();

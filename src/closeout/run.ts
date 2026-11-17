@@ -670,8 +670,12 @@ export async function readReviewRounds(
   taskId: string,
   baseline: readonly string[],
   pawsHome?: string,
+  order?: (head: string) => number,
 ): Promise<ReviewRounds> {
-  return summarizeReviewRounds(await reviewRecordsSince(evidencePath(taskId, pawsHome), baseline));
+  return summarizeReviewRounds(
+    await reviewRecordsSince(evidencePath(taskId, pawsHome), baseline),
+    order,
+  );
 }
 
 /**
