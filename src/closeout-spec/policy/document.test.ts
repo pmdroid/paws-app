@@ -73,7 +73,7 @@ describe("policy keys a parser does not know", () => {
     const lines: string[] = [];
     const restore = setJournalSink((line) => lines.push(line));
     try {
-      const files = policyWith(command("lint", "    someday: true\n"));
+      const files = policyWith(command(`lint-${crypto.randomUUID()}`, "    someday: true\n"));
       const git = createFakeGitReader(
         Object.fromEntries(
           [...files].map(([path, bytes]) => [path, new TextDecoder().decode(bytes)]),
