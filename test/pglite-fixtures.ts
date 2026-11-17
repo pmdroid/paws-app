@@ -175,7 +175,6 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
         .innerJoin(q.t.runnerAgentPolicy, eq(q.t.runner.id, q.t.runnerAgentPolicy.runnerId))
         .where(
           and(
-            eq(q.t.runnerAgentPolicy.ready, 1),
             runnerId === undefined ? undefined : eq(q.t.runner.id, runnerId),
             agent === undefined ? undefined : eq(q.t.runnerAgentPolicy.agent, agent),
           ),
@@ -219,4 +218,11 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       row.now,
     );
   }
+}
+
+export async function signInFixtureRunner(db: Db, runnerId: string, agent: string) {
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent }).onConflictDoNothing(),
+  );
+  await bindFixtureAccounts(db, runnerId, agent);
 }

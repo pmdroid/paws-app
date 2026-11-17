@@ -86,8 +86,6 @@ function readPolicy(db: Db) {
 const settlement = (fields: Partial<RunnerAgentSettlement>): RunnerAgentSettlement => ({
   runnerId: "box",
   agent: "codex",
-  authRequired: false,
-  success: false,
   quota: null,
   clearQuota: false,
   model: null,
@@ -242,8 +240,6 @@ describePglite((connect) => {
   test("a turn that shows nothing leaves the agent as it was", async () => {
     const db = await connected(connect);
     await seedPolicy(db, {
-      ready: 1,
-      authExpired: 1,
       quotaState: "low",
       resetsAt: 80,
       cooldownUntil: 90,
@@ -251,8 +247,6 @@ describePglite((connect) => {
     });
     await settle(db, {});
     expect(await readPolicy(db)).toMatchObject({
-      ready: 1,
-      authExpired: 1,
       quotaState: "low",
       resetsAt: 80,
       cooldownUntil: 90,
@@ -260,31 +254,21 @@ describePglite((connect) => {
     });
   });
 
-  test("a sign-in failure marks the agent signed out", async () => {
-    const db = await connected(connect);
-    await seedPolicy(db, { ready: 1 });
-    await settle(db, { authRequired: true, success: true });
-    expect(await readPolicy(db)).toMatchObject({ ready: 0, authExpired: 1 });
-  });
-
   test("a success clears a quota limit only when the turn may clear it", async () => {
     const db = await connected(connect);
     await seedPolicy(db, {
-      authExpired: 1,
       quotaState: "exhausted",
       resetsAt: 80,
       cooldownUntil: 90,
     });
-    await settle(db, { success: true, model: "resolved" });
+    await settle(db, { model: "resolved" });
     expect(await readPolicy(db)).toMatchObject({
-      ready: 1,
-      authExpired: 0,
       quotaState: "exhausted",
       resetsAt: 80,
       cooldownUntil: 90,
       resolvedModel: "resolved",
     });
-    await settle(db, { success: true, clearQuota: true });
+    await settle(db, { clearQuota: true });
     expect(await readPolicy(db)).toMatchObject({
       quotaState: "ok",
       resetsAt: null,

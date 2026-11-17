@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { systemClock } from "../core";
 import { resumeAccountHealthNowSteps } from "./agent-account-health";
 import { type Db, type Q, type Steps } from "./db";
@@ -159,31 +159,4 @@ export async function earliestRunnerCooldown(
   input: CooldownQuery,
 ): Promise<{ runnerId: string; until: number } | null> {
   return store.run((q) => earliestRunnerCooldownSteps(q, input));
-}
-
-export function* runnerAgentLoginReadySteps(q: Q, runnerId: string, agent: string): Steps<boolean> {
-  const { runnerAgentPolicy } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({ one: sql`1` })
-      .from(runnerAgentPolicy)
-      .where(
-        and(
-          eq(runnerAgentPolicy.runnerId, runnerId),
-          eq(runnerAgentPolicy.agent, agent),
-          eq(runnerAgentPolicy.ready, 1),
-          eq(runnerAgentPolicy.authExpired, 0),
-        ),
-      )
-      .limit(1),
-  );
-  return row !== undefined;
-}
-
-export async function runnerAgentLoginReady(
-  store: Db,
-  runnerId: string,
-  agent: string,
-): Promise<boolean> {
-  return store.run((q) => runnerAgentLoginReadySteps(q, runnerId, agent));
 }

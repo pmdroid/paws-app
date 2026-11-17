@@ -21,7 +21,7 @@ import {
 import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
-import { and, count, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, count, eq, isNotNull, sql } from "drizzle-orm";
 import { seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
@@ -110,8 +110,7 @@ export async function probeRunnerPlacement(
         }),
       (q) =>
         q.orm.insert(q.t.runnerPolicy).values({ runnerId: id!, sharing: user === "owner" ? 0 : 1 }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id!, agent: "codex", ready: 1 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id!, agent: "codex" }),
     );
   }
   const setSharing = (sharing: number) =>
@@ -357,36 +356,8 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
-    const onlySecond = async (place: () => Promise<string>) => {
-      const policy = (q: Q) => q.t.runnerAgentPolicy;
-      const others = await db.run((q) =>
-        q.all(
-          q.orm
-            .select({ id: policy(q).runnerId, ready: policy(q).ready })
-            .from(policy(q))
-            .where(ne(policy(q).runnerId, "second")),
-        ),
-      );
-      await change((q) =>
-        q.orm
-          .update(policy(q))
-          .set({ ready: 0 })
-          .where(ne(policy(q).runnerId, "second")),
-      );
-      try {
-        return await place();
-      } finally {
-        for (const other of others)
-          await change((q) =>
-            q.orm
-              .update(policy(q))
-              .set({ ready: other.ready })
-              .where(eq(policy(q).runnerId, other.id)),
-          );
-      }
-    };
     now++;
-    const fencedSignedOut = await onlySecond(() => start("second", "prepare"));
+    const fencedSignedOut = await start("second", "prepare");
     await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: fencedSignedOut,
@@ -407,7 +378,7 @@ export async function probeRunnerPlacement(
           ),
         ),
     );
-    const login = await onlySecond(() => start("second", "prepare"));
+    const login = await start("second", "prepare");
     assert(!(await ids()).includes("second"));
     await db.transaction((q) =>
       holdForRunnerSetupSteps(q, {

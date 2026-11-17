@@ -10,7 +10,7 @@ import {
   listRunnerSetupHoldsSteps,
   markRunnerSetupNotifiedSteps,
   releaseRunnerSetupHoldSteps,
-  setRunnerAgentSignedInSteps,
+  setAgentAccountEnabledSteps,
   takeRunnerSetupResumeSteps,
 } from "../src/db";
 import { describePglite, insertWorkItem, seed, withoutForeignKeys } from "./pglite-fixtures";
@@ -175,7 +175,7 @@ describePglite((open) => {
     }
   });
 
-  test("an agent signing in queues one check per owner its runner serves", async () => {
+  test("enabling a bound agent account queues one check per owner its runner serves", async () => {
     const { db, close } = await open();
     try {
       await withoutForeignKeys(db);
@@ -222,10 +222,37 @@ describePglite((open) => {
           .map(({ payload }) => (typeof payload === "string" ? JSON.parse(payload) : payload))
           .map((payload: { ownerUserId: string }) => payload.ownerUserId)
           .sort();
-      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", false, 2));
+      await seed(
+        db,
+        (q) =>
+          q.orm.insert(q.t.agentAccount).values({
+            id: "account",
+            workspaceId: "ws",
+            agent: "claude",
+            label: "claude",
+            enabled: 0,
+            createdAt: 0,
+            updatedAt: 0,
+          }),
+        (q) =>
+          q.orm.insert(q.t.agentAccountBinding).values({
+            id: "binding",
+            workspaceId: "ws",
+            accountId: "account",
+            agent: "claude",
+            runnerId: "box",
+            quotaScope: "account",
+            createdAt: 0,
+          }),
+      );
+      const enable = (enabled: boolean, now: number) =>
+        db.run((q) =>
+          setAgentAccountEnabledSteps(q, { workspaceId: "ws", accountId: "account", enabled, now }),
+        );
+      await enable(false, 2);
       expect(await pending()).toEqual([]);
-      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", true, 3));
-      await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "claude", true, 4));
+      await enable(true, 3);
+      await enable(true, 4);
       expect(await pending()).toEqual(["u"]);
       await enqueueRunnerSetupChecks(db, 5);
       expect(await pending()).toEqual(["u", "v"]);

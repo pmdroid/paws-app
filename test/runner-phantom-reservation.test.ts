@@ -30,7 +30,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { seed, signInFixtureRunner } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const roots: string[] = [];
@@ -87,11 +87,11 @@ async function fixture() {
       store,
       (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
       (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runnerId }),
-      (q) =>
-        q.orm
-          .insert(q.t.runnerAgentPolicy)
-          .values({ runnerId: runnerId, agent: "codex", ready: ready }),
     );
+    if (ready)
+      await seed(store, (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runnerId, agent: "codex" }),
+      );
     await seed(store, (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId, capacity: 1 }));
     return runnerId;
   };
@@ -215,12 +215,7 @@ async function failOnAgentbox(f: Awaited<ReturnType<typeof fixture>>, fail = tru
     });
     expect((await failed).errorMessage).toBe("agent exited with code 1");
   }
-  await seed(f.db, (q) =>
-    q.orm
-      .update(q.t.runnerAgentPolicy)
-      .set({ ready: 1 })
-      .where(eq(q.t.runnerAgentPolicy.runnerId, f.goldbox)),
-  );
+  await signInFixtureRunner(f.db, f.goldbox, "codex");
   f.tick(90_000);
   await f.heartbeat(f.goldbox);
 }
@@ -255,12 +250,7 @@ test("a run held between commands keeps its slot, and the rejection names what f
 
 test("a run holding its slot between commands resumes there even while others are admitted to that runner", async () => {
   const f = await fixture();
-  await seed(f.db, (q) =>
-    q.orm
-      .update(q.t.runnerAgentPolicy)
-      .set({ ready: 1 })
-      .where(eq(q.t.runnerAgentPolicy.runnerId, f.goldbox)),
-  );
+  await signInFixtureRunner(f.db, f.goldbox, "codex");
   f.tick(90_000);
   await f.heartbeat(f.goldbox);
   await insertQueuedItem(f.db, { id: "admitted", now: 0 });

@@ -16,14 +16,12 @@ import {
   pendingRunnerLoginCountSteps,
   pendingRunnerLoginIdSteps,
   runnerAgentOpenWorkCountSteps,
-  runnerAgentPolicyStateSteps,
   runnerHasOpenWorkSteps,
   runnerHealthCommandOutstandingSteps,
   runnerLeaseCutoff,
   runnerLoginRowSteps,
   runnerNamedBindingsSteps,
   saveAgentModelCatalogSteps,
-  setRunnerAgentSignedInSteps,
   storedAgentBindingIdSteps,
   updateRunnerLoginSteps,
   type Db,
@@ -251,27 +249,45 @@ describePglite((open) => {
     expect(await outstanding()).toBe(false);
   });
 
-  test("model sources need a ready, signed-in agent and a usable owner", async () => {
+  test("model sources need an enabled account bound to the agent and a usable owner", async () => {
     const db = await opened(open);
     await seedOwnerMember(db);
+    const bound = (agent: string, row: { enabled?: number; legacy?: number } = {}) => [
+      (q: Q) =>
+        q.orm.insert(q.t.agentAccount).values({
+          id: `account-${agent}`,
+          workspaceId: "acme",
+          agent,
+          label: agent,
+          createdAt: NOW,
+          updatedAt: NOW,
+          enabled: row.enabled ?? 1,
+        }),
+      (q: Q) =>
+        q.orm.insert(q.t.agentAccountBinding).values({
+          id: `binding-${agent}`,
+          workspaceId: "acme",
+          accountId: `account-${agent}`,
+          agent,
+          runnerId: "box",
+          quotaScope: "unknown",
+          createdAt: NOW,
+          legacy: row.legacy ?? 0,
+        }),
+    ];
     await seed(
       db,
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "codex" }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "claude" }),
       (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "codex", ready: 1 }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({
-          runnerId: "box",
-          agent: "claude",
-          ready: 1,
-          authExpired: 1,
-        }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({
-          runnerId: "box",
-          agent: "grok",
-          ready: 1,
-          cooldownUntil: NOW + 1,
-        }),
+        q.orm
+          .insert(q.t.runnerAgentPolicy)
+          .values({ runnerId: "box", agent: "grok", cooldownUntil: NOW + 1 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "opencode" }),
+      ...bound("codex"),
+      ...bound("grok"),
+      ...bound("claude", { enabled: 0 }),
+      ...bound("opencode", { legacy: 1 }),
     );
     const codex = {
       runnerId: "box",
@@ -519,30 +535,5 @@ describePglite((open) => {
       );
     });
     expect(await busy()).toBe(false);
-  });
-
-  test("signing in or out writes the agent's policy and keeps its other columns", async () => {
-    const db = await opened(open);
-    const state = () => db.run((q) => runnerAgentPolicyStateSteps(q, "box", "codex"));
-    expect(await state()).toBeNull();
-    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", false, 0));
-    expect(await state()).toEqual({
-      ready: 0,
-      authExpired: 1,
-      extraUsage: 0,
-      quotaState: "ok",
-      resetsAt: null,
-      cooldownUntil: 0,
-    });
-    await db.run(function* (q) {
-      yield* q.exec(q.orm.update(q.t.runnerAgentPolicy).set({ extraUsage: 1, cooldownUntil: 9 }));
-    });
-    await db.run((q) => setRunnerAgentSignedInSteps(q, "box", "codex", true, 0));
-    expect(await state()).toMatchObject({
-      ready: 1,
-      authExpired: 0,
-      extraUsage: 1,
-      cooldownUntil: 9,
-    });
   });
 });

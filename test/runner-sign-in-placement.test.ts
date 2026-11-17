@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   bindAgentAccount,
   bindLinearSessionTask,
@@ -9,7 +9,6 @@ import {
   recordAccountObservation,
   putWorkspaceUser,
   recordLinearInstallation,
-  type Db,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -24,20 +23,6 @@ const open: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of open.splice(0)) await close();
 });
-
-function setPolicy(db: Db, runnerId: string, set: Record<string, unknown>) {
-  return seed(db, (q) =>
-    q.orm
-      .update(q.t.runnerAgentPolicy)
-      .set(set)
-      .where(
-        and(
-          eq(q.t.runnerAgentPolicy.runnerId, runnerId),
-          eq(q.t.runnerAgentPolicy.agent, "claude"),
-        ),
-      ),
-  );
-}
 
 async function acme() {
   const { db, close } = await tempStore();
@@ -85,8 +70,8 @@ async function acme() {
         }),
       (q) =>
         q.orm.insert(q.t.runnerAgentPolicy).values([
-          { runnerId: id, agent: "claude", ready: 1 },
-          { runnerId: id, agent: "codex", ready: 0 },
+          { runnerId: id, agent: "claude" },
+          { runnerId: id, agent: "codex" },
         ]),
       (q) => currentRunnerHost(q, id, now),
     );
@@ -217,9 +202,8 @@ test("healthy bindings work without local sign-in; expired and full accounts are
   await expect(start(admission, "blocked")).rejects.toThrow("concurrency");
 });
 
-test("runner-local sign-in alone requires adding or binding an account", async () => {
+test("a runner without a bound account requires adding or binding one", async () => {
   const f = await acme();
-  await setPolicy(f.db, "acme-1", { ready: 1 });
   const result = await f.place();
   expect(result.placed).toEqual([]);
   expect(result.rejected).toEqual([

@@ -5,7 +5,6 @@ import {
   bindAgentAccount,
   createAgentAccount,
   putWorkspaceUser,
-  recordAccountObservation,
   recordLinearInstallation,
   recordRunnerAccountCapability,
   recordRunnerCapacity,
@@ -368,16 +367,15 @@ test("no check is queued while a helper waits for the lane", async () => {
   expect(await f.checks()).toHaveLength(0);
 });
 
-test("a signed-out agent, and one whose check failed, is still checked every 5 minutes", async () => {
+test("an agent whose check failed is still checked every 5 minutes", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
   await f.health.refresh();
   const [claude, codex] = await f.checks();
   await f.answer(codex!, false);
-  await f.answer(claude!);
+  await f.answer(claude!, false);
   await f.used(runnerId, "codex");
   await f.used(runnerId, "claude");
-  await f.setPolicy(runnerId, "claude", { ready: 0, authExpired: 1 });
   const count = async (agent: string) =>
     (await f.checks(runnerId)).filter((check) => check.agent === agent).length;
   for (let round = 1; round <= 3; round += 1) {
@@ -386,10 +384,11 @@ test("a signed-out agent, and one whose check failed, is still checked every 5 m
     await f.health.refresh();
     expect(await count("claude")).toBe(1 + round);
     expect(await count("codex")).toBe(1 + round);
-    await f.answer(
-      (await f.checks(runnerId)).findLast((check) => check.agent === "codex")!,
-      false,
-    );
+    for (const agent of ["claude", "codex"])
+      await f.answer(
+        (await f.checks(runnerId)).findLast((check) => check.agent === agent)!,
+        false,
+      );
   }
 });
 
@@ -634,64 +633,11 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
   expect((await delivered()).map(({ label }) => label)).toEqual(["login_check grok"]);
 });
 
-test("a login check readies the runner's agent or marks it signed out", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  const policy = async () => {
-    const row = await f.policy(runnerId, "grok");
-    return row && { ready: row.ready, authExpired: row.authExpired };
-  };
-  await f.health.refresh();
-  await f.answer((await f.checks(runnerId)).find((command) => command.agent === "grok")!);
-  expect(await policy()).toEqual({ ready: 1, authExpired: 0 });
-  f.advance(30 * 60_000 + 1);
-  await f.seen(runnerId);
-  await f.health.refresh();
-  await f.answer(
-    (await f.checks(runnerId)).findLast((command) => command.agent === "grok")!,
-    false,
-  );
-  expect(await policy()).toEqual({ ready: 0, authExpired: 1 });
-});
-
-test("a login check issued before a newer sign-in failure cannot mark the agent ready", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  const policy = async () => {
-    const row = await f.policy(runnerId, "claude");
-    return row && { ready: row.ready, authExpired: row.authExpired };
-  };
-  await f.health.refresh();
-  const late = (await f.checks(runnerId)).find((command) => command.agent === "claude")!;
-  f.advance(10_000);
-  await f.setPolicy(runnerId, "claude", { ready: 0, authExpired: 1 });
-  await recordAccountObservation(f.db, {
-    bindingId: `legacy_claude_${runnerId}`,
-    source: "result",
-    sourceId: "failed-run",
-    observedAt: f.now(),
-    now: f.now(),
-    state: "auth_required",
-  });
-  f.advance(10_000);
-  await f.answer(late);
-  expect(await policy()).toEqual({ ready: 0, authExpired: 1 });
-  await f.used(runnerId, "claude");
-
-  f.advance(5 * 60_000 + 1);
-  await f.seen(runnerId);
-  await f.health.refresh();
-  await f.answer((await f.checks(runnerId)).findLast((command) => command.agent === "claude")!);
-  expect(await policy()).toEqual({ ready: 1, authExpired: 0 });
-});
-
 test("a sign-in check's usage reading replaces a stale usage limit", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
   const reset = f.now() + 3 * 86_400_000;
   await f.setPolicy(runnerId, "claude", {
-    ready: 1,
-    authExpired: 0,
     quotaState: "exhausted",
     resetsAt: reset,
     cooldownUntil: reset,

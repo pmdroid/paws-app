@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunnerWork } from "../src/runner-work";
-import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import {
+  bindAgentAccount,
+  createAgentAccount,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+} from "../src/db";
 import { createRunnerModels } from "../src/runner-models";
 import { createRunnerPlacementBrowser } from "../src/runner-placement";
 import { workspaceId } from "../src/workspace";
@@ -52,7 +57,7 @@ async function fixture() {
         createdAt: now,
         lastSeenAt: now,
       }),
-    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude" }),
     (q) =>
       q.orm.insert(q.t.agentModelCatalog).values({
         runnerId,
@@ -78,6 +83,20 @@ async function fixture() {
         updatedAt: now,
       }),
   );
+  const account = await createAgentAccount(db, {
+    workspaceId: workspace,
+    ownerUserId: userId,
+    agent: "claude",
+    label: "labels",
+    now,
+  });
+  await bindAgentAccount(db, {
+    workspaceId: workspace,
+    userId,
+    accountId: account.id,
+    runnerId,
+    now,
+  });
   return { db, now, runnerId, userId, principal: { workspaceId: workspace, userId } };
 }
 

@@ -159,7 +159,7 @@ const policy = async (db: Db, runnerId: string) =>
   (await db.run((q) =>
     q.one(
       q.orm
-        .select({ ready: q.t.runnerAgentPolicy.ready })
+        .select({ agent: q.t.runnerAgentPolicy.agent })
         .from(q.t.runnerAgentPolicy)
         .where(
           and(

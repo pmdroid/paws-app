@@ -120,7 +120,7 @@ async function fixture(agentRead?: AgentRead) {
     db,
     (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
     (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
-    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude" }),
     (q) =>
       q.orm
         .insert(q.t.runnerHostStatus)

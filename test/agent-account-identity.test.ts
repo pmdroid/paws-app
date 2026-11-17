@@ -76,8 +76,7 @@ async function fixture() {
           createdAt: clock,
           lastSeenAt: clock,
         }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude", ready: 1 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude" }),
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)

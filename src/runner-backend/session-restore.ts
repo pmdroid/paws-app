@@ -2,7 +2,6 @@ import {
   currentRunnerAgentVersionSteps,
   lastRunCommandAccountSteps,
   latestSealedSnapshotSteps,
-  runnerAgentLoginReadySteps,
   runnerStandingSteps,
   runnerTargetForRestoreSteps,
   storedRunnerNameSteps,
@@ -32,7 +31,6 @@ export type SessionRestoreFailure =
   | "no_snapshot"
   | "old_runner"
   | "other_account"
-  | "login_not_ready"
   | "not_installed"
   | "download"
   | "integrity"
@@ -69,8 +67,8 @@ export function versionAtLeast(
 
 /**
  * Whether the run's latest sealed session snapshot may be restored on `targetRunnerId`: same
- * agent, a runner release that restores, the same owner as the snapshot, that owner's agent login
- * ready, and the agent installed. A different agent version does not refuse the restore: the
+ * agent, a runner release that restores, the same owner and account as
+ * the snapshot, and the agent installed. A different agent version does not refuse the restore: the
  * runner tries `session/load`, and the notice names both versions if the load fails.
  */
 export type SessionRestoreInput = {
@@ -107,8 +105,6 @@ export function* planSessionRestoreSteps(
     (sourceNamed && source!.accountId !== input.targetAccount!.accountId)
   )
     return { eligible: false, failure: "other_account" };
-  if (!targetNamed && !(yield* runnerAgentLoginReadySteps(q, input.targetRunnerId, snapshot.agent)))
-    return { eligible: false, failure: "login_not_ready" };
   const installed = yield* currentRunnerAgentVersionSteps(q, input.targetRunnerId, snapshot.agent);
   if (installed === null) return { eligible: false, failure: "not_installed" };
   return {
@@ -179,7 +175,6 @@ export async function sessionMoveNotice(input: {
     no_snapshot: "no saved session",
     old_runner: `${to}'s runner is too old`,
     other_account: `${to} is signed in to a different ${agent} account`,
-    login_not_ready: `${to} isn't signed in to ${agent}`,
     not_installed: `${agent} isn't installed on ${to}`,
     download: "the saved session couldn't be downloaded",
     integrity: "the saved session didn't match its checksum",

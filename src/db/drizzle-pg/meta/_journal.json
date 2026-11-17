@@ -253,6 +253,13 @@
       "when": 1794760408595,
       "tag": "0035_agent_account_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794873912947,
+      "tag": "0036_drop_runner_agent_ready_auth_expired",
+      "breakpoints": true
     }
   ]
 }

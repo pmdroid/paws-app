@@ -90,13 +90,7 @@ async function workspace(runners: Record<string, Runner>) {
           revokedAt: runner.status === "revoked" ? now : null,
         }),
       (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: runner.sharing ?? 0 }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({
-          runnerId: id,
-          agent: "codex",
-          ready: runner.ready ?? 1,
-          authExpired: runner.authExpired ?? 0,
-        }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "codex" }),
     );
     await seed(db, (q) =>
       q.orm.insert(q.t.runnerHostStatus).values({

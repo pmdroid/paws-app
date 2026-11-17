@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNull, lt, lte, max, ne, sql } from "drizzle-o
 import { type Q, type Db, type Steps } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
+import { boundAgentAccountWhere } from "./agent-accounts";
 
 type Agent = "claude" | "codex" | "grok" | "opencode";
 
@@ -29,8 +30,7 @@ export function* agentModelSourcesSteps(q: Q, at: number) {
         and(
           ne(r.status, "revoked"),
           isNull(r.revokedAt),
-          eq(p.ready, 1),
-          eq(p.authExpired, 0),
+          boundAgentAccountWhere(q, r.id, p.agent),
           lte(p.cooldownUntil, at),
           workspaceMemberUsableWhere(owner),
         ),

@@ -54,7 +54,7 @@ async function insertRunner(db: Db, { agent = "codex", sharing, capacity, ...run
     ...(sharing === undefined
       ? []
       : [(q: Q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runner.id, sharing })]),
-    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runner.id, agent, ready: 1 }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runner.id, agent }),
     ...(capacity === undefined
       ? []
       : [(q: Q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: runner.id, capacity })]),
@@ -99,8 +99,6 @@ function setRunner(db: Db, id: string | undefined, values: RunnerValues) {
 }
 
 type AgentPolicy = {
-  ready?: number;
-  authExpired?: number;
   quotaState?: string;
   extraUsage?: number;
   cooldownUntil?: number;
@@ -322,19 +320,6 @@ test("a preflight never goes to a paused runner", async () => {
     await setRunner(placed.db, "own", { status: "paused" });
     for (const role of ["implementer", "reviewer"] as const)
       expect(await placed.ids({ role, purpose: "prepare" })).toEqual(["second"]);
-  } finally {
-    await placed.close();
-  }
-});
-
-test("a preflight ignores runner-local sign-in when accounts are bound", async () => {
-  const placed = await placeItem();
-  try {
-    await setAgentPolicy(placed.db, "own", { ready: 0, authExpired: 1 });
-    const prepare = { role: "reviewer", purpose: "prepare" } as const;
-    expect((await placed.ids(prepare)).toSorted()).toEqual(["own", "second"]);
-    await setAgentPolicy(placed.db, "second", { ready: 0, authExpired: 1 });
-    expect((await placed.ids(prepare)).toSorted()).toEqual(["own", "second"]);
   } finally {
     await placed.close();
   }

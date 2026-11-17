@@ -6,7 +6,13 @@ import {
   handleAgentSettingsRequest,
   type AgentSettingsOptions,
 } from "../src/settings";
-import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import {
+  bindAgentAccount,
+  createAgentAccount,
+  putWorkspaceUser,
+  setAgentAccountEnabled,
+  syncWorkspaceMember,
+} from "../src/db";
 import { workspaceId } from "../src/workspace";
 import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
 import { startServer } from "../src/server";
@@ -513,7 +519,7 @@ describe("reviewer profile validation", () => {
     });
   });
 
-  test("runner readiness counts only active runners with the agent ready and signed in", async () => {
+  test("runner readiness counts only active runners with an enabled agent account bound", async () => {
     const { db, close } = await tempStore();
     const now = Date.now();
     const userId = await putWorkspaceUser(db, {
@@ -551,19 +557,31 @@ describe("reviewer profile validation", () => {
       return id;
     };
     const ready = await runner("ready", "active");
-    const expired = await runner("expired", "active");
+    const disabled = await runner("disabled", "active");
     await runner("blank", "active");
     const paused = await runner("paused", "paused");
-    await seed(db, (q) =>
-      q.orm.insert(q.t.runnerAgentPolicy).values([
-        { runnerId: ready, agent: "codex", ready: 1 },
-        { runnerId: expired, agent: "codex", ready: 1, authExpired: 1 },
-        { runnerId: paused, agent: "codex", ready: 1 },
-      ]),
-    );
+    const bind = async (runnerId: string) => {
+      const common = { workspaceId: workspace, now };
+      const account = await createAgentAccount(db, {
+        ...common,
+        ownerUserId: userId,
+        agent: "codex",
+        label: runnerId,
+      });
+      await bindAgentAccount(db, { ...common, userId, accountId: account.id, runnerId });
+      return account.id;
+    };
+    await bind(ready);
+    await setAgentAccountEnabled(db, {
+      workspaceId: workspace,
+      accountId: await bind(disabled),
+      enabled: false,
+      now,
+    });
+    await bind(paused);
     expect(await activeRunnerReadiness(db, "codex")).toEqual([
       { name: "blank", ready: false },
-      { name: "expired", ready: false },
+      { name: "disabled", ready: false },
       { name: "ready", ready: true },
     ]);
     expect((await activeRunnerReadiness(db, "claude")).every((entry) => !entry.ready)).toBe(true);

@@ -82,7 +82,7 @@ async function fixture() {
     store,
     (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
     (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
-    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "codex", ready: 1 }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "codex" }),
     (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId, capacity: 2 }),
   );
   await boundPlacementAccounts(store);

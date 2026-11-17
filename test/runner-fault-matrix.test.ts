@@ -369,7 +369,7 @@ async function runRemoteFault(fault: Fault) {
     yield* runnerRow(q, { status: "active" });
     yield* q.exec(q.orm.insert(q.t.runnerPolicy).values({ runnerId }));
     for (const agent of ["claude", "codex"])
-      yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent, ready: 1 }));
+      yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent }));
   });
   const hung = fault.startsWith("silent-hung");
   const clock = { held: hung ? Date.now() : null };

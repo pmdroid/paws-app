@@ -226,7 +226,7 @@ async function setup() {
         ["grok", "1.0.50"],
       ]) {
         await exec(
-          sql`INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(${runnerId},${agent!},1,0)`,
+          sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},${agent!})`,
         );
         await exec(
           sql`INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(${runnerId},${agent!},${version!},'current',${now})`,
@@ -484,24 +484,6 @@ const INELIGIBLE: [string, string, Parameters<Setup["move"]>[0]][] = [
       change: () =>
         exec(
           sql`UPDATE agent_session_snapshot SET owner_user_id=${context.otherUserId} WHERE status='sealed'`,
-        ),
-    },
-  ],
-  [
-    "Claude not ready on B",
-    "B isn't signed in to Claude",
-    {
-      change: () =>
-        exec(sql`UPDATE runner_agent_policy SET ready=0 WHERE runner_id=${context.runners.b}`),
-    },
-  ],
-  [
-    "Claude sign-in expired on B",
-    "B isn't signed in to Claude",
-    {
-      change: () =>
-        exec(
-          sql`UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=${context.runners.b}`,
         ),
     },
   ],

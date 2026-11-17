@@ -13,9 +13,11 @@ import { PawsShutdown, usageLimitNotice } from "../src/core";
 import {
   resumeAccountHealthNow,
   beginImplementRun,
+  bindAgentAccount,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  createAgentAccount,
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -230,14 +232,11 @@ async function usageLimitScenario(
   });
   await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
   await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
-  await exec(
-    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',1)`,
-  );
+  await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},'claude')`);
   if (switchProfiles)
-    await exec(
-      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'codex',1)`,
-    );
+    await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},'codex')`);
   const foreignRunnerIds: string[] = [];
+  let foreignAccount: (id: string) => Promise<void> = async () => {};
   if (wake === "foreign-workspace" || wake === "foreign-owner") {
     const otherUser = await putWorkspaceUser(db, {
       id: workspaceId(),
@@ -271,10 +270,23 @@ async function usageLimitScenario(
         sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(${id},${otherWorkspace.id},${otherUser},${id},'active',${now},${now})`,
       );
       await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${id})`);
-      await exec(
-        sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${id},'claude',0)`,
-      );
+      await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${id},'claude')`);
     }
+    foreignAccount = async (id) => {
+      const common = { workspaceId: otherWorkspace.id, now: Date.now() };
+      const account = await createAgentAccount(db, {
+        ...common,
+        ownerUserId: otherUser,
+        agent: "claude",
+        label: id,
+      });
+      await bindAgentAccount(db, {
+        ...common,
+        userId: otherUser,
+        accountId: account.id,
+        runnerId: id,
+      });
+    };
   }
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = await beginImplementRun(db, item.id, now);
@@ -416,9 +428,7 @@ async function usageLimitScenario(
         if (foreignRunnerIds.length && pauseObservedAt) {
           const elapsed = Date.now() - pauseObservedAt;
           if (foreignReady < 2 && elapsed >= 150 + foreignReady * 300) {
-            await exec(
-              sql`UPDATE runner_agent_policy SET ready=1 WHERE runner_id=${foreignRunnerIds[foreignReady]!}`,
-            );
+            await foreignAccount(foreignRunnerIds[foreignReady]!);
             foreignReady++;
           }
           if (elapsed >= 900) await resumeAccountHealthNow(db, "claude", runnerId, Date.now());

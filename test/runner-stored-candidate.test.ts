@@ -136,9 +136,7 @@ test("with mirrors off a runner run starts from the stored candidate and never c
     await db.run(function* (q) {
       yield* runnerRow(q, runnerId, { status: "active" });
       yield* q.exec(q.orm.insert(q.t.runnerPolicy).values({ runnerId }));
-      yield* q.exec(
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
-      );
+      yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude" }));
     });
     return runnerId;
   };

@@ -685,10 +685,7 @@ describe("agent session snapshots", () => {
         q.orm
           .insert(q.t.runnerHostStatus)
           .values({ runnerId: runnerB, runnerVersion: "0.1.43", reportedAt: at }),
-      (q) =>
-        q.orm
-          .insert(q.t.runnerAgentPolicy)
-          .values({ runnerId: runnerB, agent: "claude", ready: 1, authExpired: 0 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runnerB, agent: "claude" }),
       (q) =>
         q.orm.insert(q.t.runnerAgent).values({
           runnerId: runnerB,

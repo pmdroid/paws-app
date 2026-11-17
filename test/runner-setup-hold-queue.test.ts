@@ -112,9 +112,9 @@ async function addRunner(db: Db, id: string, ownerId: string, seenAt: number, re
     (q) =>
       q.orm
         .insert(q.t.runnerAgentPolicy)
-        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready }))),
+        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent }))),
   );
-  await bindFixtureAccounts(db, id);
+  if (ready) await bindFixtureAccounts(db, id);
 }
 
 function seen(db: Db, lastSeenAt: number, id?: string) {
@@ -127,17 +127,6 @@ function seen(db: Db, lastSeenAt: number, id?: string) {
 }
 
 async function signIn(db: Db, runnerId: string, agent?: string) {
-  await seed(db, (q) =>
-    q.orm
-      .update(q.t.runnerAgentPolicy)
-      .set({ ready: 1 })
-      .where(
-        and(
-          eq(q.t.runnerAgentPolicy.runnerId, runnerId),
-          agent === undefined ? undefined : eq(q.t.runnerAgentPolicy.agent, agent),
-        ),
-      ),
-  );
   await bindFixtureAccounts(db, runnerId, agent);
 }
 
@@ -542,12 +531,6 @@ function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
 }
 
 const onlyCodex = async (db: Db, runner: string) => {
-  await seed(db, (q) =>
-    q.orm
-      .update(q.t.runnerAgentPolicy)
-      .set({ ready: 0 })
-      .where(eq(q.t.runnerAgentPolicy.runnerId, runner)),
-  );
   await seed(db, (q) =>
     q.orm
       .update(q.t.agentAccountBinding)

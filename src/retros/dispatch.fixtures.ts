@@ -103,10 +103,7 @@ export async function addRunnerPg(
         runnerVersion: input.version ?? MINIMUM_RUNNER_VERSION.join("."),
         reportedAt: 0,
       }),
-    (q) =>
-      q.orm
-        .insert(q.t.runnerAgentPolicy)
-        .values({ runnerId: input.id, agent: "codex", ready: input.ready === false ? 0 : 1 }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: input.id, agent: "codex" }),
     (q) =>
       q.orm
         .insert(q.t.runnerCapacity)

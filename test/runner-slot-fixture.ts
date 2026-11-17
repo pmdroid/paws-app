@@ -56,8 +56,7 @@ export async function workspaceWithRunners(db: Db) {
           lastSeenAt: NOW,
         }),
       (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id }),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude", ready: 1 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude" }),
     );
     await recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
     await recordRunnerRepositories(db, id, repositories, NOW);

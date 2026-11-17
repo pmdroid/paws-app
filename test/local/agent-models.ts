@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { and, count as total, desc, eq } from "drizzle-orm";
-import { openPawsStore, putWorkspaceUser, syncWorkspaceMember, type Q } from "../../src/db";
+import {
+  bindAgentAccount,
+  createAgentAccount,
+  openPawsStore,
+  putWorkspaceUser,
+  setAgentAccountEnabled,
+  syncWorkspaceMember,
+  type Q,
+} from "../../src/db";
 import { runAgent } from "../../src/acp";
 import { createRunnerWork } from "../../src/runner-work";
 import { createRunnerHealth } from "../../src/runner-health";
@@ -69,10 +77,24 @@ export async function probeAgentModels(
       lastSeenAt: now,
     }),
   );
-  await exec((q) =>
-    q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "codex", ready: 1 }),
-  );
-  const policy = (set: { cooldownUntil?: number; authExpired?: number }) =>
+  await exec((q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "codex" }));
+  const account = await createAgentAccount(db, {
+    workspaceId: workspace,
+    ownerUserId: userId,
+    agent: "codex",
+    label: "models",
+    now,
+  });
+  await bindAgentAccount(db, {
+    workspaceId: workspace,
+    userId,
+    accountId: account.id,
+    runnerId,
+    now,
+  });
+  const connected = (enabled: boolean) =>
+    setAgentAccountEnabled(db, { workspaceId: workspace, accountId: account.id, enabled, now });
+  const policy = (set: { cooldownUntil?: number }) =>
     exec((q) =>
       q.orm
         .update(q.t.runnerAgentPolicy)
@@ -278,13 +300,13 @@ export async function probeAgentModels(
     await catalog.refresh();
     assert.equal(await count(), afterFailure);
     observe("failed refresh preserves last good cache and backs off", true, {});
-    await policy({ authExpired: 1 });
+    await connected(false);
     assert.deepEqual(await read(principal), []);
     const beforeDisconnected = await count();
     await catalog.refresh();
     assert.equal(await count(), beforeDisconnected);
     observe("disconnected agent accounts cannot supply new or cached choices", true, {});
-    await policy({ authExpired: 0 });
+    await connected(true);
     await exec((q) =>
       q.orm
         .update(q.t.workspaceMember)

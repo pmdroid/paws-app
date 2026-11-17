@@ -129,7 +129,6 @@ export function* bindingReadinessSteps(
     return unavailable("disabled");
   if (binding.enabled !== 1) return unavailable("disabled");
   if ((binding.lastSeenAt ?? 0) <= input.now - RUNNER_ONLINE_MS) return unavailable("offline");
-  if (binding.legacy === 1 && binding.authExpired === 1) return unavailable("auth-required");
   if (
     binding.legacy === 0 &&
     CENTRAL_CREDENTIAL_AGENTS.includes(binding.agent) &&

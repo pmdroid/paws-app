@@ -4,7 +4,6 @@ import {
   clearUsagePausesSteps,
   earliestRunnerCooldownSteps,
   resumeUsagePauseNowSteps,
-  runnerAgentLoginReadySteps,
   usagePauseSteps,
   type Db,
 } from "../src/db";
@@ -20,15 +19,13 @@ const pause = {
   pausedAt: 10,
 };
 
-function policies(db: Db, ...rows: [runnerId: string, cooldownUntil: number, ready?: number][]) {
+function policies(db: Db, ...rows: [runnerId: string, cooldownUntil: number][]) {
   return seed(
     db,
     ...rows.map(
-      ([runnerId, cooldownUntil, ready = 1]) =>
+      ([runnerId, cooldownUntil]) =>
         (q: Parameters<Parameters<typeof seed>[1]>[0]) =>
-          q.orm
-            .insert(q.t.runnerAgentPolicy)
-            .values({ runnerId, agent: "codex", cooldownUntil, ready }),
+          q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "codex", cooldownUntil }),
     ),
   );
 }
@@ -98,19 +95,16 @@ describePglite((open) => {
     }
   });
 
-  test("the earliest cooldown among the runners, and login readiness", async () => {
+  test("the earliest cooldown among the runners", async () => {
     const { db, close } = await open();
     try {
       await withoutForeignKeys(db);
-      await policies(db, ["a", 30], ["b", 20], ["c", 10], ["d", 5, 0]);
+      await policies(db, ["a", 30], ["b", 20], ["c", 10]);
       const earliest = (runnerIds: string[]) =>
         db.run((q) => earliestRunnerCooldownSteps(q, { agent: "codex", now: 15, runnerIds }));
       expect(await earliest(["a", "b", "c"])).toEqual({ runnerId: "b", until: 20 });
       expect(await earliest(["c"])).toBeNull();
       expect(await earliest([])).toBeNull();
-      expect(await db.run((q) => runnerAgentLoginReadySteps(q, "a", "codex"))).toBe(true);
-      expect(await db.run((q) => runnerAgentLoginReadySteps(q, "d", "codex"))).toBe(false);
-      expect(await db.run((q) => runnerAgentLoginReadySteps(q, "a", "claude"))).toBe(false);
     } finally {
       await close();
     }
