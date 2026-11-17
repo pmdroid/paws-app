@@ -178,12 +178,7 @@ export function* runnerAgentPoliciesSteps(q: Q, runnerId: string) {
 }
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
-  const {
-    agentAccountBinding: b,
-    agentAccount: a,
-    agentAccountCredential: c,
-    runner: r,
-  } = q.t;
+  const { agentAccountBinding: b, agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
   return yield* q.one(
     q.orm
       .select({

@@ -1,4 +1,6 @@
 import {
+  emitJobReady,
+  wakeRunnerSlotWaitsSteps,
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   commandAccountSteps,
@@ -328,7 +330,8 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
     },
     async submit(runnerId: string, input: RunnerHealthResult) {
       const result = RunnerHealthResultSchema.parse(input);
-      return store.transaction(function* (q) {
+      let woke = false;
+      const submitted = await store.transaction(function* (q) {
         const runner = yield* identitySteps(q, runnerId);
         const assigned = yield* commandSteps(q, result.commandId, runnerId);
         const at = now();
@@ -387,8 +390,14 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           ))[kind];
           return outcome === "applied";
         }
-        if (assigned.type === "login_check" && result.login)
-          yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth");
+        if (
+          assigned.type === "login_check" &&
+          result.login &&
+          (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
+          owner &&
+          result.login.authenticated
+        )
+          woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
         if (legacy && result.agentLimits)
           yield* recordRunnerAgentUsageSteps(q, {
             runnerId,
@@ -419,6 +428,8 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
         yield* touchRunnerSeenSteps(q, runnerId, at);
         return { duplicate: false };
       });
+      if (woke) emitJobReady(store);
+      return submitted;
     },
     async read(runnerId: string, commandId: string) {
       const resultJson = await store.run(function* (q) {
