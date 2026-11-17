@@ -151,12 +151,12 @@ export function seedCredential(db: Db, accountId: string, agent: string, now = 0
   );
 }
 
-export const CURRENT_RUNNER_VERSION = MINIMUM_RUNNER_VERSION.join(".");
+export const CURRENT_RUNNER_RELEASE = MINIMUM_RUNNER_VERSION.join(".");
 
 export function currentRunnerHost(q: Q, runnerId: string, reportedAt = 0) {
   return q.orm
     .insert(q.t.runnerHostStatus)
-    .values({ runnerId, runnerVersion: CURRENT_RUNNER_VERSION, reportedAt })
+    .values({ runnerId, runnerVersion: CURRENT_RUNNER_RELEASE, reportedAt })
     .onConflictDoNothing();
 }
 

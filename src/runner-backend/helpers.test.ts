@@ -1,5 +1,5 @@
 import { recordRunnerHostStatus } from "../db";
-import { bindFixtureAccounts, CURRENT_RUNNER_VERSION } from "../../test/pglite-fixtures";
+import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE } from "../../test/pglite-fixtures";
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
@@ -842,7 +842,7 @@ test("a helper whose named account hits its quota retries with the next account 
         await sqlRun(
           db,
           "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner',?,?)",
-          [CURRENT_RUNNER_VERSION, Date.now()],
+          [CURRENT_RUNNER_RELEASE, Date.now()],
         );
         await recordRunnerAccountCapability(
           db,
@@ -1073,7 +1073,7 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
   await sqlRun(
     f.db,
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner',?,?)",
-    [CURRENT_RUNNER_VERSION, Date.now()],
+    [CURRENT_RUNNER_RELEASE, Date.now()],
   );
   await recordRunnerAccountCapability(
     f.db,
@@ -1201,7 +1201,7 @@ async function answerTask() {
         "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,'claude') ON CONFLICT(runner_id,agent) DO NOTHING",
         [runnerId],
       );
-      await recordRunnerHostStatus(db, runnerId, { runnerVersion: CURRENT_RUNNER_VERSION }, now());
+      await recordRunnerHostStatus(db, runnerId, { runnerVersion: CURRENT_RUNNER_RELEASE }, now());
     }
     await bindFixtureAccounts(db);
     return createRunnerPlacement({ store: db, now });

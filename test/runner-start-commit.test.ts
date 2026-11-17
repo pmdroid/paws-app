@@ -3,7 +3,7 @@ import {
   boundHeartbeat,
   boundResultSubmissions,
 } from "./bound-runner-account";
-import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
+import { CURRENT_RUNNER_RELEASE } from "./pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -552,7 +552,7 @@ async function startScenario(input: {
   await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
   await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
   await exec(
-    sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})`,
+    sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_RELEASE},${now})`,
   );
   await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},'claude')`);
   const item = await insertQueuedItem(db, {
