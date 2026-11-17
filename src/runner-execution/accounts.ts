@@ -602,6 +602,52 @@ export function shareRunnerAgentState(
       over: (root) => journal(`runner agent state not fully shared folder=${root} limit=${limit}`),
     });
   }
+  shareAgentConfigFolders(home);
+}
+
+const AGENT_CONFIG_FOLDERS = [".claude", ".codex", ".grok", ".config"] as const;
+const REFUSED_LOG_MS = 3_600_000;
+const refusedFolders = new Map<string, number>();
+
+export function shareAgentConfigFolders(
+  home: string,
+  options: { now?: () => number; chmod?: (descriptor: number, mode: number) => void } = {},
+): void {
+  if (home.split(sep).includes(RUNNER_ACCOUNT_HOMES)) return;
+  const now = options.now ?? Date.now;
+  const chmod = options.chmod ?? fchmodSync;
+  for (const name of AGENT_CONFIG_FOLDERS) {
+    const path = join(home, name);
+    const info = lstatSync(path, { throwIfNoEntry: false });
+    if (!info?.isDirectory()) continue;
+    const wanted = (info.mode & 0o7777) | SETGID | 0o070;
+    if ((info.mode & 0o7777) === wanted) continue;
+    try {
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY,
+      );
+      try {
+        chmod(descriptor, (fstatSync(descriptor).mode & 0o7777) | SETGID | 0o070);
+      } finally {
+        closeSync(descriptor);
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!["EACCES", "EPERM"].includes(code)) {
+        journalCaught(error, "accounts.shareAgentConfigFolders", null);
+        continue;
+      }
+      if ((info.mode & 0o070) === 0o070) continue;
+      const last = refusedFolders.get(path);
+      if (last !== undefined && now() - last < REFUSED_LOG_MS) continue;
+      refusedFolders.set(path, now());
+      const octal = (info.mode & 0o7777).toString(8).padStart(4, "0");
+      journal(
+        `runner agent config folder not group-writable folder=${path} uid=${info.uid} mode=${octal} code=${code}`,
+      );
+    }
+  }
 }
 
 /**

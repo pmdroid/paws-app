@@ -87,6 +87,7 @@ import {
   withoutGitHubReadPrompt,
 } from "../acp";
 import {
+  shareAgentConfigFolders,
   shareRunnerWorkRoot,
   createRunnerResultDirectory,
   markRunnerAccountSignedIn,
@@ -1037,6 +1038,8 @@ export async function executeRunnerCommand(
     }
     if (!task) {
       shareRunnerWorkRoot(options.workRoot, options.owners);
+      if (options.owners && process.env.HOME && process.getuid?.() !== options.owners.runnerUid)
+        shareAgentConfigFolders(process.env.HOME);
     }
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(
