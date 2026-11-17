@@ -35,12 +35,12 @@ const Transfer = z.union([
   }),
 ]);
 
-export function encodePolicyFiles(load: PolicyFilesLoad, chunked = false): string {
+export function encodePolicyFiles(load: PolicyFilesLoad): string {
   if (!load.ok)
     return JSON.stringify({ error: load.message.slice(0, 4096) || "policy unavailable" });
   if (load.absent) return JSON.stringify({ absent: true });
   const size = [...load.files.values()].reduce((total, bytes) => total + bytes.byteLength, 0);
-  if (load.files.size > MAX_FILES || size > (chunked ? MAX_TRANSFER / 2 : POLICY_MAX_BYTES))
+  if (load.files.size > MAX_FILES || size > POLICY_MAX_BYTES)
     return JSON.stringify({ error: "The Closeout policy is too large to send to the runner" });
   return JSON.stringify({
     digest: load.digest,
@@ -85,13 +85,13 @@ export function decodePolicyFiles(text: string): PolicyFilesLoad {
   };
 }
 
-/** One bounded answer from a stable serialized policy; legacy requests use encodePolicyFiles. */
+/** One bounded answer from a stable serialized policy. */
 export function encodePolicyChunk(
   load: PolicyFilesLoad,
   offset: number,
   expected?: string,
 ): string {
-  const text = encodePolicyFiles(load, true);
+  const text = encodePolicyFiles(load);
   const hash = createHash("sha256").update(text).digest("hex");
   if ((expected !== undefined && expected !== hash) || offset > text.length)
     return JSON.stringify({ error: "Closeout policy changed during transfer" });
