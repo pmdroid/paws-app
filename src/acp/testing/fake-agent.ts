@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { journalCaught } from "../../journal";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { FakeResult, FakeScript, FakeStep } from "./script";
 
@@ -53,6 +53,7 @@ const spawnSteps = (() => {
 
 function ghConfig(directory: string) {
   const hosts = join(directory, "hosts.yml");
+  if (!existsSync(hosts)) return { directory, directoryMode: statSync(directory).mode & 0o777 };
   return {
     directory,
     directoryMode: statSync(directory).mode & 0o777,

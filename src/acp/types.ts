@@ -34,6 +34,8 @@ export type AcpEvent =
   | { type: "progress"; text: string; messageChunk?: boolean }
   /** A workspace hook exited with an error or timed out. The run goes on. */
   | { type: "hook_failed"; hookId: string; hookEvent: HookEvent; command: string; reason: string }
+  /** The turn's read-only GitHub token did not reach the agent, for a fixed reason. */
+  | { type: "github_read_failed"; reason: "format" | "fetch" | "expiry" | "write" }
   | {
       type: "auth_checked";
       role: AgentRole;

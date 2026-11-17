@@ -61,6 +61,15 @@ export function runnerGitHubReadId(sequence: number): string {
   return `00000000-0000-4000-8001-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+/**
+ * The answer the runner publishes once a turn's read token failed for the `slot`th reason in
+ * `GITHUB_READ_FAILURES`; its body is the reason.
+ */
+export function runnerGitHubReadFailedId(slot: number): string {
+  if (!Number.isSafeInteger(slot) || slot < 1) throw new Error("Invalid GitHub read failure");
+  return `00000000-0000-4000-8002-${slot.toString(16).padStart(12, "0")}`;
+}
+
 export const GITHUB_READ_TOKENS_PER_TURN = 64;
 
 export function removeRunnerGitHubRead(

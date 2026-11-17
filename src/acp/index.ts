@@ -181,3 +181,4 @@ export {
 export { snapshotImplementationSkills, materializeImplementationSkills } from "./skill-bundle";
 
 export { providerFor } from "./model";
+export { GITHUB_READ_PROMPT, withoutGitHubReadPrompt } from "./github-read";

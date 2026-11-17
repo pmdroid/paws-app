@@ -105,8 +105,7 @@ export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = [
   ].join("\n");
 }
 
-export const GITHUB_READ_PROMPT =
-  "`gh` is signed in with read-only access to this task's repositories. Use it to read pull requests, issues, Actions runs and logs. It can't write, and it can't read other repositories.";
+export { GITHUB_READ_PROMPT } from "../acp";
 
 export function closeoutFocusPrompt(focus: CloseoutFocus): string {
   const head = focus.head.slice(0, 12);

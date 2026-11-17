@@ -1,5 +1,6 @@
 export {
   EnrollmentTokenSchema,
+  GitHubReadExpiryError,
   githubReadExpiryAllowed,
   openRunnerDaemon,
   type RunnerDaemon,

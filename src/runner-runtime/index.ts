@@ -18,7 +18,12 @@ import {
   AGENT_SESSION_MAX_BYTES,
   AgentSessionFinishSchema,
 } from "../agent-sessions";
-import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runner-daemon";
+import {
+  GitHubReadExpiryError,
+  RunnerRequestError,
+  type RunnerDaemon,
+  type RunnerGrant,
+} from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
@@ -38,6 +43,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
   runnerGitHubReadId,
+  runnerGitHubReadFailedId,
   removeRunnerGitHubRead,
   GITHUB_READ_TOKENS_PER_TURN,
 } from "../runner-answers";
@@ -52,7 +58,9 @@ import {
   PAWS_ALIVE_LEASE_SKEW_MS,
   RUNNER_AUTHORITY_STOP_MS,
   RUNNER_LEASE_GRACE_MS,
+  GITHUB_READ_FAILURES,
   RunnerResultSchema,
+  type GitHubReadFailure,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
   type RunnerResult,
@@ -98,6 +106,7 @@ async function remote<T>(
       throw error;
     throw new (unavailable === GITHUB_UNAVAILABLE ? GitHubFailure : RemoteFailure)(
       `${unavailable}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }
@@ -175,6 +184,8 @@ type Active = {
     nextAt: number;
     failures: number;
     fetching?: Promise<void>;
+    /** Failure reasons already handed to the worker, each once. */
+    reported?: Set<GitHubReadFailure>;
   };
 };
 
@@ -615,6 +626,24 @@ export async function openRunnerRuntime(options: {
       read.nextAt =
         now() + GITHUB_READ_RETRY_MS[Math.min(read.failures++, GITHUB_READ_RETRY_MS.length - 1)]!;
       journalCaught(error, "runner-runtime.fetchGitHubRead", command.itemId);
+      const cause = error instanceof RemoteFailure ? error.cause : error;
+      const reason: GitHubReadFailure =
+        cause instanceof z.ZodError
+          ? "format"
+          : cause instanceof GitHubReadExpiryError
+            ? "expiry"
+            : "fetch";
+      if (read.reported?.has(reason)) return;
+      try {
+        // The worker turns it into one github_read_failed event; the reason is all it carries.
+        publishRunnerAnswer(options.spool, entry.execution.id, {
+          requestId: runnerGitHubReadFailedId(GITHUB_READ_FAILURES.indexOf(reason) + 1),
+          answer: reason,
+        });
+        (read.reported ??= new Set()).add(reason);
+      } catch (published) {
+        journalCaught(published, "runner-runtime.fetchGitHubRead.report", command.itemId);
+      }
     }
   }
   async function interrupt(
