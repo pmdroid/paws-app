@@ -394,7 +394,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           assigned.type === "login_check" &&
           result.login &&
           (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
-          owner &&
           result.login.authenticated
         )
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
