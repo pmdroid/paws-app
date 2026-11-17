@@ -43,8 +43,6 @@ export function createRunFileChunks(options: {
   /** The kind's 32-byte key from `loadRunFileKey`. */
   key: Buffer;
   refused: () => never;
-  /** Whether a chunk stored before encryption (no key ID) still reads. Defaults to never. */
-  plaintext?: () => Promise<boolean>;
 }) {
   const { kind, objects, key, refused } = options;
   const { store } = options;
@@ -78,21 +76,12 @@ export function createRunFileChunks(options: {
     const address = { kind, runId: file.runId, generation: file.generation };
     const rows = await store.run((q) => listRunFileChunksSteps(q, address));
     let total = 0;
-    let plaintext: boolean | undefined;
     for (const chunk of rows) {
       await before?.();
-      // A chunk without a key ID was stored before encryption and is read as is until it is
-      // converted. It may be sealed between the row read and the object read, so it opens too.
-      if (chunk.keyId === null) plaintext ??= (await options.plaintext?.()) ?? false;
-      if (chunk.offset !== total || (!(chunk.keyId === null && plaintext) && chunk.keyId !== keyId))
-        unavailable();
-      let bytes: Buffer | null;
+      if (chunk.offset !== total || chunk.keyId !== keyId) unavailable();
+      let bytes: Uint8Array | null;
       try {
-        const stored = await objects.read(objectKey(file.prefix, chunk));
-        bytes =
-          chunk.keyId === null && matches(stored, chunk)
-            ? Buffer.from(stored)
-            : opened(file, chunk, stored);
+        bytes = opened(file, chunk, await objects.read(objectKey(file.prefix, chunk)));
       } catch {
         unavailable();
       }

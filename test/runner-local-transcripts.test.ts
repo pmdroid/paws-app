@@ -1,3 +1,4 @@
+import { S3Client } from "bun";
 import { expect, test } from "bun:test";
 import {
   chmodSync,
@@ -17,6 +18,7 @@ import { createLocalRunnerTranscriptObjects } from "../src/runner-transcripts";
 import {
   configureRunnerTranscriptStorage,
   loadRunnerTranscriptObjects,
+  loadRunnerTranscriptStores,
 } from "../src/runner-transcript-config";
 import { probeRunnerTranscripts } from "./local/runner-transcripts";
 
@@ -45,6 +47,42 @@ test("local transcript configuration persists protected files across reconstruct
       configureRunnerTranscriptStorage(home, '{"kind":"local","path":"/tmp"}'),
     ).toThrow();
   } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("with S3 configured, transcript reads use the bucket and never the local directory", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-local-transcripts-"));
+  const original = S3Client.prototype.file;
+  const signed: string[] = [];
+  try {
+    configureRunnerTranscriptStorage(
+      home,
+      JSON.stringify({
+        bucket: "fixture-transcripts",
+        endpoint: "https://objects.example.invalid",
+        region: "fixture-region",
+        accessKeyId: "fixture-key",
+        secretAccessKey: "fixture-secret",
+      }),
+    );
+    const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
+    await local.write("chunk", Buffer.from("local"));
+    S3Client.prototype.file = function (key, ...args) {
+      signed.push(new URL(this.presign(key)).pathname);
+      return Object.assign(original.call(this, key, ...args), {
+        stream: () => new Blob(["remote"]).stream(),
+      });
+    };
+    const { objects, stores } = loadRunnerTranscriptStores(home);
+    chmodSync(join(home, "runner-transcripts"), 0o755);
+    expect(await text(objects.read("chunk"))).toBe("remote");
+    chmodSync(join(home, "runner-transcripts"), 0o700);
+    expect(signed).toEqual(["/fixture-transcripts/chunk"]);
+    expect(stores).toHaveLength(2);
+    expect(await text(local.read("chunk"))).toBe("local");
+  } finally {
+    S3Client.prototype.file = original;
     rmSync(home, { recursive: true, force: true });
   }
 });

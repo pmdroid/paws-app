@@ -183,31 +183,6 @@ function s3Objects(
 }
 
 /**
- * Writes go to `remote`. Reads use the local chunk when one exists, so files sealed before S3
- * was configured still read. Deletes remove the chunk from both.
- */
-export function withLocalRunFileFallback(
-  local: RunFileObjects,
-  remote: RunFileObjects,
-): RunFileObjects {
-  return {
-    write: (key, bytes) => remote.write(key, bytes),
-    async read(key) {
-      try {
-        return await local.read(key);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return remote.read(key);
-      }
-    },
-    async delete(key) {
-      await local.delete(key);
-      await remote.delete(key);
-    },
-  };
-}
-
-/**
  * Seals each object under `key`, bound to its object name, so the store only ever holds
  * ciphertext and a changed, swapped or truncated object fails to open.
  */

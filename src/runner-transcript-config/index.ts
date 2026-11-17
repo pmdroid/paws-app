@@ -16,7 +16,6 @@ import {
 import {
   createLocalRunnerTranscriptObjects,
   createS3RunnerTranscriptObjects,
-  withLocalRunnerTranscriptFallback,
 } from "../runner-transcripts";
 
 const FILE = "runner-transcript-storage.json";
@@ -229,8 +228,8 @@ export async function checkRunnerStorageSettings(
 }
 
 /**
- * Transcript chunks: `objects` reads the local chunk when one exists and the S3 bucket otherwise,
- * and writes to the bucket when one is configured. `stores` lists each store on its own.
+ * Transcript chunks: `objects` is the S3 bucket when one is configured and the local directory
+ * otherwise. `stores` lists each store that may hold a chunk.
  */
 export function loadRunnerTranscriptStores(home: string) {
   const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
@@ -238,7 +237,7 @@ export function loadRunnerTranscriptStores(home: string) {
   startedWith ??= storageKey(currentText(home));
   if (s3 === null) return { objects: local, stores: [local] };
   const remote = createS3RunnerTranscriptObjects(s3);
-  return { objects: withLocalRunnerTranscriptFallback(local, remote), stores: [local, remote] };
+  return { objects: remote, stores: [local, remote] };
 }
 
 export function loadRunnerTranscriptObjects(home: string) {
