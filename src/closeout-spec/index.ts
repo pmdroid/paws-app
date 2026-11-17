@@ -100,6 +100,8 @@ export {
   policyCheckPaths,
   policyFixBudget,
   mainFixBudget,
+  mainNarrowAfterLines,
+  DEFAULT_NARROW_AFTER_LINES,
   preExistingFindings,
   fixAttemptLimit,
   fixesLeft,

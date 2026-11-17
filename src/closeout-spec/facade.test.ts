@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGitReader, mainFixBudget } from "./facade";
+import { createGitReader, mainFixBudget, mainNarrowAfterLines } from "./facade";
 
 const temps: string[] = [];
 
@@ -130,4 +130,22 @@ test("mainFixBudget reads the policy at the local origin/main without a fetch", 
   expect(mainFixBudget(repo)).toBeNull();
   run("update-ref", "refs/remotes/origin/main", run("rev-parse", "HEAD"));
   expect(mainFixBudget(repo)).toBe(7);
+  expect(mainNarrowAfterLines(repo)).toBe(800);
+});
+
+test("mainNarrowAfterLines reads retry.narrow_after_lines, and 0 turns the size check off", () => {
+  const policy = join(mkdtempSync(join(tmpdir(), "paws-narrow-policy-")), "policy");
+  temps.push(policy);
+  mkdirSync(join(policy, ".agents"), { recursive: true });
+  const write = (retry: string) =>
+    writeFileSync(
+      join(policy, ".agents", "closeout.yaml"),
+      `specVersion: "0.1"\nretry:\n  scope: task\n${retry}items: []\n`,
+    );
+  write("  narrow_after_lines: 400\n");
+  expect(mainNarrowAfterLines("unused", policy)).toBe(400);
+  write("  narrow_after_lines: 0\n");
+  expect(mainNarrowAfterLines("unused", policy)).toBe(0);
+  write("");
+  expect(mainNarrowAfterLines("unused", policy)).toBe(800);
 });

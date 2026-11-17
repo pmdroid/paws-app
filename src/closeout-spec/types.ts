@@ -49,6 +49,7 @@ export type RetryPolicy = {
   maxFailedAttemptsPerItem: number;
   /** Autonomous restarts shared by findings, CI and review. Defaults to 3. */
   fix_rounds_per_item?: number;
+  narrow_after_lines?: number;
   maxFailedReviewAttempts?: number;
   /**
    * `candidate` shares `itemId`, `policyDigest`, `base`, and `head`.
