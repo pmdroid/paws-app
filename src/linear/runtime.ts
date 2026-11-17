@@ -40,6 +40,7 @@ import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
 import type { IssueStartReads } from "./issue-start";
 import { createLinearMembershipReads, type LinearMembershipReads } from "./membership";
+import { createLinearIssueDelegation } from "./issue-delegation";
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
@@ -50,6 +51,7 @@ export type LinearRunning = {
 export type OpenLinear = {
   findingIssues: FindingIssueAdapter | null;
   improvementIssues: ReturnType<typeof createLinearImprovementIssueLookup> | null;
+  issueDelegation: ReturnType<typeof createLinearIssueDelegation> | null;
   improvementDelivery: ImprovementLinear | null;
   memberships: LinearMembershipReads | null;
   webhook: LinearWebhookDeps;
@@ -148,6 +150,8 @@ export async function openLinear(options: {
       client === null
         ? null
         : createLinearImprovementIssueLookup(defaultCallerClient(client, "finding-groups")),
+    issueDelegation:
+      client === null ? null : createLinearIssueDelegation(callerClient(client, "auth")),
     improvementDelivery:
       client === null
         ? null
