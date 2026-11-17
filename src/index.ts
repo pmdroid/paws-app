@@ -8,6 +8,7 @@ import {
 } from "./finding-groups";
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { journalCaught } from "./journal";
+import { handleUnhandledRejection } from "./process";
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
@@ -3087,6 +3088,12 @@ if (import.meta.main || compiled()) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
   }
+  process.on("unhandledRejection", (error) =>
+    handleUnhandledRejection(error, {
+      journal: (caught) => journalCaught(caught, "index.unhandledRejection", null),
+      exit: (code) => process.exit(code),
+    }),
+  );
   const starting = startPaws(process.env, {
     refreshRepositories: true,
     refreshAgentCatalog: true,
