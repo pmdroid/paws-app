@@ -25,7 +25,8 @@ import {
   runnerGitHubReadId,
 } from "../src/runner-answers";
 import { executeRunnerCommand, writeCodexSessionBundle } from "../src/runner-worker";
-import { redactGitHubTokens } from "../src/runner-protocol";
+import { GITHUB_READ_PROMPT } from "../src/acp";
+import { redactGitHubTokens, type GitHubReadFailure } from "../src/runner-protocol";
 import { openGitHubReadConfig } from "../src/runner-worker/github-read";
 
 const roots: string[] = [];
@@ -48,6 +49,7 @@ async function turn(
   tokens: Record<number, string> = { 1: TOKEN },
   extra: Record<string, unknown> = {},
   launchEnv: Record<string, string> = {},
+  read: { prompt?: string; failures?: GitHubReadFailure[]; confirmMs?: number } = {},
 ) {
   const root = temporary();
   const source = join(root, "source");
@@ -85,7 +87,7 @@ async function turn(
       remoteUrl: "https://github.com/acme/monorepo.git",
       baseSha,
     },
-    prompt: "Implement the request",
+    prompt: read.prompt ?? "Implement the request",
     type: "run",
     checkpoint: false,
     ...(githubRead ? { githubRead: true as const } : {}),
@@ -129,6 +131,8 @@ async function turn(
       const token = tokens[sequence];
       return token ? { token, expiresAt: Date.now() + 3_600_000 } : null;
     },
+    ...(read.failures ? { githubReadFailures: () => read.failures! } : {}),
+    ...(read.confirmMs !== undefined ? { githubReadConfirmMs: read.confirmMs } : {}),
   });
   const trace = JSON.parse(readFileSync(join(root, "trace.json"), "utf8")) as FakeResult;
   return {
@@ -317,4 +321,61 @@ test("a session snapshot leaves the token out, even where it straddles a read ch
   expect(restored).not.toContain(TOKEN);
   expect(restored).not.toContain(FRESH);
   expect(restored).toBe(`${head}[redacted] and [redacted]\n${"é".repeat(5)} tail`);
+});
+
+const PROMPT = `Implement the request\n\n${GITHUB_READ_PROMPT}`;
+const failures = (journal: string) =>
+  journal
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { type: string; reason?: string })
+    .filter((event) => event.type === "github_read_failed");
+
+test("a rejected read token is reported once per reason, and the prompt leaves out the gh line", async () => {
+  const { trace, journal, directory } = await turn(
+    true,
+    {},
+    {},
+    {},
+    {
+      prompt: PROMPT,
+      failures: ["format"],
+      confirmMs: 600,
+    },
+  );
+  expect(failures(journal)).toEqual([expect.objectContaining({ reason: "format" })]);
+  expect(JSON.stringify(trace.prompts)).toContain("Implement the request");
+  expect(JSON.stringify(trace.prompts)).not.toContain("`gh` is signed in");
+  expect(journal).not.toContain(TOKEN);
+  expect(existsSync(directory)).toBe(false);
+}, 30_000);
+
+test("a turn whose read token landed keeps the gh line and reports nothing", async () => {
+  const { trace, journal } = await turn(
+    true,
+    { 1: TOKEN },
+    {},
+    {},
+    { prompt: PROMPT, confirmMs: 600 },
+  );
+  expect(JSON.stringify(trace.prompts)).toContain("`gh` is signed in");
+  expect(failures(journal)).toEqual([]);
+}, 30_000);
+
+test("a token the worker cannot read or write is reported once per reason, never with the token", async () => {
+  const directory = join(temporary(), ".gh-run");
+  const reported: string[] = [];
+  const config = openGitHubReadConfig(
+    directory,
+    () => {
+      throw new Error(`bad ${TOKEN}`);
+    },
+    5,
+    64,
+    { read: () => ["fetch"], report: (reason) => reported.push(reason) },
+  );
+  expect(await config.delivered(100)).toBe(false);
+  expect(reported).toEqual(["format", "fetch"]);
+  expect(JSON.stringify(reported)).not.toContain(TOKEN);
+  config.close();
 });

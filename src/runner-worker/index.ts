@@ -84,6 +84,7 @@ import {
   decodePolicyChunk,
   providerCliPath,
   type PolicyFilesLoad,
+  withoutGitHubReadPrompt,
 } from "../acp";
 import {
   shareRunnerWorkRoot,
@@ -115,6 +116,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
   runnerGitHubReadId,
+  runnerGitHubReadFailedId,
   GITHUB_READ_TOKENS_PER_TURN,
 } from "../runner-answers";
 import { openGitHubReadConfig, type GitHubReadConfig, type GitHubReadSource } from "./github-read";
@@ -143,6 +145,9 @@ import {
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
   AGENT_SIGNED_OUT,
+  GITHUB_READ_CONFIRM_MS,
+  GITHUB_READ_FAILURES,
+  type GitHubReadFailure,
   type RunnerArtifact,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -235,6 +240,10 @@ export interface RunnerWorkerOptions {
   checkpointIntervalMs?: number;
   livePreviewSystem?: LivePreviewSystem;
   githubRead?: GitHubReadSource;
+  /** Why the runner could not hand this turn a read token so far. */
+  githubReadFailures?: () => readonly GitHubReadFailure[];
+  /** How long the turn waits for its first read token before dropping the `gh` line. Tests lower it. */
+  githubReadConfirmMs?: number;
 }
 
 /** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
@@ -438,6 +447,7 @@ export type RunnerWorkerEvent =
           | "reply"
           | "closeout"
           | "hook_failed"
+          | "github_read_failed"
           | "session_restore"
           | "handover"
           | "handover_interrupted"
@@ -1316,7 +1326,19 @@ export async function executeRunnerCommand(
         options.githubRead,
         undefined,
         GITHUB_READ_TOKENS_PER_TURN,
+        {
+          read: () => options.githubReadFailures?.() ?? [],
+          report: (reason) => emit({ type: "github_read_failed", reason }),
+        },
       );
+    // The prompt says `gh` is signed in only once a token reached gh's config.
+    const readDelivered =
+      command.type === "run" && command.githubRead && !resumed
+        ? ((await githubRead?.delivered(
+            options.githubReadConfirmMs ?? GITHUB_READ_CONFIRM_MS,
+            options.signal,
+          )) ?? false)
+        : true;
     // The runner's agent tools (its `gh`) go last, after the runtime bin folders Closeout prepends.
     // The worker may inherit unrelated runtimes; session resumes must use the same
     // explicit base as a fresh agent turn.
@@ -1327,10 +1349,11 @@ export async function executeRunnerCommand(
       command.type === "run" && !installed.failure
         ? missingToolchainQuestion(worktree, agentEnv.PATH ?? "")
         : undefined;
-    const prompt =
+    const given =
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
+    const prompt = readDelivered ? given : withoutGitHubReadPrompt(given);
     const conversationPrompt = talk ? `${CONVERSATION_PREAMBLE}\n\n${prompt}` : undefined;
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     // A moved run unpacks its saved session at the same paths before the agent starts. Paws
@@ -2721,6 +2744,11 @@ export async function runRunnerWorker(options: {
             const value = JSON.parse(published.answer) as { token?: unknown; expiresAt?: unknown };
             if (!isRunnerToken(value.token)) throw new Error("Runner GitHub read token is invalid");
             return { token: value.token, expiresAt: Number(value.expiresAt) };
+          },
+          githubReadFailures() {
+            return GITHUB_READ_FAILURES.filter((_, index) =>
+              readRunnerAnswer(spool, options.executionId, runnerGitHubReadFailedId(index + 1)),
+            );
           },
           checkpointPublished(sequence: number) {
             return (

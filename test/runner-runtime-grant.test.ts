@@ -12,7 +12,12 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
-import { readRunnerAnswer, runnerGitHubReadId } from "../src/runner-answers";
+import {
+  readRunnerAnswer,
+  runnerGitHubReadFailedId,
+  runnerGitHubReadId,
+} from "../src/runner-answers";
+import { z } from "zod";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand } from "../src/runner-protocol";
 
@@ -57,7 +62,7 @@ async function fixture(input: {
   pushMs?: number;
   chunkMs?: number;
   refuse?: Refusal;
-  githubRead?: { failures: number; token: string };
+  githubRead?: { failures: number; token: string; error?: () => Error };
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-grant-"));
   let wall = Date.now();
@@ -224,7 +229,7 @@ async function fixture(input: {
       async githubReadCredential() {
         readAttempts++;
         if (readAttempts <= (input.githubRead?.failures ?? 0))
-          throw new Error("Runner control plane is unavailable");
+          throw input.githubRead?.error?.() ?? new Error("Runner control plane is unavailable");
         return { token: input.githubRead!.token, expiresAt: wall + 3_600_000 };
       },
       async uploadArtifact(_runId, _chunk, token) {
@@ -283,6 +288,10 @@ async function fixture(input: {
     },
     readAttempts: () => readAttempts,
     readToken: () => readRunnerAnswer(spool, execution, runnerGitHubReadId(1))?.answer ?? null,
+    readFailures: () =>
+      [1, 2, 3, 4].flatMap(
+        (slot) => readRunnerAnswer(spool, execution, runnerGitHubReadFailedId(slot))?.answer ?? [],
+      ),
     advance(ms: number) {
       wall += ms;
     },
@@ -388,6 +397,29 @@ linuxOnly(
       f.advance(15_000);
       await f.settleUntil("the third attempt delivers the token", () => f.readToken() !== null);
       expect(JSON.parse(f.readToken()!).token).toBe(token);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+linuxOnly(
+  "a read token the runner rejects hands the worker its reason once, without the token",
+  async () => {
+    const token = "ghs_has space";
+    // The daemon's credential schema refuses it, as the format check did in the acme evidence.
+    const rejected = () =>
+      z.object({ token: z.string().regex(/^[!-~]+$/) }).safeParse({ token }).error!;
+    const f = await fixture({ githubRead: { failures: 3, token, error: rejected } });
+    try {
+      expect(f.readAttempts()).toBe(1);
+      expect(f.readFailures()).toEqual(["format"]);
+      f.advance(5_000);
+      await f.settleUntil("the second attempt runs", () => f.readAttempts() === 2);
+      expect(f.readFailures()).toEqual(["format"]);
+      expect(f.readToken()).toBeNull();
+      expect(JSON.stringify(f.readFailures())).not.toContain(token);
     } finally {
       await f.cleanup();
     }

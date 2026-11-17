@@ -1313,8 +1313,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           grantToken,
         ),
       );
-      if (!githubReadExpiryAllowed(credential.expiresAt, now()))
-        throw new Error("Runner GitHub read token has an invalid expiry.");
+      if (!githubReadExpiryAllowed(credential.expiresAt, now())) throw new GitHubReadExpiryError();
       return credential;
     },
     async repositoryCommandGrant(id: string) {
@@ -1433,6 +1432,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
 }
 
 export type RunnerDaemon = ReturnType<typeof openRunnerDaemon>;
+
+/** A read token whose expiry is in the past or too far ahead of the runner's clock. */
+export class GitHubReadExpiryError extends Error {
+  constructor() {
+    super("Runner GitHub read token has an invalid expiry.");
+  }
+}
 
 const GITHUB_READ_TTL_MS = 60 * 60_000;
 const GITHUB_READ_CLOCK_SKEW_MS = 30_000;

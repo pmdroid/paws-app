@@ -106,7 +106,7 @@ export interface FakeResult {
     xaiApiKey: boolean;
     ghToken: boolean;
     githubToken: boolean;
-    ghConfig?: { directory: string; directoryMode: number; hostsMode: number; hosts: string };
+    ghConfig?: { directory: string; directoryMode: number; hostsMode?: number; hosts?: string };
     sshAuthSock: boolean;
     aws: boolean;
   };

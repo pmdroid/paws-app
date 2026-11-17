@@ -177,6 +177,8 @@ sudo journalctl -u paws-runner.service -n 100 --no-pager
 
 During an implementation or fix turn, the agent can use the bundled GitHub CLI to read the task repository's issues, pull requests and Actions logs. Its token is read-only, limited to that repository and revoked when the turn ends. Code running during the turn can read it.
 
+The agent's prompt says `gh` is signed in only when the token reaches the runner within 30 seconds of the turn starting. When the runner can't deliver a token, the run's transcript shows "GitHub read access: not delivered" with a reason: `format` (the runner rejected the token), `fetch` (fetching it failed), `expiry` (its expiry was out of range) or `write` (the runner could not save it for `gh`). Paws also journals `agent-read item=… run=… not delivered: <reason>`.
+
 To disable this access, use Settings > GitHub access. See [GitHub access configuration](configuration.md#github_access).
 
 ## Working through a Paws outage

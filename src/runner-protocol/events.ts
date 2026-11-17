@@ -3,6 +3,7 @@ import { RUNNER_HANDOVER_FAILURES } from "./commands";
 import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 import { RunnerPreviewEventSchema } from "./preview";
+import { GITHUB_READ_FAILURES } from "./github-read";
 
 export const RunnerPlanStepSchema = z.strictObject({
   content: z
@@ -138,6 +139,8 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     command: z.string().min(1).max(512),
     reason: z.string().min(1).max(1024),
   }),
+  /** The turn's read-only GitHub token did not reach the agent; sent once per run and reason. */
+  z.strictObject({ type: z.literal("github_read_failed"), reason: z.enum(GITHUB_READ_FAILURES) }),
   z.strictObject({ type: z.literal("permission"), permission: RunnerPermissionSchema }),
   z.strictObject({
     type: z.literal("plan"),
