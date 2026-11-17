@@ -23,7 +23,7 @@ import {
   syncSteps,
   type Db,
 } from "../db";
-import { RunnerSlotsBusyError, UserFacingError } from "../core";
+import { RunnerCommandRejectedError, RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
 import { createRunnerHelpers } from "../runner-helpers";
 import { RUNNER_LIVE_GRACE_MS } from "../runner-protocol";
@@ -416,6 +416,20 @@ test.each([
   expect(error).not.toBeInstanceOf(RunnerSlotsBusyError);
   expect((error as Error).message).toContain(`No paired runner can run codex`);
   expect((error as Error).message).toContain(named);
+});
+
+test("a helper prompt the protocol refuses fails at once with the schema reason", async () => {
+  const f = await fixture();
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )({ ...f.input, prompt: "x".repeat(65_537) })
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(RunnerCommandRejectedError);
+  expect((error as Error).message).toContain("refuses: prompt:");
+  expect((error as Error).message).not.toContain("No paired runner");
+  expect(await sqlRows(f.db, "SELECT 1 FROM runner_helper")).toEqual([]);
 });
 
 test("session helpers reject executable-work and file/tool contracts before dispatch", async () => {

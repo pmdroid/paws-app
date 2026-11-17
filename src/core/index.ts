@@ -135,7 +135,12 @@ export {
   parentTaskKeySql,
 } from "./delegation";
 
-export { PawsShutdown, RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";
+export {
+  PawsShutdown,
+  RunnerCommandRejectedError,
+  RunnerSlotsBusyError,
+  UserFacingError,
+} from "./user-facing-error";
 export {
   AgentHungError,
   HANG_ASK_AFTER,

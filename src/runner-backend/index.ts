@@ -109,7 +109,8 @@ import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
-import { HELPER_LANE_BUSY } from "./helpers";
+import { ZodError } from "zod";
+import { commandRejected, HELPER_LANE_BUSY } from "./helpers";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
@@ -1704,6 +1705,7 @@ export function createRemoteAgentRunner(options: {
                   throw await placementRace(itemId, selected.id, error);
                 if (error instanceof RunnerTeardownPending)
                   throw new RunnerCapacityWait(error.runnerIds);
+                if (error instanceof ZodError) throw commandRejected(assigned.type, error);
                 throw error;
               }
               phase("issue");
