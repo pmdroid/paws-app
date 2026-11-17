@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import { setJournalSink } from "../src/journal";
 import { and, count, eq, isNotNull } from "drizzle-orm";
 import { git, runDir, type AcpEvent, type RunAgentOptions } from "../src/acp";
 import { PawsShutdown, RunnerCapacityWait } from "../src/core";
@@ -342,6 +343,16 @@ async function fixture(agentRead?: AgentRead) {
           type: "activity",
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
         },
+      });
+    },
+    async readFailed(command: CloseoutCommand, sequence: number) {
+      await services.work.event({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: await grant(command),
+        sequence,
+        event: { type: "github_read_failed", reason: "format" },
       });
     },
     async finish(command: CloseoutCommand, result: Partial<RunnerResult>) {
@@ -737,6 +748,40 @@ test("a turn gets one read token and its prompt line", async () => {
     expect(stored.includes(READ_TOKEN)).toBe(false);
     expect(JSON.stringify(f.events).includes(READ_TOKEN)).toBe(false);
   } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a read token the runner rejected is journaled once and lands in the run's transcript", async () => {
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  const f = await fixture(recordingAgentRead().agentRead);
+  try {
+    const running = f.services.backend.forItem(f.item.id)({
+      ...f.checks(new AbortController().signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    await f.until(() => f.placed.length === 1);
+    const command = f.placed[0]!;
+    await f.readFailed(command, 1);
+    await f.readFailed(command, 2);
+    await f.until(async () => (await f.consumed()) === 2);
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+    expect(lines.filter((line) => line.includes("not delivered"))).toEqual([
+      `agent-read item=${f.item.id} run=${command.runId} not delivered: format`,
+    ]);
+    expect(f.events.filter((event) => event.type === "github_read_failed")).toEqual([
+      { type: "github_read_failed", reason: "format" },
+    ]);
+    const stored = readFileSync(
+      join(runDir(f.root, f.checks(new AbortController().signal).runId), "acp.jsonl"),
+      "utf8",
+    );
+    expect(stored).toContain('"github_read_failed"');
+    expect(`${lines.join("\n")}${stored}`.includes(READ_TOKEN)).toBe(false);
+  } finally {
+    restore();
     await f.close();
   }
 }, 60_000);

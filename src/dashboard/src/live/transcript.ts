@@ -126,6 +126,9 @@ function* readFile(
           kind = "err";
           const when = HOOK_LABELS[event.hookEvent] ?? "a hook event";
           text = `Workspace hook failed (${when}): ${event.command} · ${event.reason}`;
+        } else if (event?.type === "github_read_failed") {
+          kind = "err";
+          text = `GitHub read access: not delivered (${event.reason})`;
         } else if (event?.type === "error") {
           kind = "err";
           text = event.message;

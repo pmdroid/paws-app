@@ -912,6 +912,7 @@ export function createRemoteAgentRunner(options: {
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
         let readCommand: string | undefined;
+        const readFailures = new Set<string>();
         const scrub = <T>(value: T): T =>
           readCommand && options.agentRead
             ? (JSON.parse(redactedJson(value, options.agentRead.tokens(readCommand))) as T)
@@ -2010,6 +2011,16 @@ export function createRemoteAgentRunner(options: {
                 );
               }
               if (event.type === "hook_failed") await emit(event, origin);
+              if (event.type === "github_read_failed") {
+                const key = `${assigned.runId} ${event.reason}`;
+                if (!readFailures.has(key)) {
+                  readFailures.add(key);
+                  journal(
+                    `agent-read item=${itemId} run=${assigned.runId} not delivered: ${event.reason}`,
+                  );
+                  await emit(event, origin);
+                }
+              }
               const waitRun = { itemId, runId: assigned.runId, generation: assigned.generation };
               if (event.type === "agent_wait_started")
                 await startAgentWait(store, waitRun, mono(), now());

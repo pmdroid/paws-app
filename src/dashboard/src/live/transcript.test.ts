@@ -198,6 +198,26 @@ test("a failing workspace hook shows on the run page as an error", () => {
   ]);
 });
 
+test("a read token that did not reach the agent shows on the run page with its reason", () => {
+  const home = tempHome();
+  mkdirSync(join(home, "runs", "read-run"), { recursive: true });
+  writeFileSync(
+    join(home, "runs", "read-run", "acp.jsonl"),
+    `${JSON.stringify({
+      t: "2026-11-06T10:00:00.000Z",
+      event: { type: "github_read_failed", reason: "format" },
+    })}\n`,
+  );
+  expect([...fullAgentTranscript(home, "read-run", new Date(0).toISOString(), {})]).toEqual([
+    {
+      at: "2026-11-06T10:00:00.000Z",
+      kind: "err",
+      text: "GitHub read access: not delivered (format)",
+      session: 1,
+    },
+  ]);
+});
+
 test("untimed lines take the previous line's time, and a partly written last line is skipped quietly", () => {
   const home = tempHome();
   mkdirSync(join(home, "runs", "resumed-run"), { recursive: true });
