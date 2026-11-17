@@ -175,7 +175,7 @@ export function resolveAgentProfiles(
 
 export function parseAgentSettingsToml(
   text: string,
-  _implementer: ImplementerName,
+  implementer: ImplementerName,
 ): AgentSettings | null {
   if (!/^\s*\[agents\.(defaults|presets)(?:[.\]])/m.test(text)) return null;
   const parsed = Bun.TOML.parse(text) as {
@@ -190,8 +190,8 @@ export function parseAgentSettingsToml(
   };
   const agents = parsed.agents;
   const defaults = {
-    implementer: { model: null, ...agents?.defaults?.implementer },
-    reviewer: { model: null, ...agents?.defaults?.reviewer },
+    implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
+    reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
     ...(agents?.defaults?.reviewer_fallback
       ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
       : {}),
