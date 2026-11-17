@@ -158,25 +158,6 @@ export function* runnerSharingSteps(q: Q, runnerId: string) {
   return yield* q.one(q.orm.select({ sharing: p.sharing }).from(p).where(eq(p.runnerId, runnerId)));
 }
 
-export function* runnerAgentPoliciesSteps(q: Q, runnerId: string) {
-  const { runnerAgentPolicy: p } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .select({
-        agent: p.agent,
-        quotaState: p.quotaState,
-        resetsAt: p.resetsAt,
-        cooldownUntil: p.cooldownUntil,
-        resolvedModel: p.resolvedModel,
-        extraUsage: p.extraUsage,
-      })
-      .from(p)
-      .where(eq(p.runnerId, runnerId))
-      .orderBy(asc(p.agent)),
-  );
-  return rows.map((row) => ({ ...row, extraUsage: row.extraUsage === 1 }));
-}
-
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
   const { agentAccountBinding: b, agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
   return yield* q.one(

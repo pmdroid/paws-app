@@ -86,21 +86,6 @@ export function* seenMemberRunnersSteps(q: Q, seenAfter: number) {
   );
 }
 
-export function* runnerAgentPolicyRowSteps(q: Q, runnerId: string, agent: string) {
-  const { runnerAgentPolicy: p } = q.t;
-  return yield* q.one(
-    q.orm
-      .select({
-        extraUsage: p.extraUsage,
-        quotaState: p.quotaState,
-        resetsAt: p.resetsAt,
-        cooldownUntil: p.cooldownUntil,
-      })
-      .from(p)
-      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
-  );
-}
-
 export function* healthResultJsonSteps(
   q: Q,
   commandId: string,
