@@ -41,7 +41,7 @@ beforeEach(() => {
         release = resolve;
       });
     }
-    return Response.json({ bindings: [{ bindingId: "binding", agent: "claude", session }] });
+    return Response.json({ bindings: [{ bindingId: "binding", agent: session.agent, session }] });
   }) as typeof fetch;
 });
 afterEach(() => {
@@ -86,4 +86,32 @@ test("reply progress survives an unchanged response until a session update; fail
   await settle();
   expect(query("[data-account-feedback]").textContent).toBe("Runner disconnected");
   expect(query("[data-account-progress]").textContent).toBe("");
+});
+
+test("OpenCode's device sign-in shows its code instead of the terminal; a failure shows why", async () => {
+  session = {
+    ...login(
+      "\u001b[34m●\u001b[39m  Enter code: PJNS-PWFC\r\n●  https://opencode.ai/console/device?user_code=PJNS-PWFC\r\n",
+    ),
+    agent: "opencode",
+  };
+  openAgentAccounts({ id: "runner", name: "goldbox" }, "opencode", () => {}, "binding", "Team");
+  await settle();
+  expect(query("[data-agent-code]").textContent).toBe("PJNS-PWFC");
+  expect(query("[data-agent-copy]").textContent).toBe("Copy code");
+  expect(query("[data-agent-open]").getAttribute("href")).toBe(
+    "https://opencode.ai/console/device?user_code=PJNS-PWFC",
+  );
+  expect((query("[data-agent-terminal]") as unknown as HTMLElement).hidden).toBe(true);
+  expect((query("[data-agent-input]") as unknown as HTMLElement).hidden).toBe(true);
+  session = { ...session, state: "failed", terminal: "Error: device code expired" };
+  (query("[data-account-refresh]") as unknown as HTMLButtonElement).click();
+  await settle();
+  expect(window.document.querySelector("[data-agent-code]")).toBeNull();
+  expect((query("[data-agent-terminal]") as unknown as HTMLElement).hidden).toBe(false);
+  expect(query("[data-agent-terminal]").textContent).toBe("Error: device code expired");
+  session = { ...session, terminal: "" };
+  (query("[data-account-refresh]") as unknown as HTMLButtonElement).click();
+  await settle();
+  expect((query("[data-agent-terminal]") as unknown as HTMLElement).hidden).toBe(true);
 });

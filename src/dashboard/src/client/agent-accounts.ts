@@ -202,7 +202,7 @@ export function openAgentAccounts(
     const deviceShown = challenge !== null && account.agent === "opencode";
     const output = deviceShown ? "" : terminalOutput(login);
     if (terminal.dataset.output !== output) {
-      renderMarkup(terminal, terminalMarkup(output));
+      renderMarkup(terminal, `<span>${terminalMarkup(output)}</span>`);
       terminal.dataset.output = output;
     }
     terminal.hidden = !output;
@@ -214,7 +214,7 @@ export function openAgentAccounts(
       if (challenge) {
         const url = providerUrl(challenge.url, account.agent);
         const codeMarkup = code
-          ? `<div class="row"><code data-agent-code>${esc(code)}</code><button class="btn" type="button" data-agent-copy>Copy code</button></div>`
+          ? `<div class="row"><span class="font-mono text-xl font-semibold" data-agent-code>${esc(code)}</span><button class="btn" type="button" data-agent-copy>Copy code</button></div>`
           : "";
         renderMarkup(
           authorization,
