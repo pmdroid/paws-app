@@ -683,9 +683,8 @@ export function withRuleResults(full: FullStatus): FullStatus {
     {
       ...rule("restart-and-ask-from-loop", "failed", 1, 1_310),
       stdout:
-        "src/merge/lane.ts:212 applies closeout_rejected outside src/loop\nsrc/merge/lane.ts:240 calls ask() outside src/loop\n",
-      findings:
-        "P1 finding: Only src/loop applies ejected or closeout_rejected, or opens a question.",
+        "src/merge/lane.ts:212 applies blocking_question outside src/loop\nsrc/merge/lane.ts:240 calls ask() outside src/loop\n",
+      findings: "P1 finding: Only src/loop applies blocking_question or opens a question.",
     },
     {
       ...rule("api-contract", "failed", 1, 2_080),

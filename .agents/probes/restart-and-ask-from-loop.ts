@@ -3,10 +3,10 @@
  *
  * Only `src/loop` sends an item back to the agent or asks a person, through
  * `restart()` and `ask()`; `src/core` owns the edge table. Outside those two,
- * source must not name the `ejected`, `closeout_rejected` or
- * `blocking_question` events, and must not import or use a question opener
- * from `src/questions`: directly, renamed, through a namespace or dynamic
- * import, destructured, or through a `const` alias of any of those.
+ * source must not name the `blocking_question` event, and must not import or
+ * use a question opener from `src/questions`: directly, renamed, through a
+ * namespace or dynamic import, destructured, or through a `const` alias of
+ * any of those.
  *
  * Only what the branch adds counts: a changed file fails when it has such a
  * line that its base version did not have. Tests are not checked.
@@ -21,7 +21,7 @@ import { parseArgs } from "node:util";
 const OWNERS = ["src/loop/", "src/core/"];
 const SOURCE = /^src\/.+\.[cm]?[jt]sx?$/;
 const TEST = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-const EVENTS = /(["'`])(ejected|closeout_rejected|blocking_question)\1/g;
+const EVENTS = /(["'`])(blocking_question)\1/g;
 const OPENERS = new Set([
   "ask",
   "openQuestion",

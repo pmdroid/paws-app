@@ -81,7 +81,7 @@ describe("repository rules on the run page", () => {
     const failed = row(page(), "restart-and-ask-from-loop");
     expect(failed).toContain('aria-expanded="true"');
     expect(failed).toContain("exit 1 · 1.3s");
-    expect(failed).toContain("applies closeout_rejected outside src/loop");
+    expect(failed).toContain("applies blocking_question outside src/loop");
     expect(failed).toContain("P1 finding");
   });
 

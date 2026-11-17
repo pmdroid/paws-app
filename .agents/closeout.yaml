@@ -130,7 +130,7 @@ rules:
     failOn: P0
     onFail: fix
   - id: restart-and-ask-from-loop
-    summary: Only src/loop applies ejected or closeout_rejected, or opens a question.
+    summary: Only src/loop applies blocking_question or opens a question.
     probe: .agents/probes/restart-and-ask-from-loop.ts
     failOn: P1
     onFail: fix

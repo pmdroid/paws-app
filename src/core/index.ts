@@ -22,7 +22,6 @@ export type { RepositoryBinding } from "./repository";
 export {
   DELEGATION_STATES,
   IN_FLIGHT_ITEM_STATES,
-  RETIRED_WORK_ITEM_EVENTS,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
@@ -32,7 +31,6 @@ export {
 } from "./states";
 export type {
   DelegationState,
-  RecordedWorkItemEvent,
   TerminalWorkItemState,
   WorkItemEvent,
   WorkItemState,

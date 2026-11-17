@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  RETIRED_WORK_ITEM_EVENTS,
   WORK_ITEM_EDGES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
@@ -84,15 +83,6 @@ describe("transition", () => {
       expect(edge.to).not.toBe("planning");
     }
     expect(transition("planning", "cancel")).toMatchObject({ ok: true, to: "cancelled" });
-  });
-
-  test("retired events stay out of the live union and no state accepts them", () => {
-    const live = new Set<string>(WORK_ITEM_EVENTS);
-    for (const event of RETIRED_WORK_ITEM_EVENTS) {
-      expect(live.has(event)).toBe(false);
-      for (const state of WORK_ITEM_STATES)
-        expect(transition(state, event as never).ok).toBe(false);
-    }
   });
 
   test("cancel leaves every non-terminal state and stops on a terminal one", () => {

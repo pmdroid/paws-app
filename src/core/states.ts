@@ -61,18 +61,6 @@ export const WORK_ITEM_EVENTS = [
 
 export type WorkItemEvent = (typeof WORK_ITEM_EVENTS)[number];
 
-export const RETIRED_WORK_ITEM_EVENTS = [
-  "plan_approved",
-  "requeue",
-  "human_completed",
-  "commit_while_verifying",
-  "main_moved",
-  "ejected",
-  "closeout_rejected",
-] as const;
-
-export type RecordedWorkItemEvent = WorkItemEvent | (typeof RETIRED_WORK_ITEM_EVENTS)[number];
-
 /** Epic states. Budget hold is a flag on the row, not a state. */
 export const DELEGATION_STATES = [
   "planning",
