@@ -1,4 +1,4 @@
-import { routeHref, type Route } from "./route";
+import type { Route } from "./route";
 
 export const USER_SETTINGS_PAGES = [
   {
@@ -116,18 +116,8 @@ export function settingsRedirect(path: string): string | null {
   return head === "workspace" && !settingsAdmin ? "/settings/account" : null;
 }
 
-function settingsNav(page: SettingsPage): string {
-  if (isWorkspacePage(page))
-    return `<h1>${WORKSPACE_PAGES.find((entry) => entry.id === page)!.name}</h1>`;
-  const links = USER_SETTINGS_PAGES.map(
-    (entry) =>
-      `<li class="settings-item"><a href="${routeHref(settingsPageRoute(entry.id))}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
-  ).join("");
-  return `<nav aria-label="Settings pages" class="settings-nav min-w-0 overflow-x-auto"><ul class="flex w-max min-w-full list-none gap-1 border-b border-border">${links}</ul></nav>`;
-}
-
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
   const page = settingsAdmin || isUserSettingsPage(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }
