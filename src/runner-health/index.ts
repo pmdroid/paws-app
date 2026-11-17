@@ -15,8 +15,6 @@ import {
   recordAccountObservationSteps,
   recordRunnerAgentUsageSteps,
   runnerAgentCheckStatesSteps,
-  runnerAgentPolicyRowSteps,
-  runnerAgentUsageSteps,
   runnerLaneHelperWaitingSteps,
   runnerLastSeenSteps,
   settleRunnerAgentSteps,
@@ -24,7 +22,6 @@ import {
   touchRunnerSeenSteps,
   workspaceMemberSteps,
   type Q,
-  type RunnerAgentLimit,
   type Steps,
   type Db,
 } from "../db";
@@ -52,15 +49,6 @@ const requestSchema = z.discriminatedUnion("type", [
 ]);
 type HealthRequest = z.infer<typeof requestSchema>;
 type Agent = "claude" | "codex" | "grok" | "opencode";
-export type AgentSignIn = {
-  agent: Agent;
-  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "extra_usage" | "unknown";
-  checkedAt: number | null;
-  extraUsage?: true;
-  resetsAt?: number | null;
-  limits?: RunnerAgentLimit[];
-  limitsAt?: number;
-};
 type History = {
   inFlight: boolean;
   issuedAt: number;
@@ -279,53 +267,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
       }
       return false;
     },
-    agents(principal: WorkspacePrincipal, runnerId: string): Promise<AgentSignIn[]> {
-      return store.run(function* (q) {
-        const { runner } = yield* visibleSteps(q, principal, runnerId);
-        const at = now();
-        const last = yield* historySteps(q, runnerId, at);
-        const signIns: AgentSignIn[] = [];
-        for (const agent of runnerAgents) {
-          const entry = last(agent);
-          const checkedAt = entry?.result?.receivedAt ?? null;
-          const policy = yield* runnerAgentPolicyRowSteps(q, runner.id, agent);
-          const extraUsage = policy?.extraUsage === 1;
-          const extra = extraUsage ? { extraUsage: true as const } : {};
-          if (entry?.inFlight) {
-            signIns.push({ agent, status: "checking", checkedAt, ...extra });
-            continue;
-          }
-          if (entry?.result && !entry.result.authenticated) {
-            signIns.push({ agent, status: "signed_out", checkedAt, ...extra });
-            continue;
-          }
-          const usage = yield* runnerAgentUsageSteps(q, runnerId, agent);
-          const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
-          if (policy?.quotaState === "exhausted" && policy.cooldownUntil > at)
-            signIns.push({
-              agent,
-              status: "usage_limit",
-              checkedAt,
-              ...extra,
-              resetsAt: policy.resetsAt ?? policy.cooldownUntil,
-              ...limits,
-            });
-          else if (policy?.quotaState === "spent_extra" && extraUsage)
-            signIns.push({
-              agent,
-              status: "extra_usage",
-              checkedAt,
-              ...extra,
-              resetsAt: policy.resetsAt,
-              ...limits,
-            });
-          else if (entry?.result)
-            signIns.push({ agent, status: "signed_in", checkedAt, ...extra, ...limits });
-          else signIns.push({ agent, status: "unknown", checkedAt, ...extra });
-        }
-        return signIns;
-      });
-    },
     async submit(runnerId: string, input: RunnerHealthResult) {
       const result = RunnerHealthResultSchema.parse(input);
       let woke = false;
@@ -403,15 +344,13 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
             observedAt: at,
           });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
-          const extraUsage =
-            (yield* runnerAgentPolicyRowSteps(q, runnerId, assigned.agent))?.extraUsage === 1;
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
             : null;
           const resetsAt = spent.every((limit) => limit.resetsAt !== null) ? until : null;
           const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
-          const cools = spent.length > 0 && !extraUsage;
+          const cools = spent.length > 0;
           if (
             (yield* observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt)) &&
             runnerWide
@@ -420,7 +359,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
               runnerId,
               agent: assigned.agent,
               quota: {
-                state: cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
+                state: cools ? "exhausted" : "ok",
                 resetsAt: until,
                 cooldownUntil: cools ? until! : 0,
               },

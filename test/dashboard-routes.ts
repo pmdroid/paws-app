@@ -321,7 +321,6 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["PUT", "/api/runners/:id/concurrency"],
     ["PUT", "/api/runners/:id/repositories"],
     ["GET PUT", "/api/runners/:id/policy"],
-    ["POST", "/api/runners/:id/agents/:agent/extra-usage"],
     ["POST", "/api/runners/:id/fix-slots"],
     ["GET POST", "/api/runners/:id/accounts"],
     ["POST", "/api/runners/:id/sessions/move"],

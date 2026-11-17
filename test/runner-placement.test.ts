@@ -813,7 +813,7 @@ test("a runner the item's owner can't use is never offered, even with quota left
   }
 });
 
-test("the runner's owner and admins switch extra usage per agent, others get 403", async () => {
+test("per-runner extra usage is an unknown route and the runner policy has no agents", async () => {
   const placed = await placeItem();
   try {
     const runnerId = workspaceId();
@@ -826,58 +826,28 @@ test("the runner's owner and admins switch extra usage per agent, others get 403
       agent: "claude",
     });
     const browser = createRunnerPlacementBrowser({ store: placed.db, now: placed.now });
-    const as = (userId: string, role: "admin" | "member") => ({
+    const owner = {
       workspaceId: placed.workspaceId,
-      userId,
-      role,
+      userId: placed.colleague,
+      role: "admin" as const,
       authenticatedAt: placed.now(),
       teamIds: ["team"],
-    });
-    const toggle = async (userId: string, role: "admin" | "member", extraUsage: boolean) =>
-      (await browser(
+    };
+    expect(
+      await browser(
         new Request(`http://127.0.0.1/api/runners/${runnerId}/agents/claude/extra-usage`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ extraUsage }),
+          body: JSON.stringify({ extraUsage: true }),
         }),
-        as(userId, role),
-      ))!.status;
-    const read = async () =>
-      (
-        (await (await browser(
-          new Request(`http://127.0.0.1/api/runners/${runnerId}/policy`),
-          as(placed.pool, "member"),
-        ))!.json()) as { agents: { agent: string; extraUsage: boolean }[] }
-      ).agents.map(({ agent, extraUsage }) => ({ agent, extraUsage }));
-    expect(await read()).toEqual([{ agent: "claude", extraUsage: false }]);
-    expect(await toggle(placed.colleague, "member", true)).toBe(200);
-    expect(await read()).toEqual([{ agent: "claude", extraUsage: true }]);
-    expect(await toggle(placed.pool, "member", false)).toBe(403);
-    expect(await read()).toEqual([{ agent: "claude", extraUsage: true }]);
-    expect(await toggle(placed.owner, "admin", false)).toBe(200);
-    expect(await read()).toEqual([{ agent: "claude", extraUsage: false }]);
-    const quota = () =>
-      placed.db.run((q) =>
-        q.one(
-          q.orm
-            .select({
-              state: q.t.runnerAgentPolicy.quotaState,
-              until: q.t.runnerAgentPolicy.cooldownUntil,
-            })
-            .from(q.t.runnerAgentPolicy)
-            .where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
-        ),
-      );
-    await setAgentPolicy(placed.db, runnerId, {
-      quotaState: "exhausted",
-      cooldownUntil: placed.now() + 60_000,
-    });
-    expect(await toggle(placed.colleague, "member", true)).toBe(200);
-    expect(await quota()).toEqual({ state: "spent_extra", until: 0 });
-    expect(await toggle(placed.colleague, "member", false)).toBe(200);
-    expect(await quota()).toEqual({ state: "exhausted", until: placed.now() + 900_000 });
-    expect(await toggle(placed.colleague, "member", false)).toBe(200);
-    expect(await quota()).toEqual({ state: "exhausted", until: placed.now() + 900_000 });
+        owner,
+      ),
+    ).toBeNull();
+    const policy = (await (await browser(
+      new Request(`http://127.0.0.1/api/runners/${runnerId}/policy`),
+      owner,
+    ))!.json()) as Record<string, unknown>;
+    expect("agents" in policy).toBe(false);
   } finally {
     await placed.close();
   }

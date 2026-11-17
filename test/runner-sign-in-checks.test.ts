@@ -409,69 +409,28 @@ test("paused, draining, revoked and unseen runners are skipped", async () => {
   expect(new Set((await f.checks()).map((check) => check.runnerId))).toEqual(new Set([active]));
 });
 
-test("runner list reports signed in, signed out, checking, usage limit and unknown per agent", async () => {
+test("the runner list has no per-runner agent sign-in or usage", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
-  const statuses = async () =>
-    Object.fromEntries(
-      (await f.health.agents(f.owner, runnerId)).map(({ agent, ...rest }) => [agent, rest]),
-    );
-  expect(await statuses()).toEqual({
-    claude: { status: "unknown", checkedAt: null },
-    codex: { status: "unknown", checkedAt: null },
-    grok: { status: "unknown", checkedAt: null },
-    opencode: { status: "unknown", checkedAt: null },
-  });
   await f.health.refresh();
-  expect((await statuses()).claude!.status).toBe("checking");
-  const [claude, codex] = await f.checks();
+  const [claude] = await f.checks();
   await f.answer(claude!);
-  await f.answer(codex!, false);
-  expect(await statuses()).toEqual({
-    claude: { status: "signed_in", checkedAt: f.now() },
-    codex: { status: "signed_out", checkedAt: f.now() },
-    grok: { status: "checking", checkedAt: null },
-    opencode: { status: "checking", checkedAt: null },
-  });
-  const resetsAt = f.now() + 3_600_000;
-  await f.setPolicy(runnerId, "claude", {
-    quotaState: "exhausted",
-    resetsAt,
-    cooldownUntil: resetsAt,
-  });
-  expect((await statuses()).claude).toEqual({
-    status: "usage_limit",
-    checkedAt: f.now(),
-    resetsAt,
-  });
-  f.advance(3_600_001);
-  expect((await statuses()).claude!.status).toBe("signed_in");
-
-  const http = createRunnerHttp(
-    {
-      list: () => [{ id: runnerId, name: "Runner active", status: "active" }],
-      serverVersion: () => null,
-      agentVersions: () => [],
-    } as unknown as RunnerControl,
-    { agents: (principal, id) => f.health.agents(principal, id) },
-  );
+  const http = createRunnerHttp({
+    list: () => [{ id: runnerId, name: "Runner active", status: "active" }],
+    serverVersion: () => null,
+    agentVersions: () => [],
+  } as unknown as RunnerControl);
   const response = await http.browser(
     new Request("https://paws.example.invalid/api/runners"),
     f.owner,
     [],
   );
-  const body = (await response!.json()) as {
-    runners: { agents: { agent: string; status: string }[] }[];
-  };
-  expect(body.runners[0]!.agents.map(({ agent, status }) => [agent, status])).toEqual([
-    ["claude", "signed_in"],
-    ["codex", "signed_out"],
-    ["grok", "unknown"],
-    ["opencode", "unknown"],
-  ]);
+  const body = (await response!.json()) as { runners: Record<string, unknown>[] };
+  expect(body.runners).toEqual([{ id: runnerId, name: "Runner active", status: "active" }]);
+  expect("agents" in body.runners[0]!).toBe(false);
 });
 
-test("a spent usage window cools the agent down unless the runner keeps it on extra usage", async () => {
+test("a spent usage window cools the agent down even with a stored per-runner extra-usage flag", async () => {
   for (const extra of [0, 1]) {
     const f = await fixture();
     const runnerId = await f.runner();
@@ -483,18 +442,14 @@ test("a spent usage window cools the agent down unless the runner keeps it on ex
       { window: "5-hour", usedPercent: 100, resetsAt },
       { window: "Weekly", usedPercent: 46, resetsAt: null },
     ]);
-    expect(await f.policy(runnerId, "claude")).toMatchObject(
-      extra
-        ? { quotaState: "spent_extra", cooldownUntil: 0 }
-        : { quotaState: "exhausted", cooldownUntil: resetsAt },
-    );
-    const status = (await f.health.agents(f.owner, runnerId))[0]!;
-    expect(status.status).toBe(extra ? "extra_usage" : "usage_limit");
-    expect(status.extraUsage).toBe(extra ? true : undefined);
+    expect(await f.policy(runnerId, "claude")).toMatchObject({
+      quotaState: "exhausted",
+      cooldownUntil: resetsAt,
+    });
   }
 });
 
-test("the latest usage windows reach the runner list with when they were read", async () => {
+test("the latest usage windows are stored with when they were read", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
   await f.health.refresh();
@@ -504,27 +459,9 @@ test("the latest usage windows reach the runner list with when they were read", 
     { window: "Weekly", usedPercent: 3, resetsAt: null },
   ];
   await f.answer(claude!, true, limits);
-  const status = async () => (await f.health.agents(f.owner, runnerId))[0]!;
-  expect(await status()).toEqual({
-    agent: "claude",
-    status: "signed_in",
-    checkedAt: f.now(),
+  expect(await runnerAgentUsage(f.db, runnerId, "claude")).toEqual({
     limits,
-    limitsAt: f.now(),
-  });
-  const resetsAt = f.now() + 60_000;
-  await f.setPolicy(runnerId, "claude", {
-    quotaState: "exhausted",
-    resetsAt,
-    cooldownUntil: resetsAt,
-  });
-  expect(await status()).toEqual({
-    agent: "claude",
-    status: "usage_limit",
-    checkedAt: f.now(),
-    resetsAt,
-    limits,
-    limitsAt: f.now(),
+    observedAt: f.now(),
   });
   const schema = RunnerHealthResultSchema.shape.agentLimits;
   expect(schema.safeParse(limits).success).toBe(true);

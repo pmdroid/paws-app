@@ -166,7 +166,6 @@ export async function openRunnerCoordinator(options: {
   const health = createRunnerHealth({ store: options.db, work, now: options.now });
   const login = createRunnerLogin({ store: options.db, work, now: options.now });
   const http = createRunnerHttp(control, {
-    agents: (principal, runnerId) => health.agents(principal, runnerId),
     ...(options.hostWarnings ? { hostWarnings: options.hostWarnings } : {}),
     hostConfig: async () => {
       if (!options.publicUrl || !listener) return null;

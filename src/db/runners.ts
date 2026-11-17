@@ -1054,32 +1054,6 @@ export function* workspaceRunnerHostSteps(q: Q, runnerId: string, workspaceId: s
   return row ?? null;
 }
 
-export function* setRunnerAgentExtraUsageSteps(
-  q: Q,
-  input: { runnerId: string; agent: string; extraUsage: boolean; at: number },
-) {
-  const { runnerAgentPolicy: p } = q.t;
-  const set = input.extraUsage
-    ? {
-        extraUsage: 1,
-        quotaState: sql`CASE WHEN ${p.quotaState}='exhausted' AND ${p.cooldownUntil}>${input.at} THEN 'spent_extra' ELSE ${p.quotaState} END`,
-        cooldownUntil: sql`CASE WHEN ${p.quotaState}='exhausted' AND ${p.cooldownUntil}>${input.at} THEN 0 ELSE ${p.cooldownUntil} END`,
-      }
-    : {
-        extraUsage: 0,
-        quotaState: sql`CASE WHEN ${p.quotaState}='spent_extra' THEN 'exhausted' ELSE ${p.quotaState} END`,
-        cooldownUntil: sql`CASE WHEN ${p.quotaState}='spent_extra' THEN COALESCE(${p.resetsAt},${input.at + 900_000}) ELSE ${p.cooldownUntil} END`,
-      };
-  const changed = yield* q.all(
-    q.orm
-      .update(p)
-      .set(set)
-      .where(and(eq(p.runnerId, input.runnerId), eq(p.agent, input.agent)))
-      .returning({ runnerId: p.runnerId }),
-  );
-  return changed.length > 0;
-}
-
 export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean, now: number) {
   const { runnerPolicy: p } = q.t;
   const value = sharing ? 1 : 0;

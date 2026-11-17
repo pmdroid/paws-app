@@ -1,12 +1,10 @@
 import {
   auditWorkspaceAccessSteps,
   latestModelCatalogSteps,
-  runnerAgentPoliciesSteps,
   runnerSharingSteps,
   runnerFixSlotsSteps,
   runnerUsageListSteps,
   setRunnerFixSlotsSteps,
-  setRunnerAgentExtraUsageSteps,
   setRunnerSharingSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
@@ -22,9 +20,6 @@ import type { WorkspacePrincipal } from "../workspace";
 
 const policyInput = z.strictObject({
   sharing: z.boolean(),
-});
-const extraUsageInput = z.strictObject({
-  extraUsage: z.boolean(),
 });
 const fixSlotsInput = z.strictObject({
   fixSlots: z.number().int().min(0),
@@ -86,12 +81,8 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
   ): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/policy$/.exec(path);
-    const extra =
-      /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/agents\/(claude|codex|grok|opencode)\/extra-usage$/.exec(
-        path,
-      );
     const fix = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/fix-slots$/.exec(path);
-    if (!match && !extra && !fix && path !== "/api/runners/usage") return null;
+    if (!match && !fix && path !== "/api/runners/usage") return null;
     try {
       const current = await store.run((q) => memberSteps(q, principal));
       if (path === "/api/runners/usage") {
@@ -117,37 +108,6 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
               : null,
           });
         return json({ usage });
-      }
-      if (extra) {
-        if (request.method !== "POST") return json({ error: "Use POST." }, 405);
-        const [, runnerId, agent] = extra;
-        const input = extraUsageInput.parse(await body(request));
-        await store.transaction(function* (q) {
-          const changer = yield* memberSteps(q, principal);
-          const host = yield* workspaceRunnerHostSteps(q, runnerId!, principal.workspaceId);
-          if (
-            !host ||
-            host.revokedAt !== null ||
-            (host.ownerId !== principal.userId && !isWorkspaceAdmin(changer.role))
-          )
-            throw new Error("Only the host owner or a workspace admin can change extra usage.");
-          const at = now();
-          const changed = yield* setRunnerAgentExtraUsageSteps(q, {
-            runnerId: runnerId!,
-            agent: agent!,
-            extraUsage: input.extraUsage,
-            at,
-          });
-          if (!changed) throw new Error("Sign the agent in on this runner first.");
-          yield* auditWorkspaceAccessSteps(q, {
-            workspaceId: principal.workspaceId,
-            userId: principal.userId,
-            action: "runner.extra_usage.updated",
-            subject: `${runnerId}:${agent}`,
-            now: at,
-          });
-        });
-        return json({ ok: true });
       }
       if (fix) {
         if (request.method !== "POST") return json({ error: "Use POST." }, 405);
@@ -189,7 +149,6 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
           ownerUserId: identity.ownerId,
           ...(await store.run((q) => runnerSharingSteps(q, runnerId))),
           fixSlots: (await store.run((q) => runnerFixSlotsSteps(q, runnerId)))!.fixSlots,
-          agents: await store.run((q) => runnerAgentPoliciesSteps(q, runnerId)),
         });
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
       const input = policyInput.parse(await body(request));
@@ -213,11 +172,7 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
       if (error instanceof z.ZodError || error instanceof SyntaxError)
         return json(
           {
-            error: extra
-              ? "Choose a valid extra usage setting."
-              : fix
-                ? "Choose a valid number of fix slots."
-                : "Choose a valid sharing setting.",
+            error: fix ? "Choose a valid number of fix slots." : "Choose a valid sharing setting.",
           },
           400,
         );
