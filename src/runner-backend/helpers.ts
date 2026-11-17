@@ -84,10 +84,15 @@ export function createRemoteSessionAgentRunner(options: {
     return rows.length === 1 ? rows[0]! : null;
   };
   return {
-    forSession(sessionId: string, purpose: HelperCommand["purpose"]) {
+    forSession(
+      sessionId: string,
+      purpose: HelperCommand["purpose"],
+      onLaneWait?: (waiting: boolean) => Promise<void>,
+    ) {
       const attempt = async (
         input: RunAgentOptions,
         excluded: readonly string[],
+        laneWait: (waiting: boolean) => Promise<void>,
       ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (
@@ -259,6 +264,7 @@ export function createRemoteSessionAgentRunner(options: {
           if (command) break;
           if (purpose !== "finding_groups") for (const runnerId of held) noteHeld(runnerId);
           if (slotBusy && now() >= waitUntil) throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
+          if (slotBusy) await laneWait(true);
           if (!slotBusy) {
             const runnerCooldown = await earliestCooldown(cooling, profile.agent);
             const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
@@ -283,6 +289,7 @@ export function createRemoteSessionAgentRunner(options: {
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
         let accounted = false;
+        let picked = false;
         const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
         waiters.set(command.id, (waiters.get(command.id) ?? 0) + 1);
         try {
@@ -295,7 +302,12 @@ export function createRemoteSessionAgentRunner(options: {
               if (now() < deadline) throw error;
               break;
             }
+            if (!result && !picked) {
+              picked = await options.helpers.acknowledged(command.id);
+              await laneWait(!picked);
+            }
             if (result) {
+              await laneWait(false);
               const disposition = await store.transaction(function* (q) {
                 return (
                   options.placement &&
@@ -419,19 +431,32 @@ export function createRemoteSessionAgentRunner(options: {
           }
         }
       };
-      return (input: RunAgentOptions) =>
-        purpose === "finding_groups"
-          ? attempt(input, [])
-          : runWithFailover(
-              { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
-              attempt,
-              async () => {},
-              usageLimitWait(
-                { store, now, mono, interval: options.pollIntervalMs ?? 250 },
-                () => sessionRun(sessionId),
-                input,
-              ),
-            );
+      return async (input: RunAgentOptions) => {
+        let waiting = false;
+        const laneWait = async (next: boolean) => {
+          if (!onLaneWait || waiting === next) return;
+          waiting = next;
+          await onLaneWait(next).catch((error: unknown) =>
+            journalCaught(error, "helpers.forSession.laneWait", null),
+          );
+        };
+        try {
+          return await (purpose === "finding_groups"
+            ? attempt(input, [], laneWait)
+            : runWithFailover(
+                { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
+                (retried, excluded) => attempt(retried, excluded, laneWait),
+                async () => {},
+                usageLimitWait(
+                  { store, now, mono, interval: options.pollIntervalMs ?? 250 },
+                  () => sessionRun(sessionId),
+                  input,
+                ),
+              ));
+        } finally {
+          await laneWait(false);
+        }
+      };
     },
   };
 }

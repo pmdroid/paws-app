@@ -327,10 +327,35 @@ test("a helper slot still busy at the deadline is a wait, not a failure", async 
         return { retryable: false };
       }),
   }));
-  const pending = f.backend.forSession("session", "classify")(f.input);
+  const lane: boolean[] = [];
+  const pending = f.backend.forSession("session", "classify", async (waiting) => {
+    lane.push(waiting);
+  })(f.input);
   await Bun.sleep(10);
+  expect(lane).toEqual([true]);
   f.advance(60_000);
   await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+  expect(lane).toEqual([true, false]);
+});
+
+test("a dispatched helper reports a lane wait until its runner acknowledges it", async () => {
+  const f = await fixture();
+  const lane: boolean[] = [];
+  const settled = async (length: number) => {
+    for (let tick = 0; tick < 200 && lane.length < length; tick++) await Bun.sleep(2);
+  };
+  const pending = f.backend.forSession("session", "classify", async (waiting) => {
+    lane.push(waiting);
+  })(f.input);
+  await f.dispatched();
+  await settled(1);
+  expect(lane).toEqual([true]);
+  await f.helpers.acknowledge("runner", (await f.current()).id);
+  await settled(2);
+  expect(lane).toEqual([true, false]);
+  await f.reply();
+  await pending;
+  expect(lane).toEqual([true, false]);
 });
 
 test("a helper that times out while other starts queue on its slot is a wait", async () => {

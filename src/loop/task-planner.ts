@@ -18,7 +18,10 @@ export function createTaskPlanner(options: {
   pawsRoot: string;
   home?: string;
   launch: AgentLaunch;
-  agentForSession?: (sessionId: string) => typeof runAgent;
+  agentForSession?: (
+    sessionId: string,
+    onLaneWait?: (waiting: boolean) => Promise<void>,
+  ) => typeof runAgent;
   profile: () => AgentProfile;
 }) {
   const store = options.store;
@@ -38,6 +41,7 @@ export function createTaskPlanner(options: {
       taskKey: string;
       sessionId: string;
       request: (signal: AbortSignal) => Promise<string>;
+      onLaneWait?: (waiting: boolean) => Promise<void>;
     }): Promise<StoredTaskClassification> {
       const initialStopVersion = stopVersion;
       const initialSessionStop = sessionStopVersions.get(input.sessionId);
@@ -89,7 +93,7 @@ export function createTaskPlanner(options: {
           profile: options.profile(),
           signal: controller.signal,
           launch: options.launch,
-          agentRunner: options.agentForSession?.(input.sessionId),
+          agentRunner: options.agentForSession?.(input.sessionId, input.onLaneWait),
           onCleanupFailure: () => blockLinearSessionCleanup(store, input.sessionId),
         });
         await current();

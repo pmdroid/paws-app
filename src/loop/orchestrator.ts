@@ -820,7 +820,12 @@ export type OrchestratorOptions = {
     slotFree?(): Promise<boolean>;
     /** An importer already owns this run, including backend preparation before attachment. */
     runInProgress?(runId: string): Promise<boolean>;
-    agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
+    /** `onLaneWait` reports when the helper waits for a runner's helper lane, which is not work. */
+    agentForSession(
+      sessionId: string,
+      purpose: "classify" | "select_repository",
+      onLaneWait?: (waiting: boolean) => Promise<void>,
+    ): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
     /**
      * Whether the runners the item ran on report all of its commands gone since `since`, so a
@@ -1036,7 +1041,8 @@ export class Orchestrator {
       home: options.home,
       launch: (input) => this.launchAgent(input),
       agentForSession: options.remoteExecution
-        ? (sessionId) => options.remoteExecution!.agentForSession(sessionId, "classify")
+        ? (sessionId, onLaneWait) =>
+            options.remoteExecution!.agentForSession(sessionId, "classify", onLaneWait)
         : undefined,
       profile: () =>
         resolveAgentProfiles(loadConfigFile(join(options.pawsRoot, "config.toml"))).implementer,
@@ -3317,12 +3323,26 @@ export class Orchestrator {
   }
 
   private helperRunner(
-    sessionId: string | null,
+    item: WorkItemRecord,
     purpose: "classify" | "select_repository",
   ): typeof runAgent | undefined {
     if (!this.options.remoteExecution) return undefined;
-    if (!sessionId) throw new Error("Remote helper requires a Linear session");
-    return this.options.remoteExecution.agentForSession(sessionId, purpose);
+    if (!item.sessionKey) throw new Error("Remote helper requires a Linear session");
+    return this.options.remoteExecution.agentForSession(
+      item.sessionKey,
+      purpose,
+      this.helperLaneWait(item.id),
+    );
+  }
+
+  /** Time a helper spends held back by a busy helper lane counts as waiting, not work. */
+  private helperLaneWait(itemId: string): (waiting: boolean) => Promise<void> {
+    return async (waiting) => {
+      const job = this.leasedJobs.get(itemId);
+      if (!job) return;
+      const clock = this.options.clock ?? systemClock;
+      await markJobAwakeWait(this.store, job, waiting, clock.mono(), clock.now(), "runner");
+    };
   }
 
   private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
@@ -3403,6 +3423,7 @@ export class Orchestrator {
       classification = await this.taskPlanner.plan({
         taskKey,
         sessionId: sessionKey,
+        onLaneWait: this.helperLaneWait(item.id),
         request: async (signal) =>
           this.classificationRequest(
             sessionKey,
@@ -3474,7 +3495,7 @@ export class Orchestrator {
         profile: (await this.profileSnapshot(run.id)).implementer,
         signal: controller.signal,
         launch: (input) => this.launchAgent(input),
-        agentRunner: this.helperRunner(item.sessionKey, "classify"),
+        agentRunner: this.helperRunner(item, "classify"),
         onCleanupFailure: () => this.blockConversation(item.id),
       });
       controller.signal.throwIfAborted();
@@ -11380,7 +11401,7 @@ export class Orchestrator {
             .implementer,
           signal: controller.signal,
           launch: this.launchAgent,
-          agentRunner: this.helperRunner(item.sessionKey, "select_repository"),
+          agentRunner: this.helperRunner(item, "select_repository"),
           onCleanupFailure: () => this.blockConversation(item.id),
         });
         controller.signal.throwIfAborted();
