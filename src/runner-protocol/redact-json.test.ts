@@ -20,3 +20,19 @@ test("the token pattern stops at a backslash", () => {
   const token = `ghp_${"a".repeat(24)}`;
   expect(redactGitHubTokens(`${token}\\n next`)).toBe("[redacted]\\n next");
 });
+
+test("Paws access and refresh tokens are redacted in strings and nested records", () => {
+  for (const prefix of ["paws_at_", "paws_rt_"]) {
+    const token = `${prefix}${"Ab3".repeat(14)}x`;
+    expect(redactGitHubTokens(`token ${token} used`)).toBe("token [redacted] used");
+    const line = redactedJson({ type: "acp", output: { nested: [{ value: `Bearer ${token}` }] } });
+    expect(line).not.toContain(prefix);
+    expect(JSON.parse(line).output.nested[0].value).toBe("Bearer [redacted]");
+  }
+});
+
+test("names that start with paws_ or PAWS_ are left alone", () => {
+  const text = "PAWS_EVIDENCE_DIR=paws_evidence_dir PAWS_HOME=/home/me/.paws";
+  expect(redactGitHubTokens(text)).toBe(text);
+  expect(JSON.parse(redactedJson({ text })).text).toBe(text);
+});

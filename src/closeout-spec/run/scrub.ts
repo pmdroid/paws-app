@@ -91,10 +91,12 @@ const TOKEN_STARTS = [
   "xoxs-",
   "AKIA",
   "sk-",
+  "paws_at_",
+  "paws_rt_",
 ];
 
 const TOKEN_PATTERN =
-  /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,}/g;
+  /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,}|paws_(?:at|rt)_[A-Za-z0-9]{20,}/g;
 
 function redactTokens(text: string): string {
   return text.replace(TOKEN_PATTERN, REDACTED);

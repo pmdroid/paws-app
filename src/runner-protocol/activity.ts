@@ -118,7 +118,8 @@ function publicValue(value: unknown, depth = 0): unknown {
   );
 }
 
-const GITHUB_TOKENS = /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}\\]{20,}/g;
+const GITHUB_TOKENS =
+  /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}\\]{20,}|paws_(?:at|rt)_[A-Za-z0-9]{20,}/g;
 
 export function redactGitHubTokens(text: string, exact: readonly string[] = []): string {
   return exact
