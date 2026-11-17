@@ -286,6 +286,7 @@ import {
   resumeRetrySpreadMs,
   retryNote,
   transientRetryDelayMs,
+  RunnerCommandRejectedError,
 } from "../core";
 import {
   listWaitingProfileRunsSteps,
@@ -689,6 +690,7 @@ import {
 import { createLinearInputLoader, createReviewMarkLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
+import { boundRunnerError, type PromptPart } from "./prompt-fit";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
@@ -1846,21 +1848,27 @@ export class Orchestrator {
     snapshot: EpicSnapshot,
     signal: AbortSignal,
     options: { followupBodies?: readonly string[]; conversation?: string } = {},
-  ): Promise<string> {
+  ): Promise<PromptPart[]> {
     await this.hydrateLinearContext(sessionId, signal);
     const history = (await this.store.run((q) => listLinearActivitySnapshotsSteps(q, sessionId)))
       .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)
       .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral);
+    const latestPrompt = history.findLast((activity) => activity.content.type === "prompt");
     return [
-      JSON.stringify(snapshot),
-      await this.store.run((q) => getLinearSessionContextSteps(q, sessionId)),
-      JSON.stringify(history),
-      options.conversation ?? "",
-      ...(options.followupBodies ??
+      { text: JSON.stringify(snapshot), keep: true },
+      { text: await this.store.run((q) => getLinearSessionContextSteps(q, sessionId)) },
+      ...history.map((activity) => ({
+        text: JSON.stringify(activity),
+        keep: activity === latestPrompt,
+      })),
+      { text: options.conversation ?? "" },
+      ...(
+        options.followupBodies ??
         (await this.store.run((q) => listPendingLinearTurnsSteps(q, sessionId))).map(
           (turn) => turn.body,
-        )),
-    ].join("\n\n");
+        )
+      ).map((body) => ({ text: body, keep: true })),
+    ];
   }
 
   /**
@@ -2853,7 +2861,9 @@ export class Orchestrator {
         );
         return;
       }
-      if (job.attempts >= job.maxAttempts)
+      if (error instanceof RunnerCommandRejectedError)
+        await this.fail(item, "run_error", message, error);
+      else if (job.attempts >= job.maxAttempts)
         await this.fail(
           item,
           "run_error",
@@ -3495,10 +3505,10 @@ export class Orchestrator {
         itemId: itemPathId(item),
         runId: run.id,
         request: [
-          await this.workContext(item),
-          (await this.store.run((q) => getConversationSteps(q, item.id))).entries,
-          handoff,
-        ].join("\n\n"),
+          { text: await this.workContext(item) },
+          { text: (await this.store.run((q) => getConversationSteps(q, item.id))).entries },
+          { text: handoff, keep: true },
+        ],
         pawsRoot: this.options.pawsRoot,
         home: this.options.home,
         profile: (await this.profileSnapshot(run.id)).implementer,
@@ -8544,6 +8554,7 @@ export class Orchestrator {
       `${current.linearIdentifier} failed (${reason}): ${text}`,
       ...(cause === undefined ? [] : [cause]),
     );
+    text = boundRunnerError(text);
     if (
       current.state === "running" ||
       current.state === "verifying" ||

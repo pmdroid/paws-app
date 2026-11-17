@@ -4,7 +4,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import { RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
-import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
+import { ZodError } from "zod";
+import {
+  RunnerCommandRejectedError,
+  RunnerSlotsBusyError,
+  systemClock,
+  UserFacingError,
+} from "../core";
 import {
   earliestRunnerCooldownSteps,
   getRunnerSteps,
@@ -45,6 +51,16 @@ function noRunnerMessage(agent: string, reasons: ReadonlyMap<string, ReadonlySet
     ? `: ${[...reasons].map(([runner, why]) => `${runner}: ${[...why].join(", ")}`).join("; ")}.`
     : ".";
   return `No paired runner can run ${agent} for this issue right now${named} Check runner availability and usage limits, then retry.`;
+}
+
+export function commandRejected(kind: string, error: ZodError): RunnerCommandRejectedError {
+  const issues = error.issues
+    .map((issue) => `${issue.path.join(".") || "command"}: ${issue.message}`)
+    .join("; ");
+  return new RunnerCommandRejectedError(
+    `Paws built a ${kind} command the runner protocol refuses: ${issues}`,
+    { cause: error },
+  );
 }
 
 export function createRemoteSessionAgentRunner(options: {
@@ -231,6 +247,7 @@ export function createRemoteSessionAgentRunner(options: {
               });
               break;
             } catch (caughtError1) {
+              if (caughtError1 instanceof ZodError) throw commandRejected(purpose, caughtError1);
               const busy = caughtError1 instanceof RunnerHelperBusyError ? caughtError1 : null;
               if (busy) slotBusy = true;
               if (busy?.heldRunnerId) held.add(busy.heldRunnerId);

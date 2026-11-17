@@ -17,3 +17,5 @@ export class PawsShutdown extends Error {
     super("Paws is restarting");
   }
 }
+
+export class RunnerCommandRejectedError extends UserFacingError {}
