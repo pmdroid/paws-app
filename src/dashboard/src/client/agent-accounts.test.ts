@@ -3,8 +3,10 @@ import {
   accountStatus,
   dialogAccount,
   loginChallenge,
+  openCodeCode,
   runningNotice,
   terminalMarkup,
+  terminalOutput,
 } from "./agent-accounts";
 
 const idle = { agent: "claude" as const, connected: false, session: null };
@@ -100,4 +102,61 @@ test("a bound account whose sign-in finished without a stored credential shows a
   );
   const stored = dialogAccount({ bindings: [{ ...bound, signedIn: true }] }, "claude", "B1")!;
   expect(accountStatus(stored, "agentbox", 0)).toBe("Connected to your account");
+});
+
+const OPENCODE_DEVICE =
+  "https://opencode.ai/console/device?user_code=PJNS-PWFC&client_id=opencode-cli";
+const OPENCODE_TERMINAL = [
+  "\u001b[90m┌\u001b[39m  Connect an integration\r\n",
+  "\u001b[35m◒\u001b[39m  Starting authorization\u001b[999D\u001b[J",
+  "\u001b[35m◐\u001b[39m  Starting authorization\u001b[999D\u001b[J",
+  "\u001b[32m◇\u001b[39m  Authorization started\r\n",
+  "\u001b[90m│\u001b[39m\r\n\u001b[34m●\u001b[39m  Enter code: PJNS-PWFC\r\n",
+  `\u001b[34m●\u001b[39m  ${OPENCODE_DEVICE}\r\n`,
+  "\u001b[32m◇\u001b[39m  Waiting for authorization...\r\n",
+].join("");
+
+test("OpenCode's device link and code in the terminal become an open button", () => {
+  expect(loginChallenge("opencode", null, OPENCODE_TERMINAL)).toEqual({
+    url: OPENCODE_DEVICE,
+    message: "Enter code PJNS-PWFC at OpenCode, then approve.",
+  });
+  expect(openCodeCode(OPENCODE_TERMINAL)).toBe("PJNS-PWFC");
+  expect(loginChallenge("opencode", null, `●  ${OPENCODE_DEVICE}`)).toEqual({
+    url: OPENCODE_DEVICE,
+    message: "Approve the sign-in at OpenCode.",
+  });
+  expect(
+    loginChallenge(
+      "opencode",
+      null,
+      "Enter code: PJNS-PWFC\nhttps://evil.example/console/device?user_code=PJNS-PWFC",
+    ),
+  ).toBeNull();
+  expect(
+    loginChallenge(
+      "opencode",
+      null,
+      "Enter code: PJNS-PWFC\nhttps://opencode.ai.evil.example/console/device?user_code=PJNS-PWFC",
+    ),
+  ).toBeNull();
+  expect(
+    loginChallenge("opencode", null, "https://opencode.ai/other?user_code=PJNS-PWFC"),
+  ).toBeNull();
+});
+
+test("a failed sign-in shows why in the terminal", () => {
+  const session = {
+    id: "f",
+    agent: "opencode" as const,
+    startedAt: 0,
+    expiresAt: 1,
+    authorization: null,
+  };
+  const failed = { ...session, state: "failed" as const, terminal: "Error: device code expired" };
+  expect(terminalMarkup(terminalOutput(failed))).toContain("Error: device code expired");
+  expect(terminalOutput({ ...failed, terminal: "" })).toBe("");
+  expect(terminalOutput({ ...failed, state: "cancelled" })).toBe("");
+  expect(terminalOutput({ ...failed, state: "waiting", terminal: "live" })).toBe("live");
+  expect(terminalOutput(null)).toBe("");
 });

@@ -88,13 +88,41 @@ export function loginChallenge(
   authorization: { url: string; message: string } | null,
   terminal: string,
 ): { url: string; message: string } | null {
-  if (authorization || agent !== "claude") return authorization;
-  const url = [...terminal.matchAll(TERMINAL_URL)]
-    .map((match) => match[0])
-    .find(
-      (candidate) => URL.canParse(candidate) && CLAUDE_HOSTS.includes(new URL(candidate).hostname),
+  if (authorization) return authorization;
+  if (agent === "opencode") {
+    const url = terminalUrl(
+      terminal,
+      (found) => found.hostname === "opencode.ai" && found.pathname === "/console/device",
     );
+    if (!url) return null;
+    const code = openCodeCode(terminal);
+    return {
+      url,
+      message: code
+        ? `Enter code ${code} at OpenCode, then approve.`
+        : "Approve the sign-in at OpenCode.",
+    };
+  }
+  if (agent !== "claude") return null;
+  const url = terminalUrl(terminal, (found) => CLAUDE_HOSTS.includes(found.hostname));
   return url ? { url, message: "Sign in to Claude, then paste the code it shows below." } : null;
+}
+
+function terminalUrl(terminal: string, accept: (url: URL) => boolean): string | undefined {
+  return [...terminal.matchAll(TERMINAL_URL)]
+    .map((match) => match[0])
+    .find((candidate) => URL.canParse(candidate) && accept(new URL(candidate)));
+}
+
+/** The device code OpenCode prints on its `Enter code: <code>` line. */
+export function openCodeCode(terminal: string): string | null {
+  return /Enter code: ([A-Z0-9]{4}-[A-Z0-9]{4})(?![A-Z0-9])/.exec(terminal)?.[1] ?? null;
+}
+
+/** The terminal text the dialog shows: the live one while signing in, or why a sign-in failed. */
+export function terminalOutput(login: Login | null): string {
+  if (pending(login) || login?.state === "failed") return login?.terminal ?? "";
+  return "";
 }
 
 export function openAgentAccounts(
@@ -168,24 +196,29 @@ export function openAgentAccounts(
       actions.dataset.action = action;
     }
     const terminal = row.querySelector<HTMLElement>("[data-agent-terminal]")!;
-    const output = active ? (login?.terminal ?? "") : "";
+    const challenge =
+      active && login ? loginChallenge(account.agent, login.authorization, login.terminal) : null;
+    const code = challenge && account.agent === "opencode" ? openCodeCode(login!.terminal) : null;
+    const deviceShown = challenge !== null && account.agent === "opencode";
+    const output = deviceShown ? "" : terminalOutput(login);
     if (terminal.dataset.output !== output) {
       renderMarkup(terminal, terminalMarkup(output));
       terminal.dataset.output = output;
     }
     terminal.hidden = !output;
     row.querySelector<HTMLElement>("[data-agent-input]")!.hidden =
-      !active || (account.agent !== "claude" && account.agent !== "opencode");
+      !active || deviceShown || (account.agent !== "claude" && account.agent !== "opencode");
     const authorization = row.querySelector<HTMLElement>("[data-agent-authorization]")!;
-    const challenge =
-      active && login ? loginChallenge(account.agent, login.authorization, login.terminal) : null;
-    const challengeKey = JSON.stringify(challenge);
+    const challengeKey = JSON.stringify([challenge, code]);
     if (authorization.dataset.challenge !== challengeKey) {
       if (challenge) {
         const url = providerUrl(challenge.url, account.agent);
+        const codeMarkup = code
+          ? `<div class="row"><code data-agent-code>${esc(code)}</code><button class="btn" type="button" data-agent-copy>Copy code</button></div>`
+          : "";
         renderMarkup(
           authorization,
-          `<p>${esc(challenge.message)}</p><p class="break-all">${esc(url)}</p><a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer" data-agent-open>Open ${name} sign-in</a>`,
+          `<p>${esc(challenge.message)}</p>${codeMarkup}<p class="break-all">${esc(url)}</p><a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer" data-agent-open>Open ${name} sign-in</a>`,
         );
       } else renderMarkup(authorization, "");
       authorization.dataset.challenge = challengeKey;
@@ -305,9 +338,20 @@ export function openAgentAccounts(
       return;
     }
     const target = (event.target as Element).closest<HTMLElement>(
-      "[data-agent-action], [data-agent-open]",
+      "[data-agent-action], [data-agent-open], [data-agent-copy]",
     );
     if (!target) return;
+    if (target.hasAttribute("data-agent-copy")) {
+      const code = dialog.querySelector<HTMLElement>("[data-agent-code]")?.textContent ?? "";
+      void navigator.clipboard
+        .writeText(code)
+        .then(() => (target.textContent = "Copied"))
+        .catch((error) => {
+          journalCaught(error, "agent-accounts.copy-code", null);
+          feedback.textContent = "Could not copy. Select the code and copy it.";
+        });
+      return;
+    }
     if (target.hasAttribute("data-agent-open")) {
       if (busy) event.preventDefault();
       else if (agent === "codex") void act("input", { accept: true });
@@ -334,7 +378,9 @@ function providerUrl(value: string, agent: Agent): string {
       ? ["auth.openai.com", "chatgpt.com"]
       : agent === "grok"
         ? ["accounts.x.ai", "auth.x.ai"]
-        : CLAUDE_HOSTS;
+        : agent === "opencode"
+          ? ["opencode.ai"]
+          : CLAUDE_HOSTS;
   if (
     url.protocol !== "https:" ||
     url.username ||
