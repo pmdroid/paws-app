@@ -23,11 +23,8 @@ import {
 } from "../runner-protocol";
 import { type WorkspacePrincipal } from "../workspace";
 
-const RETIRED = /^\/api\/runners\/accounts(?:\/.*)?$/;
 const CENTRAL =
   /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?:\/(extra-usage|enabled|sign-in|credential|device|token))?)?$/;
-
-export const AGENT_ACCOUNTS_RETIRED = "This route was replaced by /api/runners/agent-accounts.";
 
 const agent = z.enum(RUNNER_CODING_AGENTS);
 const Create = z.strictObject({ agent, label: z.string().trim().min(1).max(80) });
@@ -66,7 +63,6 @@ export function createAccountManagement(
     principal: WorkspacePrincipal,
   ): Promise<Response | null> {
     const path = new URL(request.url).pathname;
-    if (RETIRED.test(path)) return json({ error: AGENT_ACCOUNTS_RETIRED }, 410);
     const match = CENTRAL.exec(path);
     if (!match || !options.store) return null;
     const { store } = options;
