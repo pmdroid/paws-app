@@ -128,7 +128,12 @@ export function callerClient(
 
 async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return operation;
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    void operation.catch((error: unknown) =>
+      journalCaught(error, "graphql.abortable", null, "cancellation may interrupt work"),
+    );
+    signal.throwIfAborted();
+  }
   let abort: () => void = () => {};
   const cancelled = new Promise<never>((_resolve, reject) => {
     abort = () => reject(signal.reason);
