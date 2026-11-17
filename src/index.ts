@@ -403,6 +403,11 @@ import {
 } from "./runner-backend";
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
+const NOT_DELEGATED: IntakeDecision = {
+  outcome: "refused",
+  reason: "The issue is no longer delegated to Paws.",
+  quiet: true,
+};
 const MEMBERS_ONLY: IntakeDecision = {
   outcome: "refused",
   reason: "Only active members of the Paws workspace can work with Paws.",
@@ -1830,6 +1835,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             }
           : {}),
         authorizeLinearEvent: async (event) => {
+          if (
+            event.action === "created" &&
+            event.issueId &&
+            linear?.issueDelegation &&
+            runtime.linearViewerId &&
+            !(await linear
+              .issueDelegation(event.issueId, runtime.linearViewerId)
+              .catch((error: unknown) => {
+                journalCaught(error, "index.authorizeLinearEvent.delegation", null);
+                return true;
+              }))
+          )
+            return NOT_DELEGATED;
           if (!workspace) return ACCEPTED;
           if (!(await (await workspace.access).authorizeLinearEvent(event))) return MEMBERS_ONLY;
           return (
