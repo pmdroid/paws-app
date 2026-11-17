@@ -1,6 +1,7 @@
 import { trackHostOperation } from "../host-operation";
 import { journalCaught, journalItemId } from "../journal";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
+import { SQL } from "bun";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
 import { type Db, type Q, type Steps } from "./db";
 import { jobInstanceElsewhereSteps } from "./instances";
@@ -24,6 +25,15 @@ export const JOB_IDLE_CLAIM_MS = 1_000;
  * A due job older than this, with a worker free and no recent claim, is the stall signal.
  * Busy timeout is 5s and the idle claim is 1s, so a live loop claims well inside the minute.
  */
+const JOB_READY_CHANNEL = "paws_job_ready";
+
+type ListenClient = {
+  listen(
+    channel: string,
+    onnotify: (payload: string) => void,
+  ): Promise<(() => Promise<void>) | { unlisten(): Promise<void> }>;
+};
+
 export const JOB_PROGRESS_STALE_MS = 60_000;
 
 export type JobLoopLiveness = {
@@ -190,6 +200,7 @@ export class JobLoop {
     const stopWake = onJobReady((db) => {
       if (db === this.db || db === this.store) this.wake();
     });
+    const listening = this.listenForJobs();
     try {
       while (!signal.aborted) {
         const generation = this.readyGeneration;
@@ -201,6 +212,36 @@ export class JobLoop {
       await Promise.all(this.inflight);
     } finally {
       stopWake();
+      await (
+        await listening
+      )();
+    }
+  }
+
+  private async listenForJobs(): Promise<() => Promise<void>> {
+    const client = (this.store.orm as { $client?: Partial<ListenClient> }).$client;
+    if (typeof client?.listen !== "function") return async () => {};
+    const wake = () => this.wake();
+    let subscribed = false;
+    const relisten = () => {
+      if (subscribed) wake();
+      subscribed = true;
+    };
+    try {
+      const handle =
+        client instanceof SQL
+          ? await client.listen(JOB_READY_CHANNEL, wake, relisten)
+          : await (client as ListenClient).listen(JOB_READY_CHANNEL, wake);
+      return async () => {
+        try {
+          await (typeof handle === "function" ? handle() : handle.unlisten());
+        } catch (error) {
+          journalCaught(error, "loop.run.unlisten", null);
+        }
+      };
+    } catch (error) {
+      journalCaught(error, "loop.run.listen", null);
+      return async () => {};
     }
   }
 
