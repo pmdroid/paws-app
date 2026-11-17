@@ -10106,11 +10106,7 @@ export class Orchestrator {
     }
   }
 
-  private *workContextSteps(
-    q: Q,
-    item: WorkItemRecord,
-    projectContext?: string,
-  ): Steps<string> {
+  private *workContextSteps(q: Q, item: WorkItemRecord, projectContext?: string): Steps<string> {
     const taskKey = yield* itemParentTaskKeySteps(q, item.id);
     const classification = taskKey ? yield* getTaskClassificationSteps(q, taskKey) : null;
     const activities = item.sessionKey

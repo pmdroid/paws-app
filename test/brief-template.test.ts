@@ -49,6 +49,14 @@ describe("brief templates", () => {
       ),
     ).toBe("Text {{conversation}}\n\nEnd");
   });
+  test("a custom template renders the project context once, after the issue", () => {
+    expect(
+      renderWorkContext(
+        "{{issue.description}}\n\n{{project_overview}}\n\n{{project_overview}}\n\nAgain {{project_overview}}",
+        input,
+      ),
+    ).toBe("Text {{conversation}}\n\nOverview\n\nAgain ");
+  });
   test("the saved workspace template resolves on each read", async () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-test-"));
     try {

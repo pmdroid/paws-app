@@ -81,7 +81,7 @@ async function withhold(
     generation: 0,
     status: "withheld",
     packHash: "",
-    manifest: null,
+    manifest: {},
     now: request.now,
   });
   return {
@@ -157,7 +157,8 @@ export async function checkContextDelivery(
   },
 ): Promise<ContextDeliveryCheck> {
   const session = await getContextSession(db, request.consumerKey);
-  if (!session || session.version !== request.version) return { status: "stale", reason: "superseded" };
+  if (!session || session.version !== request.version)
+    return { status: "stale", reason: "superseded" };
   const { namespace } = session;
   if (
     session.requesterId !== request.requester.userId ||
@@ -232,9 +233,7 @@ export async function inspectSessionContext(
   const manifest = session.status === "injected" ? (session.manifest as ContextManifest) : null;
   const ids = manifest ? manifestRecordIds(manifest) : [];
   const rows = await currentContextRecords(db, namespace, ids, request.now);
-  const visible = rows
-    .filter((row) => disclosable(row, current, destination.audience))
-    .map(view);
+  const visible = rows.filter((row) => disclosable(row, current, destination.audience)).map(view);
   const order = new Map(ids.map((id, index) => [id, index]));
   visible.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   return {
