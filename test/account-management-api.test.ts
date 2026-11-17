@@ -110,6 +110,13 @@ describePglite((connect) => {
         },
       });
       const codex = (await send("POST", "", { agent: "codex", label: "Codex" })).body;
+      expect(await send("POST", `/${codex.id}/sign-in`)).toEqual({
+        status: 400,
+        body: {
+          error:
+            "Codex signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+        },
+      });
       expect((await send("PUT", `/${claude.id}/token`, { token: "not-a-token" })).status).toBe(400);
       expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-bad" })).toEqual({
         status: 400,

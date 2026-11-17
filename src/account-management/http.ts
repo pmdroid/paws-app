@@ -178,6 +178,14 @@ export function createAccountManagement(
             },
             400,
           );
+        if (account.agent === "codex")
+          return json(
+            {
+              error:
+                "Codex signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+            },
+            400,
+          );
         return json(
           await store.transaction((q) =>
             centralSignInTargetSteps(q, {
