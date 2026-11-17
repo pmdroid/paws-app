@@ -272,12 +272,12 @@ describe("config", () => {
     expect(runtime.trackerKind).toBe("linear");
   });
 
-  test("retired [checkout] path and github.auth load and are ignored", () => {
+  test("retired [tracker] kind, [checkout] path and github.auth load and are ignored", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
     const retired =
-      '[github]\nauth = "oauth"\nrepo = "pmdroid/paws-demo"\n\n[checkout]\npath = "/repo"\n';
+      '[github]\nauth = "oauth"\nrepo = "pmdroid/paws-demo"\n\n[tracker]\nkind = "jira"\n\n[checkout]\npath = "/repo"\n';
     writeFileSync(paths.configFile, retired, { mode: 0o600 });
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.configError).toBeNull();
