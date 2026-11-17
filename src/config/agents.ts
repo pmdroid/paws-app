@@ -44,13 +44,11 @@ const profileSchema = z.strictObject({
     .optional(),
   fast: z.boolean().optional(),
 });
-const retiredAccounts = z.unknown().optional();
 const settingsSchema = z.strictObject({
   defaults: z.strictObject({
     implementer: profileSchema,
     reviewer: profileSchema,
     reviewerFallback: profileSchema.optional(),
-    accounts: retiredAccounts,
   }),
   presets: z
     .record(
@@ -66,7 +64,7 @@ const settingsSchema = z.strictObject({
 });
 
 export function parseAgentSettings(value: unknown): AgentSettings {
-  const settings = dropAccounts(settingsSchema.parse(value));
+  const settings = settingsSchema.parse(value);
   const names = new Set<string>();
   for (const name of Object.keys(settings.presets ?? {})) {
     const key = name.trim().toLowerCase();
@@ -84,14 +82,6 @@ export function parseAgentSettings(value: unknown): AgentSettings {
   if (settings.defaults.reviewerFallback?.agent === settings.defaults.reviewer.agent)
     throw new Error("The reviewer fallback must use a different agent than the reviewer");
   return settings;
-}
-
-function dropAccounts(settings: z.infer<typeof settingsSchema>): AgentSettings {
-  const { accounts: _defaults, ...defaults } = settings.defaults;
-  return {
-    defaults,
-    ...(settings.presets === undefined ? {} : { presets: settings.presets }),
-  };
 }
 
 const REVIEW_PATHS: Partial<Record<ImplementerName, "review command" | "ACP reviewer">> = {

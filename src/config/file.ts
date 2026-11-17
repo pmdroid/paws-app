@@ -142,8 +142,6 @@ export function loadConfigFile(path: string): PawsConfigFile {
   return text === "" ? emptyConfigFile() : parseConfigToml(text);
 }
 
-const RETIRED_UPDATE_SECTION = "update";
-
 /** The setup writer’s subset: sections, comments, quoted strings, integers, booleans. */
 export function parseConfigToml(text: string): PawsConfigFile {
   const config = emptyConfigFile();
@@ -161,15 +159,13 @@ export function parseConfigToml(text: string): PawsConfigFile {
         ) &&
         !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
         section !== "time_limits" &&
-        section !== "skills" &&
-        section !== RETIRED_UPDATE_SECTION
+        section !== "skills"
       )
         throw new Error(`config.toml line ${index + 1} has an unknown section: ${section}`);
       continue;
     }
     const eq = line.indexOf("=");
     if (eq <= 0) throw new Error(`config.toml line ${index + 1} is not a key`);
-    if (section === RETIRED_UPDATE_SECTION) continue;
     if (section === "brief" || section.startsWith("brief.")) continue;
     if (section === "time_limits" || section.startsWith("time_limits.")) continue;
     const key = line.slice(0, eq).trim().toLowerCase();
