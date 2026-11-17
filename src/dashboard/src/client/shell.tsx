@@ -23,7 +23,12 @@ import {
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
-import { settingsAreEditable, shownSettingsPage } from "./settings-pages";
+import {
+  WORKSPACE_PAGES,
+  settingsAreEditable,
+  settingsPageRoute,
+  shownSettingsPage,
+} from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { CommandPalette, shortcutLabel } from "./command-palette";
 import { createShortcuts, PAGE_SHORTCUTS } from "./shortcuts";
@@ -153,11 +158,31 @@ export function Navigation({
                 <SidebarMenuLink
                   to={routePath({ view: "workspace" })}
                   active={route.view === "workspace"}
+                  aria-current={undefined}
                   onClick={onNavigate}
                 >
                   <Building2 className="size-4 shrink-0" aria-hidden="true" />
                   <span>{PAGES.workspace.title}</span>
                 </SidebarMenuLink>
+                {route.view === "workspace" && (
+                  <SidebarMenu
+                    aria-label="Workspace pages"
+                    className="mt-1 ml-4 gap-0.5 border-l border-border pl-2"
+                  >
+                    {WORKSPACE_PAGES.map((page) => (
+                      <li key={page.id}>
+                        <SidebarMenuLink
+                          to={routePath(settingsPageRoute(page.id))}
+                          active={shownSettingsPage(route) === page.id}
+                          onClick={onNavigate}
+                          className="text-[13px]"
+                        >
+                          {page.name}
+                        </SidebarMenuLink>
+                      </li>
+                    ))}
+                  </SidebarMenu>
+                )}
               </li>
             )}
           </SidebarMenu>
