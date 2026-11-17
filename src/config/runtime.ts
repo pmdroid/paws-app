@@ -9,7 +9,6 @@ import {
   loadConfigFile,
   type GitHubConfigAuth,
   type PawsConfigFile,
-  type TrackerKind,
 } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
@@ -45,7 +44,7 @@ export type RuntimeConfig = {
   linearClientSecret: string | null;
   linearOrganizationId: string | null;
   githubAuth: GitHubConfigAuth;
-  trackerKind: TrackerKind;
+  trackerKind: "linear";
   /** Repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
@@ -62,7 +61,6 @@ export function startupSettings(source: EnvSource = process.env) {
   return {
     env,
     publicUrl: env.publicUrl ?? file?.publicUrl ?? null,
-    trackerKind: file?.trackerKind ?? "linear",
     databaseUrl:
       url === null ? (file?.databaseUrl ?? null) : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
   };
@@ -130,36 +128,13 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
     githubAuth,
-    trackerKind: file.trackerKind ?? "linear",
+    trackerKind: "linear",
     repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
     maxAwakeMs: maxAwakeMsFrom(source),
     webhooks: resolveWebhooks(file, source),
     databaseUrl,
   };
-}
-
-const INSTALLATION_ID = /^[1-9][0-9]{0,19}$/;
-
-export function dashboardModeProblem(source: EnvSource, runtime: RuntimeConfig): string | null {
-  if (runtime.trackerKind !== "dashboard") return null;
-  if (source.PAWS_PUBLIC_DASHBOARD !== "1" || !isHttps(runtime.publicUrl))
-    return "Dashboard mode requires PAWS_PUBLIC_DASHBOARD=1 and an HTTPS PAWS_PUBLIC_URL.";
-  const app = loadGitHubAppCredentials(runtime.env.home, source);
-  if (app === null)
-    return "Dashboard mode requires the GitHub App credentials (docs/github-app.md).";
-  if (app.installationId === null || !INSTALLATION_ID.test(app.installationId))
-    return "Dashboard mode requires GITHUB_APP_INSTALLATION_ID, the one installation this workspace belongs to.";
-  return null;
-}
-
-function isHttps(url: string | null): boolean {
-  if (url === null) return false;
-  try {
-    return new URL(url).protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 export function maxAwakeMsFrom(source: EnvSource = process.env): number {

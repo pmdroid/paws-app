@@ -444,8 +444,6 @@ const SETTINGS_REFRESH_MS = 5_000;
 
 function checkStartup(envSource: EnvSource, execution: string | undefined) {
   const settings = startupSettings(envSource);
-  if (settings.trackerKind === "dashboard")
-    throw new Error("Dashboard mode is not available in this build.");
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const proxy = publicTlsProxy(envSource);
   const tls = proxy
