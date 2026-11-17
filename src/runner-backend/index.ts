@@ -1323,10 +1323,9 @@ export function createRemoteAgentRunner(options: {
                 await store.run((q) =>
                   saveCheckpointSteps(q, itemId, { phase: "running", baseSha, wipCommit: baseSha }),
                 );
-              const acceptsRebase = !taskScope;
               const checkpointBase = (await store.run((q) => getWorkItemSteps(q, itemId)))
                 ?.checkpoint?.baseSha;
-              const upstreamMain = !acceptsRebase
+              const upstreamMain = taskScope
                 ? undefined
                 : github
                   ? ((await github.ref("refs/heads/main", signal).catch((caughtError1) => {
@@ -1353,11 +1352,7 @@ export function createRemoteAgentRunner(options: {
                   : upstreamMain;
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               let mainSha =
-                !taskScope &&
-                baseSha &&
-                mainCandidate &&
-                mainCandidate !== baseSha &&
-                (acceptsRebase || (await descends(mainCandidate, baseSha)))
+                !taskScope && baseSha && mainCandidate && mainCandidate !== baseSha
                   ? mainCandidate
                   : undefined;
               if (
