@@ -248,7 +248,11 @@ import {
   POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
-import { createLinearContextAccess, createProjectSessionContext } from "./project-context";
+import {
+  createLinearContextAccess,
+  createProjectContextHttp,
+  createProjectSessionContext,
+} from "./project-context";
 import {
   acceptGitHubDelivery,
   type PullCommentFilter,
@@ -1455,6 +1459,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           );
         },
       }),
+      ...(members
+        ? {
+            projectContext: (() => {
+              const read = createProjectContextHttp({
+                db: store,
+                access: createLinearContextAccess(members),
+              });
+              return (request: Request, principal: WorkspacePrincipal) =>
+                read(request, { workspaceId: principal.workspaceId, userId: principal.userId });
+            })(),
+          }
+        : {}),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),

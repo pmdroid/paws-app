@@ -19,6 +19,7 @@ export type Route =
   | { view: "improvements"; tab: ImprovementTab; id: string | null }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
+  | { view: "context"; kind: "project"; id: string }
   | { view: "settings"; page?: UserSettingsPage }
   | { view: "workspace"; page?: WorkspacePage };
 
@@ -71,6 +72,10 @@ export function matchRoute(path: string): Route | null {
       return { view: "evidence", id };
     case "questions":
       return { view: "questions", id };
+    case "context":
+      return id === "project" && parts.length === 3
+        ? { view: "context", kind: "project", id: parts[2]! }
+        : null;
     case "settings":
       if (id === "findings") return { view: "findings" };
       return isUserSettingsPage(id) ? { view: "settings", page: id } : { view: "settings" };
@@ -93,6 +98,7 @@ export function routePath(route: Route): string {
     const id = encodeURIComponent(route.id);
     return route.tab === "report" ? `/improvements/reports/${id}` : `/improvements/${id}`;
   }
+  if (route.view === "context") return `/context/${route.kind}/${encodeURIComponent(route.id)}`;
   if (route.view === "alias") return `/${route.kind}/${encodeURIComponent(route.id)}`;
   return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
 }

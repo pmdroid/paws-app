@@ -38,6 +38,10 @@ export const PAGES = {
     title: "Questions",
     description: "Review blocked work and answer questions in Linear.",
   },
+  context: {
+    title: "Project context",
+    description: "What Paws keeps for a Linear project, where it came from, and its summary.",
+  },
   runners: {
     title: "Runners",
     description: "Manage the runners that execute work delegated in Linear.",

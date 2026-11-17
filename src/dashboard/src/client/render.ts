@@ -104,7 +104,10 @@ export interface Rendered {
 
 /** The Findings page loads its own data into this root. */
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
-const IMPROVEMENTS_ROOT = `${pageHeading("improvements")}<div id="improvements-page"></div>`;
+const PAGE_ROOTS: Partial<Record<Route["view"], string>> = {
+  improvements: `${pageHeading("improvements")}<div id="improvements-page"></div>`,
+  context: `${pageHeading("context")}<div id="context-page"></div>`,
+};
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
@@ -125,8 +128,8 @@ export function render(model: RenderModel): Rendered {
           ? '<div id="runner-settings"></div>'
           : model.route.view === "findings"
             ? FINDINGS_ROOT
-            : model.route.view === "improvements"
-              ? IMPROVEMENTS_ROOT
+            : PAGE_ROOTS[model.route.view]
+              ? PAGE_ROOTS[model.route.view]!
               : settingsPage
                 ? renderSettingsPage(settingsPage)
                 : model.route.view === "questions"
@@ -688,7 +691,12 @@ function issueFacts(
   blocked: readonly string[],
 ): Array<[string, string]> {
   const facts: Array<[string, string]> = [
-    ["Project", esc(item.project?.name ?? "No project")],
+    [
+      "Project",
+      item.project
+        ? `<a href="${routeHref({ view: "context", kind: "project", id: item.project.id })}" title="Read the context Paws keeps for this project">${esc(item.project.name)}</a>`
+        : "No project",
+    ],
     ["Runner", esc(run?.runner ?? "Not placed yet")],
     ["Agent", esc(run?.agent ?? item.agent)],
   ];

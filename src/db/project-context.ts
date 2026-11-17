@@ -6,6 +6,7 @@ import {
   eq,
   exists,
   gt,
+  ilike,
   inArray,
   isNotNull,
   isNull,
@@ -821,6 +822,54 @@ export function* listContextCandidatesSteps(q: Q, input: ContextCandidateRead) {
 
 export async function listContextCandidates(store: Db, input: ContextCandidateRead) {
   return store.run((q) => listContextCandidatesSteps(q, input));
+}
+
+export type ContextPageRead = {
+  readonly namespace: ContextNamespace;
+  readonly visibility: ContextVisibility;
+  readonly now: number;
+  readonly offset: number;
+  readonly limit: number;
+  readonly search?: string;
+  readonly currentOnly?: boolean;
+  readonly classifications?: readonly ContextClassification[];
+  readonly sourceKinds?: readonly string[];
+};
+
+export async function listContextPage(store: Db, input: ContextPageRead) {
+  return store.run(function* (q) {
+    const scope = yield* scopeStatusSteps(q, input.namespace);
+    if (!scope || scope.status !== "connected") return [] as ContextRecordRow[];
+    const { contextRecord } = q.t;
+    const search = input.search?.replace(/[\\%_]/g, (match) => `\\${match}`);
+    const rows = yield* q.all(
+      q.orm
+        .select(contextRecordColumns(q))
+        .from(contextRecord)
+        .where(
+          and(
+            nsWhere(contextRecord, input.namespace),
+            input.currentOnly
+              ? eq(contextRecord.status, "current")
+              : inArray(contextRecord.status, ["current", "superseded"]),
+            gt(contextRecord.expiresAt, input.now),
+            visibleTo(q, input.visibility),
+            contextSourceVerified(q),
+            search ? ilike(contextRecord.body, `%${search}%`) : undefined,
+            input.classifications
+              ? inArray(contextRecord.classification, [...input.classifications])
+              : undefined,
+            input.sourceKinds
+              ? inArray(contextRecord.sourceKind, [...input.sourceKinds])
+              : undefined,
+          ),
+        )
+        .orderBy(desc(contextRecord.observedAt), desc(contextRecord.id))
+        .offset(input.offset)
+        .limit(input.limit),
+    );
+    return rows.map(contextRecordRow);
+  });
 }
 
 export function* contextRecordHistorySteps(

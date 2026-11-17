@@ -129,6 +129,7 @@ export type ServerOptions = {
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
   ) => Promise<Response | null>;
+  projectContext?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   executionControls?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -302,6 +303,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
+          ...(options.projectContext ? { projectContext: options.projectContext } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
@@ -361,6 +363,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
   improvements?: ServerOptions["improvements"];
+  projectContext?: ServerOptions["projectContext"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
   linkAsks?: ServerOptions["linkAsks"];
@@ -554,6 +557,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         secrets.improvements !== undefined
       ) {
         const response = await secrets.improvements(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
+      if (path.startsWith("/api/context/") && secrets.projectContext !== undefined) {
+        const response = await secrets.projectContext(request, access.principal);
         if (response !== null) return response;
       }
       if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {
