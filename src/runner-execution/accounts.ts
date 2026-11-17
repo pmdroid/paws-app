@@ -602,6 +602,57 @@ export function shareRunnerAgentState(
       over: (root) => journal(`runner agent state not fully shared folder=${root} limit=${limit}`),
     });
   }
+  shareAgentConfigFolders(home, owners);
+}
+
+const AGENT_CONFIG_FOLDERS = [".claude", ".codex", ".grok", ".config"] as const;
+const REFUSED_LOG_MS = 3_600_000;
+const refusedFolders = new Map<string, number>();
+
+export function shareAgentConfigFolders(
+  home: string,
+  owners: RunnerAccountOwners,
+  options: {
+    report?: boolean;
+    now?: () => number;
+    chmod?: (descriptor: number, mode: number) => void;
+  } = {},
+): void {
+  if (home.split(sep).includes(RUNNER_ACCOUNT_HOMES)) return;
+  const now = options.now ?? Date.now;
+  const chmod = options.chmod ?? fchmodSync;
+  for (const [path, at] of refusedFolders)
+    if (now() - at >= REFUSED_LOG_MS) refusedFolders.delete(path);
+  for (const name of AGENT_CONFIG_FOLDERS) {
+    const path = join(home, name);
+    const info = lstatSync(path, { throwIfNoEntry: false });
+    if (!info?.isDirectory()) continue;
+    const mode = info.mode & 0o7777;
+    if (info.gid === owners.agentGid && (mode | SETGID | 0o070) === mode) continue;
+    let code: string;
+    try {
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY,
+      );
+      try {
+        const current = fstatSync(descriptor);
+        if (current.gid !== owners.agentGid) fchownSync(descriptor, -1, owners.agentGid);
+        chmod(descriptor, (current.mode & 0o7777) | SETGID | 0o070);
+      } finally {
+        closeSync(descriptor);
+      }
+      continue;
+    } catch (error) {
+      code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    }
+    if (options.report === false || ["ENOENT", "ENOTDIR", "ELOOP"].includes(code)) continue;
+    if (refusedFolders.has(path)) continue;
+    refusedFolders.set(path, now());
+    journal(
+      `runner agent config folder not shared with the agent group folder=${path} uid=${info.uid} gid=${info.gid} mode=${mode.toString(8).padStart(4, "0")} code=${code}`,
+    );
+  }
 }
 
 /**

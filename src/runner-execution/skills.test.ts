@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withTarModes, type RunnerSkill } from "../runner-protocol";
+import { shareRunnerAgentState } from "./accounts";
 import { createRunnerSkillInstaller } from "./skills";
 
 const roots: string[] = [];
@@ -26,6 +27,15 @@ const owner = { uid: process.getuid!(), gid: process.getgid!() };
 const homeA = "agent-a";
 const homeB = "agent-b";
 const mode = (path: string) => statSync(path).mode & 0o7777;
+const keepsSetgid = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "paws-setgid-"));
+  try {
+    chmodSync(probe, 0o2700);
+    return mode(probe) === 0o2700;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
 
 async function bundle(
   name: string,
@@ -167,6 +177,23 @@ describe("runner skill installer", () => {
     expect(existsSync(join(home(homeA), ".claude/skills/own"))).toBe(true);
     expect(installer.installed()).toEqual([]);
   });
+
+  test.skipIf(!keepsSetgid)(
+    "an old 02700 .grok is made group-writable when the home is prepared, and skills apply",
+    async () => {
+      const { installer, served, home, errors } = setup([homeA]);
+      const grok = join(home(homeA), ".grok");
+      mkdirSync(grok);
+      chmodSync(grok, 0o2700);
+      shareRunnerAgentState(home(homeA), { runnerUid: owner.uid, agentGid: owner.gid });
+      expect(mode(grok)).toBe(0o2770);
+      const { skill, bytes } = await bundle("impeccable", "2.4.1", "v1", ["grok"]);
+      served.set("impeccable@2.4.1", bytes);
+      await installer.sync([skill]);
+      expect(errors).toEqual([]);
+      expect(existsSync(join(grok, "skills/impeccable/SKILL.md"))).toBe(true);
+    },
+  );
 
   test("drops an agent folder when the skill no longer applies to that agent", async () => {
     const { installer, served, home, skills } = setup([homeA]);

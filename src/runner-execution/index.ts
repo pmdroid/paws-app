@@ -50,6 +50,7 @@ export {
   runnerAccountHome,
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
+  shareAgentConfigFolders,
   shareRunnerAgentState,
   shareRunnerWorkRoot,
 } from "./accounts";
