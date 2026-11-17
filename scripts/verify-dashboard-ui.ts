@@ -383,7 +383,21 @@ try {
     await visit(admin, width, "settings-agents", "/dashboard/workspace/agents", "Agents");
     await expect(admin.locator("#preset-0-name")).toHaveValue("Opus");
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
-    await expect(admin.locator(".settings-nav a")).toHaveCount(12);
+    await expect(admin.locator(".settings-nav")).toHaveCount(0);
+    if (width <= 390) await admin.getByRole("button", { name: "Open navigation" }).click();
+    const submenu = admin
+      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("list", { name: "Workspace pages" })
+      .getByRole("link");
+    await expect(submenu).toHaveCount(12);
+    await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
+    await admin.screenshot({ path: join(out, `workspace-submenu-${width}.png`) });
+    if (width <= 390) {
+      await submenu.filter({ hasText: "Merging" }).click();
+      await expect(admin.locator("#content h1")).toHaveText("Merging");
+      await admin.goBack();
+      await expect(admin.locator("#content h1")).toHaveText("Agents");
+    }
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -605,6 +619,7 @@ try {
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     await expect(page.locator(".settings-nav a")).toHaveText(["Your account", "Agent accounts"]);
+    await expect(page.getByRole("list", { name: "Workspace pages" })).toHaveCount(0);
     if (width > 390)
       await expect(sidebar(page).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
         "Settings",

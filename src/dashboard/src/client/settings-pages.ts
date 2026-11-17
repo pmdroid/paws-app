@@ -117,14 +117,13 @@ export function settingsRedirect(path: string): string | null {
 }
 
 function settingsNav(page: SettingsPage): string {
-  const workspace = isWorkspacePage(page);
-  const links = (workspace ? WORKSPACE_PAGES : USER_SETTINGS_PAGES)
-    .map(
-      (entry) =>
-        `<li class="settings-item"><a href="${routeHref(settingsPageRoute(entry.id))}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
-    )
-    .join("");
-  return `<nav aria-label="${workspace ? "Workspace" : "Settings"} pages" class="settings-nav min-w-0 overflow-x-auto"><ul class="flex w-max min-w-full list-none gap-1 border-b border-border">${links}</ul></nav>`;
+  if (isWorkspacePage(page))
+    return `<h1>${WORKSPACE_PAGES.find((entry) => entry.id === page)!.name}</h1>`;
+  const links = USER_SETTINGS_PAGES.map(
+    (entry) =>
+      `<li class="settings-item"><a href="${routeHref(settingsPageRoute(entry.id))}"${entry.id === page ? ' aria-current="page"' : ""} class="settings-link">${entry.name}</a></li>`,
+  ).join("");
+  return `<nav aria-label="Settings pages" class="settings-nav min-w-0 overflow-x-auto"><ul class="flex w-max min-w-full list-none gap-1 border-b border-border">${links}</ul></nav>`;
 }
 
 export function renderSettingsPage(requested: SettingsPage = "account"): string {

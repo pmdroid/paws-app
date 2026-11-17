@@ -31,7 +31,7 @@ test("Settings opens on Your account and Workspace opens on Agents", () => {
   expect(
     render({ route: { view: "workspace" }, phase: "ready", error: null, engineUrl: ENGINE })
       .content,
-  ).toContain('aria-current="page" class="settings-link">Agents</a>');
+  ).toContain("<h1>Agents</h1>");
 });
 
 test("an old settings link to a workspace page opens Workspace for admins and Your account for members", () => {
@@ -76,43 +76,15 @@ test("Settings shows only its own two tabs, marking the current one", () => {
   expect(doc.querySelector("a[aria-current]")?.textContent).toBe("Agent accounts");
 });
 
-test("Workspace shows one tab bar of twelve pages in order, marking the current one", () => {
+test("a Workspace page shows its title and description with no tab bar", () => {
   setSettingsAdmin(true);
-  const doc = new Window().document;
-  doc.body.innerHTML = renderSettingsPage("merging");
-  const navs = doc.querySelectorAll("nav");
-  expect(navs.length).toBe(1);
-  expect(navs[0]?.getAttribute("aria-label")).toBe("Workspace pages");
-  const links = [...navs[0]!.querySelectorAll("a")];
-  expect(links.map((link) => link.textContent)).toEqual([
-    "Agents",
-    "Merging",
-    "Repositories",
-    "Linear",
-    "Storage",
-    "Queue and limits",
-    "Member VMs",
-    "Agent instructions",
-    "Integrations",
-    "Members",
-    "Workspace access",
-    "Audit history",
-  ]);
-  for (const [index, link] of links.entries()) {
-    const id = WORKSPACE_PAGES[index]!.id;
-    expect(link.getAttribute("href")?.endsWith(`/workspace/${id}`)).toBe(true);
-    expect(parseRoute(new URL(link.getAttribute("href")!, ENGINE).pathname)).toEqual({
-      view: "workspace",
-      page: id,
-    });
+  for (const page of WORKSPACE_PAGES) {
+    const doc = new Window().document;
+    doc.body.innerHTML = renderSettingsPage(page.id);
+    expect(doc.querySelectorAll("nav").length).toBe(0);
+    expect(doc.querySelector("h1")?.textContent).toBe(page.name);
+    expect(doc.querySelector(".settings-body > p.sub")?.textContent).toBe(page.description);
   }
-  const current = links.filter((link) => link.getAttribute("aria-current") === "page");
-  expect(current.map((link) => link.textContent)).toEqual(["Merging"]);
-  expect(doc.body.textContent).not.toMatch(/\badmin\b|\byou\b|When to touch this/);
-  expect(doc.querySelector(".settings-when, h1")).toBeNull();
-  expect(doc.querySelector(".settings-body > p.sub")?.textContent).toBe(
-    SETTINGS_PAGES.find((page) => page.id === "merging")!.description,
-  );
 });
 
 test("a member opening a workspace page gets Your account", () => {
@@ -216,7 +188,7 @@ function navLinks(doc: { querySelectorAll(selector: string): Iterable<Element> }
   return [...doc.querySelectorAll("nav a")].map((link) => link.textContent);
 }
 
-test("Workspace tabs show only once the session says admin", async () => {
+test("Workspace pages show only once the session says admin", async () => {
   for (const role of ["admin", "member"]) {
     let respond = (_: Response) => {};
     globalThis.fetch = (() =>
@@ -228,9 +200,10 @@ test("Workspace tabs show only once the session says admin", async () => {
     expect(await loaded).toBe(true);
     window.document.body.innerHTML = renderSettingsPage("merging");
     expect(navLinks(window.document)).toEqual(
-      role === "admin"
-        ? WORKSPACE_PAGES.map((page) => page.name)
-        : ["Your account", "Agent accounts"],
+      role === "admin" ? [] : ["Your account", "Agent accounts"],
+    );
+    expect(window.document.querySelector("h1")?.textContent ?? null).toBe(
+      role === "admin" ? "Merging" : null,
     );
   }
 });
