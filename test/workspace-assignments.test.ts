@@ -29,6 +29,7 @@ import {
   type Db,
   type Q,
 } from "../src/db";
+import { setJournalSink } from "../src/journal";
 import { readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
 import { FakeClock } from "../src/core";
@@ -770,9 +771,8 @@ for (const [rule, reason, apply] of rules)
 
 test("a session Paws started without a stored delegator is refused without a Linear post", async () => {
   const f = await fixture();
-  const original = console.error;
   const lines: string[] = [];
-  console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  const restore = setJournalSink((line) => lines.push(line));
   try {
     await linkMember(f);
     f.session.creatorId = "app";
@@ -784,11 +784,11 @@ test("a session Paws started without a stored delegator is refused without a Lin
     await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
     expect(await listWorkItems(f.db)).toHaveLength(0);
     expect(f.tracker.progress.slice(1)).toEqual([]);
-    expect(lines.join("\n")).toContain(
+    expect(lines.filter((line) => line.includes("could not tell who started"))).toEqual([
       "linear intake issue session session refused: Paws could not tell who started this session.",
-    );
+    ]);
   } finally {
-    console.error = original;
+    restore();
     await f.close();
   }
 });

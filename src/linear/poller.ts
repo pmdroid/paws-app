@@ -249,15 +249,31 @@ export function startCatchUpPoller(options: {
         sessionByIssue.set(activity.issueId, activity.sessionId);
       }
     }
-    for (const session of sighting.sessions)
-      if (!session.stoppedAtMs && !session.endedAtMs)
-        sessionByIssue.set(session.issueId, session.id);
     const { db } = options;
     const sessionHasTask = async (sessionId: string) =>
       db !== undefined && (await sessionHasWorkItem(db, sessionId));
+    const staleSessions = new Set<string>();
+    for (const session of sighting.sessions) {
+      if (session.stoppedAtMs) continue;
+      if (
+        session.stale &&
+        db !== undefined &&
+        !(await sessionHasWorkItem(db, session.id)) &&
+        !(await issueHasItemOutside(db, session.issueId))
+      ) {
+        staleSessions.add(session.id);
+        sessionByIssue.set(session.issueId, session.id);
+      } else if (!session.endedAtMs) sessionByIssue.set(session.issueId, session.id);
+    }
     const issueEvents: AcceptedLinearEvent[] = [];
     for (const issue of sighting.issues) {
-      const event = await issueEvent(issue, sessionByIssue, options.store, sessionHasTask);
+      const event = await issueEvent(
+        issue,
+        sessionByIssue,
+        options.store,
+        sessionHasTask,
+        staleSessions,
+      );
       if (event !== null) issueEvents.push(event);
     }
     const closedEvents: AcceptedLinearEvent[] = [];
@@ -275,7 +291,15 @@ export function startCatchUpPoller(options: {
     const sessionEvents: (AcceptedLinearEvent | null)[] = [];
     for (const session of sighting.sessions)
       if (session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id))
-        sessionEvents.push(await sessionEvent(session, since, options.store, sessionHasTask));
+        sessionEvents.push(
+          await sessionEvent(
+            session,
+            since,
+            options.store,
+            sessionHasTask,
+            staleSessions.has(session.id),
+          ),
+        );
     const events = [
       ...issueEvents,
       ...closedEvents,
@@ -445,6 +469,7 @@ async function sessionEvent(
   since: number,
   store: InboxStore,
   sessionHasTask: (sessionId: string) => Promise<boolean>,
+  stale: boolean,
 ): Promise<AcceptedLinearEvent | null> {
   const prior = await store.get(`issue:${session.issueId}:intake`);
   if (session.stoppedAtMs != null) {
@@ -461,6 +486,17 @@ async function sessionEvent(
       payload: { kind: "stop", reason: "session" },
     });
   }
+  if (stale)
+    return inboxEvent({
+      dedupeKey: sessionCreatedKey(session.id),
+      action: "created",
+      sessionId: session.id,
+      issueId: session.issueId,
+      body: null,
+      signal: null,
+      updatedAtMs: session.updatedAtMs,
+      payload: { kind: "session", reason: "stale" },
+    });
   if (session.endedAtMs != null) return null;
   const delegatedAt = await store.getCursor(`delegated:${session.issueId}`);
   const redelegated =
@@ -495,6 +531,7 @@ async function issueEvent(
   sessionByIssue: ReadonlyMap<string, string>,
   store: InboxStore,
   sessionHasTask: (sessionId: string) => Promise<boolean>,
+  staleSessions: ReadonlySet<string>,
 ): Promise<AcceptedLinearEvent | null> {
   const sessionId = sessionByIssue.get(issue.id) ?? null;
   if (issue.labeled || issue.delegated) {
@@ -510,7 +547,9 @@ async function issueEvent(
       !(await sessionHasTask(sessionId));
     return inboxEvent({
       dedupeKey:
-        prior !== null && sessionId !== null && prior.sessionId !== sessionId
+        prior !== null &&
+        sessionId !== null &&
+        (prior.sessionId !== sessionId || staleSessions.has(sessionId))
           ? `session:${sessionId}:created`
           : redelegated
             ? `issue:${issue.id}:intake:${delegatedAt}`

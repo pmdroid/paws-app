@@ -1328,7 +1328,7 @@ export class Orchestrator {
     const created = event.action === "created" && event.signal !== "stop";
     if (created && (last || decision.outcome !== "accepted")) {
       const reason = decision.outcome === "accepted" ? "" : `: ${decision.reason}`;
-      console.error(
+      (this.options.journal ?? journal)(
         `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} ${decision.outcome}${reason}`,
       );
     }
@@ -1338,6 +1338,7 @@ export class Orchestrator {
       throw new LinearIntakeRefusedError(decision.reason, {
         quiet: decision.quiet === true,
         response: decision.response === true,
+        journaled: true,
       });
     return false;
   }
