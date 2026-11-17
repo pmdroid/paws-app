@@ -184,25 +184,26 @@ const MERGE = {
     'export const asked = (db: unknown, id: string) => applyWorkItemEvent(db, id, "blocking_question");',
     "",
   ].join("\n"),
-  "src/loop/merge.ts": 'export const event = "ejected";\n',
+  "src/loop/merge.ts": 'export const event = "blocking_question";\n',
 };
 
-test("a fixture that applies ejected from src/merge fails restart-and-ask-from-loop", () => {
+test("a fixture that applies blocking_question from src/merge fails restart-and-ask-from-loop", () => {
   const ran = probe(
     "restart-and-ask-from-loop",
     candidate(MERGE, {
       "src/merge/advance.ts": MERGE["src/merge/advance.ts"].replace(
         '  applyWorkItemEvent(db, id, "merge_accepted");',
-        '  applyWorkItemEvent(db, id, "merge_accepted");\n  applyWorkItemEvent(\n    db,\n    id,\n    "ejected",\n  );',
+        '  applyWorkItemEvent(db, id, "merge_accepted");\n  applyWorkItemEvent(\n    db,\n    id,\n    "blocking_question",\n  );',
       ),
     }),
   );
   expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain('src/merge/advance.ts:9 names the ejected event: "ejected",');
+  expect(ran.output).toContain(
+    'src/merge/advance.ts:9 names the blocking_question event: "blocking_question",',
+  );
 });
 
 test.each([
-  ["closeout_rejected", 'export const send = (db: unknown) => apply(db, "closeout_rejected");\n'],
   ["a question opener import", 'import { openQuestion } from "../questions";\n'],
   ["a renamed opener import", 'import { type Asked, ask as askTeam } from "../questions";\n'],
   [
@@ -285,9 +286,10 @@ test("src/loop, src/core, tests, type imports and lines already on the base pass
   const ran = probe(
     "restart-and-ask-from-loop",
     candidate(MERGE, {
-      "src/loop/eject.ts": 'import { ask } from "../questions";\nexport const e = "ejected";\n',
-      "src/core/events.ts": 'export const events = ["ejected", "closeout_rejected"];\n',
-      "src/merge/advance.test.ts": 'apply(db, id, "ejected");\n',
+      "src/loop/eject.ts":
+        'import { ask } from "../questions";\nexport const e = "blocking_question";\n',
+      "src/core/events.ts": 'export const events = ["blocking_question"];\n',
+      "src/merge/advance.test.ts": 'apply(db, id, "blocking_question");\n',
       "src/merge/orders.ts": 'import type { ask } from "../questions";\nexport const o = 1;\n',
       "src/merge/harness.ts": `// Moved below.\n\n${MERGE["src/merge/harness.ts"]}`,
     }),
@@ -296,7 +298,7 @@ test("src/loop, src/core, tests, type imports and lines already on the base pass
   expect(ran.exitCode).toBe(0);
 });
 
-test("moving a file out of src/loop with an ejected line fails", () => {
+test("moving a file out of src/loop with a blocking_question line fails", () => {
   const ran = probe(
     "restart-and-ask-from-loop",
     candidate(MERGE, {
@@ -305,7 +307,7 @@ test("moving a file out of src/loop with an ejected line fails", () => {
     }),
   );
   expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain("src/merge/merge.ts:1 names the ejected event");
+  expect(ran.output).toContain("src/merge/merge.ts:1 names the blocking_question event");
 });
 
 const EVENTS = [

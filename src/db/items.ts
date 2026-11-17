@@ -50,7 +50,6 @@ import {
   transition,
   type Checkpoint,
   type RestartReason,
-  type RecordedWorkItemEvent,
   type WorkItemEvent,
   type WorkItemEventKind,
   type WorkItemState,
@@ -303,7 +302,7 @@ export type WorkItemEventRow = {
   at: number;
   fromState: WorkItemState;
   toState: WorkItemState;
-  event: RecordedWorkItemEvent;
+  event: WorkItemEvent;
   kind: WorkItemEventKind;
   reason: string | null;
   payloadDigest: string | null;

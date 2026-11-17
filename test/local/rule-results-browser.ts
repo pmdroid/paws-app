@@ -62,7 +62,7 @@ try {
         await section.getByText(text, { exact: true }).first().waitFor();
       await section.getByRole("button", { name: "Approve", exact: true }).waitFor();
       await section.getByRole("button", { name: "Send back", exact: true }).waitFor();
-      await section.getByText("applies closeout_rejected outside src/loop").waitFor();
+      await section.getByText("applies blocking_question outside src/loop").waitFor();
       // A string expression, because this file type-checks without the DOM library.
       const overflow = Number(
         await page.evaluate(
