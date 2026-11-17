@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createWorktree, ensureBareMirror, commitCheckpoint } from "../src/acp";
-import { journalRetiredProjectSettings, parseConfigToml } from "../src/config";
+import { parseConfigToml } from "../src/config";
 import { checkoutPatterns, exclusionPatterns } from "../src/worktree-checkout";
 
 const roots: string[] = [];
@@ -122,18 +122,6 @@ test("reuse finishes a worktree left unpopulated during creation", async () => {
   expect(existsSync(join(target, "large"))).toBe(false);
   expect(existsSync(join(target, "README.md"))).toBe(true);
   expect(git(target, "status", "--porcelain")).toBe("");
-});
-
-test("an old checkout.projects table loads, is ignored and is journaled", async () => {
-  const f = await fixture();
-  const configPath = join(f.pawsRoot, "config.toml");
-  await writeFile(configPath, '[checkout.projects."Acme/Demo"]\nexclude = ["large"]\n');
-  const tree = await f.create();
-  expect(existsSync(join(tree.path, "large/file.txt"))).toBe(true);
-  expect(git(tree.path, "status", "--porcelain")).toBe("");
-  const lines: string[] = [];
-  journalRetiredProjectSettings(configPath, (line) => lines.push(line));
-  expect(lines).toEqual(["checkout.projects is no longer supported"]);
 });
 
 test("excluded files are never passed through checkout filters", async () => {

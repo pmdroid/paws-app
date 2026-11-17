@@ -70,7 +70,6 @@ export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app
 export type { GitHubAppCredentials } from "./github-app";
 
 export {
-  journalRetiredAgentProjects,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,
@@ -128,7 +127,6 @@ export type {
 } from "./merge";
 
 export {
-  copyCapsToTimeLimits,
   MAX_TIME_LIMIT_MINUTES,
   parseTimeLimitSettings,
   readTimeLimitSettings,
@@ -136,7 +134,6 @@ export {
   writeTimeLimits,
 } from "./time-limits";
 export type { StoredTimeLimits, TimeLimitMinutes, TimeLimitSettings } from "./time-limits";
-export { journalRetiredProjectSettings } from "./retired-projects";
 
 export {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,

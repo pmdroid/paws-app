@@ -1,5 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { readConfigText, updateConfigText } from "./settings-store";
+import { updateConfigText } from "./settings-store";
 import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
 import { setMergeSettingsText, type StoredMerge } from "./merge";
@@ -67,10 +66,6 @@ const settingsSchema = z.strictObject({
 });
 
 export function parseAgentSettings(value: unknown): AgentSettings {
-  return parseSettings(value, false);
-}
-
-function parseSettings(value: unknown, legacyDefaults: boolean): AgentSettings {
   const settings = dropAccounts(settingsSchema.parse(value));
   const names = new Set<string>();
   for (const name of Object.keys(settings.presets ?? {})) {
@@ -85,8 +80,6 @@ function parseSettings(value: unknown, legacyDefaults: boolean): AgentSettings {
       throw new Error(`Preset ${name}: ${(error as Error).message}`, { cause: error });
     }
   }
-  // Presets alone must not newly validate the synthesized legacy role pair.
-  if (legacyDefaults) return settings;
   validateIndependence(settings.defaults);
   if (settings.defaults.reviewerFallback?.agent === settings.defaults.reviewer.agent)
     throw new Error("The reviewer fallback must use a different agent than the reviewer");
@@ -182,7 +175,7 @@ export function resolveAgentProfiles(
 
 export function parseAgentSettingsToml(
   text: string,
-  implementer: ImplementerName,
+  _implementer: ImplementerName,
 ): AgentSettings | null {
   if (!/^\s*\[agents\.(defaults|presets)(?:[.\]])/m.test(text)) return null;
   const parsed = Bun.TOML.parse(text) as {
@@ -192,72 +185,33 @@ export function parseAgentSettingsToml(
         reviewer?: Partial<AgentProfile>;
         reviewer_fallback?: Partial<AgentProfile>;
       };
-      presets?: Record<string, Partial<AgentProfile> & Partial<Record<keyof AgentPreset, object>>>;
+      presets?: Record<string, Partial<Record<keyof AgentPreset, object>>>;
     };
   };
   const agents = parsed.agents;
   const defaults = {
-    implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
-    reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
+    implementer: { model: null, ...agents?.defaults?.implementer },
+    reviewer: { model: null, ...agents?.defaults?.reviewer },
     ...(agents?.defaults?.reviewer_fallback
       ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
       : {}),
   };
-  return parseSettings(
-    {
-      defaults,
-      ...(agents?.presets === undefined
-        ? {}
-        : {
-            presets: Object.fromEntries(
-              Object.entries(agents.presets).map(([name, preset]) => [
-                name,
-                "implementer" in preset || "reviewer" in preset
-                  ? {
-                      implementer: { model: null, ...preset.implementer },
-                      reviewer: { model: null, ...preset.reviewer },
-                    }
-                  : legacyPreset({ model: null, ...preset }, defaults),
-              ]),
-            ),
-          }),
-    },
-    agents?.defaults === undefined,
-  );
-}
-
-function legacyPreset(profile: unknown, defaults: Record<string, unknown>): unknown {
-  const normal = (value: unknown) => {
-    const parsed = profileSchema.safeParse(value);
-    return parsed.success ? parsed.data : value;
-  };
-  const implementer = normal(profile);
-  const pair = { implementer, reviewer: normal(defaults.reviewer) };
-  try {
-    validateIndependence(pair as AgentPreset);
-    return pair;
-  } catch {
-    return defaults.reviewerFallback
-      ? { implementer, reviewer: normal(defaults.reviewerFallback) }
-      : pair;
-  }
-}
-
-const RETIRED_AGENT_PROJECTS = "agents.projects is no longer supported; using the global profiles";
-
-function hasRetiredAgentProjects(text: string): boolean {
-  if (!/^\s*\[agents\.projects(?:[.\]])/m.test(text)) return false;
-  const agents = (Bun.TOML.parse(text) as { agents?: { projects?: unknown } }).agents;
-  return agents?.projects !== undefined;
-}
-
-export function journalRetiredAgentProjects(
-  configPath: string,
-  journal: (line: string) => void,
-): void {
-  const file = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  if (hasRetiredAgentProjects(file) || hasRetiredAgentProjects(readConfigText(configPath)))
-    journal(RETIRED_AGENT_PROJECTS);
+  return parseAgentSettings({
+    defaults,
+    ...(agents?.presets === undefined
+      ? {}
+      : {
+          presets: Object.fromEntries(
+            Object.entries(agents.presets).map(([name, preset]) => [
+              name,
+              {
+                implementer: { model: null, ...preset.implementer },
+                reviewer: { model: null, ...preset.reviewer },
+              },
+            ]),
+          ),
+        }),
+  });
 }
 
 export function renderAgentSettingsText(current: string, input: AgentSettings): string {
@@ -268,7 +222,7 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
     .filter((line) => {
       const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
       if (heading?.[1]) section = heading[1].trim();
-      return !/^agents\.(defaults|projects|presets)(?:\.|$)/i.test(section);
+      return !/^agents\.(defaults|presets)(?:\.|$)/i.test(section);
     })
     .join("\n");
   const base = setImplementerText(retained, settings.defaults.implementer.agent).trimEnd();
@@ -302,7 +256,6 @@ export function writeAgentSettings(
   });
 }
 
-/** Render already-validated presets without materializing legacy role defaults. */
 function renderAgentPresetsText(settings: AgentSettings): string {
   return Object.entries(settings.presets ?? {})
     .flatMap(([name, preset]) =>
