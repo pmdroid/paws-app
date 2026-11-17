@@ -3,13 +3,10 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   emptyConfigFile,
-  journalRetiredAgentProjects,
   loadConfigFile,
   parseAgentSettings,
   readAgentSettings,
-  readConfigText,
   resolveAgentProfiles,
-  useSettingsStore,
   writeAgentSettings,
   type AgentSettings,
 } from "../src/config";
@@ -88,61 +85,6 @@ describe("agent settings config", () => {
     writeFileSync(path, '[agents]\nimplementer = "grok" # selected locally\n');
     writeAgentSettings(path, settings);
     expect(readFileSync(path, "utf8")).toContain('implementer = "claude" # selected locally');
-  });
-
-  test("a retired agents.projects table loads, uses the global profiles and journals once", () => {
-    const path = join(tempHome(), "config.toml");
-    writeAgentSettings(path, settings);
-    writeFileSync(
-      path,
-      `${readFileSync(path, "utf8")}\n[agents.projects."acme/app".reviewer]\nagent = "grok"\nmodel = "grok-4"\n`,
-    );
-    const config = loadConfigFile(path);
-    expect(readAgentSettings(config)).toEqual(settings);
-    expect(resolveAgentProfiles(config)).toEqual(settings.defaults);
-    const lines: string[] = [];
-    journalRetiredAgentProjects(path, (line) => lines.push(line));
-    expect(lines).toEqual(["agents.projects is no longer supported; using the global profiles"]);
-    writeAgentSettings(path, settings);
-    expect(readFileSync(path, "utf8")).not.toContain("agents.projects");
-    lines.length = 0;
-    journalRetiredAgentProjects(path, (line) => lines.push(line));
-    expect(lines).toEqual([]);
-  });
-
-  test("a retired agents.projects table in the file is journalled after the Settings page saved to the database", async () => {
-    const path = join(tempHome(), "config.toml");
-    writeFileSync(path, '[agents.projects."acme/app".reviewer]\nagent = "grok"\n');
-    let stored: string | null =
-      '[agents.defaults.implementer]\nagent = "claude"\n[agents.defaults.reviewer]\nagent = "codex"\n';
-    const saved = await useSettingsStore(path, {
-      read: async () => stored,
-      update: async (change) => {
-        stored = change(stored);
-      },
-    });
-    try {
-      expect(readConfigText(path)).not.toContain("agents.projects");
-      const lines: string[] = [];
-      journalRetiredAgentProjects(path, (line) => lines.push(line));
-      expect(lines).toEqual(["agents.projects is no longer supported; using the global profiles"]);
-    } finally {
-      saved.release();
-    }
-  });
-
-  test("a config with only a retired agents.projects table keeps the legacy defaults", () => {
-    const path = join(tempHome(), "config.toml");
-    writeFileSync(
-      path,
-      '[agents]\nimplementer = "grok"\n[agents.projects."acme/app".implementer]\nagent = "claude"\n',
-    );
-    const config = loadConfigFile(path);
-    expect(config.agentSettings).toBeUndefined();
-    expect(resolveAgentProfiles(config)).toEqual({
-      implementer: { agent: "grok", model: null },
-      reviewer: { agent: "codex", model: null },
-    });
   });
 
   test("validates model values and reviewer independence before writing", () => {

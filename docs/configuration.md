@@ -52,7 +52,7 @@ Each stage has its own limit, and `0` means the stage's time is not counted. The
 - **Fixes**: turns for CI, review comments, Closeout findings and merge conflicts. Fix rounds are already limited by count (`ci_fix_attempts`), so by default their time is not counted.
 - **Closeout**: Closeout's checks of a head.
 
-The limits are global: every item uses the same `[time_limits]`. A missing `implementation_minutes` is `PAWS_MAX_AWAKE_MS` (milliseconds), or 3 hours when that is unset, and missing fixes or Closeout limits count nothing. `config.toml` `[caps] max_awake_ms` is no longer read: when it is set and no `implementation_minutes` is saved, startup saves it once as `implementation_minutes`, rounded up to whole minutes, and journals that it was copied. A value above the 7-day maximum is saved as 7 days, and the journal line says it was shortened. Limits are fixed when an item is delegated and when a person asks for more time. Workspace › Queue and limits › Time limits reads and writes this table. An old `[time_limits.projects…]` table, in `config.toml` or saved by the Settings page, still loads; Paws ignores it, journals once at startup "time_limits.projects is no longer supported; using the global time limits", and the next save of time limits leaves it out.
+The limits are global: every item uses the same `[time_limits]`. A missing `implementation_minutes` is `PAWS_MAX_AWAKE_MS` (milliseconds), or 3 hours when that is unset, and missing fixes or Closeout limits count nothing. Limits are fixed when an item is delegated and when a person asks for more time. Workspace › Queue and limits › Time limits reads and writes this table.
 
 ### `[github_access]`
 
@@ -67,7 +67,7 @@ Workspace administrators can choose which external Linear agents' issue comments
 
 ### `[brief]`
 
-`[brief] template` replaces the built-in agent brief for every repository; Settings › Brief reads and writes it. An old `[brief.projects…]` table still loads; Paws ignores it, journals once at startup "brief.projects is no longer supported; using the global brief template", and the next save of the template leaves it out.
+`[brief] template` replaces the built-in agent brief for every repository; Settings › Brief reads and writes it.
 
 When a stage reaches its limit, Paws stops the agent or the Closeout run and asks in the Linear session, naming the stage ("Implementation reached its 3 h limit"): Continue or Stop, plus Merge once Closeout accepted a head. Continue after a stopped Closeout run checks the same head again. Accepted work in the merge queue or re-verification is not stopped. A task without a Linear session pauses when Closeout accepted a head, and fails otherwise.
 
@@ -189,11 +189,6 @@ Names contain 1–40 letters, digits, spaces, dots, underscores or hyphens.
 Matching ignores case and surrounding spaces; duplicate names under that comparison
 are refused. Quote TOML names containing spaces or dots.
 
-A preset in the older single-profile form (the profile fields directly
-under `[agents.presets.<name>]`) loads as that implementer with the default reviewer,
-or with the reviewer fallback when the default reviewer would match the implementer.
-The next save writes both roles.
-
 The Linear label groups are **Implementer** and **Reviewer**. A label in either
 group naming a preset applies the whole preset, both roles. Unknown names, and two
 labels naming different presets (`conflicting_presets`), return label problems and
@@ -216,10 +211,7 @@ The existing admin-protected `/api/workspace/agents` endpoint reads and writes
 a `presets` object keyed by name alongside `defaults`.
 
 Agent profiles are global: every repository uses the same implementer and
-reviewer. A `config.toml` that still has `[agents.projects…]` tables keeps
-loading; Paws ignores them and journals once at startup "agents.projects is no
-longer supported; using the global profiles". The next save of agent settings
-leaves them out.
+reviewer.
 
 ### Grok and OpenCode commands
 

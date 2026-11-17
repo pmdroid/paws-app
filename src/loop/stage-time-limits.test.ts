@@ -107,22 +107,3 @@ test("without [time_limits], max_awake_ms limits implementation and nothing else
   expect((await work(HOUR, "answer")).asked).toBe(true);
   expect(await question()).toStartWith("Implementation reached its 1 h limit");
 });
-
-test("an old per-project table loads and the item gets [time_limits]", async () => {
-  const toml = [
-    "[caps]",
-    "max_awake_ms = 3600000",
-    "[time_limits]",
-    "implementation_minutes = 120",
-    "fixes_minutes = 0",
-    '[time_limits.projects."proj-1"]',
-    "fixes_minutes = 30",
-  ].join("\n");
-  expect(resolveTimeLimits(parseConfigToml(toml), HOUR)).toEqual({
-    implementation: 2 * HOUR,
-    fixes: 0,
-    closeout: 0,
-  });
-  const { work } = await harness(toml);
-  expect((await work(90 * MINUTE, "conflict")).asked).toBeUndefined();
-});

@@ -100,9 +100,6 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
-  journalRetiredAgentProjects,
-  journalRetiredProjectSettings,
-  copyCapsToTimeLimits,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -607,13 +604,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
-    const copiedCaps = await copyCapsToTimeLimits(
-      paths.configFile,
-      loadConfigFile(paths.configFile),
-    );
-    if (copiedCaps !== null) journal(copiedCaps);
-    journalRetiredAgentProjects(paths.configFile, journal);
-    journalRetiredProjectSettings(paths.configFile, journal);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }

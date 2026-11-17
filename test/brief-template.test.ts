@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  journalRetiredProjectSettings,
-  loadConfigFile,
-  resolveBriefTemplate,
-  writeBriefTemplates,
-} from "../src/config";
+import { loadConfigFile, resolveBriefTemplate, writeBriefTemplates } from "../src/config";
 import {
   previewBriefValues,
   defaultBriefTemplate,
@@ -54,21 +49,13 @@ describe("brief templates", () => {
       ),
     ).toBe("Text {{conversation}}\n\nEnd");
   });
-  test("the saved workspace template resolves on each read and old repository tables are ignored", async () => {
+  test("the saved workspace template resolves on each read", async () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-test-"));
     try {
       const path = join(dir, "config.toml");
       await writeBriefTemplates(path, { template: "First" });
       expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
-      appendFileSync(path, '\n[brief.projects."a/b"]\ntemplate = "Override"\n');
-      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
-      const lines: string[] = [];
-      journalRetiredProjectSettings(path, (line) => lines.push(line));
-      expect(lines).toEqual([
-        "brief.projects is no longer supported; using the global brief template",
-      ]);
       await writeBriefTemplates(path, { template: "Second" });
-      expect(readFileSync(path, "utf8")).not.toContain("brief.projects");
       expect(resolveBriefTemplate(loadConfigFile(path))).toBe("Second");
     } finally {
       rmSync(dir, { recursive: true, force: true });

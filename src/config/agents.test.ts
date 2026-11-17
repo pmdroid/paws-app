@@ -116,43 +116,10 @@ test("a preset whose two roles match is refused with its name", () => {
   ).toThrow("Preset Twin: Implementer and reviewer must use different agents or different models");
   expect(() =>
     parseConfigToml(
-      '[agents.presets.Twin.implementer]\nagent = "codex"\n[agents.presets.Twin.reviewer]\nagent = "codex"\n',
+      renderAgentSettingsText("", { defaults: settings.defaults }) +
+        '[agents.presets.Twin.implementer]\nagent = "codex"\n[agents.presets.Twin.reviewer]\nagent = "codex"\n',
     ),
   ).toThrow("Preset Twin");
-});
-
-test("a legacy single-profile preset loads with the default reviewer, else the fallback", () => {
-  const defaults = renderAgentSettingsText("", { defaults: settings.defaults });
-  const legacy = (agent: string, model: string) =>
-    parseAgentSettingsToml(
-      `${defaults}\n[agents.presets.Old]\nagent = "${agent}"\nmodel = "${model}"\n`,
-      "claude",
-    )?.presets?.Old;
-  expect(legacy("claude", "opus")).toEqual({
-    implementer: { agent: "claude", model: "opus" },
-    reviewer: settings.defaults.reviewer,
-  });
-  expect(legacy("codex", "review")).toEqual({
-    implementer: { agent: "codex", model: "review" },
-    reviewer: settings.defaults.reviewerFallback,
-  });
-  expect(legacy("codex", " review ")).toEqual({
-    implementer: { agent: "codex", model: "review" },
-    reviewer: settings.defaults.reviewerFallback,
-  });
-  const noFallback = renderAgentSettingsText("", {
-    defaults: { implementer: settings.defaults.implementer, reviewer: settings.defaults.reviewer },
-  });
-  expect(() =>
-    parseAgentSettingsToml(
-      `${noFallback}\n[agents.presets.Old]\nagent = "codex"\nmodel = "review"\n`,
-      "claude",
-    ),
-  ).toThrow("Preset Old");
-  const text = `${defaults}\n[agents.presets.Old]\nagent = "claude"\nmodel = "opus"\n`;
-  const saved = renderAgentSettingsText(text, parseAgentSettingsToml(text, "claude")!);
-  expect(saved).toContain('[agents.presets."Old".reviewer]');
-  expect(saved).not.toMatch(/^\[agents\.presets\.Old\]$/m);
 });
 
 test("preset names and profiles are validated, including duplicates after trimming", () => {
@@ -175,30 +142,4 @@ test("preset names and profiles are validated, including duplicates after trimmi
       presets: { Bad: { ...settings.presets.Opus, implementer: { agent: "unknown", model: "x" } } },
     }),
   ).toThrow();
-});
-
-test("presets alone preserve legacy Codex defaults without weakening explicit profile validation", () => {
-  const legacy = '[agents]\nimplementer = "codex"\n';
-  const preset = '\n[agents.presets.Opus]\nagent = "claude"\nmodel = "opus"\n';
-  const before = resolveAgentProfiles(parseConfigToml(legacy));
-  const cfg = parseConfigToml(legacy + preset);
-  expect(resolveAgentProfiles(cfg)).toEqual(before);
-  expect(cfg.agentSettings?.presets?.Opus).toEqual({
-    implementer: { agent: "claude", model: "opus" },
-    reviewer: before.reviewer,
-  });
-  expect(resolveAgentProfiles(cfg, { implementer: "Opus" }).implementer).toEqual({
-    agent: "claude",
-    model: "opus",
-  });
-  expect(() =>
-    parseConfigToml(legacy + preset + '\n[agents.defaults.implementer]\nagent = "codex"\n'),
-  ).toThrow("Implementer and reviewer");
-  expect(() => parseAgentSettings(cfg.agentSettings)).toThrow("Implementer and reviewer");
-  expect(() =>
-    parseConfigToml(legacy + preset.replace('agent = "claude"', 'agent = "invalid"')),
-  ).toThrow();
-  expect(() => parseConfigToml(legacy + preset + preset.replace("Opus", "opus"))).toThrow(
-    "Duplicate preset",
-  );
 });
