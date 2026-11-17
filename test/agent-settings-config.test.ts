@@ -90,6 +90,9 @@ describe("agent settings config", () => {
   test("validates model values and reviewer independence before writing", () => {
     expect(() => parseAgentSettings({ ...settings, executable: "/tmp/evil" })).toThrow();
     expect(() => parseAgentSettings({ ...settings, projects: [] })).toThrow();
+    expect(() =>
+      parseAgentSettings({ defaults: { ...settings.defaults, accounts: ["work"] } }),
+    ).toThrow();
     const same = { agent: "codex", model: null };
     const invalid = {
       defaults: { implementer: same, reviewer: same },

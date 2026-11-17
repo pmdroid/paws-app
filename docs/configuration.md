@@ -33,7 +33,7 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 | `[queue]`       | `start_timeout_hours`, `max_running_per_owner`                                                                                                                                        | See [below](#queue).                                                                                                                                                                            |
 | `[database]`    | `url`                                                                                                                                                                                 | A Postgres URL, a secret; `PAWS_DATABASE_URL` wins. Without it Paws uses PGlite in `~/.paws/pglite`: see [Database](postgres.md).                                                               |
 
-Paws ignores the retired `[tracker] kind`, `[checkout] path`, `[github] auth` and `[update]` keys, so an older file that still has them loads.
+Paws ignores the retired `[tracker] kind`, `[checkout] path` and `[github] auth` keys, so an older file that still has them loads.
 
 Time limits count active work only. Waiting does not spend them: queued items, runner capacity waits, questions, pauses, usage limits, retry backoff, Closeout waiting on CI or a runner, and the merge queue all count zero. Time-limit messages report each stage's time separately from waiting.
 

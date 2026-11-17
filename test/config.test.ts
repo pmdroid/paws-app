@@ -196,13 +196,10 @@ describe("config", () => {
     );
   });
 
-  test("the retired [update] section from older installs is ignored, not fatal", () => {
-    const config = parseConfigToml(
-      '[agents]\nimplementer = "codex"\n\n[update]\nautomatic = false\n\n[merge]\norder = "queue"\n',
-    );
-    expect(config).toEqual(
-      parseConfigToml('[agents]\nimplementer = "codex"\n\n[merge]\norder = "queue"\n'),
-    );
+  test("an [update] section is an unknown section", () => {
+    expect(() =>
+      parseConfigToml('[agents]\nimplementer = "codex"\n\n[update]\nautomatic = false\n'),
+    ).toThrow("config.toml line 4 has an unknown section: update");
   });
 
   test("missing config.toml defaults the implementer to claude", () => {

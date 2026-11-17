@@ -126,12 +126,9 @@ describe("local agent settings API", () => {
     expect(bad?.status).toBe(400);
   });
 
-  test("a retired account list is accepted and dropped, so the saved file holds none", async () => {
+  test("a save with defaults.accounts is refused and the file is kept", async () => {
     const { options } = fixture();
-    writeFileSync(
-      options.configPath,
-      '[agents.defaults.accounts]\nimplementer = ["01J0000000000000000000000A"]\n',
-    );
+    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
     const saved = await handleAgentSettingsRequest(
       request(undefined, "PUT", {
         ...settings,
@@ -139,11 +136,8 @@ describe("local agent settings API", () => {
       }),
       options,
     );
-    expect(saved?.status).toBe(200);
-    expect(readFileSync(options.configPath, "utf8")).not.toContain("accounts");
-    expect(readAgentSettings(loadConfigFile(options.configPath)).defaults).not.toHaveProperty(
-      "accounts",
-    );
+    expect(saved?.status).toBe(400);
+    expect(readFileSync(options.configPath, "utf8")).toBe("[caps]\nmax_turns = 31\n");
   });
 
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
