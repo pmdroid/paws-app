@@ -37,7 +37,6 @@ export * from "./checkpoint-ref-cleanup";
 export * from "./question-handoffs";
 export * from "./policy-outage";
 export * from "./policy-block";
-export * from "./policy-runner-warning";
 export {
   connectPglite,
   connectPostgres,

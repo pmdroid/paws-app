@@ -200,11 +200,11 @@ const digest = (json: string) => createHash("sha256").update(json).digest("hex")
 const BEFORE_BATCHING = [
   [
     "2f750fbb65c05c2f6518854dee11eae6a2881158dbe305e314da337da02f95d6",
-    "0b540e9bc4aac8df5fa88dad4a8899acfb7c28ebcf3c38b9fd7af1518845bfff",
+    "f8feded8a588ddb4a29c6d8b81f0735a963ac32946bc15de5c41d3836efc9a35",
   ],
   [
     "f0d78f37588ef06e5177c9c981c92dac3ae474ada3390f789dda67acc7f45195",
-    "6d3cc225d6266f187614bc6c18cf5b926bf17b369e52ffba10f0f5ecc1902302",
+    "4b6f31efbea1ade588a02fadca023c9886ff14ed4393f8841d0c5eeb3f80d933",
   ],
 ];
 

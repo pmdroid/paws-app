@@ -645,7 +645,6 @@ import {
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
-import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
@@ -11072,14 +11071,6 @@ export class Orchestrator {
         : {}),
       closeoutPolicy: async () => {
         const load = await trustedPolicyFiles(repo, home, policyRoot);
-        // The runner parses the policy with its own release: say which keys it would leave out.
-        if (load.ok && !load.absent)
-          await checkPolicyRunners(this.store, {
-            repository: `${repository.owner}/${repository.repo}`,
-            digest: load.digest,
-            files: load.files,
-            now: this.now(),
-          });
         return load.ok && !load.absent
           ? {
               ...load,

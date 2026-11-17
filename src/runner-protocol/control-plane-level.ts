@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runnerVersionAtLeast } from "./policy-keys";
+import { runnerVersionAtLeast } from "./version-compare";
 import * as versions from "./versions";
 import type { RunnerVersion } from "./versions";
 

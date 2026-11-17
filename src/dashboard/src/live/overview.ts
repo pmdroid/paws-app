@@ -55,7 +55,6 @@ import {
   queueOf,
   readerOutbox,
   readIntake,
-  readPolicyRunnerWarnings,
   readPushOutages,
   runState,
   textOr,
@@ -153,8 +152,6 @@ export async function readOverview(
     linearBudget: intake.linearBudget ?? null,
     linearWebhook: intake.linearWebhook ?? null,
     pushOutages: (await readPushOutages(store, options)).pushOutages ?? [],
-    policyRunnerWarnings:
-      (await readPolicyRunnerWarnings(store, options)).policyRunnerWarnings ?? [],
     mergeQueueCount: listed.filter(
       (record) =>
         record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
@@ -174,7 +171,6 @@ export function emptyOverview(now = new Date()): OverviewResponse {
     linearBudget: null,
     linearWebhook: null,
     pushOutages: [],
-    policyRunnerWarnings: [],
     mergeQueueCount: 0,
     setup: { github: false, runner: false, agent: false, delegated: false },
   };

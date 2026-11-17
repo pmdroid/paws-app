@@ -3,7 +3,7 @@ import { z } from "zod";
 import { journalCaught } from "../journal";
 import { RunnerAccountSchema, runnerAccountAgentUnsupported } from "./accounts";
 import { RUNNER_INPUT_CHUNK_BYTES } from "./inputs";
-import { runnerVersionAtLeast } from "./policy-keys";
+import { runnerVersionAtLeast } from "./version-compare";
 import { RunnerProfileSchema, type SignedRunnerCommand } from "./commands";
 import { canonicalJson, openSignedPayload, signPayload } from "./signature";
 import { RETRO_RUNNER_VERSION } from "./versions";

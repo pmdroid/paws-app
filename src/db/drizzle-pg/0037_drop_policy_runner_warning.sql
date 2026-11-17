@@ -1,0 +1,1 @@
+DROP TABLE "policy_runner_warning" CASCADE;

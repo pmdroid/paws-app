@@ -639,14 +639,6 @@ export const runnerSessionMove = pgTable(
   () => [check("runner_session_move_check_1", sql`status IN ('moving','waiting','stayed')`)],
 );
 
-export const policyRunnerWarning = pgTable("policy_runner_warning", {
-  repository: text().primaryKey(),
-  policyDigest: text("policy_digest").notNull(),
-  runnerVersion: text("runner_version").notNull(),
-  keys: text().notNull(),
-  checkedAt: bigint("checked_at", { mode: "number" }).notNull(),
-});
-
 export const runnerLogin = pgTable(
   "runner_login",
   {

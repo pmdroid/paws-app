@@ -975,7 +975,6 @@ export interface OverviewResponse {
   linearBudget: StatusLinearBudget | null;
   linearWebhook: StatusLinearWebhook | null;
   pushOutages: StatusPushOutage[];
-  policyRunnerWarnings: StatusPolicyRunnerWarning[];
   mergeQueueCount: number;
   setup: OverviewSetup;
 }
@@ -1010,7 +1009,6 @@ export function parseOverviewResponse(input: unknown): OverviewParseResult {
         linearBudget: nullable("linearBudget", readLinearBudget),
         linearWebhook: nullable("linearWebhook", readLinearWebhook),
         pushOutages: list("pushOutages", readPushOutage),
-        policyRunnerWarnings: list("policyRunnerWarnings", readPolicyRunnerWarning),
         mergeQueueCount: count(body, "mergeQueueCount", path),
         setup: readOverviewSetup(body.setup, `${path}.setup`),
       };
@@ -1233,7 +1231,6 @@ export interface MergeQueueResponse {
   history: StatusMergeOutcome[];
   issues: MergeQueueIssue[];
   pushOutages: StatusPushOutage[];
-  policyRunnerWarnings: StatusPolicyRunnerWarning[];
 }
 
 export type MergeQueueParseResult =
@@ -1256,7 +1253,6 @@ export function parseMergeQueueResponse(input: unknown): MergeQueueParseResult {
         history: list("history", (entry, at) => readMergeOutcome(entry, at, head.project.repo)),
         issues: list("issues", readMergeQueueIssue),
         pushOutages: list("pushOutages", readPushOutage),
-        policyRunnerWarnings: list("policyRunnerWarnings", readPolicyRunnerWarning),
       };
     },
     "contract.parseMergeQueueResponse",
@@ -1414,20 +1410,6 @@ export interface StatusPushOutage {
   installationUrl: string | null;
 }
 
-/**
- * `repository`'s Closeout policy uses keys the lowest online runner release does not know. That
- * runner leaves them out and runs the rest of the policy.
- */
-export interface StatusPolicyRunnerWarning {
-  repository: string;
-  policyDigest: string;
-  /** The lowest runner release online when Paws checked. */
-  runnerVersion: string;
-  /** Each key that runner does not know, with the first release that does. */
-  keys: Array<{ key: string; needs: string }>;
-  checkedAt: string;
-}
-
 export interface StatusLinearWebhook {
   warning: string;
   fix: string;
@@ -1543,23 +1525,6 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
     seen.add(value);
   }
   return seen;
-}
-
-function readPolicyRunnerWarning(input: unknown, path: string): StatusPolicyRunnerWarning {
-  const body = object(input, path);
-  return {
-    repository: text(body, "repository", path),
-    policyDigest: text(body, "policyDigest", path),
-    runnerVersion: text(body, "runnerVersion", path),
-    keys: array(body, "keys", path).map((entry, index) => {
-      const key = object(entry, `${path}.keys[${index}]`);
-      return {
-        key: text(key, "key", `${path}.keys[${index}]`),
-        needs: text(key, "needs", `${path}.keys[${index}]`),
-      };
-    }),
-    checkedAt: dateString(body, "checkedAt", path),
-  };
 }
 
 function readMergedTimes(input: unknown, path: string): StatusMergedTimes {
