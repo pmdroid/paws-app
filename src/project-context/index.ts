@@ -89,3 +89,21 @@ export {
   type ContextSummarizer,
   type ContextSummarizerInput,
 } from "./compact";
+export {
+  CONTEXT_SESSION_NOTICE,
+  CONTEXT_SESSION_UNAVAILABLE,
+  PROJECT_SESSION_DEFAULTS,
+  checkContextDelivery,
+  createLinearContextAccess,
+  createProjectSessionContext,
+  inspectSessionContext,
+  prepareSessionContext,
+  recordWorkItemContext,
+  type ContextConsumerRequest,
+  type ContextDeliveryCheck,
+  type ProjectSessionContext,
+  type ProjectSessionInput,
+  type SessionContext,
+  type SessionContextInspection,
+  type WorkItemContextEntry,
+} from "./session";

@@ -220,5 +220,6 @@ export {
   renderWorkContext,
   type BriefValues,
 } from "./brief-template";
+export { renderWorkBrief } from "./render-brief";
 
 export { quotaSignal, usageLimitCause, usageLimitNotice, type QuotaSignal } from "./quota";

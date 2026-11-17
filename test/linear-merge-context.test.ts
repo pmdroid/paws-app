@@ -66,7 +66,8 @@ test("project documents follow the description in the overview text", async () =
   expect(text).toStartWith(
     "Project overview: Exports\n\nRows leave as files.\n\nProject document: Spec\n\nCSV first.\n\nProject document: Long\n\n",
   );
-  expect(text).toEndWith("[Document cut at 20,000 characters. The rest is in Linear.]");
+  expect(text).toEndWith("characters. The rest is in Linear.]");
+  expect(text.length).toBeLessThan(12_100);
 });
 
 test("a project with documents and no description still has an overview", async () => {

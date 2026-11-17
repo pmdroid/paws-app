@@ -87,6 +87,7 @@ export * from "./settings";
 export * from "./linear-context";
 export * from "./project-context";
 export * from "./project-context-summary";
+export * from "./project-context-session";
 export * from "./linear-sessions";
 export * from "./task-requests";
 export * from "./task-blocks";

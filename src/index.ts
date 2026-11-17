@@ -248,6 +248,7 @@ import {
   POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
+import { createLinearContextAccess, createProjectSessionContext } from "./project-context";
 import {
   acceptGitHubDelivery,
   type PullCommentFilter,
@@ -1737,6 +1738,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         closeoutPolicyRoot: ({ owner, repo }) =>
           closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
+        projectContext:
+          members && linear?.projectContext
+            ? createProjectSessionContext({
+                db: store,
+                access: createLinearContextAccess(members),
+                reads: linear.projectContext,
+              })
+            : null,
         linearTaskModes: true,
         remoteExecution,
         ...(placeOnRunner
