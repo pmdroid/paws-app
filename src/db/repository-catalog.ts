@@ -83,7 +83,7 @@ export function teamRepositoryAllowedSql(
   teamSql: string,
   repositorySql: string,
 ): string {
-  return `(EXISTS (SELECT 1 FROM workspace_repository scope_link WHERE scope_link.workspace_id = ${workspaceSql} AND scope_link.team_id = ${teamSql} AND lower(scope_link.repository) = ${repositorySql}) OR (NOT EXISTS (SELECT 1 FROM workspace_repository scope_team WHERE scope_team.workspace_id = ${workspaceSql} AND scope_team.team_id = ${teamSql}) AND EXISTS (SELECT 1 FROM repository_catalog scope_catalog WHERE scope_catalog.repository = ${repositorySql})))`;
+  return `(EXISTS (SELECT 1 FROM workspace_repository scope_link WHERE scope_link.workspace_id = ${workspaceSql} AND scope_link.team_id = ${teamSql} AND lower(scope_link.repository) = ${repositorySql}) OR (COALESCE(${teamSql}, '') NOT LIKE 'repo:%' AND NOT EXISTS (SELECT 1 FROM workspace_repository scope_team WHERE scope_team.workspace_id = ${workspaceSql} AND scope_team.team_id = ${teamSql}) AND EXISTS (SELECT 1 FROM repository_catalog scope_catalog WHERE scope_catalog.repository = ${repositorySql})))`;
 }
 
 export async function listTeamRepositories(store: Db, sessionId: string): Promise<string[]> {
@@ -124,6 +124,17 @@ export function* listRepositoryCandidatesSteps(
   configured: readonly RepositoryBinding[],
 ): Steps<RepositoryBinding[]> {
   const teamLinks = sessionId ? yield* listTeamRepositoriesSteps(q, sessionId) : [];
+  if (sessionId && teamLinks.length === 0) {
+    const { linearSession } = q.t;
+    const session = yield* q.one(
+      q.orm
+        .select({ teamId: linearSession.teamId })
+        .from(linearSession)
+        .where(eq(linearSession.sessionId, sessionId))
+        .limit(1),
+    );
+    if (session?.teamId?.startsWith("repo:")) return [];
+  }
   const candidates = [
     ...configured,
     ...(yield* listRepositoryCatalogSteps(q)),
@@ -145,7 +156,7 @@ export function* listRepositoryCandidatesSteps(
 
 /**
  * Whether the team may use this repository (`owner/repo` in lower case): the team maps it, or the
- * team maps none and it is in the catalog.
+ * team maps none, is not a repository team (`repo:`) and the repository is in the catalog.
  */
 export function* teamRepositoryAllowedSteps(
   q: Q,
@@ -166,6 +177,7 @@ export function* teamRepositoryAllowedSteps(
       .limit(1),
   );
   if (mapped !== undefined) return true;
+  if (teamId.startsWith("repo:")) return false;
   const anyMapped = yield* q.one(
     q.orm
       .select({ one: sql`1` })
