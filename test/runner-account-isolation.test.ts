@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -41,38 +42,26 @@ const b: RunnerAccount = {
   bindingId: "01JBINDINGB000000000000000",
 };
 
-const codexProvider = `
-const input = require("node:readline").createInterface({ input: process.stdin });
-const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
-input.on("line", (line) => {
-  const request = JSON.parse(line);
-  if (request.method === "initialize") send({ id: request.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [{ id: "chat-gpt-device-code", name: "ChatGPT" }] } });
-  else if (request.method === "authenticate") {
-    require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json", JSON.stringify({ token: process.env.PAWS_FIXTURE_TOKEN ?? require("node:fs").readFileSync(process.env.HOME + "/../../token", "utf8") }));
-    send({ id: request.id, result: {} });
-  }
-});
-`;
+function seedCodex(root: string, account: RunnerAccount, token: string) {
+  const home = openRunnerAccountHome(root, account, "codex", { signIn: true });
+  publishRunnerAccountHome(home, "01J00000000000000000000009", () => {
+    writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify({ token }));
+    markRunnerAccountSignedIn(home, account, "codex");
+  });
+  return home;
+}
 
-async function signIn(
-  root: string,
-  account: RunnerAccount,
-  token: string,
-  agent: "codex" | "opencode" = "codex",
-) {
-  const home = openRunnerAccountHome(root, account, agent, { signIn: true });
-  writeFileSync(join(root, ".paws-accounts", "token"), token);
-  const provider = join(root, `${agent}-provider.js`);
+async function signIn(root: string, account: RunnerAccount, token: string) {
+  const home = openRunnerAccountHome(root, account, "opencode", { signIn: true });
+  const provider = join(root, "opencode-provider.js");
+  const seen = join(root, "provider-env.json");
   writeFileSync(
     provider,
-    agent === "codex"
-      ? codexProvider
-      : `const fs = require("node:fs"); fs.mkdirSync(process.env.XDG_DATA_HOME + "/opencode", { recursive: true }); fs.writeFileSync(process.env.XDG_DATA_HOME + "/opencode/auth.json", ${JSON.stringify(JSON.stringify({ token }))}); process.exit(0);`,
+    `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env)); fs.mkdirSync(process.env.XDG_DATA_HOME + "/opencode", { recursive: true }); fs.writeFileSync(process.env.XDG_DATA_HOME + "/opencode/auth.json", ${JSON.stringify(JSON.stringify({ token }))}); process.exit(0);`,
   );
   const updates: RunnerLoginUpdate[] = [];
-  const envs: NodeJS.ProcessEnv[] = [];
   await runProviderLogin({
-    agent,
+    agent: "opencode",
     home,
     signal: AbortSignal.timeout(5000),
     command: [process.execPath, provider],
@@ -82,64 +71,90 @@ async function signIn(
         signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
       );
     },
-    async loginCommand(_command, _args, env) {
-      envs.push(env);
-      return { exitCode: 0, stdout: "Logged in", stderr: "" };
-    },
     account: {
       publish: (write) =>
         publishRunnerAccountHome(home, "01J00000000000000000000009", () => {
           write();
-          markRunnerAccountSignedIn(home, account, agent);
+          markRunnerAccountSignedIn(home, account, "opencode");
         }),
     },
   });
-  rmSync(join(root, ".paws-accounts", "token"));
-  return { home, state: updates.at(-1)?.state, envs };
+  const env = JSON.parse(readFileSync(seen, "utf8")) as NodeJS.ProcessEnv;
+  rmSync(seen);
+  return { home, state: updates.at(-1)?.state, env };
 }
+
+const auth = (home: string) => join(home, ".local", "share", "opencode", "auth.json");
 
 test("signing in account B leaves account A's credentials and sessions untouched", async () => {
   const root = temporary("paws-two-accounts-");
   const first = await signIn(root, a, "synthetic-token-a");
   expect(first.state).toBe("connected");
-  writeFileSync(join(first.home, ".codex", "sessions", "rollout-a.jsonl"), "{}\n");
+  writeFileSync(join(first.home, ".local", "share", "opencode", "opencode.db"), "sessions");
   const second = await signIn(root, b, "synthetic-token-b");
   expect(second.state).toBe("connected");
-  expect(second.envs[0]!.HOME!.startsWith(join(second.home, ".paws-login-"))).toBe(true);
-  expect(second.envs[0]!.CODEX_HOME).toBe(join(second.envs[0]!.HOME!, ".codex"));
-  expect(second.envs[0]!.XDG_DATA_HOME).toBe(join(second.envs[0]!.HOME!, ".local", "share"));
+  expect(second.env.HOME!.startsWith(join(second.home, ".paws-login-"))).toBe(true);
+  expect(second.env.XDG_DATA_HOME).toBe(join(second.env.HOME!, ".local", "share"));
 
-  expect(JSON.parse(readFileSync(join(first.home, ".codex", "auth.json"), "utf8"))).toEqual({
+  expect(JSON.parse(readFileSync(auth(first.home), "utf8"))).toEqual({
     token: "synthetic-token-a",
   });
-  expect(JSON.parse(readFileSync(join(second.home, ".codex", "auth.json"), "utf8"))).toEqual({
+  expect(JSON.parse(readFileSync(auth(second.home), "utf8"))).toEqual({
     token: "synthetic-token-b",
   });
-  expect(readdirSync(join(first.home, ".codex", "sessions"))).toEqual(["rollout-a.jsonl"]);
-  expect(readdirSync(join(second.home, ".codex", "sessions"))).toEqual([]);
-  expect(readdirSync(root).filter((name) => name.startsWith(".codex"))).toEqual([]);
+  expect(readdirSync(join(first.home, ".local", "share", "opencode")).sort()).toEqual([
+    "auth.json",
+    "opencode.db",
+  ]);
+  expect(readdirSync(join(second.home, ".local", "share", "opencode"))).toEqual(["auth.json"]);
   expect(runnerAccountBindings(root)).toEqual([
-    { bindingId: a.bindingId, agent: "codex" },
-    { bindingId: b.bindingId, agent: "codex" },
+    { bindingId: a.bindingId, agent: "opencode" },
+    { bindingId: b.bindingId, agent: "opencode" },
   ]);
   for (const home of [first.home, second.home])
     expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
 }, 20_000);
 
+test("Codex never signs in on the runner and publishes nothing", async () => {
+  const root = temporary("paws-codex-account-");
+  const home = openRunnerAccountHome(root, a, "codex", { signIn: true });
+  const updates: RunnerLoginUpdate[] = [];
+  await runProviderLogin({
+    agent: "codex",
+    home,
+    signal: AbortSignal.timeout(5000),
+    command: [process.execPath, "-e", "process.exit(0)"],
+    emit: (update) => updates.push(update),
+    answer: async () => ({ answer: "{}" }),
+    account: {
+      publish: () => {
+        throw new Error("A Codex sign-in on the runner must not publish");
+      },
+    },
+  });
+  expect(updates.map((update) => update.state)).toEqual(["failed"]);
+  expect(readdirSync(join(home, ".codex"))).toEqual(["sessions"]);
+  expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
+  expect(runnerAccountBindings(root)).toEqual([]);
+});
+
 test("a cancelled first sign-in leaves the binding unheld and writes nothing", async () => {
   const root = temporary("paws-cancelled-account-");
-  const home = openRunnerAccountHome(root, a, "codex", { signIn: true });
+  const home = openRunnerAccountHome(root, a, "opencode", { signIn: true });
   const updates: RunnerLoginUpdate[] = [];
   const abort = new AbortController();
   const provider = join(root, "slow.js");
   writeFileSync(provider, "setInterval(() => {}, 1000);");
   const login = runProviderLogin({
-    agent: "codex",
+    agent: "opencode",
     home,
     signal: abort.signal,
     command: [process.execPath, provider],
     emit: (update) => updates.push(update),
-    answer: async () => ({ answer: "{}" }),
+    answer: (_id, signal) =>
+      new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      ),
     account: {
       publish: () => {
         throw new Error("A cancelled sign-in must not publish");
@@ -149,39 +164,36 @@ test("a cancelled first sign-in leaves the binding unheld and writes nothing", a
   setTimeout(() => abort.abort(), 100);
   await login;
   expect(updates.at(-1)!.state).toBe("failed");
-  expect(readdirSync(join(home, ".codex"))).toEqual(["sessions"]);
+  expect(existsSync(join(home, ".local", "share", "opencode"))).toBe(false);
   expect(runnerAccountBindings(root)).toEqual([]);
-  expect(() => openRunnerAccountHome(root, a, "codex")).toThrow(/not signed in/);
-}, 20_000);
-
-test("an OpenCode account signs in through a staged XDG data folder", async () => {
-  const root = temporary("paws-opencode-account-");
-  const { home, state } = await signIn(root, a, "synthetic-opencode-token", "opencode");
-  expect(state).toBe("connected");
-  expect(
-    JSON.parse(readFileSync(join(home, ".local", "share", "opencode", "auth.json"), "utf8")),
-  ).toEqual({ token: "synthetic-opencode-token" });
-  expect(runnerAccountBindings(root)).toEqual([{ bindingId: a.bindingId, agent: "opencode" }]);
+  expect(() => openRunnerAccountHome(root, a, "opencode")).toThrow(/not signed in/);
 }, 20_000);
 
 test("a credentials folder that links into another account fails the sign-in", async () => {
   const root = temporary("paws-linked-account-");
   const first = await signIn(root, a, "synthetic-token-a");
-  const victim = join(first.home, ".codex", "auth.json");
-  const home = openRunnerAccountHome(root, b, "codex", { signIn: true });
-  rmSync(join(home, ".codex"), { recursive: true });
-  symlinkSync(join(first.home, ".codex"), join(home, ".codex"));
+  const victim = auth(first.home);
+  const home = openRunnerAccountHome(root, b, "opencode", { signIn: true });
+  symlinkSync(
+    join(first.home, ".local", "share", "opencode"),
+    join(home, ".local", "share", "opencode"),
+  );
   const provider = join(root, "provider.js");
-  writeFileSync(provider, codexProvider);
+  writeFileSync(
+    provider,
+    `const fs = require("node:fs"); fs.mkdirSync(process.env.XDG_DATA_HOME + "/opencode", { recursive: true }); fs.writeFileSync(process.env.XDG_DATA_HOME + "/opencode/auth.json", "{}"); process.exit(0);`,
+  );
   const updates: RunnerLoginUpdate[] = [];
   await runProviderLogin({
-    agent: "codex",
+    agent: "opencode",
     home,
     signal: AbortSignal.timeout(5000),
     command: [process.execPath, provider],
     emit: (update) => updates.push(update),
-    answer: async () => ({ answer: "{}" }),
-    loginCommand: async () => ({ exitCode: 0, stdout: "Logged in", stderr: "" }),
+    answer: (_id, signal) =>
+      new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      ),
     account: {
       publish: (write) => publishRunnerAccountHome(home, "01J00000000000000000000009", write),
     },
@@ -251,8 +263,8 @@ async function check(root: string, account?: RunnerAccount, agent: "codex" | "cl
 
 test("checks run with their binding's home and never see another account's secrets", async () => {
   const root = temporary("paws-account-check-");
-  const { home } = await signIn(root, a, "synthetic-token-a");
-  await signIn(root, b, "synthetic-token-b");
+  const home = seedCodex(root, a, "synthetic-token-a");
+  seedCodex(root, b, "synthetic-token-b");
   const named = await check(root, a);
   expect(named.result.login?.authenticated).toBe(true);
   const env = named.reads[0]!;
