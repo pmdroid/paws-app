@@ -48,6 +48,7 @@ const FIX = {
   git: "Install git and put it on PATH.",
   bun: "Install Bun 1.4 or newer and run this process with bun.",
   home: "Create ~/.paws and make sure this user can write it.",
+  database: 'See "A database from an older Paws" in docs/postgres.md.',
   linear: "Open Paws in your browser and connect Linear.",
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
@@ -118,6 +119,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   );
   if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
+  if (facts.databaseRefused)
+    checks.push(check("database", false, facts.databaseRefused, FIX.database));
   if (facts.secrets) checks.push(secretsCheck(facts.secrets));
   const overridden = facts.overriddenSections ?? [];
   if (overridden.length > 0) checks.push(overriddenSectionsNote(overridden));

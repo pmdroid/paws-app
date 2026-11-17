@@ -1,1 +1,0 @@
-DROP TABLE "candidate_paths" CASCADE;

@@ -1,2 +1,0 @@
-ALTER TABLE "work_item_merge_settings" DROP CONSTRAINT "work_item_merge_settings_check_2";--> statement-breakpoint
-ALTER TABLE "work_item_merge_settings" ADD CONSTRAINT "work_item_merge_settings_check_2" CHECK (main_moved IN ('overlap','green','ci','closeout'));

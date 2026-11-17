@@ -29,7 +29,7 @@ import { drizzle as drizzlePglite, type PgliteDatabase } from "drizzle-orm/pglit
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import { PG_MIGRATIONS_FOLDER } from "./migrate";
 import * as pgSchema from "./schema-pg";
-import type { PostgresConnection } from "./db-check";
+import { refuseOlderDatabase, type PostgresConnection } from "./db-check";
 import { postgresDb, type PgDb } from "./db";
 
 const runtimeOptions = await pgliteOptions();
@@ -37,6 +37,16 @@ const runtimeOptions = await pgliteOptions();
 export type PostgresDb = BunSQLDatabase<typeof pgSchema> & { $client: SQL };
 
 export type PgliteDb = PgliteDatabase<typeof pgSchema> & { $client: PGlite };
+
+async function migratePostgres(db: PostgresDb): Promise<void> {
+  await refuseOlderDatabase(db);
+  await migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+}
+
+async function migrateOwnPglite(db: PgliteDb): Promise<void> {
+  await refuseOlderDatabase(db);
+  await migratePglite(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+}
 
 export function openPostgres(url: string): PostgresDb {
   const max = Number(new URL(url).searchParams.get("max") ?? 10);
@@ -48,7 +58,7 @@ export function connectPostgres(url: string): PostgresConnection {
   const db = openPostgres(url);
   return {
     db,
-    migrate: () => migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER }),
+    migrate: () => migratePostgres(db),
     close: () => db.$client.close(),
   };
 }
@@ -94,7 +104,7 @@ export function connectPglite(dir: string): PostgresConnection {
     const db = drizzlePglite({ client, schema: pgSchema });
     return {
       db,
-      migrate: () => migratePglite(db, { migrationsFolder: PG_MIGRATIONS_FOLDER }),
+      migrate: () => migrateOwnPglite(db),
       close: () => client.close().finally(release),
     };
   } catch (error) {
@@ -107,7 +117,7 @@ export async function openPglite(dir: string): Promise<PgliteDb> {
   const client = new PGlite(dir, runtimeOptions);
   const db = drizzlePglite({ client, schema: pgSchema });
   try {
-    await migratePglite(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+    await migrateOwnPglite(db);
   } catch (error) {
     await client.close();
     throw error;
@@ -133,7 +143,7 @@ export async function openPawsStore(input: {
   }
   const db = openPostgres(input.url);
   try {
-    await migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+    await migratePostgres(db);
   } catch (error) {
     await db.$client.close();
     throw error;

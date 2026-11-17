@@ -1,1 +1,0 @@
-ALTER TABLE "member_vm" DROP CONSTRAINT "member_vm_workspace_id_user_id_unique";

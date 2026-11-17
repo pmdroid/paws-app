@@ -1,1 +1,0 @@
-ALTER TABLE "runner_enrollment" ADD COLUMN "admin_repositories" jsonb;

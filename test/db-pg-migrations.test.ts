@@ -1,21 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
+import { citext } from "@electric-sql/pglite/contrib/citext";
 import { getTableName } from "drizzle-orm";
-import { migrate } from "drizzle-orm/pglite/migrator";
-import {
-  PG_MIGRATIONS_FOLDER,
-  getOpenFindingsLineSteps,
-  getPublishedHeadSteps,
-  linearActivitiesListedAtSteps,
-  pgSchema,
-  postgresDb,
-  withOpenFindingsSteps,
-} from "../src/db";
+import { readMigrationFiles } from "drizzle-orm/migrator";
+import { openPawsStore, PG_MIGRATIONS_FOLDER, pgSchema, UnknownDatabaseError } from "../src/db";
 import { tempHome } from "./helpers";
-import { pgliteDb } from "./pglite";
 
 const ROOT = new URL("..", import.meta.url).pathname;
+const BASELINE = readMigrationFiles({ migrationsFolder: PG_MIGRATIONS_FOLDER })[0]!;
+const OLDER = "This database was created by an older Paws. Reset it to start this version.";
+const NEWER = "This database was created by a newer Paws. Start that version or reset it.";
 
 function drizzleKit(home: string) {
   cpSync(PG_MIGRATIONS_FOLDER, join(home, "drizzle-pg"), { recursive: true });
@@ -39,435 +35,116 @@ function drizzleKit(home: string) {
     .sort();
 }
 
-function migrationsBefore(tag: string): string {
-  const out = join(tempHome(), "migrations");
-  cpSync(PG_MIGRATIONS_FOLDER, out, { recursive: true });
-  const path = join(out, "meta/_journal.json");
-  const journal = JSON.parse(readFileSync(path, "utf8")) as { entries: { tag: string }[] };
-  const index = journal.entries.findIndex((entry) => entry.tag.endsWith(`_${tag}`));
-  expect(index).toBeGreaterThan(0);
-  journal.entries = journal.entries.slice(0, index);
-  writeFileSync(path, JSON.stringify(journal));
-  return out;
+async function withPglite<T>(dir: string, work: (client: PGlite) => Promise<T>): Promise<T> {
+  const client = new PGlite(dir, { extensions: { citext } });
+  try {
+    return await work(client);
+  } finally {
+    await client.close();
+  }
+}
+
+async function unknownDatabase(createdAt: number): Promise<string> {
+  const home = tempHome();
+  await withPglite(join(home, "pglite"), (client) =>
+    client.exec(`
+      CREATE SCHEMA drizzle;
+      CREATE TABLE drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint);
+      INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('unknown', ${createdAt});
+    `),
+  );
+  return home;
+}
+
+async function contents(home: string) {
+  return withPglite(join(home, "pglite"), async (client) => ({
+    migrations: (await client.query("SELECT hash, created_at FROM drizzle.__drizzle_migrations"))
+      .rows,
+    tables: (
+      await client.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'",
+      )
+    ).rows[0]!.n,
+  }));
+}
+
+async function spawnPaws(home: string, args: string[]) {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    PAWS_HOME: home,
+    PAWS_PORT: "0",
+    PAWS_HOST: "127.0.0.1",
+  };
+  for (const key of Object.keys(env))
+    if (
+      key.startsWith("LINEAR_") ||
+      key === "PAWS_EXECUTION" ||
+      key === "PAWS_PUBLIC_URL" ||
+      key === "PAWS_DATABASE_URL"
+    )
+      delete env[key];
+  const proc = Bun.spawn(["bun", "src/index.ts", ...args], {
+    cwd: ROOT,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+  return { stderr, code };
 }
 
 describe("Postgres drizzle-kit migrations", () => {
-  test("the migrations apply to a fresh PGlite database, once each, with every table", async () => {
-    const db = await pgliteDb();
-    try {
-      await migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-      const applied = await db.$client.query("SELECT hash FROM drizzle.__drizzle_migrations");
-      const journal = JSON.parse(
-        readFileSync(join(PG_MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
-      ) as { entries: unknown[] };
-      expect(applied.rows).toHaveLength(journal.entries.length);
-      const tables = await db.$client.query<{ table_name: string }>(
+  test("a fresh database migrates to the single baseline with every table", async () => {
+    const pgliteDir = join(tempHome(), "pglite");
+    const opened = await openPawsStore({ url: null, pgliteDir });
+    await opened.close();
+    await withPglite(pgliteDir, async (client) => {
+      const applied = await client.query("SELECT hash FROM drizzle.__drizzle_migrations");
+      expect(applied.rows).toEqual([{ hash: BASELINE.hash }]);
+      const tables = await client.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
       );
       const expected = Object.values(pgSchema).map((table) => getTableName(table));
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual(expected.sort());
-    } finally {
-      await db.$client.close();
-    }
-  });
-
-  test("a NOCASE column is citext, so it compares case-insensitively", async () => {
-    const db = await pgliteDb();
-    try {
-      const columns = await db.$client.query<{ table_name: string }>(
-        "SELECT table_name FROM information_schema.columns WHERE column_name = 'repository' AND udt_name = 'citext'",
+      const triggers = await client.query<{ tgname: string }>(
+        "SELECT tgname FROM pg_trigger WHERE tgrelid = 'work_item'::regclass AND NOT tgisinternal ORDER BY tgname",
       );
-      expect(columns.rows.map((row) => row.table_name).sort()).toEqual([
-        "improvement",
-        "retro_collection_lock",
-        "retro_coverage_gap",
-        "retro_evidence",
-        "retro_item",
-        "retro_repository",
-        "retro_watermark",
+      expect(triggers.rows.map((row) => row.tgname)).toEqual([
+        "runner_setup_hold_ends",
+        "runner_setup_resume_ends",
       ]);
-      const equal = await db.$client.query<{ equal: boolean }>(
-        "SELECT 'Org/Repo'::citext = 'org/repo' AS equal",
-      );
+      const sequence = await client.query("SELECT nextval('job_activation_seq') AS n");
+      expect(sequence.rows).toHaveLength(1);
+      const equal = await client.query("SELECT 'Org/Repo'::citext = 'org/repo' AS equal");
       expect(equal.rows).toEqual([{ equal: true }]);
-    } finally {
-      await db.$client.close();
-    }
-  });
-
-  test("journal starts with 0000_baseline", () => {
-    const journal = JSON.parse(
-      readFileSync(join(PG_MIGRATIONS_FOLDER, "meta/_journal.json"), "utf8"),
-    ) as { dialect: string; entries: { tag: string }[] };
-    expect(journal.dialect).toBe("postgresql");
-    expect(journal.entries[0]?.tag).toBe("0000_baseline");
-  });
+    });
+  }, 30_000);
 
   test("the Postgres schema has no change without a migration", () => {
-    expect(drizzleKit(tempHome())).toEqual(
-      readdirSync(PG_MIGRATIONS_FOLDER)
-        .filter((name) => name.endsWith(".sql"))
-        .sort(),
-    );
+    expect(drizzleKit(tempHome())).toEqual(["0000_baseline.sql"]);
   });
 
-  test("dropping job_activation keeps each job's activation id and issues later ones above every earlier one", async () => {
-    const pg = await pgliteDb({ migrationsFolder: migrationsBefore("drop_dead_tables") });
-    try {
-      for (const id of [1, 2, 3])
-        await pg.$client.query(
-          `INSERT INTO job (id, queue, run_at, created_at) VALUES (${id}, 'work', 0, 0)`,
-        );
-      for (const [id, jobId] of [
-        [1, 1],
-        [2, 2],
-        [3, 2],
-        [4, 3],
-        [5, 1],
-      ])
-        await pg.$client
-          .query(`INSERT INTO job_activation (job_id) VALUES (${jobId}) RETURNING id`)
-          .then((result) => expect(result.rows).toEqual([{ id }]));
-      await pg.$client.exec(
-        "UPDATE job SET activation_id = CASE id WHEN 1 THEN 5 WHEN 2 THEN 3 ELSE 4 END; DELETE FROM job WHERE id = 1",
-      );
-      await pg.$client.exec(
-        "INSERT INTO paws_alive (id, at) VALUES (1, 10); INSERT INTO linear_input VALUES ('s', 't', 'a', 'u', 'image/png', 1, 'h'); INSERT INTO linear_item_caller_request VALUES ('i', 'outbox', 2)",
-      );
-      const before = await pg.$client.query(
-        "SELECT id::int AS id, activation_id::int AS activation FROM job ORDER BY id",
-      );
-      expect(before.rows).toEqual([
-        { id: 2, activation: 3 },
-        { id: 3, activation: 4 },
-      ]);
+  for (const [name, createdAt, message] of [
+    ["an older", BASELINE.folderMillis - 1, OLDER],
+    ["a newer", BASELINE.folderMillis + 1, NEWER],
+  ] as const)
+    test(`a database from ${name} Paws is refused and left unchanged`, async () => {
+      const home = await unknownDatabase(createdAt);
+      const before = await contents(home);
+      expect(before.tables).toBe(0);
 
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+      const opening = openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
+      await expect(opening).rejects.toBeInstanceOf(UnknownDatabaseError);
+      await expect(opening).rejects.toThrow(message);
 
-      const after = await pg.$client.query(
-        "SELECT id::int AS id, activation_id::int AS activation FROM job ORDER BY id",
-      );
-      expect(after.rows).toEqual(before.rows);
-      const added = await pg.$client.query(
-        "INSERT INTO job (queue, run_at, created_at) VALUES ('work', 0, 0) RETURNING activation_id::int AS activation",
-      );
-      expect(added.rows).toEqual([{ activation: 6 }]);
-      for (const table of [
-        "paws_alive",
-        "run_review_rounds",
-        "linear_item_caller_request",
-        "linear_input",
-        "job_activation",
-      ]) {
-        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
-        expect(gone.rows).toEqual([{ name: null }]);
-      }
-    } finally {
-      await pg.$client.close();
-    }
-  });
+      const started = await spawnPaws(home, []);
+      expect(started.code).toBe(1);
+      expect(started.stderr.trim()).toBe(message);
 
-  test("folding open_findings and linear_activity_listing keeps every published head, line and listed generation", async () => {
-    const pg = await pgliteDb({
-      migrationsFolder: migrationsBefore("open_findings_and_activity_listing_columns"),
-    });
-    try {
-      for (const id of ["A", "B", "C"])
-        await pg.$client.query(
-          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd', 'i-${id}', 'PAS-${id}', 't', 'queued', 'paws/${id}', 0, 0)`,
-        );
-      await pg.$client.exec(
-        "INSERT INTO item_pull_request (item_id, pull_number, pull_url, opened_at) VALUES ('A', 1, 'u', 1), ('B', 2, NULL, 2), ('C', 3, NULL, 3)",
-      );
-      await pg.$client.exec(
-        "INSERT INTO open_findings (item_id, head_sha, line, recorded_at) VALUES ('A', 'h1', '1 finding still open.', 1), ('B', 'h2', '', 2)",
-      );
-      await pg.$client.exec(
-        "INSERT INTO linear_session (session_id, created_at) VALUES ('s1', 1), ('s2', 1); INSERT INTO linear_activity_listing (session_id, generation) VALUES ('s1', 4)",
-      );
-      const db = postgresDb(pg);
-      const read = () =>
-        db.run(function* (q) {
-          const items = [];
-          for (const id of ["A", "B", "C"])
-            items.push([
-              yield* getPublishedHeadSteps(q, id),
-              yield* getOpenFindingsLineSteps(q, id),
-              yield* withOpenFindingsSteps(q, id, "Done."),
-            ]);
-          return {
-            items,
-            listed: [
-              yield* linearActivitiesListedAtSteps(q, "s1"),
-              yield* linearActivitiesListedAtSteps(q, "s2"),
-            ],
-          };
-        });
-      const before = await pg.$client.query(
-        "SELECT p.item_id, f.head_sha, f.line FROM item_pull_request p LEFT JOIN open_findings f ON f.item_id = p.item_id ORDER BY p.item_id",
-      );
-      const listedBefore = await pg.$client.query(
-        "SELECT s.session_id, l.generation::int AS generation FROM linear_session s LEFT JOIN linear_activity_listing l ON l.session_id = s.session_id ORDER BY s.session_id",
-      );
+      const checked = await spawnPaws(home, ["db", "check"]);
+      expect(checked.code).toBe(1);
+      expect(checked.stderr).toContain(message);
 
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-
-      const after = await pg.$client.query(
-        "SELECT item_id, published_head AS head_sha, open_findings_line AS line FROM item_pull_request ORDER BY item_id",
-      );
-      expect(after.rows).toEqual(before.rows);
-      const listedAfter = await pg.$client.query(
-        "SELECT session_id, activities_listed_generation::int AS generation FROM linear_session ORDER BY session_id",
-      );
-      expect(listedAfter.rows).toEqual(listedBefore.rows);
-      expect(await read()).toEqual({
-        items: [
-          ["h1", "1 finding still open.", "Done.\n\n1 finding still open."],
-          ["h2", null, "Done."],
-          [null, null, "Done."],
-        ],
-        listed: [4, null],
-      });
-      for (const table of ["open_findings", "linear_activity_listing"]) {
-        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
-        expect(gone.rows).toEqual([{ name: null }]);
-      }
-    } finally {
-      await pg.$client.close();
-    }
-  });
-  test("folding run_owner and run_agent_setup keeps each run's owner and each runner work's setup", async () => {
-    const pg = await pgliteDb({
-      migrationsFolder: migrationsBefore("fold_run_owner_and_agent_setup"),
-    });
-    try {
-      await pg.$client.exec(`
-        SET session_replication_role = replica;
-        INSERT INTO run (id, item_id, kind, agent, status, created_at, updated_at) VALUES
-          ('owned', 'item', 'implement', 'codex', 'active', 0, 0),
-          ('free', 'item', 'implement', 'codex', 'active', 0, 0);
-        INSERT INTO run_owner (run_id, owner_instance) VALUES ('owned', 'acme');
-        INSERT INTO runner_work (run_id, runner_id, workspace_id, generation, runner_fence, command_id, lease_until) VALUES
-          ('owned', 'box', 'ws', 1, 0, 'c1', 10),
-          ('free', 'box', 'ws', 1, 0, 'c2', 10);
-        INSERT INTO run_agent_setup (run_id, runner_id, skills, hooks, recorded_at) VALUES
-          ('owned', 'box', '[{"name":"lint","version":"a","status":"installed"}]', '[{"name":"fmt","event":"stop"}]', 7);
-      `);
-
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-
-      const runs = await pg.$client.query(
-        "SELECT id, owner_instance AS owner FROM run ORDER BY id",
-      );
-      expect(runs.rows).toEqual([
-        { id: "free", owner: null },
-        { id: "owned", owner: "acme" },
-      ]);
-      const work = await pg.$client.query(
-        "SELECT run_id, runner_id, skills, hooks, setup_recorded_at::int AS at FROM runner_work ORDER BY run_id",
-      );
-      expect(work.rows).toEqual([
-        { run_id: "free", runner_id: "box", skills: null, hooks: null, at: null },
-        {
-          run_id: "owned",
-          runner_id: "box",
-          skills: '[{"name":"lint","version":"a","status":"installed"}]',
-          hooks: '[{"name":"fmt","event":"stop"}]',
-          at: 7,
-        },
-      ]);
-      for (const table of ["run_owner", "run_agent_setup"]) {
-        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
-        expect(gone.rows).toEqual([{ name: null }]);
-      }
-    } finally {
-      await pg.$client.close();
-    }
-  });
-
-  test("the single-row tables move into setting and workspace with the same values", async () => {
-    const pg = await pgliteDb({
-      migrationsFolder: migrationsBefore("single_row_tables_into_setting"),
-    });
-    try {
-      await pg.$client.exec(
-        "INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES ('on', 'org-on', 'On', 1), ('off', 'org-off', 'Off', 2); INSERT INTO finding_grouping_off (workspace_id) VALUES ('off'); INSERT INTO agent_catalog_refresh (id, completed_at) VALUES (1, 1700000000123); INSERT INTO linear_outbox_backoff (id, not_before) VALUES (1, 1700000005000)",
-      );
-
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-
-      const workspaces = await pg.$client.query(
-        "SELECT id, finding_grouping_off AS off FROM workspace ORDER BY id",
-      );
-      expect(workspaces.rows).toEqual([
-        { id: "off", off: 1 },
-        { id: "on", off: 0 },
-      ]);
-      const settings = await pg.$client.query(
-        "SELECT key, value FROM setting WHERE key IN ('agent_catalog_refreshed_at', 'linear_outbox_not_before') ORDER BY key",
-      );
-      expect(settings.rows).toEqual([
-        { key: "agent_catalog_refreshed_at", value: "1700000000123" },
-        { key: "linear_outbox_not_before", value: "1700000005000" },
-      ]);
-      for (const table of [
-        "agent_catalog_refresh",
-        "linear_outbox_backoff",
-        "finding_grouping_off",
-      ]) {
-        const gone = await pg.$client.query(`SELECT to_regclass('${table}') AS name`);
-        expect(gone.rows).toEqual([{ name: null }]);
-      }
-    } finally {
-      await pg.$client.close();
-    }
-  });
-
-  test("merging candidate_paths into candidate_risk keeps classified and unclassified heads with their recording times", async () => {
-    const pg = await pgliteDb({
-      migrationsFolder: migrationsBefore("merge_candidate_paths_into_candidate_risk"),
-    });
-    try {
-      for (const id of ["ENG-1", "ENG-2"])
-        await pg.$client.query(
-          `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at) VALUES ('${id}', 'd-${id}', 'i-${id}', '${id}', '${id}', 'queued', 'paws/${id}', 0, 0)`,
-        );
-      await pg.$client.exec(`
-        INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, classified_at, matches) VALUES
-          ('ENG-1', 'h1', 'b', 'high', '["a.ts"]', 100, '[]'),
-          ('ENG-1', 'h2', 'b', 'normal', '[]', 20, NULL),
-          ('ENG-2', 'h1', 'b', 'normal', '[]', 5, NULL);
-        INSERT INTO candidate_paths (item_id, head_sha, paths, recorded_at) VALUES
-          ('ENG-1', 'h1', '["a.ts", "b.ts"]', 10),
-          ('ENG-1', 'h2', '["c.ts"]', 20),
-          ('ENG-1', 'h3', '["d.ts"]', 30);
-      `);
-      const before = await pg.$client.query(
-        "SELECT COALESCE(r.item_id, p.item_id) AS item_id, COALESCE(r.head_sha, p.head_sha) AS head_sha, r.tier, r.paths, r.matches, p.paths AS changed, p.recorded_at FROM candidate_risk r FULL OUTER JOIN candidate_paths p USING (item_id, head_sha) ORDER BY item_id, head_sha",
-      );
-
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-
-      const after = await pg.$client.query(
-        "SELECT item_id, head_sha, tier, paths, matches, changed_paths AS changed, recorded_at FROM candidate_risk ORDER BY item_id, head_sha",
-      );
-      expect(after.rows).toEqual(before.rows);
-      expect(after.rows.map((row) => (row as { changed: unknown }).changed)).toEqual([
-        ["a.ts", "b.ts"],
-        ["c.ts"],
-        ["d.ts"],
-        null,
-      ]);
-      const gone = await pg.$client.query("SELECT to_regclass('candidate_paths') AS name");
-      expect(gone.rows).toEqual([{ name: null }]);
-      const index = await pg.$client.query(
-        "SELECT indexdef FROM pg_indexes WHERE indexname = 'candidate_risk_item'",
-      );
-      expect(index.rows).toEqual([
-        {
-          indexdef:
-            "CREATE INDEX candidate_risk_item ON public.candidate_risk USING btree (item_id, recorded_at)",
-        },
-      ]);
-    } finally {
-      await pg.$client.close();
-    }
-  });
-  test("delivery metadata survives dropping payload, including issue comments and malformed bodies", async () => {
-    const pg = await pgliteDb({ migrationsFolder: migrationsBefore("github_delivery_metadata") });
-    try {
-      const bodies = [
-        { repository: { full_name: "Acme/App" }, pull_request: { number: 7 } },
-        { repository: { full_name: "Acme/App" }, issue: { number: 8 } },
-        { repository: { full_name: "Other/App" }, pull_request: { number: 7 } },
-        { repository: { full_name: "Acme/App" }, issue: { number: "7" } },
-      ];
-      for (const [i, body] of [
-        ...bodies.map((value) => JSON.stringify(value)),
-        "invalid",
-        "null",
-        JSON.stringify({
-          repository: { full_name: "Acme/App" },
-          pull_request: { number: 7 },
-          comment: "\u0000",
-        }),
-        '{"repository":{"full_name":"Acme/App"},"issue":{"number":8},"number":1e1000000}',
-        ...["\ud800", "\udc00", "\ud83d\udc36", String.raw`\u0000`].map((comment) =>
-          JSON.stringify({
-            repository: { full_name: "Acme/App" },
-            pull_request: { number: 7 },
-            comment,
-          }),
-        ),
-        ...["Acme/🐶", String.raw`Acme/\u0000`].map((full_name) =>
-          JSON.stringify({ repository: { full_name }, pull_request: { number: 7 } }),
-        ),
-      ].entries())
-        await pg.$client.query("INSERT INTO github_delivery VALUES ($1, 'issue_comment', $2, $3)", [
-          String(i),
-          body,
-          i + 100,
-        ]);
-      await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-      const rows = await pg
-        .select()
-        .from(pgSchema.githubDelivery)
-        .orderBy(pgSchema.githubDelivery.receivedAt);
-      expect(
-        rows.map(({ repository, pullNumber, receivedAt }) => [repository, pullNumber, receivedAt]),
-      ).toEqual([
-        ["acme/app", 7, 100],
-        ["acme/app", 8, 101],
-        ["other/app", 7, 102],
-        ["acme/app", null, 103],
-        [null, null, 104],
-        [null, null, 105],
-        ["acme/app", 7, 106],
-        ["acme/app", 8, 107],
-        ["acme/app", 7, 108],
-        ["acme/app", 7, 109],
-        ["acme/app", 7, 110],
-        ["acme/app", 7, 111],
-        ["acme/🐶", 7, 112],
-        [String.raw`acme/\u0000`, 7, 113],
-      ]);
-      expect(Object.keys(rows[0]!)).not.toContain("payload");
-    } finally {
-      await pg.$client.close();
-    }
-  });
-});
-
-test("account ownership backfills from oldest live binding or first workspace owner", async () => {
-  const pg = await pgliteDb({ migrationsFolder: migrationsBefore("agent_account_owner") });
-  try {
-    await pg.$client.exec(`
-      INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',0);
-      INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES
-        ('first','first','First','first@test'),('later','later','Later','later@test');
-      INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES
-        ('w','first','owner','manual',1,1),('w','later','owner','manual',1,2);
-      INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES
-        ('r1','w','first','R1','active',0),('r2','w','later','R2','active',0);
-      INSERT INTO agent_account(id,workspace_id,agent,label,legacy,created_at,updated_at) VALUES
-        ('bound','w','claude','Bound',0,0,0),('fallback','w','claude','Fallback',0,0,0),
-        ('legacy','w','claude','Legacy',1,0,0);
-      INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,quota_scope,created_at,removed_at) VALUES
-        ('removed','w','bound','claude','r1','account',0,1),
-        ('old','w','bound','claude','r2','account',1,NULL),
-        ('new','w','bound','claude','r1','account',2,NULL);
-      INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,legacy,quota_scope,created_at) VALUES
-        ('legacy','w','legacy','claude','r1',1,'unknown',0);
-    `);
-    await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-    expect(
-      (await pg.$client.query("SELECT id, owner_user_id FROM agent_account ORDER BY id")).rows,
-    ).toEqual([
-      { id: "bound", owner_user_id: "later" },
-      { id: "fallback", owner_user_id: "first" },
-    ]);
-    expect((await pg.$client.query("SELECT id FROM agent_account_binding")).rows).toHaveLength(3);
-  } finally {
-    await pg.$client.close();
-  }
+      expect(await contents(home)).toEqual(before);
+    }, 60_000);
 });

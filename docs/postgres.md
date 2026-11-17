@@ -35,6 +35,18 @@ Keep that value secret and available to every Paws instance using the database. 
 
 A `~/.paws/paws.db` from an earlier release is set aside at the first start: see [Moving to Postgres](database-reset.md).
 
+## A database from an older Paws
+
+Paws ships one migration, `0000_baseline`. Before it applies migrations, Paws reads the migration history the database recorded. When that history names a migration Paws does not ship, Paws refuses to start, prints one line and exits with status 1:
+
+```text
+This database was created by an older Paws. Reset it to start this version.
+```
+
+When the unknown migration is newer than the baseline, the line is `This database was created by a newer Paws. Start that version or reset it.` A refused start changes nothing in the database. `paws db check` prints the same message, and `paws doctor` fails its `database` check with it.
+
+There is no upgrade path. To reset, stop Paws and start it on an empty database: move `~/.paws/pglite` aside, or drop and create the database at `[database] url`. Then set up again as after [Moving to Postgres](database-reset.md#what-to-set-up-again).
+
 ## `paws db check`
 
 ```sh
