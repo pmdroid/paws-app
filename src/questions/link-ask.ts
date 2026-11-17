@@ -186,7 +186,21 @@ export function reviewRoundsDetail(rounds: LinkAskRounds): string {
             ? ` (${rounds.open.filter((finding) => finding.bugClass === rounds.bugClass).length} of ${open} open findings)`
             : ""
         }.`;
-  return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${recurring} Rethink the approach, keep going, or stop.`;
+  return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${roundSizes(rounds)}${recurring} Rethink the approach, keep going, or stop.`;
+}
+
+function roundSizes(rounds: LinkAskRounds): string {
+  const sized = rounds.rounds.filter((round) => round.lines !== undefined);
+  if (sized.length === 0) return "";
+  const sizes = sized.map(
+    (round) =>
+      `${shortCommit(round.head)} ${round.lines!.toLocaleString("en-US")} ${round.lines === 1 ? "line" : "lines"}${
+        round.files === undefined
+          ? ""
+          : ` in ${round.files} ${round.files === 1 ? "file" : "files"}`
+      }`,
+  );
+  return ` Diff size per round: ${sizes.join(", ")}.`;
 }
 
 export function shortCommit(head: string): string {

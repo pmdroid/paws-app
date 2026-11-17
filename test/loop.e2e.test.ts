@@ -3654,21 +3654,25 @@ async function runCiFix(options: {
     }),
     launch(input) {
       if (input.role === "reviewer") reviewerLaunches += 1;
-      if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
+      if (
+        (input.purpose === "implement" || input.purpose === "fix") &&
+        ++launches === 1 &&
+        options.rateLimitFirstLaunch
+      )
         throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
       const scriptPath = path.join(layout.root, `ci-rounds-${sequence}.json`);
       const resultPath =
-        input.purpose === "implement"
+        input.purpose === "implement" || input.purpose === "fix"
           ? path.join(layout.root, `ci-rounds-result-${sequence}.json`)
           : "";
-      if (input.purpose === "implement") {
+      if (input.purpose === "implement" || input.purpose === "fix") {
         implementRuns += 1;
         prompts.push(input.prompt);
         implementResults.push(resultPath);
       }
       const steps: FakeScript["steps"] =
-        input.purpose === "implement"
+        input.purpose === "implement" || input.purpose === "fix"
           ? (options.implement?.(implementRuns, input.worktree, {
               merged: github.merged.length,
               reviews: reviewerLaunches,
@@ -5374,5 +5378,73 @@ test("a fixed claim the next review still reports stays unresolved, pending veri
   expect(result.implementRuns, result.detail).toBe(2);
   expect(result.pullBodies.at(-1)!).toMatch(
     /`ok\.txt:1` .* \(adversarial-review, below failOn; fixed in [0-9a-f]{7}, pending verification\)/,
+  );
+}, 120_000);
+
+const CHANGED_LINE_P1: Finding = {
+  severity: "P1",
+  location: "ok.txt:1",
+  explanation: "unchecked grant: the refresh keeps a revoked grant alive.",
+  evidence: "ok.txt line 1",
+};
+
+const lines = (count: number) =>
+  Array.from({ length: count }, (_, index) => `layer ${index}`).join("\n") + "\n";
+
+test("a candidate past the line limit gets one narrowing restart before its next review round", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    findings: (round) => (round <= 2 ? [CHANGED_LINE_P1] : []),
+    implement: (run, worktree) => [
+      writeOk(worktree, `ok-${run}\n`),
+      { type: "fs_write", path: path.join(worktree, "admission.txt"), content: lines(900) },
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(3);
+  const [, narrowing, fix] = result.prompts;
+  expect(narrowing).toContain(
+    "Paws stopped the next fix round: the change grew to 901 changed lines in 2 files, past the 800-line limit.",
+  );
+  expect(narrowing).toContain("Narrow the change back to the issue before you fix anything.");
+  expect(narrowing).toContain("Added since the base:");
+  expect(narrowing).toContain("- admission.txt (+900 −0)");
+  expect(narrowing).toContain("ok.txt:1");
+  expect(fix).not.toContain("Paws stopped the next fix round");
+  expect(fix).toContain("ok.txt:1");
+}, 120_000);
+
+test("a candidate under the line limit gets the usual fix round", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    findings: (round) => (round === 1 ? [CHANGED_LINE_P1] : []),
+    implement: (run, worktree) => [
+      writeOk(worktree, `ok-${run}\n`),
+      { type: "fs_write", path: path.join(worktree, "admission.txt"), content: lines(700) },
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.prompts[1]).not.toContain("Paws stopped the next fix round");
+  expect(result.prompts[1]).toContain("ok.txt:1");
+}, 120_000);
+
+test("the question when review rounds run out lists the diff size per round", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    publicUrl: "https://paws.example",
+    findings: () => [CHANGED_LINE_P1],
+    implement: (run, worktree) => [
+      writeOk(worktree, `ok-${run}\n`),
+      { type: "fs_write", path: path.join(worktree, "admission.txt"), content: lines(run * 40) },
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implementRuns, result.detail).toBe(3);
+  expect(result.questions.at(-1)).toMatch(
+    /Diff size per round: [0-9a-f]{7} 41 lines in 2 files, [0-9a-f]{7} 81 lines in 2 files, [0-9a-f]{7} 121 lines in 2 files\./,
   );
 }, 120_000);

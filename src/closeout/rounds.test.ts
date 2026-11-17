@@ -60,6 +60,34 @@ test("rounds follow the heads in order, and the open findings are the last round
   expect(summary.bugClass).toBe("unchecked null");
 });
 
+test("an order puts the rounds, and the open findings, in the order Closeout reviewed them", () => {
+  const started = new Map([
+    ["aaa", 10],
+    ["bbb", 20],
+    ["ccc", 30],
+  ]);
+  const summary = summarizeReviewRounds(
+    [
+      { itemId: "independent-review", head: "ccc", attempt: 1, findings: [] },
+      {
+        itemId: "independent-review",
+        head: "aaa",
+        attempt: 1,
+        findings: [finding("src/a.ts:1", "unchecked null: a")],
+      },
+      {
+        itemId: "independent-review",
+        head: "bbb",
+        attempt: 1,
+        findings: [finding("src/a.ts:2", "unchecked null: b")],
+      },
+    ],
+    (head) => started.get(head)!,
+  );
+  expect(summary.rounds.map((round) => round.head)).toEqual(["aaa", "bbb", "ccc"]);
+  expect(summary.open).toEqual([]);
+});
+
 test("no review records means no rounds and no class", () => {
   expect(summarizeReviewRounds([])).toEqual({ rounds: [], open: [], bugClass: null });
 });

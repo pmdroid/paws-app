@@ -75,6 +75,7 @@ import {
   type ResolvedPolicyAbsent,
   type ResolvedReview,
   type ResolvedRule,
+  type RetryPolicy,
   type ReviewRecord,
   type ReviewRequest,
   type ReviewResult,
@@ -497,16 +498,28 @@ export async function policyFixBudget(
 }
 
 export function mainFixBudget(repo: string, policyRoot?: string): number | null {
+  const retry = mainRetry(repo, policyRoot);
+  return retry === null ? null : (retry?.fix_rounds_per_item ?? 3);
+}
+
+export const DEFAULT_NARROW_AFTER_LINES = 800;
+
+export function mainNarrowAfterLines(repo: string, policyRoot?: string): number | null {
+  const retry = mainRetry(repo, policyRoot);
+  return retry === null ? null : (retry?.narrow_after_lines ?? DEFAULT_NARROW_AFTER_LINES);
+}
+
+function mainRetry(repo: string, policyRoot?: string): RetryPolicy | undefined | null {
   if (policyRoot !== undefined) {
     const local = loadLocalPolicy(policyRoot);
     if (!local.ok) return null;
-    return local.policy.source === "none" ? 3 : (local.policy.retry?.fix_rounds_per_item ?? 3);
+    return local.policy.source === "none" ? undefined : local.policy.retry;
   }
   const main = trustedMirrorMain(repo);
   if (!main.ok) return null;
   const loaded = loadCommitPolicy({ repo, git: gitReader }, main.commit);
   if (!loaded.ok) return null;
-  return loaded.policy?.retry?.fix_rounds_per_item ?? 3;
+  return loaded.policy?.retry;
 }
 
 /**

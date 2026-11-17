@@ -291,6 +291,8 @@ function decodeRetry(value: unknown): RetryPolicy {
   };
   if (value.fix_rounds_per_item !== undefined)
     retry.fix_rounds_per_item = expectInt(value.fix_rounds_per_item);
+  if (value.narrow_after_lines !== undefined)
+    retry.narrow_after_lines = expectInt(value.narrow_after_lines);
   if (value.maxFailedReviewAttempts !== undefined) {
     retry.maxFailedReviewAttempts = expectInt(value.maxFailedReviewAttempts);
     if (retry.maxFailedReviewAttempts < retry.maxFailedAttemptsPerItem) {

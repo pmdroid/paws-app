@@ -39,7 +39,7 @@ export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]>
 export const LINK_ASK_NOTE_REQUIRED: ReadonlySet<LinkAskDecision> = new Set(["changes", "answer"]);
 
 /** One failed review round: the commit reviewed and how many findings it got. */
-export type ReviewRound = { head: string; findings: number };
+export type ReviewRound = { head: string; findings: number; lines?: number; files?: number };
 
 /** A finding the last round still reported, with the class of bug its explanation starts with. */
 export type OpenReviewFinding = { severity: string; location: string; bugClass: string };

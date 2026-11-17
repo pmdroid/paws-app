@@ -14,6 +14,7 @@
       "properties": {
         "attempts_per_check": { "type": "integer", "minimum": 1, "maximum": 100000 },
         "fix_rounds_per_item": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "narrow_after_lines": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "maxFailedAttemptsPerItem": { "type": "integer", "minimum": 1, "maximum": 100000 },
         "scope": { "enum": ["task", "candidate"] },
         "maxFailedReviewAttempts": { "type": "integer", "minimum": 1, "maximum": 100000 }

@@ -16,6 +16,8 @@ export {
   fixesLeft,
   policyFixBudget,
   mainFixBudget,
+  mainNarrowAfterLines,
+  DEFAULT_NARROW_AFTER_LINES,
   policyCheckPaths,
   approvalsAtHead,
   fixChangedPaths,

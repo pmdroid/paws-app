@@ -46,6 +46,9 @@ export function policyCanonicalJson(policy: {
       ...(policy.retry.fix_rounds_per_item !== undefined
         ? { fix_rounds_per_item: policy.retry.fix_rounds_per_item }
         : {}),
+      ...(policy.retry.narrow_after_lines !== undefined
+        ? { narrow_after_lines: policy.retry.narrow_after_lines }
+        : {}),
       ...(policy.retry.maxFailedReviewAttempts !== undefined
         ? { maxFailedReviewAttempts: policy.retry.maxFailedReviewAttempts }
         : {}),
