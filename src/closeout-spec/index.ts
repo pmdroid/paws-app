@@ -134,7 +134,6 @@ export {
   encodePolicyChunk,
   decodePolicyChunk,
 } from "./policy/transfer";
-export { policyKeys } from "./policy/keys";
 export type { PolicyFilesLoad, RootFilesLoad } from "./policy/load";
 export type {
   AddReviewInput,

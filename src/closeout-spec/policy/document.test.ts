@@ -4,7 +4,6 @@ import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import { recheckDigest } from "./canonical";
 import { createPolicyParser, parsePolicy } from "./document";
 import { createFakeGitReader } from "./git";
-import { policyKeys } from "./keys";
 import { loadPolicy } from "./load";
 import { loadMemoryPolicy, PUBLIC_POLICY_PATH } from "./resolve";
 
@@ -117,40 +116,5 @@ describe("recheck digest", () => {
       policyWith(command("lint") + command("test", marked).replace("30", "60")),
     );
     expect(markedCheck.recheck).not.toBe(before.recheck);
-  });
-});
-
-describe("policyKeys", () => {
-  test("lists each key the entry and its imports write, as a schema path", () => {
-    const files = new Map([
-      [
-        PUBLIC_POLICY_PATH,
-        new TextEncoder().encode(
-          `specVersion: "0.1"\nretry:\n  scope: task\nimports:\n  - path: .agents/shared.yaml\n    as: shared\nitems:\n${command("lint", '    ci: "lint"\n')}`,
-        ),
-      ],
-      [
-        ".agents/shared.yaml",
-        new TextEncoder().encode(
-          `specVersion: "0.1"\nitems:\n${command("test", "    recheck: true\n")}`,
-        ),
-      ],
-    ]);
-    expect(policyKeys(files)).toEqual([
-      "imports",
-      "imports[].as",
-      "imports[].path",
-      "items",
-      "items[].ci",
-      "items[].exec",
-      "items[].gate",
-      "items[].id",
-      "items[].kind",
-      "items[].recheck",
-      "items[].timeoutSeconds",
-      "retry",
-      "retry.scope",
-      "specVersion",
-    ]);
   });
 });

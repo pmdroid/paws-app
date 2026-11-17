@@ -8,7 +8,6 @@ import {
   insertQueuedItem,
   joinMergeQueue,
   recordPushOutage,
-  savePolicyRunnerWarning,
   upsertCloseoutStep,
   type Db,
 } from "../../../db";
@@ -121,13 +120,6 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     now,
     delayMs: () => 60_000,
   });
-  await savePolicyRunnerWarning(db, {
-    repository: "acme/platform",
-    policyDigest: `sha256:${"a".repeat(64)}`,
-    runnerVersion: "0.1.48",
-    keys: [{ key: "items[].ci", needs: "0.1.49" }],
-    checkedAt: now,
-  });
   await seed(
     db,
     (q) =>
@@ -182,7 +174,6 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     },
   ]);
   expect(queue.pushOutages.map((outage) => outage.repository)).toEqual(["acme/platform"]);
-  expect(queue.policyRunnerWarnings.map((warning) => warning.runnerVersion)).toEqual(["0.1.48"]);
   expect(JSON.stringify(queue)).not.toContain("check output");
   for (const table of DETAIL_TABLES)
     expect(reads.join("\n")).not.toMatch(new RegExp(`\\b${table}\\b`));

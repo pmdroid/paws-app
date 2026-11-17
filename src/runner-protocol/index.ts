@@ -213,12 +213,7 @@ export {
   takeRejectedFields,
   withRejectedFields,
 } from "./control-plane-level";
-export {
-  POLICY_KEY_RUNNER_VERSIONS,
-  policyKeysAbove,
-  runnerVersionAtLeast,
-  type PolicyKeyNeed,
-} from "./policy-keys";
+export { runnerVersionAtLeast } from "./version-compare";
 export {
   LIVE_PREVIEW_STOP_REASONS,
   LIVE_PREVIEW_TIME_LIMIT_MINUTES,

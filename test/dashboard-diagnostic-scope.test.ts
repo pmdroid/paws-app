@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import {
   putWorkspaceUser,
   recordPushOutage,
-  savePolicyRunnerWarning,
   sessionRepositoriesAllowed,
   syncWorkspaceMember,
   workspaceSessionIds,
@@ -81,13 +80,6 @@ async function seed() {
       now: 0,
       delayMs: () => 60_000,
     });
-    await savePolicyRunnerWarning(db, {
-      repository,
-      policyDigest: `sha256:policy-${repository}`,
-      runnerVersion: "0.1.0",
-      keys: [],
-      checkedAt: 0,
-    });
   }
   return { db, close };
 }
@@ -162,22 +154,18 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
     expect(response.status).toBe(200);
     return (await response.json()) as {
       pushOutages?: Array<{ repository: string }>;
-      policyRunnerWarnings?: Array<{ repository: string }>;
     };
   };
-  const repositories = (body: Awaited<ReturnType<typeof read>>) => [
-    body.pushOutages?.map((row) => row.repository).sort(),
-    body.policyRunnerWarnings?.map((row) => row.repository).sort(),
-  ];
+  const repositories = (body: Awaited<ReturnType<typeof read>>) =>
+    body.pushOutages?.map((row) => row.repository).sort();
   try {
     for (let round = 0; round < 2; round += 1) {
       const all = ["Fixture/Catalog", "fixture/private-team-b", "fixture/team-a"];
-      expect(repositories(await read("/api/overview", admin))).toEqual([all, all]);
-      expect(repositories(await read("/api/merge-queue", admin))).toEqual([all, all]);
+      expect(repositories(await read("/api/overview", admin))).toEqual(all);
+      expect(repositories(await read("/api/merge-queue", admin))).toEqual(all);
       for (const path of ["/api/overview", "/api/merge-queue", "/api/issues"]) {
         const body = await read(path, member);
-        if (path !== "/api/issues")
-          expect(repositories(body)).toEqual([["fixture/team-a"], ["fixture/team-a"]]);
+        if (path !== "/api/issues") expect(repositories(body)).toEqual(["fixture/team-a"]);
         const text = JSON.stringify(body);
         for (const hidden of ["private-team-b", "Catalog", "installations/22", "installations/15"])
           expect(text).not.toContain(hidden);
@@ -196,7 +184,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
       teamIds: [],
       now: Date.now() + 1,
     });
-    expect(repositories(await read("/api/overview", member))).toEqual([[], []]);
+    expect(repositories(await read("/api/overview", member))).toEqual([]);
   } finally {
     await server.stop(true);
     await close();
