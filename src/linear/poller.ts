@@ -8,7 +8,7 @@ import {
   sessionHasWorkItem,
   type Db,
 } from "../db";
-import { CLOSED_ISSUE_EVENT } from "./administration";
+import { CLOSED_ISSUE_EVENT, UNDELEGATED_ISSUE_EVENT } from "./administration";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
 import { LinearEntityNotFoundError } from "./graphql";
 import type {
@@ -264,6 +264,14 @@ export function startCatchUpPoller(options: {
     for (const issue of sighting.issues)
       if (issue.closed && db !== undefined && (await issueHasItemOutside(db, issue.id)))
         closedEvents.push(closedIssueEvent(issue, sessionByIssue.get(issue.id) ?? null));
+      else if (
+        !issue.closed &&
+        issue.undelegated &&
+        !issue.labeled &&
+        db !== undefined &&
+        (await issueHasItemOutside(db, issue.id))
+      )
+        closedEvents.push(undelegatedIssueEvent(issue));
     const sessionEvents: (AcceptedLinearEvent | null)[] = [];
     for (const session of sighting.sessions)
       if (session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id))
@@ -549,6 +557,19 @@ function closedIssueEvent(issue: PolledIssue, sessionId: string | null): Accepte
       closedAtMs: closed.closedAtMs,
       identifier: issue.identifier,
     },
+  });
+}
+
+function undelegatedIssueEvent(issue: PolledIssue): AcceptedLinearEvent {
+  return inboxEvent({
+    dedupeKey: `issue:${issue.id}:${UNDELEGATED_ISSUE_EVENT}:${issue.updatedAtMs}`,
+    action: "other",
+    sessionId: null,
+    issueId: issue.id,
+    body: null,
+    signal: null,
+    updatedAtMs: issue.updatedAtMs,
+    payload: { kind: UNDELEGATED_ISSUE_EVENT },
   });
 }
 

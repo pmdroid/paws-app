@@ -150,7 +150,7 @@ export async function handleLinearAdministration(
 export async function stopUndelegatedIssue(
   store: Db,
   undelegation: {
-    organizationId: string;
+    organizationId: string | null;
     appUserId: string;
     issueId: string;
     createdAtMs: number;

@@ -178,6 +178,7 @@ export type {
 export {
   parseLinearAdministration,
   parseLinearUndelegation,
+  parsePolledUndelegation,
   parseLinearIssueClosed,
   parseLinearIssueProjectChange,
   parseLinearUserChange,
