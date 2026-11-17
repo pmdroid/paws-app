@@ -50,65 +50,40 @@ function reviewerFault(): CloseoutVerdict {
   };
 }
 
-test("a reviewer fault holds two items with one alert, and a reviewer change re-verifies both into the merge queue", async () => {
-  const layout = await repoLayout();
-  const tracker = createFakeTracker(
-    ["ENG-1", "ENG-2"].map((identifier) => ({
-      linearIssueId: `issue-${identifier}`,
-      identifier,
-      title: `Task ${identifier}`,
-      description: null,
-      subIssues: [],
-    })),
-  );
-  const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
-  const { db, close } = await tempStore();
-  const jobs = new JobLoop(db, clock);
-  const outbox = new OutboxDispatcher(db, clock);
-  const gate = createFakeCloseoutGate();
-  gate.next = reviewerFault();
-  let launches = 0;
-  const launch: AgentLaunch = () => {
-    launches += 1;
-    const scriptPath = path.join(layout.root, `script-${launches}.json`);
-    writeFileSync(
-      scriptPath,
-      JSON.stringify({ model: "test-model", steps: [{ type: "end", stopReason: "end_turn" }] }),
-    );
-    return {
-      command: process.execPath,
-      args: [fakeAgent, path.join(layout.root, `result-${launches}.json`), scriptPath],
-      env: process.env,
-    };
-  };
-  const github = createFakeGitHub();
-  const orchestrator = attachOrchestrator({
-    store: db,
-    admission: workspaceAdmission(db),
-    jobs,
-    outbox,
-    clock,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
-    githubForRepository: () => ({
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: privateKey as string,
-      client: githubClient(layout.bare, github),
-    }),
-    launch,
-    closeoutGate: () => gate,
+test("a review command the runner refuses asks one question instead of re-verifying every minute", async () => {
+  const refused = `reviewer failed for independent-review: Paws built a review command the runner protocol refuses: command: Invalid input`;
+  const summary = `Closeout: blocked\n${refused}`;
+  const verdict = reviewerFault();
+  const { layout, db, close, tracker, orchestrator, drain } = await harness(["ENG-1"], {
+    ...verdict,
+    summary,
+    result: { ...verdict.result!, summary, reviewerFault: undefined },
   });
-  const drain = async () => {
-    while ((await jobs.tick()) !== null);
-    for (let round = 0; round < 20; round++) {
-      const claimed = await outbox.tick();
-      await outbox.idle();
-      if (claimed.length === 0) break;
-    }
-  };
+  try {
+    await orchestrator.onLinearEvent(created("ENG-1"));
+    await db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" })));
+    await drain();
+    await drain();
+
+    expect((await listWorkItems(db)).map((item) => item.state)).toEqual(["awaiting_input"]);
+    expect(tracker.questions).toHaveLength(1);
+    expect(
+      (await listJobs(db)).filter(
+        (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
+      ),
+    ).toEqual([]);
+  } finally {
+    await orchestrator.shutdown();
+    await close();
+    await layout.cleanup();
+  }
+}, 90_000);
+
+test("a reviewer fault holds two items with one alert, and a reviewer change re-verifies both into the merge queue", async () => {
+  const { layout, db, close, jobs, gate, tracker, orchestrator, drain } = await harness(
+    ["ENG-1", "ENG-2"],
+    reviewerFault(),
+  );
   const holds = async () =>
     (await listJobs(db)).filter(
       (job) =>
@@ -198,6 +173,68 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     await layout.cleanup();
   }
 }, 90_000);
+
+async function harness(identifiers: string[], verdict: CloseoutVerdict) {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker(
+    identifiers.map((identifier) => ({
+      linearIssueId: `issue-${identifier}`,
+      identifier,
+      title: `Task ${identifier}`,
+      description: null,
+      subIssues: [],
+    })),
+  );
+  const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
+  const { db, close } = await tempStore();
+  const jobs = new JobLoop(db, clock);
+  const outbox = new OutboxDispatcher(db, clock);
+  const gate = createFakeCloseoutGate();
+  gate.next = verdict;
+  let launches = 0;
+  const launch: AgentLaunch = () => {
+    launches += 1;
+    const scriptPath = path.join(layout.root, `script-${launches}.json`);
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({ model: "test-model", steps: [{ type: "end", stopReason: "end_turn" }] }),
+    );
+    return {
+      command: process.execPath,
+      args: [fakeAgent, path.join(layout.root, `result-${launches}.json`), scriptPath],
+      env: process.env,
+    };
+  };
+  const github = createFakeGitHub();
+  const orchestrator = attachOrchestrator({
+    store: db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    clock,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: privateKey as string,
+      client: githubClient(layout.bare, github),
+    }),
+    launch,
+    closeoutGate: () => gate,
+  });
+  const drain = async () => {
+    while ((await jobs.tick()) !== null);
+    for (let round = 0; round < 20; round++) {
+      const claimed = await outbox.tick();
+      await outbox.idle();
+      if (claimed.length === 0) break;
+    }
+  };
+  return { layout, db, close, jobs, gate, tracker, orchestrator, drain };
+}
 
 function created(identifier: string): AcceptedLinearEvent {
   return {

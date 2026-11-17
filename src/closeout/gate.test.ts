@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { ZodError } from "zod";
+import { RunnerCommandRejectedError } from "../core";
 import { createCloseoutGate } from "./gate";
 import type { FixRunner } from "./fixer";
 import {
@@ -44,7 +46,7 @@ describe("closeout gate", () => {
       const result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -132,7 +134,7 @@ describe("closeout gate", () => {
       const input = {
         taskId: TASK,
         worktree: repo.dir,
-        baseSha: repo.head,
+        baseSha: repo.base,
         headSha: repo.head,
         attempt: 1,
       };
@@ -177,7 +179,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -273,7 +275,7 @@ describe("closeout gate", () => {
       result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -314,7 +316,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -345,7 +347,7 @@ describe("closeout gate", () => {
       maxFixAttempts: 3,
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -375,7 +377,7 @@ describe("closeout gate", () => {
       maxFixAttempts: 3,
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -402,7 +404,7 @@ describe("closeout gate", () => {
       maxFixAttempts: 12,
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -430,7 +432,7 @@ describe("closeout gate", () => {
       maxFixAttempts: 2,
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -463,7 +465,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -498,7 +500,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -541,7 +543,7 @@ describe("closeout gate", () => {
       const evaluation = await evaluateCandidate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -588,7 +590,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -647,7 +649,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -694,7 +696,7 @@ describe("closeout gate", () => {
       await evaluateCandidate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -747,7 +749,7 @@ describe("closeout gate", () => {
       const result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -773,6 +775,85 @@ describe("closeout gate", () => {
     });
   }
 
+  test("a head with no commits beyond its base accepts without running the review", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    let reviews = 0;
+    try {
+      const result = await runCloseoutGate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            reviews += 1;
+            throw new Error("unexpected review");
+          },
+        },
+        fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
+      });
+      expect(result.outcome).toBe("accepted");
+      expect(reviews).toBe(0);
+      expect(result.decision?.items.find((item) => item.id === "adversarial-review")).toMatchObject(
+        { state: "skipped", message: "no commits beyond base" },
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  for (const [label, refused] of [
+    [
+      "the zod error",
+      new ZodError([{ code: "custom", path: [], message: "Invalid input", input: undefined }]),
+    ],
+    [
+      "the rejected command",
+      new RunnerCommandRejectedError(
+        "Paws built a review command the runner protocol refuses: command: Invalid input",
+      ),
+    ],
+  ] as const) {
+    test(`a review command the runner refuses with ${label} blocks once without a reviewer fault`, async () => {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 5),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      let reviews = 0;
+      try {
+        const result = await runCloseoutGate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: repo.base,
+          head: repo.head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          reviewRetryDelaysMs: [0, 0, 0],
+          reviewer: {
+            async review() {
+              reviews += 1;
+              throw refused;
+            },
+          },
+          fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
+        });
+        expect(result.outcome).toBe("blocked");
+        expect(reviews).toBe(1);
+        expect(result.reviewerFault).toBeUndefined();
+        expect(result.summary).toContain("Invalid input");
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
   // Twelve review rounds and eleven committed fixes take about 3.4 s on an
   // idle machine, so bun's 5 s default overran under parallel load.
   test("progress-aware reviews pass the old host cap and preserve task evidence between gate calls", async () => {
@@ -789,7 +870,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         candidate: candidate(),
         home: repo.home,
         pawsHome: repo.pawsHome,
@@ -830,7 +911,7 @@ describe("closeout gate", () => {
           {
             questionId: "human-approval",
             taskId: TASK,
-            base: repo.head,
+            base: repo.base,
             head: result.head,
             policyDigest: result.decision!.policy.digest!,
             checkIds: ["review"],
@@ -872,7 +953,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -901,7 +982,7 @@ describe("closeout gate", () => {
           {
             questionId: "human-approval",
             taskId: TASK,
-            base: repo.head,
+            base: repo.base,
             head: repo.head,
             policyDigest: exhausted.decision!.policy.digest!,
             checkIds: ["test"],
@@ -929,7 +1010,7 @@ describe("closeout gate", () => {
       const result = await evaluateCandidate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -941,7 +1022,7 @@ describe("closeout gate", () => {
                 (
                   await addReview({
                     repo: repo.dir,
-                    base: repo.head,
+                    base: repo.base,
                     head: repo.head,
                     gate: "beforePR",
                     task: TASK,
@@ -988,7 +1069,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -1016,7 +1097,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         candidate: candidate(),
         home: repo.home,
         pawsHome: repo.pawsHome,
@@ -1058,7 +1139,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -1069,7 +1150,7 @@ describe("closeout gate", () => {
       const approval = {
         questionId: "question-1",
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         policyDigest: failed.decision!.policy.digest!,
         checkIds: ["first"],
@@ -1126,7 +1207,7 @@ describe("closeout gate", () => {
       const result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         candidate: candidate(),
         home: repo.home,
         pawsHome: repo.pawsHome,
@@ -1161,7 +1242,7 @@ describe("closeout gate", () => {
         const result = await runCloseoutGate({
           worktree: repo.dir,
           taskId: TASK,
-          base: repo.head,
+          base: repo.base,
           candidate: candidate(),
           home: repo.home,
           pawsHome: repo.pawsHome,
@@ -1222,7 +1303,7 @@ describe("closeout gate", () => {
         const result = await runCloseoutGate({
           worktree: repo.dir,
           taskId: TASK,
-          base: repo.head,
+          base: repo.base,
           candidate: candidate(),
           home: repo.home,
           pawsHome: repo.pawsHome,
@@ -1256,7 +1337,7 @@ describe("closeout gate", () => {
       const input = {
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -1267,7 +1348,7 @@ describe("closeout gate", () => {
       const approval = {
         questionId: "setup-question",
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         policyDigest: failed.decision!.policy.digest!,
         checkIds: ["install"],
@@ -1293,7 +1374,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -1324,7 +1405,7 @@ describe("closeout gate", () => {
     const blank = await runCloseoutGate({
       worktree: repo.dir,
       taskId: " ",
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -1339,7 +1420,7 @@ describe("closeout gate", () => {
     const huge = await runCloseoutGate({
       worktree: repo.dir,
       taskId: "x".repeat(257),
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -1364,7 +1445,7 @@ describe("closeout gate", () => {
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: repo.head,
+      base: repo.base,
       head: repo.head,
       candidate: candidate(),
       home: repo.home,
@@ -1394,7 +1475,7 @@ describe("closeout gate", () => {
         const evaluation = await evaluateCandidate({
           worktree: repo.dir,
           taskId: TASK,
-          base: repo.head,
+          base: repo.base,
           head: repo.head,
           candidate: candidate(),
           home: repo.home,
@@ -1407,7 +1488,7 @@ describe("closeout gate", () => {
           },
         });
         expect(evaluation.outcome).toBe("accepted");
-        expect(requests.at(-1)).toMatchObject({ base: repo.head, head: repo.head });
+        expect(requests.at(-1)).toMatchObject({ base: repo.base, head: repo.head });
       } finally {
         await repo.cleanup();
       }
@@ -1428,7 +1509,7 @@ describe("closeout gate", () => {
       const evaluation = await evaluateCandidate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -1460,7 +1541,7 @@ describe("closeout gate", () => {
       evaluateCandidate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head,
         candidate: candidate(),
         home: repo.home,
@@ -1511,7 +1592,7 @@ describe("closeout gate", () => {
         const evaluation = await evaluateCandidate({
           worktree: repo.dir,
           taskId: TASK,
-          base: head,
+          base: repo.base,
           head,
           candidate: candidate(),
           home: repo.home,
@@ -1626,7 +1707,7 @@ describe("closeout gate", () => {
       result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -1749,6 +1830,7 @@ function reviewItem(id: string) {
 async function originRepo(files: Record<string, string>): Promise<{
   root: string;
   dir: string;
+  base: string;
   head: string;
   home: string;
   pawsHome: string;
@@ -1774,10 +1856,14 @@ async function originRepo(files: Record<string, string>): Promise<{
   await exec("git", ["-C", dir, "add", "."]);
   await exec("git", ["-C", dir, "commit", "-m", "init"]);
   await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
+  const base = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  await exec("git", ["-C", dir, "commit", "--allow-empty", "-m", "task"]);
+  await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
   const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"]);
   return {
     root,
     dir,
+    base,
     head: stdout.trim(),
     home,
     pawsHome,
