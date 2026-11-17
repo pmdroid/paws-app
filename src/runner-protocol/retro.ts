@@ -3,10 +3,8 @@ import { z } from "zod";
 import { journalCaught } from "../journal";
 import { RunnerAccountSchema, runnerAccountAgentUnsupported } from "./accounts";
 import { RUNNER_INPUT_CHUNK_BYTES } from "./inputs";
-import { runnerVersionAtLeast } from "./policy-keys";
 import { RunnerProfileSchema, type SignedRunnerCommand } from "./commands";
 import { canonicalJson, openSignedPayload, signPayload } from "./signature";
-import { RETRO_RUNNER_VERSION } from "./versions";
 
 export const RUNNER_RETRO_CAPABILITY = 1;
 
@@ -246,10 +244,6 @@ export function acceptRetroResult(
   )
     return { ok: false, reason: "over_limit" };
   return { ok: true, result };
-}
-
-export function runnerAcceptsRetro(version: string | null | undefined): boolean {
-  return version != null && runnerVersionAtLeast(version, RETRO_RUNNER_VERSION);
 }
 
 export function signRunnerRetroCommand(input: {

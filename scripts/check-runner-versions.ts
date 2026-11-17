@@ -1,26 +1,14 @@
 /**
- * Fail a runner release whose version is below a feature's minimum runner version.
+ * Check `MINIMUM_RUNNER_VERSION` against runner releases.
  *
  * Usage: bun scripts/check-runner-versions.ts <major.minor.patch>
+ *        bun scripts/check-runner-versions.ts --since-latest-release
  *
- * Every constant in src/runner-protocol/versions.ts names the first release that has its
- * feature. A release cut from a commit carries every feature on it, so its tag must be at least
- * each of them; otherwise Paws refuses that feature on the runner it just shipped.
+ * A release must be at least the minimum, or Paws refuses the runner it just shipped. Between
+ * releases the minimum must name a runner that has shipped, and must not drop below the minimum
+ * the latest release carried.
  */
-import * as versions from "../src/runner-protocol/versions";
-
-export function versionsAbove(release: string): { name: string; version: string }[] {
-  const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(release)?.slice(1).map(Number);
-  if (!parts)
-    throw new Error(`Release version ${JSON.stringify(release)} is not major.minor.patch.`);
-  return Object.entries(versions)
-    .filter(([, minimum]) => {
-      for (const [index, part] of parts.entries())
-        if (part !== minimum[index]) return part < minimum[index]!;
-      return false;
-    })
-    .map(([name, minimum]) => ({ name, version: minimum.join(".") }));
-}
+import { MINIMUM_RUNNER_VERSION } from "../src/runner-protocol/versions";
 
 type Version = readonly number[];
 
@@ -34,45 +22,42 @@ function compare(left: Version, right: Version): number {
   return 0;
 }
 
+export function releaseBelowMinimum(
+  release: string,
+  minimum: Version = MINIMUM_RUNNER_VERSION,
+): boolean {
+  const parsed = release.startsWith("v") ? undefined : parse(release);
+  if (!parsed)
+    throw new Error(`Release version ${JSON.stringify(release)} is not major.minor.patch.`);
+  return compare(parsed, minimum) < 0;
+}
+
 export function latestRelease(tags: readonly string[]): string | undefined {
   return tags
     .filter((tag) => parse(tag) !== undefined)
     .sort((left, right) => compare(parse(right)!, parse(left)!))[0];
 }
 
-export function releasedVersions(source: string): Record<string, string> {
-  const released: Record<string, string> = {};
-  for (const match of source.matchAll(
-    /export const (\w+): RunnerVersion = \[(\d+), (\d+), (\d+)\];/g,
-  ))
-    released[match[1]!] = `${match[2]}.${match[3]}.${match[4]}`;
-  return released;
+export function releasedMinimum(source: string): Version | undefined {
+  const match =
+    /export const MINIMUM_RUNNER_VERSION: RunnerVersion = \[(\d+), (\d+), (\d+)\];/.exec(source);
+  return match?.slice(1).map(Number);
 }
 
 export function minimumAboveRelease(
   latest: string,
-  minimum: Version = versions.MINIMUM_RUNNER_VERSION,
+  minimum: Version = MINIMUM_RUNNER_VERSION,
 ): boolean {
-  const shipped = parse(latest);
+  const shipped = latest.startsWith("v") ? parse(latest) : undefined;
   if (!shipped) throw new Error(`Release tag ${JSON.stringify(latest)} is not vmajor.minor.patch.`);
   return compare(minimum, shipped) > 0;
 }
 
-export function newSinceRelease(
-  latest: string,
-  released: Record<string, string>,
-  current: Record<string, Version> = versions,
-): { name: string; version: string }[] {
-  const shipped = parse(latest);
-  if (!shipped) throw new Error(`Release tag ${JSON.stringify(latest)} is not vmajor.minor.patch.`);
-  return Object.entries(current)
-    .map(([name, minimum]) => ({ name, version: minimum.join("."), minimum }))
-    .filter(({ name, version, minimum }) =>
-      name === "MINIMUM_RUNNER_VERSION"
-        ? released[name] !== undefined && compare(minimum, parse(released[name])!) < 0
-        : released[name] !== version && compare(minimum, shipped) <= 0,
-    )
-    .map(({ name, version }) => ({ name, version }));
+export function minimumLowered(
+  released: Version | undefined,
+  minimum: Version = MINIMUM_RUNNER_VERSION,
+): boolean {
+  return released !== undefined && compare(minimum, released) < 0;
 }
 
 function git(args: string[]): string {
@@ -102,33 +87,28 @@ function checkSinceLatestRelease(): number {
     "origin",
     `refs/tags/${latest}:refs/tags/${latest}`,
   ]);
-  const released = releasedVersions(git(["show", `${latest}:src/runner-protocol/versions.ts`]));
-  const slipped = newSinceRelease(latest, released);
-  const next = parse(latest)!
-    .map((part, index) => (index === 2 ? part + 1 : part))
-    .join(".");
+  const released = releasedMinimum(git(["show", `${latest}:src/runner-protocol/versions.ts`]));
+  const minimum = MINIMUM_RUNNER_VERSION.join(".");
   const unreleased = minimumAboveRelease(latest);
   if (unreleased)
     console.error(
-      `MINIMUM_RUNNER_VERSION names runner ${versions.MINIMUM_RUNNER_VERSION.join(".")}, above ${latest}, so every runner would be outdated. Set it to a released version.`,
+      `MINIMUM_RUNNER_VERSION names runner ${minimum}, above ${latest}, so every runner would be outdated. Set it to a released version.`,
     );
-  for (const { name, version } of slipped)
+  const lowered = minimumLowered(released);
+  if (lowered)
     console.error(
-      `${name} names runner ${version}, but ${latest} has shipped without it. Set it to ${next}, the next release.`,
+      `MINIMUM_RUNNER_VERSION names runner ${minimum}, below ${released!.join(".")} in ${latest}. Do not lower it.`,
     );
-  return slipped.length || unreleased ? 1 : 0;
+  return unreleased || lowered ? 1 : 0;
 }
 
 if (import.meta.main && process.argv[2] === "--since-latest-release") {
   process.exit(checkSinceLatestRelease());
 } else if (import.meta.main) {
   const release = process.argv[2] ?? "";
-  const above = versionsAbove(release);
-  for (const { name, version } of above)
-    console.error(`${name} needs runner ${version}, but this release is ${release}.`);
-  if (above.length) {
+  if (releaseBelowMinimum(release)) {
     console.error(
-      "Tag a release at least as high as every constant in src/runner-protocol/versions.ts.",
+      `MINIMUM_RUNNER_VERSION needs runner ${MINIMUM_RUNNER_VERSION.join(".")}, but this release is ${release}. Tag a release at least that high.`,
     );
     process.exit(1);
   }

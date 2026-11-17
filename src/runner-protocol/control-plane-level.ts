@@ -1,37 +1,8 @@
 import { z } from "zod";
-import { runnerVersionAtLeast } from "./policy-keys";
-import * as versions from "./versions";
-import type { RunnerVersion } from "./versions";
+import { MINIMUM_RUNNER_VERSION } from "./versions";
 
-/**
- * The newest runner release this control plane knows about. A field and its entry in
- * `versions.ts` land together, so a control plane at this level accepts every field up to it.
- */
-export const CONTROL_PLANE_PROTOCOL_LEVEL = Object.values(versions)
-  .reduce<RunnerVersion>((a, b) => (runnerVersionAtLeast(a.join("."), b) ? a : b), [0, 0, 0])
-  .join(".");
-
-/** Result fields a control plane's strict schema refuses below the release that added them. */
-const RESULT_FIELD_MINIMUMS = {
-  interrupted: versions.INTERRUPT_RECOVERY_RUNNER_VERSION,
-  replies: versions.CONVERSATION_RUNNER_VERSION,
-  startWork: versions.CONVERSATION_RUNNER_VERSION,
-} as const;
-
-/**
- * `result` without the fields the control plane at `level` does not know. No level means a control
- * plane from before levels were reported: it may refuse any of them and strand the whole result.
- */
-export function resultForControlPlane<Result extends object>(
-  result: Result,
-  level: string | undefined,
-): Result {
-  const known = Object.entries(result).filter(([field]) => {
-    const minimum = RESULT_FIELD_MINIMUMS[field as keyof typeof RESULT_FIELD_MINIMUMS];
-    return minimum === undefined || (level !== undefined && runnerVersionAtLeast(level, minimum));
-  });
-  return Object.fromEntries(known) as Result;
-}
+/** The level Paws reports on heartbeat. Released runners keep every result field at it. */
+export const CONTROL_PLANE_PROTOCOL_LEVEL = MINIMUM_RUNNER_VERSION.join(".");
 
 /** Refused paths by response. Held here, so no listener setup can send them to a runner. */
 const rejectedFields = new WeakMap<Response, string>();

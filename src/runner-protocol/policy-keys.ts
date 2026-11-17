@@ -1,9 +1,4 @@
-import {
-  CLOSEOUT_CI_KEY_RUNNER_VERSION,
-  CLOSEOUT_EXCEPT_RUNNER_VERSION,
-  CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
-  type RunnerVersion,
-} from "./versions";
+import type { RunnerVersion } from "./versions";
 
 /**
  * The first runner release whose Closeout policy parser knows each policy key added after the
@@ -11,12 +6,12 @@ import {
  * known to every runner Paws places work on, or unknown to this Paws too.
  */
 export const POLICY_KEY_RUNNER_VERSIONS: Readonly<Record<string, RunnerVersion>> = {
-  "items[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
-  "rules[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
-  "setup[].except": CLOSEOUT_EXCEPT_RUNNER_VERSION,
-  "items[].ci": CLOSEOUT_CI_KEY_RUNNER_VERSION,
-  "items[].recheck": CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
-  "rules[].recheck": CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
+  "items[].except": [0, 1, 84],
+  "rules[].except": [0, 1, 84],
+  "setup[].except": [0, 1, 84],
+  "items[].ci": [0, 1, 53],
+  "items[].recheck": [0, 1, 53],
+  "rules[].recheck": [0, 1, 53],
 };
 
 /** A policy key and the first runner release that knows it. */

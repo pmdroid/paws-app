@@ -4,7 +4,7 @@ import { jsonValue, parsedJson } from "./json-text";
 import { auditWorkspaceAccessSteps } from "./workspace";
 import { agentCatalogSummarySteps, readAgentVersionSteps } from "./agent-versions";
 
-type ReportedStatus = "current" | "previous" | "installing" | "waiting" | "failed";
+type ReportedStatus = "current" | "installing" | "waiting" | "failed";
 
 /** A coding agent version as a runner reported it in its heartbeat. */
 type RunnerAgentReport = {

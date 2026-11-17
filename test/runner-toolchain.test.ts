@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { TOOLCHAIN_PREFLIGHT_RUNNER_VERSION } from "../src/runner-protocol";
 import { parseRuntimeFiles } from "../src/runtimes";
 import { git } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
@@ -160,7 +159,6 @@ for (const [
           },
         });
       const result = await execute();
-      expect(TOOLCHAIN_PREFLIGHT_RUNNER_VERSION).toEqual([0, 1, 75]);
       expect(result.run.stopReason).toBe("end_turn");
       expect(existsSync(join(root, "trace.json"))).toBe(!blocked);
       expect(Boolean(question)).toBe(blocked);

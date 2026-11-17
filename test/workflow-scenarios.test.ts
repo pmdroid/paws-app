@@ -34,7 +34,7 @@ import {
 } from "../src/db";
 import { acceptGitHubDelivery, worktreeBranch } from "../src/loop";
 import { mergeAcceptedWork } from "../src/loop/accepted-work";
-import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { createRunnerWork, RunnerTeardownPending, RunnerWorkFencedError } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
@@ -409,7 +409,7 @@ async function runnerWorld() {
     profile: { agent: "claude", model: null },
     prompt: "Implement the issue",
   };
-  const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
+  const host = { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") };
   const work = controller();
   await work.assign(command);
   await work.acknowledge("box", command.id);

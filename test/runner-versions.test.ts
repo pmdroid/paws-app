@@ -5,9 +5,9 @@ import * as versions from "../src/runner-protocol/versions";
 import {
   latestRelease,
   minimumAboveRelease,
-  newSinceRelease,
-  releasedVersions,
-  versionsAbove,
+  minimumLowered,
+  releaseBelowMinimum,
+  releasedMinimum,
 } from "../scripts/check-runner-versions";
 
 const ROOT = new URL("../", import.meta.url).pathname;
@@ -38,64 +38,29 @@ test("src/runner-protocol/versions.ts is the only place a minimum runner version
   expect(declared).toEqual(["src/runner-protocol/versions.ts"]);
 });
 
-test("a release below a constant names it; an equal or higher release passes", () => {
-  for (const [name, minimum] of Object.entries(versions)) {
-    const [major, minor, patch] = minimum;
-    const names = (release: number[]) =>
-      versionsAbove(release.join(".")).map((above) => above.name);
-    expect(names(minimum as unknown as number[])).not.toContain(name);
-    expect(names([major, minor, patch + 1])).not.toContain(name);
-    expect(names([major, minor + 1, 0])).not.toContain(name);
-    expect(names([major + 1, 0, 0])).not.toContain(name);
-    if (patch > 0)
-      expect(versionsAbove([major, minor, patch - 1].join("."))).toContainEqual({
-        name,
-        version: minimum.join("."),
-      });
-  }
-  expect(() => versionsAbove("v0.1.47")).toThrow();
+test("a release below the minimum fails; an equal or higher release passes", () => {
+  expect(releaseBelowMinimum("0.1.84", [0, 1, 84])).toBe(false);
+  expect(releaseBelowMinimum("0.1.85", [0, 1, 84])).toBe(false);
+  expect(releaseBelowMinimum("0.2.0", [0, 1, 84])).toBe(false);
+  expect(releaseBelowMinimum("1.0.0", [0, 1, 84])).toBe(false);
+  expect(releaseBelowMinimum("0.1.83", [0, 1, 84])).toBe(true);
+  expect(() => releaseBelowMinimum("v0.1.47")).toThrow();
 });
-
-const RELEASED = `
-export const ACME_OLD: RunnerVersion = [0, 1, 40];
-export const ACME_SHIPPED: RunnerVersion = [0, 1, 61];
-`;
 
 test("the latest release is the highest vmajor.minor.patch tag", () => {
   expect(latestRelease(["v0.1.9", "v0.1.61", "v0.1.10", "nightly", "v0.1.60"])).toBe("v0.1.61");
   expect(latestRelease(["nightly"])).toBeUndefined();
 });
 
-test("a released versions file reads as name to version", () => {
-  expect(releasedVersions(RELEASED)).toEqual({
-    ACME_OLD: "0.1.40",
-    ACME_SHIPPED: "0.1.61",
-  });
-});
-
-test("a minimum added after a release must name a later release", () => {
-  const released = releasedVersions(RELEASED);
+test("a released versions file reads its minimum runner version", () => {
   expect(
-    newSinceRelease("v0.1.61", released, {
-      ACME_OLD: [0, 1, 40],
-      ACME_SHIPPED: [0, 1, 61],
-      ACME_SLIPPED: [0, 1, 61],
-      ACME_NEXT: [0, 1, 62],
-    }),
-  ).toEqual([{ name: "ACME_SLIPPED", version: "0.1.61" }]);
-});
-
-test("lowering a released minimum to an older release is a slip too", () => {
-  expect(
-    newSinceRelease("v0.1.61", releasedVersions(RELEASED), {
-      ACME_OLD: [0, 1, 40],
-      ACME_SHIPPED: [0, 1, 50],
-    }),
-  ).toEqual([{ name: "ACME_SHIPPED", version: "0.1.50" }]);
-});
-
-test("the current versions file has no minimum the latest release shipped without", () => {
-  expect(newSinceRelease("v0.0.0", {})).toEqual([]);
+    releasedMinimum(
+      ["OLD_RUNNER_VERSION", "MINIMUM_RUNNER_VERSION"]
+        .map((name, patch) => `export const ${name}: RunnerVersion = [0, 1, ${patch + 83}];`)
+        .join("\n"),
+    ),
+  ).toEqual([0, 1, 84]);
+  expect(releasedMinimum("")).toBeUndefined();
 });
 
 test("the minimum runner version must name a runner that has shipped", () => {
@@ -105,11 +70,8 @@ test("the minimum runner version must name a runner that has shipped", () => {
 });
 
 test("lowering a released minimum runner version is a slip", () => {
-  const released = { MINIMUM_RUNNER_VERSION: "0.1.84" };
-  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
-  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 86] })).toEqual([]);
-  expect(newSinceRelease("v0.1.86", released, { MINIMUM_RUNNER_VERSION: [0, 1, 50] })).toEqual([
-    { name: "MINIMUM_RUNNER_VERSION", version: "0.1.50" },
-  ]);
-  expect(newSinceRelease("v0.1.86", {}, { MINIMUM_RUNNER_VERSION: [0, 1, 84] })).toEqual([]);
+  expect(minimumLowered([0, 1, 84], [0, 1, 84])).toBe(false);
+  expect(minimumLowered([0, 1, 84], [0, 1, 86])).toBe(false);
+  expect(minimumLowered([0, 1, 84], [0, 1, 50])).toBe(true);
+  expect(minimumLowered(undefined, [0, 1, 84])).toBe(false);
 });

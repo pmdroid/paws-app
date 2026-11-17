@@ -51,13 +51,13 @@ export const RunnerAgentTargetsSchema = z
 
 /**
  * An agent version as the runner reports it in its heartbeat. `current` is the version new
- * sessions start. `previous` is only sent by older runners, and Paws ignores it. The others answer the target `target`: `installing`, `waiting` while `sessions` still run on the old
- * version, or `failed` with `error`.
+ * sessions start. The others answer the target `target`: `installing`, `waiting` while
+ * `sessions` still run on the old version, or `failed` with `error`.
  */
 export const RunnerInstalledAgentSchema = z.strictObject({
   agent,
   version: RunnerAgentVersionSchema,
-  status: z.enum(["current", "previous", "installing", "waiting", "failed"]),
+  status: z.enum(["current", "installing", "waiting", "failed"]),
   target: id.optional(),
   sessions: z.number().int().min(0).max(1024).optional(),
   error: z.string().min(1).max(500).optional(),

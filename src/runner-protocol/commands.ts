@@ -14,8 +14,7 @@ export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
 export const RUNNER_LIVE_GRACE_MS = 30_000;
 /**
  * How much time Paws is unreachable does not count against a runner lease. `creditedLeaseUntil`
- * adds it, capped by this budget and the command's `expiresAt`. Only a runner at
- * `OFFLINE_LEASE_RUNNER_VERSION` or newer is told the budget and has its stored lease moved.
+ * adds it, capped by this budget and the command's `expiresAt`.
  */
 export const RUNNER_OFFLINE_BUDGET_MS = 30 * 60_000;
 /** A handover waits this long for a safe point; after that the session keeps running. */
@@ -170,13 +169,6 @@ export const RunnerRuntimeSchema = z.strictObject({
     .regex(/^(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9@][A-Za-z0-9@._/+-]{0,199}$/),
   version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/),
 });
-
-/** A tool a runner before `ANY_MISE_BACKEND_RUNNER_VERSION` accepts: a mise core tool or `aqua:`. */
-export function legacyRuntimeTool(tool: string): boolean {
-  return /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/.test(
-    tool,
-  );
-}
 
 export const RunnerRuntimesSchema = z.array(RunnerRuntimeSchema).max(32);
 
