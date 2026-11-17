@@ -122,6 +122,7 @@ export type PolledSession = {
   updatedAtMs: number;
   endedAtMs?: number | null;
   stoppedAtMs?: number | null;
+  stale?: boolean;
 };
 
 export type PolledActivity = {
@@ -337,6 +338,7 @@ function readSessions(
           readTime(node, "dismissedAt") ??
           readTime(node, "archivedAt") ??
           (readString(node, "status") === "stopping" ? updatedAtMs : null),
+        stale: readString(node, "status") === "stale",
       });
     }
   }
