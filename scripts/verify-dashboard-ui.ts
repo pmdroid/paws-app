@@ -385,13 +385,16 @@ try {
     await expect(admin.locator("#preset-1-name")).toHaveValue("Codex");
     await expect(admin.locator(".settings-nav")).toHaveCount(0);
     if (width <= 390) await admin.getByRole("button", { name: "Open navigation" }).click();
-    const submenu = admin
+    const submenu = (width <= 390 ? admin.getByRole("dialog") : admin)
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
     await expect(submenu).toHaveCount(12);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
-    await admin.screenshot({ path: join(out, `workspace-submenu-${width}.png`) });
+    await admin.screenshot({
+      path: join(out, `workspace-submenu-${width}.png`),
+      animations: "disabled",
+    });
     if (width <= 390) {
       await submenu.filter({ hasText: "Merging" }).click();
       await expect(admin.locator("#content h1")).toHaveText("Merging");
@@ -681,7 +684,7 @@ try {
       await visit(reader, width, name, "/dashboard/settings/agent-accounts", "Agent accounts");
       await expect(reader.locator("#agent-account-settings li")).toHaveCount(3);
       await expect(reader.locator("#agent-account-settings button")).toHaveCount(
-        canManage ? 10 : 0,
+        canManage ? 15 : 0,
       );
       await reader.unroute("**/api/runners/agent-accounts");
     }
