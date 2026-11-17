@@ -27,7 +27,9 @@ import { checkDatabaseUrl } from "./database";
 /** `github.auth`. Paws uses the GitHub App only. */
 export type GitHubConfigAuth = "app";
 
-export type TrackerKind = "linear";
+const TRACKER_KINDS = ["linear", "dashboard"] as const;
+
+export type TrackerKind = (typeof TRACKER_KINDS)[number];
 
 export const IMPLEMENTERS = ["claude", "grok", "codex", "opencode"] as const;
 
@@ -119,6 +121,7 @@ export type PawsConfigFile = {
   briefTemplate?: string | null;
   timeLimits?: StoredTimeLimits;
   databaseUrl?: string;
+  trackerKind?: TrackerKind;
 };
 
 export function emptyConfigFile(): PawsConfigFile {
@@ -393,6 +396,10 @@ function assignConfig(
       asString(value, line),
       `config.toml line ${line}: database.url`,
     );
+    return;
+  }
+  if (section === "tracker") {
+    if (key === "kind") config.trackerKind = oneOf(TRACKER_KINDS, value, line, "tracker.kind");
     return;
   }
   if (section === "linear_comments") {

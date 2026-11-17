@@ -60,6 +60,7 @@ export type { PawsPaths } from "./paths";
 export {
   databaseUrlOf,
   LINEAR_WORKSPACE_REQUIRED,
+  dashboardModeProblem,
   loadRuntime,
   maxAwakeMsFrom,
   startupSettings,
