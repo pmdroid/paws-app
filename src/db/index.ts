@@ -48,7 +48,13 @@ export {
   type PgliteDb,
   type PostgresDb,
 } from "./postgres";
-export { checkPostgres, type MigrationReport, type PostgresConnection } from "./db-check";
+export {
+  checkPostgres,
+  refuseOlderDatabase,
+  UnknownDatabaseError,
+  type MigrationReport,
+  type PostgresConnection,
+} from "./db-check";
 export * from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { postgresDb, type Db, type PgDb, type PgOrm, type Q, syncSteps, type Steps } from "./db";

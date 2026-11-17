@@ -1,557 +1,230 @@
 CREATE EXTENSION IF NOT EXISTS citext;
 --> statement-breakpoint
-CREATE TABLE "agent_account" (
-	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"agent" text NOT NULL,
-	"label" text NOT NULL,
-	"legacy" integer DEFAULT 0 NOT NULL,
-	"enabled" integer DEFAULT 1 NOT NULL,
-	"created_at" bigint NOT NULL,
-	"updated_at" bigint NOT NULL,
-	"removed_at" bigint,
-	"concurrency" bigint,
-	CONSTRAINT "agent_account_id_workspace_id_agent_unique" UNIQUE("id","workspace_id","agent"),
-	CONSTRAINT "agent_account_check_1" CHECK (length(id) BETWEEN 1 AND 128),
-	CONSTRAINT "agent_account_check_2" CHECK (agent IN ('claude','codex','grok','opencode')),
-	CONSTRAINT "agent_account_check_3" CHECK (length(label) BETWEEN 1 AND 80),
-	CONSTRAINT "agent_account_check_4" CHECK (legacy IN (0,1)),
-	CONSTRAINT "agent_account_check_5" CHECK (enabled IN (0,1)),
-	CONSTRAINT "agent_account_check_6" CHECK (concurrency IS NULL OR concurrency BETWEEN 1 AND 64)
+CREATE SEQUENCE "job_activation_seq" AS bigint;
+--> statement-breakpoint
+CREATE TABLE "linear_access_event" (
+	"event_key" text PRIMARY KEY NOT NULL,
+	"created_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "agent_account_binding" (
+CREATE TABLE "linear_activity_snapshot" (
 	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"account_id" text NOT NULL,
-	"agent" text NOT NULL,
-	"runner_id" text NOT NULL,
-	"legacy" integer DEFAULT 0 NOT NULL,
-	"quota_scope" text NOT NULL,
-	"created_at" bigint NOT NULL,
-	"removed_at" bigint,
-	CONSTRAINT "agent_account_binding_check_1" CHECK (length(id) BETWEEN 1 AND 128),
-	CONSTRAINT "agent_account_binding_check_2" CHECK (legacy IN (0,1)),
-	CONSTRAINT "agent_account_binding_check_3" CHECK (quota_scope IN ('account','unknown')),
-	CONSTRAINT "agent_account_binding_check_4" CHECK (legacy=0 OR quota_scope='unknown')
+	"session_id" text NOT NULL,
+	"created_at" text NOT NULL,
+	"snapshot" jsonb NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "agent_account_health" (
-	"kind" text NOT NULL,
-	"scope" text NOT NULL,
-	"scope_id" text NOT NULL,
-	"model" text DEFAULT '' NOT NULL,
-	"workspace_id" text NOT NULL,
-	"agent" text NOT NULL,
+CREATE TABLE "linear_app_revocation" (
+	"organization_id" text NOT NULL,
+	"oauth_client_id" text NOT NULL,
+	"revoked_at" bigint NOT NULL,
+	"generation" bigint DEFAULT 1 NOT NULL,
+	"restored_after" bigint,
+	"restored_credential_fingerprint" text,
+	CONSTRAINT "linear_app_revocation_organization_id_oauth_client_id_pk" PRIMARY KEY("organization_id","oauth_client_id")
+);
+--> statement-breakpoint
+CREATE TABLE "linear_artifact" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"run_id" text NOT NULL,
+	"path" text NOT NULL,
+	"display_name" text NOT NULL,
+	"mime_type" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"request_version" bigint DEFAULT 0 NOT NULL,
 	"state" text NOT NULL,
+	"asset_url" text,
+	"created_at" bigint NOT NULL,
+	"identity_hash" text,
+	CONSTRAINT "linear_artifact_item_id_path_display_name_mime_type_sha256_unique" UNIQUE("item_id","path","display_name","mime_type","sha256"),
+	CONSTRAINT "linear_artifact_check_1" CHECK (state IN ('pending', 'uploaded', 'failed'))
+);
+--> statement-breakpoint
+CREATE TABLE "linear_artifact_attempt" (
+	"item_id" text NOT NULL,
+	"identity_hash" text NOT NULL,
+	"version" bigint NOT NULL,
+	"completed_version" bigint DEFAULT 0 NOT NULL,
+	"attachment_requested" integer DEFAULT 0 NOT NULL,
+	CONSTRAINT "linear_artifact_attempt_item_id_identity_hash_pk" PRIMARY KEY("item_id","identity_hash"),
+	CONSTRAINT "linear_artifact_attempt_check_1" CHECK (attachment_requested IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "linear_comment" (
+	"comment_id" text PRIMARY KEY NOT NULL,
+	"issue_id" text NOT NULL,
+	"organization_id" text,
+	"team_id" text,
+	"author_id" text,
+	"actor_id" text,
+	"actor_type" text,
+	"bot_actor" text,
+	"on_behalf_of" text,
+	"parent_id" text,
+	"body" text NOT NULL,
+	"created_at_ms" bigint NOT NULL,
+	"updated_at_ms" bigint NOT NULL,
+	"received_at" bigint NOT NULL,
 	"source" text NOT NULL,
-	"source_id" text NOT NULL,
-	"binding_id" text NOT NULL,
-	"runner_id" text NOT NULL,
-	"observed_at" bigint NOT NULL,
-	"resets_at" bigint,
-	"next_check_at" bigint,
-	"failures" bigint DEFAULT 0 NOT NULL,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "agent_account_health_kind_scope_id_model_pk" PRIMARY KEY("kind","scope_id","model"),
-	CONSTRAINT "agent_account_health_check_1" CHECK (kind IN ('quota','auth','provider','model')),
-	CONSTRAINT "agent_account_health_check_2" CHECK (scope IN ('account','binding','provider')),
-	CONSTRAINT "agent_account_health_check_3" CHECK (length(scope_id) BETWEEN 1 AND 300),
-	CONSTRAINT "agent_account_health_check_4" CHECK (length(model)<=200),
-	CONSTRAINT "agent_account_health_check_5" CHECK (agent IN ('claude','codex','grok','opencode')),
-	CONSTRAINT "agent_account_health_check_6" CHECK (state IN ('ok','low','exhausted','auth_required','restricted','unsupported_model')),
-	CONSTRAINT "agent_account_health_check_7" CHECK (source IN ('result','login_check','sign_in','resume')),
-	CONSTRAINT "agent_account_health_check_8" CHECK (length(source_id) BETWEEN 1 AND 200),
-	CONSTRAINT "agent_account_health_check_9" CHECK (failures BETWEEN 0 AND 1000),
-	CONSTRAINT "agent_account_health_check_10" CHECK ((kind='provider')=(scope='provider')),
-	CONSTRAINT "agent_account_health_check_11" CHECK (kind='model' OR model='')
-);
---> statement-breakpoint
-CREATE TABLE "agent_catalog_refresh" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "agent_catalog_refresh_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"completed_at" bigint NOT NULL,
-	CONSTRAINT "agent_catalog_refresh_check_1" CHECK (id = 1)
-);
---> statement-breakpoint
-CREATE TABLE "agent_closeout_event" (
-	"run_id" text NOT NULL,
-	"sequence" bigint NOT NULL,
-	"item_id" text NOT NULL,
-	"at" bigint NOT NULL,
-	"type" text NOT NULL,
-	"head" text NOT NULL,
-	"max_attempts" bigint,
-	"check_id" text,
-	"kind" text,
-	"command" text,
-	"attempt" bigint,
-	"state" text,
-	"exit_code" bigint,
-	"timed_out" integer DEFAULT 0 NOT NULL,
-	"duration_ms" bigint,
-	"stdout" text DEFAULT '' NOT NULL,
-	"stderr" text DEFAULT '' NOT NULL,
-	"truncated" integer DEFAULT 0 NOT NULL,
-	"checks" text,
-	"blocked" text,
-	"base" text,
-	"policy_digest" text,
-	"clean" bigint,
-	CONSTRAINT "agent_closeout_event_run_id_sequence_pk" PRIMARY KEY("run_id","sequence"),
-	CONSTRAINT "agent_closeout_event_check_1" CHECK (sequence > 0),
-	CONSTRAINT "agent_closeout_event_check_2" CHECK (type IN ('report', 'started', 'finished')),
-	CONSTRAINT "agent_closeout_event_check_3" CHECK (state IS NULL OR state IN ('passed', 'failed', 'exhausted', 'cancelled')),
-	CONSTRAINT "agent_closeout_event_check_4" CHECK (timed_out IN (0, 1)),
-	CONSTRAINT "agent_closeout_event_check_5" CHECK (truncated IN (0, 1)),
-	CONSTRAINT "agent_closeout_event_check_6" CHECK (clean IS NULL OR clean IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "agent_hook" (
-	"id" text PRIMARY KEY NOT NULL,
-	"event" text NOT NULL,
-	"matcher" text,
-	"command" text NOT NULL,
-	"timeout_seconds" bigint NOT NULL,
-	"agents" jsonb NOT NULL,
-	"skill" text,
-	"created_at" bigint NOT NULL,
-	CONSTRAINT "agent_hook_check_1" CHECK (event IN ('after_edit','before_shell','before_tool','stop','session_start')),
-	CONSTRAINT "agent_hook_check_2" CHECK (matcher IS NULL OR length(matcher) BETWEEN 1 AND 256),
-	CONSTRAINT "agent_hook_check_3" CHECK (length(command) BETWEEN 1 AND 4096),
-	CONSTRAINT "agent_hook_check_4" CHECK (timeout_seconds BETWEEN 1 AND 600)
-);
---> statement-breakpoint
-CREATE TABLE "agent_model_catalog" (
-	"runner_id" text NOT NULL,
-	"user_id" text NOT NULL,
-	"agent" text NOT NULL,
-	"model" text NOT NULL,
-	"result_json" jsonb NOT NULL,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "agent_model_catalog_runner_id_user_id_agent_model_pk" PRIMARY KEY("runner_id","user_id","agent","model"),
-	CONSTRAINT "agent_model_catalog_check_1" CHECK (agent IN ('claude','codex','grok','opencode'))
-);
---> statement-breakpoint
-CREATE TABLE "agent_model_probe" (
-	"command_id" text PRIMARY KEY NOT NULL,
-	"runner_id" text NOT NULL,
-	"user_id" text NOT NULL,
-	"agent" text NOT NULL,
-	"model" text NOT NULL,
-	"requested_at" bigint NOT NULL,
-	"finished_at" bigint,
-	CONSTRAINT "agent_model_probe_check_1" CHECK (agent IN ('claude','codex','grok','opencode'))
-);
---> statement-breakpoint
-CREATE TABLE "agent_session_snapshot" (
-	"run_id" text NOT NULL,
-	"generation" bigint NOT NULL,
-	"item_id" text NOT NULL,
-	"workspace_id" text NOT NULL,
-	"runner_id" text NOT NULL,
-	"owner_user_id" text,
-	"agent" text,
-	"agent_version" text,
-	"session_id" text,
-	"workspace_path" text,
-	"commit_sha" text,
-	"turn" bigint,
-	"size_bytes" bigint DEFAULT 0 NOT NULL,
-	"sealed_size" bigint,
-	"sha256" text,
-	"status" text DEFAULT 'uploading' NOT NULL,
-	"created_at" bigint NOT NULL,
-	"sealed_at" bigint,
-	CONSTRAINT "agent_session_snapshot_run_id_generation_pk" PRIMARY KEY("run_id","generation"),
-	CONSTRAINT "agent_session_snapshot_check_1" CHECK (generation>0),
-	CONSTRAINT "agent_session_snapshot_check_2" CHECK (agent IS NULL OR agent IN ('claude','codex','grok')),
-	CONSTRAINT "agent_session_snapshot_check_3" CHECK (turn IS NULL OR turn>=0),
-	CONSTRAINT "agent_session_snapshot_check_4" CHECK (size_bytes BETWEEN 0 AND 1073741824),
-	CONSTRAINT "agent_session_snapshot_check_5" CHECK (sealed_size IS NULL OR sealed_size=size_bytes),
-	CONSTRAINT "agent_session_snapshot_check_6" CHECK (sha256 IS NULL OR length(sha256)=64),
-	CONSTRAINT "agent_session_snapshot_check_7" CHECK (status IN ('uploading','sealed','discarded')),
-	CONSTRAINT "agent_session_snapshot_check_8" CHECK (status<>'sealed' OR (owner_user_id IS NOT NULL AND agent IS NOT NULL AND agent_version IS NOT NULL AND session_id IS NOT NULL AND workspace_path IS NOT NULL AND commit_sha IS NOT NULL AND turn IS NOT NULL AND sealed_size IS NOT NULL AND sha256 IS NOT NULL AND sealed_at IS NOT NULL))
-);
---> statement-breakpoint
-CREATE TABLE "agent_session_snapshot_chunk" (
-	"run_id" text NOT NULL,
-	"generation" bigint NOT NULL,
-	"offset" bigint NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	"key_id" text NOT NULL,
-	CONSTRAINT "agent_session_snapshot_chunk_run_id_generation_offset_pk" PRIMARY KEY("run_id","generation","offset"),
-	CONSTRAINT "agent_session_snapshot_chunk_check_1" CHECK ("offset">=0 AND "offset"%524288=0),
-	CONSTRAINT "agent_session_snapshot_chunk_check_2" CHECK (size_bytes BETWEEN 1 AND 524288),
-	CONSTRAINT "agent_session_snapshot_chunk_check_3" CHECK (length(sha256)=64),
-	CONSTRAINT "agent_session_snapshot_chunk_check_4" CHECK (length(key_id)=64)
-);
---> statement-breakpoint
-CREATE TABLE "agent_skill" (
-	"name" text PRIMARY KEY NOT NULL,
-	"source" jsonb NOT NULL,
-	"version" text NOT NULL,
-	"sha256" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"agents" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"updated_at" bigint NOT NULL,
+	"edited" integer DEFAULT 0 NOT NULL,
 	"removed_at" bigint,
-	CONSTRAINT "agent_skill_check_1" CHECK (length(name) BETWEEN 1 AND 64),
-	CONSTRAINT "agent_skill_check_3" CHECK (length(version) BETWEEN 1 AND 128),
-	CONSTRAINT "agent_skill_check_4" CHECK (length(sha256)=64),
-	CONSTRAINT "agent_skill_check_5" CHECK (size_bytes>0)
-);
---> statement-breakpoint
-CREATE TABLE "agent_version" (
-	"agent" text NOT NULL,
-	"version" text NOT NULL,
-	"published_at" bigint,
-	"integrity" text NOT NULL,
-	"status" text NOT NULL,
-	"first_seen_at" bigint NOT NULL,
+	"state" text DEFAULT 'received' NOT NULL,
 	"reason" text,
-	"native_version" text,
-	"checked_at" bigint NOT NULL,
-	CONSTRAINT "agent_version_agent_version_pk" PRIMARY KEY("agent","version"),
-	CONSTRAINT "agent_version_check_1" CHECK (status IN ('eligible','waiting','ineligible','refused'))
+	"authority" text,
+	"item_id" text,
+	"session_id" text,
+	"generation" bigint,
+	"item_version" bigint,
+	"via" text,
+	"settled_at" bigint,
+	CONSTRAINT "linear_comment_check_1" CHECK (length(comment_id) BETWEEN 1 AND 300),
+	CONSTRAINT "linear_comment_check_2" CHECK (length(issue_id) BETWEEN 1 AND 300),
+	CONSTRAINT "linear_comment_check_3" CHECK (source IN ('webhook','poll')),
+	CONSTRAINT "linear_comment_check_4" CHECK (edited IN (0,1)),
+	CONSTRAINT "linear_comment_check_5" CHECK (state IN ('received','queued','delivered','answered','ignored','rejected','removed')),
+	CONSTRAINT "linear_comment_check_6" CHECK (authority IS NULL OR authority IN ('person','agent')),
+	CONSTRAINT "linear_comment_check_7" CHECK (via IS NULL OR via IN ('brief','follow_up','restart','answer'))
 );
 --> statement-breakpoint
-CREATE TABLE "agent_wait" (
-	"run_id" text PRIMARY KEY NOT NULL,
-	"generation" bigint NOT NULL,
-	"started_at" bigint NOT NULL,
-	"waiting_ms" bigint NOT NULL
+CREATE TABLE "linear_conversation" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"transcript" text,
+	"transcript_offset" bigint DEFAULT 0 NOT NULL,
+	"blocked" integer DEFAULT 0 NOT NULL,
+	"blocked_at" bigint,
+	CONSTRAINT "linear_conversation_check_2" CHECK (blocked IN (0,1))
 );
 --> statement-breakpoint
-CREATE TABLE "browser_installation_request" (
-	"state_hash" text PRIMARY KEY NOT NULL,
-	"browser_hash" text NOT NULL,
-	"identity" text NOT NULL,
+CREATE TABLE "linear_conversation_entry" (
+	"item_id" text NOT NULL,
+	"position" integer NOT NULL,
+	"entry" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	CONSTRAINT "linear_conversation_entry_item_id_position_pk" PRIMARY KEY("item_id","position")
+);
+--> statement-breakpoint
+CREATE TABLE "linear_installation_permission" (
+	"organization_id" text NOT NULL,
+	"oauth_client_id" text NOT NULL,
+	"app_user_id" text NOT NULL,
+	"all_public_teams" integer NOT NULL,
+	"observed_at" bigint NOT NULL,
+	CONSTRAINT "linear_installation_permission_organization_id_oauth_client_id_app_user_id_pk" PRIMARY KEY("organization_id","oauth_client_id","app_user_id"),
+	CONSTRAINT "linear_installation_permission_check_1" CHECK (all_public_teams IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "linear_issue_context" (
+	"session_id" text NOT NULL,
+	"issue_id" text NOT NULL,
+	"observed_at" bigint NOT NULL,
+	"context" text NOT NULL,
+	CONSTRAINT "linear_issue_context_session_id_issue_id_pk" PRIMARY KEY("session_id","issue_id")
+);
+--> statement-breakpoint
+CREATE TABLE "linear_item_request" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"requests" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "linear_request_budget" (
+	"workspace" text PRIMARY KEY NOT NULL,
+	"window_start" bigint NOT NULL,
+	"spent" bigint NOT NULL,
+	"hold_until" bigint,
+	"request_limit" bigint
+);
+--> statement-breakpoint
+CREATE TABLE "linear_request_reservation" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace" text NOT NULL,
 	"expires_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "candidate_paths" (
-	"item_id" text NOT NULL,
-	"head_sha" text NOT NULL,
-	"paths" jsonb NOT NULL,
-	"recorded_at" bigint NOT NULL,
-	CONSTRAINT "candidate_paths_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha")
-);
---> statement-breakpoint
-CREATE TABLE "candidate_risk" (
-	"item_id" text NOT NULL,
-	"head_sha" text NOT NULL,
-	"base_sha" text NOT NULL,
-	"tier" text NOT NULL,
-	"paths" jsonb NOT NULL,
-	"classified_at" bigint NOT NULL,
-	"matches" jsonb,
-	CONSTRAINT "candidate_risk_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha"),
-	CONSTRAINT "candidate_risk_check_1" CHECK (tier IN ('high', 'normal'))
-);
---> statement-breakpoint
-CREATE TABLE "checkpoint_ref_cleanup" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"ended_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "ci_rerun" (
-	"item_id" text NOT NULL,
-	"head_sha" text NOT NULL,
-	"run_ids" jsonb NOT NULL,
-	"reason" text NOT NULL,
-	"at" bigint NOT NULL,
-	CONSTRAINT "ci_rerun_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha"),
-	CONSTRAINT "ci_rerun_check_2" CHECK (length(reason) BETWEEN 1 AND 2000)
-);
---> statement-breakpoint
-CREATE TABLE "ci_round" (
-	"item_id" text NOT NULL,
-	"head" text NOT NULL,
-	"run_id" text,
-	"next" text NOT NULL,
-	"fix" bigint,
-	"fix_limit" bigint NOT NULL,
-	"checks" jsonb NOT NULL,
-	"recorded_at" bigint NOT NULL,
-	CONSTRAINT "ci_round_item_id_head_pk" PRIMARY KEY("item_id","head"),
-	CONSTRAINT "ci_round_check_1" CHECK (next IN ('agent','asked','failed')),
-	CONSTRAINT "ci_round_check_2" CHECK (fix IS NULL OR fix >= 1),
-	CONSTRAINT "ci_round_check_3" CHECK (fix_limit >= 0)
-);
---> statement-breakpoint
-CREATE TABLE "closeout_bypass_check" (
-	"question_id" text NOT NULL,
-	"check_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"state" text NOT NULL,
-	"attempt" bigint,
-	"message" text NOT NULL,
-	"ordinal" bigint NOT NULL,
-	"reason" text,
-	"approved_by" text,
-	"approved_by_name" text,
-	"approved_at" bigint,
-	CONSTRAINT "closeout_bypass_check_question_id_check_id_pk" PRIMARY KEY("question_id","check_id")
-);
---> statement-breakpoint
-CREATE TABLE "closeout_evidence_object" (
-	"task" text NOT NULL,
-	"path" text NOT NULL,
-	"prefix" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	"modified_at" bigint NOT NULL,
-	"stored_at" bigint NOT NULL,
-	CONSTRAINT "closeout_evidence_object_task_path_pk" PRIMARY KEY("task","path")
-);
---> statement-breakpoint
-CREATE TABLE "closeout_policy_block" (
-	"question_id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"repository" text NOT NULL,
-	"cause" text NOT NULL,
-	"error" text NOT NULL,
-	"policy_path" text NOT NULL,
-	"main_sha" text NOT NULL,
-	"changed_by_sha" text,
+CREATE TABLE "linear_session" (
+	"session_id" text PRIMARY KEY NOT NULL,
+	"issue_id" text,
+	"organization_id" text,
+	"app_user_id" text,
+	"creator_id" text,
+	"active_item_id" text,
+	"generation" bigint DEFAULT 0 NOT NULL,
+	"stopped_at" bigint,
 	"created_at" bigint NOT NULL,
-	CONSTRAINT "closeout_policy_block_check_1" CHECK (cause = 'policy_unreadable')
+	"oauth_client_id" text,
+	"team_id" text,
+	"installation_observed_at" bigint,
+	"activities_listed_generation" bigint
 );
 --> statement-breakpoint
-CREATE TABLE "closeout_policy_outage" (
-	"repository" text PRIMARY KEY NOT NULL,
-	"started_at" bigint NOT NULL,
-	"error" text NOT NULL,
-	"policy_path" text NOT NULL,
-	"main_sha" text NOT NULL,
-	"changed_by_sha" text,
-	"question_id" text,
-	"question_item_id" text
+CREATE TABLE "linear_session_cleanup_block" (
+	"session_id" text PRIMARY KEY NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "closeout_progress" (
-	"id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"task_id" text NOT NULL,
-	"base" text NOT NULL,
-	"head" text NOT NULL,
-	"policy_digest" text NOT NULL,
-	"policy_path" text,
-	"decision" text,
-	"started_at" bigint NOT NULL,
-	"updated_at" bigint NOT NULL,
-	"finished_at" bigint,
-	"recheck_digest" text
+CREATE TABLE "linear_session_context" (
+	"session_id" text PRIMARY KEY NOT NULL,
+	"context" text NOT NULL,
+	"richness" bigint NOT NULL,
+	"snapshot_context" text
 );
 --> statement-breakpoint
-CREATE TABLE "closeout_recovery" (
-	"question_id" text PRIMARY KEY NOT NULL,
-	"task_id" text NOT NULL,
-	"item_id" text NOT NULL,
-	"base" text NOT NULL,
-	"head" text NOT NULL,
-	"policy_digest" text NOT NULL,
-	"failed_checks" jsonb NOT NULL,
-	"retry_baseline" jsonb NOT NULL,
-	"summary" text NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "closeout_retry_window" (
-	"job_id" bigint NOT NULL,
-	"activation_id" bigint NOT NULL,
-	"item_id" text NOT NULL,
-	"retry_baseline" jsonb NOT NULL,
-	CONSTRAINT "closeout_retry_window_job_id_activation_id_pk" PRIMARY KEY("job_id","activation_id")
-);
---> statement-breakpoint
-CREATE TABLE "closeout_round" (
-	"item_id" text NOT NULL,
-	"head" text NOT NULL,
-	"retry_baseline" jsonb NOT NULL,
-	"started_at" bigint NOT NULL,
-	CONSTRAINT "closeout_round_item_id_head_pk" PRIMARY KEY("item_id","head")
-);
---> statement-breakpoint
-CREATE TABLE "closeout_step" (
-	"progress_id" text NOT NULL,
-	"step_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"state" text NOT NULL,
-	"command" text NOT NULL,
-	"detail" text,
-	"attempt" bigint NOT NULL,
-	"timeout_seconds" bigint,
-	"started_at" bigint,
-	"finished_at" bigint,
-	"exit_code" bigint,
-	"timed_out" integer DEFAULT 0 NOT NULL,
-	"timeout_reason" text,
-	"stdout" text DEFAULT '' NOT NULL,
-	"stderr" text DEFAULT '' NOT NULL,
-	"truncated" integer DEFAULT 0 NOT NULL,
-	"log_path" text,
-	"evidence_path" text,
-	"findings" text,
-	"ordinal" bigint NOT NULL,
-	"duration_ms" bigint,
-	"tokens" bigint,
-	"review_fail_on" text,
-	"review_pre_existing" text,
-	CONSTRAINT "closeout_step_progress_id_step_id_pk" PRIMARY KEY("progress_id","step_id"),
-	CONSTRAINT "closeout_step_check_1" CHECK (kind IN ('setup', 'command', 'review')),
-	CONSTRAINT "closeout_step_check_2" CHECK (state IN ( 'pending', 'running', 'passed', 'failed', 'blocked', 'skipped', 'exhausted' )),
-	CONSTRAINT "closeout_step_check_3" CHECK (timed_out IN (0, 1)),
-	CONSTRAINT "closeout_step_check_4" CHECK (truncated IN (0, 1)),
-	CONSTRAINT "closeout_step_check_5" CHECK (duration_ms IS NULL OR duration_ms >= 0),
-	CONSTRAINT "closeout_step_check_6" CHECK (tokens IS NULL OR tokens >= 0),
-	CONSTRAINT "closeout_step_check_7" CHECK (review_fail_on IS NULL OR review_fail_on IN ('P0', 'P1', 'P2', 'P3'))
-);
---> statement-breakpoint
-CREATE TABLE "credential" (
-	"kind" text NOT NULL,
-	"workspace" text NOT NULL,
-	"ciphertext" text NOT NULL,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "credential_kind_workspace_pk" PRIMARY KEY("kind","workspace"),
-	CONSTRAINT "credential_kind" CHECK (kind IN ('linear', 'slack'))
-);
---> statement-breakpoint
-CREATE TABLE "decision_memory" (
-	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"question_id" text NOT NULL,
-	"statement" text NOT NULL,
-	"scope_globs" jsonb NOT NULL,
-	"tags" jsonb NOT NULL,
-	"revision" bigint DEFAULT 1 NOT NULL,
-	"retired_at" bigint,
-	"saved_by" text NOT NULL,
-	"updated_by" text NOT NULL,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "decision_memory_question_id_unique" UNIQUE("question_id")
-);
---> statement-breakpoint
-CREATE TABLE "decision_suggestion" (
-	"id" text PRIMARY KEY NOT NULL,
-	"question_id" text NOT NULL,
-	"decision_id" text NOT NULL,
-	"revision" bigint NOT NULL,
-	"statement" text NOT NULL,
-	"accepted_by" text,
-	"accepted_at" bigint,
-	CONSTRAINT "decision_suggestion_question_id_decision_id_unique" UNIQUE("question_id","decision_id")
-);
---> statement-breakpoint
-CREATE TABLE "delegation_reconciliation" (
-	"delegation_id" text PRIMARY KEY NOT NULL,
-	"changes" bigint DEFAULT 0 NOT NULL,
-	"reconciled_changes" bigint DEFAULT 0 NOT NULL,
-	"reconciled_at" bigint
-);
---> statement-breakpoint
-CREATE TABLE "evidence" (
-	"id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"run_id" text NOT NULL,
-	"check_id" text NOT NULL,
-	"attempt" bigint NOT NULL,
-	"media_type" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	"display_name" text NOT NULL,
-	"head_commit" text NOT NULL,
+CREATE TABLE "linear_stop_receipt" (
+	"session_id" text NOT NULL,
+	"event_key" text NOT NULL,
+	"generation" bigint NOT NULL,
 	"created_at" bigint NOT NULL,
-	"asset_url" text,
-	CONSTRAINT "evidence_check_1" CHECK (attempt>=1),
-	CONSTRAINT "evidence_check_2" CHECK (media_type IN ('video/webm','video/mp4','image/png','image/jpeg','image/webp')),
-	CONSTRAINT "evidence_check_3" CHECK (size_bytes>0),
-	CONSTRAINT "evidence_check_4" CHECK (length(sha256)=64)
+	CONSTRAINT "linear_stop_receipt_session_id_event_key_pk" PRIMARY KEY("session_id","event_key")
 );
 --> statement-breakpoint
-CREATE TABLE "evidence_object" (
-	"id" text PRIMARY KEY NOT NULL,
-	"prefix" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"stored_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "finding_group" (
-	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"repository" text NOT NULL,
+CREATE TABLE "linear_task_delegation" (
+	"item_id" text NOT NULL,
+	"issue_id" text NOT NULL,
 	"team_id" text NOT NULL,
-	"title" text NOT NULL,
-	"summary" text NOT NULL,
-	"scope" text NOT NULL,
-	"suggested_issue" text,
-	"member_ids" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"run_id" text NOT NULL,
-	"status" text DEFAULT 'open' NOT NULL,
-	"status_reason" text,
-	"status_by" text,
-	"status_at" bigint,
-	"filed_issue" text,
-	"action" text,
-	CONSTRAINT "finding_group_check_2" CHECK (status IN ('open','filed','added','dismissed')),
-	CONSTRAINT "finding_group_check_3" CHECK (action IS NULL OR action IN ('file','add','dismiss'))
+	"app_user_id" text NOT NULL,
+	"human_actor_id" text,
+	CONSTRAINT "linear_task_delegation_item_id_issue_id_pk" PRIMARY KEY("item_id","issue_id")
 );
 --> statement-breakpoint
-CREATE TABLE "finding_group_run" (
+CREATE TABLE "linear_team_access" (
+	"organization_id" text NOT NULL,
+	"oauth_client_id" text NOT NULL,
+	"app_user_id" text NOT NULL,
+	"team_id" text NOT NULL,
+	"allowed" integer NOT NULL,
+	"observed_at" bigint NOT NULL,
+	CONSTRAINT "linear_team_access_organization_id_oauth_client_id_app_user_id_team_id_pk" PRIMARY KEY("organization_id","oauth_client_id","app_user_id","team_id"),
+	CONSTRAINT "linear_team_access_check_1" CHECK (allowed IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "linear_turn" (
+	"ordinal" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "linear_turn_ordinal_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"event_key" text NOT NULL,
+	"activity_id" text,
+	"session_id" text NOT NULL,
+	"actor_id" text,
+	"body" text NOT NULL,
+	"payload" jsonb NOT NULL,
+	"created_at_ms" bigint NOT NULL,
+	"received_at" bigint NOT NULL,
+	"item_id" text,
+	"state" text DEFAULT 'pending' NOT NULL,
+	"announced_generation" bigint,
+	CONSTRAINT "linear_turn_event_key_unique" UNIQUE("event_key"),
+	CONSTRAINT "linear_turn_activity_id_unique" UNIQUE("activity_id"),
+	CONSTRAINT "linear_turn_check_2" CHECK (state IN ('pending','applied','cancelled'))
+);
+--> statement-breakpoint
+CREATE TABLE "instance" (
 	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"day" text NOT NULL,
+	"role" text NOT NULL,
+	"host" text NOT NULL,
 	"started_at" bigint NOT NULL,
-	"finished_at" bigint,
-	"fingerprint" text NOT NULL,
-	"status" text NOT NULL,
-	"tokens" bigint,
-	"group_count" bigint DEFAULT 0 NOT NULL,
-	"error" text,
-	"finding_cursor" bigint DEFAULT 0 NOT NULL,
-	"issue_cursor" bigint DEFAULT 0 NOT NULL,
-	"skip_reason" text,
-	CONSTRAINT "finding_group_run_workspace_id_day_unique" UNIQUE("workspace_id","day"),
-	CONSTRAINT "finding_group_run_check_1" CHECK (status IN ('running','completed','failed'))
-);
---> statement-breakpoint
-CREATE TABLE "finding_grouping_off" (
-	"workspace_id" text PRIMARY KEY NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "github_attribution_request" (
-	"state_hash" text PRIMARY KEY NOT NULL,
-	"browser_hash" text NOT NULL,
-	"session_hash" text NOT NULL,
-	"workspace_id" text NOT NULL,
-	"user_id" text NOT NULL,
-	"revision" bigint NOT NULL,
-	"expires_at" bigint NOT NULL,
-	"return_path" text,
-	CONSTRAINT "github_attribution_request_check_1" CHECK (return_path IS NULL OR return_path = '/status/settings/account' OR ( length(return_path) = 35 AND substr(return_path, 1, 9) = '/onboard/' AND substr(return_path, 10) !~ '[^0-9A-Za-z]' ))
-);
---> statement-breakpoint
-CREATE TABLE "github_delivery" (
-	"delivery_id" text PRIMARY KEY NOT NULL,
-	"event" text NOT NULL,
-	"payload" text NOT NULL,
-	"received_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "github_integration_hold" (
-	"question_id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"phase" text NOT NULL,
-	"item_version" bigint NOT NULL,
-	"session_generation" bigint NOT NULL,
-	"current_run_id" text,
-	"checkpoint" text NOT NULL,
-	"authority" text NOT NULL,
-	"status" text DEFAULT 'pending' NOT NULL,
-	CONSTRAINT "github_integration_hold_check_1" CHECK (phase IN ('initial','publication')),
-	CONSTRAINT "github_integration_hold_check_2" CHECK (status IN ('pending','verified','revoked'))
+	"heartbeat_at" bigint NOT NULL,
+	"version" text,
+	"pid" bigint,
+	"stopped_at" bigint,
+	CONSTRAINT "instance_role" CHECK (role IN ('all', 'web', 'worker'))
 );
 --> statement-breakpoint
 CREATE TABLE "improvement" (
@@ -761,428 +434,37 @@ CREATE TABLE "improvement_work" (
 	"bound_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "inbox_event" (
-	"dedupe_key" text PRIMARY KEY NOT NULL,
-	"delivery_id" text,
-	"source" text NOT NULL,
-	"action" text NOT NULL,
-	"session_id" text,
-	"issue_id" text,
-	"activity_id" text,
-	"body" text,
-	"signal" text,
-	"updated_at_ms" bigint NOT NULL,
-	"payload" jsonb NOT NULL,
-	"received_at" bigint NOT NULL,
-	"handled" integer DEFAULT 0 NOT NULL,
-	"attempts" bigint DEFAULT 0 NOT NULL,
-	"next_attempt_at" bigint,
-	"last_error" text,
-	"locked_by" text,
-	"locked_until" bigint,
-	CONSTRAINT "inbox_event_check_1" CHECK (source IN ('webhook', 'poll')),
-	CONSTRAINT "inbox_event_check_2" CHECK (action IN ('created', 'prompted', 'other')),
-	CONSTRAINT "inbox_event_check_4" CHECK (handled IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "instance" (
-	"id" text PRIMARY KEY NOT NULL,
-	"role" text NOT NULL,
-	"host" text NOT NULL,
-	"started_at" bigint NOT NULL,
-	"heartbeat_at" bigint NOT NULL,
-	"version" text,
-	"pid" bigint,
-	CONSTRAINT "instance_role" CHECK (role IN ('all', 'web', 'worker'))
-);
---> statement-breakpoint
-CREATE TABLE "item_blocker_check" (
+CREATE TABLE "checkpoint_ref_cleanup" (
 	"item_id" text PRIMARY KEY NOT NULL,
-	"checked_at" bigint NOT NULL
+	"ended_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "item_branch_state" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"run_id" text NOT NULL,
-	"head" text NOT NULL,
-	"base" text NOT NULL,
-	"commits" bigint NOT NULL,
-	"recorded_at" bigint NOT NULL,
-	CONSTRAINT "item_branch_state_check_1" CHECK (commits >= 0)
+CREATE TABLE "github_blob" (
+	"sha" text PRIMARY KEY NOT NULL,
+	"content" text NOT NULL,
+	"cached_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "item_candidate" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"sha" text NOT NULL,
-	"branch" text NOT NULL,
-	"recorded_at" bigint NOT NULL
+CREATE TABLE "github_delivery" (
+	"delivery_id" text PRIMARY KEY NOT NULL,
+	"event" text NOT NULL,
+	"repository" text,
+	"pull_number" integer,
+	"received_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "item_continuation" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"previous_item_id" text NOT NULL,
-	"branch" text NOT NULL,
-	CONSTRAINT "item_continuation_check_1" CHECK (branch LIKE 'paws/%')
-);
---> statement-breakpoint
-CREATE TABLE "item_dependency_snapshot" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"generation" bigint NOT NULL,
-	"scope" jsonb NOT NULL,
-	"linear_states" jsonb NOT NULL,
-	"external_evidence" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"linear_identifiers" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	CONSTRAINT "item_dependency_snapshot_check_1" CHECK (generation>0)
-);
---> statement-breakpoint
-CREATE TABLE "item_hold" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"reason" text NOT NULL,
-	"blockers" jsonb NOT NULL,
-	"files" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	CONSTRAINT "item_hold_check_1" CHECK (reason IN ('blocked','project','reconciling','snapshot','cap','slot','workspace','overlap'))
-);
---> statement-breakpoint
-CREATE TABLE "item_pull_request" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"pull_number" bigint NOT NULL,
-	"pull_url" text,
-	"opened_at" bigint NOT NULL,
-	CONSTRAINT "item_pull_request_check_1" CHECK (pull_number > 0)
-);
---> statement-breakpoint
-CREATE TABLE "item_reconciliation_effect" (
-	"item_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"token" text NOT NULL,
-	CONSTRAINT "item_reconciliation_effect_item_id_kind_pk" PRIMARY KEY("item_id","kind"),
-	CONSTRAINT "item_reconciliation_effect_check_1" CHECK (kind IN ('spec','removed','canceled'))
-);
---> statement-breakpoint
-CREATE TABLE "item_reconciliation_request" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"token" text NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "item_wait" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"version" bigint NOT NULL,
-	"since" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "job" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "job_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"queue" text NOT NULL,
-	"job_key" text,
-	"payload" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"priority" bigint DEFAULT 5 NOT NULL,
-	"run_at" bigint NOT NULL,
-	"status" text DEFAULT 'pending' NOT NULL,
-	"attempts" bigint DEFAULT 0 NOT NULL,
-	"max_attempts" bigint DEFAULT 10 NOT NULL,
-	"locked_by" text,
-	"locked_until" bigint,
-	"last_error" text,
-	"created_at" bigint NOT NULL,
-	"finished_at" bigint,
-	"recurring_every_ms" bigint,
-	"fire_count" bigint DEFAULT 0 NOT NULL,
-	"lane" text DEFAULT 'default' NOT NULL,
-	"item_version" bigint,
-	"activation_id" bigint DEFAULT 0 NOT NULL,
-	CONSTRAINT "job_job_key_unique" UNIQUE("job_key"),
-	CONSTRAINT "job_check_2" CHECK (status IN ('pending', 'running', 'done', 'dead', 'cancelled'))
-);
---> statement-breakpoint
-CREATE TABLE "job_activation" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "job_activation_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"job_id" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_access_event" (
-	"event_key" text PRIMARY KEY NOT NULL,
-	"created_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_activity_listing" (
-	"session_id" text PRIMARY KEY NOT NULL,
-	"generation" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_activity_snapshot" (
-	"id" text PRIMARY KEY NOT NULL,
-	"session_id" text NOT NULL,
-	"created_at" text NOT NULL,
-	"snapshot" jsonb NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_app_revocation" (
-	"organization_id" text NOT NULL,
-	"oauth_client_id" text NOT NULL,
-	"revoked_at" bigint NOT NULL,
-	"generation" bigint DEFAULT 1 NOT NULL,
-	"restored_after" bigint,
-	"restored_credential_fingerprint" text,
-	CONSTRAINT "linear_app_revocation_organization_id_oauth_client_id_pk" PRIMARY KEY("organization_id","oauth_client_id")
-);
---> statement-breakpoint
-CREATE TABLE "linear_artifact" (
-	"id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"run_id" text NOT NULL,
-	"path" text NOT NULL,
-	"display_name" text NOT NULL,
-	"mime_type" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	"request_version" bigint DEFAULT 0 NOT NULL,
-	"state" text NOT NULL,
-	"asset_url" text,
-	"created_at" bigint NOT NULL,
-	"identity_hash" text,
-	CONSTRAINT "linear_artifact_item_id_path_display_name_mime_type_sha256_unique" UNIQUE("item_id","path","display_name","mime_type","sha256"),
-	CONSTRAINT "linear_artifact_check_1" CHECK (state IN ('pending', 'uploaded', 'failed'))
-);
---> statement-breakpoint
-CREATE TABLE "linear_artifact_attempt" (
-	"item_id" text NOT NULL,
-	"identity_hash" text NOT NULL,
-	"version" bigint NOT NULL,
-	"completed_version" bigint DEFAULT 0 NOT NULL,
-	"attachment_requested" integer DEFAULT 0 NOT NULL,
-	CONSTRAINT "linear_artifact_attempt_item_id_identity_hash_pk" PRIMARY KEY("item_id","identity_hash"),
-	CONSTRAINT "linear_artifact_attempt_check_1" CHECK (attachment_requested IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "linear_comment" (
-	"comment_id" text PRIMARY KEY NOT NULL,
-	"issue_id" text NOT NULL,
-	"organization_id" text,
-	"team_id" text,
-	"author_id" text,
-	"actor_id" text,
-	"actor_type" text,
-	"bot_actor" text,
-	"on_behalf_of" text,
-	"parent_id" text,
-	"body" text NOT NULL,
-	"created_at_ms" bigint NOT NULL,
-	"updated_at_ms" bigint NOT NULL,
-	"received_at" bigint NOT NULL,
-	"source" text NOT NULL,
-	"edited" integer DEFAULT 0 NOT NULL,
-	"removed_at" bigint,
-	"state" text DEFAULT 'received' NOT NULL,
-	"reason" text,
-	"authority" text,
-	"item_id" text,
-	"session_id" text,
-	"generation" bigint,
-	"item_version" bigint,
-	"via" text,
-	"settled_at" bigint,
-	CONSTRAINT "linear_comment_check_1" CHECK (length(comment_id) BETWEEN 1 AND 300),
-	CONSTRAINT "linear_comment_check_2" CHECK (length(issue_id) BETWEEN 1 AND 300),
-	CONSTRAINT "linear_comment_check_3" CHECK (source IN ('webhook','poll')),
-	CONSTRAINT "linear_comment_check_4" CHECK (edited IN (0,1)),
-	CONSTRAINT "linear_comment_check_5" CHECK (state IN ('received','queued','delivered','answered','ignored','rejected','removed')),
-	CONSTRAINT "linear_comment_check_6" CHECK (authority IS NULL OR authority IN ('person','agent')),
-	CONSTRAINT "linear_comment_check_7" CHECK (via IS NULL OR via IN ('brief','follow_up','restart','answer'))
-);
---> statement-breakpoint
-CREATE TABLE "linear_conversation" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"entries" jsonb NOT NULL,
-	"transcript" text,
-	"transcript_offset" bigint DEFAULT 0 NOT NULL,
-	"blocked" integer DEFAULT 0 NOT NULL,
-	"blocked_at" bigint,
-	CONSTRAINT "linear_conversation_check_2" CHECK (blocked IN (0,1))
-);
---> statement-breakpoint
-CREATE TABLE "linear_input" (
-	"session_id" text NOT NULL,
-	"turn_id" text NOT NULL,
-	"asset_id" text NOT NULL,
-	"asset_url" text NOT NULL,
-	"mime_type" text NOT NULL,
-	"size" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	CONSTRAINT "linear_input_session_id_turn_id_asset_id_pk" PRIMARY KEY("session_id","turn_id","asset_id")
-);
---> statement-breakpoint
-CREATE TABLE "linear_installation_permission" (
-	"organization_id" text NOT NULL,
-	"oauth_client_id" text NOT NULL,
-	"app_user_id" text NOT NULL,
-	"all_public_teams" integer NOT NULL,
-	"observed_at" bigint NOT NULL,
-	CONSTRAINT "linear_installation_permission_organization_id_oauth_client_id_app_user_id_pk" PRIMARY KEY("organization_id","oauth_client_id","app_user_id"),
-	CONSTRAINT "linear_installation_permission_check_1" CHECK (all_public_teams IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "linear_issue_context" (
-	"session_id" text NOT NULL,
-	"issue_id" text NOT NULL,
-	"observed_at" bigint NOT NULL,
-	"context" text NOT NULL,
-	CONSTRAINT "linear_issue_context_session_id_issue_id_pk" PRIMARY KEY("session_id","issue_id")
-);
---> statement-breakpoint
-CREATE TABLE "linear_item_caller_request" (
-	"item_id" text NOT NULL,
-	"caller" text NOT NULL,
-	"requests" bigint NOT NULL,
-	CONSTRAINT "linear_item_caller_request_item_id_caller_pk" PRIMARY KEY("item_id","caller")
-);
---> statement-breakpoint
-CREATE TABLE "linear_item_request" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"requests" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_outbox_backoff" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "linear_outbox_backoff_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"not_before" bigint NOT NULL,
-	CONSTRAINT "linear_outbox_backoff_check_1" CHECK (id=1)
-);
---> statement-breakpoint
-CREATE TABLE "linear_session" (
-	"session_id" text PRIMARY KEY NOT NULL,
-	"issue_id" text,
-	"organization_id" text,
-	"app_user_id" text,
-	"creator_id" text,
-	"active_item_id" text,
-	"generation" bigint DEFAULT 0 NOT NULL,
-	"stopped_at" bigint,
-	"created_at" bigint NOT NULL,
-	"oauth_client_id" text,
-	"team_id" text,
-	"installation_observed_at" bigint
-);
---> statement-breakpoint
-CREATE TABLE "linear_session_cleanup_block" (
-	"session_id" text PRIMARY KEY NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "linear_session_context" (
-	"session_id" text PRIMARY KEY NOT NULL,
-	"context" text NOT NULL,
-	"richness" bigint NOT NULL,
-	"snapshot_context" text
-);
---> statement-breakpoint
-CREATE TABLE "linear_stop_receipt" (
-	"session_id" text NOT NULL,
-	"event_key" text NOT NULL,
-	"generation" bigint NOT NULL,
-	"created_at" bigint NOT NULL,
-	CONSTRAINT "linear_stop_receipt_session_id_event_key_pk" PRIMARY KEY("session_id","event_key")
-);
---> statement-breakpoint
-CREATE TABLE "linear_task_delegation" (
-	"item_id" text NOT NULL,
-	"issue_id" text NOT NULL,
-	"team_id" text NOT NULL,
-	"app_user_id" text NOT NULL,
-	"human_actor_id" text,
-	CONSTRAINT "linear_task_delegation_item_id_issue_id_pk" PRIMARY KEY("item_id","issue_id")
-);
---> statement-breakpoint
-CREATE TABLE "linear_team_access" (
-	"organization_id" text NOT NULL,
-	"oauth_client_id" text NOT NULL,
-	"app_user_id" text NOT NULL,
-	"team_id" text NOT NULL,
-	"allowed" integer NOT NULL,
-	"observed_at" bigint NOT NULL,
-	CONSTRAINT "linear_team_access_organization_id_oauth_client_id_app_user_id_team_id_pk" PRIMARY KEY("organization_id","oauth_client_id","app_user_id","team_id"),
-	CONSTRAINT "linear_team_access_check_1" CHECK (allowed IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "linear_turn" (
-	"ordinal" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "linear_turn_ordinal_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"event_key" text NOT NULL,
-	"activity_id" text,
-	"session_id" text NOT NULL,
-	"actor_id" text,
-	"body" text NOT NULL,
-	"payload" jsonb NOT NULL,
-	"created_at_ms" bigint NOT NULL,
-	"received_at" bigint NOT NULL,
-	"item_id" text,
-	"state" text DEFAULT 'pending' NOT NULL,
-	"announced_generation" bigint,
-	CONSTRAINT "linear_turn_event_key_unique" UNIQUE("event_key"),
-	CONSTRAINT "linear_turn_activity_id_unique" UNIQUE("activity_id"),
-	CONSTRAINT "linear_turn_check_2" CHECK (state IN ('pending','applied','cancelled'))
-);
---> statement-breakpoint
-CREATE TABLE "link_ask" (
+CREATE TABLE "github_integration_hold" (
 	"question_id" text PRIMARY KEY NOT NULL,
 	"item_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"head_commit" text NOT NULL,
-	"link" text NOT NULL,
-	"title" text NOT NULL,
-	"detail" text NOT NULL,
-	"answerers" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"decision" text,
-	"note" text,
-	"decided_by" text,
-	"decided_at" bigint,
-	"closed_reason" text,
-	"closed_at" bigint,
-	"rounds" jsonb,
-	CONSTRAINT "link_ask_check_1" CHECK (kind IN ('bypass', 'screenshots', 'risk', 'question', 'rounds', 'rule')),
-	CONSTRAINT "link_ask_check_3" CHECK (decision IN ('approve', 'changes', 'answer', 'rethink', 'continue', 'stop')),
-	CONSTRAINT "link_ask_check_4" CHECK (closed_reason IN ('decided', 'guidance', 'head_moved', 'cancelled'))
-);
---> statement-breakpoint
-CREATE TABLE "member_vm" (
-	"id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"user_id" text NOT NULL,
-	"vm_name" text NOT NULL,
-	"step" text NOT NULL,
-	"failure" text,
-	"runner_id" text,
-	"step_started_at" bigint NOT NULL,
-	"create_requested_at" bigint,
-	"install_started_at" bigint,
-	"token_expires_at" bigint,
-	"created_at" bigint NOT NULL,
-	"updated_at" bigint NOT NULL,
-	"install_at" bigint,
-	"enroll_at" bigint,
-	"health_at" bigint,
-	"ready_at" bigint,
-	"delete_step" text,
-	"delete_runner_id" text,
-	"delete_requested_by" text,
-	"delete_force" integer DEFAULT 0 NOT NULL,
-	"delete_step_started_at" bigint,
-	"delete_at" jsonb,
-	"delete_failure" text,
-	"delete_blocked" jsonb,
-	"enrollments_tracked" integer DEFAULT 1 NOT NULL,
-	"pool" text,
-	CONSTRAINT "member_vm_vm_name_unique" UNIQUE("vm_name"),
-	CONSTRAINT "member_vm_workspace_id_user_id_unique" UNIQUE("workspace_id","user_id"),
-	CONSTRAINT "member_vm_check_1" CHECK (step IN ('create','install','enroll','health','ready')),
-	CONSTRAINT "member_vm_check_2" CHECK (delete_step IS NULL OR delete_step IN ('drain','tailnet','revoke','destroy','clear')),
-	CONSTRAINT "member_vm_check_3" CHECK (delete_force IN (0,1)),
-	CONSTRAINT "member_vm_check_6" CHECK (enrollments_tracked IN (0,1))
-);
---> statement-breakpoint
-CREATE TABLE "member_vm_enrollment" (
-	"token_hash" text PRIMARY KEY NOT NULL,
-	"member_vm_id" text NOT NULL,
-	"created_at" bigint NOT NULL
+	"phase" text NOT NULL,
+	"item_version" bigint NOT NULL,
+	"session_generation" bigint NOT NULL,
+	"current_run_id" text,
+	"checkpoint" text NOT NULL,
+	"authority" text NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	CONSTRAINT "github_integration_hold_check_1" CHECK (phase IN ('initial','publication')),
+	CONSTRAINT "github_integration_hold_check_2" CHECK (status IN ('pending','verified','revoked'))
 );
 --> statement-breakpoint
 CREATE TABLE "merge_call" (
@@ -1212,124 +494,6 @@ CREATE TABLE "merge_queue_entry" (
 	CONSTRAINT "merge_queue_entry_check_1" CHECK (kept IN (0, 1))
 );
 --> statement-breakpoint
-CREATE TABLE "npm_package" (
-	"package" text PRIMARY KEY NOT NULL,
-	"etag" text,
-	"fetched_at" bigint NOT NULL,
-	"versions" jsonb NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "npm_package_version" (
-	"package" text NOT NULL,
-	"version" text NOT NULL,
-	"integrity" text NOT NULL,
-	"first_seen_at" bigint NOT NULL,
-	"changed_integrity" text,
-	"changed_at" bigint,
-	CONSTRAINT "npm_package_version_package_version_pk" PRIMARY KEY("package","version")
-);
---> statement-breakpoint
-CREATE TABLE "open_findings" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"head_sha" text NOT NULL,
-	"line" text NOT NULL,
-	"recorded_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "outbox" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "outbox_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"target" text NOT NULL,
-	"op" text NOT NULL,
-	"ordering_key" text,
-	"critical" bigint DEFAULT 1 NOT NULL,
-	"idempotency_key" text NOT NULL,
-	"payload" jsonb NOT NULL,
-	"ephemeral" bigint DEFAULT 0 NOT NULL,
-	"priority" bigint DEFAULT 5 NOT NULL,
-	"not_before" bigint DEFAULT 0 NOT NULL,
-	"attempts" bigint DEFAULT 0 NOT NULL,
-	"status" text DEFAULT 'pending' NOT NULL,
-	"external_id" text,
-	"error" text,
-	"created_at" bigint NOT NULL,
-	"sent_at" bigint,
-	"locked_by" text,
-	"locked_until" bigint,
-	"max_attempts" bigint DEFAULT 5 NOT NULL,
-	"delivery_kind" text DEFAULT 'ordered' NOT NULL,
-	"delivery_generation" bigint DEFAULT 0 NOT NULL,
-	"activity_run_id" text,
-	CONSTRAINT "outbox_idempotency_key_unique" UNIQUE("idempotency_key"),
-	CONSTRAINT "outbox_check_1" CHECK (target IN ('linear', 'slack', 'github', 'sandbox')),
-	CONSTRAINT "outbox_check_3" CHECK (status IN ('pending', 'sent', 'dead', 'dropped')),
-	CONSTRAINT "outbox_check_4" CHECK (delivery_kind IN ('ordered', 'progress', 'critical', 'terminal', 'stop', 'status'))
-);
---> statement-breakpoint
-CREATE TABLE "outbox_session_fence" (
-	"target" text NOT NULL,
-	"ordering_key" text NOT NULL,
-	"generation" bigint DEFAULT 0 NOT NULL,
-	"stopped" integer DEFAULT 0 NOT NULL,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "outbox_session_fence_target_ordering_key_pk" PRIMARY KEY("target","ordering_key"),
-	CONSTRAINT "outbox_session_fence_check_1" CHECK (stopped IN (0, 1))
-);
---> statement-breakpoint
-CREATE TABLE "parent_delegation" (
-	"delegation_id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"organization_id" text NOT NULL,
-	"parent_issue_id" text NOT NULL,
-	"parent_identifier" text NOT NULL,
-	"title" text NOT NULL,
-	"session_id" text NOT NULL,
-	"owner_user_id" text NOT NULL,
-	"edges" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"stopped_at" bigint,
-	"last_error" text
-);
---> statement-breakpoint
-CREATE TABLE "parent_delegation_issue" (
-	"parent_delegation_id" text NOT NULL,
-	"workspace_id" text NOT NULL,
-	"issue_id" text NOT NULL,
-	"identifier" text NOT NULL,
-	"title" text NOT NULL,
-	"url" text,
-	"position" bigint NOT NULL,
-	"session_id" text,
-	"delegation_id" text,
-	"released_at" bigint,
-	CONSTRAINT "parent_delegation_issue_parent_delegation_id_issue_id_pk" PRIMARY KEY("parent_delegation_id","issue_id"),
-	CONSTRAINT "parent_delegation_issue_session_id_unique" UNIQUE("session_id")
-);
---> statement-breakpoint
-CREATE TABLE "paws_alive" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "paws_alive_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"at" bigint NOT NULL,
-	CONSTRAINT "paws_alive_check_1" CHECK (id=1)
-);
---> statement-breakpoint
-CREATE TABLE "plan_proposal" (
-	"question_id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"parent_issue_id" text NOT NULL,
-	"repository" text,
-	"drafts" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"filed" jsonb,
-	"filed_at" bigint
-);
---> statement-breakpoint
-CREATE TABLE "policy_runner_warning" (
-	"repository" text PRIMARY KEY NOT NULL,
-	"policy_digest" text NOT NULL,
-	"runner_version" text NOT NULL,
-	"keys" text NOT NULL,
-	"checked_at" bigint NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "pull_ci_failure" (
 	"item_id" text NOT NULL,
 	"head" text NOT NULL,
@@ -1338,6 +502,7 @@ CREATE TABLE "pull_ci_failure" (
 	"failed_checks" jsonb NOT NULL,
 	"checks" jsonb NOT NULL,
 	"observed_at" bigint NOT NULL,
+	"lane_first_failure_at" bigint,
 	"handled_at" bigint,
 	"outcome" text,
 	CONSTRAINT "pull_ci_failure_item_id_head_pk" PRIMARY KEY("item_id","head"),
@@ -1367,6 +532,7 @@ CREATE TABLE "pull_request_draft" (
 	"item_id" text PRIMARY KEY NOT NULL,
 	"title" text NOT NULL,
 	"body" text NOT NULL,
+	"remaining_json" text,
 	"updated_at" bigint NOT NULL
 );
 --> statement-breakpoint
@@ -1406,47 +572,6 @@ CREATE TABLE "push_outage" (
 	"question_id" text
 );
 --> statement-breakpoint
-CREATE TABLE "question" (
-	"id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"run_id" text,
-	"session_id" text NOT NULL,
-	"kind" text DEFAULT 'agent' NOT NULL,
-	"body" text NOT NULL,
-	"context" text,
-	"options" jsonb,
-	"status" text NOT NULL,
-	"answer" text,
-	"answered_by" text,
-	"created_at" bigint NOT NULL,
-	"answered_at" bigint,
-	"cancelled_at" bigint,
-	"answer_event_key" text,
-	"reason" text,
-	"handoff_version" bigint,
-	CONSTRAINT "question_check_2" CHECK (status IN ('queued', 'open', 'answered'))
-);
---> statement-breakpoint
-CREATE TABLE "queue_position" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"position" bigint NOT NULL,
-	"busy_slots" bigint NOT NULL,
-	"total_slots" bigint NOT NULL,
-	"updated_at" bigint NOT NULL,
-	"owner_cap" bigint,
-	CONSTRAINT "queue_position_check_1" CHECK (position >= 1),
-	CONSTRAINT "queue_position_check_2" CHECK (busy_slots >= 0),
-	CONSTRAINT "queue_position_check_3" CHECK (total_slots >= 1),
-	CONSTRAINT "queue_position_check_4" CHECK (owner_cap IS NULL OR owner_cap >= 1)
-);
---> statement-breakpoint
-CREATE TABLE "queue_wait" (
-	"item_id" text NOT NULL,
-	"version" bigint NOT NULL,
-	"since" bigint NOT NULL,
-	CONSTRAINT "queue_wait_item_id_version_pk" PRIMARY KEY("item_id","version")
-);
---> statement-breakpoint
 CREATE TABLE "rebase_return" (
 	"job_id" bigint NOT NULL,
 	"activation_id" bigint NOT NULL,
@@ -1483,10 +608,182 @@ CREATE TABLE "repository_catalog" (
 	"refreshed_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "restart_hold" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"session_id" text NOT NULL,
-	"requested_at" bigint NOT NULL
+CREATE TABLE "agent_closeout_event" (
+	"run_id" text NOT NULL,
+	"sequence" bigint NOT NULL,
+	"item_id" text NOT NULL,
+	"at" bigint NOT NULL,
+	"type" text NOT NULL,
+	"head" text NOT NULL,
+	"max_attempts" bigint,
+	"check_id" text,
+	"kind" text,
+	"command" text,
+	"attempt" bigint,
+	"state" text,
+	"exit_code" bigint,
+	"timed_out" integer DEFAULT 0 NOT NULL,
+	"duration_ms" bigint,
+	"stdout" text DEFAULT '' NOT NULL,
+	"stderr" text DEFAULT '' NOT NULL,
+	"truncated" integer DEFAULT 0 NOT NULL,
+	"output_key" text,
+	"output_bytes" bigint,
+	"output_sha256" text,
+	"checks" text,
+	"blocked" text,
+	"base" text,
+	"policy_digest" text,
+	"clean" bigint,
+	CONSTRAINT "agent_closeout_event_run_id_sequence_pk" PRIMARY KEY("run_id","sequence"),
+	CONSTRAINT "agent_closeout_event_check_1" CHECK (sequence > 0),
+	CONSTRAINT "agent_closeout_event_check_2" CHECK (type IN ('report', 'started', 'finished')),
+	CONSTRAINT "agent_closeout_event_check_3" CHECK (state IS NULL OR state IN ('passed', 'failed', 'exhausted', 'cancelled')),
+	CONSTRAINT "agent_closeout_event_check_4" CHECK (timed_out IN (0, 1)),
+	CONSTRAINT "agent_closeout_event_check_5" CHECK (truncated IN (0, 1)),
+	CONSTRAINT "agent_closeout_event_check_6" CHECK (clean IS NULL OR clean IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_hook" (
+	"id" text PRIMARY KEY NOT NULL,
+	"event" text NOT NULL,
+	"matcher" text,
+	"command" text NOT NULL,
+	"timeout_seconds" bigint NOT NULL,
+	"agents" jsonb NOT NULL,
+	"skill" text,
+	"created_at" bigint NOT NULL,
+	CONSTRAINT "agent_hook_check_1" CHECK (event IN ('after_edit','before_shell','before_tool','stop','session_start')),
+	CONSTRAINT "agent_hook_check_2" CHECK (matcher IS NULL OR length(matcher) BETWEEN 1 AND 256),
+	CONSTRAINT "agent_hook_check_3" CHECK (length(command) BETWEEN 1 AND 4096),
+	CONSTRAINT "agent_hook_check_4" CHECK (timeout_seconds BETWEEN 1 AND 600)
+);
+--> statement-breakpoint
+CREATE TABLE "agent_model_catalog" (
+	"runner_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"model" text NOT NULL,
+	"result_json" jsonb NOT NULL,
+	"updated_at" bigint NOT NULL,
+	CONSTRAINT "agent_model_catalog_runner_id_user_id_agent_model_pk" PRIMARY KEY("runner_id","user_id","agent","model"),
+	CONSTRAINT "agent_model_catalog_check_1" CHECK (agent IN ('claude','codex','grok','opencode'))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_model_probe" (
+	"command_id" text PRIMARY KEY NOT NULL,
+	"runner_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"model" text NOT NULL,
+	"requested_at" bigint NOT NULL,
+	"finished_at" bigint,
+	CONSTRAINT "agent_model_probe_check_1" CHECK (agent IN ('claude','codex','grok','opencode'))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_session_snapshot" (
+	"run_id" text NOT NULL,
+	"generation" bigint NOT NULL,
+	"item_id" text NOT NULL,
+	"workspace_id" text NOT NULL,
+	"runner_id" text NOT NULL,
+	"owner_user_id" text,
+	"agent" text,
+	"agent_version" text,
+	"session_id" text,
+	"workspace_path" text,
+	"commit_sha" text,
+	"turn" bigint,
+	"size_bytes" bigint DEFAULT 0 NOT NULL,
+	"sealed_size" bigint,
+	"sha256" text,
+	"status" text DEFAULT 'uploading' NOT NULL,
+	"created_at" bigint NOT NULL,
+	"sealed_at" bigint,
+	CONSTRAINT "agent_session_snapshot_run_id_generation_pk" PRIMARY KEY("run_id","generation"),
+	CONSTRAINT "agent_session_snapshot_check_1" CHECK (generation>0),
+	CONSTRAINT "agent_session_snapshot_check_2" CHECK (agent IS NULL OR agent IN ('claude','codex','grok')),
+	CONSTRAINT "agent_session_snapshot_check_3" CHECK (turn IS NULL OR turn>=0),
+	CONSTRAINT "agent_session_snapshot_check_4" CHECK (size_bytes BETWEEN 0 AND 1073741824),
+	CONSTRAINT "agent_session_snapshot_check_5" CHECK (sealed_size IS NULL OR sealed_size=size_bytes),
+	CONSTRAINT "agent_session_snapshot_check_6" CHECK (sha256 IS NULL OR length(sha256)=64),
+	CONSTRAINT "agent_session_snapshot_check_7" CHECK (status IN ('uploading','sealed','discarded')),
+	CONSTRAINT "agent_session_snapshot_check_8" CHECK (status<>'sealed' OR (owner_user_id IS NOT NULL AND agent IS NOT NULL AND agent_version IS NOT NULL AND session_id IS NOT NULL AND workspace_path IS NOT NULL AND commit_sha IS NOT NULL AND turn IS NOT NULL AND sealed_size IS NOT NULL AND sha256 IS NOT NULL AND sealed_at IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_session_snapshot_chunk" (
+	"run_id" text NOT NULL,
+	"generation" bigint NOT NULL,
+	"offset" bigint NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"key_id" text NOT NULL,
+	CONSTRAINT "agent_session_snapshot_chunk_run_id_generation_offset_pk" PRIMARY KEY("run_id","generation","offset"),
+	CONSTRAINT "agent_session_snapshot_chunk_check_1" CHECK ("offset">=0 AND "offset"%524288=0),
+	CONSTRAINT "agent_session_snapshot_chunk_check_2" CHECK (size_bytes BETWEEN 1 AND 524288),
+	CONSTRAINT "agent_session_snapshot_chunk_check_3" CHECK (length(sha256)=64),
+	CONSTRAINT "agent_session_snapshot_chunk_check_4" CHECK (length(key_id)=64)
+);
+--> statement-breakpoint
+CREATE TABLE "agent_skill" (
+	"name" text PRIMARY KEY NOT NULL,
+	"source" jsonb NOT NULL,
+	"version" text NOT NULL,
+	"sha256" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"agents" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"removed_at" bigint,
+	CONSTRAINT "agent_skill_check_1" CHECK (length(name) BETWEEN 1 AND 64),
+	CONSTRAINT "agent_skill_check_3" CHECK (length(version) BETWEEN 1 AND 128),
+	CONSTRAINT "agent_skill_check_4" CHECK (length(sha256)=64),
+	CONSTRAINT "agent_skill_check_5" CHECK (size_bytes>0)
+);
+--> statement-breakpoint
+CREATE TABLE "agent_version" (
+	"agent" text NOT NULL,
+	"version" text NOT NULL,
+	"published_at" bigint,
+	"integrity" text NOT NULL,
+	"status" text NOT NULL,
+	"first_seen_at" bigint NOT NULL,
+	"reason" text,
+	"native_version" text,
+	"checked_at" bigint NOT NULL,
+	CONSTRAINT "agent_version_agent_version_pk" PRIMARY KEY("agent","version"),
+	CONSTRAINT "agent_version_check_1" CHECK (status IN ('eligible','waiting','ineligible','refused'))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_wait" (
+	"run_id" text PRIMARY KEY NOT NULL,
+	"generation" bigint NOT NULL,
+	"started_at" bigint NOT NULL,
+	"waiting_ms" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "browser_installation_request" (
+	"state_hash" text PRIMARY KEY NOT NULL,
+	"browser_hash" text NOT NULL,
+	"identity" text NOT NULL,
+	"expires_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "npm_package" (
+	"package" text PRIMARY KEY NOT NULL,
+	"etag" text,
+	"fetched_at" bigint NOT NULL,
+	"versions" jsonb NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "npm_package_version" (
+	"package" text NOT NULL,
+	"version" text NOT NULL,
+	"integrity" text NOT NULL,
+	"first_seen_at" bigint NOT NULL,
+	"changed_integrity" text,
+	"changed_at" bigint,
+	CONSTRAINT "npm_package_version_package_version_pk" PRIMARY KEY("package","version")
 );
 --> statement-breakpoint
 CREATE TABLE "retro" (
@@ -1717,6 +1014,582 @@ CREATE TABLE "retro_watermark" (
 	CONSTRAINT "retro_watermark_workspace_id_repository_pk" PRIMARY KEY("workspace_id","repository")
 );
 --> statement-breakpoint
+CREATE TABLE "delegation_reconciliation" (
+	"delegation_id" text PRIMARY KEY NOT NULL,
+	"changes" bigint DEFAULT 0 NOT NULL,
+	"reconciled_changes" bigint DEFAULT 0 NOT NULL,
+	"reconciled_at" bigint
+);
+--> statement-breakpoint
+CREATE TABLE "item_blocker_check" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"checked_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "item_branch_state" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"run_id" text NOT NULL,
+	"head" text NOT NULL,
+	"base" text NOT NULL,
+	"commits" bigint NOT NULL,
+	"recorded_at" bigint NOT NULL,
+	CONSTRAINT "item_branch_state_check_1" CHECK (commits >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "item_candidate" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"sha" text NOT NULL,
+	"branch" text NOT NULL,
+	"recorded_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "item_continuation" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"previous_item_id" text NOT NULL,
+	"branch" text NOT NULL,
+	CONSTRAINT "item_continuation_check_1" CHECK (branch LIKE 'paws/%')
+);
+--> statement-breakpoint
+CREATE TABLE "item_dependency_snapshot" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"generation" bigint NOT NULL,
+	"scope" jsonb NOT NULL,
+	"linear_states" jsonb NOT NULL,
+	"external_evidence" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"linear_identifiers" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	CONSTRAINT "item_dependency_snapshot_check_1" CHECK (generation>0)
+);
+--> statement-breakpoint
+CREATE TABLE "item_hold" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"reason" text,
+	"blockers" jsonb NOT NULL,
+	"files" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"overlap_since" bigint,
+	CONSTRAINT "item_hold_check_1" CHECK (reason IN ('blocked','project','reconciling','snapshot','cap','slot','workspace','overlap'))
+);
+--> statement-breakpoint
+CREATE TABLE "item_pull_request" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"pull_number" bigint NOT NULL,
+	"pull_url" text,
+	"opened_at" bigint NOT NULL,
+	"published_head" text,
+	"open_findings_line" text,
+	CONSTRAINT "item_pull_request_check_1" CHECK (pull_number > 0)
+);
+--> statement-breakpoint
+CREATE TABLE "item_reconciliation_effect" (
+	"item_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"token" text NOT NULL,
+	CONSTRAINT "item_reconciliation_effect_item_id_kind_pk" PRIMARY KEY("item_id","kind"),
+	CONSTRAINT "item_reconciliation_effect_check_1" CHECK (kind IN ('spec','removed','canceled'))
+);
+--> statement-breakpoint
+CREATE TABLE "item_reconciliation_request" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"token" text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "item_wait" (
+	"item_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"version" bigint NOT NULL,
+	"since" bigint NOT NULL,
+	CONSTRAINT "item_wait_item_id_kind_pk" PRIMARY KEY("item_id","kind"),
+	CONSTRAINT "item_wait_check_1" CHECK (kind IN ('queue','item'))
+);
+--> statement-breakpoint
+CREATE TABLE "parent_delegation" (
+	"delegation_id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"organization_id" text NOT NULL,
+	"parent_issue_id" text NOT NULL,
+	"parent_identifier" text NOT NULL,
+	"title" text NOT NULL,
+	"session_id" text NOT NULL,
+	"owner_user_id" text NOT NULL,
+	"edges" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"stopped_at" bigint,
+	"last_error" text
+);
+--> statement-breakpoint
+CREATE TABLE "parent_delegation_issue" (
+	"parent_delegation_id" text NOT NULL,
+	"workspace_id" text NOT NULL,
+	"issue_id" text NOT NULL,
+	"identifier" text NOT NULL,
+	"title" text NOT NULL,
+	"url" text,
+	"position" bigint NOT NULL,
+	"session_id" text,
+	"delegation_id" text,
+	"released_at" bigint,
+	CONSTRAINT "parent_delegation_issue_parent_delegation_id_issue_id_pk" PRIMARY KEY("parent_delegation_id","issue_id"),
+	CONSTRAINT "parent_delegation_issue_session_id_unique" UNIQUE("session_id")
+);
+--> statement-breakpoint
+CREATE TABLE "queue_position" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"position" bigint NOT NULL,
+	"busy_slots" bigint NOT NULL,
+	"total_slots" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"owner_cap" bigint,
+	CONSTRAINT "queue_position_check_1" CHECK (position >= 1),
+	CONSTRAINT "queue_position_check_2" CHECK (busy_slots >= 0),
+	CONSTRAINT "queue_position_check_3" CHECK (total_slots >= 1),
+	CONSTRAINT "queue_position_check_4" CHECK (owner_cap IS NULL OR owner_cap >= 1)
+);
+--> statement-breakpoint
+CREATE TABLE "restart_hold" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"session_id" text NOT NULL,
+	"requested_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "run" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"agent" text NOT NULL,
+	"status" text NOT NULL,
+	"checkpoint" jsonb,
+	"fresh_session" integer DEFAULT 0 NOT NULL,
+	"created_at" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"owner_instance" text,
+	CONSTRAINT "run_check_1" CHECK (status IN ('provisioning', 'active', 'ended', 'lost')),
+	CONSTRAINT "run_check_3" CHECK (fresh_session IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "run_fallback_attempt" (
+	"run_id" text NOT NULL,
+	"call_id" text NOT NULL,
+	"ordinal" bigint NOT NULL,
+	"policy_key" text NOT NULL,
+	"outcome" text NOT NULL,
+	"runner_id" text NOT NULL,
+	"generation" bigint NOT NULL,
+	"excluded_key" text NOT NULL,
+	"account_id" text,
+	"binding_id" text,
+	"recorded_at" bigint NOT NULL,
+	"closed_at" bigint,
+	CONSTRAINT "run_fallback_attempt_run_id_call_id_ordinal_pk" PRIMARY KEY("run_id","call_id","ordinal"),
+	CONSTRAINT "run_fallback_attempt_check_1" CHECK (length(call_id) BETWEEN 1 AND 300),
+	CONSTRAINT "run_fallback_attempt_check_2" CHECK (ordinal BETWEEN 1 AND 256),
+	CONSTRAINT "run_fallback_attempt_check_3" CHECK (length(policy_key) BETWEEN 1 AND 2000),
+	CONSTRAINT "run_fallback_attempt_check_4" CHECK (outcome IN ('failed','handed_over','usage_limit')),
+	CONSTRAINT "run_fallback_attempt_check_5" CHECK (generation>=0),
+	CONSTRAINT "run_fallback_attempt_check_6" CHECK (length(excluded_key)<=300)
+);
+--> statement-breakpoint
+CREATE TABLE "task_block" (
+	"blocker_linear_issue_id" text NOT NULL,
+	"blocked_linear_issue_id" text NOT NULL,
+	CONSTRAINT "task_block_blocked_linear_issue_id_blocker_linear_issue_id_pk" PRIMARY KEY("blocked_linear_issue_id","blocker_linear_issue_id"),
+	CONSTRAINT "task_block_check_1" CHECK (blocker_linear_issue_id <> blocked_linear_issue_id)
+);
+--> statement-breakpoint
+CREATE TABLE "task_request" (
+	"task_key" text PRIMARY KEY NOT NULL,
+	"classification" jsonb NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "usage_pause" (
+	"run_id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"runner_id" text,
+	"resets_at" bigint,
+	"resume_at" bigint NOT NULL,
+	"paused_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "work_item" (
+	"id" text PRIMARY KEY NOT NULL,
+	"delegation_id" text NOT NULL,
+	"linear_issue_id" text NOT NULL,
+	"linear_identifier" text NOT NULL,
+	"title" text NOT NULL,
+	"state" text NOT NULL,
+	"branch_name" text NOT NULL,
+	"position" bigint NOT NULL,
+	"version" bigint DEFAULT 0 NOT NULL,
+	"task_key" text,
+	"created_at" bigint NOT NULL,
+	"checkpoint" jsonb,
+	"recovery_attempts" bigint DEFAULT 0 NOT NULL,
+	"awake_ms" bigint DEFAULT 0 NOT NULL,
+	"last_mono_ms" bigint,
+	"turn_count" bigint DEFAULT 0 NOT NULL,
+	"max_turns" bigint DEFAULT 80 NOT NULL,
+	"max_awake_ms" bigint DEFAULT 2700000 NOT NULL,
+	"cancel_requested" bigint DEFAULT 0 NOT NULL,
+	"session_key" text,
+	"current_run_id" text,
+	"brief" jsonb,
+	"owner_user_id" text,
+	"delegated_by" text,
+	"resumed_at" bigint,
+	"accepted_head" text,
+	"agent_ms" bigint DEFAULT 0 NOT NULL,
+	"closeout_ms" bigint DEFAULT 0 NOT NULL,
+	"waiting_ms" bigint DEFAULT 0 NOT NULL,
+	"recheck_ms" bigint DEFAULT 0 NOT NULL,
+	"linear_project_id" text,
+	"linear_project_name" text,
+	"implement_ms" bigint DEFAULT 0 NOT NULL,
+	"fix_ms" bigint DEFAULT 0 NOT NULL,
+	"max_fix_ms" bigint DEFAULT 0 NOT NULL,
+	"max_closeout_ms" bigint DEFAULT 0 NOT NULL,
+	CONSTRAINT "work_item_task_key_unique" UNIQUE("task_key"),
+	CONSTRAINT "work_item_check_1" CHECK (state IN ( 'planning', 'queued', 'running', 'paused', 'awaiting_input', 'recovering', 'verifying', 'failed', 'merge_queue', 'manual', 'completed', 'merged', 'cancelled' ))
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_event" (
+	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "work_item_event_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"item_id" text NOT NULL,
+	"version" bigint NOT NULL,
+	"at" bigint NOT NULL,
+	"from_state" text NOT NULL,
+	"to_state" text NOT NULL,
+	"event" text NOT NULL,
+	"kind" text DEFAULT 'transition' NOT NULL,
+	"reason" text,
+	"payload_digest" text,
+	"actor" text,
+	CONSTRAINT "work_item_event_item_id_version_unique" UNIQUE("item_id","version"),
+	CONSTRAINT "work_item_event_check_1" CHECK (kind IN ('transition','restart','ask')),
+	CONSTRAINT "work_item_event_check_2" CHECK (kind<>'restart' OR reason IN ('findings','ci','review','conflict','follow_up','answer')),
+	CONSTRAINT "work_item_event_check_3" CHECK (kind<>'ask' OR reason IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_linear_read" (
+	"item_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"value_json" jsonb NOT NULL,
+	"read_at" bigint NOT NULL,
+	CONSTRAINT "work_item_linear_read_item_id_kind_pk" PRIMARY KEY("item_id","kind"),
+	CONSTRAINT "work_item_linear_read_check_1" CHECK (kind IN ('project_overview','repository_hints','repository_suggestions'))
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_merge_settings" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"merge_order" text NOT NULL,
+	"main_moved" text NOT NULL,
+	"resolved_json" text NOT NULL,
+	"resolved_at" bigint NOT NULL,
+	CONSTRAINT "work_item_merge_settings_check_1" CHECK (merge_order IN ('queue','ci-green','github-queue')),
+	CONSTRAINT "work_item_merge_settings_check_2" CHECK (main_moved IN ('overlap','green','ci','closeout'))
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_repository" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"owner" text NOT NULL,
+	"repo" text NOT NULL,
+	"remote_url" text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_repository_question" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"question_id" text NOT NULL,
+	"candidates" jsonb NOT NULL,
+	"chosen_repository" jsonb
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_scheduling" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"project_id" text,
+	"project_known" integer NOT NULL,
+	"priority" bigint DEFAULT 0 NOT NULL,
+	"paths" jsonb,
+	"project_lead_id" text,
+	CONSTRAINT "work_item_scheduling_check_1" CHECK (project_known IN (0,1)),
+	CONSTRAINT "work_item_scheduling_check_2" CHECK (priority BETWEEN 0 AND 4)
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_specification" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"hash" text NOT NULL,
+	"revision" bigint NOT NULL,
+	"present" integer NOT NULL,
+	CONSTRAINT "work_item_specification_check_1" CHECK (revision>0),
+	CONSTRAINT "work_item_specification_check_2" CHECK (present IN (0,1))
+);
+--> statement-breakpoint
+CREATE TABLE "work_item_task" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"mode" text NOT NULL,
+	"response" text,
+	"generation" bigint DEFAULT 0 NOT NULL,
+	"repository_context" integer DEFAULT 0 NOT NULL,
+	CONSTRAINT "work_item_task_check_1" CHECK (mode IN ('code', 'answer', 'artifact', 'plan')),
+	CONSTRAINT "work_item_task_check_2" CHECK (repository_context IN (0,1))
+);
+--> statement-breakpoint
+CREATE TABLE "candidate_risk" (
+	"item_id" text NOT NULL,
+	"head_sha" text NOT NULL,
+	"base_sha" text,
+	"tier" text,
+	"paths" jsonb,
+	"classified_at" bigint,
+	"matches" jsonb,
+	"changed_paths" jsonb,
+	"recorded_at" bigint,
+	CONSTRAINT "candidate_risk_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha"),
+	CONSTRAINT "candidate_risk_check_1" CHECK (tier IN ('high', 'normal'))
+);
+--> statement-breakpoint
+CREATE TABLE "ci_rerun" (
+	"item_id" text NOT NULL,
+	"head_sha" text NOT NULL,
+	"run_ids" jsonb NOT NULL,
+	"reason" text NOT NULL,
+	"at" bigint NOT NULL,
+	CONSTRAINT "ci_rerun_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha"),
+	CONSTRAINT "ci_rerun_check_2" CHECK (length(reason) BETWEEN 1 AND 2000)
+);
+--> statement-breakpoint
+CREATE TABLE "ci_round" (
+	"item_id" text NOT NULL,
+	"head" text NOT NULL,
+	"run_id" text,
+	"next" text NOT NULL,
+	"fix" bigint,
+	"fix_limit" bigint NOT NULL,
+	"checks" jsonb NOT NULL,
+	"recorded_at" bigint NOT NULL,
+	CONSTRAINT "ci_round_item_id_head_pk" PRIMARY KEY("item_id","head"),
+	CONSTRAINT "ci_round_check_1" CHECK (next IN ('agent','asked','failed')),
+	CONSTRAINT "ci_round_check_2" CHECK (fix IS NULL OR fix >= 1),
+	CONSTRAINT "ci_round_check_3" CHECK (fix_limit >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_bypass_check" (
+	"question_id" text NOT NULL,
+	"check_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"state" text NOT NULL,
+	"attempt" bigint,
+	"message" text NOT NULL,
+	"ordinal" bigint NOT NULL,
+	"reason" text,
+	"approved_by" text,
+	"approved_by_name" text,
+	"approved_at" bigint,
+	CONSTRAINT "closeout_bypass_check_question_id_check_id_pk" PRIMARY KEY("question_id","check_id")
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_evidence_object" (
+	"task" text NOT NULL,
+	"path" text NOT NULL,
+	"prefix" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"modified_at" bigint NOT NULL,
+	"stored_at" bigint NOT NULL,
+	CONSTRAINT "closeout_evidence_object_task_path_pk" PRIMARY KEY("task","path")
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_policy_block" (
+	"question_id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"repository" text NOT NULL,
+	"cause" text NOT NULL,
+	"error" text NOT NULL,
+	"policy_path" text NOT NULL,
+	"main_sha" text NOT NULL,
+	"changed_by_sha" text,
+	"created_at" bigint NOT NULL,
+	CONSTRAINT "closeout_policy_block_check_1" CHECK (cause = 'policy_unreadable')
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_policy_outage" (
+	"repository" text PRIMARY KEY NOT NULL,
+	"started_at" bigint NOT NULL,
+	"error" text NOT NULL,
+	"policy_path" text NOT NULL,
+	"main_sha" text NOT NULL,
+	"changed_by_sha" text,
+	"question_id" text,
+	"question_item_id" text
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_progress" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"task_id" text NOT NULL,
+	"base" text NOT NULL,
+	"head" text NOT NULL,
+	"policy_digest" text NOT NULL,
+	"policy_path" text,
+	"decision" text,
+	"started_at" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"finished_at" bigint,
+	"recheck_digest" text
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_recovery" (
+	"question_id" text PRIMARY KEY NOT NULL,
+	"task_id" text NOT NULL,
+	"item_id" text NOT NULL,
+	"base" text NOT NULL,
+	"head" text NOT NULL,
+	"policy_digest" text NOT NULL,
+	"failed_checks" jsonb NOT NULL,
+	"retry_baseline" jsonb NOT NULL,
+	"summary" text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_retry_window" (
+	"job_id" bigint NOT NULL,
+	"activation_id" bigint NOT NULL,
+	"item_id" text NOT NULL,
+	"retry_baseline" jsonb NOT NULL,
+	CONSTRAINT "closeout_retry_window_job_id_activation_id_pk" PRIMARY KEY("job_id","activation_id")
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_round" (
+	"item_id" text NOT NULL,
+	"head" text NOT NULL,
+	"retry_baseline" jsonb NOT NULL,
+	"started_at" bigint NOT NULL,
+	CONSTRAINT "closeout_round_item_id_head_pk" PRIMARY KEY("item_id","head")
+);
+--> statement-breakpoint
+CREATE TABLE "closeout_step" (
+	"progress_id" text NOT NULL,
+	"step_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"state" text NOT NULL,
+	"command" text NOT NULL,
+	"detail" text,
+	"attempt" bigint NOT NULL,
+	"timeout_seconds" bigint,
+	"started_at" bigint,
+	"finished_at" bigint,
+	"exit_code" bigint,
+	"timed_out" integer DEFAULT 0 NOT NULL,
+	"timeout_reason" text,
+	"stdout" text DEFAULT '' NOT NULL,
+	"stderr" text DEFAULT '' NOT NULL,
+	"truncated" integer DEFAULT 0 NOT NULL,
+	"output_key" text,
+	"output_bytes" bigint,
+	"output_sha256" text,
+	"log_path" text,
+	"evidence_path" text,
+	"findings" text,
+	"ordinal" bigint NOT NULL,
+	"duration_ms" bigint,
+	"tokens" bigint,
+	"review_fail_on" text,
+	"review_pre_existing" text,
+	CONSTRAINT "closeout_step_progress_id_step_id_pk" PRIMARY KEY("progress_id","step_id"),
+	CONSTRAINT "closeout_step_check_1" CHECK (kind IN ('setup', 'command', 'review')),
+	CONSTRAINT "closeout_step_check_2" CHECK (state IN ( 'pending', 'running', 'passed', 'failed', 'blocked', 'skipped', 'exhausted' )),
+	CONSTRAINT "closeout_step_check_3" CHECK (timed_out IN (0, 1)),
+	CONSTRAINT "closeout_step_check_4" CHECK (truncated IN (0, 1)),
+	CONSTRAINT "closeout_step_check_5" CHECK (duration_ms IS NULL OR duration_ms >= 0),
+	CONSTRAINT "closeout_step_check_6" CHECK (tokens IS NULL OR tokens >= 0),
+	CONSTRAINT "closeout_step_check_7" CHECK (review_fail_on IS NULL OR review_fail_on IN ('P0', 'P1', 'P2', 'P3'))
+);
+--> statement-breakpoint
+CREATE TABLE "evidence" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"run_id" text NOT NULL,
+	"check_id" text NOT NULL,
+	"attempt" bigint NOT NULL,
+	"media_type" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"display_name" text NOT NULL,
+	"head_commit" text NOT NULL,
+	"created_at" bigint NOT NULL,
+	"asset_url" text,
+	CONSTRAINT "evidence_check_1" CHECK (attempt>=1),
+	CONSTRAINT "evidence_check_2" CHECK (media_type IN ('video/webm','video/mp4','image/png','image/jpeg','image/webp')),
+	CONSTRAINT "evidence_check_3" CHECK (size_bytes>0),
+	CONSTRAINT "evidence_check_4" CHECK (length(sha256)=64)
+);
+--> statement-breakpoint
+CREATE TABLE "evidence_object" (
+	"id" text PRIMARY KEY NOT NULL,
+	"prefix" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"stored_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "finding_group" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"repository" text NOT NULL,
+	"team_id" text NOT NULL,
+	"title" text NOT NULL,
+	"summary" text NOT NULL,
+	"scope" text NOT NULL,
+	"suggested_issue" text,
+	"member_ids" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"run_id" text NOT NULL,
+	"status" text DEFAULT 'open' NOT NULL,
+	"status_reason" text,
+	"status_by" text,
+	"status_at" bigint,
+	"filed_issue" text,
+	"action" text,
+	CONSTRAINT "finding_group_check_2" CHECK (status IN ('open','filed','added','dismissed')),
+	CONSTRAINT "finding_group_check_3" CHECK (action IS NULL OR action IN ('file','add','dismiss'))
+);
+--> statement-breakpoint
+CREATE TABLE "finding_group_run" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"day" text NOT NULL,
+	"started_at" bigint NOT NULL,
+	"finished_at" bigint,
+	"fingerprint" text NOT NULL,
+	"status" text NOT NULL,
+	"tokens" bigint,
+	"group_count" bigint DEFAULT 0 NOT NULL,
+	"error" text,
+	"finding_cursor" bigint DEFAULT 0 NOT NULL,
+	"issue_cursor" bigint DEFAULT 0 NOT NULL,
+	"skip_reason" text,
+	CONSTRAINT "finding_group_run_workspace_id_day_unique" UNIQUE("workspace_id","day"),
+	CONSTRAINT "finding_group_run_check_1" CHECK (status IN ('running','completed','failed'))
+);
+--> statement-breakpoint
+CREATE TABLE "fix_record" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"run_id" text,
+	"linear_identifier" text NOT NULL,
+	"repository" text,
+	"reason" text NOT NULL,
+	"triggers" jsonb NOT NULL,
+	"round" bigint NOT NULL,
+	"started_at" bigint NOT NULL,
+	"ended_at" bigint,
+	"outcome" text,
+	"head_before" text,
+	"head_after" text,
+	"agent" text,
+	"model" text,
+	"duration_ms" bigint,
+	CONSTRAINT "fix_record_check_1" CHECK (reason IN ('ci', 'review', 'conflict', 'findings', 'suggested', 'follow_up')),
+	CONSTRAINT "fix_record_check_3" CHECK (outcome IN ('fixed', 'not_fixed', 'asked', 'abandoned'))
+);
+--> statement-breakpoint
 CREATE TABLE "review_escape" (
 	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "review_escape_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
 	"trigger_key" text NOT NULL,
@@ -1763,7 +1636,7 @@ CREATE TABLE "review_finding" (
 	"filed_issue" text,
 	CONSTRAINT "review_finding_dedupe_key_unique" UNIQUE("dedupe_key"),
 	CONSTRAINT "review_finding_check_1" CHECK (severity IN ('P0', 'P1', 'P2', 'P3')),
-	CONSTRAINT "review_finding_check_2" CHECK (why IN ('pre-existing', 'below failOn')),
+	CONSTRAINT "review_finding_check_2" CHECK (why IN ('pre-existing', 'below failOn', 'meets failOn')),
 	CONSTRAINT "review_finding_check_3" CHECK (status IN ('open', 'filed', 'dismissed', 'gone'))
 );
 --> statement-breakpoint
@@ -1839,59 +1712,97 @@ CREATE TABLE "risk_fix" (
 	CONSTRAINT "risk_fix_item_id_head_sha_pk" PRIMARY KEY("item_id","head_sha")
 );
 --> statement-breakpoint
-CREATE TABLE "run" (
-	"id" text PRIMARY KEY NOT NULL,
+CREATE TABLE "suggested_finding" (
 	"item_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"agent" text NOT NULL,
-	"status" text NOT NULL,
-	"checkpoint" jsonb,
-	"fresh_session" integer DEFAULT 0 NOT NULL,
+	"finding_id" text NOT NULL,
+	"review_id" text NOT NULL,
+	"location" text NOT NULL,
+	"severity" text NOT NULL,
+	"explanation" text NOT NULL,
+	"handed_at" bigint NOT NULL,
+	"decision" text,
+	"reason" text,
+	"head" text,
+	"decided_at" bigint,
+	CONSTRAINT "suggested_finding_item_id_finding_id_pk" PRIMARY KEY("item_id","finding_id"),
+	CONSTRAINT "suggested_finding_check_1" CHECK (decision IN ('fixed','declined')),
+	CONSTRAINT "suggested_finding_check_2" CHECK ((decision IS NULL) = (decided_at IS NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "suggestion_turn" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"outcome" text NOT NULL,
+	"reason" text,
+	"head" text NOT NULL,
+	"recorded_at" bigint NOT NULL,
+	CONSTRAINT "suggestion_turn_check_1" CHECK (outcome IN ('started','skipped'))
+);
+--> statement-breakpoint
+CREATE TABLE "visual_review" (
+	"question_id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"check_id" text NOT NULL,
+	"evidence_ids" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"kind" text DEFAULT 'review' NOT NULL,
+	"outcome" text,
+	"answered_by" text,
+	"answered_at" bigint,
+	"feedback" text,
+	"head_commit" text,
+	"carried" jsonb,
+	CONSTRAINT "visual_review_check_2" CHECK (kind IN ('review','continue')),
+	CONSTRAINT "visual_review_check_3" CHECK (outcome IS NULL OR outcome IN ('accepted','changes_requested','stale','continued'))
+);
+--> statement-breakpoint
+CREATE TABLE "visual_review_mark" (
+	"id" text PRIMARY KEY NOT NULL,
+	"question_id" text NOT NULL,
+	"evidence_id" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"created_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "member_vm" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"vm_name" text NOT NULL,
+	"step" text NOT NULL,
+	"failure" text,
+	"runner_id" text,
+	"step_started_at" bigint NOT NULL,
+	"create_requested_at" bigint,
+	"install_started_at" bigint,
+	"token_expires_at" bigint,
 	"created_at" bigint NOT NULL,
 	"updated_at" bigint NOT NULL,
-	CONSTRAINT "run_check_1" CHECK (status IN ('provisioning', 'active', 'ended', 'lost')),
-	CONSTRAINT "run_check_3" CHECK (fresh_session IN (0, 1))
+	"install_at" bigint,
+	"enroll_at" bigint,
+	"health_at" bigint,
+	"ready_at" bigint,
+	"delete_step" text,
+	"delete_runner_id" text,
+	"delete_requested_by" text,
+	"delete_force" integer DEFAULT 0 NOT NULL,
+	"delete_step_started_at" bigint,
+	"delete_at" jsonb,
+	"delete_failure" text,
+	"delete_blocked" jsonb,
+	"enrollments_tracked" integer DEFAULT 1 NOT NULL,
+	"pool" text,
+	CONSTRAINT "member_vm_vm_name_unique" UNIQUE("vm_name"),
+	CONSTRAINT "member_vm_check_1" CHECK (step IN ('create','install','enroll','health','ready')),
+	CONSTRAINT "member_vm_check_2" CHECK (delete_step IS NULL OR delete_step IN ('drain','tailnet','revoke','destroy','clear')),
+	CONSTRAINT "member_vm_check_3" CHECK (delete_force IN (0,1)),
+	CONSTRAINT "member_vm_check_6" CHECK (enrollments_tracked IN (0,1))
 );
 --> statement-breakpoint
-CREATE TABLE "run_agent_setup" (
-	"run_id" text PRIMARY KEY NOT NULL,
-	"runner_id" text NOT NULL,
-	"skills" text NOT NULL,
-	"hooks" text NOT NULL,
-	"recorded_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "run_fallback_attempt" (
-	"run_id" text NOT NULL,
-	"call_id" text NOT NULL,
-	"ordinal" bigint NOT NULL,
-	"policy_key" text NOT NULL,
-	"outcome" text NOT NULL,
-	"runner_id" text NOT NULL,
-	"generation" bigint NOT NULL,
-	"excluded_key" text NOT NULL,
-	"account_id" text,
-	"binding_id" text,
-	"recorded_at" bigint NOT NULL,
-	"closed_at" bigint,
-	CONSTRAINT "run_fallback_attempt_run_id_call_id_ordinal_pk" PRIMARY KEY("run_id","call_id","ordinal"),
-	CONSTRAINT "run_fallback_attempt_check_1" CHECK (length(call_id) BETWEEN 1 AND 300),
-	CONSTRAINT "run_fallback_attempt_check_2" CHECK (ordinal BETWEEN 1 AND 256),
-	CONSTRAINT "run_fallback_attempt_check_3" CHECK (length(policy_key) BETWEEN 1 AND 2000),
-	CONSTRAINT "run_fallback_attempt_check_4" CHECK (outcome IN ('failed','handed_over','usage_limit')),
-	CONSTRAINT "run_fallback_attempt_check_5" CHECK (generation>=0),
-	CONSTRAINT "run_fallback_attempt_check_6" CHECK (length(excluded_key)<=300)
-);
---> statement-breakpoint
-CREATE TABLE "run_owner" (
-	"run_id" text PRIMARY KEY NOT NULL,
-	"owner_instance" text NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "run_review_rounds" (
-	"run_id" text PRIMARY KEY NOT NULL,
-	"rounds" bigint NOT NULL,
-	CONSTRAINT "run_review_rounds_check_1" CHECK (rounds >= 0)
+CREATE TABLE "member_vm_enrollment" (
+	"token_hash" text PRIMARY KEY NOT NULL,
+	"member_vm_id" text NOT NULL,
+	"created_at" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "runner" (
@@ -1906,16 +1817,9 @@ CREATE TABLE "runner" (
 	"last_seen_at" bigint,
 	"live_reported_at" bigint,
 	"terminations_since" bigint,
+	"fix_slots" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "runner_check_1" CHECK (status IN ('active','paused','draining','revoked')),
 	CONSTRAINT "runner_check_2" CHECK (fence >= 0)
-);
---> statement-breakpoint
-CREATE TABLE "runner_account_capability" (
-	"runner_id" text PRIMARY KEY NOT NULL,
-	"protocol" bigint NOT NULL,
-	"bindings" jsonb NOT NULL,
-	"reported_at" bigint NOT NULL,
-	CONSTRAINT "runner_account_capability_check_1" CHECK (protocol>=1)
 );
 --> statement-breakpoint
 CREATE TABLE "runner_agent" (
@@ -1934,8 +1838,6 @@ CREATE TABLE "runner_agent" (
 CREATE TABLE "runner_agent_policy" (
 	"runner_id" text NOT NULL,
 	"agent" text NOT NULL,
-	"ready" integer DEFAULT 0 NOT NULL,
-	"auth_expired" integer DEFAULT 0 NOT NULL,
 	"quota_state" text DEFAULT 'ok' NOT NULL,
 	"resets_at" bigint,
 	"cooldown_until" bigint DEFAULT 0 NOT NULL,
@@ -1945,8 +1847,6 @@ CREATE TABLE "runner_agent_policy" (
 	"extra_usage" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "runner_agent_policy_runner_id_agent_pk" PRIMARY KEY("runner_id","agent"),
 	CONSTRAINT "runner_agent_policy_check_1" CHECK (agent IN ('claude','codex','grok','opencode')),
-	CONSTRAINT "runner_agent_policy_check_2" CHECK (ready IN (0,1)),
-	CONSTRAINT "runner_agent_policy_check_3" CHECK (auth_expired IN (0,1)),
 	CONSTRAINT "runner_agent_policy_check_4" CHECK (quota_state IN ('ok','low','exhausted','spent_extra')),
 	CONSTRAINT "runner_agent_policy_check_5" CHECK (extra_usage IN (0,1))
 );
@@ -1978,6 +1878,7 @@ CREATE TABLE "runner_capacity" (
 	"capacity" bigint NOT NULL,
 	"ceiling" bigint,
 	"desired" bigint,
+	"conversation" bigint,
 	CONSTRAINT "runner_capacity_check_1" CHECK (capacity BETWEEN 1 AND 16),
 	CONSTRAINT "runner_capacity_check_2" CHECK (ceiling IS NULL OR ceiling BETWEEN 1 AND 16),
 	CONSTRAINT "runner_capacity_check_3" CHECK (desired IS NULL OR desired BETWEEN 1 AND 16)
@@ -2009,18 +1910,6 @@ CREATE TABLE "runner_command" (
 	CONSTRAINT "runner_command_check_1" CHECK (kind IN ('run','review','check','task','cancel','handover','checkpoint','probe','login_check','login','upgrade'))
 );
 --> statement-breakpoint
-CREATE TABLE "runner_command_account" (
-	"command_id" text PRIMARY KEY NOT NULL,
-	"workspace_id" text NOT NULL,
-	"runner_id" text NOT NULL,
-	"agent" text NOT NULL,
-	"account_id" text NOT NULL,
-	"binding_id" text NOT NULL,
-	"named" integer NOT NULL,
-	"recorded_at" bigint NOT NULL,
-	CONSTRAINT "runner_command_account_check_1" CHECK (named IN (0,1))
-);
---> statement-breakpoint
 CREATE TABLE "runner_enrollment" (
 	"id" text PRIMARY KEY NOT NULL,
 	"token_hash" text NOT NULL,
@@ -2030,6 +1919,7 @@ CREATE TABLE "runner_enrollment" (
 	"expires_at" bigint NOT NULL,
 	"used_at" bigint,
 	"runner_id" text,
+	"admin_repositories" jsonb,
 	CONSTRAINT "runner_enrollment_token_hash_unique" UNIQUE("token_hash")
 );
 --> statement-breakpoint
@@ -2117,7 +2007,8 @@ CREATE TABLE "runner_helper" (
 	"expires_at" bigint NOT NULL,
 	"acknowledged_at" bigint,
 	"ended_at" bigint,
-	"result" jsonb
+	"result" jsonb,
+	"purpose" text
 );
 --> statement-breakpoint
 CREATE TABLE "runner_host_status" (
@@ -2208,6 +2099,13 @@ CREATE TABLE "runner_repository_command" (
 	"done_at" bigint,
 	CONSTRAINT "runner_repository_command_check_1" CHECK (state IN ('pending','delivered','done','expired')),
 	CONSTRAINT "runner_repository_command_check_2" CHECK ((state = 'done') = (result IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "runner_reservation" (
+	"run_id" text PRIMARY KEY NOT NULL,
+	"runner_id" text NOT NULL,
+	"instance_id" text NOT NULL,
+	"expires_at" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "runner_result" (
@@ -2318,6 +2216,9 @@ CREATE TABLE "runner_work" (
 	"confirmed_at" bigint,
 	"lost_at" bigint,
 	"teardown_confirmed_at" bigint,
+	"skills" text,
+	"hooks" text,
+	"setup_recorded_at" bigint,
 	CONSTRAINT "runner_work_command_id_unique" UNIQUE("command_id"),
 	CONSTRAINT "runner_work_check_1" CHECK (generation>0),
 	CONSTRAINT "runner_work_check_2" CHECK (runner_fence>=0),
@@ -2330,6 +2231,30 @@ CREATE TABLE "runner_work_grant" (
 	"run_id" text NOT NULL,
 	"generation" bigint NOT NULL,
 	"expires_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "job" (
+	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "job_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"queue" text NOT NULL,
+	"job_key" text,
+	"payload" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"priority" bigint DEFAULT 5 NOT NULL,
+	"run_at" bigint NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"attempts" bigint DEFAULT 0 NOT NULL,
+	"max_attempts" bigint DEFAULT 10 NOT NULL,
+	"locked_by" text,
+	"locked_until" bigint,
+	"last_error" text,
+	"created_at" bigint NOT NULL,
+	"finished_at" bigint,
+	"recurring_every_ms" bigint,
+	"fire_count" bigint DEFAULT 0 NOT NULL,
+	"lane" text DEFAULT 'default' NOT NULL,
+	"item_version" bigint,
+	"activation_id" bigint DEFAULT nextval('job_activation_seq') NOT NULL,
+	CONSTRAINT "job_job_key_unique" UNIQUE("job_key"),
+	CONSTRAINT "job_check_2" CHECK (status IN ('pending', 'running', 'done', 'dead', 'cancelled'))
 );
 --> statement-breakpoint
 CREATE TABLE "scheduler_admission" (
@@ -2345,63 +2270,302 @@ CREATE TABLE "scheduler_admission" (
 	CONSTRAINT "scheduler_admission_check_2" CHECK (hot IN (0,1))
 );
 --> statement-breakpoint
+CREATE TABLE "sync_cursor" (
+	"name" text PRIMARY KEY NOT NULL,
+	"cursor_ms" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "wake" (
+	"from_wall" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "wake_from_wall_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"to_wall" bigint NOT NULL,
+	"slept_ms" bigint NOT NULL,
+	"created_at" bigint NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "setting" (
 	"key" text PRIMARY KEY NOT NULL,
 	"value" text NOT NULL,
 	"updated_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "suggested_finding" (
-	"item_id" text NOT NULL,
-	"finding_id" text NOT NULL,
-	"review_id" text NOT NULL,
-	"location" text NOT NULL,
-	"severity" text NOT NULL,
-	"explanation" text NOT NULL,
-	"handed_at" bigint NOT NULL,
-	"decision" text,
-	"reason" text,
-	"head" text,
-	"decided_at" bigint,
-	CONSTRAINT "suggested_finding_item_id_finding_id_pk" PRIMARY KEY("item_id","finding_id"),
-	CONSTRAINT "suggested_finding_check_1" CHECK (decision IN ('fixed','declined')),
-	CONSTRAINT "suggested_finding_check_2" CHECK ((decision IS NULL) = (decided_at IS NULL))
+CREATE TABLE "credential" (
+	"kind" text NOT NULL,
+	"workspace" text NOT NULL,
+	"ciphertext" text NOT NULL,
+	"updated_at" bigint NOT NULL,
+	CONSTRAINT "credential_kind_workspace_pk" PRIMARY KEY("kind","workspace"),
+	CONSTRAINT "credential_kind" CHECK (kind IN ('linear', 'slack'))
 );
 --> statement-breakpoint
-CREATE TABLE "suggestion_turn" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"outcome" text NOT NULL,
-	"reason" text,
-	"head" text NOT NULL,
-	"recorded_at" bigint NOT NULL,
-	CONSTRAINT "suggestion_turn_check_1" CHECK (outcome IN ('started','skipped'))
-);
---> statement-breakpoint
-CREATE TABLE "sync_cursor" (
+CREATE TABLE "secret" (
 	"name" text PRIMARY KEY NOT NULL,
-	"cursor_ms" bigint NOT NULL
+	"ciphertext" text NOT NULL,
+	"updated_at" bigint NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "task_block" (
-	"blocker_linear_issue_id" text NOT NULL,
-	"blocked_linear_issue_id" text NOT NULL,
-	CONSTRAINT "task_block_blocked_linear_issue_id_blocker_linear_issue_id_pk" PRIMARY KEY("blocked_linear_issue_id","blocker_linear_issue_id"),
-	CONSTRAINT "task_block_check_1" CHECK (blocker_linear_issue_id <> blocked_linear_issue_id)
+CREATE TABLE "inbox_event" (
+	"dedupe_key" text PRIMARY KEY NOT NULL,
+	"delivery_id" text,
+	"source" text NOT NULL,
+	"action" text NOT NULL,
+	"session_id" text,
+	"issue_id" text,
+	"activity_id" text,
+	"body" text,
+	"signal" text,
+	"updated_at_ms" bigint NOT NULL,
+	"payload" jsonb NOT NULL,
+	"received_at" bigint NOT NULL,
+	"handled" integer DEFAULT 0 NOT NULL,
+	"attempts" bigint DEFAULT 0 NOT NULL,
+	"next_attempt_at" bigint,
+	"last_error" text,
+	"locked_by" text,
+	"locked_until" bigint,
+	CONSTRAINT "inbox_event_check_1" CHECK (source IN ('webhook', 'poll')),
+	CONSTRAINT "inbox_event_check_2" CHECK (action IN ('created', 'prompted', 'other')),
+	CONSTRAINT "inbox_event_check_4" CHECK (handled IN (0, 1))
 );
 --> statement-breakpoint
-CREATE TABLE "task_request" (
-	"task_key" text PRIMARY KEY NOT NULL,
-	"classification" jsonb NOT NULL
+CREATE TABLE "outbox" (
+	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "outbox_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"target" text NOT NULL,
+	"op" text NOT NULL,
+	"ordering_key" text,
+	"critical" bigint DEFAULT 1 NOT NULL,
+	"idempotency_key" text NOT NULL,
+	"payload" jsonb NOT NULL,
+	"ephemeral" bigint DEFAULT 0 NOT NULL,
+	"priority" bigint DEFAULT 5 NOT NULL,
+	"not_before" bigint DEFAULT 0 NOT NULL,
+	"attempts" bigint DEFAULT 0 NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"external_id" text,
+	"error" text,
+	"created_at" bigint NOT NULL,
+	"sent_at" bigint,
+	"locked_by" text,
+	"locked_until" bigint,
+	"max_attempts" bigint DEFAULT 5 NOT NULL,
+	"delivery_kind" text DEFAULT 'ordered' NOT NULL,
+	"delivery_generation" bigint DEFAULT 0 NOT NULL,
+	"activity_run_id" text,
+	CONSTRAINT "outbox_idempotency_key_unique" UNIQUE("idempotency_key"),
+	CONSTRAINT "outbox_check_1" CHECK (target IN ('linear', 'slack', 'github', 'sandbox')),
+	CONSTRAINT "outbox_check_3" CHECK (status IN ('pending', 'sent', 'dead', 'dropped')),
+	CONSTRAINT "outbox_check_4" CHECK (delivery_kind IN ('ordered', 'progress', 'critical', 'terminal', 'stop', 'status'))
 );
 --> statement-breakpoint
-CREATE TABLE "usage_pause" (
-	"run_id" text PRIMARY KEY NOT NULL,
+CREATE TABLE "outbox_session_fence" (
+	"target" text NOT NULL,
+	"ordering_key" text NOT NULL,
+	"generation" bigint DEFAULT 0 NOT NULL,
+	"stopped" integer DEFAULT 0 NOT NULL,
+	"updated_at" bigint NOT NULL,
+	CONSTRAINT "outbox_session_fence_target_ordering_key_pk" PRIMARY KEY("target","ordering_key"),
+	CONSTRAINT "outbox_session_fence_check_1" CHECK (stopped IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "decision_memory" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"question_id" text NOT NULL,
+	"statement" text NOT NULL,
+	"scope_globs" jsonb NOT NULL,
+	"tags" jsonb NOT NULL,
+	"revision" bigint DEFAULT 1 NOT NULL,
+	"retired_at" bigint,
+	"saved_by" text NOT NULL,
+	"updated_by" text NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"search" "tsvector" GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(statement || ' ' || tags::text, '[[:punct:]]+', ' ', 'g'))) STORED,
+	CONSTRAINT "decision_memory_question_id_unique" UNIQUE("question_id")
+);
+--> statement-breakpoint
+CREATE TABLE "decision_suggestion" (
+	"id" text PRIMARY KEY NOT NULL,
+	"question_id" text NOT NULL,
+	"decision_id" text NOT NULL,
+	"revision" bigint NOT NULL,
+	"statement" text NOT NULL,
+	"accepted_by" text,
+	"accepted_at" bigint,
+	CONSTRAINT "decision_suggestion_question_id_decision_id_unique" UNIQUE("question_id","decision_id")
+);
+--> statement-breakpoint
+CREATE TABLE "link_ask" (
+	"question_id" text PRIMARY KEY NOT NULL,
 	"item_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"head_commit" text NOT NULL,
+	"link" text NOT NULL,
+	"title" text NOT NULL,
+	"detail" text NOT NULL,
+	"answerers" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"decision" text,
+	"note" text,
+	"decided_by" text,
+	"decided_at" bigint,
+	"closed_reason" text,
+	"closed_at" bigint,
+	"rounds" jsonb,
+	CONSTRAINT "link_ask_check_1" CHECK (kind IN ('bypass', 'screenshots', 'risk', 'question', 'rounds', 'rule')),
+	CONSTRAINT "link_ask_check_3" CHECK (decision IN ('approve', 'changes', 'answer', 'rethink', 'continue', 'stop')),
+	CONSTRAINT "link_ask_check_4" CHECK (closed_reason IN ('decided', 'guidance', 'head_moved', 'cancelled'))
+);
+--> statement-breakpoint
+CREATE TABLE "plan_proposal" (
+	"question_id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"parent_issue_id" text NOT NULL,
+	"repository" text,
+	"drafts" jsonb NOT NULL,
+	"created_at" bigint NOT NULL,
+	"filed" jsonb,
+	"filed_at" bigint
+);
+--> statement-breakpoint
+CREATE TABLE "question" (
+	"id" text PRIMARY KEY NOT NULL,
+	"item_id" text NOT NULL,
+	"run_id" text,
+	"session_id" text NOT NULL,
+	"kind" text DEFAULT 'agent' NOT NULL,
+	"body" text NOT NULL,
+	"context" text,
+	"options" jsonb,
+	"status" text NOT NULL,
+	"answer" text,
+	"answered_by" text,
+	"created_at" bigint NOT NULL,
+	"answered_at" bigint,
+	"cancelled_at" bigint,
+	"answer_event_key" text,
+	"reason" text,
+	"handoff_version" bigint,
+	CONSTRAINT "question_check_2" CHECK (status IN ('queued', 'open', 'answered'))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"owner_user_id" text,
 	"agent" text NOT NULL,
+	"label" text NOT NULL,
+	"enabled" integer DEFAULT 1 NOT NULL,
+	"created_at" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"removed_at" bigint,
+	"concurrency" bigint,
+	"position" bigint DEFAULT 1 NOT NULL,
+	"extra_usage" integer DEFAULT 0 NOT NULL,
+	CONSTRAINT "agent_account_id_workspace_id_agent_unique" UNIQUE("id","workspace_id","agent"),
+	CONSTRAINT "agent_account_check_1" CHECK (length(id) BETWEEN 1 AND 128),
+	CONSTRAINT "agent_account_check_2" CHECK (agent IN ('claude','codex','grok','opencode')),
+	CONSTRAINT "agent_account_check_3" CHECK (length(label) BETWEEN 1 AND 80),
+	CONSTRAINT "agent_account_check_5" CHECK (enabled IN (0,1)),
+	CONSTRAINT "agent_account_check_6" CHECK (concurrency IS NULL OR concurrency BETWEEN 1 AND 64)
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account_binding" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"account_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"runner_id" text NOT NULL,
+	"quota_scope" text NOT NULL,
+	"created_at" bigint NOT NULL,
+	"removed_at" bigint,
+	CONSTRAINT "agent_account_binding_check_1" CHECK (length(id) BETWEEN 1 AND 128),
+	CONSTRAINT "agent_account_binding_check_3" CHECK (quota_scope IN ('account','unknown'))
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account_credential" (
+	"account_id" text PRIMARY KEY NOT NULL,
+	"agent" text NOT NULL,
+	"ciphertext" text NOT NULL,
+	"version" bigint NOT NULL,
+	"updated_at" bigint NOT NULL,
+	"runner_id" text
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account_health" (
+	"kind" text NOT NULL,
+	"scope" text NOT NULL,
+	"scope_id" text NOT NULL,
+	"model" text DEFAULT '' NOT NULL,
+	"workspace_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"state" text NOT NULL,
+	"source" text NOT NULL,
+	"source_id" text NOT NULL,
+	"binding_id" text,
 	"runner_id" text,
+	"observed_at" bigint NOT NULL,
+	"limits_json" text,
 	"resets_at" bigint,
-	"resume_at" bigint NOT NULL,
-	"paused_at" bigint NOT NULL
+	"next_check_at" bigint,
+	"failures" bigint DEFAULT 0 NOT NULL,
+	"updated_at" bigint NOT NULL,
+	CONSTRAINT "agent_account_health_kind_scope_id_model_pk" PRIMARY KEY("kind","scope_id","model"),
+	CONSTRAINT "agent_account_health_check_1" CHECK (kind IN ('quota','auth','provider','model')),
+	CONSTRAINT "agent_account_health_check_2" CHECK (scope IN ('account','binding','provider')),
+	CONSTRAINT "agent_account_health_check_3" CHECK (length(scope_id) BETWEEN 1 AND 300),
+	CONSTRAINT "agent_account_health_check_4" CHECK (length(model)<=200),
+	CONSTRAINT "agent_account_health_check_5" CHECK (agent IN ('claude','codex','grok','opencode')),
+	CONSTRAINT "agent_account_health_check_6" CHECK (state IN ('ok','low','exhausted','auth_required','restricted','unsupported_model')),
+	CONSTRAINT "agent_account_health_check_7" CHECK (source IN ('result','login_check','sign_in','resume')),
+	CONSTRAINT "agent_account_health_check_8" CHECK (length(source_id) BETWEEN 1 AND 200),
+	CONSTRAINT "agent_account_health_check_9" CHECK (failures BETWEEN 0 AND 1000),
+	CONSTRAINT "agent_account_health_check_10" CHECK ((kind='provider')=(scope='provider')),
+	CONSTRAINT "agent_account_health_check_11" CHECK (kind='model' OR model='')
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account_lease" (
+	"account_id" text PRIMARY KEY NOT NULL,
+	"runner_id" text NOT NULL,
+	"run_id" text NOT NULL,
+	"expires_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "agent_account_usage" (
+	"account_id" text PRIMARY KEY NOT NULL,
+	"runner_id" text NOT NULL,
+	"limits_json" text NOT NULL,
+	"observed_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "runner_account_capability" (
+	"runner_id" text PRIMARY KEY NOT NULL,
+	"protocol" bigint NOT NULL,
+	"bindings" jsonb NOT NULL,
+	"reported_at" bigint NOT NULL,
+	CONSTRAINT "runner_account_capability_check_1" CHECK (protocol>=1)
+);
+--> statement-breakpoint
+CREATE TABLE "runner_command_account" (
+	"command_id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"runner_id" text NOT NULL,
+	"agent" text NOT NULL,
+	"account_id" text NOT NULL,
+	"binding_id" text NOT NULL,
+	"named" integer NOT NULL,
+	"recorded_at" bigint NOT NULL,
+	CONSTRAINT "runner_command_account_check_1" CHECK (named IN (0,1))
+);
+--> statement-breakpoint
+CREATE TABLE "github_attribution_request" (
+	"state_hash" text PRIMARY KEY NOT NULL,
+	"browser_hash" text NOT NULL,
+	"session_hash" text NOT NULL,
+	"workspace_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"revision" bigint NOT NULL,
+	"expires_at" bigint NOT NULL,
+	"return_path" text,
+	CONSTRAINT "github_attribution_request_check_1" CHECK (return_path IS NULL OR return_path = '/status/settings/account' OR ( length(return_path) = 35 AND substr(return_path, 1, 9) = '/onboard/' AND substr(return_path, 10) !~ '[^0-9A-Za-z]' ))
 );
 --> statement-breakpoint
 CREATE TABLE "verified_github_attribution" (
@@ -2417,166 +2581,12 @@ CREATE TABLE "verified_github_attribution" (
 	CONSTRAINT "verified_github_attribution_check_1" CHECK (github_id>0)
 );
 --> statement-breakpoint
-CREATE TABLE "visual_review" (
-	"question_id" text PRIMARY KEY NOT NULL,
-	"item_id" text NOT NULL,
-	"check_id" text NOT NULL,
-	"evidence_ids" jsonb NOT NULL,
-	"created_at" bigint NOT NULL,
-	"kind" text DEFAULT 'review' NOT NULL,
-	"outcome" text,
-	"answered_by" text,
-	"answered_at" bigint,
-	"feedback" text,
-	"head_commit" text,
-	"carried" jsonb,
-	CONSTRAINT "visual_review_check_2" CHECK (kind IN ('review','continue')),
-	CONSTRAINT "visual_review_check_3" CHECK (outcome IS NULL OR outcome IN ('accepted','changes_requested','stale','continued'))
-);
---> statement-breakpoint
-CREATE TABLE "visual_review_mark" (
-	"id" text PRIMARY KEY NOT NULL,
-	"question_id" text NOT NULL,
-	"evidence_id" text NOT NULL,
-	"size_bytes" bigint NOT NULL,
-	"sha256" text NOT NULL,
-	"created_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "wake" (
-	"from_wall" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "wake_from_wall_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"to_wall" bigint NOT NULL,
-	"slept_ms" bigint NOT NULL,
-	"created_at" bigint NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "work_item" (
-	"id" text PRIMARY KEY NOT NULL,
-	"delegation_id" text NOT NULL,
-	"linear_issue_id" text NOT NULL,
-	"linear_identifier" text NOT NULL,
-	"title" text NOT NULL,
-	"state" text NOT NULL,
-	"branch_name" text NOT NULL,
-	"position" bigint NOT NULL,
-	"version" bigint DEFAULT 0 NOT NULL,
-	"task_key" text,
-	"created_at" bigint NOT NULL,
-	"checkpoint" jsonb,
-	"recovery_attempts" bigint DEFAULT 0 NOT NULL,
-	"awake_ms" bigint DEFAULT 0 NOT NULL,
-	"last_mono_ms" bigint,
-	"turn_count" bigint DEFAULT 0 NOT NULL,
-	"max_turns" bigint DEFAULT 80 NOT NULL,
-	"max_awake_ms" bigint DEFAULT 2700000 NOT NULL,
-	"cancel_requested" bigint DEFAULT 0 NOT NULL,
-	"session_key" text,
-	"current_run_id" text,
-	"brief" jsonb,
-	"owner_user_id" text,
-	"delegated_by" text,
-	"resumed_at" bigint,
-	"accepted_head" text,
-	"agent_ms" bigint DEFAULT 0 NOT NULL,
-	"closeout_ms" bigint DEFAULT 0 NOT NULL,
-	"waiting_ms" bigint DEFAULT 0 NOT NULL,
-	"recheck_ms" bigint DEFAULT 0 NOT NULL,
-	"linear_project_id" text,
-	"linear_project_name" text,
-	"implement_ms" bigint DEFAULT 0 NOT NULL,
-	"fix_ms" bigint DEFAULT 0 NOT NULL,
-	"max_fix_ms" bigint DEFAULT 0 NOT NULL,
-	"max_closeout_ms" bigint DEFAULT 0 NOT NULL,
-	CONSTRAINT "work_item_task_key_unique" UNIQUE("task_key"),
-	CONSTRAINT "work_item_check_1" CHECK (state IN ( 'planning', 'queued', 'running', 'paused', 'awaiting_input', 'recovering', 'verifying', 'failed', 'merge_queue', 'manual', 'completed', 'merged', 'cancelled' ))
-);
---> statement-breakpoint
-CREATE TABLE "work_item_event" (
-	"id" bigint PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY (sequence name "work_item_event_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
-	"item_id" text NOT NULL,
-	"version" bigint NOT NULL,
-	"at" bigint NOT NULL,
-	"from_state" text NOT NULL,
-	"to_state" text NOT NULL,
-	"event" text NOT NULL,
-	"kind" text DEFAULT 'transition' NOT NULL,
-	"reason" text,
-	"payload_digest" text,
-	"actor" text,
-	CONSTRAINT "work_item_event_item_id_version_unique" UNIQUE("item_id","version"),
-	CONSTRAINT "work_item_event_check_1" CHECK (kind IN ('transition','restart','ask')),
-	CONSTRAINT "work_item_event_check_2" CHECK (kind<>'restart' OR reason IN ('findings','ci','review','conflict','follow_up','answer')),
-	CONSTRAINT "work_item_event_check_3" CHECK (kind<>'ask' OR reason IS NOT NULL)
-);
---> statement-breakpoint
-CREATE TABLE "work_item_linear_read" (
-	"item_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"value_json" jsonb NOT NULL,
-	"read_at" bigint NOT NULL,
-	CONSTRAINT "work_item_linear_read_item_id_kind_pk" PRIMARY KEY("item_id","kind"),
-	CONSTRAINT "work_item_linear_read_check_1" CHECK (kind IN ('project_overview','repository_hints','repository_suggestions'))
-);
---> statement-breakpoint
-CREATE TABLE "work_item_merge_settings" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"merge_order" text NOT NULL,
-	"main_moved" text NOT NULL,
-	"resolved_json" text NOT NULL,
-	"resolved_at" bigint NOT NULL,
-	CONSTRAINT "work_item_merge_settings_check_1" CHECK (merge_order IN ('queue','ci-green','github-queue')),
-	CONSTRAINT "work_item_merge_settings_check_2" CHECK (main_moved IN ('overlap','ci','closeout'))
-);
---> statement-breakpoint
-CREATE TABLE "work_item_repository" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"owner" text NOT NULL,
-	"repo" text NOT NULL,
-	"remote_url" text NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "work_item_repository_question" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"question_id" text NOT NULL,
-	"candidates" jsonb NOT NULL,
-	"chosen_repository" jsonb
-);
---> statement-breakpoint
-CREATE TABLE "work_item_scheduling" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"project_id" text,
-	"project_known" integer NOT NULL,
-	"priority" bigint DEFAULT 0 NOT NULL,
-	"paths" jsonb,
-	"project_lead_id" text,
-	CONSTRAINT "work_item_scheduling_check_1" CHECK (project_known IN (0,1)),
-	CONSTRAINT "work_item_scheduling_check_2" CHECK (priority BETWEEN 0 AND 4)
-);
---> statement-breakpoint
-CREATE TABLE "work_item_specification" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"hash" text NOT NULL,
-	"revision" bigint NOT NULL,
-	"present" integer NOT NULL,
-	CONSTRAINT "work_item_specification_check_1" CHECK (revision>0),
-	CONSTRAINT "work_item_specification_check_2" CHECK (present IN (0,1))
-);
---> statement-breakpoint
-CREATE TABLE "work_item_task" (
-	"item_id" text PRIMARY KEY NOT NULL,
-	"mode" text NOT NULL,
-	"response" text,
-	"generation" bigint DEFAULT 0 NOT NULL,
-	"repository_context" integer DEFAULT 0 NOT NULL,
-	CONSTRAINT "work_item_task_check_1" CHECK (mode IN ('code', 'answer', 'artifact', 'plan')),
-	CONSTRAINT "work_item_task_check_2" CHECK (repository_context IN (0,1))
-);
---> statement-breakpoint
 CREATE TABLE "workspace" (
 	"id" text PRIMARY KEY NOT NULL,
 	"linear_organization_id" text NOT NULL,
 	"name" text NOT NULL,
 	"created_at" bigint NOT NULL,
+	"finding_grouping_off" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "workspace_linear_organization_id_unique" UNIQUE("linear_organization_id")
 );
 --> statement-breakpoint
@@ -2634,23 +2644,6 @@ CREATE TABLE "workspace_github_oauth" (
 	"expires_at" bigint NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
 	CONSTRAINT "workspace_github_oauth_check_1" CHECK (status IN ('pending','claimed','complete','failed'))
-);
---> statement-breakpoint
-CREATE TABLE "workspace_identity_link" (
-	"workspace_id" text NOT NULL,
-	"user_id" text NOT NULL,
-	"provider" text NOT NULL,
-	"external_id" text,
-	"installation_id" text,
-	"method" text NOT NULL,
-	"status" text NOT NULL,
-	"checked_at" bigint NOT NULL,
-	CONSTRAINT "workspace_identity_link_workspace_id_user_id_provider_pk" PRIMARY KEY("workspace_id","user_id","provider"),
-	CONSTRAINT "workspace_identity_link_workspace_id_provider_external_id_unique" UNIQUE("workspace_id","provider","external_id"),
-	CONSTRAINT "workspace_identity_link_check_1" CHECK (provider IN ('slack','github')),
-	CONSTRAINT "workspace_identity_link_check_2" CHECK (method IN ('email','manual')),
-	CONSTRAINT "workspace_identity_link_check_3" CHECK (status IN ('linked','unmatched','error')),
-	CONSTRAINT "workspace_identity_link_check_4" CHECK ((status='linked' AND external_id IS NOT NULL) OR (status!='linked' AND external_id IS NULL))
 );
 --> statement-breakpoint
 CREATE TABLE "workspace_member" (
@@ -2711,52 +2704,17 @@ CREATE TABLE "workspace_user_team" (
 	CONSTRAINT "workspace_user_team_workspace_id_user_id_team_id_pk" PRIMARY KEY("workspace_id","user_id","team_id")
 );
 --> statement-breakpoint
-ALTER TABLE "agent_account" ADD CONSTRAINT "agent_account_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_account_binding" ADD CONSTRAINT "agent_account_binding_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_account_binding" ADD CONSTRAINT "agent_account_binding_account_id_workspace_id_agent_agent_account_id_workspace_id_agent_fk" FOREIGN KEY ("account_id","workspace_id","agent") REFERENCES "public"."agent_account"("id","workspace_id","agent") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_binding_id_agent_account_binding_id_fk" FOREIGN KEY ("binding_id") REFERENCES "public"."agent_account_binding"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_model_catalog" ADD CONSTRAINT "agent_model_catalog_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_model_catalog" ADD CONSTRAINT "agent_model_catalog_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_command_id_runner_command_id_fk" FOREIGN KEY ("command_id") REFERENCES "public"."runner_command"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_session_snapshot_chunk" ADD CONSTRAINT "agent_session_snapshot_chunk_run_id_generation_agent_session_snapshot_run_id_generation_fk" FOREIGN KEY ("run_id","generation") REFERENCES "public"."agent_session_snapshot"("run_id","generation") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_wait" ADD CONSTRAINT "agent_wait_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "candidate_paths" ADD CONSTRAINT "candidate_paths_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "candidate_risk" ADD CONSTRAINT "candidate_risk_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "checkpoint_ref_cleanup" ADD CONSTRAINT "checkpoint_ref_cleanup_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ci_rerun" ADD CONSTRAINT "ci_rerun_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ci_round" ADD CONSTRAINT "ci_round_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_bypass_check" ADD CONSTRAINT "closeout_bypass_check_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_recovery" ADD CONSTRAINT "closeout_recovery_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_recovery" ADD CONSTRAINT "closeout_recovery_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_retry_window" ADD CONSTRAINT "closeout_retry_window_job_id_job_id_fk" FOREIGN KEY ("job_id") REFERENCES "public"."job"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_retry_window" ADD CONSTRAINT "closeout_retry_window_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_round" ADD CONSTRAINT "closeout_round_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "closeout_step" ADD CONSTRAINT "closeout_step_progress_id_closeout_progress_id_fk" FOREIGN KEY ("progress_id") REFERENCES "public"."closeout_progress"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_saved_by_workspace_user_id_fk" FOREIGN KEY ("saved_by") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_updated_by_workspace_user_id_fk" FOREIGN KEY ("updated_by") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_suggestion" ADD CONSTRAINT "decision_suggestion_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_suggestion" ADD CONSTRAINT "decision_suggestion_decision_id_decision_memory_id_fk" FOREIGN KEY ("decision_id") REFERENCES "public"."decision_memory"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "evidence" ADD CONSTRAINT "evidence_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "finding_group" ADD CONSTRAINT "finding_group_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "finding_group" ADD CONSTRAINT "finding_group_run_id_finding_group_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."finding_group_run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "finding_group_run" ADD CONSTRAINT "finding_group_run_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "finding_grouping_off" ADD CONSTRAINT "finding_grouping_off_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_session_hash_workspace_session_token_hash_fk" FOREIGN KEY ("session_hash") REFERENCES "public"."workspace_session"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "github_integration_hold" ADD CONSTRAINT "github_integration_hold_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "github_integration_hold" ADD CONSTRAINT "github_integration_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_artifact" ADD CONSTRAINT "linear_artifact_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_artifact_attempt" ADD CONSTRAINT "linear_artifact_attempt_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_conversation" ADD CONSTRAINT "linear_conversation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_conversation_entry" ADD CONSTRAINT "linear_conversation_entry_item_id_linear_conversation_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."linear_conversation"("item_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_issue_context" ADD CONSTRAINT "linear_issue_context_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_session" ADD CONSTRAINT "linear_session_active_item_id_work_item_id_fk" FOREIGN KEY ("active_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_session_cleanup_block" ADD CONSTRAINT "linear_session_cleanup_block_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_stop_receipt" ADD CONSTRAINT "linear_stop_receipt_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_task_delegation" ADD CONSTRAINT "linear_task_delegation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_turn" ADD CONSTRAINT "linear_turn_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "linear_turn" ADD CONSTRAINT "linear_turn_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "improvement" ADD CONSTRAINT "improvement_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "improvement_action" ADD CONSTRAINT "improvement_action_improvement_id_improvement_id_fk" FOREIGN KEY ("improvement_id") REFERENCES "public"."improvement"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "improvement_criterion" ADD CONSTRAINT "improvement_criterion_improvement_id_improvement_id_fk" FOREIGN KEY ("improvement_id") REFERENCES "public"."improvement"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2772,50 +2730,28 @@ ALTER TABLE "improvement_source" ADD CONSTRAINT "improvement_source_improvement_
 ALTER TABLE "improvement_sweep" ADD CONSTRAINT "improvement_sweep_improvement_id_improvement_id_fk" FOREIGN KEY ("improvement_id") REFERENCES "public"."improvement"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "improvement_work" ADD CONSTRAINT "improvement_work_improvement_id_improvement_id_fk" FOREIGN KEY ("improvement_id") REFERENCES "public"."improvement"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "improvement_work" ADD CONSTRAINT "improvement_work_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_blocker_check" ADD CONSTRAINT "item_blocker_check_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_branch_state" ADD CONSTRAINT "item_branch_state_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_candidate" ADD CONSTRAINT "item_candidate_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_previous_item_id_work_item_id_fk" FOREIGN KEY ("previous_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_dependency_snapshot" ADD CONSTRAINT "item_dependency_snapshot_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_dependency_snapshot" ADD CONSTRAINT "item_dependency_snapshot_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_hold" ADD CONSTRAINT "item_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_pull_request" ADD CONSTRAINT "item_pull_request_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_reconciliation_effect" ADD CONSTRAINT "item_reconciliation_effect_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_reconciliation_request" ADD CONSTRAINT "item_reconciliation_request_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_reconciliation_request" ADD CONSTRAINT "item_reconciliation_request_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "item_wait" ADD CONSTRAINT "item_wait_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "job_activation" ADD CONSTRAINT "job_activation_job_id_job_id_fk" FOREIGN KEY ("job_id") REFERENCES "public"."job"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_artifact" ADD CONSTRAINT "linear_artifact_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_artifact_attempt" ADD CONSTRAINT "linear_artifact_attempt_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_conversation" ADD CONSTRAINT "linear_conversation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_issue_context" ADD CONSTRAINT "linear_issue_context_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_session" ADD CONSTRAINT "linear_session_active_item_id_work_item_id_fk" FOREIGN KEY ("active_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_session_cleanup_block" ADD CONSTRAINT "linear_session_cleanup_block_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_stop_receipt" ADD CONSTRAINT "linear_stop_receipt_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_task_delegation" ADD CONSTRAINT "linear_task_delegation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_turn" ADD CONSTRAINT "linear_turn_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "linear_turn" ADD CONSTRAINT "linear_turn_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "link_ask" ADD CONSTRAINT "link_ask_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "member_vm" ADD CONSTRAINT "member_vm_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "member_vm" ADD CONSTRAINT "member_vm_workspace_id_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "checkpoint_ref_cleanup" ADD CONSTRAINT "checkpoint_ref_cleanup_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_integration_hold" ADD CONSTRAINT "github_integration_hold_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_integration_hold" ADD CONSTRAINT "github_integration_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "merge_call" ADD CONSTRAINT "merge_call_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "merge_queue_entry" ADD CONSTRAINT "merge_queue_entry_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "open_findings" ADD CONSTRAINT "open_findings_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "outbox" ADD CONSTRAINT "outbox_activity_run_id_run_id_fk" FOREIGN KEY ("activity_run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "parent_delegation" ADD CONSTRAINT "parent_delegation_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "parent_delegation" ADD CONSTRAINT "parent_delegation_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "parent_delegation_issue" ADD CONSTRAINT "parent_delegation_issue_parent_delegation_id_parent_delegation_delegation_id_fk" FOREIGN KEY ("parent_delegation_id") REFERENCES "public"."parent_delegation"("delegation_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "parent_delegation_issue" ADD CONSTRAINT "parent_delegation_issue_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "plan_proposal" ADD CONSTRAINT "plan_proposal_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pull_ci_failure" ADD CONSTRAINT "pull_ci_failure_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pull_comment" ADD CONSTRAINT "pull_comment_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pull_review" ADD CONSTRAINT "pull_review_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "queue_position" ADD CONSTRAINT "queue_position_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "queue_wait" ADD CONSTRAINT "queue_wait_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rebase_return" ADD CONSTRAINT "rebase_return_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "remote_merge_fact" ADD CONSTRAINT "remote_merge_fact_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "restart_hold" ADD CONSTRAINT "restart_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_model_catalog" ADD CONSTRAINT "agent_model_catalog_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_model_catalog" ADD CONSTRAINT "agent_model_catalog_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_command_id_runner_command_id_fk" FOREIGN KEY ("command_id") REFERENCES "public"."runner_command"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_model_probe" ADD CONSTRAINT "agent_model_probe_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot" ADD CONSTRAINT "agent_session_snapshot_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_session_snapshot_chunk" ADD CONSTRAINT "agent_session_snapshot_chunk_run_id_generation_agent_session_snapshot_run_id_generation_fk" FOREIGN KEY ("run_id","generation") REFERENCES "public"."agent_session_snapshot"("run_id","generation") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_wait" ADD CONSTRAINT "agent_wait_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retro" ADD CONSTRAINT "retro_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retro" ADD CONSTRAINT "retro_workspace_id_settings_revision_retro_settings_revision_workspace_id_revision_fk" FOREIGN KEY ("workspace_id","settings_revision") REFERENCES "public"."retro_settings_revision"("workspace_id","revision") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retro_artifact" ADD CONSTRAINT "retro_artifact_retro_id_retro_id_fk" FOREIGN KEY ("retro_id") REFERENCES "public"."retro"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2838,20 +2774,66 @@ ALTER TABLE "retro_schedule_runtime" ADD CONSTRAINT "retro_schedule_runtime_last
 ALTER TABLE "retro_settings_revision" ADD CONSTRAINT "retro_settings_revision_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retro_watermark" ADD CONSTRAINT "retro_watermark_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retro_watermark" ADD CONSTRAINT "retro_watermark_retro_id_retro_id_fk" FOREIGN KEY ("retro_id") REFERENCES "public"."retro"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_blocker_check" ADD CONSTRAINT "item_blocker_check_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_branch_state" ADD CONSTRAINT "item_branch_state_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_candidate" ADD CONSTRAINT "item_candidate_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_previous_item_id_work_item_id_fk" FOREIGN KEY ("previous_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_dependency_snapshot" ADD CONSTRAINT "item_dependency_snapshot_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_dependency_snapshot" ADD CONSTRAINT "item_dependency_snapshot_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_hold" ADD CONSTRAINT "item_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_pull_request" ADD CONSTRAINT "item_pull_request_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_reconciliation_effect" ADD CONSTRAINT "item_reconciliation_effect_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_reconciliation_request" ADD CONSTRAINT "item_reconciliation_request_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_reconciliation_request" ADD CONSTRAINT "item_reconciliation_request_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_wait" ADD CONSTRAINT "item_wait_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "parent_delegation" ADD CONSTRAINT "parent_delegation_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "parent_delegation" ADD CONSTRAINT "parent_delegation_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "parent_delegation_issue" ADD CONSTRAINT "parent_delegation_issue_parent_delegation_id_parent_delegation_delegation_id_fk" FOREIGN KEY ("parent_delegation_id") REFERENCES "public"."parent_delegation"("delegation_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "parent_delegation_issue" ADD CONSTRAINT "parent_delegation_issue_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "queue_position" ADD CONSTRAINT "queue_position_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "restart_hold" ADD CONSTRAINT "restart_hold_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run" ADD CONSTRAINT "run_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_fallback_attempt" ADD CONSTRAINT "run_fallback_attempt_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "usage_pause" ADD CONSTRAINT "usage_pause_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "usage_pause" ADD CONSTRAINT "usage_pause_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item" ADD CONSTRAINT "work_item_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_event" ADD CONSTRAINT "work_item_event_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_linear_read" ADD CONSTRAINT "work_item_linear_read_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_merge_settings" ADD CONSTRAINT "work_item_merge_settings_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_repository" ADD CONSTRAINT "work_item_repository_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_repository_question" ADD CONSTRAINT "work_item_repository_question_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_repository_question" ADD CONSTRAINT "work_item_repository_question_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_scheduling" ADD CONSTRAINT "work_item_scheduling_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_specification" ADD CONSTRAINT "work_item_specification_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "work_item_task" ADD CONSTRAINT "work_item_task_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "candidate_risk" ADD CONSTRAINT "candidate_risk_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ci_rerun" ADD CONSTRAINT "ci_rerun_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ci_round" ADD CONSTRAINT "ci_round_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_bypass_check" ADD CONSTRAINT "closeout_bypass_check_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_recovery" ADD CONSTRAINT "closeout_recovery_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_recovery" ADD CONSTRAINT "closeout_recovery_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_retry_window" ADD CONSTRAINT "closeout_retry_window_job_id_job_id_fk" FOREIGN KEY ("job_id") REFERENCES "public"."job"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_retry_window" ADD CONSTRAINT "closeout_retry_window_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_round" ADD CONSTRAINT "closeout_round_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "closeout_step" ADD CONSTRAINT "closeout_step_progress_id_closeout_progress_id_fk" FOREIGN KEY ("progress_id") REFERENCES "public"."closeout_progress"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "evidence" ADD CONSTRAINT "evidence_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "finding_group" ADD CONSTRAINT "finding_group_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "finding_group" ADD CONSTRAINT "finding_group_run_id_finding_group_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."finding_group_run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "finding_group_run" ADD CONSTRAINT "finding_group_run_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_finding" ADD CONSTRAINT "review_finding_first_item_id_work_item_id_fk" FOREIGN KEY ("first_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_finding" ADD CONSTRAINT "review_finding_last_item_id_work_item_id_fk" FOREIGN KEY ("last_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_finding_item" ADD CONSTRAINT "review_finding_item_finding_id_review_finding_id_fk" FOREIGN KEY ("finding_id") REFERENCES "public"."review_finding"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_finding_item" ADD CONSTRAINT "review_finding_item_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "risk_auto_context" ADD CONSTRAINT "risk_auto_context_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "risk_fix" ADD CONSTRAINT "risk_fix_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run" ADD CONSTRAINT "run_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_agent_setup" ADD CONSTRAINT "run_agent_setup_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_agent_setup" ADD CONSTRAINT "run_agent_setup_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_fallback_attempt" ADD CONSTRAINT "run_fallback_attempt_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_owner" ADD CONSTRAINT "run_owner_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_review_rounds" ADD CONSTRAINT "run_review_rounds_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "suggested_finding" ADD CONSTRAINT "suggested_finding_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "suggestion_turn" ADD CONSTRAINT "suggestion_turn_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "visual_review_mark" ADD CONSTRAINT "visual_review_mark_question_id_visual_review_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."visual_review"("question_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "visual_review_mark" ADD CONSTRAINT "visual_review_mark_evidence_id_evidence_id_fk" FOREIGN KEY ("evidence_id") REFERENCES "public"."evidence"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "member_vm" ADD CONSTRAINT "member_vm_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "member_vm" ADD CONSTRAINT "member_vm_workspace_id_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner" ADD CONSTRAINT "runner_workspace_id_owner_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","owner_user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runner_account_capability" ADD CONSTRAINT "runner_account_capability_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_agent" ADD CONSTRAINT "runner_agent_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_agent_policy" ADD CONSTRAINT "runner_agent_policy_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_agent_target" ADD CONSTRAINT "runner_agent_target_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2860,9 +2842,6 @@ ALTER TABLE "runner_capacity" ADD CONSTRAINT "runner_capacity_runner_id_runner_i
 ALTER TABLE "runner_certificate" ADD CONSTRAINT "runner_certificate_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_command" ADD CONSTRAINT "runner_command_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_command" ADD CONSTRAINT "runner_command_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_binding_id_agent_account_binding_id_fk" FOREIGN KEY ("binding_id") REFERENCES "public"."agent_account_binding"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_account_id_workspace_id_agent_agent_account_id_workspace_id_agent_fk" FOREIGN KEY ("account_id","workspace_id","agent") REFERENCES "public"."agent_account"("id","workspace_id","agent") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_enrollment" ADD CONSTRAINT "runner_enrollment_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_enrollment" ADD CONSTRAINT "runner_enrollment_workspace_id_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_event" ADD CONSTRAINT "runner_event_run_id_runner_work_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."runner_work"("run_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2886,6 +2865,8 @@ ALTER TABLE "runner_question_answer" ADD CONSTRAINT "runner_question_answer_run_
 ALTER TABLE "runner_repositories" ADD CONSTRAINT "runner_repositories_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_repository_command" ADD CONSTRAINT "runner_repository_command_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_repository_command" ADD CONSTRAINT "runner_repository_command_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_reservation" ADD CONSTRAINT "runner_reservation_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_reservation" ADD CONSTRAINT "runner_reservation_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_result" ADD CONSTRAINT "runner_result_run_id_runner_work_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."runner_work"("run_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_result" ADD CONSTRAINT "runner_result_command_id_runner_command_id_fk" FOREIGN KEY ("command_id") REFERENCES "public"."runner_command"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_runtime" ADD CONSTRAINT "runner_runtime_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2907,24 +2888,37 @@ ALTER TABLE "runner_work_grant" ADD CONSTRAINT "runner_work_grant_run_id_runner_
 ALTER TABLE "scheduler_admission" ADD CONSTRAINT "scheduler_admission_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_admission" ADD CONSTRAINT "scheduler_admission_job_id_job_id_fk" FOREIGN KEY ("job_id") REFERENCES "public"."job"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_admission" ADD CONSTRAINT "scheduler_admission_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "suggested_finding" ADD CONSTRAINT "suggested_finding_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "suggestion_turn" ADD CONSTRAINT "suggestion_turn_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "usage_pause" ADD CONSTRAINT "usage_pause_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "usage_pause" ADD CONSTRAINT "usage_pause_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "outbox" ADD CONSTRAINT "outbox_activity_run_id_run_id_fk" FOREIGN KEY ("activity_run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_saved_by_workspace_user_id_fk" FOREIGN KEY ("saved_by") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_memory" ADD CONSTRAINT "decision_memory_updated_by_workspace_user_id_fk" FOREIGN KEY ("updated_by") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_suggestion" ADD CONSTRAINT "decision_suggestion_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_suggestion" ADD CONSTRAINT "decision_suggestion_decision_id_decision_memory_id_fk" FOREIGN KEY ("decision_id") REFERENCES "public"."decision_memory"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "link_ask" ADD CONSTRAINT "link_ask_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plan_proposal" ADD CONSTRAINT "plan_proposal_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account" ADD CONSTRAINT "agent_account_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account" ADD CONSTRAINT "agent_account_owner_fk" FOREIGN KEY ("workspace_id","owner_user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_binding" ADD CONSTRAINT "agent_account_binding_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_binding" ADD CONSTRAINT "agent_account_binding_account_id_workspace_id_agent_agent_account_id_workspace_id_agent_fk" FOREIGN KEY ("account_id","workspace_id","agent") REFERENCES "public"."agent_account"("id","workspace_id","agent") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_credential" ADD CONSTRAINT "agent_account_credential_account_id_agent_account_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."agent_account"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_credential" ADD CONSTRAINT "agent_account_credential_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_binding_id_agent_account_binding_id_fk" FOREIGN KEY ("binding_id") REFERENCES "public"."agent_account_binding"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_health" ADD CONSTRAINT "agent_account_health_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_lease" ADD CONSTRAINT "agent_account_lease_account_id_agent_account_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."agent_account"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_lease" ADD CONSTRAINT "agent_account_lease_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_usage" ADD CONSTRAINT "agent_account_usage_account_id_agent_account_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."agent_account"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_account_usage" ADD CONSTRAINT "agent_account_usage_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_account_capability" ADD CONSTRAINT "runner_account_capability_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_binding_id_agent_account_binding_id_fk" FOREIGN KEY ("binding_id") REFERENCES "public"."agent_account_binding"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runner_command_account" ADD CONSTRAINT "runner_command_account_account_id_workspace_id_agent_agent_account_id_workspace_id_agent_fk" FOREIGN KEY ("account_id","workspace_id","agent") REFERENCES "public"."agent_account"("id","workspace_id","agent") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_session_hash_workspace_session_token_hash_fk" FOREIGN KEY ("session_hash") REFERENCES "public"."workspace_session"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_attribution_request" ADD CONSTRAINT "github_attribution_request_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "verified_github_attribution" ADD CONSTRAINT "verified_github_attribution_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "verified_github_attribution" ADD CONSTRAINT "verified_github_attribution_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "visual_review_mark" ADD CONSTRAINT "visual_review_mark_question_id_visual_review_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."visual_review"("question_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "visual_review_mark" ADD CONSTRAINT "visual_review_mark_evidence_id_evidence_id_fk" FOREIGN KEY ("evidence_id") REFERENCES "public"."evidence"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item" ADD CONSTRAINT "work_item_owner_user_id_workspace_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_event" ADD CONSTRAINT "work_item_event_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_linear_read" ADD CONSTRAINT "work_item_linear_read_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_merge_settings" ADD CONSTRAINT "work_item_merge_settings_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_repository" ADD CONSTRAINT "work_item_repository_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_repository_question" ADD CONSTRAINT "work_item_repository_question_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_repository_question" ADD CONSTRAINT "work_item_repository_question_question_id_question_id_fk" FOREIGN KEY ("question_id") REFERENCES "public"."question"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_scheduling" ADD CONSTRAINT "work_item_scheduling_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_specification" ADD CONSTRAINT "work_item_specification_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "work_item_task" ADD CONSTRAINT "work_item_task_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_access_audit" ADD CONSTRAINT "workspace_access_audit_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_access_audit" ADD CONSTRAINT "workspace_access_audit_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_assignment" ADD CONSTRAINT "workspace_assignment_session_id_linear_session_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."linear_session"("session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2933,9 +2927,6 @@ ALTER TABLE "workspace_github_connection" ADD CONSTRAINT "workspace_github_conne
 ALTER TABLE "workspace_github_connection" ADD CONSTRAINT "workspace_github_connection_actor_id_workspace_user_id_fk" FOREIGN KEY ("actor_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_github_oauth" ADD CONSTRAINT "workspace_github_oauth_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_github_oauth" ADD CONSTRAINT "workspace_github_oauth_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_identity_link" ADD CONSTRAINT "workspace_identity_link_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_identity_link" ADD CONSTRAINT "workspace_identity_link_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_identity_link" ADD CONSTRAINT "workspace_identity_link_workspace_id_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_member" ADD CONSTRAINT "workspace_member_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_member" ADD CONSTRAINT "workspace_member_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_member" ADD CONSTRAINT "workspace_member_revoked_by_workspace_user_id_fk" FOREIGN KEY ("revoked_by") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2943,77 +2934,62 @@ ALTER TABLE "workspace_repository" ADD CONSTRAINT "workspace_repository_workspac
 ALTER TABLE "workspace_session" ADD CONSTRAINT "workspace_session_user_id_workspace_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."workspace_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_session" ADD CONSTRAINT "workspace_session_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_user_team" ADD CONSTRAINT "workspace_user_team_workspace_id_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_account_label" ON "agent_account" USING btree ("workspace_id","agent",lower(label)) WHERE removed_at IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_account_legacy" ON "agent_account" USING btree ("workspace_id","agent") WHERE legacy=1;--> statement-breakpoint
-CREATE INDEX "agent_binding_account" ON "agent_account_binding" USING btree ("account_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_binding_legacy" ON "agent_account_binding" USING btree ("runner_id","agent") WHERE legacy=1;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_binding_runner_account" ON "agent_account_binding" USING btree ("runner_id","account_id") WHERE removed_at IS NULL;--> statement-breakpoint
-CREATE INDEX "agent_account_health_agent" ON "agent_account_health" USING btree ("workspace_id","agent","next_check_at");--> statement-breakpoint
-CREATE INDEX "agent_closeout_event_item" ON "agent_closeout_event" USING btree ("item_id","run_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_model_probe_pending" ON "agent_model_probe" USING btree ("runner_id") WHERE finished_at IS NULL;--> statement-breakpoint
-CREATE INDEX "agent_model_probe_refresh" ON "agent_model_probe" USING btree ("runner_id","user_id","agent","model","requested_at");--> statement-breakpoint
-CREATE INDEX "candidate_paths_item" ON "candidate_paths" USING btree ("item_id","recorded_at");--> statement-breakpoint
-CREATE INDEX "closeout_policy_block_repository" ON "closeout_policy_block" USING btree ("repository");--> statement-breakpoint
-CREATE INDEX "closeout_progress_item" ON "closeout_progress" USING btree ("item_id","updated_at");--> statement-breakpoint
-CREATE INDEX "closeout_recovery_item" ON "closeout_recovery" USING btree ("item_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "decision_suggestion_answer" ON "decision_suggestion" USING btree ("question_id") WHERE accepted_at IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "evidence_item" ON "evidence" USING btree ("item_id","created_at");--> statement-breakpoint
-CREATE INDEX "finding_group_workspace" ON "finding_group" USING btree ("workspace_id","status");--> statement-breakpoint
-CREATE INDEX "github_delivery_received" ON "github_delivery" USING btree ("received_at");--> statement-breakpoint
-CREATE INDEX "github_integration_hold_pending" ON "github_integration_hold" USING btree ("status","item_id");--> statement-breakpoint
+CREATE INDEX "linear_activity_session" ON "linear_activity_snapshot" USING btree ("session_id","created_at","id");--> statement-breakpoint
+CREATE INDEX "linear_comment_issue" ON "linear_comment" USING btree ("issue_id","state");--> statement-breakpoint
+CREATE INDEX "linear_comment_item" ON "linear_comment" USING btree ("item_id","state");--> statement-breakpoint
+CREATE INDEX "linear_request_reservation_workspace" ON "linear_request_reservation" USING btree ("workspace","expires_at");--> statement-breakpoint
+CREATE INDEX "linear_turn_pending" ON "linear_turn" USING btree ("session_id","state","created_at_ms","ordinal");--> statement-breakpoint
+CREATE INDEX "instance_heartbeat" ON "instance" USING btree ("heartbeat_at");--> statement-breakpoint
 CREATE INDEX "improvement_issue" ON "improvement" USING btree ("workspace_id","issue_id") WHERE issue_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "improvement_workspace" ON "improvement" USING btree ("workspace_id","review_state");--> statement-breakpoint
 CREATE INDEX "improvement_action_improvement" ON "improvement_action" USING btree ("improvement_id","id");--> statement-breakpoint
 CREATE INDEX "improvement_delivery_open" ON "improvement_delivery" USING btree ("state") WHERE state IN ('pending','claimed','failed','unknown');--> statement-breakpoint
 CREATE INDEX "improvement_outcome_improvement" ON "improvement_outcome" USING btree ("improvement_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "inbox_event_delivery" ON "inbox_event" USING btree ("delivery_id") WHERE delivery_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "inbox_event_issue" ON "inbox_event" USING btree ((payload->'data'->>'id'),"updated_at_ms") WHERE (payload->>'type')='Issue';--> statement-breakpoint
-CREATE INDEX "inbox_event_session" ON "inbox_event" USING btree ("session_id","received_at");--> statement-breakpoint
-CREATE INDEX "inbox_event_unhandled" ON "inbox_event" USING btree ("handled","received_at");--> statement-breakpoint
-CREATE INDEX "instance_heartbeat" ON "instance" USING btree ("heartbeat_at");--> statement-breakpoint
-CREATE INDEX "item_continuation_previous" ON "item_continuation" USING btree ("previous_item_id");--> statement-breakpoint
-CREATE INDEX "job_due" ON "job" USING btree ("status","run_at","priority");--> statement-breakpoint
-CREATE INDEX "linear_activity_session" ON "linear_activity_snapshot" USING btree ("session_id","created_at","id");--> statement-breakpoint
-CREATE INDEX "linear_comment_issue" ON "linear_comment" USING btree ("issue_id","state");--> statement-breakpoint
-CREATE INDEX "linear_comment_item" ON "linear_comment" USING btree ("item_id","state");--> statement-breakpoint
-CREATE INDEX "linear_turn_pending" ON "linear_turn" USING btree ("session_id","state","created_at_ms","ordinal");--> statement-breakpoint
-CREATE INDEX "link_ask_item_open" ON "link_ask" USING btree ("item_id","closed_at");--> statement-breakpoint
-CREATE INDEX "member_vm_enrollment_vm" ON "member_vm_enrollment" USING btree ("member_vm_id");--> statement-breakpoint
+CREATE INDEX "github_delivery_received" ON "github_delivery" USING btree ("received_at");--> statement-breakpoint
+CREATE INDEX "github_integration_hold_pending" ON "github_integration_hold" USING btree ("status","item_id");--> statement-breakpoint
 CREATE INDEX "merge_queue_entry_lane" ON "merge_queue_entry" USING btree ("repository","lane","ready_at","id");--> statement-breakpoint
 CREATE INDEX "merge_queue_entry_repository" ON "merge_queue_entry" USING btree ("repository","ready_at","id");--> statement-breakpoint
-CREATE INDEX "outbox_activity_run" ON "outbox" USING btree ("activity_run_id","sent_at");--> statement-breakpoint
-CREATE INDEX "outbox_due" ON "outbox" USING btree ("status","target","not_before","priority");--> statement-breakpoint
-CREATE INDEX "outbox_session_delivery" ON "outbox" USING btree ("target","ordering_key","delivery_generation","status");--> statement-breakpoint
-CREATE UNIQUE INDEX "parent_delegation_active" ON "parent_delegation" USING btree ("workspace_id","parent_issue_id") WHERE stopped_at IS NULL;--> statement-breakpoint
-CREATE INDEX "parent_delegation_session" ON "parent_delegation" USING btree ("session_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "parent_delegation_issue_active" ON "parent_delegation_issue" USING btree ("workspace_id","issue_id") WHERE released_at IS NULL;--> statement-breakpoint
-CREATE INDEX "parent_delegation_issue_delegation" ON "parent_delegation_issue" USING btree ("delegation_id");--> statement-breakpoint
-CREATE INDEX "plan_proposal_item" ON "plan_proposal" USING btree ("item_id");--> statement-breakpoint
 CREATE INDEX "pull_ci_failure_pending" ON "pull_ci_failure" USING btree ("item_id") WHERE handled_at IS NULL;--> statement-breakpoint
 CREATE INDEX "pull_comment_open" ON "pull_comment" USING btree ("item_id") WHERE handled_at IS NULL;--> statement-breakpoint
 CREATE INDEX "pull_review_open" ON "pull_review" USING btree ("item_id") WHERE handled_at IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "question_answer_event" ON "question" USING btree ("session_id","answer_event_key") WHERE answer_event_key IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "question_one_active_session" ON "question" USING btree ("session_id") WHERE status = 'open' AND cancelled_at IS NULL;--> statement-breakpoint
-CREATE INDEX "question_run_kind" ON "question" USING btree ("run_id","kind");--> statement-breakpoint
-CREATE INDEX "question_session_open" ON "question" USING btree ("session_id","status");--> statement-breakpoint
 CREATE INDEX "rebase_return_item" ON "rebase_return" USING btree ("item_id","activation_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_model_probe_pending" ON "agent_model_probe" USING btree ("runner_id") WHERE finished_at IS NULL;--> statement-breakpoint
+CREATE INDEX "agent_model_probe_refresh" ON "agent_model_probe" USING btree ("runner_id","user_id","agent","model","requested_at");--> statement-breakpoint
 CREATE INDEX "retro_workspace" ON "retro" USING btree ("workspace_id","window_end");--> statement-breakpoint
 CREATE INDEX "retro_coverage_gap_retro" ON "retro_coverage_gap" USING btree ("retro_id");--> statement-breakpoint
 CREATE INDEX "retro_dispatch_runner_open" ON "retro_dispatch" USING btree ("runner_id") WHERE released_at IS NULL;--> statement-breakpoint
 CREATE INDEX "retro_dispatch_unsettled" ON "retro_dispatch" USING btree ("retro_id") WHERE settled_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "retro_occurrence_scheduled" ON "retro_occurrence" USING btree ("workspace_id","occurrence_at") WHERE origin = 'scheduled';--> statement-breakpoint
+CREATE INDEX "item_continuation_previous" ON "item_continuation" USING btree ("previous_item_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "parent_delegation_active" ON "parent_delegation" USING btree ("workspace_id","parent_issue_id") WHERE stopped_at IS NULL;--> statement-breakpoint
+CREATE INDEX "parent_delegation_session" ON "parent_delegation" USING btree ("session_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "parent_delegation_issue_active" ON "parent_delegation_issue" USING btree ("workspace_id","issue_id") WHERE released_at IS NULL;--> statement-breakpoint
+CREATE INDEX "parent_delegation_issue_delegation" ON "parent_delegation_issue" USING btree ("delegation_id");--> statement-breakpoint
+CREATE INDEX "run_item" ON "run" USING btree ("item_id","created_at");--> statement-breakpoint
+CREATE INDEX "run_owner_instance" ON "run" USING btree ("owner_instance");--> statement-breakpoint
+CREATE UNIQUE INDEX "run_fallback_attempt_open" ON "run_fallback_attempt" USING btree ("run_id","call_id","runner_id","generation","excluded_key","outcome") WHERE closed_at IS NULL;--> statement-breakpoint
+CREATE INDEX "task_block_blocker" ON "task_block" USING btree ("blocker_linear_issue_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "work_item_active_issue" ON "work_item" USING btree ("linear_issue_id") WHERE state NOT IN ('completed','merged','cancelled');--> statement-breakpoint
+CREATE INDEX "work_item_delegation_position" ON "work_item" USING btree ("delegation_id","position");--> statement-breakpoint
+CREATE INDEX "candidate_risk_item" ON "candidate_risk" USING btree ("item_id","recorded_at");--> statement-breakpoint
+CREATE INDEX "closeout_policy_block_repository" ON "closeout_policy_block" USING btree ("repository");--> statement-breakpoint
+CREATE INDEX "closeout_progress_item" ON "closeout_progress" USING btree ("item_id","updated_at");--> statement-breakpoint
+CREATE INDEX "closeout_recovery_item" ON "closeout_recovery" USING btree ("item_id");--> statement-breakpoint
+CREATE INDEX "evidence_item" ON "evidence" USING btree ("item_id","created_at");--> statement-breakpoint
+CREATE INDEX "finding_group_workspace" ON "finding_group" USING btree ("workspace_id","status");--> statement-breakpoint
+CREATE INDEX "fix_record_item_open" ON "fix_record" USING btree ("item_id","ended_at");--> statement-breakpoint
+CREATE INDEX "fix_record_started" ON "fix_record" USING btree ("started_at");--> statement-breakpoint
 CREATE INDEX "review_escape_item_open" ON "review_escape" USING btree ("item_id","settled_at");--> statement-breakpoint
 CREATE INDEX "review_finding_last_seen" ON "review_finding" USING btree ("status","last_seen_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "review_finding_path" ON "review_finding" USING btree ("repository","review","path");--> statement-breakpoint
 CREATE INDEX "review_finding_issue_claim_finding" ON "review_finding_issue_claim" USING btree ("finding_key");--> statement-breakpoint
 CREATE INDEX "review_finding_item_item" ON "review_finding_item" USING btree ("item_id");--> statement-breakpoint
 CREATE INDEX "review_reply_item_open" ON "review_reply" USING btree ("item_id","replied_at");--> statement-breakpoint
-CREATE INDEX "run_item" ON "run" USING btree ("item_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "run_fallback_attempt_open" ON "run_fallback_attempt" USING btree ("run_id","call_id","runner_id","generation","excluded_key","outcome") WHERE closed_at IS NULL;--> statement-breakpoint
-CREATE INDEX "run_owner_instance" ON "run_owner" USING btree ("owner_instance");--> statement-breakpoint
+CREATE INDEX "visual_review_item" ON "visual_review" USING btree ("item_id","check_id");--> statement-breakpoint
+CREATE INDEX "visual_review_mark_question" ON "visual_review_mark" USING btree ("question_id");--> statement-breakpoint
+CREATE INDEX "member_vm_enrollment_vm" ON "member_vm_enrollment" USING btree ("member_vm_id");--> statement-breakpoint
 CREATE INDEX "runner_certificate_identity" ON "runner_certificate" USING btree ("runner_id");--> statement-breakpoint
 CREATE INDEX "runner_command_pending" ON "runner_command" USING btree ("runner_id","acknowledged_at","ordinal");--> statement-breakpoint
-CREATE INDEX "runner_command_account_binding" ON "runner_command_account" USING btree ("binding_id");--> statement-breakpoint
 CREATE INDEX "runner_enrollment_expiry" ON "runner_enrollment" USING btree ("expires_at") WHERE used_at IS NULL;--> statement-breakpoint
 CREATE INDEX "runner_event_type" ON "runner_event" USING btree ("run_id","generation","type");--> statement-breakpoint
 CREATE INDEX "runner_usage_item" ON "runner_execution_usage" USING btree ("item_id","ended_at");--> statement-breakpoint
@@ -3024,11 +3000,48 @@ CREATE INDEX "runner_helper_pending" ON "runner_helper" USING btree ("runner_id"
 CREATE INDEX "runner_login_account" ON "runner_login" USING btree ("runner_id","user_id","agent","updated_at");--> statement-breakpoint
 CREATE INDEX "runner_login_binding" ON "runner_login" USING btree ("binding_id") WHERE binding_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "runner_repository_command_runner" ON "runner_repository_command" USING btree ("runner_id","state");--> statement-breakpoint
-CREATE INDEX "scheduler_project" ON "scheduler_admission" USING btree ("project_key");--> statement-breakpoint
-CREATE INDEX "task_block_blocker" ON "task_block" USING btree ("blocker_linear_issue_id");--> statement-breakpoint
+CREATE INDEX "runner_reservation_runner" ON "runner_reservation" USING btree ("runner_id","expires_at");--> statement-breakpoint
+CREATE INDEX "job_due" ON "job" USING btree ("status","run_at","priority");--> statement-breakpoint
+CREATE UNIQUE INDEX "inbox_event_delivery" ON "inbox_event" USING btree ("delivery_id") WHERE delivery_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "inbox_event_issue" ON "inbox_event" USING btree ((payload->'data'->>'id'),"updated_at_ms") WHERE (payload->>'type')='Issue';--> statement-breakpoint
+CREATE INDEX "inbox_event_session" ON "inbox_event" USING btree ("session_id","received_at");--> statement-breakpoint
+CREATE INDEX "inbox_event_unhandled" ON "inbox_event" USING btree ("handled","received_at");--> statement-breakpoint
+CREATE INDEX "outbox_activity_run" ON "outbox" USING btree ("activity_run_id","sent_at");--> statement-breakpoint
+CREATE INDEX "outbox_due" ON "outbox" USING btree ("status","target","not_before","priority");--> statement-breakpoint
+CREATE INDEX "outbox_session_delivery" ON "outbox" USING btree ("target","ordering_key","delivery_generation","status");--> statement-breakpoint
+CREATE INDEX "decision_memory_search_idx" ON "decision_memory" USING gin ("search");--> statement-breakpoint
+CREATE UNIQUE INDEX "decision_suggestion_answer" ON "decision_suggestion" USING btree ("question_id") WHERE accepted_at IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "link_ask_item_open" ON "link_ask" USING btree ("item_id","closed_at");--> statement-breakpoint
+CREATE INDEX "plan_proposal_item" ON "plan_proposal" USING btree ("item_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "question_answer_event" ON "question" USING btree ("session_id","answer_event_key") WHERE answer_event_key IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "question_one_active_session" ON "question" USING btree ("session_id") WHERE status = 'open' AND cancelled_at IS NULL;--> statement-breakpoint
+CREATE INDEX "question_run_kind" ON "question" USING btree ("run_id","kind");--> statement-breakpoint
+CREATE INDEX "question_session_open" ON "question" USING btree ("session_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_account_label" ON "agent_account" USING btree ("workspace_id","agent",lower(label)) WHERE removed_at IS NULL;--> statement-breakpoint
+CREATE INDEX "agent_binding_account" ON "agent_account_binding" USING btree ("account_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_binding_runner_account" ON "agent_account_binding" USING btree ("runner_id","account_id") WHERE removed_at IS NULL;--> statement-breakpoint
+CREATE INDEX "agent_account_health_agent" ON "agent_account_health" USING btree ("workspace_id","agent","next_check_at");--> statement-breakpoint
+CREATE INDEX "runner_command_account_binding" ON "runner_command_account" USING btree ("binding_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "verified_github_attribution_account" ON "verified_github_attribution" USING btree ("workspace_id","github_id") WHERE consented_at IS NOT NULL AND revoked_at IS NULL;--> statement-breakpoint
-CREATE INDEX "visual_review_item" ON "visual_review" USING btree ("item_id","check_id");--> statement-breakpoint
-CREATE INDEX "visual_review_mark_question" ON "visual_review_mark" USING btree ("question_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "work_item_active_issue" ON "work_item" USING btree ("linear_issue_id") WHERE state NOT IN ('completed','merged','cancelled');--> statement-breakpoint
-CREATE INDEX "work_item_delegation_position" ON "work_item" USING btree ("delegation_id","position");--> statement-breakpoint
-CREATE UNIQUE INDEX "workspace_assignment_link_id" ON "workspace_assignment" USING btree ("link_id");
+CREATE UNIQUE INDEX "workspace_assignment_link_id" ON "workspace_assignment" USING btree ("link_id");--> statement-breakpoint
+CREATE FUNCTION runner_setup_hold_end() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM runner_setup_hold WHERE item_id = NEW.id;
+  RETURN NULL;
+END $$;
+--> statement-breakpoint
+CREATE FUNCTION runner_setup_resume_end() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM runner_setup_resume WHERE item_id = NEW.id;
+  RETURN NULL;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER runner_setup_hold_ends AFTER UPDATE OF state, cancel_requested ON work_item
+FOR EACH ROW WHEN (NEW.state <> 'queued' OR NEW.cancel_requested = 1)
+EXECUTE FUNCTION runner_setup_hold_end();
+--> statement-breakpoint
+CREATE TRIGGER runner_setup_resume_ends AFTER UPDATE OF cancel_requested ON work_item
+FOR EACH ROW WHEN (NEW.cancel_requested = 1)
+EXECUTE FUNCTION runner_setup_resume_end();

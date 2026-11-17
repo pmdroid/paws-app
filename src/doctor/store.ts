@@ -6,6 +6,8 @@ import {
   openPostgres,
   PgliteInUseError,
   postgresDb,
+  refuseOlderDatabase,
+  UnknownDatabaseError,
   readSettingSteps,
   updateSettingSteps,
   type Db,
@@ -17,12 +19,17 @@ import { journalCaught } from "../journal";
 export const DATABASE_HELD =
   "saved Settings-page values were not read because Paws holds the database; using config.toml";
 
-export type SavedStore = { store: Db | null; held: boolean };
+export type SavedStore = { store: Db | null; held: boolean; refused?: string };
 
 async function openSaved(url: string | null, pgliteDir: string): Promise<PawsStore | null> {
   if (url !== null) {
     const db = openPostgres(url);
-    return { store: postgresDb(db), close: () => db.$client.close() };
+    const close = () => db.$client.close();
+    await refuseOlderDatabase(db).catch(async (error: unknown) => {
+      await close().catch(() => undefined);
+      throw error;
+    });
+    return { store: postgresDb(db), close };
   }
   if (!existsSync(pgliteDir)) return null;
   return openPawsStore({ url: null, pgliteDir });
@@ -57,6 +64,8 @@ export async function withSavedStore<T>(
     await secrets?.close().catch(() => undefined);
     await opened?.close().catch(() => undefined);
     if (error instanceof PgliteInUseError) return work({ store: null, held: true });
+    if (error instanceof UnknownDatabaseError)
+      return work({ store: null, held: false, refused: error.message });
     journalCaught(error, "doctor.withSavedStore.open", null);
     return work({ store: null, held: false });
   }

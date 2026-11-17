@@ -1,1 +1,0 @@
-ALTER TABLE "runner" ADD COLUMN "fix_slots" integer DEFAULT 1 NOT NULL;

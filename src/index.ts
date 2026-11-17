@@ -128,6 +128,7 @@ import {
   connectPglite,
   connectPostgres,
   PgliteInUseError,
+  UnknownDatabaseError,
   type PostgresConnection,
   readSettingSteps,
   updateSettingSteps,
@@ -3114,7 +3115,11 @@ if (import.meta.main || compiled()) {
       }
       shutdown(PUBLIC_TLS_RESTART_EXIT);
     });
-  const paws = await starting;
+  const paws = await starting.catch((error: unknown) => {
+    if (!(error instanceof UnknownDatabaseError)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  });
   try {
     await paws.ready;
   } catch (caughtError5) {

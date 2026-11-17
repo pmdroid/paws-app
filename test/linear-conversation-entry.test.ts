@@ -1,56 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { migrate as migratePg } from "drizzle-orm/pglite/migrator";
-import { getConversation, PG_MIGRATIONS_FOLDER, postgresDb, saveConversation } from "../src/db";
+import { expect, test } from "bun:test";
+import { getConversation, postgresDb, saveConversation } from "../src/db";
 import { describePglite, insertWorkItem } from "./pglite-fixtures";
-import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
-
-const TAG = "linear_conversation_entry";
-
-function before(folder: string): string {
-  const out = join(tempHome(), "migrations");
-  cpSync(folder, out, { recursive: true });
-  const path = join(out, "meta/_journal.json");
-  const journal = JSON.parse(readFileSync(path, "utf8")) as { entries: { tag: string }[] };
-  const index = journal.entries.findIndex((entry) => entry.tag.endsWith(`_${TAG}`));
-  expect(index).toBeGreaterThan(0);
-  journal.entries = journal.entries.slice(0, index);
-  writeFileSync(path, JSON.stringify(journal));
-  return out;
-}
 
 const HISTORY = [
   { kind: "request", body: "first request" },
   { kind: "response", body: 'said "done"' },
   { kind: "tool_result", body: "wrote result.txt" },
 ];
-
-const OLD_ROWS = (entries: (value: unknown) => string) => [
-  `INSERT INTO linear_conversation (item_id, entries, transcript, blocked) VALUES ('a', ${entries(HISTORY)}, NULL, 0), ('b', ${entries([])}, NULL, 1)`,
-];
-
-describe("linear_conversation entries move into linear_conversation_entry", () => {
-  test("on Postgres", async () => {
-    const pg = await pgliteDb({ migrationsFolder: before(PG_MIGRATIONS_FOLDER) });
-    try {
-      const db = postgresDb(pg);
-      for (const id of ["a", "b"]) await insertWorkItem(db, id);
-      const jsonb = (value: unknown) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
-      for (const statement of OLD_ROWS(jsonb)) await pg.$client.exec(statement);
-      await migratePg(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
-      expect(JSON.parse((await getConversation(db, "a")).entries)).toEqual(HISTORY);
-      expect(await getConversation(db, "b")).toMatchObject({ entries: "[]", blocked: true });
-      const column = await pg.$client.query(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = 'linear_conversation' AND column_name = 'entries'",
-      );
-      expect(column.rows).toEqual([]);
-    } finally {
-      await pg.$client.close();
-    }
-  });
-});
 
 describePglite((open) => {
   test("appending and reading return the same entries in the same order", async () => {

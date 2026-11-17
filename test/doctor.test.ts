@@ -19,7 +19,7 @@ import {
 } from "../src/doctor";
 import { LINEAR_WEBHOOK_FIX, openPawsStore, type Db } from "../src/db";
 import { grokLoginStatus } from "../src/install";
-import { copyMigratedPglite, pgliteServer } from "./pglite";
+import { copyMigratedPglite, pgliteServer, sqlRun } from "./pglite";
 
 async function seedWorkspace(store: Db): Promise<void> {
   await store.run(function* (q) {
@@ -309,6 +309,33 @@ test("while Paws holds PGlite doctor uses config.toml and prints one note", asyn
     .split("\n")
     .filter((line) => line.includes(DATABASE_HELD));
   expect(notes).toEqual([`note database: ${DATABASE_HELD}`]);
+}, 30_000);
+
+test("doctor fails the database check on a database from an older Paws", async () => {
+  const older = "This database was created by an older Paws. Reset it to start this version.";
+  const insert =
+    "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('unknown', 1)";
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-older-"));
+  await copyMigratedPglite(join(home, "pglite"));
+  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
+  await sqlRun(database.store, insert);
+  await database.close();
+  const refused = await realProbe({ HOME: home, PAWS_HOME: home, PATH: "" });
+  expect(refused.facts.databaseRefused).toBe(older);
+  expect(doctorChecks(refused).find((item) => item.name === "database")).toMatchObject({
+    ok: false,
+    detail: older,
+  });
+  expect(formatDoctor(doctorChecks(refused))).toContain(`missing database: ${older}`);
+
+  const server = await pgliteServer();
+  try {
+    await sqlRun(server.store, insert);
+    const env = { HOME: home, PAWS_HOME: home, PATH: "", PAWS_DATABASE_URL: server.url };
+    expect((await realProbe(env)).facts.databaseRefused).toBe(older);
+  } finally {
+    await server.close();
+  }
 }, 30_000);
 
 test("doctor names the chosen repositories and fails when none is chosen", () => {

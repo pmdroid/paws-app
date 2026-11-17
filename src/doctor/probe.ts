@@ -66,6 +66,7 @@ export type GitHubDoctorFacts = {
 export type ProbeFacts = {
   configError: string | null;
   databaseHeld?: boolean;
+  databaseRefused?: string;
   secrets?: { where: string; count: number; failed: string[]; stored: string[] | null };
   overriddenSections?: string[];
   agentProfiles?: AgentProfiles[];
@@ -128,6 +129,7 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
   return {
     configError: runtime.configError,
     databaseHeld: saved.held,
+    databaseRefused: saved.refused,
     overriddenSections: overriddenConfigSections(pawsPaths(runtime.env.home).configFile),
     agentProfiles,
     grokLogin,

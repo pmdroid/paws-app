@@ -2,6 +2,12 @@
 
 Changes that need action on upgrade come first in each entry. Settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-17: One baseline migration; older databases are refused
+
+### Changed
+
+- **Reset the database before starting this version.** The Postgres migrations are squashed into one `0000_baseline`. Paws refuses a database created by an older Paws, prints `This database was created by an older Paws. Reset it to start this version.` and exits with status 1 without changing it. Move `~/.paws/pglite` aside or drop and create the database at `[database] url`, then onboard again. `paws db check` and `paws doctor` report the same message. See [A database from an older Paws](docs/postgres.md#a-database-from-an-older-paws).
+
 ## 2026-11-15: Runners install through apt
 
 ### Changed
