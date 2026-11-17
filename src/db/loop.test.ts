@@ -466,6 +466,19 @@ test("a store whose listen throws still claims on the poll", async () => {
   }
 });
 
+test("a listen that never settles does not hold up stopping the loop", async () => {
+  const { db, close } = await tempStore();
+  const client = (db.orm as unknown as { $client: Listens }).$client;
+  client.listen = () => new Promise(() => {});
+  const loop = new JobLoop(db, systemClock, { pollMs: 10 });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal);
+  await eventually(() => loop.liveness().polling);
+  controller.abort();
+  await running;
+  await close();
+});
+
 test("a claim failure keeps the worker polling and runs the job once", async () => {
   const clock = new FakeClock(1_000);
   const { db: real, close: closeReal } = await tempStore();

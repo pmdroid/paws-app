@@ -21,10 +21,6 @@ import {
 /** Idle backstop. Enqueue and a due `run_at` wake the claimer sooner. */
 export const JOB_IDLE_CLAIM_MS = 1_000;
 
-/**
- * A due job older than this, with a worker free and no recent claim, is the stall signal.
- * Busy timeout is 5s and the idle claim is 1s, so a live loop claims well inside the minute.
- */
 const JOB_READY_CHANNEL = "paws_job_ready";
 
 type ListenClient = {
@@ -34,6 +30,10 @@ type ListenClient = {
   ): Promise<(() => Promise<void>) | { unlisten(): Promise<void> }>;
 };
 
+/**
+ * A due job older than this, with a worker free and no recent claim, is the stall signal.
+ * Busy timeout is 5s and the idle claim is 1s, so a live loop claims well inside the minute.
+ */
 export const JOB_PROGRESS_STALE_MS = 60_000;
 
 export type JobLoopLiveness = {
@@ -200,7 +200,7 @@ export class JobLoop {
     const stopWake = onJobReady((db) => {
       if (db === this.db || db === this.store) this.wake();
     });
-    const listening = this.listenForJobs();
+    const stopListening = this.listenForJobs();
     try {
       while (!signal.aborted) {
         const generation = this.readyGeneration;
@@ -212,13 +212,24 @@ export class JobLoop {
       await Promise.all(this.inflight);
     } finally {
       stopWake();
-      await (
-        await listening
-      )();
+      await stopListening();
     }
   }
 
-  private async listenForJobs(): Promise<() => Promise<void>> {
+  private listenForJobs(): () => Promise<void> {
+    let unlisten: (() => Promise<void>) | undefined;
+    let stopped = false;
+    void this.subscribeJobReady().then((stop) => {
+      if (stopped) return stop();
+      unlisten = stop;
+    });
+    return async () => {
+      stopped = true;
+      await unlisten?.();
+    };
+  }
+
+  private async subscribeJobReady(): Promise<() => Promise<void>> {
     const client = (this.store.orm as { $client?: Partial<ListenClient> }).$client;
     if (typeof client?.listen !== "function") return async () => {};
     const wake = () => this.wake();
