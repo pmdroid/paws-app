@@ -2,19 +2,17 @@ import {
   getWorkItemSteps,
   itemSessionResultsSteps,
   runPlacementCommandSteps,
-  legacyAgentBindingId,
   inMergeQueueSteps,
   restartedFromMergeQueueSteps,
   type Q,
   type Steps,
 } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
 import { quotaSignal } from "../core";
 type SessionHolder = {
   runnerId: string;
   agent: string;
   sessionId: string;
-  bindingId: string;
+  bindingId: string | null;
   runId: string;
   model: string | null;
   account?: { accountId: string; bindingId: string };
@@ -55,9 +53,7 @@ export function* sessionHolderSteps(q: Q, itemId: string): Steps<SessionHolder |
           runnerId: command.runnerId,
           agent: command.profile.agent,
           sessionId: result.sessionId,
-          bindingId:
-            command.account?.bindingId ??
-            legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
+          bindingId: command.account?.bindingId ?? null,
           runId: command.runId,
           model: command.profile.model ?? null,
           ...(command.account ? { account: command.account } : {}),
@@ -102,8 +98,9 @@ export function* runRunnerSteps(
 
 export function* itemWorkPlacementSteps(q: Q, itemId: string, agent: string) {
   const holder = yield* sessionHolderSteps(q, itemId);
+  const sessionRunnerId = holder?.agent === agent ? holder.runnerId : undefined;
   const session =
-    holder?.agent === agent
+    holder?.agent === agent && holder.bindingId !== null
       ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
       : undefined;
   const runId = (yield* getWorkItemSteps(q, itemId))?.currentRunId;
@@ -113,7 +110,7 @@ export function* itemWorkPlacementSteps(q: Q, itemId: string, agent: string) {
           itemId,
           runId,
           continuesSession: true,
-          ...(session ? { sessionRunnerId: session.runnerId } : {}),
+          ...(sessionRunnerId ? { sessionRunnerId } : {}),
         })
       : {}),
     ...(session ? { session } : {}),

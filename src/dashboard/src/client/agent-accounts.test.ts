@@ -9,16 +9,14 @@ import {
 
 const idle = { agent: "claude" as const, connected: false, session: null };
 
-test("the dialog reports the runner's own sign-in that the card shows", () => {
-  expect(accountStatus(idle, "signed_in", "agentbox", 0)).toBe("Signed in on this runner");
-  expect(accountStatus(idle, "signed_out", "agentbox", 0)).toBe("Not connected");
-  expect(accountStatus(idle, undefined, "agentbox", 0)).toBe("Not connected");
-  expect(accountStatus({ ...idle, connected: true }, "signed_out", "agentbox", 0)).toBe(
+test("the dialog reports only the account's own sign-in", () => {
+  expect(accountStatus(idle, "agentbox", 0)).toBe("Not connected");
+  expect(accountStatus({ ...idle, connected: true }, "agentbox", 0)).toBe(
     "Connected to your account",
   );
 });
 
-test("a starting sign-in names the runner it waits for and the time since the click, over the runner's status", () => {
+test("a starting sign-in names the runner it waits for and the time since the click", () => {
   expect(
     accountStatus(
       {
@@ -33,7 +31,6 @@ test("a starting sign-in names the runner it waits for and the time since the cl
           authorization: null,
         },
       },
-      "signed_in",
       "agentbox",
       96_000,
     ),
@@ -75,14 +72,14 @@ test("the sign-in terminal shows text without escape sequences", () => {
   expect(html).toContain("Paste code here if prompted &gt;");
 });
 
-test("a dialog opened for a binding follows that binding's sign-in, not the runner's own", () => {
+test("a dialog follows its binding's sign-in", () => {
   const login = { id: "b", agent: "claude" as const, state: "waiting" as const, startedAt: 0 };
   const session = { ...login, expiresAt: 1, terminal: "", authorization: null };
   const bound = { bindingId: "B1", agent: "claude" as const, session };
-  const result = { accounts: [idle], bindings: [{ ...bound, bindingId: "B0" }, bound] };
-  expect(dialogAccount(result, "claude")).toBe(idle);
+  const result = { bindings: [{ ...bound, bindingId: "B0" }, bound] };
   expect(dialogAccount(result, "claude", "B1")).toEqual({ ...bound, connected: false });
-  expect(dialogAccount({ accounts: [idle] }, "claude", "B1")).toBeNull();
+  expect(dialogAccount(result, "codex", "B1")).toBeNull();
+  expect(dialogAccount({}, "claude", "B1")).toBeNull();
 });
 
 test("a bound account whose sign-in finished without a stored credential shows as not signed in", () => {
@@ -96,15 +93,11 @@ test("a bound account whose sign-in finished without a stored credential shows a
     authorization: null,
   };
   const bound = { bindingId: "B1", agent: "claude" as const, signedIn: false, session };
-  const account = dialogAccount({ accounts: [idle], bindings: [bound] }, "claude", "B1")!;
+  const account = dialogAccount({ bindings: [bound] }, "claude", "B1")!;
   expect(account.connected).toBe(false);
-  expect(accountStatus(account, undefined, "agentbox", 0)).toBe(
+  expect(accountStatus(account, "agentbox", 0)).toBe(
     "Not signed in. Paws has not stored this sign-in yet.",
   );
-  const stored = dialogAccount(
-    { accounts: [idle], bindings: [{ ...bound, signedIn: true }] },
-    "claude",
-    "B1",
-  )!;
-  expect(accountStatus(stored, undefined, "agentbox", 0)).toBe("Connected to your account");
+  const stored = dialogAccount({ bindings: [{ ...bound, signedIn: true }] }, "claude", "B1")!;
+  expect(accountStatus(stored, "agentbox", 0)).toBe("Connected to your account");
 });

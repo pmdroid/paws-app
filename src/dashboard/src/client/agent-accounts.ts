@@ -29,15 +29,13 @@ type Bound = {
   signedIn?: boolean;
   session: Login | null;
 };
-type RunnerAccounts = { accounts: Account[]; bindings?: Bound[] };
+type RunnerAccounts = { bindings?: Bound[] };
 
-export function dialogAccount(result: RunnerAccounts, agent: string, binding?: string) {
-  if (!binding) return result.accounts.find((entry) => entry.agent === agent) ?? null;
+export function dialogAccount(result: RunnerAccounts, agent: string, binding: string) {
   const bound = result.bindings?.find((b) => b.bindingId === binding && b.agent === agent);
   return bound ? { ...bound, connected: bound.signedIn === true } : null;
 }
 
-type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
 const NAMES: Record<Agent, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -49,12 +47,7 @@ function pending(login: Login | null): boolean {
   return login?.state === "starting" || login?.state === "waiting";
 }
 
-export function accountStatus(
-  account: Account,
-  runnerStatus: string | undefined,
-  runnerName: string,
-  now: number,
-): string {
+export function accountStatus(account: Account, runnerName: string, now: number): string {
   const login = account.session;
   if (pending(login))
     return login?.state === "starting"
@@ -62,7 +55,6 @@ export function accountStatus(
       : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`;
   if (account.connected) return "Connected to your account";
   if (login?.state === "connected") return "Not signed in. Paws has not stored this sign-in yet.";
-  if (runnerStatus === "signed_in") return "Signed in on this runner";
   if (login?.state === "expired") return "Sign-in expired. Start again to connect.";
   if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
   if (login?.state === "cancelled") return "Sign-in cancelled";
@@ -109,18 +101,13 @@ export function openAgentAccounts(
   runner: { id: string; name: string },
   agent: string,
   onClose: () => void,
-  binding?: string,
-  accountName?: string,
+  binding: string,
+  accountName: string,
 ): void {
   if (!(agent in NAMES)) return;
   const name = NAMES[agent as Agent];
-  const title =
-    binding && accountName
-      ? `Sign in to ${name} for ${esc(accountName)}`
-      : `Sign in to ${name} on ${esc(runner.name)}`;
-  const context = binding
-    ? `<p class="muted">Paws runs the sign-in on ${esc(runner.name)}; the account is saved for all your runners.</p>`
-    : "";
+  const title = `Sign in to ${name} for ${esc(accountName)}`;
+  const context = `<p class="muted">Paws runs the sign-in on ${esc(runner.name)}; the account is saved for all your runners.</p>`;
   const host = document.createElement("div");
   document.body.append(host);
   renderMarkup(
@@ -139,7 +126,6 @@ export function openAgentAccounts(
   const list = dialog.querySelector<HTMLElement>("[data-account-list]")!;
   const refresh = dialog.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
   let account: Account | null = null;
-  let runnerStatus: string | undefined;
   let busy = false;
   let timer = 0;
   let generation = 0;
@@ -166,7 +152,6 @@ export function openAgentAccounts(
     const active = pending(login);
     row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = accountStatus(
       account,
-      runnerStatus,
       runner.name,
       Date.now(),
     );
@@ -230,8 +215,7 @@ export function openAgentAccounts(
   function accountPath(login?: Login | null): string {
     const base = `/api/runners/${encodeURIComponent(runner.id)}/accounts`;
     if (login === undefined) return base;
-    if (login === null && binding)
-      return `${base}/${agent}/login?binding=${encodeURIComponent(binding)}`;
+    if (login === null) return `${base}/${agent}/login?binding=${encodeURIComponent(binding)}`;
     return `${base}/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}`;
   }
 
@@ -252,17 +236,11 @@ export function openAgentAccounts(
     controls();
     feedback.textContent = "";
     try {
-      const [result, listed] = await Promise.all([
-        request<RunnerAccounts>(accountPath()),
-        request<{ runners: RunnerSignIns[] }>("/api/runners"),
-      ]);
+      const result = await request<RunnerAccounts>(accountPath());
       if (!dialog.isConnected || current !== generation) return;
       account = dialogAccount(result, agent, binding);
       if (awaitingSession !== undefined && JSON.stringify(account?.session) !== awaitingSession)
         clearProgress();
-      runnerStatus = listed.runners
-        .find((entry) => !binding && entry.id === runner.id)
-        ?.agents?.find((entry) => entry.agent === agent)?.status;
       if (!account) feedback.textContent = `${name} is not available on this runner.`;
       paint();
     } catch (error) {

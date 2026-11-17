@@ -4,7 +4,6 @@ import {
   ACCOUNT_RESET_SLACK_MS,
   accountAttemptsInFlightSteps,
   bindingAccountHealthSteps,
-  legacyBindingAccountHealthSteps,
   recordAccountObservationSteps,
   resumeAccountHealthNowSteps,
   type AccountObservation,
@@ -117,26 +116,6 @@ describePglite((connect) => {
       await observe(db, { ...ok, sourceId: "s3", observedAt: NOW + 10, now: NOW + 10 }),
     ).toEqual({ quota: "removed" });
     expect(await db.run((q) => bindingAccountHealthSteps(q, "missing"))).toEqual([]);
-  });
-
-  test("a runner without a default binding reads its workspace's provider health", async () => {
-    const handle = await connect();
-    open.push(handle);
-    const { db } = handle;
-    await accounts(db);
-    await observe(db, {
-      bindingId: "A-R1",
-      source: "result",
-      sourceId: "s1",
-      observedAt: NOW,
-      now: NOW,
-      state: "restricted",
-    });
-    const health = await db.run((q) => legacyBindingAccountHealthSteps(q, "R2", "claude"));
-    expect(health.map((row) => [row.kind, row.scopeId, row.state])).toEqual([
-      ["provider", "acme:claude", "restricted"],
-    ]);
-    expect(await db.run((q) => legacyBindingAccountHealthSteps(q, "R2", "codex"))).toEqual([]);
   });
 
   test("attempts in flight count open usage and retro dispatches on the account or binding", async () => {

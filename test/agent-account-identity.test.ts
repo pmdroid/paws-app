@@ -10,7 +10,6 @@ import {
   ensureLegacyAgentBinding,
   insertQueuedItem,
   legacyAgentAccountId,
-  legacyAgentBindingId,
   listAgentAccounts,
   listAgentBindings,
   putWorkspaceUser,
@@ -202,7 +201,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
   expect(
     RunnerAccountSchema.safeParse({
       accountId: f.accounts.legacy,
-      bindingId: legacyAgentBindingId("R1", "claude"),
+      bindingId: "legacy_claude_R1",
     }).success,
   ).toBe(false);
   expect(
@@ -246,7 +245,7 @@ test("a runner's default sign-in is a legacy account beside named ones and is ad
   await ensureLegacyAgentBinding(f.db, "R1", "claude", f.now());
   await ensureLegacyAgentBinding(f.db, "R2", "codex", f.now());
   expect(legacy).toMatchObject({
-    id: legacyAgentBindingId("R1", "claude"),
+    id: "legacy_claude_R1",
     accountId: f.accounts.legacy,
     quotaScope: "unknown",
     legacy: true,
@@ -264,12 +263,7 @@ test("a runner's default sign-in is a legacy account beside named ones and is ad
   ).toMatchObject({ legacy: true, enabled: true });
   expect(
     (await listAgentBindings(f.db, f.workspaceId)).filter((row) => row.legacy).map((row) => row.id),
-  ).toEqual(
-    expect.arrayContaining([
-      legacyAgentBindingId("R1", "claude"),
-      legacyAgentBindingId("R2", "codex"),
-    ]),
-  );
+  ).toEqual(expect.arrayContaining(["legacy_claude_R1", "legacy_codex_R2"]));
   expect(await admitAgentAccounts(f.db, f.workspaceId, "claude")).toEqual({
     agent: "claude",
     eligible: [f.accounts.legacy],

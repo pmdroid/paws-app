@@ -1,13 +1,24 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { insertQueuedItem, putWorkspaceUser, syncWorkspaceMember, type Db } from "../src/db";
+import {
+  bindAgentAccount,
+  bindingAccountHealth,
+  createAgentAccount,
+  insertQueuedItem,
+  putWorkspaceUser,
+  recordRunnerAccountCapability,
+  syncWorkspaceMember,
+  type Db,
+} from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerLogin } from "../src/runner-login";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import type { RunnerCommand } from "../src/runner-protocol";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+
+type Agent = "claude" | "codex" | "grok" | "opencode";
 
 const stores: { close(): Promise<void> }[] = [];
 afterEach(async () => {
@@ -83,7 +94,46 @@ async function fixture() {
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const login = createRunnerLogin({ store: db, work, now: () => at });
+  const service = createRunnerLogin({ store: db, work, now: () => at });
+  const bindings = new Map<string, string>();
+  for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
+    const account = await createAgentAccount(db, {
+      workspaceId: workspace,
+      ownerUserId: owner.userId,
+      agent,
+      label: agent,
+      now: at,
+    });
+    const binding = await bindAgentAccount(db, {
+      workspaceId: workspace,
+      userId: owner.userId,
+      accountId: account.id,
+      runnerId,
+      now: at,
+    });
+    bindings.set(agent, binding.id);
+  }
+  await recordRunnerAccountCapability(
+    db,
+    runnerId,
+    {
+      protocol: 1,
+      bindings: [...bindings].map(([agent, bindingId]) => ({ bindingId, agent: agent as Agent })),
+    },
+    at,
+  );
+  const login = {
+    ...service,
+    start: (principal: WorkspacePrincipal, target: string, agent: Agent) =>
+      service.start(principal, target, agent, bindings.get(agent)!),
+    browser(request: Request, principal: WorkspacePrincipal) {
+      const url = new URL(request.url);
+      const agent = /\/accounts\/(\w+)\/login$/.exec(url.pathname)?.[1];
+      if (!agent) return service.browser(request, principal);
+      url.searchParams.set("binding", bindings.get(agent)!);
+      return service.browser(new Request(url.toString(), request), principal);
+    },
+  };
   const waiting = {
     state: "waiting" as const,
     terminal: "",
@@ -98,23 +148,11 @@ async function fixture() {
   };
   const url = (id: string, suffix = "") =>
     `https://paws.example.invalid/api/runners/${runnerId}/accounts/codex/login/${id}${suffix}`;
-  const policy = async (agent: string) =>
-    (await db.run((q) =>
-      q.one(
-        q.orm
-          .select({
-            ready: q.t.runnerAgentPolicy.ready,
-            authExpired: q.t.runnerAgentPolicy.authExpired,
-          })
-          .from(q.t.runnerAgentPolicy)
-          .where(
-            and(
-              eq(q.t.runnerAgentPolicy.runnerId, runnerId),
-              eq(q.t.runnerAgentPolicy.agent, agent),
-            ),
-          ),
-      ),
-    )) ?? null;
+  const session = async (agent: Agent) =>
+    (await service.list(owner, runnerId)).bindings.find((entry) => entry.agent === agent)?.session;
+  const auth = async (agent: Agent) =>
+    (await bindingAccountHealth(db, bindings.get(agent)!)).find((row) => row.kind === "auth")
+      ?.state ?? null;
   return {
     db,
     owner,
@@ -126,14 +164,15 @@ async function fixture() {
     waiting,
     connected,
     url,
-    policy,
+    session,
+    auth,
     advance: (ms: number) => {
       at += ms;
     },
   };
 }
 
-test("the owner's sign-in carries no member and readies the runner's own agent", async () => {
+test("the owner's account sign-in carries no member and marks its binding signed in", async () => {
   const f = await fixture();
   const session = await f.login.start(f.owner, f.runnerId, "codex");
   expect((await f.login.start(f.owner, f.runnerId, "codex")).id).toBe(session.id);
@@ -143,11 +182,12 @@ test("the owner's sign-in carries no member and readies the runner's own agent",
   ) as RunnerCommand;
   expect(command.type).toBe("login");
   expect(command.memberId).toBeUndefined();
+  expect(command.type === "login" && command.account?.bindingId).toBe(session.bindingId!);
   await f.login.exchange(f.runnerId, session.id, f.waiting);
-  expect(await f.policy("codex")).toBeNull();
+  expect(await f.auth("codex")).toBeNull();
   await f.login.exchange(f.runnerId, session.id, f.connected);
-  expect(await f.policy("codex")).toEqual({ ready: 1, authExpired: 0 });
-  expect((await f.login.list(f.owner, f.runnerId)).accounts[1]!.connected).toBe(true);
+  expect(await f.auth("codex")).toBe("ok");
+  expect((await f.session("codex"))?.state).toBe("connected");
 });
 
 test("only the runner owner can start, read, answer or list a sign-in", async () => {
@@ -206,7 +246,7 @@ test("revocation, expiry and cancellation fence provider completion", async () =
     if (condition === "cancelled")
       await f.login.browser(new Request(f.url(session.id), { method: "DELETE" }), f.owner);
     expect((await f.login.exchange(f.runnerId, session.id, f.connected)).cancelled).toBe(true);
-    expect(await f.policy("codex")).toBeNull();
+    expect(await f.auth("codex")).toBeNull();
   }
 });
 
@@ -268,7 +308,7 @@ test("delayed login input is rejected after cancellation, revocation, expiry or 
   }
 });
 
-test("Grok device login rejects foreign authorization hosts and connects the runner", async () => {
+test("Grok device login rejects foreign authorization hosts and connects the account", async () => {
   const f = await fixture();
   const endpoint = `https://paws.example.invalid/api/runners/${f.runnerId}/accounts/grok/login`;
   const response = await f.login.browser(new Request(endpoint, { method: "POST" }), f.owner);
@@ -306,15 +346,9 @@ test("Grok device login rejects foreign authorization hosts and connects the run
     authorization: { url: "https://auth.x.ai/device", message: "Enter ABCD-1234" },
   });
   await f.login.exchange(f.runnerId, session.id, waiting);
-  expect(
-    (await f.login.list(f.owner, f.runnerId)).accounts.find((entry) => entry.agent === "grok")
-      ?.session?.authorization,
-  ).toEqual(waiting.authorization);
+  expect((await f.session("grok"))?.authorization).toEqual(waiting.authorization);
   await f.login.exchange(f.runnerId, session.id, f.connected);
-  expect(
-    (await f.login.list(f.owner, f.runnerId)).accounts.find((entry) => entry.agent === "grok")
-      ?.connected,
-  ).toBe(true);
+  expect(await f.auth("grok")).toBe("ok");
 });
 
 test("starting another sign-in keeps an agent that is already connected", async () => {
@@ -325,10 +359,7 @@ test("starting another sign-in keeps an agent that is already connected", async 
   const again = await f.login.start(f.owner, f.runnerId, "grok");
   expect(again.id).not.toBe(session.id);
   expect(again.state).toBe("starting");
-  expect(
-    (await f.login.list(f.owner, f.runnerId)).accounts.find((entry) => entry.agent === "grok")
-      ?.connected,
-  ).toBe(true);
+  expect(await f.auth("grok")).toBe("ok");
 });
 
 function logins(db: Db) {
@@ -389,13 +420,6 @@ for (const agent of ["claude", "grok"] as const) {
     expect(response.status).toBe(200);
     expect(((await response.json()) as { state: string }).state).toBe("starting");
     expect(await logins(f.db)).toEqual([{ agent, state: "starting" }]);
-    const accounts = (await f.login.list(f.owner, f.runnerId)).accounts;
-    expect(accounts.map((account) => [account.agent, account.running])).toEqual([
-      ["claude", 1],
-      ["codex", 0],
-      ["grok", 0],
-      ["opencode", 0],
-    ]);
   });
 }
 
@@ -427,27 +451,6 @@ test("a runner with four sign-ins waiting refuses another, even while it works",
   });
 });
 
-test("a sign-in that succeeds during a live turn of its agent clears auth_expired and leaves the turn", async () => {
-  const f = await fixture();
-  await seed(f.db, (q) =>
-    q.orm
-      .insert(q.t.runnerAgentPolicy)
-      .values({ runnerId: f.runnerId, agent: "claude", ready: 0, authExpired: 1 }),
-  );
-  const turn = await busy(f, "claude");
-  const before = await turn();
-  const session = await f.login.start(f.owner, f.runnerId, "claude");
-  expect(session.state).toBe("starting");
-  await f.login.exchange(f.runnerId, session.id, f.connected);
-  expect(await f.policy("claude")).toEqual({ ready: 1, authExpired: 0 });
-  expect(await turn()).toEqual(before);
-  expect((await f.login.list(f.owner, f.runnerId)).accounts[0]).toMatchObject({
-    agent: "claude",
-    connected: true,
-    running: 1,
-  });
-});
-
 test("the owner can sign in agents on a paused runner, not on a draining or revoked one", async () => {
   const f = await fixture();
   const status = (value: string) =>
@@ -457,7 +460,7 @@ test("the owner can sign in agents on a paused runner, not on a draining or revo
   await status("paused");
   const session = await f.login.start(f.owner, f.runnerId, "claude");
   expect(session.state).toBe("starting");
-  expect((await f.login.list(f.owner, f.runnerId)).accounts.length).toBeGreaterThan(0);
+  expect((await f.login.list(f.owner, f.runnerId)).bindings.length).toBeGreaterThan(0);
   for (const value of ["draining", "revoked"]) {
     await status(value);
     await expect(f.login.start(f.owner, f.runnerId, "codex")).rejects.toThrow();

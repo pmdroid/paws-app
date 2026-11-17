@@ -42,8 +42,6 @@ import {
   getTaskModeSteps,
   closeFallbackAttemptsSteps,
   fallbackHistorySteps,
-  legacyAgentAccountId,
-  legacyAgentBindingId,
   getWorkItemSteps,
   refundLostTurnAsync,
   listHooks,
@@ -766,13 +764,7 @@ export function createRemoteAgentRunner(options: {
         id: row.runnerId,
         workspaceId: row.workspaceId,
         runId,
-        account: command.account
-          ? { ...command.account, named: true }
-          : {
-              accountId: legacyAgentAccountId(row.workspaceId, command.profile.agent),
-              bindingId: legacyAgentBindingId(row.runnerId, command.profile.agent),
-              named: false,
-            },
+        ...(command.account ? { account: { ...command.account, named: true } } : {}),
       },
       assigned: command,
       // A response task without a repository has no commit.
@@ -861,8 +853,9 @@ export function createRemoteAgentRunner(options: {
         const holder = continuesSession
           ? await store.run((q) => sessionHolderSteps(q, itemId))
           : undefined;
+        const sessionRunnerId = holder?.agent === profile.agent ? holder.runnerId : undefined;
         const session =
-          holder?.agent === profile.agent
+          holder?.agent === profile.agent && holder.bindingId !== null
             ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
             : undefined;
         const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
@@ -873,7 +866,7 @@ export function createRemoteAgentRunner(options: {
                   itemId,
                   runId,
                   continuesSession,
-                  ...(session ? { sessionRunnerId: session.runnerId } : {}),
+                  ...(sessionRunnerId ? { sessionRunnerId } : {}),
                 }),
               )
             : {};

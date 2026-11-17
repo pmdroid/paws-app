@@ -128,9 +128,15 @@ The runner sizes the most simultaneous tasks this host accepts from its resource
 
 `agentUser` defaults to `"paws-agent"`, which separates agent work from the runner's identity. Keep that default for normal installations. Restart `paws-runner.service` after changing the configuration.
 
-## Sign in to the agents
+## Sign in to agent accounts
 
-Run the login command for each provider you intend to use on this host, as the user agents run as. An agent's state belongs to that user: with `"agentUser": "paws-agent"` (the default) the runner's sign-in checks, usage probes and dashboard sign-ins start through `paws-agent@<executionId>.service` like any agent turn, so they run as `paws-agent`. Each package install or upgrade with `"paws-agent"` hands existing agent state in `/var/lib/paws-agent` and in each account home under `.paws-accounts` to `paws-agent:paws-agent`, recursively: `.codex`, `.claude`, `.claude.json`, `.grok`, `.bun`, `.config`, `.local` and `.cache` (OpenCode's config, data and cache are under the last three). Modes and the setgid bit stay as they are, and running the installer again changes nothing. `work/`, `.paws-skills`, `.paws-accounts` itself and each account home's `account.json` and holds stay `paws-runner`'s. Codex and OpenCode change the modes of their own state, which only its owner may, so they fail with `Operation not permitted` when it belongs to `paws-runner`. Run the installer again (`sudo dpkg-reconfigure paws-runner`) after switching an existing host to `"paws-agent"`. With `"agentUser": "runner"` the installer leaves ownership as it is and everything runs as `paws-runner`, as in runner 0.1.72; to go back to it on a host that was already handed over, give the folders above back to `paws-runner:paws-agent` (`chown -R`) before restarting. Both accounts use the provider state under `/var/lib/paws-agent` as `HOME`:
+Sign in to coding agents in **Settings › Agent accounts**. Add an account and choose **Sign in**: Paws runs the provider's sign-in on one of your runners and saves the account for all your runners. Paws places work only through healthy agent accounts on eligible online runners with access to the repository. If none is available, the item waits and the dashboard shows why.
+
+The runner's page on **Runners** has an **Agents** table with one row per agent (Claude, Codex, Grok and OpenCode). It shows the runner's own sign-in status, the latest usage windows, such as "5-hour 62% · weekly 3%", with **Usage limit** or **Running on extra usage** once a window is spent, and the **Keep running on extra usage** switch: when a window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage. The owner and workspace admins change the switch; everyone else sees the table read-only. The table has no sign-in controls.
+
+### The runner's own sign-in
+
+Retros still run as the runner's own sign-in, so an admin runner that runs retros needs the agent signed in on the host. Run the login command for that agent as the user agents run as. An agent's state belongs to that user: with `"agentUser": "paws-agent"` (the default) the runner's sign-in checks, usage probes and account sign-ins start through `paws-agent@<executionId>.service` like any agent turn, so they run as `paws-agent`. Each package install or upgrade with `"paws-agent"` hands existing agent state in `/var/lib/paws-agent` and in each account home under `.paws-accounts` to `paws-agent:paws-agent`, recursively: `.codex`, `.claude`, `.claude.json`, `.grok`, `.bun`, `.config`, `.local` and `.cache` (OpenCode's config, data and cache are under the last three). Modes and the setgid bit stay as they are, and running the installer again changes nothing. `work/`, `.paws-skills`, `.paws-accounts` itself and each account home's `account.json` and holds stay `paws-runner`'s. Codex and OpenCode change the modes of their own state, which only its owner may, so they fail with `Operation not permitted` when it belongs to `paws-runner`. Run the installer again (`sudo dpkg-reconfigure paws-runner`) after switching an existing host to `"paws-agent"`. With `"agentUser": "runner"` the installer leaves ownership as it is and everything runs as `paws-runner`, as in runner 0.1.72; to go back to it on a host that was already handed over, give the folders above back to `paws-runner:paws-agent` (`chown -R`) before restarting. Both accounts use the provider state under `/var/lib/paws-agent` as `HOME`:
 
 ```sh
 sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
@@ -140,20 +146,6 @@ sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paw
 With `"agentUser": "runner"`, use `--user paws-runner` instead.
 
 Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM.
-
-Or sign in from the dashboard, which is all the setup there is: open the runner on the **Runners** page. Its **Agents** table has one row per agent (Claude, Codex, Grok and OpenCode) with:
-
-- the sign-in status, and **Sign in** or **Sign in again**, which opens that agent's sign-in terminal on the runner;
-- the latest usage windows, such as "5-hour 62% · weekly 3%", with **Usage limit** or **Running on extra usage** once a window is spent;
-- the **Keep running on extra usage** switch: when a window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage.
-
-The runner's owner signs in; the owner and workspace admins change the switch. Everyone else sees the table read-only. New work runs as each runner's sign-in for the agent it needs.
-
-### Sign-in belongs to the runner
-
-Sign in to each coding agent on each runner you want to use. Credentials stay on that runner. Use the Runners page to check sign-in and usage, retry a failed sign-in, or choose whether work may continue on extra usage.
-
-Paws chooses an eligible online runner with access to the repository and a ready sign-in for the requested agent. If none is ready, the item waits and the dashboard shows why. Check that runner's sign-in, quota, access and health before retrying.
 
 ## Add the host
 
@@ -184,7 +176,7 @@ sudo systemctl enable --now paws-runner.service
 sudo systemctl status paws-runner.service --no-pager
 ```
 
-In **Runners**, select **Refresh runners**, then **View health** for the new host. Choose an agent and run **Check sign-in**, followed by **Check connection**. Connection checks call the selected agent, so use a provider account you have signed in to. The host's heartbeat updates **Last seen**, and the check receipts appear below the form.
+In **Runners**, select **Refresh runners**. The host's heartbeat updates **Last seen**.
 
 For daemon errors, inspect its journal on the VM:
 
