@@ -453,7 +453,7 @@ describe("closeout progress backend", () => {
     await insertQueuedItem(db, { id: "item-1", now: 1 });
     await beginImplementRun(db, "item-1", 1, {
       phase: "running",
-      baseSha: repo.head,
+      baseSha: repo.base,
       wipCommit: repo.head,
     });
     await applyWorkItemEvent(db, "item-1", "turn_ended");
@@ -627,14 +627,14 @@ describe("closeout progress backend", () => {
     await insertQueuedItem(db, { id: "item-1", now: 1 });
     await beginImplementRun(db, "item-1", 1, {
       phase: "running",
-      baseSha: repo.head,
+      baseSha: repo.base,
       wipCommit: repo.head,
       turn: 4,
     });
     await applyWorkItemEvent(db, "item-1", "turn_ended");
     await saveCheckpoint(db, "item-1", {
       phase: "verifying",
-      baseSha: repo.head,
+      baseSha: repo.base,
       wipCommit: repo.head,
       turn: 4,
     });
@@ -644,7 +644,7 @@ describe("closeout progress backend", () => {
       const result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: repo.head,
+        base: repo.base,
         head: repo.head,
         candidate: candidate(),
         home: repo.home,
@@ -677,7 +677,7 @@ describe("closeout progress backend", () => {
       const checkpoint = (await getWorkItem(db, "item-1"))?.checkpoint;
       expect(checkpoint?.phase).toBe("verifying");
       expect(checkpoint?.turn).toBe(4);
-      expect(checkpoint?.baseSha).toBe(repo.head);
+      expect(checkpoint?.baseSha).toBe(repo.base);
       expect(checkpoint?.wipCommit).toBe(liveHead);
       expect(checkpoint?.wipCommit).not.toBe(repo.head);
       const rows = await listCloseoutProgress(db);
@@ -687,7 +687,7 @@ describe("closeout progress backend", () => {
       expect(previous?.decision).toBe("rejected");
       expect(previous?.steps[0]?.stdout).toContain("STILL-OLD");
       expect(current?.decision).toBe("accepted");
-      expect(current?.base).toBe(repo.head);
+      expect(current?.base).toBe(repo.base);
       expect(current?.steps[0]?.stdout).toContain("NOW-NEW");
       expect(current?.steps[0]?.stdout).not.toContain("STILL-OLD");
       const oldLog = evidenceFile(repo.pawsHome, previous?.steps[0]?.logPath ?? "");
@@ -866,13 +866,13 @@ function watching(inner: CloseoutProgress, onOutput: () => Promise<void>): Close
 }
 
 function evalInput(
-  repo: { dir: string; head: string; home: string; pawsHome: string },
+  repo: { dir: string; base: string; head: string; home: string; pawsHome: string },
   progress: CloseoutProgress,
 ) {
   return {
     worktree: repo.dir,
     taskId: TASK,
-    base: repo.head,
+    base: repo.base,
     head: repo.head,
     candidate: candidate(),
     home: repo.home,
@@ -954,6 +954,7 @@ function reviewItem(id: string) {
 async function originRepo(files: Record<string, string>): Promise<{
   root: string;
   dir: string;
+  base: string;
   head: string;
   home: string;
   pawsHome: string;
@@ -979,10 +980,14 @@ async function originRepo(files: Record<string, string>): Promise<{
   await exec("git", ["-C", dir, "add", "."]);
   await exec("git", ["-C", dir, "commit", "-m", "init"]);
   await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
+  const base = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  await exec("git", ["-C", dir, "commit", "--allow-empty", "-m", "task"]);
+  await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
   const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"]);
   return {
     root,
     dir,
+    base,
     head: stdout.trim(),
     home,
     pawsHome,

@@ -1252,7 +1252,39 @@ function reviewGaps(decision: DecisionDocument): CloseoutItem[] {
   );
 }
 
-function toGateDecision(document: SpecDecision): DecisionDocument {
+const BLOCKING_STATES: readonly string[] = [
+  "exhausted",
+  "unsupported",
+  "missing",
+  "stale",
+  "invalid",
+  "untrusted",
+  "independence",
+];
+
+function withoutEmptyChangeReviews(document: SpecDecision): SpecDecision {
+  if (document.base !== document.head || document.message !== undefined) return document;
+  const items = document.items.map((item) =>
+    item.kind === "review" && (item.state === "missing" || item.state === "stale")
+      ? {
+          id: item.id,
+          kind: item.kind,
+          state: "skipped" as const,
+          message: "no commits beyond base",
+        }
+      : item,
+  );
+  if (items.every((item, index) => item === document.items[index])) return document;
+  const decision = items.some((item) => BLOCKING_STATES.includes(item.state))
+    ? "blocked"
+    : items.some((item) => item.state === "failed")
+      ? "rejected"
+      : "accepted";
+  return { ...document, decision, items };
+}
+
+function toGateDecision(spec: SpecDecision): DecisionDocument {
+  const document = withoutEmptyChangeReviews(spec);
   const decision: DecisionDocument = {
     specVersion: "0.1",
     decision: document.decision,
