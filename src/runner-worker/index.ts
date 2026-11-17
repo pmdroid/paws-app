@@ -1038,8 +1038,8 @@ export async function executeRunnerCommand(
     }
     if (!task) {
       shareRunnerWorkRoot(options.workRoot, options.owners);
-      if (options.owners && process.env.HOME && process.getuid?.() !== options.owners.runnerUid)
-        shareAgentConfigFolders(process.env.HOME);
+      if (options.owners && process.env.HOME)
+        shareAgentConfigFolders(process.env.HOME, options.owners, { report: false });
     }
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(

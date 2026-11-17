@@ -615,6 +615,7 @@ test.skipIf(!folderOwnerChangeAllowed)(
 
 test("an agent config folder the runner can't fix is journaled once per folder per hour", () => {
   const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
   for (const folder of [".claude", ".grok"]) {
     mkdirSync(join(root, folder));
     chmodSync(join(root, folder), 0o700);
@@ -628,13 +629,14 @@ test("an agent config folder the runner can't fix is journaled once per folder p
   try {
     for (const at of [0, 60_000, 3_599_999, 3_600_000]) {
       clock = at;
-      shareAgentConfigFolders(root, { now: () => clock, chmod: refuse });
+      shareAgentConfigFolders(root, owners, { now: () => clock, chmod: refuse });
+      shareAgentConfigFolders(root, owners, { report: false, now: () => clock, chmod: refuse });
     }
   } finally {
     restore();
   }
   expect(lines.filter((line) => line.includes(join(root, ".grok")))).toHaveLength(2);
   expect(lines.filter((line) => line.includes(join(root, ".claude")))).toHaveLength(2);
-  expect(lines[0]).toStartWith("runner agent config folder not group-writable");
+  expect(lines[0]).toStartWith("runner agent config folder not shared with the agent group");
   expect(statSync(join(root, ".grok")).mode & 0o7777).toBe(0o700);
 });
