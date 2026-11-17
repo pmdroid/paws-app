@@ -188,6 +188,8 @@ import {
 import {
   fixAttemptLimit,
   mainFixBudget,
+  mainNarrowAfterLines,
+  DEFAULT_NARROW_AFTER_LINES,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -348,6 +350,7 @@ import {
   commandInstance,
   emitJobReady,
   fixRoundsSteps,
+  restartsSinceHumanTurnSteps,
   getOutboxSteps,
   type Db,
   CLEANUP_BLOCKED_NOTICE,
@@ -644,6 +647,13 @@ import {
 } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
+import {
+  candidateGrowth,
+  candidateSize,
+  growthLine,
+  narrowBackHandoff,
+  type CandidateSize,
+} from "./narrow-back";
 import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
@@ -5458,12 +5468,14 @@ export class Orchestrator {
       limit: number;
       attempts: ReturnType<typeof fixAttemptLimit>;
       fix: FixRound;
+      narrow?: boolean;
     },
   ): Steps<boolean> {
     const latest = yield* getWorkItemSteps(q, itemId);
     if (latest?.version !== version) return false;
     const restarted = yield* restartWithFeedbackSteps(q, latest, {
       reason: "findings",
+      ...(input.narrow ? { jobKey: `${narrowKey(itemId)}${latest.version}` } : {}),
       lead: [input.lead],
       reads: input.reads,
       fixRoundLimit: input.limit,
@@ -5554,11 +5566,13 @@ export class Orchestrator {
         };
         await this.store.transaction((q) => recordReviewFindingsSteps(q, report));
       }
+      const narrowed = await this.narrowBack(current, result, result?.handoff ?? summary);
       const reads = await this.readPendingFeedback(current);
       await this.assertJobCurrent(item.id);
       const armed = await this.store.transaction((q) =>
         this.restartForFindingsSteps(q, item.id, current.version, {
-          lead: result?.handoff ?? summary,
+          lead: narrowed?.handoff ?? result?.handoff ?? summary,
+          ...(narrowed ? { narrow: true } : {}),
           reads,
           limit,
           attempts: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
@@ -5574,6 +5588,10 @@ export class Orchestrator {
         }),
       );
       if (armed) emitJobReady(this.store);
+      if (armed && narrowed)
+        this.options.journal?.(
+          `item ${current.linearIdentifier} narrowing back at ${narrowed.head.slice(0, 7)}: ${narrowed.line}`,
+        );
       return;
     }
     const sessionId = this.activitySession(item);
@@ -5680,6 +5698,7 @@ export class Orchestrator {
         itemPathId(item),
         (await recoveryOptions(this.store, item.id)).retryBaseline,
         this.options.pawsRoot,
+        await this.closeoutRoundOrder(item),
       );
     } catch (caught) {
       journalCaught(
@@ -5695,6 +5714,11 @@ export class Orchestrator {
       (check) => check.kind === "review" && check.state === "exhausted",
     );
     const findings = reviewFindingText(await this.failedReviewFindings(item));
+    const sizes = await this.candidateSizes(
+      item,
+      help.base,
+      rounds.rounds.map((round) => round.head),
+    );
     await this.assertJobCurrent(item.id);
     const question = await askReviewRounds(this.store, {
       item,
@@ -5702,6 +5726,10 @@ export class Orchestrator {
       findings,
       rounds: {
         ...rounds,
+        rounds: rounds.rounds.map((round) => {
+          const size = sizes.find((entry) => entry.head === round.head);
+          return size ? { ...round, lines: size.lines, files: size.files } : round;
+        }),
         limit: reviewRoundLimit(exhausted?.message),
         handoff: result?.handoff ?? [help.summary, findings].filter(Boolean).join("\n"),
       },
@@ -5711,6 +5739,86 @@ export class Orchestrator {
     if (question === null) return false;
     await this.flush();
     return true;
+  }
+
+  private async narrowBack(
+    item: WorkItemRecord,
+    result: GateResult | undefined,
+    findings: string,
+  ): Promise<{ handoff: string; head: string; line: string } | null> {
+    const base = result?.base || item.checkpoint?.baseSha || "";
+    const head = result?.head || item.checkpoint?.wipCommit || "";
+    if (base === "" || head === "") return null;
+    try {
+      if (
+        (await this.store.run((q) => restartsSinceHumanTurnSteps(q, item.id, narrowKey(item.id)))) >
+        0
+      )
+        return null;
+      const limit = await this.narrowAfterLines(item);
+      if (limit <= 0) return null;
+      await this.pullCloseoutEvidence(item);
+      const earlier = (
+        await readReviewRounds(
+          itemPathId(item),
+          [],
+          this.options.pawsRoot,
+          await this.closeoutRoundOrder(item),
+        )
+      ).rounds
+        .map((round) => round.head)
+        .filter((round) => round !== head);
+      const sizes = await this.candidateSizes(item, base, [...earlier, head]);
+      if (sizes.at(-1)?.head !== head) return null;
+      const growth = candidateGrowth(sizes, limit);
+      if (growth === null) return null;
+      const repo = (await this.itemHead(item)).repo;
+      return {
+        handoff: await narrowBackHandoff((args) => git(args), { repo, base, growth, findings }),
+        head,
+        line: growthLine(growth),
+      };
+    } catch (caught) {
+      journalCaught(caught, "orchestrator.narrowBack", item.id, undefined, this.options.journal);
+      return null;
+    }
+  }
+
+  private async candidateSizes(
+    item: WorkItemRecord,
+    base: string,
+    heads: readonly string[],
+  ): Promise<CandidateSize[]> {
+    if (base === "") return [];
+    const repo = (await this.itemHead(item)).repo;
+    const sizes: CandidateSize[] = [];
+    for (const head of heads) {
+      try {
+        sizes.push(await candidateSize((args) => git(args), repo, base, head));
+      } catch (caught) {
+        journalCaught(
+          caught,
+          "orchestrator.candidateSizes",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+      }
+    }
+    return sizes;
+  }
+
+  private async closeoutRoundOrder(item: WorkItemRecord): Promise<(head: string) => number> {
+    const started = await this.store.run((q) => closeoutHeadsStartedSteps(q, item.id));
+    return (head) => started.get(head) ?? Number.MAX_SAFE_INTEGER;
+  }
+
+  private async narrowAfterLines(item: WorkItemRecord): Promise<number> {
+    const { policyRoot } = await this.closeoutHome(item);
+    return (
+      mainNarrowAfterLines((await this.itemHead(item)).repo, policyRoot) ??
+      DEFAULT_NARROW_AFTER_LINES
+    );
   }
 
   private async waitForVerification(
@@ -11949,4 +12057,8 @@ function sortedWait(wait: ItemWait): ItemWait {
   if (wait.kind === "blocked") return { ...wait, blockers: wait.blockers.toSorted(natural) };
   if (wait.kind === "overlap") return { ...wait, files: wait.files.toSorted(natural) };
   return wait;
+}
+
+function narrowKey(itemId: string): string {
+  return `narrow:${itemId}:`;
 }

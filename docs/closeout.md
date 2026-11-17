@@ -6,7 +6,7 @@ Closeout checks an agent's work before Paws publishes or merges its pull request
 
 Open the issue in the dashboard to see the current run, check results, review findings and evidence. Command checks run the repository's configured commands. Independent reviews inspect the proposed change. Evidence checks require the files requested by the policy.
 
-When a check fails, Paws can send the findings back to the agent for another attempt. Retry budgets come from the [configuration](configuration.md#closeout-retry) and the repository policy. If Paws needs a decision, it asks in Linear and on the question page.
+When a check fails, Paws can send the findings back to the agent for another attempt. A candidate that grew past the policy's line limit, or doubled since the previous round, is first sent back to narrow the change to the issue. Retry budgets come from the [configuration](configuration.md#closeout-retry) and the repository policy. If Paws needs a decision, it asks in Linear and on the question page.
 
 ## Review evidence
 
@@ -16,7 +16,7 @@ An approval applies to the evidence and candidate you reviewed. Changed evidence
 
 ## Resolve a verification question
 
-Read the failed check and its output before choosing an action. You can give the agent guidance, retry verification when the problem is resolved, or use the dashboard's available controls. If you bypass a check, supply the reason requested by Paws.
+Read the failed check and its output before choosing an action. When review rounds run out, the question lists the diff size of each round, so a change that kept growing shows at a glance. You can give the agent guidance, retry verification when the problem is resolved, or use the dashboard's available controls. If you bypass a check, supply the reason requested by Paws.
 
 ## Follow merging
 

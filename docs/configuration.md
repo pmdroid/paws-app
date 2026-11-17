@@ -157,10 +157,12 @@ Set the CPU count, memory, disk size, image and pool for newly created VMs in Se
 retry:
   attempts_per_check: 3
   fix_rounds_per_item: 3
+  narrow_after_lines: 800
 ```
 
 - **`attempts_per_check`**: failed attempts one Closeout check gets, on the agent side and the Paws side. Default 3. A check that reaches it is exhausted and Paws asks the team. `maxFailedAttemptsPerItem` is a legacy alias.
 - **`fix_rounds_per_item`**: fix rounds per item, counted since the latest reply from a person in the item's session. Default 3. Closeout findings, red CI and changes-requested reviews all count. When they are spent, Paws asks the team.
+- **`narrow_after_lines`**: the size, in changed lines against the base, past which Paws narrows a candidate back to its issue. Default 800; `0` turns the size check off. When Closeout rejects a candidate that is past it, or that doubled since the previous review round and has at least 200 changed lines, the next fix round becomes a narrowing restart: the agent is told to cut the change back to the issue, with the files and commits added since the last smaller head. Paws narrows once per reply from a person; the narrowing restart counts as a fix round.
 
 Rebase returns are not configurable: three in a row on a known main commit or a conflicting push, and six in any rolling hour, then Paws asks. Only a person's reply in the session refills a budget. [Verification questions](closeout.md#resolve-a-verification-question) describe both.
 
