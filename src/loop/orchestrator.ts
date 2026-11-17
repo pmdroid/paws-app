@@ -1326,12 +1326,14 @@ export class Orchestrator {
   ): boolean {
     if (decision === undefined) return true;
     const created = event.action === "created" && event.signal !== "stop";
-    if (created && (last || decision.outcome !== "accepted")) {
-      const reason = decision.outcome === "accepted" ? "" : `: ${decision.reason}`;
-      console.error(
-        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} ${decision.outcome}${reason}`,
+    if (created && decision.outcome === "retry")
+      (this.options.journal ?? journal)(
+        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} retry: ${decision.reason}`,
       );
-    }
+    if (created && last && decision.outcome === "accepted")
+      (this.options.journal ?? journal)(
+        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} accepted`,
+      );
     if (decision.outcome === "accepted") return true;
     if (decision.outcome === "retry") throw new LinearIntakePendingError(decision.reason);
     if (created)

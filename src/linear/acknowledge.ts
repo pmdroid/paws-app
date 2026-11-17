@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { isTransient, RunnerSlotsBusyError, UserFacingError } from "../core";
 import { LinearRateLimitError } from "./budget";
@@ -115,8 +115,9 @@ export async function acknowledgeNewSession(
               },
           { signal: options.signal },
         );
-
-      journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
+      journal(
+        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} refused: ${error.message}`,
+      );
       return false;
     }
     if (error instanceof LinearIssueClosedError && event.sessionId !== null) {
