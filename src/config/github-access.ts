@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { githubMirrorsOn, type PawsConfigFile } from "./file";
+import { agentReadAllowed, githubMirrorsOn, type PawsConfigFile } from "./file";
 import { updateConfigText } from "./settings-store";
 
 export type GitHubAccessSettings = { agentRead: boolean; mirrors: boolean };
@@ -17,11 +17,9 @@ export function activeGitHubMirrors(): boolean | undefined {
 const schema = z.strictObject({ agentRead: z.boolean(), mirrors: z.boolean() });
 
 export function readGitHubAccessSettings(config: PawsConfigFile) {
-  const saved = config.githubAccess?.agentRead !== undefined;
   return {
     configured: config.githubAccess !== undefined,
-    agentRead: saved ? config.githubAccess!.agentRead! : true,
-    agentReadOff: saved ? [] : (config.agentReadOff ?? []),
+    agentRead: agentReadAllowed(config),
     mirrors: githubMirrorsOn(config),
   };
 }

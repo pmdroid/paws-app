@@ -5,7 +5,6 @@ import { renderMarkup } from "./theme";
 type Access = {
   agentRead: boolean;
   mirrors: boolean;
-  agentReadOff?: string[];
   restartRequired?: boolean;
 };
 type Policies = { projects: Record<string, { policyRoot: string }> };
@@ -54,7 +53,7 @@ export function mountRepositorySettings(engine: string | null): void {
           )
           .join(
             "",
-          )}${access.agentReadOff?.length ? `<p class="sub">Legacy read exclusions: ${access.agentReadOff.map(esc).join(", ")}</p>` : ""}${access.restartRequired ? '<p role="status">Restart Paws for Closeout policy reads to use the new mirrors setting.</p>' : ""}<button class="btn primary" type="submit" name="section" value="access">Save GitHub access</button></div></section>
+          )}${access.restartRequired ? '<p role="status">Restart Paws for Closeout policy reads to use the new mirrors setting.</p>' : ""}<button class="btn primary" type="submit" name="section" value="access">Save GitHub access</button></div></section>
       <section class="settings-section"><div class="settings-label"><h2>Closeout policy roots</h2><p class="sub">Absolute directories on the Paws host, per repository.</p></div><div class="col">${rows.map(([repo, path], i) => `<div class="settings-project"><div class="settings-field"><label for="policy-repo-${i}">Repository</label><input id="policy-repo-${i}" name="repo-${i}" value="${esc(repo)}" placeholder="owner/repo"></div><div class="settings-field"><label for="policy-root-${i}">Policy root</label><input id="policy-root-${i}" name="root-${i}" value="${esc(path)}" placeholder="/path/to/policy"></div><button class="btn" type="button" data-remove="${i}">Remove repository</button></div>`).join("")}${!rows.length ? '<p class="sub">No local policy roots configured.</p>' : ""}<button class="btn" type="button" data-add>Add repository</button><button class="btn primary" type="submit" name="section" value="policies">Save policy roots</button></div></section>`;
     renderMarkup(
       root,
@@ -93,17 +92,6 @@ export function mountRepositorySettings(engine: string | null): void {
     if (busy || !loaded) return;
     draft();
     const section = (event as SubmitEvent).submitter?.getAttribute("value");
-    if (section === "access" && access.agentReadOff?.length) {
-      const effect = access.agentRead
-        ? "Agents will be allowed to read every repository, including those currently excluded."
-        : "Agents will be denied read access to every repository.";
-      if (
-        !window.confirm(
-          `Saving GitHub access replaces the legacy read exclusions for ${access.agentReadOff.join(", ")} with one workspace-wide setting, even when only mirrors changed. ${effect} Replace the exclusions and save?`,
-        )
-      )
-        return;
-    }
     void run(async () => {
       if (linear)
         agents = (await request<{ agents: string[] }>("/api/settings/linear-comments", { agents }))

@@ -77,7 +77,6 @@ export type PawsConfigFile = {
   webhooks: boolean | null;
   repo: string | null;
   githubRepos: string[];
-  agentReadOff?: string[];
   githubMirrors?: boolean;
   githubAccess?: GitHubAccess;
   publicUrl: string | null;
@@ -193,13 +192,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
 
 export type GitHubAccess = { agentRead?: boolean; mirrors?: boolean };
 
-export function agentReadAllowed(
-  config: Pick<PawsConfigFile, "agentReadOff" | "githubAccess">,
-  repository: string,
-) {
-  if (config.githubAccess?.agentRead !== undefined) return config.githubAccess.agentRead;
-  const name = repository.toLowerCase();
-  return !(config.agentReadOff ?? []).some((entry) => entry.toLowerCase() === name);
+export function agentReadAllowed(config: Pick<PawsConfigFile, "githubAccess">) {
+  return config.githubAccess?.agentRead ?? true;
 }
 
 export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubMirrors" | "githubAccess">) {
@@ -421,7 +415,6 @@ function assignConfig(
   if (section === "github") {
     if (key === "repo") config.repo = asString(value, line);
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
-    else if (key === "agent_read_off") config.agentReadOff = asStringArray(value, line);
     else if (key === "mirrors") config.githubMirrors = asBoolean(value, line);
     return;
   }

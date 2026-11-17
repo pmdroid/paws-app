@@ -24,7 +24,7 @@ let release: () => void;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "paws-github-access-"));
   configPath = join(dir, "config.toml");
-  writeFileSync(configPath, '[github]\nrepo = "o/r"\nagent_read_off = ["o/r"]\nmirrors = true\n');
+  writeFileSync(configPath, '[github]\nrepo = "o/r"\nmirrors = true\n');
   audits = [];
   stored = null;
   const snapshot = await useSettingsStore(configPath, {
@@ -67,11 +67,9 @@ test("without a saved section the settings come from the [github] keys", async (
   expect(await response!.json()).toEqual({
     configured: false,
     agentRead: true,
-    agentReadOff: ["o/r"],
     mirrors: true,
   });
-  expect(agentReadAllowed(loadConfigFile(configPath), "o/r")).toBe(false);
-  expect(agentReadAllowed(loadConfigFile(configPath), "o/other")).toBe(true);
+  expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
 });
 
 test("a save goes to the database, wins over the file and applies without a restart", async () => {
@@ -86,7 +84,6 @@ test("a save goes to the database, wins over the file and applies without a rest
     expect(await response!.json()).toEqual({
       configured: true,
       agentRead: false,
-      agentReadOff: [],
       mirrors: false,
       restartRequired: true,
     });
@@ -104,14 +101,14 @@ test("a save goes to the database, wins over the file and applies without a rest
     '[github]\nrepo = "o/r"\nmirrors = true\n\n[github_access]\nagent_read = true\n',
   );
   const config = loadConfigFile(configPath);
-  expect(agentReadAllowed(config, "o/other")).toBe(false);
+  expect(agentReadAllowed(config)).toBe(false);
   expect(githubMirrorsOn(config)).toBe(false);
   const again = await handleGitHubAccessSettingsRequest(
     put({ agentRead: true, mirrors: false }),
     options("admin"),
   );
   expect(await again!.json()).toMatchObject({ agentRead: true, restartRequired: false });
-  expect(agentReadAllowed(loadConfigFile(configPath), "o/r")).toBe(true);
+  expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
 });
 
 test("a member, a missing CSRF token or an invalid value cannot write", async () => {
