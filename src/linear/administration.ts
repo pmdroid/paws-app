@@ -148,6 +148,30 @@ export function parseLinearUndelegation(
   return { organizationId, appUserId, issueId, createdAtMs };
 }
 
+export const UNDELEGATED_ISSUE_EVENT = "undelegated";
+
+export function parsePolledUndelegation(
+  event: AcceptedLinearEvent,
+  appUserId: string | null,
+  organizationId: string | null,
+): {
+  organizationId: string | null;
+  appUserId: string;
+  issueId: string;
+  createdAtMs: number;
+} | null {
+  if (event.source !== "poll" || event.issueId === null || appUserId === null) return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(event.payload);
+  } catch (error) {
+    journalCaught(error, "administration.parsePolledUndelegation.parse", null);
+    return null;
+  }
+  if (!isRecord(payload) || readString(payload, "kind") !== UNDELEGATED_ISSUE_EVENT) return null;
+  return { organizationId, appUserId, issueId: event.issueId, createdAtMs: event.updatedAtMs };
+}
+
 export type LinearIssueClosedState = "completed" | "canceled";
 
 /** An issue moved to a completed or canceled workflow state, from a webhook or the catch-up poll. */

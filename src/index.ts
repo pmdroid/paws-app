@@ -238,6 +238,7 @@ import {
   parseLinearIssueClosed,
   parseLinearIssueProjectChange,
   parseLinearUndelegation,
+  parsePolledUndelegation,
   parseLinearUserChange,
   cacheLinearMemberships,
   sessionCreatedKey,
@@ -818,7 +819,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         await store.run((q) =>
           applyLinearIssueProjectSteps(q, projectChange.issueId, projectChange.project),
         );
-      const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
+      const polledUndelegation = parsePolledUndelegation(
+        event,
+        runtime.linearViewerId,
+        runtime.linearOrganizationId,
+      );
+      if (polledUndelegation)
+        await invalidateAuthorization({ issueId: polledUndelegation.issueId });
+      const undelegation =
+        parseLinearUndelegation(event, runtime.linearViewerId) ?? polledUndelegation;
       if (undelegation)
         await stopUndelegatedIssue(store, undelegation, {
           notify: (command) => {

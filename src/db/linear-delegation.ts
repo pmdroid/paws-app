@@ -179,7 +179,7 @@ export async function linearSessionsForDelegatedTeams(
 }
 
 type UndelegatedIssue = {
-  organizationId: string;
+  organizationId: string | null;
   appUserId: string;
   issueId: string;
   createdAtMs: number;
@@ -204,7 +204,9 @@ export function* linearSessionsForUndelegatedIssueSteps(
       .from(linearSession)
       .where(
         and(
-          eq(linearSession.organizationId, input.organizationId),
+          input.organizationId === null
+            ? undefined
+            : eq(linearSession.organizationId, input.organizationId),
           eq(linearSession.appUserId, input.appUserId),
           isNull(linearSession.stoppedAt),
           lte(linearSession.createdAt, createdAtMs),

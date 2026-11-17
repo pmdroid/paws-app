@@ -23,6 +23,7 @@ import {
   openLinear,
   parseAgentEvent,
   parseLinearIssueClosed,
+  parsePolledUndelegation,
   startCatchUpPoller,
   type AcceptedLinearEvent,
   type IntakeSighting,
@@ -347,6 +348,84 @@ test("the catch-up poll closes the tasks of an issue whose webhook was missed", 
   expect((await store.listUnhandled()).map((event) => event.dedupeKey)).not.toContain(
     seen[0]!.dedupeKey,
   );
+});
+
+test("the catch-up poll stops the queued task of an issue no longer delegated to Paws", async () => {
+  const f = await fixture();
+  const store = createInboxStore(f.db);
+  const updatedAtMs = Date.now() + 1_000;
+  const issue = { identifier: "ENG-1", updatedAtMs, delegated: false, closed: null };
+  const sighting: IntakeSighting = {
+    sessions: [],
+    issues: [
+      { ...issue, id: "issue", labeled: false, undelegated: true },
+      { ...issue, id: "unrelated", labeled: false, undelegated: true },
+    ],
+    comments: [],
+    activities: [],
+    budget: null,
+    caughtUp: true,
+    queried: true,
+  };
+  const seen: AcceptedLinearEvent[] = [];
+  const stopped: string[] = [];
+  const poller = startCatchUpPoller({
+    source: { poll: async () => sighting },
+    store,
+    db: f.db,
+    onEvent: async (event) => {
+      seen.push(event);
+      const undelegation = parsePolledUndelegation(event, scope.appUserId, scope.organizationId);
+      if (undelegation)
+        await stopUndelegatedIssue(f.db, undelegation, {
+          notify: (command) => stopped.push(command.itemId),
+        });
+      return false;
+    },
+    sleeper: { wait: () => new Promise(() => {}), wake: () => {} },
+  });
+  cleanup.push(() => void poller.stop());
+  await poller.pollNow();
+  expect(seen.map((event) => event.issueId)).toEqual(["issue"]);
+  expect(stopped).toEqual([f.item.id]);
+  expect((await getWorkItem(f.db, f.item.id))?.state).toBe("cancelled");
+  expect(await store.listUnhandled()).toEqual([]);
+});
+
+test("the catch-up poll leaves a task alone while its issue is delegated or labeled", async () => {
+  const f = await fixture();
+  const updatedAtMs = Date.now() + 1_000;
+  const issue = { id: "issue", identifier: "ENG-1", updatedAtMs, closed: null };
+  const seen: AcceptedLinearEvent[] = [];
+  for (const state of [
+    { delegated: true, undelegated: false, labeled: false },
+    { delegated: false, undelegated: true, labeled: true },
+  ]) {
+    const poller = startCatchUpPoller({
+      source: {
+        poll: async () => ({
+          sessions: [],
+          issues: [{ ...issue, ...state }],
+          comments: [],
+          activities: [],
+          budget: null,
+          caughtUp: true,
+          queried: true,
+        }),
+      },
+      store: createInboxStore(f.db),
+      db: f.db,
+      onEvent: async (event) => {
+        if (parsePolledUndelegation(event, scope.appUserId, scope.organizationId)) seen.push(event);
+        return false;
+      },
+      sleeper: { wait: () => new Promise(() => {}), wake: () => {} },
+    });
+    cleanup.push(() => void poller.stop());
+    await poller.pollNow();
+  }
+  expect(seen).toEqual([]);
+  expect((await getWorkItem(f.db, f.item.id))?.state).toBe("queued");
 });
 
 describe("parseLinearIssueClosed", () => {

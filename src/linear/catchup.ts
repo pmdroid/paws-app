@@ -99,6 +99,7 @@ export type PolledIssue = {
   updatedAtMs: number;
   labeled: boolean;
   delegated: boolean;
+  undelegated?: boolean;
   /** Set when the issue sits in a completed or canceled workflow state. */
   closed?: { stateType: LinearIssueClosedState; closedAtMs: number } | null;
 };
@@ -379,6 +380,7 @@ function dedupeIssues(
       updatedAtMs,
       labeled: hasPawsLabel(node),
       delegated: appUserId !== null && delegateId === appUserId,
+      undelegated: appUserId !== null && delegateId !== appUserId,
       closed: readClosed(node, updatedAtMs),
     });
   }
