@@ -112,9 +112,9 @@ async function fixture() {
   return { db, now, runnerId, userId, workspace: workspace.id, heartbeat, check, queued };
 }
 
-test("an old runner keeps running checks without an account and never receives a named account", async () => {
+test("a named account goes to the runner only once it reports the binding", async () => {
   const { db, now, runnerId, userId, workspace, heartbeat, check, queued } = await fixture();
-  expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
+  expect(await heartbeat({ runnerVersion: "0.1.84" })).toBe(200);
   const legacy = await check();
   expect(await commandAccount(db, legacy)).toBeNull();
 
@@ -133,25 +133,16 @@ test("an old runner keeps running checks without an account and never receives a
     now,
   });
   const named = { accountId: account.id, bindingId: binding.id };
-  await expect(check(named)).rejects.toThrow(/runner 0\.1\.61 or later/);
-  expect(
-    await heartbeat({
-      runnerVersion: "0.1.59",
-      accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
-    }),
-  ).toBe(200);
-  await expect(check(named)).rejects.toThrow(/runner 0\.1\.61 or later/);
-  expect(await heartbeat({ runnerVersion: "0.1.61" })).toBe(200);
   await expect(check(named)).rejects.toThrow(/not reported agent account support/);
   expect(
-    await heartbeat({ runnerVersion: "0.1.61", accounts: { protocol: 1, bindings: [] } }),
+    await heartbeat({ runnerVersion: "0.1.84", accounts: { protocol: 1, bindings: [] } }),
   ).toBe(200);
   await expect(check(named)).rejects.toThrow(/not reported this account binding/);
   expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
 
   expect(
     await heartbeat({
-      runnerVersion: "0.1.61",
+      runnerVersion: "0.1.84",
       accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     }),
   ).toBe(200);
@@ -170,7 +161,7 @@ test("an old runner keeps running checks without an account and never receives a
   expect(await queued()).toEqual([{ id: accepted, account: named }]);
   expect(
     await heartbeat({
-      runnerVersion: "0.1.61",
+      runnerVersion: "0.1.84",
       accounts: { protocol: 1, bindings: [{ bindingId: "legacy_claude_x", agent: "claude" }] },
     }),
   ).toBe(403);

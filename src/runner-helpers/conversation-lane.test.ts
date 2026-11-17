@@ -13,11 +13,7 @@ import {
   runnerHelperAvailability,
   runnerOccupancy,
 } from "../db";
-import {
-  CODEX_FAST_MODE_RUNNER_VERSION,
-  FAST_MODE_RUNNER_VERSION,
-  RUNNER_CONVERSATION_MS,
-} from "../runner-protocol";
+import { MINIMUM_RUNNER_VERSION, RUNNER_CONVERSATION_MS } from "../runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from ".";
 import { sqlRun, tempStore } from "../../test/pglite";
@@ -27,11 +23,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-async function fixture(
-  version: string | null,
-  conversations?: number,
-  agent: "claude" | "codex" = "claude",
-) {
+async function fixture(conversations?: number, agent: "claude" | "codex" = "claude") {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-lane-"));
   const { db, close: closeDb } = await tempStore();
   const now = Date.now();
@@ -64,7 +56,12 @@ async function fixture(
       observedAtMs: now,
     });
   await recordRunnerCapacity(db, "runner", 1, 1, conversations);
-  if (version) await recordRunnerHostStatus(db, "runner", { runnerVersion: version }, now);
+  await recordRunnerHostStatus(
+    db,
+    "runner",
+    { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
+    now,
+  );
   const helpers = createRunnerHelpers({
     store: db,
     keyId: "fixture",
@@ -98,7 +95,7 @@ async function fixture(
 }
 
 test("a conversation starts with every work slot busy and fills no work slot", async () => {
-  const { db, now, workspace, dispatch } = await fixture("0.1.77", 2);
+  const { db, now, workspace, dispatch } = await fixture(2);
   await dispatch("session-1", "classify");
   expect(await runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
   expect((await runnerHelperAvailability(db, "runner", now, true)).available).toBe(false);
@@ -111,27 +108,15 @@ test("a conversation starts with every work slot busy and fills no work slot", a
   expect(runner!.conversations).toEqual({ used: 1, total: 2 });
 });
 
-test("a helper keeps fast mode only on a runner that knows it", async () => {
-  const [major, minor, patch] = FAST_MODE_RUNNER_VERSION;
-  const older = await fixture(`${major}.${minor}.${patch - 1}`);
-  const helper = await older.dispatch("session-1", "classify");
-  expect(helper.type === "helper" && helper.profile).toEqual({ agent: "claude", model: null });
-  const current = await fixture(FAST_MODE_RUNNER_VERSION.join("."));
-  const fast = await current.dispatch("session-1", "classify");
-  expect(fast.type === "helper" && fast.profile.fast).toBe(true);
-});
-
-test("a Codex helper needs the runner that detects fast-mode", async () => {
-  const older = await fixture(FAST_MODE_RUNNER_VERSION.join("."), undefined, "codex");
-  const helper = await older.dispatch("session-1", "classify");
-  expect(helper.type === "helper" && helper.profile.fast).toBeUndefined();
-  const current = await fixture(CODEX_FAST_MODE_RUNNER_VERSION.join("."), undefined, "codex");
-  const fast = await current.dispatch("session-1", "classify");
-  expect(fast.type === "helper" && fast.profile.fast).toBe(true);
-});
+for (const agent of ["claude", "codex"] as const)
+  test(`a ${agent} helper keeps fast mode`, async () => {
+    const { dispatch } = await fixture(undefined, agent);
+    const helper = await dispatch("session-1", "classify");
+    expect(helper.type === "helper" && helper.profile.fast).toBe(true);
+  });
 
 test("a third conversation waits for a conversation slot, not a work slot", async () => {
-  const { db, now, dispatch } = await fixture("0.1.77", 2);
+  const { db, now, dispatch } = await fixture(2);
   await dispatch("session-1", "conversation");
   await dispatch("session-2", "conversation");
   await expect(dispatch("session-3", "conversation")).rejects.toThrow("Runner is busy");
@@ -140,15 +125,12 @@ test("a third conversation waits for a conversation slot, not a work slot", asyn
   expect((await dispatch("session-4", "classify")).purpose).toBe("classify");
 });
 
-for (const [name, version, conversations] of [
-  ["an older runner", "0.1.73", 2],
-  ["a runner that reports no conversation lane", "0.1.77", undefined],
-  ["a runner with the lane turned off", "0.1.77", 0],
-  ["a runner that is not told the control plane's level", "0.1.75", 2],
-  ["a runner that refuses Claude's reply and start_work calls", "0.1.76", 2],
+for (const [name, conversations] of [
+  ["a runner that reports no conversation lane", undefined],
+  ["a runner with the lane turned off", 0],
 ] as const)
   test(`${name} admits no conversation`, async () => {
-    const { db, now, dispatch } = await fixture(version, conversations);
+    const { db, now, dispatch } = await fixture(conversations);
     expect((await runnerHelperAvailability(db, "runner", now, true, true)).available).toBe(false);
     await expect(dispatch("session-1", "conversation")).rejects.toThrow("Runner is busy");
   });

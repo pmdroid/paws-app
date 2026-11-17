@@ -21,10 +21,6 @@ import {
   getWorkItemRepositorySteps,
   getWorkItemSteps,
   insertRunnerCommandSteps,
-  insertRunnerResultSteps,
-  insertHealthResultSteps,
-  healthResultJsonSteps,
-  updateRunnerLoginSteps,
   insertRunnerEventSteps,
   insertRunnerWorkGrantSteps,
   lastInstanceHeartbeatSteps,
@@ -54,7 +50,6 @@ import {
   runnerCommandEnvelopeSteps,
   runnerFinishedRunsSteps,
   runnerHasCapacitySteps,
-  runnerHostVersionSteps,
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerResultForCommandSteps,
@@ -79,24 +74,16 @@ import {
   getAgentAccountSteps,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
-import { journal, journalCaught } from "../journal";
+import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import {
   executionAuthorityUntil,
-  FAST_MODE_RUNNER_VERSION,
-  CODEX_FAST_MODE_RUNNER_VERSION,
-  LIVE_PREVIEW_RUNNER_VERSION,
-  OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
   RUNNER_LIVE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
-  OPENCODE_RUNNER_VERSION,
-  CONTROL_PLANE_LEVEL_RUNNER_VERSION,
   CONTROL_PLANE_PROTOCOL_LEVEL,
-  WORK_ROOT_CLEANUP_RUNNER_VERSION,
   RunnerCommandSchema,
-  runnerReleaseAtLeast,
   RunnerEventSchema,
   type RunnerEvent,
   signRunnerCommand,
@@ -110,16 +97,13 @@ import {
   type RunnerSkill,
   type SignedRunnerCommand,
   withoutJournalTime,
-  AGENT_CREDENTIAL_RUNNER_VERSION,
-  ACCESS_CREDENTIAL_RUNNER_VERSION,
   accessCredentialFiles,
-  CLAUDE_OAUTH_RUNNER_VERSION,
   agentCredentialContext,
   runnerCommandAccount,
   sealForRunner,
   type RunnerAgentCredentialFiles,
 } from "../runner-protocol";
-import { workspaceId as newExecutionId, workspaceSecret, workspaceTokenHash } from "../workspace";
+import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestionSteps } from "../questions";
 import {
   deliverRepositoryCommands,
@@ -402,30 +386,7 @@ export function createRunnerWork(options: {
       throw new Error("Run grant is invalid or expired.");
     return work;
   }
-  function* supportsAgentSteps(q: Q, runnerId: string, agent: string) {
-    if (agent !== "opencode") return true;
-    const version = yield* runnerHostVersionSteps(q, runnerId);
-    const parts = version
-      ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
-      ?.slice(1)
-      .map(Number);
-    if (!parts) return false;
-    for (const [index, part] of parts.entries())
-      if (part !== OPENCODE_RUNNER_VERSION[index]) return part > OPENCODE_RUNNER_VERSION[index]!;
-    return true;
-  }
   function* queueSteps(q: Q, command: RunnerCommand) {
-    yield* requireClaudeCompatibilitySteps(
-      q,
-      command,
-      yield* runnerHostVersionSteps(q, command.runnerId),
-    );
-    const agent =
-      "profile" in command ? command.profile.agent : "agent" in command ? command.agent : null;
-    if (agent && !(yield* supportsAgentSteps(q, command.runnerId, agent)))
-      throw new Error(
-        `OpenCode needs runner ${OPENCODE_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then try again.`,
-      );
     const envelope = signRunnerCommand({
       keyId: options.keyId,
       privateKey: options.privateKey,
@@ -447,11 +408,6 @@ export function createRunnerWork(options: {
     const command = RunnerCommandSchema.parse(input);
     if (command.type !== "run" && command.type !== "review" && command.type !== "task")
       throw new Error("Work command is required.");
-    yield* requireClaudeCompatibilitySteps(
-      q,
-      command,
-      yield* runnerHostVersionSteps(q, command.runnerId),
-    );
     const at = now();
     const accepting = yield* runnerSteps(q, command.runnerId);
     if (
@@ -496,25 +452,6 @@ export function createRunnerWork(options: {
     )
       throw new Error("Run assignment generation conflicts.");
     const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
-    if (
-      command.type === "run" &&
-      command.livePreview &&
-      !runnerReleaseAtLeast(
-        yield* runnerHostVersionSteps(q, command.runnerId),
-        LIVE_PREVIEW_RUNNER_VERSION,
-      )
-    )
-      delete command.livePreview;
-    const fastVersion =
-      command.profile.agent === "codex" ? CODEX_FAST_MODE_RUNNER_VERSION : FAST_MODE_RUNNER_VERSION;
-    if (
-      command.profile.fast !== undefined &&
-      !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, command.runnerId), fastVersion)
-    ) {
-      if (command.profile.fast)
-        journal(`fast mode needs runner ${fastVersion.join(".")} for run ${command.runId}`);
-      delete command.profile.fast;
-    }
     const envelope = yield* queueSteps(q, command);
     yield* assignRunnerWorkSteps(q, {
       runId: command.runId,
@@ -615,69 +552,7 @@ export function createRunnerWork(options: {
   function openEventSteps(q: Q, row: StoredRunnerEvent): Steps<RunnerEvent> {
     return openRunnerEventSteps(q, eventKey, row);
   }
-  function* requireClaudeCompatibilitySteps(
-    q: Q,
-    command: RunnerCommand,
-    version: string | null,
-    blob?: string | null,
-  ): Steps<void> {
-    const named = runnerCommandAccount(command);
-    const agent = command.type === "login" ? command.agent : named?.agent;
-    if (agent !== "claude" || runnerReleaseAtLeast(version, CLAUDE_OAUTH_RUNNER_VERSION)) return;
-    const stored =
-      blob !== undefined
-        ? { blob }
-        : options.secretsDir && named
-          ? yield* readAgentCredentialSteps(q, options.secretsDir, named.account.accountId)
-          : null;
-    if (command.type === "login" || stored?.blob?.includes(".claude/paws-oauth.json"))
-      throw new RunnerWorkFencedError(
-        `Claude OAuth credentials need runner ${CLAUDE_OAUTH_RUNNER_VERSION.join(".")} or later; placement on ${command.runnerId} failed. Upgrade the runner and retry.`,
-      );
-  }
-  function* rejectCompatibilitySteps(q: Q, command: RunnerCommand, error: RunnerWorkFencedError) {
-    const at = now();
-    const result = JSON.stringify({
-      executionId: newExecutionId(),
-      commandId: command.id,
-      role: command.type === "review" ? "reviewer" : "implementer",
-      stopReason: "error",
-      timedOut: false,
-      cancelled: false,
-      authRequired: false,
-      agentExited: false,
-      errorMessage: error.message,
-      ...("account" in command && command.account ? { account: command.account } : {}),
-      ...(command.type === "login_check"
-        ? { login: { agent: command.agent, authenticated: false, method: "none" } }
-        : {}),
-    });
-    if (command.type === "run" || command.type === "review" || command.type === "task") {
-      if ((yield* runnerResultForCommandSteps(q, command, command.id)) === null)
-        yield* insertRunnerResultSteps(q, {
-          runId: command.runId,
-          generation: command.generation,
-          commandId: command.id,
-          payload: result,
-          receivedAt: at,
-        });
-    } else if (command.type === "login") {
-      yield* updateRunnerLoginSteps(q, command.id, {
-        state: "failed",
-        terminal: error.message,
-        authorization: null,
-        inputId: null,
-        updatedAt: at,
-      });
-    } else if (
-      command.type === "login_check" &&
-      (yield* healthResultJsonSteps(q, command.id)) === null
-    )
-      yield* insertHealthResultSteps(q, command.id, command.runnerId, result, at);
-    yield* acknowledgeRunnerCommandSteps(q, command.runnerId, command.id, at);
-  }
   const api = {
-    supportsAgentSteps,
     identity(runnerId: string) {
       return store.run((q) => runnerSteps(q, runnerId));
     },
@@ -764,7 +639,6 @@ export function createRunnerWork(options: {
       const { secretsDir } = options;
       if (!secretsDir || envelopes.length === 0) return Promise.resolve(envelopes);
       return store.transaction(function* (q) {
-        const version = yield* runnerHostVersionSteps(q, runnerId);
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
         const sent: SignedRunnerCommand[] = [];
         for (const envelope of envelopes) {
@@ -776,19 +650,10 @@ export function createRunnerWork(options: {
             ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
             : null;
           const central = named && (yield* readAgentAuthSteps(q, named.account.accountId));
-          if (central && (!pem || !runnerReleaseAtLeast(version, ACCESS_CREDENTIAL_RUNNER_VERSION)))
-            throw new RunnerWorkFencedError();
-          try {
-            yield* requireClaudeCompatibilitySteps(q, command, version, stored?.blob ?? null);
-          } catch (error) {
-            if (!(error instanceof RunnerWorkFencedError)) throw error;
-            yield* rejectCompatibilitySteps(q, command, error);
-            continue;
-          }
+          if (central && !pem) throw new RunnerWorkFencedError();
           if (
             !named ||
             !pem ||
-            !runnerReleaseAtLeast(version, AGENT_CREDENTIAL_RUNNER_VERSION) ||
             (command.type !== "login" && (stored?.agent !== named.agent || stored.blob === null))
           ) {
             sent.push(envelope);
@@ -902,14 +767,9 @@ export function createRunnerWork(options: {
       let woke = false;
       const reply = await store.transaction(function* (q) {
         yield* runnerSteps(q, runnerId);
-        const storedVersion = yield* runnerHostVersionSteps(q, runnerId);
-        const version = host.runnerVersion ?? storedVersion;
         const aliveAt = yield* lastInstanceHeartbeatSteps(q);
         const offlineCredit =
-          aliveAt !== null &&
-          runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
-            ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
-            : undefined;
+          aliveAt !== null ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt } : undefined;
         const at = now();
         const reconnected =
           ((yield* runnerStandingSteps(q, runnerId))?.lastSeenAt ?? 0) <= at - 60_000;
@@ -944,8 +804,7 @@ export function createRunnerWork(options: {
           targets = [];
           for (const target of yield* runnerAgentTargetsSteps(q, runnerId)) {
             const parsed = RunnerAgentTargetSchema.safeParse(target);
-            if (parsed.success && (yield* supportsAgentSteps(q, runnerId, parsed.data.agent)))
-              targets.push(parsed.data);
+            if (parsed.success) targets.push(parsed.data);
           }
         }
         // A receipt ACK and an expired command never confirm worker termination.
@@ -1008,12 +867,7 @@ export function createRunnerWork(options: {
           for (const { runId, generation } of reported)
             yield* confirmRunnerWorkSteps(q, { runId, generation, at, runnerId });
         }
-        const finishedRuns = runnerReleaseAtLeast(
-          host.runnerVersion ?? storedVersion,
-          WORK_ROOT_CLEANUP_RUNNER_VERSION,
-        )
-          ? yield* runnerFinishedRunsSteps(q, runnerId)
-          : [];
+        const finishedRuns = yield* runnerFinishedRunsSteps(q, runnerId);
         return {
           leases,
           fenced,
@@ -1024,10 +878,7 @@ export function createRunnerWork(options: {
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),
-          // Older runners parse this reply strictly, so only a known older release goes without.
-          ...(!version || runnerReleaseAtLeast(version, CONTROL_PLANE_LEVEL_RUNNER_VERSION)
-            ? { protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL }
-            : {}),
+          protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL,
         };
       });
       if (woke) emitJobReady(store);

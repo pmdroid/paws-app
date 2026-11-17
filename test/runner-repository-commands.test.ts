@@ -10,7 +10,7 @@ import {
   type Db,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
-import { verifyRunnerCommand } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, verifyRunnerCommand } from "../src/runner-protocol";
 import { createRepositoryCommandAccess } from "../src/runner-repository-access";
 import {
   createRepositoryCommandsHttp,
@@ -32,10 +32,6 @@ const repository = {
   repo: "repository",
   remoteUrl: "https://github.com/fixture/repository.git",
 };
-
-function setRunnerVersion(db: Db, runnerVersion: string) {
-  return seed(db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion }));
-}
 
 function setBranch(db: Db, branchName: string) {
   return seed(db, (q) =>
@@ -95,7 +91,7 @@ async function fixture(store?: Db) {
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)
-          .values({ runnerId, runnerVersion: "0.1.63", reportedAt: now }),
+          .values({ runnerId, runnerVersion: MINIMUM_RUNNER_VERSION.join("."), reportedAt: now }),
     );
   const item = await insertQueuedItem(db, { id: "item-1", now, branchName: "paws/item-1" });
   await bindWorkItemRepository(db, item.id, repository);
@@ -223,12 +219,8 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
   expect((await f.ack(id, "runner-a"))!.status).toBe(200);
 });
 
-test("the pull request title goes only to a runner that accepts it", async () => {
+test("the pull request title goes to the runner", async () => {
   const f = await fixture();
-  await setRunnerVersion(f.db, "0.1.75");
-  await f.enqueue(120_000, "Add widgets");
-  expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
-  await setRunnerVersion(f.db, "0.1.76");
   await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
 });
@@ -346,11 +338,8 @@ test("an undelivered command past expiresAt is never delivered", async () => {
   expect(await repositoryCommandState(f.db, id)).toBe("expired");
 });
 
-test("a branch outside paws/ or an old runner is refused at enqueue", async () => {
+test("a branch outside paws/ is refused at enqueue", async () => {
   const f = await fixture();
-  await setRunnerVersion(f.db, "0.1.62");
-  await expect(f.enqueue()).rejects.toThrow(/runner 0\.1\.63/);
-  await setRunnerVersion(f.db, "0.1.63");
   await setBranch(f.db, "main");
   await expect(f.enqueue()).rejects.toThrow();
 });

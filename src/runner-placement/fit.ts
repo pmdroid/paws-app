@@ -13,7 +13,6 @@ import {
   type Steps,
 } from "../db";
 import {
-  CLAUDE_OAUTH_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
@@ -64,8 +63,6 @@ export function* signInFitSteps(
     (binding) => binding.runnerId === runner.id && binding.agent === input.agent && !binding.legacy,
   );
   const refusals: AccountRefusal[] = [];
-  const oauthVersion =
-    input.role === "reviewer" ? REVIEW_COMMAND_OAUTH_RUNNER_VERSION : CLAUDE_OAUTH_RUNNER_VERSION;
   for (const binding of bindings) {
     if (
       input.excludeBindingIds?.includes(binding.id) ||
@@ -74,12 +71,16 @@ export function* signInFitSteps(
       continue;
     if (
       input.agent === "claude" &&
+      input.role === "reviewer" &&
       requiresOAuthSteps &&
       (yield* requiresOAuthSteps(q, binding.accountId)) &&
-      !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), oauthVersion)
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, runner.id),
+        REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
+      )
     ) {
       refusals.push({
-        reason: `Claude OAuth credentials need runner ${oauthVersion.join(".")} or later`,
+        reason: `Claude OAuth credentials need runner ${REVIEW_COMMAND_OAUTH_RUNNER_VERSION.join(".")} or later`,
       });
       continue;
     }

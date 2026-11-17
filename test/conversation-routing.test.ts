@@ -36,7 +36,7 @@ import {
 } from "../src/loop";
 import { createConversationTurns } from "../src/runner-backend";
 import { createRunnerHelpers } from "../src/runner-helpers";
-import { RUNNER_CONVERSATION_MS } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, RUNNER_CONVERSATION_MS } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { json, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -50,7 +50,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-async function setup(options: { version?: string; conversations?: number } = {}) {
+async function setup(options: { conversations?: number } = {}) {
   const { db, close: closeDb } = await tempStore();
   const clock = new FakeClock(T0);
   const userId = await putWorkspaceUser(db, {
@@ -79,7 +79,12 @@ async function setup(options: { version?: string; conversations?: number } = {})
     }),
   );
   await recordRunnerCapacity(db, "runner", 1, 1, options.conversations ?? 2);
-  await recordRunnerHostStatus(db, "runner", { runnerVersion: options.version ?? "0.1.77" }, T0);
+  await recordRunnerHostStatus(
+    db,
+    "runner",
+    { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
+    T0,
+  );
   const helpers = createRunnerHelpers({
     store: db,
     keyId: "acme",
@@ -410,20 +415,6 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
   expect((await f.brief("acme-1"))?.text).toContain("Also cover the empty cart.");
 });
 
-// 0.1.74 to 0.1.76 run conversations but refuse Claude's reply and start_work calls (and 0.1.74
-// and 0.1.75 drop `replies` and `startWork` from the result): the turn could not act on the message.
-for (const version of ["0.1.73", "0.1.75", "0.1.76"])
-  test(`a runner at ${version}, which cannot return a conversation's replies or start_work, gets a follow_up restart with the message`, async () => {
-    const f = await setup({ version });
-    await f.item("acme-1");
-    await f.say("acme-1", "c-1", "Use the v2 endpoint.");
-    expect(await f.deliver("acme-1")).toBe("restarted");
-    expect(await f.conversations()).toEqual([]);
-    expect(await f.resumes()).toHaveLength(1);
-    expect(((await f.resumes())[0]!.payload as { reason: string }).reason).toBe("follow_up");
-    expect((await f.brief("acme-1"))?.text).toContain("Use the v2 endpoint.");
-  });
-
 test("a queued item's start job waits while a conversation runs on its session", async () => {
   const f = await setup();
   await f.item("acme-1", "queued");
@@ -487,8 +478,8 @@ test("session replies past the prompt budget wait for the next conversation", as
   expect(await listPendingLinearTurns(f.db, acme.session)).toEqual([]);
 });
 
-test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {
-  const f = await setup({ version: "0.1.77" });
+test("start_work in a conversation restarts the item with the plan and posts it, holding no slot while it waits", async () => {
+  const f = await setup();
   await f.item("acme-busy", "running");
   const acme = await f.item("acme-1");
   const slots = await f.taskSlots();

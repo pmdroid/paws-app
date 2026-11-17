@@ -1,12 +1,7 @@
 import { providerUsageSteps } from "./account-provider-usage";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
-import {
-  AGENT_CREDENTIAL_RUNNER_VERSION,
-  CLAUDE_OAUTH_RUNNER_VERSION,
-  runnerReleaseAtLeast,
-  type RunnerCodingAgent,
-} from "../runner-protocol";
+import { type RunnerCodingAgent } from "../runner-protocol";
 import {
   AgentAccountError,
   bindAgentAccountSteps,
@@ -260,12 +255,11 @@ export function* centralSignInTargetSteps(
   const account = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
   if (account.ownerUserId !== input.userId)
     throw new AgentAccountError("not-your-account", "Agent account belongs to another member");
-  const { runner, runnerHostStatus: h } = q.t;
+  const { runner } = q.t;
   const online = yield* q.all(
     q.orm
-      .select({ id: runner.id, version: h.runnerVersion })
+      .select({ id: runner.id })
       .from(runner)
-      .innerJoin(h, eq(h.runnerId, runner.id))
       .where(
         and(
           eq(runner.workspaceId, input.workspaceId),
@@ -277,16 +271,11 @@ export function* centralSignInTargetSteps(
       )
       .orderBy(asc(runner.name), asc(runner.id)),
   );
-  const target = online.find((row) =>
-    runnerReleaseAtLeast(
-      row.version,
-      account.agent === "claude" ? CLAUDE_OAUTH_RUNNER_VERSION : AGENT_CREDENTIAL_RUNNER_VERSION,
-    ),
-  );
+  const target = online[0];
   if (!target)
     throw new AgentAccountError(
       "runner_unsupported",
-      "None of your runners is online with central sign-ins. Start or update one of your runners, then try again.",
+      "None of your runners is online. Start one of your runners, then try again.",
     );
   const agent = account.agent as RunnerCodingAgent;
   const bound = yield* liveAccountBindingSteps(q, target.id, account.id);

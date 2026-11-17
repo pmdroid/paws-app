@@ -348,10 +348,6 @@ test("a named account is refused unless the runner reports the binding", async (
   const attempt = (id: string, account = named, runner = "R1", workspace = "W1") =>
     code(async () => await recordCommandAccount(db, probe(id, runner, workspace, account), NOW));
   expect(await attempt("N1")).toBe("runner_unsupported");
-  await hostStatus(db, "0.1.59");
-  expect(await attempt("N2")).toBe("runner_unsupported");
-  await hostStatus(db, "0.1.61");
-  expect(await attempt("N3")).toBe("runner_unsupported");
   await recordRunnerAccountCapability(db, "R1", { protocol: 1, bindings: [] }, NOW);
   expect(await attempt("N4")).toBe("runner_unsupported");
   await recordRunnerAccountCapability(
@@ -401,7 +397,7 @@ test("identity stays attached after an account is disabled or removed", async ()
     runnerId: "R1",
     now: NOW,
   });
-  await hostStatus(db, "0.1.61");
+  await hostStatus(db, "0.1.84");
   await recordRunnerAccountCapability(
     db,
     "R1",

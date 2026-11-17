@@ -159,12 +159,8 @@ export function createRunnerLogin(options: { store: Db; work: RunnerWork; now?: 
     list(principal: WorkspacePrincipal, runnerId: string) {
       return store.run(function* (q) {
         yield* accessSteps(q, principal.workspaceId, principal.userId, runnerId);
-        const agents: Agent[] = [];
-        for (const agent of ["claude", "codex", "grok", "opencode"] as const)
-          if (yield* work.supportsAgentSteps(q, runnerId, agent)) agents.push(agent);
         const bindings = [];
         for (const binding of yield* runnerNamedBindingsSteps(q, runnerId, principal.workspaceId)) {
-          if (!agents.includes(binding.agent)) continue;
           const session = yield* latestBindingRunnerLoginIdSteps(q, {
             runnerId,
             userId: principal.userId,

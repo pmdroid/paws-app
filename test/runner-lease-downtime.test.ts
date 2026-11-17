@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CONTROL_PLANE_PROTOCOL_LEVEL } from "../src/runner-protocol";
+import { CONTROL_PLANE_PROTOCOL_LEVEL, MINIMUM_RUNNER_VERSION } from "../src/runner-protocol";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,7 +99,7 @@ async function fixture() {
     (q) =>
       q.orm
         .insert(q.t.runnerHostStatus)
-        .values({ runnerId, runnerVersion: "0.1.53", reportedAt: now() }),
+        .values({ runnerId, runnerVersion: MINIMUM_RUNNER_VERSION.join("."), reportedAt: now() }),
   );
   const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = await beginImplementRun(db, item.id, now());
@@ -180,13 +180,6 @@ async function fixture() {
     },
     /** A second Paws process on the same database. */
     second: (): Db => db,
-    version: (runnerVersion: string) =>
-      seed(db, (q) =>
-        q.orm
-          .update(q.t.runnerHostStatus)
-          .set({ runnerVersion })
-          .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
-      ),
     /** The instance serving now. */
     get instance() {
       return instance;
@@ -585,9 +578,8 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
   }
 }, 30_000);
 
-test("a runner that parses the level is told it on the heartbeat reply", async () => {
+test("a runner is told the control plane's level on the heartbeat reply", async () => {
   const f = await fixture();
-  await f.version("0.1.76");
   expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   await seed(f.db, (q) =>
     q.orm.delete(q.t.runnerHostStatus).where(eq(q.t.runnerHostStatus.runnerId, f.runnerId)),
@@ -595,26 +587,6 @@ test("a runner that parses the level is told it on the heartbeat reply", async (
   expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   await f.close();
 });
-
-test("a runner older than the offline lease release is not extended", async () => {
-  const f = await fixture();
-  try {
-    await f.admit();
-    await f.version("0.1.52");
-    const beat = await f.work.heartbeat(f.runnerId);
-    expect(beat).not.toHaveProperty("offlineBudgetMs");
-    expect(beat).not.toHaveProperty("aliveAt");
-    expect(beat).not.toHaveProperty("protocolLevel");
-    const before = await f.leaseUntil();
-    await f.down(20 * MINUTE);
-    expect(await recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
-      { type: "resume", freshSession: true, checkpoint: null },
-    ]);
-    expect(await f.leaseUntil()).toBe(before);
-  } finally {
-    await f.close();
-  }
-}, 30_000);
 
 test("revoked runners receive no downtime credit", async () => {
   const f = await fixture();

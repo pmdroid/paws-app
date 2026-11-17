@@ -341,7 +341,7 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
   }
 });
 
-test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", async () => {
+test("a repository command goes to the item's last runner while it is eligible and current, then to another", async () => {
   const w = await workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
   try {
     const { db, now } = w;
@@ -407,7 +407,7 @@ test("a repository command goes to the item's last runner while it is eligible a
       id: "last",
       workspaceId: w.ws.id,
     });
-    await seed(db, version("0.1.62", "last"));
+    await seed(db, version("0.1.83", "last"));
     expect((await repositoryRunner())?.id).toBe("first");
     await seed(db, version(MINIMUM_RUNNER_VERSION.join(".")), (q) =>
       q.orm
@@ -416,7 +416,7 @@ test("a repository command goes to the item's last runner while it is eligible a
         .where(eq(q.t.runner.id, "last")),
     );
     expect((await repositoryRunner())?.id).toBe("first");
-    await seed(db, version("0.1.62", "first"));
+    await seed(db, version("0.1.83", "first"));
     expect(await repositoryRunner()).toBeNull();
   } finally {
     await w.close();

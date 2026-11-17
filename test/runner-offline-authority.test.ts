@@ -109,7 +109,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   await seed(db, (q) =>
     q.orm
       .insert(q.t.runnerHostStatus)
-      .values({ runnerId, runnerVersion: "0.1.59", reportedAt: pawsNow() }),
+      .values({ runnerId, runnerVersion: "0.1.84", reportedAt: pawsNow() }),
   );
   const item = await insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
   const { run } = await beginImplementRun(db, item.id, pawsNow());
@@ -257,7 +257,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
           paws.work.heartbeat(
             runnerId,
             1,
-            { runnerVersion: "0.1.59" },
+            { runnerVersion: "0.1.84" },
             undefined,
             undefined,
             undefined,

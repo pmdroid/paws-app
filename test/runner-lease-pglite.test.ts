@@ -95,17 +95,7 @@ describePglite((connect) => {
   test("taking over a gone instance's runs credits the time no instance was alive", async () => {
     const db = await connected(connect);
     const now = 1_000_000;
-    for (const [id, version] of [
-      ["box", "0.1.53"],
-      ["old", "0.1.52"],
-    ] as const) {
-      await seedRunner(db, id);
-      await seed(db, (q) =>
-        q.orm
-          .insert(q.t.runnerHostStatus)
-          .values({ runnerId: id, runnerVersion: version, reportedAt: 0 }),
-      );
-    }
+    await seedRunner(db, "box");
     await seed(db, (q) =>
       q.orm.insert(q.t.instance).values([
         {
@@ -119,32 +109,26 @@ describePglite((connect) => {
         { id: "self", role: "all", host: "here", startedAt: 900_000, heartbeatAt: now },
       ]),
     );
-    for (const [runId, runnerId] of [
-      ["shifted", "box"],
-      ["old-runner", "old"],
-    ] as const) {
-      await seedWork(db, runId, runnerId, { leaseUntil: 1_000 });
-      await seedCommand(db, `command-${runId}`, { runnerId, runId, kind: "run" });
-      await seed(db, (q) =>
-        q.orm.insert(q.t.run).values({
-          id: runId,
-          itemId: "item",
-          kind: "implement",
-          agent: "codex",
-          status: "active",
-          createdAt: 0,
-          updatedAt: 0,
-          ownerInstance: "gone",
-        }),
-      );
-    }
+    await seedWork(db, "shifted", "box", { leaseUntil: 1_000 });
+    await seedCommand(db, "command-shifted", { runnerId: "box", runId: "shifted", kind: "run" });
+    await seed(db, (q) =>
+      q.orm.insert(q.t.run).values({
+        id: "shifted",
+        itemId: "item",
+        kind: "implement",
+        agent: "codex",
+        status: "active",
+        createdAt: 0,
+        updatedAt: 0,
+        ownerInstance: "gone",
+      }),
+    );
     await seedWork(db, "answered", "box", { leaseUntil: 1_000 });
     await seedCommand(db, "command-answered", { runnerId: "box", runId: "answered", kind: "run" });
     await seedResult(db, "answered", "command-answered", {});
 
     await db.run((q) => shiftRunnerLeasesForDowntimeSteps(q, now, 30 * 60_000, "self"));
     expect(await leaseOf(db, "shifted")).toBe(900_000);
-    expect(await leaseOf(db, "old-runner")).toBe(1_000);
     expect(await leaseOf(db, "answered")).toBe(1_000);
   });
 });

@@ -1,10 +1,5 @@
 import type { RunnerCapacityWaitState } from "./items";
-import {
-  CONVERSATION_TOOLS_RUNNER_VERSION,
-  RUNNER_LIVE_GRACE_MS,
-  runnerHelperLifetime,
-  runnerReleaseAtLeast,
-} from "../runner-protocol";
+import { RUNNER_LIVE_GRACE_MS, runnerHelperLifetime } from "../runner-protocol";
 import {
   and,
   asc,
@@ -705,27 +700,16 @@ export async function runTeardownOwner(store: Db, runId: string): Promise<string
   return store.run((q) => runTeardownOwnerSteps(q, runId));
 }
 
-/** The conversation slots a runner offers and whether its release can run conversations. */
-function* conversationLaneSteps(q: Q, runnerId: string) {
-  const { runnerCapacity, runnerHostStatus } = q.t;
+/** The conversation slots a runner offers. */
+function* conversationLimitSteps(q: Q, runnerId: string) {
+  const { runnerCapacity } = q.t;
   const capacity = yield* q.one(
     q.orm
       .select({ limit: runnerCapacity.conversation })
       .from(runnerCapacity)
       .where(eq(runnerCapacity.runnerId, runnerId)),
   );
-  const status = yield* q.one(
-    q.orm
-      .select({ version: runnerHostStatus.runnerVersion })
-      .from(runnerHostStatus)
-      .where(eq(runnerHostStatus.runnerId, runnerId)),
-  );
-  return {
-    limit: capacity?.limit ?? 0,
-    // A conversation acts only through `reply` and `start_work`. Earlier runners refuse Claude's
-    // calls to them in the read-only turn, and before 0.1.76 drop `replies` and `startWork` too.
-    supported: runnerReleaseAtLeast(status?.version, CONVERSATION_TOOLS_RUNNER_VERSION),
-  };
+  return capacity?.limit ?? 0;
 }
 
 /** Read-only admission check. Helpers share one runtime slot, independently of work capacity.
@@ -739,10 +723,10 @@ export function* runnerHelperAvailabilitySteps(
 ) {
   const { runnerHelper } = q.t;
   if (conversation) {
-    const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
+    const limit = yield* conversationLimitSteps(q, runnerId);
     const inUse = yield* conversationsInUseSteps(q, [runnerId], now);
     return {
-      available: supported && (inUse.get(runnerId) ?? 0) < limit,
+      available: (inUse.get(runnerId) ?? 0) < limit,
       preempts: false,
       held: false,
     };
@@ -929,8 +913,7 @@ export function* runnerConversationLaneSteps(
   runnerId: string,
   now: number,
 ): Steps<"closed" | "full" | "free"> {
-  const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
-  if (limit <= 0 || !supported) return "closed";
+  if ((yield* conversationLimitSteps(q, runnerId)) <= 0) return "closed";
   return (yield* runnerHelperAvailabilitySteps(q, runnerId, now, true, true)).available
     ? "free"
     : "full";

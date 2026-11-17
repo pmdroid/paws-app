@@ -14,15 +14,13 @@ import {
   recordLinearInstallation,
 } from "../src/db";
 import { createRunnerWorkCleaner } from "../src/runner-execution";
-import { WORK_ROOT_CLEANUP_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
 
-const CURRENT = WORK_ROOT_CLEANUP_RUNNER_VERSION.join(".");
-
-async function tornDownRun(state: string, runnerVersion = CURRENT) {
+async function tornDownRun(state: string) {
   const root = mkdtempSync(join(tmpdir(), "paws-checkout-cleanup-"));
   const { db, close } = await tempStore();
   const now = Date.now();
@@ -107,7 +105,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     const reply = await work.heartbeat(
       "box",
       1,
-      { runnerVersion },
+      { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
       undefined,
       undefined,
       undefined,
@@ -142,11 +140,6 @@ describe("after a confirmed teardown", () => {
       expect(reply.finishedRuns).toBeUndefined();
       expect(kept).toBe(true);
     });
-
-  test("an older runner is not sent a field its strict reply schema refuses", async () => {
-    const { reply } = await tornDownRun("merged", "0.1.74");
-    expect(reply).not.toHaveProperty("finishedRuns");
-  });
 });
 
 test("the runtime passes the runs Paws names on a heartbeat to its cleaner", async () => {

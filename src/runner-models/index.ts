@@ -65,12 +65,6 @@ export function createRunnerModels(options: {
       journalCaught(caught, "runner-models.refreshDefaults", null);
     }
   }
-  function* sourcesSteps(q: Q, at: number): Steps<Source[]> {
-    const usable: Source[] = [];
-    for (const source of yield* agentModelSourcesSteps(q, at))
-      if (yield* work.supportsAgentSteps(q, source.runnerId, source.agent)) usable.push(source);
-    return usable;
-  }
   async function receive() {
     const pending = await store.run((q) => pendingAgentModelProbesSteps(q));
     for (const probe of pending) {
@@ -104,7 +98,7 @@ export function createRunnerModels(options: {
   }
   function* availableSteps(q: Q): Steps<Source[]> {
     const ranked: Array<{ source: Source; lastAt: number }> = [];
-    for (const source of yield* sourcesSteps(q, now()))
+    for (const source of yield* agentModelSourcesSteps(q, now()))
       ranked.push({ source, lastAt: yield* lastAgentModelProbeAtSteps(q, source) });
     return ranked.sort((a, b) => a.lastAt - b.lastAt).map(({ source }) => source);
   }
@@ -179,7 +173,7 @@ export function createRunnerModels(options: {
     )
       throw new Error("Workspace access is unavailable.");
     const rows: Array<Source & { model: string; resultJson: string; updatedAt: number }> = [];
-    for (const source of yield* sourcesSteps(q, Number.MAX_SAFE_INTEGER))
+    for (const source of yield* agentModelSourcesSteps(q, Number.MAX_SAFE_INTEGER))
       if (source.workspaceId === principal.workspaceId && source.userId === principal.userId)
         for (const row of yield* cachedAgentModelsSteps(q, source))
           rows.push({ ...source, ...row });
