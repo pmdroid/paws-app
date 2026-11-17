@@ -14,3 +14,4 @@ export * from "./outbox";
 export * from "./asks";
 export * from "./accounts";
 export * from "./workspace";
+export * from "./threads";

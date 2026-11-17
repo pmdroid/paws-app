@@ -49,7 +49,7 @@ export const outbox = pgTable(
       table.deliveryGeneration,
       table.status,
     ),
-    check("outbox_check_1", sql`target IN ('linear', 'slack', 'github', 'sandbox')`),
+    check("outbox_check_1", sql`target IN ('linear', 'slack', 'buzz', 'github', 'sandbox')`),
     check("outbox_check_3", sql`status IN ('pending', 'sent', 'dead', 'dropped')`),
     check(
       "outbox_check_4",

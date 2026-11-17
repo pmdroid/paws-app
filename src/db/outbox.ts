@@ -31,7 +31,7 @@ import { emitJobReady, enqueueJobOnceSteps, errorText } from "./jobs";
 import { journal } from "./journal";
 import type * as pgSchema from "./schema-pg";
 
-const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
+const OUTBOX_TARGETS = ["linear", "slack", "buzz", "github"] as const;
 export type OutboxTarget = (typeof OUTBOX_TARGETS)[number];
 
 const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;
