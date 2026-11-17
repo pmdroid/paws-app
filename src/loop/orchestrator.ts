@@ -675,7 +675,8 @@ import {
   linearSessionProgressSteps,
   type LinearSessionProgress,
 } from "./session-progress";
-import { renderWorkContext, withLeftForLater } from "../core";
+import { renderWorkBrief, renderWorkContext, withLeftForLater } from "../core";
+import { CONTEXT_SESSION_UNAVAILABLE, type ProjectSessionContext } from "../project-context";
 import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -772,6 +773,7 @@ export type OrchestratorOptions = {
   /** How often a merge-queue re-check reads CI while it waits for it, and for how long. */
   ciRecheckWait?: { pollMs: number; maxWaitMs: number };
   tracker?: TrackerAdapter | null;
+  projectContext?: ProjectSessionContext | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
@@ -10061,11 +10063,64 @@ export class Orchestrator {
     }
   }
 
-  private workContext(item: WorkItemRecord): Promise<string> {
-    return this.store.run((q) => this.workContextSteps(q, item));
+  private async workContext(item: WorkItemRecord): Promise<string> {
+    const projectContext = await this.projectContextFor(item);
+    return this.store.run((q) => this.workContextSteps(q, item, projectContext));
   }
 
-  private *workContextSteps(q: Q, item: WorkItemRecord): Steps<string> {
+  /**
+   * The `{{project_overview}}` text for the brief. With the project context service connected,
+   * the brief gets the bounded, access-checked selection, nothing for an authorized project with
+   * nothing current, or the non-sensitive note when access can't be confirmed. It never falls back
+   * to Linear's raw overview there: that text skips forgetting and access checks, so a forgotten
+   * or revoked document would come back (PAS-2114: failure falls back only to bounded
+   * still-authorized context or a non-sensitive clarification). Only without the service, or for
+   * an item outside any project, does the brief keep the stored legacy overview.
+   */
+  private async projectContextFor(item: WorkItemRecord): Promise<ProjectOverviewSource> {
+    const service = this.options.projectContext;
+    if (!service) return LEGACY_PROJECT_OVERVIEW;
+    try {
+      const resolved = (await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id)))
+        ?.resolved["projectId"];
+      const projectId = item.linearProjectId ?? (typeof resolved === "string" ? resolved : null);
+      if (!projectId) return LEGACY_PROJECT_OVERVIEW;
+      const session = item.sessionKey
+        ? await this.store.run((q) => getLinearSessionSteps(q, item.sessionKey!))
+        : null;
+      if (!session?.organizationId || !session.creatorId) return CONTEXT_WITHHELD;
+      const turns = await this.store.run((q) => listLinearTurnsForItemSteps(q, item.id));
+      const task = [renderWorkBrief(item.brief), ...turns.map((turn) => turn.body)].join("\n\n");
+      const request = task.slice(0, PROJECT_CONTEXT_REQUEST_CHARS);
+      const prepared = await service.prepare({
+        consumerKey: `work_item:${item.id}`,
+        organizationId: session.organizationId,
+        projectId,
+        requesterId: session.creatorId,
+        instructions: "",
+        request,
+        toolsTokens: Math.ceil((task.length - request.length) / 2),
+      });
+      if (prepared.status === "injected" || prepared.reason === "empty")
+        return { source: "context", text: prepared.text };
+      return CONTEXT_WITHHELD;
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.projectContextFor.prepare",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return CONTEXT_WITHHELD;
+    }
+  }
+
+  private *workContextSteps(
+    q: Q,
+    item: WorkItemRecord,
+    projectContext: ProjectOverviewSource = LEGACY_PROJECT_OVERVIEW,
+  ): Steps<string> {
     const taskKey = yield* itemParentTaskKeySteps(q, item.id);
     const classification = taskKey ? yield* getTaskClassificationSteps(q, taskKey) : null;
     const activities = item.sessionKey
@@ -10074,7 +10129,11 @@ export class Orchestrator {
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
     const projectOverview =
-      ((yield* getTaskLinearReadSteps(q, item.id, "project_overview")) as string | undefined) ?? "";
+      projectContext.source === "context"
+        ? projectContext.text
+        : (((yield* getTaskLinearReadSteps(q, item.id, "project_overview")) as
+            | string
+            | undefined) ?? "");
     const userUpdates = (yield* listLinearTurnsForItemSteps(q, item.id)).map((turn) => turn.body);
     const sessionContext = item.sessionKey
       ? yield* getLinearSessionContextSteps(q, item.sessionKey)
@@ -11906,6 +11965,14 @@ function retryCount(payload: unknown): number {
 
 const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 const MERGE_TURN_NOTE_MS = 10 * 60_000;
+const PROJECT_CONTEXT_REQUEST_CHARS = 16_000;
+
+type ProjectOverviewSource = { source: "legacy" } | { source: "context"; text: string };
+const LEGACY_PROJECT_OVERVIEW: ProjectOverviewSource = { source: "legacy" };
+const CONTEXT_WITHHELD: ProjectOverviewSource = {
+  source: "context",
+  text: CONTEXT_SESSION_UNAVAILABLE,
+};
 const REVIEWER_ALERT_INTERVAL_MS = 60 * 60_000;
 
 function closeoutFaults(payload: unknown): CloseoutFaults | null {

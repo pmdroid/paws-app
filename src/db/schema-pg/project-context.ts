@@ -207,3 +207,27 @@ export const contextSummarySource = pgTable(
     index("context_summary_source_record").on(table.recordId),
   ],
 );
+
+export const contextSession = pgTable(
+  "context_session",
+  {
+    consumerKey: text("consumer_key").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id").notNull(),
+    requesterId: text("requester_id").notNull(),
+    audience: text().notNull(),
+    version: integer().notNull(),
+    generation: bigint({ mode: "number" }).notNull(),
+    status: text().notNull(),
+    packHash: text("pack_hash").notNull(),
+    manifest: jsonb().notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("context_session_scope").on(table.workspaceId, table.scopeKind, table.scopeId),
+    check("context_session_status", sql`status IN ('injected','withheld')`),
+    check("context_session_version", sql`version > 0`),
+  ],
+);

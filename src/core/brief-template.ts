@@ -148,8 +148,9 @@ export function renderWorkContext(template: string | null, input: WorkContextInp
 
 export function renderBriefTemplate(template: string, values: BriefValues): string {
   const blocks = template.replaceAll("\r\n", "\n").split("\n\n");
+  const used = new Set<string>();
   return blocks
-    .map((block) => substitute(block, values))
+    .map((block) => substitute(block, values, used))
     .filter((block) => block.trim() !== "")
     .join("\n\n");
 }
@@ -188,10 +189,16 @@ export function previewBriefValues(input: {
   };
 }
 
-function substitute(block: string, values: BriefValues): string {
+const RENDERED_ONCE = new Set<string>(["project_overview"]);
+
+function substitute(block: string, values: BriefValues, used: Set<string>): string {
   return block.replace(PLACEHOLDER, (_whole, raw: string) => {
     const name = raw.trim();
     if (!PLACEHOLDER_SET.has(name)) throw new Error(`Unknown placeholder {{${name}}}.`);
+    if (RENDERED_ONCE.has(name)) {
+      if (used.has(name)) return "";
+      used.add(name);
+    }
     return values[name as BriefPlaceholder] ?? "";
   });
 }

@@ -7,7 +7,9 @@ export type ProjectDocument = { title: string; content: string };
 /** A Linear project's description and documents. Linear holds them; Paws only reads them. */
 export type ProjectOverview = { name: string; content: string; documents?: ProjectDocument[] };
 
-const PROJECT_DOCUMENT_MAX = 20_000;
+export const PROJECT_OVERVIEW_MAX = 12_000;
+const PROJECT_OVERVIEW_DOCUMENT_MIN = 200;
+const PROJECT_OVERVIEW_OMITTED_RESERVE = 64;
 
 /** Every query that feeds `projectOverviewFrom` selects these same project fields. */
 const OVERVIEW_QUERY = `query PawsIssueProjectOverview($id: String!) {
@@ -32,24 +34,41 @@ export function projectOverviewFrom(project: unknown): ProjectOverview | null {
   return documents.length ? { name, content, documents } : { name, content };
 }
 
-/** The brief's `{{project_overview}}` text: the description, then each document under its title. */
 export function projectOverviewText(overview: ProjectOverview | null | undefined): string {
   if (!overview) return "";
   const documents = (overview.documents ?? []).filter((document) => document.content.trim());
   if (!overview.name || (!overview.content.trim() && documents.length === 0)) return "";
-  return [
+  const budget = PROJECT_OVERVIEW_MAX - PROJECT_OVERVIEW_OMITTED_RESERVE;
+  const head = clipped(
     overview.content.trim()
       ? `Project overview: ${overview.name}\n\n${overview.content}`
       : `Project: ${overview.name}`,
-    ...documents.map(
-      (document) => `Project document: ${document.title}\n\n${clipped(document.content)}`,
-    ),
-  ].join("\n\n");
+    budget,
+  );
+  const parts = [head];
+  let used = head.length;
+  let omitted = 0;
+  for (const document of documents) {
+    const room = budget - used - 2;
+    if (room < PROJECT_OVERVIEW_DOCUMENT_MIN) {
+      omitted++;
+      continue;
+    }
+    const text = clipped(`Project document: ${document.title}\n\n${document.content}`, room);
+    parts.push(text);
+    used += text.length + 2;
+  }
+  if (omitted)
+    parts.push(
+      `[${omitted} more project ${omitted === 1 ? "document is" : "documents are"} in Linear.]`,
+    );
+  return parts.join("\n\n");
 }
 
-function clipped(content: string): string {
-  if (content.length <= PROJECT_DOCUMENT_MAX) return content;
-  return `${content.slice(0, PROJECT_DOCUMENT_MAX)}\n\n[Document cut at ${PROJECT_DOCUMENT_MAX.toLocaleString("en-US")} characters. The rest is in Linear.]`;
+function clipped(content: string, max: number): string {
+  if (content.length <= max) return content;
+  const note = `\n\n[Cut at ${max.toLocaleString("en-US")} characters. The rest is in Linear.]`;
+  return `${content.slice(0, Math.max(0, max - note.length))}${note}`;
 }
 
 export function createLinearProjectScopeReads(client: LinearClient) {

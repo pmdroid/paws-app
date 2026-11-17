@@ -50,6 +50,13 @@
       "when": 1794950145580,
       "tag": "0006_context_summary",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794951563838,
+      "tag": "0007_context_session",
+      "breakpoints": true
     }
   ]
 }

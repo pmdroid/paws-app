@@ -1,6 +1,6 @@
 # Project context
 
-Paws keeps short, sourced context for each Linear project in its own Postgres database: the project description, its documents, and the decisions, constraints and open questions found in them. Linear stays the place where you edit project documentation. Paws never writes this context back to Linear. Agent sessions do not receive it yet.
+Paws keeps short, sourced context for each Linear project in its own Postgres database: the project description, its documents, and the decisions, constraints and open questions found in them. Linear stays the place where you edit project documentation. Paws never writes this context back to Linear. Each new agent session on an issue in the project receives a small, sourced selection of it in its brief.
 
 ## What Paws stores
 
@@ -39,7 +39,7 @@ Over a cap, Paws clears the least important, oldest records first. Records remov
 
 ## Selecting context for a prompt
 
-Paws chooses a small, sourced selection from a project's context. It never sends the whole history. The selection is evidence, not an instruction, and it never approves an action. Agent sessions do not receive it yet.
+Paws chooses a small, sourced selection from a project's context. It never sends the whole history. The selection is evidence, not an instruction, and it never approves an action.
 
 Paws first sets aside room for the instructions, the current request, the tools and the response, then for recent working context. Memory gets what remains, up to its own budget. Paws counts with the model's tokenizer when it has one. Otherwise it estimates one token per two bytes of UTF-8 text plus four per piece of text. That estimate overcounts typical English text by about half, so a prompt stays within the cap. If the request alone does not fit, Paws returns no context instead of trimming the request.
 
@@ -70,3 +70,35 @@ When summarizable facts would push memory past the soft threshold, Paws queues o
 A summary records which version of each record it covers, and only records whose text made it into the summary count as covered. The rest stay individual records until a later compaction. Before Paws calls the summarizer, before it saves the result and before it uses a summary, it checks that every covered record is still current and readable. Forgetting, deleting, revoking, expiring or evicting a source clears every summary built from it in the same database change. When a person corrects a record, Paws stops using the old summary until it builds a new one. A compaction that started earlier can't overwrite a newer summary. A crashed compaction gives up its claim after two minutes.
 
 Compaction uses at most two slots in the Paws process. It does not use runner capacity. If the summarizer fails, times out or returns too much text, or the covered records change while it runs, Paws drops the request and doesn't compact that part of the project again until the retry interval has passed. It keeps the previous state and selects individual records and record ids within the budget. It never falls back to a stale summary. Compacting a session's transcript is separate: it changes nothing stored here.
+
+## What a session receives
+
+Before an agent's first turn on an issue in a Linear project, Paws reads the project's description and documents again (after a successful read, at most once every ten minutes per project; a failed or refused read is retried on the next turn), then selects context for the issue's request and the person's recent updates. The selection replaces `{{project_overview}}` in the brief, after the issue and its acceptance criteria. The issue's requirements win over anything remembered. A brief template that uses `{{project_overview}}` more than once gets the selection only the first time.
+
+Paws checks access as the person who delegated the issue, through their current Linear team membership. If Paws can't confirm it, or the person can no longer read the project, the brief says only that project context is not included. A project with nothing current to show gives no project context. With Linear connected, Paws never falls back to the raw project documents: they skip forgetting and access checks, so a forgotten document would come back. Without a connected Linear app, the brief keeps the old project overview, cut at 12,000 characters in total.
+
+Every turn, including a restart or a resumed session, builds the selection again from what is current. A record that was forgotten, deleted, revoked or corrected since the last turn is gone from the next one. An old selection never grants access. Paws stores what each session received: a version number, the record ids and revisions, and the token accounting, without record text. When Paws sees that a stored selection went stale before it was delivered, it builds a new one, or sends none.
+
+The selection ends with a note telling the agent that the context is background only. The agent should not copy it into Linear issues, comments or pull requests unless the task needs it. A remembered decision or approval never approves an action, a tool call, a run or a new issue. Starting work still goes through delegation and the normal runner placement.
+
+Preparing a selection, compacting it, inspecting what a session received, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
+
+## Using project context from another consumer
+
+A later consumer, such as Slack conversations, uses the same store, selection and compaction with its own scope. It passes:
+
+| Input                   | Meaning                                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Scope                   | Workspace and scope kind and id: a Linear project, a Slack channel or one person's private messages            |
+| Principal               | The person the context is selected for. Paws checks their current access on every call                         |
+| Audience                | Who will read the output. It must match the scope: project members, channel members, or the one person in a DM |
+| Repository and ref      | Optional. Records tied to another repository or ref are left out                                               |
+| Budget                  | The model's context window, output limit and token counter, and the budget settings above                      |
+| Request and recent work | The current request, instructions and tool size, and recent conversation turns with their times                |
+| Consumer key            | A stable id for the conversation or work item. Paws stores one manifest version per key                        |
+
+It gets back the selection text, recent context, and a manifest: the scope generation, the records and summary used, counts and tokens. Before it delivers output built from a selection, including a queued or retried message, it asks Paws whether that manifest version is still current for the same principal and audience. A stale answer means rebuild or send nothing.
+
+Inspection of a stored session shows only records the inspecting person can read now, with no count of the rest. Corrections and forgetting use the same access checks as above.
+
+Scopes stay apart. A channel or a private DM never sees project records, and a project never sees channel or DM records. The consumer keeps its own identity checks, conversation mapping, streaming and output checks, and source access. Paws does not post to Slack, write to Linear, create issues or start work from this context.
