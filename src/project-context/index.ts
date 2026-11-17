@@ -1,0 +1,55 @@
+export {
+  CONTEXT_AUDIENCES,
+  createFakeContextAccess,
+  type ContextAccess,
+  type ContextAudience,
+  type ContextDestination,
+  type ContextRequester,
+  type ContextRequesterAccess,
+  type FakeContextAccess,
+} from "./policy";
+export {
+  CONTEXT_CLAIM_LIMITS,
+  CONTEXT_QUERY_LIMITS,
+  CONTEXT_RETENTION,
+  correctContext,
+  disconnectContext,
+  forgetContextSource,
+  ingestContext,
+  inspectContext,
+  invalidateContext,
+  queryContext,
+  readdContext,
+  reconnectContext,
+  sweepContext,
+  type ContextCorrectionOutcome,
+  type ContextForgetOutcome,
+  type ContextIngestOutcome,
+  type ContextIngestRequest,
+  type ContextInspection,
+  type ContextQuery,
+  type ContextQueryResult,
+  type ContextRecordView,
+} from "./store";
+export {
+  ingestLinearProjectContext,
+  projectContextClaims,
+  type LinearProjectContextIngest,
+  type ProjectContextReads,
+} from "./linear";
+export type {
+  ContextClaim,
+  ContextClassification,
+  ContextInvalidation,
+  ContextLayer,
+  ContextNamespace,
+  ContextRestriction,
+  ContextScopeKind,
+  ContextSourceRef,
+  ContextSourceRevision,
+} from "../db";
+export {
+  createFakeProjectContextReads,
+  type FakeProjectContextReads,
+  type FakeProjectDocument,
+} from "./fake";
