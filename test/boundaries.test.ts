@@ -190,6 +190,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   host: ["journal", "core", "db", "host-operation"],
   loop: [
     "journal",
+    "project-context",
     "workspace",
     "decisions",
     "worktree-checkout",
