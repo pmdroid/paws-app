@@ -125,10 +125,10 @@ describe("Postgres drizzle-kit migrations", () => {
   });
 
   for (const [name, createdAt, message] of [
-    ["older", BASELINE.folderMillis - 1, OLDER],
-    ["newer", BASELINE.folderMillis + 1, NEWER],
+    ["an older", BASELINE.folderMillis - 1, OLDER],
+    ["a newer", BASELINE.folderMillis + 1, NEWER],
   ] as const)
-    test(`a database from a ${name} Paws is refused and left unchanged`, async () => {
+    test(`a database from ${name} Paws is refused and left unchanged`, async () => {
       const home = await unknownDatabase(createdAt);
       const before = await contents(home);
       expect(before.tables).toBe(0);
