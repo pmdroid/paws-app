@@ -82,8 +82,6 @@ function setRunner(db: Db, id: string, values: { status?: string; lastSeenAt?: n
 
 type AgentPolicy = {
   virtualFinish?: number;
-  ready?: number;
-  authExpired?: number;
   quotaState?: string;
 };
 
@@ -399,10 +397,6 @@ test("a successful background sign-in check wakes parked work", async () => {
   const db = await database();
   const { pair, queue } = await workspaceWithRunners(db);
   const id = await pair("agentbox", 1, [REPOSITORY]);
-  await setAgentPolicy(db, (q) => eq(q.t.runnerAgentPolicy.runnerId, id), {
-    ready: 0,
-    authExpired: 1,
-  });
   await queue("parked");
   const { jobId } = await parkedRun(db, "parked", [id], [id]);
   const at = NOW + 1;
