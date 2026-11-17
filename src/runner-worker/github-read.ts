@@ -96,7 +96,8 @@ export function openGitHubReadConfig(
     tokens: () => tokens,
     async delivered(ms, signal) {
       const until = Date.now() + ms;
-      while (tokens.length === 0 && Date.now() < until && !signal?.aborted) {
+      for (;;) {
+        if (tokens.length > 0 || Date.now() >= until || signal?.aborted) break;
         await delay(Math.min(250, Math.max(0, until - Date.now())));
         refresh();
       }
