@@ -97,6 +97,41 @@ test("a new drizzle-kit migration appended to the journal passes", () => {
   expect(ran.exitCode).toBe(0);
 });
 
+test("squashing the migrations into a new baseline passes", () => {
+  const ran = probe(
+    "migrations-append-only",
+    candidate(
+      { ...DB, ...appended },
+      {
+        "src/db/drizzle-pg/0000_baseline.sql": "CREATE TABLE a (id TEXT, b TEXT);\n",
+        "src/db/drizzle-pg/0001_probe.sql": null,
+        "src/db/drizzle-pg/meta/0001_snapshot.json": null,
+        [JOURNAL]: journal({ ...BASELINE, when: 3000 }),
+      },
+    ),
+  );
+  expect(ran.output).toContain("1 new drizzle-kit migration");
+  expect(ran.exitCode).toBe(0);
+});
+
+test("a squash that edits a migration it keeps fails migrations-append-only", () => {
+  const ran = probe(
+    "migrations-append-only",
+    candidate(
+      { ...DB, ...appended },
+      {
+        "src/db/drizzle-pg/0000_baseline.sql": "CREATE TABLE a (id TEXT);\n",
+        "src/db/drizzle-pg/0001_probe.sql": "ALTER TABLE a ADD COLUMN c TEXT;\n",
+        [JOURNAL]: journal({ ...BASELINE, when: 3000 }, { ...PROBE, when: 4000 }),
+      },
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(
+    "src/db/drizzle-pg/0001_probe.sql is a shipped drizzle-kit migration and was edited",
+  );
+});
+
 test.each([
   [
     "editing the baseline",
