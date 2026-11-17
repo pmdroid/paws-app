@@ -377,6 +377,27 @@ export async function probeRunnerBackend(
     }
     throw new Error("No dispatched runner command");
   }
+  const answerStopCheckpoint = async (command: {
+    id: string;
+    runId: string;
+    generation: number;
+  }) => {
+    if ((await next()).type !== "checkpoint") return;
+    const { token } = await work.issueGrant({
+      runnerId,
+      runId: command.runId,
+      commandId: command.id,
+      generation: command.generation,
+    });
+    await work.event({
+      runnerId,
+      runId: command.runId,
+      generation: command.generation,
+      token,
+      sequence: ((await runnerWorkOf(command.runId))?.lastSequence ?? 0) + 1,
+      event: { type: "checkpoint", reason: "stop", dropped: "stopped" },
+    });
+  };
   let sequence = 0;
   const finishRuns = async () => {
     for (const { id } of await db.run((q) =>
@@ -742,8 +763,7 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
     const stopped = await item();
-    const runnerAt = (version: string) => reportRunnerVersion(runnerId, version, Date.now());
-    await runnerAt("0.1.75");
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
     const stoppedAgent = backend.forItem(stopped.id);
     const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
@@ -841,10 +861,9 @@ export async function probeRunnerBackend(
       wipCommit: head,
     });
     // A refused push still delivers the worker's interruption result, but cannot restart
-    // from the previously recorded checkpoint. A failed save, missing stop evidence and a
-    // runner too old to tell a failed save from nothing to save fail closed too.
-    for (const publication of ["refused", "failed", "missing", "older"] as const) {
-      if (publication === "older") await runnerAt("0.1.74");
+    // from the previously recorded checkpoint. A failed save and missing stop evidence fail
+    // closed too.
+    for (const publication of ["refused", "failed", "missing"] as const) {
       const record = await item();
       const publicationRun = backend.forItem(record.id)(input(record));
       const command = await next();
@@ -865,18 +884,14 @@ export async function probeRunnerBackend(
           sequence: 1,
           event: { type: "checkpoint", reason: "stop", sha: head, dropped: "Git push refused" },
         });
-      if (publication === "failed" || publication === "older")
+      if (publication === "failed")
         await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
           token: publicationGrant.token,
           sequence: 1,
-          event: {
-            type: "checkpoint",
-            reason: "stop",
-            ...(publication === "failed" ? { dropped: "The runner could not save" } : {}),
-          },
+          event: { type: "checkpoint", reason: "stop", dropped: "The runner could not save" },
         });
       await results.submit({
         runnerId,
@@ -889,11 +904,7 @@ export async function probeRunnerBackend(
       assert.equal((await getWorkItem(db, record.id))?.checkpoint?.wipCommit, previousWip);
     }
     await clearHostStatus(runnerId);
-    observe(
-      "a refused, failed or missing stop checkpoint, or an older runner, prevents interruption retry",
-      true,
-      {},
-    );
+    observe("a refused, failed or missing stop checkpoint prevents interruption retry", true, {});
     const stoppedWith = async (errorMessage: string, sessionId: string) => {
       const record = await item();
       const run = backend.forItem(record.id)(input(record));
@@ -920,7 +931,7 @@ export async function probeRunnerBackend(
       "limited-session",
     );
     const tooLong = await stoppedWith("Prompt is too long", "too-long-session");
-    await reportRunnerVersion(runnerId, "0.1.24", Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
     const continued: Record<string, string | null> = {};
     for (const [name, record] of [
       ["ended", first],
@@ -936,6 +947,7 @@ export async function probeRunnerBackend(
       let command = await next();
       while (command.type !== "run" || command.itemId !== record.id) command = await next();
       stop.abort();
+      await answerStopCheckpoint(command);
       await again.catch(() => undefined);
       continued[name] = command.resumeSessionId ?? null;
     }
@@ -959,6 +971,7 @@ export async function probeRunnerBackend(
       );
       assert.equal(command.repository.baseSha, head);
       stop.abort();
+      await answerStopCheckpoint(command);
       await again.catch(() => undefined);
     }
     while ((await work.commands(runnerId)).length) await next();
@@ -971,15 +984,16 @@ export async function probeRunnerBackend(
         continued.tooLong === null,
       continued,
     );
-    const runtimeCommands: Record<string, unknown> = {};
+    let runtimeCommand: unknown = null;
     const runtimeLines: string[] = [];
-    for (const version of ["0.1.26", "0.1.25"]) {
-      await reportRunnerVersion(runnerId, version, Date.now());
+    {
+      await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
       const record = await item();
       const stop = new AbortController();
       const sent = backend.forItem(record.id)(
         input(record, {
           signal: stop.signal,
+          checkpoint: false,
           runtimes: async () => ({
             runtimes: [
               { tool: "node", version: "22" },
@@ -988,7 +1002,7 @@ export async function probeRunnerBackend(
             notices: ["Paws refused the mise tool `cargo:ripgrep` in mise.toml."],
           }),
           onEvent: (event) => {
-            if (event.type === "progress") runtimeLines.push(`${version} ${event.text.trim()}`);
+            if (event.type === "progress") runtimeLines.push(event.text.trim());
           },
         }),
       );
@@ -997,28 +1011,23 @@ export async function probeRunnerBackend(
       while (command.type !== "run" || command.itemId !== record.id) command = await next();
       stop.abort();
       await sent.catch(() => undefined);
-      runtimeCommands[version] = command.runtimes ?? null;
+      runtimeCommand = command.runtimes ?? null;
     }
     while ((await work.commands(runnerId)).length) await next();
     await clearHostStatus(runnerId);
     observe(
       "a run carries the repository's runtime list to a runner that accepts it and posts its notices",
-      JSON.stringify(runtimeCommands["0.1.26"]) ===
+      JSON.stringify(runtimeCommand) ===
         JSON.stringify([
           { tool: "node", version: "22" },
           { tool: "aqua:cli/cli", version: "2.40.0" },
         ]) &&
-        runtimeCommands["0.1.25"] === null &&
-        runtimeLines.includes("0.1.26 Paws refused the mise tool `cargo:ripgrep` in mise.toml.") &&
+        runtimeLines.includes("Paws refused the mise tool `cargo:ripgrep` in mise.toml.") &&
         runtimeLines.some(
           (line) =>
-            line.startsWith("0.1.26 Starting on ") &&
-            line.endsWith(", node 22, aqua:cli/cli 2.40.0."),
-        ) &&
-        runtimeLines.some(
-          (line) => line.startsWith("0.1.25 ") && line.includes("needs runner 0.1.26 or later"),
+            line.startsWith("Starting on ") && line.endsWith(", node 22, aqua:cli/cli 2.40.0."),
         ),
-      { runtimeCommands, runtimeLines },
+      { runtimeCommand, runtimeLines },
     );
     await saveHook(
       db,
@@ -1033,13 +1042,7 @@ export async function probeRunnerBackend(
       },
       Date.now(),
     );
-    await reportRunnerVersion(runnerId, "0.1.52", Date.now());
-    const oldHookRun = await item();
-    await assert.rejects(
-      backend.forItem(oldHookRun.id)(input(oldHookRun)),
-      /needs runner 0.1.53 or later to run skill hooks/,
-    );
-    await reportRunnerVersion(runnerId, "0.1.53", Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
     const hookRun = await item();
     const hookStop = new AbortController();
     const hooked = backend.forItem(hookRun.id)(
@@ -1380,15 +1383,7 @@ export async function probeRunnerBackend(
         .forItem(record.id)(input(record, { ...overrides, reviewCommand: { base: reviewBase } }))
         .catch((error: Error) => refusedReviews.push(error.message));
     }
-    await reportRunnerVersion(runnerId, "0.1.46", Date.now());
-    const oldRunner = await item();
-    const tooOld = await backend
-      .forItem(oldRunner.id)(reviewCommandInput(oldRunner))
-      .then(
-        () => "",
-        (error: Error) => error.message,
-      );
-    await reportRunnerVersion(runnerId, "0.1.55", Date.now());
+    await reportRunnerVersion(runnerId, CURRENT_RUNNER_VERSION, Date.now());
     const commandReviewer = await item();
     let commandText = "";
     const commandReviewed = backend.forItem(commandReviewer.id)({
@@ -1421,15 +1416,14 @@ export async function probeRunnerBackend(
     await commandReviewed;
     await clearHostStatus(runnerId);
     observe(
-      "a review command is sent as a review on its runner with the diff base, and only to a runner release that runs it",
+      "a review command is sent as a review on its runner with the diff base",
       commandReview.reviewCommand?.base === reviewBase &&
         commandReview.repository.baseSha === head &&
         commandText === "[]" &&
-        /needs runner 0\.1\.55 or later/.test(tooOld) &&
         refusedReviews.length === 2 &&
         /read-only reviewer work/.test(refusedReviews[0]!) &&
         /Claude or Codex model/.test(refusedReviews[1]!),
-      { reviewCommand: commandReview.reviewCommand, commandText, tooOld, refusedReviews },
+      { reviewCommand: commandReview.reviewCommand, commandText, refusedReviews },
     );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
     const transcripts = createRunnerTranscripts({
@@ -2440,6 +2434,7 @@ export async function probeRunnerBackend(
     const waiting = await next();
     assert.equal(waiting.type, "run");
     abort.abort();
+    await answerStopCheckpoint(waiting as Extract<RunnerCommand, { type: "run" }>);
     await rejection;
     const cancel = await next();
     assert.equal(cancel.type, "cancel");
@@ -3444,26 +3439,22 @@ export async function probeRunnerBackend(
         return command;
       };
       await git(["-C", source, "reset", "--hard", head]);
-      const current = await sent("0.1.19");
+      const current = await sent(CURRENT_RUNNER_VERSION);
       const moved = (
         await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
       ).trim();
       await git(["-C", source, "update-ref", "refs/paws/upstream-main", moved]);
-      const beforeRebase = await sent("0.1.22");
-      const rebasing = await sent("0.1.23");
+      const rebasing = await sent(CURRENT_RUNNER_VERSION);
       await git(["-C", source, "update-ref", "refs/paws/upstream-main", base]);
-      const stale = await sent("0.1.23", head);
+      const stale = await sent(CURRENT_RUNNER_VERSION, head);
       await git(["-C", source, "update-ref", "-d", "refs/paws/upstream-main"]);
       await git(["-C", source, "reset", "--hard", base]);
-      if (beforeRebase.type !== "run" || rebasing.type !== "run" || stale.type !== "run")
-        throw new Error("Expected run commands");
+      if (rebasing.type !== "run" || stale.type !== "run") throw new Error("Expected run commands");
       observe(
-        "runners on 0.1.23 or later receive the main Paws last fetched past the run's base, never an older one",
-        beforeRebase.repository.mainSha === base &&
-          rebasing.repository.mainSha === moved &&
+        "runners receive the main Paws last fetched past the run's base, never an older one",
+        rebasing.repository.mainSha === moved &&
           (stale.repository.mainSha === undefined || stale.repository.mainSha === head),
         {
-          before: beforeRebase.repository.mainSha,
           rebasing: rebasing.repository.mainSha,
           moved,
           stale: stale.repository.mainSha,

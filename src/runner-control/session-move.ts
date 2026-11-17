@@ -16,7 +16,7 @@ import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 /** What the runner backend's `handOverItem` answers, as far as the runner card tells it. */
 export type SessionHandoverOutcome =
-  | { status: "handed_over" | "finished" | "timed_out" | "unanswered" | "old_runner" }
+  | { status: "handed_over" | "finished" | "timed_out" | "unanswered" }
   | { status: "not_running" }
   | { status: "failed"; reason: "commit" | "snapshot" | "publication" };
 
@@ -29,7 +29,6 @@ const STAYED = {
   timed_out:
     "The runner found no safe point to stop within 2 minutes, so the session keeps running here.",
   unanswered: "The runner did not answer in time, so the session keeps running here.",
-  old_runner: "This runner's release cannot hand sessions over. Update the runner to move it.",
   not_running: "The session was no longer running here, so there was nothing to move.",
 } as const;
 const FAILED_STEP = {

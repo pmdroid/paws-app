@@ -5,20 +5,17 @@ import {
   itemOpenRunnerWorkSteps,
   lastRunnerEventSequenceSteps,
   runnerEventsAfterSteps,
-  runnerHostVersionSteps,
   runnerResultPayloadSteps,
   runnerWorkEndedSteps,
   type Db,
 } from "../db";
 import {
-  HANDOVER_RUNNER_VERSION,
   RUNNER_HANDOVER_LIMIT_MS,
   RunnerResultSchema,
   type RunnerEvent,
   type RunnerHandoverFailure,
 } from "../runner-protocol";
 import type { RunnerWork } from "../runner-work";
-import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's deadline: polling and delivery of its decision. */
 const DELIVERY_GRACE_MS = 30_000;
@@ -45,8 +42,6 @@ export type RunnerHandoverOutcome =
    * Paws could not keep the WIP commit.
    */
   | { status: "unanswered" }
-  /** The runner's release cannot hand over; nothing was asked of it. */
-  | { status: "old_runner" }
   | { status: "not_running" };
 
 /**
@@ -68,8 +63,6 @@ export function createRemoteHandover(options: {
     const request = await store.transaction(function* (q) {
       const row = yield* itemOpenRunnerWorkSteps(q, itemId);
       if (!row) return null;
-      const version = yield* runnerHostVersionSteps(q, row.runnerId);
-      if (!versionAtLeast(version, HANDOVER_RUNNER_VERSION)) return "old_runner" as const;
       const at = now();
       yield* work.enqueueSteps(q, {
         id: randomUUID(),
@@ -86,7 +79,6 @@ export function createRemoteHandover(options: {
       return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + DELIVERY_GRACE_MS };
     });
     if (!request) return { status: "not_running" };
-    if (request === "old_runner") return { status: "old_runner" };
     let deadline = request.deadline;
     while (now() < deadline) {
       signal?.throwIfAborted();

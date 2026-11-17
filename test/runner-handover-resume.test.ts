@@ -89,17 +89,6 @@ function setAgentReady(db: Db, runnerId: string, ready: number) {
   );
 }
 
-function setRunnerVersion(db: Db, runnerId: string, runnerVersion: string) {
-  return db.run((q) =>
-    q.exec(
-      q.orm
-        .update(q.t.runnerHostStatus)
-        .set({ runnerVersion })
-        .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
-    ),
-  );
-}
-
 function setWorkItem(db: Db, id: string, values: Partial<Q["t"]["workItem"]["$inferInsert"]>) {
   return db.run((q) =>
     q.exec(q.orm.update(q.t.workItem).set(values).where(eq(q.t.workItem.id, id))),
@@ -616,7 +605,6 @@ async function setup() {
     async stopAll() {
       const stopping = [...turns];
       turns.clear();
-      for (const runnerId of Object.values(runners)) await setRunnerVersion(db, runnerId, "0.1.44");
       for (const { stop } of stopping) stop.abort();
       const routes = [...moveRoutes];
       moveRoutes.clear();
@@ -1423,7 +1411,7 @@ for (const [owner, change] of [
         { type: "question", text: "Which delimiter?", options: [] },
       ]);
       if (whileAttached) expect(await context.next(runners.a, 50)).toBeNull();
-      await setRunnerVersion(db, runners.a, "0.1.44");
+      await setRunner(db, runners.a, { lastSeenAt: 0 });
       await stale();
       await answerQuestion(db, record.runId, "Too late.");
       expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
@@ -1452,7 +1440,7 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
     return { answer: "Never asked." };
   });
   const command = (await context.next(runners.a)) as RunCommand;
-  await setRunnerVersion(db, runners.a, "0.1.44");
+  await setRunner(db, runners.a, { lastSeenAt: 0 });
   await context.events(command, runners.a, [
     { type: "question", text: "Which delimiter?", options: [] },
   ]);

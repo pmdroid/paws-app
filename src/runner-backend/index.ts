@@ -27,7 +27,6 @@ import {
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
   onlineMemberRunnersSteps,
-  runnerHostVersionSteps,
   runnerLastSeenSteps,
   runnerNameSteps,
   runnerOnlineSteps,
@@ -94,33 +93,15 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
-  SKILL_HOOK_RUNNER_VERSION,
-  REBASE_RUNNER_VERSION,
   REVIEW_BRIEF_LIMIT,
-  REVIEW_CONTEXT_RUNNER_VERSION,
-  CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
-  CLOSEOUT_FOCUS_RUNNER_VERSION,
-  PULL_REQUEST_DRAFT_RUNNER_VERSION,
-  QUESTION_ENDS_TURN_RUNNER_VERSION,
-  INTERRUPT_RECOVERY_RUNNER_VERSION,
-  CI_RERUN_RUNNER_VERSION,
-  SUGGESTED_FINDINGS_RUNNER_VERSION,
-  REVIEW_FINDINGS_RUNNER_VERSION,
-  GITHUB_READ_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
-  RUNTIMES_RUNNER_VERSION,
-  ANY_MISE_BACKEND_RUNNER_VERSION,
-  legacyRuntimeTool,
   redactedJson,
-  SESSION_RESUME_RUNNER_VERSION,
-  HIDDEN_CHECKPOINT_RUNNER_VERSION,
   withSignedOutAuth,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerResult,
-  type RunnerVersion,
 } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
@@ -252,17 +233,6 @@ function reviewContext(
   };
 }
 
-function versionAtLeast(version: string | null | undefined, minimum: RunnerVersion): boolean {
-  const parts = version
-    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
-    ?.slice(1)
-    .map(Number);
-  if (!parts) return false;
-  for (const [index, part] of parts.entries())
-    if (part !== minimum[index]) return part > minimum[index]!;
-  return true;
-}
-
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 
 function commandAccount(account: PlacementAccount | undefined) {
@@ -367,23 +337,14 @@ export function createRemoteAgentRunner(options: {
   function usageLimitReset(agent: string, sessionId: string | null) {
     return store.run((q) => usageLimitResetSteps(q, agent, sessionId, now()));
   }
-  function hostVersion(runnerId: string) {
-    return store.run((q) => runnerHostVersionSteps(q, runnerId));
-  }
   async function runnerName(runnerId: string) {
     return (await store.run((q) => runnerNameSteps(q, runnerId))) ?? runnerId;
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
-  async function runHooks(agent: string, runnerId: string): Promise<{ hooks?: WorkspaceHook[] }> {
+  async function runHooks(agent: string): Promise<{ hooks?: WorkspaceHook[] }> {
     const hooks = (await listHooks(store)).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
-    if (hooks.some((hook) => hook.skill !== null)) {
-      if (!versionAtLeast(await hostVersion(runnerId), SKILL_HOOK_RUNNER_VERSION))
-        throw new Error(
-          `Runner ${runnerId} needs runner ${SKILL_HOOK_RUNNER_VERSION.join(".")} or later to run skill hooks. Upgrade the runner, then run again.`,
-        );
-    }
     return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
   async function select(
@@ -1101,14 +1062,7 @@ export function createRemoteAgentRunner(options: {
                   throw new CheckpointLookupFailed(branch, { cause: error });
                 })
               : null;
-            if (hidden === wip) {
-              if (versionAtLeast(await hostVersion(selected.id), HIDDEN_CHECKPOINT_RUNNER_VERSION))
-                return { sha: wip, branch };
-              throw new RetryableRunnerError(
-                selected.id,
-                `Runner ${selected.id} is older than ${HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".")} and cannot restore the saved work at ${wip.slice(0, 7)} without putting it on ${branch}`,
-              );
-            }
+            if (hidden === wip) return { sha: wip, branch };
             if (!tip || !(await github.contains(tip, wip, signal)))
               throw new Error(
                 `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${branch}: GitHub does not hold it`,
@@ -1202,14 +1156,7 @@ export function createRemoteAgentRunner(options: {
                 scoped.repository.remoteUrl,
                 networkGit,
               )) === wip;
-            if (hidden) {
-              if (versionAtLeast(await hostVersion(selected.id), HIDDEN_CHECKPOINT_RUNNER_VERSION))
-                return { sha: wip, branch: scoped.item.branchName };
-              throw new RetryableRunnerError(
-                selected.id,
-                `Runner ${selected.id} is older than ${HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".")} and cannot restore the saved work at ${wip.slice(0, 7)} without putting it on ${scoped.item.branchName}`,
-              );
-            }
+            if (hidden) return { sha: wip, branch: scoped.item.branchName };
             if (local) return;
             // The turn must start from the saved work; a checkout without it would lose it.
             try {
@@ -1376,8 +1323,7 @@ export function createRemoteAgentRunner(options: {
                 await store.run((q) =>
                   saveCheckpointSteps(q, itemId, { phase: "running", baseSha, wipCommit: baseSha }),
                 );
-              const acceptsRebase =
-                !taskScope && versionAtLeast(await hostVersion(selected.id), REBASE_RUNNER_VERSION);
+              const acceptsRebase = !taskScope;
               const checkpointBase = (await store.run((q) => getWorkItemSteps(q, itemId)))
                 ?.checkpoint?.baseSha;
               const upstreamMain = !acceptsRebase
@@ -1476,7 +1422,6 @@ export function createRemoteAgentRunner(options: {
                 input.readOnly !== true &&
                 input.githubRead !== undefined &&
                 options.agentRead !== undefined &&
-                versionAtLeast(await hostVersion(selected.id), GITHUB_READ_RUNNER_VERSION) &&
                 (await options.agentRead.open({
                   commandId,
                   itemId,
@@ -1488,10 +1433,7 @@ export function createRemoteAgentRunner(options: {
               if (githubRead) readCommand = commandId;
               const prompt = [
                 lostNote,
-                restoreCheckpoint &&
-                versionAtLeast(await hostVersion(selected.id), HIDDEN_CHECKPOINT_RUNNER_VERSION)
-                  ? restoredCheckpointNote(restoreCheckpoint.sha)
-                  : undefined,
+                restoreCheckpoint ? restoredCheckpointNote(restoreCheckpoint.sha) : undefined,
                 replayed,
                 githubRead ? input.githubRead!.prompt : undefined,
               ]
@@ -1598,8 +1540,7 @@ export function createRemoteAgentRunner(options: {
                 (!pinnedRunnerId || pinnedRunnerId === selected.id) &&
                 !taskScope &&
                 input.role === "implementer" &&
-                input.checkpoint !== false &&
-                versionAtLeast(await hostVersion(selected.id), SESSION_RESUME_RUNNER_VERSION)
+                input.checkpoint !== false
                   ? await earlierSession(
                       store,
                       itemId,
@@ -1623,39 +1564,8 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const runnerVersion = await hostVersion(selected.id);
-              const acceptsRuntimes = versionAtLeast(runnerVersion, RUNTIMES_RUNNER_VERSION);
-              // An older runner rejects the whole command over one tool it does not know.
-              const anyBackend = versionAtLeast(runnerVersion, ANY_MISE_BACKEND_RUNNER_VERSION);
-              const held = anyBackend
-                ? []
-                : (runtimeList?.runtimes ?? []).filter(
-                    (runtime) => !legacyRuntimeTool(runtime.tool),
-                  );
-              const sendable = (runtimeList?.runtimes ?? []).filter(
-                (runtime) => !held.includes(runtime),
-              );
-              const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
-              if (
-                input.reviewCommand &&
-                !versionAtLeast(runnerVersion, REVIEW_CONTEXT_RUNNER_VERSION)
-              )
-                throw new Error(
-                  `Runner ${selected.id} needs runner ${REVIEW_CONTEXT_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
-                );
-              const runtimeNotices = [
-                ...(runtimeList?.notices ?? []),
-                ...(runtimeList?.runtimes.length && !acceptsRuntimes
-                  ? [
-                      `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
-                    ]
-                  : []),
-                ...(acceptsRuntimes && held.length
-                  ? [
-                      `Paws did not send ${held.map((runtime) => `\`${runtime.tool}\``).join(", ")} to this runner because tools other than core and aqua: need runner ${ANY_MISE_BACKEND_RUNNER_VERSION.join(".")} or later.`,
-                    ]
-                  : []),
-              ];
+              const runtimes = runtimeList?.runtimes.length ? runtimeList.runtimes : undefined;
+              const runtimeNotices = runtimeList?.notices ?? [];
               const assigned: WorkCommand = {
                 id: commandId,
                 runnerId: selected.id,
@@ -1698,9 +1608,7 @@ export function createRemoteAgentRunner(options: {
                           }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                      ...(input.role === "reviewer"
-                        ? {}
-                        : await runHooks(profile.agent, selected.id)),
+                      ...(input.role === "reviewer" ? {} : await runHooks(profile.agent)),
                       repository: {
                         ...scoped.repository!,
                         baseSha: baseSha!,
@@ -1710,14 +1618,10 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.closeoutRulesFirst &&
-                      versionAtLeast(runnerVersion, CLOSEOUT_RULES_FIRST_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.closeoutRulesFirst
                         ? { closeoutRulesFirst: true as const }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.closeoutFocus &&
-                      versionAtLeast(runnerVersion, CLOSEOUT_FOCUS_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.closeoutFocus
                         ? {
                             closeoutFocus: {
                               ...input.closeoutFocus,
@@ -1725,9 +1629,7 @@ export function createRemoteAgentRunner(options: {
                             },
                           }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.pullRequestDraft &&
-                      versionAtLeast(runnerVersion, PULL_REQUEST_DRAFT_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.pullRequestDraft
                         ? {
                             pullRequestDraft: {
                               title: input.pullRequestDraft.title,
@@ -1735,14 +1637,10 @@ export function createRemoteAgentRunner(options: {
                             },
                           }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.suggestedFindings?.length &&
-                      versionAtLeast(runnerVersion, SUGGESTED_FINDINGS_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.suggestedFindings?.length
                         ? { suggestedFindings: input.suggestedFindings.slice(0, 50) }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.reviewFindings?.length &&
-                      versionAtLeast(runnerVersion, REVIEW_FINDINGS_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.reviewFindings?.length
                         ? {
                             reviewFindings: input.reviewFindings.slice(0, 20).map((group) => ({
                               reviewId: group.reviewId,
@@ -1751,23 +1649,14 @@ export function createRemoteAgentRunner(options: {
                           }
                         : {}),
                       ...(githubRead ? { githubRead: true as const } : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.ciRerun &&
-                      input.readOnly !== true &&
-                      versionAtLeast(runnerVersion, CI_RERUN_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.ciRerun && input.readOnly !== true
                         ? { ciRerun: true as const }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.askTeam &&
-                      input.readOnly !== true &&
-                      versionAtLeast(runnerVersion, QUESTION_ENDS_TURN_RUNNER_VERSION)
+                      ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
-                      ...(restoreCheckpoint &&
-                      versionAtLeast(runnerVersion, HIDDEN_CHECKPOINT_RUNNER_VERSION)
-                        ? { restoreCheckpoint }
-                        : {}),
+                      ...(restoreCheckpoint ? { restoreCheckpoint } : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
                         : {}),
@@ -2697,11 +2586,9 @@ export function createRemoteAgentRunner(options: {
                 .filter((event) => event.type === "checkpoint" && event.reason === "stop")
                 .at(-1)
             : undefined;
-          // From this release a stop with no sha means the worktree equals the base, so restarting
-          // from the base loses nothing; a failed or unprovable save sets `dropped`. Before it, a
-          // failed save looked the same.
+          // A stop with no sha means the worktree equals the base, so restarting from the base
+          // loses nothing; a failed or unprovable save sets `dropped`.
           const interruptionSaved =
-            versionAtLeast(await hostVersion(selected.id), INTERRUPT_RECOVERY_RUNNER_VERSION) &&
             stopCheckpoint?.type === "checkpoint" &&
             stopCheckpoint.dropped === undefined &&
             (!stopCheckpoint.sha ||

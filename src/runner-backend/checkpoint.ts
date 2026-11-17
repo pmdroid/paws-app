@@ -16,14 +16,12 @@ import {
 } from "../db";
 import { OUTBOX_ACTIVITY } from "../core";
 import {
-  CHECKPOINT_RUNNER_VERSION,
   RUNNER_CHECKPOINT_LIMIT_MS,
   type RunnerCommand,
   type RunnerEvent,
 } from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
 import type { RunnerWork } from "../runner-work";
-import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's limit: polling and delivery of its checkpoint. */
 const DELIVERY_GRACE_MS = 30_000;
@@ -109,9 +107,8 @@ export function createRemoteCheckpoint(options: {
       if (command.type !== "run" || command.checkpoint === false) return null;
       // A handover publishes its own WIP commit; a stop of the same run keeps that checkpoint.
       if (yield* runnerHandoverSentSteps(q, runId, row.generation)) return null;
-      // A runner that is gone or too old never answers; the stop does not wait for it.
+      // A runner that is gone never answers; the stop does not wait for it.
       if ((row.lastSeen ?? 0) <= now() - RUNNER_ONLINE_MS) return null;
-      if (!versionAtLeast(row.version, CHECKPOINT_RUNNER_VERSION)) return null;
       const at = now();
       yield* work.enqueueSteps(q, {
         id: randomUUID(),
