@@ -2,7 +2,6 @@ import { and, count, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
-import { setRunnerAgentSignedInSteps } from "./runner-work";
 import { noteRunnerSeenSteps } from "./runners";
 
 const HEALTH_KINDS = ["probe", "login_check"];
@@ -134,16 +133,6 @@ export function* insertHealthResultSteps(
       .insert(q.t.runnerHealthResult)
       .values({ commandId, runnerId, resultJson, receivedAt: at }),
   );
-}
-
-export function* setLegacyAgentReadySteps(
-  q: Q,
-  runnerId: string,
-  agent: string,
-  ready: boolean,
-  now: number,
-) {
-  yield* setRunnerAgentSignedInSteps(q, runnerId, agent, ready, now);
 }
 
 export function* setLegacyAgentQuotaSteps(

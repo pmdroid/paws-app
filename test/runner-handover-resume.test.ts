@@ -452,11 +452,7 @@ async function setup() {
         yield* q.exec(
           q.orm.delete(q.t.runnerAgentPolicy).where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
         );
-        yield* q.exec(
-          q.orm
-            .insert(q.t.runnerAgentPolicy)
-            .values({ runnerId, agent: "claude", ready: 1, authExpired: 0 }),
-        );
+        yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude" }));
         yield* q.exec(q.orm.delete(q.t.runnerAgent).where(eq(q.t.runnerAgent.runnerId, runnerId)));
         yield* q.exec(
           q.orm.insert(q.t.runnerAgent).values({

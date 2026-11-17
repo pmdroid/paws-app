@@ -27,7 +27,6 @@ import {
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
   onlineMemberRunnersSteps,
-  runnerAgentPolicyStateSteps,
   runnerHostVersionSteps,
   runnerLastSeenSteps,
   runnerNameSteps,
@@ -1060,19 +1059,6 @@ export function createRemoteAgentRunner(options: {
                     }))
                   );
                 });
-                const policy = await store.run((q) =>
-                  runnerAgentPolicyStateSteps(q, selected.id, profile.agent),
-                );
-                if (
-                  (result.authRequired || result.errorMessage || !result.identity) &&
-                  (policy?.ready !== 1 || policy.authExpired === 1)
-                )
-                  throw new RunnerSetupRequired({
-                    reason: "agent-not-signed-in",
-                    runnerId: selected.id,
-                    runnerName: await runnerName(selected.id),
-                    agent: profile.agent,
-                  });
                 if (
                   disposition?.retryable &&
                   result.agentExited &&

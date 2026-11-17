@@ -285,10 +285,7 @@ async function addRunner(db: Db, id: string, ownerId: string, now: number) {
   );
   await rows(db, sql`INSERT INTO runner_capacity(runner_id,capacity) VALUES(${id},1)`);
   for (const agent of ["claude", "codex"])
-    await rows(
-      db,
-      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${id},${agent},1)`,
-    );
+    await rows(db, sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${id},${agent})`);
   await bindFixtureAccounts(db, id);
   await enqueueRunnerSetupCheck(db, ownerId, now);
 }

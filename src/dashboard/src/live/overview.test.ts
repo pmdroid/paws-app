@@ -293,8 +293,7 @@ describe("overview resource", () => {
           { ...runner, id: "box", name: "box" },
           { ...runner, id: "old", name: "old", status: "revoked", revokedAt: 1 },
         ]),
-      (q) =>
-        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "old", agent: "claude", ready: 1 }),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "old", agent: "claude" }),
     );
     expect((await read()).setup).toEqual({
       github: true,

@@ -130,12 +130,42 @@ describePglite((open) => {
           q.orm
             .insert(q.t.workspaceUser)
             .values({ id: "ada", linearUserId: "lin-ada", name: "Ada", email: "a@x" }),
+        (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "r1", agent: "codex" }),
         (q) =>
-          q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "r1", agent: "codex", ready: 1 }),
+          q.orm.insert(q.t.agentAccount).values([
+            {
+              id: "a1",
+              workspaceId: "w1",
+              agent: "codex",
+              label: "on",
+              createdAt: 0,
+              updatedAt: 0,
+            },
+            {
+              id: "a3",
+              workspaceId: "w1",
+              agent: "codex",
+              label: "off",
+              enabled: 0,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          ]),
         (q) =>
-          q.orm
-            .insert(q.t.runnerAgentPolicy)
-            .values({ runnerId: "r3", agent: "codex", ready: 1, authExpired: 1 }),
+          q.orm.insert(q.t.agentAccountBinding).values(
+            [
+              ["b1", "a1", "r1"],
+              ["b3", "a3", "r3"],
+            ].map(([id, accountId, runnerId]) => ({
+              id: id!,
+              workspaceId: "w1",
+              accountId: accountId!,
+              agent: "codex",
+              runnerId: runnerId!,
+              quotaScope: "account",
+              createdAt: 0,
+            })),
+          ),
       );
       expect(await db.run((q) => runnerNameAndOwnerSteps(q, "r1"))).toEqual({
         name: "beta",

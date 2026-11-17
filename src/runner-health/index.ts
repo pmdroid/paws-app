@@ -1,8 +1,9 @@
 import {
+  emitJobReady,
+  wakeRunnerSlotWaitsSteps,
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   commandAccountSteps,
-  emitJobReady,
   getRunnerSteps,
   HEALTH_COMMAND_KINDS,
   healthCheckHistorySteps,
@@ -20,9 +21,7 @@ import {
   runnerLastSeenSteps,
   seenMemberRunnersSteps,
   setLegacyAgentQuotaSteps,
-  setLegacyAgentReadySteps,
   touchRunnerSeenSteps,
-  wakeRunnerSlotWaitsSteps,
   workspaceMemberSteps,
   type Q,
   type RunnerAgentLimit,
@@ -80,12 +79,12 @@ const runnerAgents = ["claude", "codex", "grok", "opencode"] as const;
  */
 function checkDue(
   entry: History | undefined,
-  state: { authExpired: number; lastUsedAt: number } | undefined,
+  state: { lastUsedAt: number } | undefined,
   at: number,
 ) {
   if (entry?.inFlight || (entry && entry.issuedAt > at - SIGN_IN_INTERVAL_MS)) return false;
   if (!entry?.result) return true;
-  const signedIn = entry.result.authenticated && state?.authExpired !== 1;
+  const signedIn = entry.result.authenticated;
   if (!signedIn && (state?.lastUsedAt ?? 0) <= at - RECENT_USE_MS) return false;
   return entry.result.receivedAt < at - (signedIn ? PASSED_CHECK_INTERVAL_MS : SIGN_IN_INTERVAL_MS);
 }
@@ -395,17 +394,10 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           assigned.type === "login_check" &&
           result.login &&
           (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
-          legacy
-        ) {
-          yield* setLegacyAgentReadySteps(
-            q,
-            runnerId,
-            assigned.agent,
-            result.login.authenticated,
-            at,
-          );
-          if (result.login.authenticated) woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
-        }
+          owner &&
+          result.login.authenticated
+        )
+          woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
         if (legacy && result.agentLimits)
           yield* recordRunnerAgentUsageSteps(q, {
             runnerId,

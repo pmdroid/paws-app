@@ -554,9 +554,7 @@ async function startScenario(input: {
   await exec(
     sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})`,
   );
-  await exec(
-    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',1)`,
-  );
+  await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},'claude')`);
   const item = await insertQueuedItem(db, {
     id: "item",
     now,

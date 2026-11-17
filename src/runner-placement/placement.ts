@@ -767,8 +767,6 @@ export function createRunnerPlacement(options: {
       yield* settleRunnerAgentSteps(q, {
         runnerId: input.runnerId,
         agent: usage.agent,
-        authRequired: result?.authRequired === true,
-        success,
         quota,
         clearQuota: success && usage.purpose !== "prepare",
         model,

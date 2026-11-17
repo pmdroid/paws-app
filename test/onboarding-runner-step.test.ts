@@ -408,11 +408,8 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
     await seed(f.db, (q) =>
       q.orm
         .insert(q.t.runnerAgentPolicy)
-        .values({ runnerId: vm.runnerId!, agent, ready: 1 })
-        .onConflictDoUpdate({
-          target: [q.t.runnerAgentPolicy.runnerId, q.t.runnerAgentPolicy.agent],
-          set: { ready: 1 },
-        }),
+        .values({ runnerId: vm.runnerId!, agent })
+        .onConflictDoNothing(),
     );
   expect(await ready()).toBe(false);
   await bindFixtureAccounts(f.db, vm.runnerId!);

@@ -103,7 +103,7 @@ async function addRunner(db: Db, id: string, seenAt: number) {
     (q) =>
       q.orm
         .insert(q.t.runnerAgentPolicy)
-        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready: 1 }))),
+        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent }))),
   );
   await bindFixtureAccounts(db, id);
 }

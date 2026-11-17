@@ -169,9 +169,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     await exec(sql`UPDATE runner SET status='active' WHERE id=${runnerId}`);
     await exec(sql`UPDATE runner SET owner_user_id=${userId} WHERE id=${runnerId}`);
     await exec(sql`INSERT INTO runner_policy(runner_id) VALUES(${runnerId})`);
-    await exec(
-      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${runnerId},'claude',${ready})`,
-    );
+    await exec(sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${runnerId},'claude')`);
     if (ready || (delegatorRunner === "unsigned" && name === "member-vm")) {
       const common = { workspaceId: workspace.id, now };
       const { id } = await createAgentAccount(db, {
@@ -209,7 +207,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     memberRunner = await pair("member-vm", memberId, ready ? 1 : 0);
     if (delegatorRunner === "reviewer-signed-out")
       await exec(
-        sql`INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(${memberRunner},'codex',0,1)`,
+        sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES(${memberRunner},'codex')`,
       );
     if (delegatorRunner === "offline")
       await exec(sql`UPDATE runner SET last_seen_at=${now - 10 * 60_000} WHERE id=${memberRunner}`);

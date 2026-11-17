@@ -67,7 +67,6 @@ for (const runner of runners)
       q.orm.insert(q.t.runnerAgentPolicy).values({
         runnerId: runner.id,
         agent: "claude",
-        ready: 1,
         quotaState: "exhausted",
         resetsAt: now + 3600000,
         cooldownUntil: now + 3600000,

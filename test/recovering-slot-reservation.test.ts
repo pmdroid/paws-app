@@ -243,8 +243,8 @@ async function runRecovering(input: {
     (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
     (q) =>
       q.orm.insert(q.t.runnerAgentPolicy).values([
-        { runnerId, agent: "claude", ready: 1 },
-        { runnerId, agent: "codex", ready: 1 },
+        { runnerId, agent: "claude" },
+        { runnerId, agent: "codex" },
       ]),
   );
 

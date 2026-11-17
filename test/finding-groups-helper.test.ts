@@ -59,10 +59,7 @@ async function seed() {
     db,
     sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','admin','Runner','active',${now},${now})`,
   );
-  await exec(
-    db,
-    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)`,
-  );
+  await exec(db, sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES('runner','codex')`);
   await recordRunnerHostStatus(db, "runner", { runnerVersion: CURRENT_RUNNER_VERSION }, now);
   await boundPlacementAccounts(db);
   const { privateKey } = generateKeyPairSync("ed25519");
@@ -246,7 +243,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
     );
     await exec(
       f.db,
-      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)`,
+      sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES('runner2','codex')`,
     );
     await recordRunnerHostStatus(f.db, "runner2", { runnerVersion: CURRENT_RUNNER_VERSION }, f.now);
     await boundPlacementAccounts(f.db);
@@ -470,10 +467,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       f.db,
       sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'idle',workspace_id,owner_user_id,'Idle','active',created_at,last_seen_at FROM runner WHERE id='runner'`,
     );
-    await exec(
-      f.db,
-      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('idle','codex',1)`,
-    );
+    await exec(f.db, sql`INSERT INTO runner_agent_policy(runner_id,agent) VALUES('idle','codex')`);
     const profile = { agent: "codex" as const, model: null };
     const maintenance = await f.helpers.dispatch({
       runnerId: "runner",

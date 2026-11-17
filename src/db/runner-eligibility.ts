@@ -19,8 +19,6 @@ export function* eligibleRunnerRowsSteps(
         lastSeenAt: r.lastSeenAt,
         revokedAt: r.revokedAt,
         sharing: sql<number>`COALESCE(${p.sharing}, 0)`.mapWith(Number),
-        ready: sql<number>`COALESCE(${a.ready}, 0)`.mapWith(Number),
-        authExpired: sql<number>`COALESCE(${a.authExpired}, 0)`.mapWith(Number),
         quotaState: sql<string>`COALESCE(${a.quotaState}, 'ok')`,
         cooldownUntil: sql<number>`COALESCE(${a.cooldownUntil}, 0)`.mapWith(Number),
         virtualFinish: sql<number>`COALESCE(${a.virtualFinish}, 0)`.mapWith(Number),
@@ -166,8 +164,6 @@ export function* runnerAgentPoliciesSteps(q: Q, runnerId: string) {
     q.orm
       .select({
         agent: p.agent,
-        ready: p.ready,
-        authExpired: p.authExpired,
         quotaState: p.quotaState,
         resetsAt: p.resetsAt,
         cooldownUntil: p.cooldownUntil,
@@ -182,13 +178,7 @@ export function* runnerAgentPoliciesSteps(q: Q, runnerId: string) {
 }
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
-  const {
-    agentAccountBinding: b,
-    agentAccount: a,
-    agentAccountCredential: c,
-    runner: r,
-    runnerAgentPolicy: p,
-  } = q.t;
+  const { agentAccountBinding: b, agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
   return yield* q.one(
     q.orm
       .select({
@@ -204,12 +194,10 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
         revokedAt: r.revokedAt,
         lastSeenAt: r.lastSeenAt,
         legacy: b.legacy,
-        authExpired: p.authExpired,
       })
       .from(b)
       .innerJoin(a, eq(a.id, b.accountId))
       .innerJoin(r, eq(r.id, b.runnerId))
-      .leftJoin(p, and(eq(p.runnerId, b.runnerId), eq(p.agent, b.agent)))
       .leftJoin(c, eq(c.accountId, b.accountId))
       .where(eq(b.id, bindingId)),
   );

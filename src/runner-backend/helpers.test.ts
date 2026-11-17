@@ -1198,7 +1198,7 @@ async function answerTask() {
       await recordRunnerCapacity(db, runnerId, 2, 2, 2);
       await sqlRun(
         db,
-        "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
+        "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,'claude') ON CONFLICT(runner_id,agent) DO NOTHING",
         [runnerId],
       );
       await recordRunnerHostStatus(db, runnerId, { runnerVersion: CURRENT_RUNNER_VERSION }, now());

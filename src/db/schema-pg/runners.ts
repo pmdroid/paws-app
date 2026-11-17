@@ -730,8 +730,6 @@ export const runnerAgentPolicy = pgTable(
       .notNull()
       .references(() => runner.id),
     agent: text().notNull(),
-    ready: integer().default(0).notNull(),
-    authExpired: integer("auth_expired").default(0).notNull(),
     quotaState: text("quota_state").default("ok").notNull(),
     resetsAt: bigint("resets_at", { mode: "number" }),
     cooldownUntil: bigint("cooldown_until", { mode: "number" }).default(0).notNull(),
@@ -746,8 +744,6 @@ export const runnerAgentPolicy = pgTable(
       name: "runner_agent_policy_runner_id_agent_pk",
     }),
     check("runner_agent_policy_check_1", sql`agent IN ('claude','codex','grok','opencode')`),
-    check("runner_agent_policy_check_2", sql`ready IN (0,1)`),
-    check("runner_agent_policy_check_3", sql`auth_expired IN (0,1)`),
     check(
       "runner_agent_policy_check_4",
       sql`quota_state IN ('ok','low','exhausted','spent_extra')`,

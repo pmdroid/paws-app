@@ -2490,7 +2490,7 @@ export async function probeRunnerBackend(
         (q) =>
           q.orm
             .insert(q.t.runnerAgentPolicy)
-            .values({ runnerId: id, agent: "codex", ready: 1, virtualFinish: index * 10 }),
+            .values({ runnerId: id, agent: "codex", virtualFinish: index * 10 }),
       );
     }
     await bindFixtureAccounts(db);

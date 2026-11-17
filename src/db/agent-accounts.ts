@@ -8,6 +8,7 @@ import {
   count,
   desc,
   eq,
+  exists,
   gt,
   isNotNull,
   isNull,
@@ -1102,5 +1103,25 @@ export function* activeAccountRunnerWorkSteps(
         )
         .limit(1),
     )) !== undefined
+  );
+}
+
+export function boundAgentAccountWhere(q: Q, runnerId: AnyColumn, agent: AnyColumn | string) {
+  const { agentAccountBinding: b, agentAccount: a } = q.t;
+  return exists(
+    q.orm
+      .select({ one: sql`1` })
+      .from(b)
+      .innerJoin(a, eq(a.id, b.accountId))
+      .where(
+        and(
+          eq(b.runnerId, runnerId),
+          eq(b.agent, agent),
+          eq(b.legacy, 0),
+          isNull(b.removedAt),
+          isNull(a.removedAt),
+          eq(a.enabled, 1),
+        ),
+      ),
   );
 }

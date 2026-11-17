@@ -22,6 +22,7 @@ import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspa
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
+import { boundAgentAccountWhere } from "./agent-accounts";
 import {
   conversationsInUseSteps,
   laneHelperSql,
@@ -1465,8 +1466,6 @@ export async function finishRunnerExecutionUsage(
 export type RunnerAgentSettlement = {
   runnerId: string;
   agent: string;
-  authRequired: boolean;
-  success: boolean;
   quota: { state: string; resetsAt: number | null; cooldownUntil: number } | null;
   /** A successful non-preparation turn clears a recorded quota limit. */
   clearQuota: boolean;
@@ -1476,13 +1475,11 @@ export type RunnerAgentSettlement = {
 /** Apply what a finished turn showed about the runner's agent; anything it did not show stays. */
 export function* settleRunnerAgentSteps(q: Q, input: RunnerAgentSettlement) {
   const { runnerAgentPolicy: p } = q.t;
-  const { authRequired, success, quota, clearQuota, model } = input;
+  const { quota, clearQuota, model } = input;
   yield* q.exec(
     q.orm
       .update(p)
       .set({
-        ready: authRequired ? 0 : success ? 1 : p.ready,
-        authExpired: authRequired ? 1 : success ? 0 : p.authExpired,
         quotaState: quota ? quota.state : clearQuota ? "ok" : p.quotaState,
         resetsAt: quota ? quota.resetsAt : clearQuota ? null : p.resetsAt,
         cooldownUntil: quota ? quota.cooldownUntil : clearQuota ? 0 : p.cooldownUntil,
@@ -1646,21 +1643,17 @@ export async function runnerNameAndOwner(
 }
 
 export function* runnerAgentReadinessSteps(q: Q, agent: string) {
-  const { runner: r, runnerAgentPolicy: p } = q.t;
-  const rows = yield* q.all(
+  const { runner: r } = q.t;
+  return yield* q.all(
     q.orm
       .select({
         name: r.name,
-        ready: sql<number>`CASE WHEN ${p.ready}=1 AND ${p.authExpired}=0 THEN 1 ELSE 0 END`.mapWith(
-          Number,
-        ),
+        ready: sql<boolean>`${boundAgentAccountWhere(q, r.id, agent)}`.mapWith(Boolean),
       })
       .from(r)
-      .leftJoin(p, and(eq(p.runnerId, r.id), eq(p.agent, agent)))
       .where(and(eq(r.status, "active"), isNull(r.revokedAt)))
       .orderBy(r.name),
   );
-  return rows.map((row) => ({ name: row.name, ready: row.ready === 1 }));
 }
 
 export async function runnerAgentReadiness(

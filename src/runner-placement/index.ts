@@ -48,8 +48,6 @@ export type EligibleRunner = {
   workspaceId: string;
   ownerId: string;
   sharing: number;
-  ready: number;
-  authExpired: number;
   quotaState: string;
   cooldownUntil: number;
   virtualFinish: number;

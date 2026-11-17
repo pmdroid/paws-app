@@ -17,7 +17,6 @@ import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText, jsonValue } from "./json-text";
 import { laneHelperSql, runnerSignInWaitingSteps } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
-import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 
 export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
   const { run, runnerWork } = q.t;
@@ -400,7 +399,6 @@ export function* runnerAgentCheckStatesSteps(q: Q, runnerId: string) {
     q.orm
       .select({
         agent: runnerAgentPolicy.agent,
-        authExpired: runnerAgentPolicy.authExpired,
         lastUsedAt: runnerAgentPolicy.lastUsedAt,
       })
       .from(runnerAgentPolicy)
@@ -500,71 +498,6 @@ export function* runnerHasOpenWorkSteps(q: Q, runnerId: string, at: number) {
 
 export async function runnerHasOpenWork(store: Db, runnerId: string, at: number): Promise<boolean> {
   return store.run((q) => runnerHasOpenWorkSteps(q, runnerId, at));
-}
-
-export type RunnerAgentPolicyState = {
-  ready: number;
-  authExpired: number;
-  extraUsage: number;
-  quotaState: string;
-  resetsAt: number | null;
-  cooldownUntil: number;
-};
-
-export function* runnerAgentPolicyStateSteps(q: Q, runnerId: string, agent: string) {
-  const { runnerAgentPolicy: p } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({
-        ready: p.ready,
-        authExpired: p.authExpired,
-        extraUsage: p.extraUsage,
-        quotaState: p.quotaState,
-        resetsAt: p.resetsAt,
-        cooldownUntil: p.cooldownUntil,
-      })
-      .from(p)
-      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
-  );
-  return row ?? null;
-}
-
-export async function runnerAgentPolicyState(
-  store: Db,
-  runnerId: string,
-  agent: string,
-): Promise<RunnerAgentPolicyState | null> {
-  return store.run((q) => runnerAgentPolicyStateSteps(q, runnerId, agent));
-}
-
-export function* setRunnerAgentSignedInSteps(
-  q: Q,
-  runnerId: string,
-  agent: string,
-  signedIn: boolean,
-  now: number,
-) {
-  const { runnerAgentPolicy: p } = q.t;
-  const state = { ready: signedIn ? 1 : 0, authExpired: signedIn ? 0 : 1 };
-  const before = yield* runnerAgentPolicyStateSteps(q, runnerId, agent);
-  yield* q.exec(
-    q.orm
-      .insert(p)
-      .values({ runnerId, agent, ...state })
-      .onConflictDoUpdate({ target: [p.runnerId, p.agent], set: state }),
-  );
-  if (signedIn && (before?.ready !== 1 || before.authExpired !== 0))
-    yield* enqueueRunnerSetupChecksSteps(q, now, { runnerId });
-}
-
-export async function setRunnerAgentSignedIn(
-  store: Db,
-  runnerId: string,
-  agent: string,
-  signedIn: boolean,
-  now: number,
-): Promise<void> {
-  await store.run((q) => setRunnerAgentSignedInSteps(q, runnerId, agent, signedIn, now));
 }
 
 export type RunnerAssignment = {
