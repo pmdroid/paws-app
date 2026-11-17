@@ -104,8 +104,10 @@ export interface Rendered {
 
 /** The Findings page loads its own data into this root. */
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
-const IMPROVEMENTS_ROOT = `${pageHeading("improvements")}<div id="improvements-page"></div>`;
-const CONTEXT_ROOT = `${pageHeading("context")}<div id="context-page"></div>`;
+const PAGE_ROOTS: Partial<Record<Route["view"], string>> = {
+  improvements: `${pageHeading("improvements")}<div id="improvements-page"></div>`,
+  context: `${pageHeading("context")}<div id="context-page"></div>`,
+};
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
@@ -126,41 +128,38 @@ export function render(model: RenderModel): Rendered {
           ? '<div id="runner-settings"></div>'
           : model.route.view === "findings"
             ? FINDINGS_ROOT
-            : model.route.view === "improvements"
-              ? IMPROVEMENTS_ROOT
-              : model.route.view === "context"
-                ? CONTEXT_ROOT
-                : settingsPage
-                  ? renderSettingsPage(settingsPage)
-                  : model.route.view === "questions"
-                    ? renderQuestions({
-                        selected: model.route.id,
-                        list: model.questions ?? null,
-                        detail:
-                          model.question?.question.id === model.route.id ? model.question : null,
-                        missing:
-                          model.route.id !== null && model.missingQuestion === model.route.id,
-                        error: model.phase === "error" ? model.error : null,
-                      })
-                    : model.route.view === "evidence"
-                      ? renderEvidence(model)
-                      : model.route.view === "overview"
-                        ? model.overview
-                          ? viewOverview(model.overview)
-                          : renderPending(model)
-                        : model.route.view === "mergeQueue"
-                          ? viewMergeQueue(model)
-                          : model.phase !== "loading" && openDetail(model)
-                            ? issuePage(
-                                model.issue!,
-                                model.closeout ?? emptyCloseoutView(),
-                                model.engineUrl,
-                              )
-                            : model.phase !== "loading" &&
-                                model.issues &&
-                                (route.view === "issues" || route.view === "runs")
-                              ? viewIssues(model.issues, route.id)
-                              : renderPending(model),
+            : PAGE_ROOTS[model.route.view]
+              ? PAGE_ROOTS[model.route.view]!
+              : settingsPage
+                ? renderSettingsPage(settingsPage)
+                : model.route.view === "questions"
+                  ? renderQuestions({
+                      selected: model.route.id,
+                      list: model.questions ?? null,
+                      detail:
+                        model.question?.question.id === model.route.id ? model.question : null,
+                      missing: model.route.id !== null && model.missingQuestion === model.route.id,
+                      error: model.phase === "error" ? model.error : null,
+                    })
+                  : model.route.view === "evidence"
+                    ? renderEvidence(model)
+                    : model.route.view === "overview"
+                      ? model.overview
+                        ? viewOverview(model.overview)
+                        : renderPending(model)
+                      : model.route.view === "mergeQueue"
+                        ? viewMergeQueue(model)
+                        : model.phase !== "loading" && openDetail(model)
+                          ? issuePage(
+                              model.issue!,
+                              model.closeout ?? emptyCloseoutView(),
+                              model.engineUrl,
+                            )
+                          : model.phase !== "loading" &&
+                              model.issues &&
+                              (route.view === "issues" || route.view === "runs")
+                            ? viewIssues(model.issues, route.id)
+                            : renderPending(model),
     title,
   };
 }
