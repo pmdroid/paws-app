@@ -24,10 +24,12 @@ import {
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
+  USER_SETTINGS_PAGES,
   WORKSPACE_PAGES,
   settingsAreEditable,
   settingsPageRoute,
   shownSettingsPage,
+  type SettingsPage,
 } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { CommandPalette, shortcutLabel } from "./command-palette";
@@ -165,23 +167,12 @@ export function Navigation({
                   <span>{PAGES.workspace.title}</span>
                 </SidebarMenuLink>
                 {route.view === "workspace" && (
-                  <SidebarMenu
-                    aria-label="Workspace pages"
-                    className="mt-1 ml-4 gap-0.5 border-l border-border pl-2"
-                  >
-                    {WORKSPACE_PAGES.map((page) => (
-                      <li key={page.id}>
-                        <SidebarMenuLink
-                          to={routePath(settingsPageRoute(page.id))}
-                          active={shownSettingsPage(route) === page.id}
-                          onClick={onNavigate}
-                          className="text-[13px]"
-                        >
-                          {page.name}
-                        </SidebarMenuLink>
-                      </li>
-                    ))}
-                  </SidebarMenu>
+                  <SidebarSubmenu
+                    label="Workspace pages"
+                    pages={WORKSPACE_PAGES}
+                    route={route}
+                    onNavigate={onNavigate}
+                  />
                 )}
               </li>
             )}
@@ -193,14 +184,52 @@ export function Navigation({
           <SidebarMenuLink
             to={routePath({ view: "settings" })}
             active={route.view === "settings"}
+            aria-current={undefined}
             onClick={onNavigate}
           >
             <Settings className="size-4 shrink-0" aria-hidden="true" />
             <span>Settings</span>
           </SidebarMenuLink>
+          {route.view === "settings" && (
+            <SidebarSubmenu
+              label="Settings pages"
+              pages={USER_SETTINGS_PAGES}
+              route={route}
+              onNavigate={onNavigate}
+            />
+          )}
         </li>
       </SidebarMenu>
     </nav>
+  );
+}
+
+function SidebarSubmenu({
+  label,
+  pages,
+  route,
+  onNavigate,
+}: {
+  label: string;
+  pages: readonly { id: SettingsPage; name: string }[];
+  route: Route;
+  onNavigate?: () => void;
+}) {
+  return (
+    <SidebarMenu aria-label={label} className="mt-1 ml-4 gap-0.5 border-l border-border pl-2">
+      {pages.map((page) => (
+        <li key={page.id}>
+          <SidebarMenuLink
+            to={routePath(settingsPageRoute(page.id))}
+            active={shownSettingsPage(route) === page.id}
+            onClick={onNavigate}
+            className="text-[13px]"
+          >
+            {page.name}
+          </SidebarMenuLink>
+        </li>
+      ))}
+    </SidebarMenu>
   );
 }
 

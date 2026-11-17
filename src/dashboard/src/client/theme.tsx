@@ -193,10 +193,6 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "a") {
-    if (has("settings-link"))
-      return styled(
-        "-mb-px flex min-h-control items-center whitespace-nowrap border-b-2 border-transparent px-4 py-1.5 text-sm font-medium text-muted-foreground no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground",
-      );
     if (has("improvement-row"))
       return styled(
         "flex min-h-control min-w-0 flex-col gap-2 rounded-base border border-border bg-secondary-background px-4 py-3 no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring hover:bg-background aria-[current=true]:bg-accent",
@@ -764,7 +760,6 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex min-w-0 flex-col gap-4");
   if (name === "ul" && has("overview-work"))
     return styled("m-0 list-none divide-y-2 divide-border p-0");
-  if (has("settings-item")) return styled("shrink-0");
   if (name === "li" || has("it", "act", "qe")) return styled("py-3");
   if (has("err-bar"))
     return styled(

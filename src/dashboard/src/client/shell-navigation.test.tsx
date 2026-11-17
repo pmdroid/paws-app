@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
-import { WORKSPACE_PAGES, setSettingsAdmin } from "./settings-pages";
+import { USER_SETTINGS_PAGES, WORKSPACE_PAGES, setSettingsAdmin } from "./settings-pages";
 import type { Route } from "./route";
 import { Navigation } from "./shell";
 
@@ -67,4 +67,32 @@ test("the Workspace submenu is closed away from Workspace and opens on its first
 test("members see no Workspace submenu on a workspace path", () => {
   const links = sidebar(false, "/workspace/merging");
   expect(links.map((link) => link.group)).not.toContain("Workspace pages");
+});
+
+test("admins and members see the Settings submenu on a Settings page, marking the current one", () => {
+  for (const admin of [true, false]) {
+    const links = sidebar(admin, "/settings/agent-accounts", {
+      view: "settings",
+      page: "agent-accounts",
+    });
+    const settings = links.findIndex((link) => link.text === "Settings");
+    expect(links[settings]).toMatchObject({ href: "/settings", current: null });
+    expect(links.slice(settings + 1)).toEqual(
+      USER_SETTINGS_PAGES.map((page) => ({
+        text: page.name,
+        href: `/settings/${page.id}`,
+        current: page.id === "agent-accounts" ? "page" : null,
+        group: "Settings pages",
+      })),
+    );
+  }
+});
+
+test("the Settings submenu is closed away from Settings and opens on its first page", () => {
+  const away = sidebar(false, "/runners", { view: "runners", id: null } as Route);
+  expect(away.map((link) => link.group)).not.toContain("Settings pages");
+  const first = sidebar(false, "/settings", { view: "settings" });
+  expect(first.filter((link) => link.current === "page").map((link) => link.text)).toEqual([
+    "Your account",
+  ]);
 });

@@ -38,11 +38,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
     const route = settingsPageRoute(page.id);
     expect(parseRoute(routeHref(route))).toEqual(route);
     const result = render({ ...model, route });
-    expect(result.content).toContain(
-      route.view === "workspace"
-        ? `<h1>${page.name}</h1>`
-        : `aria-current="page" class="settings-link">${page.name}</a>`,
-    );
+    expect(result.content).toContain(`<h1>${page.name}</h1>`);
     expect(result.content).not.toContain("settings-navigation");
     expect(result.title).toContain(page.name);
   }

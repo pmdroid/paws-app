@@ -68,9 +68,7 @@ async function visit(page: Page, width: number, name: string, path: string, head
   current = `${name}@${width}`;
   const before = { requests: requests.length, statements: f.statements() };
   await page.goto(`${f.origin}${f.fill(path)}`);
-  await expect(page.locator("#content h1, .settings-link[aria-current]").first()).toHaveText(
-    heading,
-  );
+  await expect(page.locator("#content h1").first()).toHaveText(heading);
   await page.waitForTimeout(5_600);
   const seen = requests.slice(before.requests);
   visits.push({
@@ -621,8 +619,28 @@ try {
       ]);
     await visit(page, width, "settings-member", "/dashboard/settings/merging", "Your account");
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
-    await expect(page.locator(".settings-nav a")).toHaveText(["Your account", "Agent accounts"]);
+    await expect(page.locator(".settings-nav")).toHaveCount(0);
     await expect(page.getByRole("list", { name: "Workspace pages" })).toHaveCount(0);
+    for (const viewer of [admin, page]) {
+      if (viewer === admin) await viewer.goto(`${f.origin}/dashboard/settings`);
+      if (width <= 390) await viewer.getByRole("button", { name: "Open navigation" }).click();
+      const settingsMenu = (width <= 390 ? viewer.getByRole("dialog") : viewer)
+        .getByRole("navigation", { name: "Main navigation" })
+        .getByRole("list", { name: "Settings pages" })
+        .getByRole("link");
+      await expect(settingsMenu).toHaveText(["Your account", "Agent accounts"]);
+      await expect(settingsMenu.and(viewer.locator('[aria-current="page"]'))).toHaveText(
+        "Your account",
+      );
+      await viewer.screenshot({
+        path: join(out, `settings-submenu-${viewer === admin ? "admin" : "member"}-${width}.png`),
+        animations: "disabled",
+      });
+      await settingsMenu.filter({ hasText: "Agent accounts" }).click();
+      await expect(viewer.locator("#content h1")).toHaveText("Agent accounts");
+      await viewer.goBack();
+      await expect(viewer.locator("#content h1")).toHaveText("Your account");
+    }
     if (width > 390)
       await expect(sidebar(page).filter({ hasText: /^(Workspace|Settings)$/ })).toHaveText([
         "Settings",
