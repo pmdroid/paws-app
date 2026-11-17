@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { asc, count, eq, sql } from "drizzle-orm";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, type Db } from "../src/db";
+import { JobLoop, OutboxDispatcher, setJournalSink, type Db } from "../src/db";
 import {
   INTAKE_RETRY_MS,
   createFakeTracker,
@@ -450,6 +450,53 @@ test("an inbox event inserted by raw SQL while the queue sleeps is taken without
     expect(delivered).toEqual([event.dedupeKey]);
   } finally {
     await unlisten();
+    await queue.stop();
+    await close();
+  }
+});
+
+test("an arrival whose Linear call times out is journalled, leaves Paws running and is retried by catch-up", async () => {
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
+  const journalled: string[] = [];
+  const restore = setJournalSink((line) => journalled.push(line));
+  const escaped: unknown[] = [];
+  const onUnhandled = (error: unknown) => escaped.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  const delivered: string[] = [];
+  const queue = createIntakeQueue({
+    store,
+    log: () => {},
+    arrive: async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    },
+    deliver: async (event) => {
+      delivered.push(event.sessionId!);
+    },
+  });
+  try {
+    const event = created(0);
+    await store.commit(event);
+    queue.arrive(event);
+    await queue.idle();
+    queue.wake();
+    await queue.idle();
+    expect({
+      escaped,
+      journalled: journalled.filter((line) => line.includes("The operation timed out.")),
+      delivered,
+      unhandled: await unhandled(db),
+    }).toEqual({
+      escaped: [],
+      journalled: [
+        "catch item=none operation=intake-queue.arrive.then error=The operation timed out.",
+      ],
+      delivered: ["s0"],
+      unhandled: 0,
+    });
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    restore();
     await queue.stop();
     await close();
   }

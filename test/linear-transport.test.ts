@@ -154,3 +154,36 @@ describe("Linear HTTP failures", () => {
     expect(retryAfterMs(await failing(503))).toBeNull();
   });
 });
+
+test("a Linear request that times out while its response body is read leaves no unhandled rejection", async () => {
+  const escaped: unknown[] = [];
+  const onUnhandled = (error: unknown) => escaped.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  const controller = new AbortController();
+  const timedOut = new DOMException("The operation timed out.", "TimeoutError");
+  const client = createLinearClient({
+    auth: {
+      ensureFresh: async () => "fixture-token",
+      forceRefresh: async () => "fixture-token",
+      hasToken: async () => true,
+    },
+    fetch: async () => {
+      const body = new ReadableStream({
+        start(stream) {
+          controller.signal.addEventListener("abort", () => stream.error(controller.signal.reason));
+        },
+      });
+      controller.abort(timedOut);
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    },
+  });
+  try {
+    const failure = await client
+      .query("query { viewer { id } }", {}, { signal: controller.signal })
+      .catch((error: unknown) => error);
+    await Bun.sleep(10);
+    expect({ failure, escaped }).toEqual({ failure: timedOut, escaped: [] });
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
