@@ -87,6 +87,7 @@ const MODULES = [
   "live-preview",
   "dashboard-links",
   "retros",
+  "project-context",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -173,6 +174,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   runtimes: ["journal"],
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
+  "project-context": ["db", "linear"],
   retros: [
     "journal",
     "db",

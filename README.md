@@ -44,6 +44,7 @@ Delegate an issue to the Paws app in Linear. Follow progress in the issue's agen
 - [Follow sessions and answer questions](docs/linear-agent-sessions.md).
 - [Review checks and evidence](docs/closeout.md).
 - [Review improvements](docs/improvement-review.md).
+- [Project context](docs/project-context.md).
 - [Declare your repository's runtimes](docs/runtimes.md).
 - [Add local implementation skills](docs/local-skills.md).
 - [Set a local Closeout policy](docs/local-closeout.md).

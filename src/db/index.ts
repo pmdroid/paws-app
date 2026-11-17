@@ -85,6 +85,7 @@ export * from "./hot-files";
 export * from "./integration-events";
 export * from "./settings";
 export * from "./linear-context";
+export * from "./project-context";
 export * from "./linear-sessions";
 export * from "./task-requests";
 export * from "./task-blocks";
