@@ -115,8 +115,8 @@ async function fixture() {
 test("a named account goes to the runner only once it reports the binding", async () => {
   const { db, now, runnerId, userId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.84" })).toBe(200);
-  const legacy = await check();
-  expect(await commandAccount(db, legacy)).toBeNull();
+  const unnamed = await check();
+  expect(await commandAccount(db, unnamed)).toBeNull();
 
   const account = await createAgentAccount(db, {
     ownerUserId: userId,
@@ -138,7 +138,7 @@ test("a named account goes to the runner only once it reports the binding", asyn
     await heartbeat({ runnerVersion: "0.1.84", accounts: { protocol: 1, bindings: [] } }),
   ).toBe(200);
   await expect(check(named)).rejects.toThrow(/not reported this account binding/);
-  expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
+  expect(await queued()).toEqual([{ id: unnamed, account: undefined }]);
 
   expect(
     await heartbeat({
@@ -151,18 +151,12 @@ test("a named account goes to the runner only once it reports the binding", asyn
     bindingId: binding.id,
     named: true,
   });
-  // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
-  expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
+  // Routine checks go to the runner one at a time: the named one follows the unnamed one's result.
+  expect(await queued()).toEqual([{ id: unnamed, account: undefined }]);
   await seed(db, (q) =>
     q.orm
       .insert(q.t.runnerHealthResult)
-      .values({ commandId: legacy, runnerId, resultJson: "{}", receivedAt: now }),
+      .values({ commandId: unnamed, runnerId, resultJson: "{}", receivedAt: now }),
   );
   expect(await queued()).toEqual([{ id: accepted, account: named }]);
-  expect(
-    await heartbeat({
-      runnerVersion: "0.1.84",
-      accounts: { protocol: 1, bindings: [{ bindingId: "legacy_claude_x", agent: "claude" }] },
-    }),
-  ).toBe(403);
 });

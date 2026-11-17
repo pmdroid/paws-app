@@ -120,11 +120,7 @@ async function setAgentPolicy(
       .where(ids === undefined ? undefined : inArray(q.t.runnerAgentPolicy.runnerId, ids)),
   );
   if (values.cooldownUntil || values.quotaState === "low") {
-    const bindings = await db.run((q) =>
-      q.all(
-        q.orm.select().from(q.t.agentAccountBinding).where(eq(q.t.agentAccountBinding.legacy, 0)),
-      ),
-    );
+    const bindings = await db.run((q) => q.all(q.orm.select().from(q.t.agentAccountBinding)));
     for (const b of bindings.filter((entry) => ids === undefined || ids.includes(entry.runnerId)))
       await recordAccountObservation(db, {
         bindingId: b.id,

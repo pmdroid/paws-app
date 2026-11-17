@@ -45,7 +45,7 @@ function context(overrides: Partial<RunnerCommandVerifier> = {}) {
 const signed = (command: RunnerCommand) =>
   signRunnerCommand({ keyId: "key", privateKey: keys.privateKey, command });
 
-test("a command without an account is the legacy default and still verifies", () => {
+test("a command without an account verifies", () => {
   const { verifier } = context();
   expect(verifyRunnerCommand(signed(probe), verifier)).toEqual({ ok: true, command: probe });
 });
@@ -85,10 +85,9 @@ test.each<RunnerCommand["type"]>(["cancel", "handover", "checkpoint", "upgrade"]
   },
 );
 
-test("legacy, malformed and extra account fields are rejected", () => {
+test("malformed and extra account fields are rejected", () => {
   for (const value of [
-    { ...account, accountId: "legacy_claude_workspace" },
-    { ...account, bindingId: "legacy_claude_runner" },
+    { ...account, accountId: "-claude" },
     { accountId: account.accountId },
     { ...account, email: "person@example.test" },
     null,

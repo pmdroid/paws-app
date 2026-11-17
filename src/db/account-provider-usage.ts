@@ -8,7 +8,7 @@ export function* usageAccountsSteps(q: Q) {
     q.orm
       .select()
       .from(a)
-      .where(and(isNull(a.removedAt), eq(a.enabled, 1), eq(a.legacy, 0))),
+      .where(and(isNull(a.removedAt), eq(a.enabled, 1))),
   );
 }
 export function* providerUsageSteps(q: Q, id: string) {

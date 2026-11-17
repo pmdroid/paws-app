@@ -76,7 +76,7 @@ export function createRunnerLogin(options: { store: Db; work: RunnerWork; now?: 
     try {
       yield* q.transaction(function* (tx) {
         const binding = yield* getAgentBindingSteps(tx, workspaceId, bindingId);
-        if (binding.legacy || (yield* agentAccountSignedInSteps(tx, binding.accountId))) return;
+        if (yield* agentAccountSignedInSteps(tx, binding.accountId)) return;
         yield* removeAgentBindingSteps(tx, { workspaceId, bindingId, now: now() });
       });
     } catch (error) {
@@ -142,7 +142,6 @@ export function createRunnerLogin(options: { store: Db; work: RunnerWork; now?: 
     const binding = yield* getAgentBindingSteps(q, principal.workspaceId, bindingId);
     const account = yield* getAgentAccountSteps(q, principal.workspaceId, binding.accountId);
     if (
-      binding.legacy ||
       binding.runnerId !== runnerId ||
       binding.agent !== agent ||
       binding.removedAt !== null ||

@@ -275,13 +275,7 @@ test("the schema keeps each binding to one workspace, account and agent", async 
     label: "A",
     now: NOW,
   });
-  const bind = (
-    workspace: string,
-    agent: string,
-    runner: string,
-    legacy = 0,
-    quotaScope = "account",
-  ) =>
+  const bind = (workspace: string, agent: string, runner: string, quotaScope = "account") =>
     insert(db, (q) =>
       q.orm.insert(q.t.agentAccountBinding).values({
         id: `B-${workspace}-${agent}-${runner}`,
@@ -289,14 +283,13 @@ test("the schema keeps each binding to one workspace, account and agent", async 
         accountId: a.id,
         agent,
         runnerId: runner,
-        legacy,
         quotaScope,
         createdAt: NOW,
       }),
     );
   await expect(bind("W1", "codex", "R1")).rejects.toMatchObject(refused("foreign key"));
   await expect(bind("W2", "claude", "R3")).rejects.toMatchObject(refused("foreign key"));
-  await expect(bind("W1", "claude", "R1", 1, "account")).rejects.toMatchObject(
+  await expect(bind("W1", "claude", "R1", "runner")).rejects.toMatchObject(
     refused("check constraint"),
   );
   await expect(bind("W1", "claude", "missing")).rejects.toMatchObject(refused("foreign key"));
@@ -451,39 +444,4 @@ test("identity stays attached after an account is disabled or removed", async ()
       })
     ).label,
   ).toBe("A");
-
-  await insert(db, (q) =>
-    q.orm.insert(q.t.agentAccount).values({
-      id: "legacy_claude_W1",
-      workspaceId: "W1",
-      agent: "claude",
-      label: "Claude default sign-in",
-      legacy: 1,
-      enabled: 1,
-      createdAt: NOW,
-      updatedAt: NOW,
-    }),
-  );
-  expect(
-    await code(
-      async () =>
-        await removeAgentAccount(db, {
-          workspaceId: "W1",
-          accountId: "legacy_claude_W1",
-          now: NOW,
-        }),
-    ),
-  ).toBe("legacy");
-  expect(
-    await code(
-      async () =>
-        await bindAgentAccount(db, {
-          userId: "user-W1",
-          workspaceId: "W1",
-          accountId: "legacy_claude_W1",
-          runnerId: "R1",
-          now: NOW,
-        }),
-    ),
-  ).toBe("legacy");
 });

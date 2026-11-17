@@ -171,7 +171,6 @@ export {
 } from "./preview";
 
 export {
-  LEGACY_ACCOUNT_PREFIX,
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   RunnerAccountSchema,

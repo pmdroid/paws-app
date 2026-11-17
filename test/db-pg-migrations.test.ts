@@ -456,6 +456,8 @@ test("account ownership backfills from oldest live binding or first workspace ow
         ('removed','w','bound','claude','r1','account',0,1),
         ('old','w','bound','claude','r2','account',1,NULL),
         ('new','w','bound','claude','r1','account',2,NULL);
+      INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,legacy,quota_scope,created_at) VALUES
+        ('legacy','w','legacy','claude','r1',1,'unknown',0);
     `);
     await migrate(pg, { migrationsFolder: PG_MIGRATIONS_FOLDER });
     expect(
@@ -463,7 +465,6 @@ test("account ownership backfills from oldest live binding or first workspace ow
     ).toEqual([
       { id: "bound", owner_user_id: "later" },
       { id: "fallback", owner_user_id: "first" },
-      { id: "legacy", owner_user_id: null },
     ]);
     expect((await pg.$client.query("SELECT id FROM agent_account_binding")).rows).toHaveLength(3);
   } finally {

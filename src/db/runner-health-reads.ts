@@ -135,25 +135,6 @@ export function* insertHealthResultSteps(
   );
 }
 
-export function* setLegacyAgentQuotaSteps(
-  q: Q,
-  runnerId: string,
-  agent: string,
-  quota: { state: string; resetsAt: number | null; cooldownUntil: number },
-) {
-  const { runnerAgentPolicy: p } = q.t;
-  yield* q.exec(
-    q.orm
-      .update(p)
-      .set({
-        quotaState: quota.state,
-        resetsAt: quota.resetsAt,
-        cooldownUntil: quota.cooldownUntil,
-      })
-      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
-  );
-}
-
 export function* touchRunnerSeenSteps(q: Q, runnerId: string, at: number) {
   yield* noteRunnerSeenSteps(q, runnerId, at);
 }

@@ -105,11 +105,6 @@ test("generated paths reject traversal, symlinks and foreign permissions", () =>
   expect(() =>
     openRunnerAccountHome(root, { ...a, bindingId: "../escape" }, "claude", { signIn: true }),
   ).toThrow();
-  expect(() =>
-    openRunnerAccountHome(root, { ...a, bindingId: "legacy_claude_runner" }, "claude", {
-      signIn: true,
-    }),
-  ).toThrow();
 
   const elsewhere = agentHome();
   symlinkSync(elsewhere, join(root, ".paws-accounts"));

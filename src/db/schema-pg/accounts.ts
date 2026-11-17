@@ -25,7 +25,6 @@ export const agentAccount = pgTable(
     ownerUserId: text("owner_user_id"),
     agent: text().notNull(),
     label: text().notNull(),
-    legacy: integer().default(0).notNull(),
     enabled: integer().default(1).notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
@@ -44,13 +43,9 @@ export const agentAccount = pgTable(
     uniqueIndex("agent_account_label")
       .on(table.workspaceId, table.agent, sql`lower(label)`)
       .where(sql`removed_at IS NULL`),
-    uniqueIndex("agent_account_legacy")
-      .on(table.workspaceId, table.agent)
-      .where(sql`legacy=1`),
     check("agent_account_check_1", sql`length(id) BETWEEN 1 AND 128`),
     check("agent_account_check_2", sql`agent IN ('claude','codex','grok','opencode')`),
     check("agent_account_check_3", sql`length(label) BETWEEN 1 AND 80`),
-    check("agent_account_check_4", sql`legacy IN (0,1)`),
     check("agent_account_check_5", sql`enabled IN (0,1)`),
     check("agent_account_check_6", sql`concurrency IS NULL OR concurrency BETWEEN 1 AND 64`),
   ],
@@ -66,16 +61,12 @@ export const agentAccountBinding = pgTable(
     runnerId: text("runner_id")
       .notNull()
       .references(() => runner.id),
-    legacy: integer().default(0).notNull(),
     quotaScope: text("quota_scope").notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     removedAt: bigint("removed_at", { mode: "number" }),
   },
   (table) => [
     index("agent_binding_account").on(table.accountId),
-    uniqueIndex("agent_binding_legacy")
-      .on(table.runnerId, table.agent)
-      .where(sql`legacy=1`),
     uniqueIndex("agent_binding_runner_account")
       .on(table.runnerId, table.accountId)
       .where(sql`removed_at IS NULL`),
@@ -85,9 +76,7 @@ export const agentAccountBinding = pgTable(
       name: "agent_account_binding_account_id_workspace_id_agent_agent_account_id_workspace_id_agent_fk",
     }),
     check("agent_account_binding_check_1", sql`length(id) BETWEEN 1 AND 128`),
-    check("agent_account_binding_check_2", sql`legacy IN (0,1)`),
     check("agent_account_binding_check_3", sql`quota_scope IN ('account','unknown')`),
-    check("agent_account_binding_check_4", sql`legacy=0 OR quota_scope='unknown'`),
   ],
 );
 

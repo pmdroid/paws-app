@@ -59,7 +59,6 @@ function listsRepository(repositories: string): boolean {
 export function* onboardingAccountStatesSteps(q: Q, workspaceId: string, ownerUserId?: string) {
   const accounts = (yield* listAgentAccountsSteps(q, workspaceId)).filter(
     (row) =>
-      !row.legacy &&
       row.enabled &&
       row.removedAt === null &&
       (ownerUserId === undefined || row.ownerUserId === ownerUserId),

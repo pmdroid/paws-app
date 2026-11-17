@@ -25,7 +25,7 @@ export default {
       profile: { agent: "claude" as const },
     };
     const binding = (await data.listAgentBindings(db, workspace.id)).find(
-      (b) => b.runnerId === runnerId && !b.legacy,
+      (b) => b.runnerId === runnerId,
     )!;
     for (const runnerVersion of [null, "0.1.83"]) {
       await seed(db, (q) =>

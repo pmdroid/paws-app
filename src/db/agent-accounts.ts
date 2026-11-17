@@ -6,7 +6,6 @@ import {
   and,
   asc,
   count,
-  desc,
   eq,
   exists,
   gt,
@@ -38,7 +37,6 @@ export type AgentAccount = {
   ownerUserId: string | null;
   agent: RunnerCodingAgent;
   label: string;
-  legacy: boolean;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -51,7 +49,6 @@ export type AgentAccountBinding = {
   accountId: string;
   agent: RunnerCodingAgent;
   runnerId: string;
-  legacy: boolean;
   quotaScope: "account" | "unknown";
   createdAt: number;
   removedAt: number | null;
@@ -77,7 +74,6 @@ type AgentAccountErrorCode =
   | "invalid"
   | "removed"
   | "disabled"
-  | "legacy"
   | "binding_mismatch"
   | "runner_unsupported";
 
@@ -106,7 +102,6 @@ const accountColumns = (q: Q) => {
     ownerUserId: a.ownerUserId,
     agent: a.agent,
     label: a.label,
-    legacy: a.legacy,
     enabled: a.enabled,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
@@ -118,13 +113,11 @@ const account = (
 ): AgentAccount => ({
   ...row,
   agent: row.agent as RunnerCodingAgent,
-  legacy: row.legacy === 1,
   enabled: row.enabled === 1,
 });
 const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccountBinding => ({
   ...row,
   agent: row.agent as RunnerCodingAgent,
-  legacy: row.legacy === 1,
   quotaScope: row.quotaScope as AgentAccountBinding["quotaScope"],
 });
 
@@ -200,7 +193,7 @@ export function* listAgentAccountsSteps(q: Q, workspaceId: string) {
       .select(accountColumns(q))
       .from(a)
       .where(eq(a.workspaceId, workspaceId))
-      .orderBy(asc(a.agent), desc(a.legacy), asc(a.createdAt), added(q, a.id)),
+      .orderBy(asc(a.agent), asc(a.createdAt), added(q, a.id)),
   );
   return rows.map(account);
 }
@@ -299,11 +292,7 @@ export function* createAgentAccountSteps(
       .select({ position: max(agentAccount.position) })
       .from(agentAccount)
       .where(
-        and(
-          eq(agentAccount.workspaceId, input.workspaceId),
-          eq(agentAccount.agent, input.agent),
-          eq(agentAccount.legacy, 0),
-        ),
+        and(eq(agentAccount.workspaceId, input.workspaceId), eq(agentAccount.agent, input.agent)),
       ),
   );
   yield* q.exec(
@@ -313,7 +302,6 @@ export function* createAgentAccountSteps(
       ownerUserId: input.ownerUserId,
       agent: input.agent,
       label,
-      legacy: 0,
       enabled: 1,
       position: Number(last?.position ?? 0) + 1,
       createdAt: input.now,
@@ -426,8 +414,6 @@ export function* removeAgentAccountSteps(
 ) {
   const { agentAccount, agentAccountBinding } = q.t;
   const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
-  if (row.legacy)
-    throw new AgentAccountError("legacy", "The default sign-in account cannot be removed");
   yield* q.exec(
     q.orm
       .update(agentAccount)
@@ -456,8 +442,6 @@ export function* bindAgentAccountSteps(
 ) {
   const { agentAccountBinding: b } = q.t;
   const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
-  if (row.legacy)
-    throw new AgentAccountError("legacy", "The default sign-in account binds automatically");
   if (row.ownerUserId !== input.userId)
     throw new AgentAccountError("not-your-account", "Agent account belongs to another member");
   const runner = yield* runnerWorkspaceSteps(q, input.runnerId);
@@ -482,7 +466,6 @@ export function* bindAgentAccountSteps(
       accountId: row.id,
       agent: row.agent,
       runnerId: input.runnerId,
-      legacy: 0,
       quotaScope: "account",
       createdAt: input.now,
     }),
@@ -495,11 +478,11 @@ export function* bindToOwnerRunnersSteps(q: Q, accountId: string, now: number) {
   const { agentAccount: a, runner: r } = q.t;
   const owned = yield* q.one(
     q.orm
-      .select({ workspaceId: a.workspaceId, ownerUserId: a.ownerUserId, legacy: a.legacy })
+      .select({ workspaceId: a.workspaceId, ownerUserId: a.ownerUserId })
       .from(a)
       .where(and(eq(a.id, accountId), isNull(a.removedAt))),
   );
-  if (!owned || owned.legacy || owned.ownerUserId === null) return;
+  if (!owned || owned.ownerUserId === null) return;
   const runners = yield* q.all(
     q.orm
       .select({ id: r.id })
@@ -539,8 +522,6 @@ export function* removeAgentBindingSteps(
 ) {
   const { agentAccountBinding: b } = q.t;
   const row = yield* getAgentBindingSteps(q, input.workspaceId, input.bindingId);
-  if (row.legacy)
-    throw new AgentAccountError("legacy", "The default sign-in binding cannot be removed");
   yield* q.exec(
     q.orm
       .update(b)
@@ -685,12 +666,7 @@ export function* recordCommandAccountSteps(
   const named = "account" in command ? command.account : undefined;
   if (!named) return null;
   const row = yield* getAgentBindingSteps(q, command.workspaceId, named.bindingId);
-  if (
-    row.legacy ||
-    row.accountId !== named.accountId ||
-    row.runnerId !== command.runnerId ||
-    row.agent !== agent
-  )
+  if (row.accountId !== named.accountId || row.runnerId !== command.runnerId || row.agent !== agent)
     throw new AgentAccountError(
       "binding_mismatch",
       "Agent account binding does not match the command",
@@ -877,7 +853,6 @@ export function* runnerNamedBindingsSteps(q: Q, runnerId: string, workspaceId: s
         and(
           eq(b.runnerId, runnerId),
           eq(b.workspaceId, workspaceId),
-          eq(b.legacy, 0),
           isNull(b.removedAt),
           isNull(a.removedAt),
         ),
@@ -1002,7 +977,6 @@ export function boundAgentAccountWhere(q: Q, runnerId: AnyColumn, agent: AnyColu
         and(
           eq(b.runnerId, runnerId),
           eq(b.agent, agent),
-          eq(b.legacy, 0),
           isNull(b.removedAt),
           isNull(a.removedAt),
           eq(a.enabled, 1),

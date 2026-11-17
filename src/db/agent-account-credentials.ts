@@ -216,7 +216,6 @@ export function* centralAgentAccountsSteps(
             : or(isNull(c.ciphertext), ne(c.ciphertext, "")),
           eq(a.workspaceId, workspaceId),
           eq(a.agent, agent),
-          eq(a.legacy, 0),
           eq(a.enabled, 1),
           isNull(a.removedAt),
         ),

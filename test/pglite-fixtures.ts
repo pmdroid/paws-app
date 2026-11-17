@@ -186,8 +186,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
     const bindings = await listAgentBindings(db, row.workspaceId);
     if (
       !bindings.some(
-        (b) =>
-          b.runnerId === row.runnerId && b.agent === row.agent && !b.legacy && b.removedAt === null,
+        (b) => b.runnerId === row.runnerId && b.agent === row.agent && b.removedAt === null,
       )
     ) {
       const account = await createAgentAccount(db, {
@@ -212,7 +211,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       {
         protocol: 1,
         bindings: (await listAgentBindings(db, row.workspaceId))
-          .filter((b) => b.runnerId === row.runnerId && !b.legacy && b.removedAt === null)
+          .filter((b) => b.runnerId === row.runnerId && b.removedAt === null)
           .map((b) => ({ bindingId: b.id, agent: b.agent })),
       },
       row.now,

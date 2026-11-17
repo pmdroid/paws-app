@@ -60,7 +60,7 @@ export function* signInFitSteps(
   requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>,
 ): Steps<AccountFit | AccountRefusal> {
   const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
-    (binding) => binding.runnerId === runner.id && binding.agent === input.agent && !binding.legacy,
+    (binding) => binding.runnerId === runner.id && binding.agent === input.agent,
   );
   const refusals: AccountRefusal[] = [];
   for (const binding of bindings) {

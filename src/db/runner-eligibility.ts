@@ -193,7 +193,6 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
         status: r.status,
         revokedAt: r.revokedAt,
         lastSeenAt: r.lastSeenAt,
-        legacy: b.legacy,
       })
       .from(b)
       .innerJoin(a, eq(a.id, b.accountId))

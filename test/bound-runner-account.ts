@@ -19,7 +19,7 @@ export function* boundAccountSteps(q: database.Q, runnerId: string) {
   const row =
     runner &&
     (yield* database.listAgentBindingsSteps(q, runner.workspaceId)).find(
-      (binding) => binding.runnerId === runnerId && !binding.legacy,
+      (binding) => binding.runnerId === runnerId,
     );
   if (!row) throw new Error("Missing fixture binding");
   return { accountId: row.accountId, bindingId: row.id, named: true };
@@ -35,7 +35,7 @@ export function boundHeartbeat(
     args[11] = {
       protocol: 1,
       bindings: bindings
-        .filter((b) => b.runnerId === args[0] && !b.legacy)
+        .filter((b) => b.runnerId === args[0])
         .map((b) => ({ bindingId: b.id, agent: b.agent as RunnerCodingAgent })),
     };
     return heartbeat(...args);

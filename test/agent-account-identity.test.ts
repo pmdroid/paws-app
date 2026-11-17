@@ -192,12 +192,6 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
   expect(RunnerAccountSchema.safeParse({ ...a, token: SECRET }).success).toBe(false);
   expect(RunnerAccountSchema.safeParse({ ...a, bindingId: "../R2" }).success).toBe(false);
   expect(
-    RunnerAccountSchema.safeParse({
-      accountId: "legacy_claude_ws",
-      bindingId: "legacy_claude_R1",
-    }).success,
-  ).toBe(false);
-  expect(
     RunnerAccountCapabilitySchema.safeParse({
       protocol: 1,
       bindings: [{ bindingId: f.bindings.a1, agent: "claude", home: "/x" }],

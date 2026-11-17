@@ -267,6 +267,13 @@
       "when": 1794880140920,
       "tag": "0037_drop_policy_runner_warning",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794886262808,
+      "tag": "0038_drop_agent_account_legacy",
+      "breakpoints": true
     }
   ]
 }

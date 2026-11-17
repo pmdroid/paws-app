@@ -302,7 +302,6 @@ function* retroBindingSteps(
     if (
       binding.runnerId !== input.runnerId ||
       binding.agent !== input.agent ||
-      binding.legacy ||
       binding.removedAt !== null
     )
       continue;
