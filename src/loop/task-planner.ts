@@ -11,6 +11,7 @@ import {
   type StoredTaskClassification,
 } from "../db";
 import type { AgentLaunch } from "./agents";
+import type { PromptPart } from "./prompt-fit";
 import { classifyTask } from "./task-classifier";
 
 export function createTaskPlanner(options: {
@@ -40,7 +41,7 @@ export function createTaskPlanner(options: {
     async plan(input: {
       taskKey: string;
       sessionId: string;
-      request: (signal: AbortSignal) => Promise<string>;
+      request: (signal: AbortSignal) => Promise<string | readonly PromptPart[]>;
       onLaneWait?: (waiting: boolean) => Promise<void>;
     }): Promise<StoredTaskClassification> {
       const initialStopVersion = stopVersion;
