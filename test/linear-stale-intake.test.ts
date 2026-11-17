@@ -27,7 +27,10 @@ function captureJournal(): string[] {
   return lines;
 }
 
-async function fixture(delegated: boolean) {
+async function fixture(
+  delegated: boolean,
+  options: { updatedAgoMs?: number; withDb?: boolean } = {},
+) {
   const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
@@ -44,7 +47,7 @@ async function fixture(delegated: boolean) {
     id: "session",
     issueId: "issue",
     createdAtMs: now - 120_000,
-    updatedAtMs: now - 60_000,
+    updatedAtMs: now - (options.updatedAgoMs ?? 60_000),
     endedAtMs: now - 60_000,
     stoppedAtMs: null,
     stale: true,
@@ -62,7 +65,7 @@ async function fixture(delegated: boolean) {
       }),
     },
     store,
-    db,
+    ...(options.withDb === false ? {} : { db }),
     timer: false,
     onEvent: (event) =>
       acknowledgeNewSession(tracker, event, async (accepted) => {
@@ -161,4 +164,55 @@ test("a quiet refusal posts nothing to Linear and still writes a journal line", 
   expect(accepted).toBe(false);
   expect(tracker.progress.map((update) => update.kind)).toEqual(["thought"]);
   expect(lines).toEqual([`linear intake issue session quiet refused: ${NOT_DELEGATED}`]);
+});
+
+test("catch-up recovers a stale session last updated before the poll window", async () => {
+  const f = await fixture(true, { updatedAgoMs: 3 * 60 * 60_000 });
+  try {
+    await f.poller.pollNow();
+    expect(await listWorkItems(f.db)).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a poll without a database cannot tell a stale session has no work, so it starts none", async () => {
+  const f = await fixture(true, { withDb: false });
+  try {
+    await f.poller.pollNow();
+    expect(await listWorkItems(f.db)).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a refusal is journaled even when its Linear reply fails", async () => {
+  const lines = captureJournal();
+  const tracker = createFakeTracker([]);
+  const event: AcceptedLinearEvent = {
+    dedupeKey: "session:loud:created",
+    deliveryId: "delivery",
+    source: "webhook",
+    action: "created",
+    sessionId: "loud",
+    issueId: "issue",
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs: 1,
+    payload: "{}",
+  };
+  const failing = {
+    ...tracker,
+    postProgress: async (update: Parameters<typeof tracker.postProgress>[0]) => {
+      if (update.kind === "error") throw new Error("Linear is down");
+      await tracker.postProgress(update);
+    },
+  };
+  await expect(
+    acknowledgeNewSession(failing, event, async () => {
+      throw new LinearIntakeRefusedError(NOT_DELEGATED);
+    }),
+  ).rejects.toThrow("Linear is down");
+  expect(lines).toEqual([`linear intake issue session loud refused: ${NOT_DELEGATED}`]);
 });

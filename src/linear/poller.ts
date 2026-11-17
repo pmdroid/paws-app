@@ -257,9 +257,9 @@ export function startCatchUpPoller(options: {
       if (session.stoppedAtMs) continue;
       if (
         session.stale &&
-        session.updatedAtMs >= since &&
-        !(await sessionHasTask(session.id)) &&
-        !(db !== undefined && (await issueHasItemOutside(db, session.issueId)))
+        db !== undefined &&
+        !(await sessionHasWorkItem(db, session.id)) &&
+        !(await issueHasItemOutside(db, session.issueId))
       ) {
         staleSessions.add(session.id);
         sessionByIssue.set(session.issueId, session.id);

@@ -15,10 +15,15 @@ export class LinearIntakeRefusedError extends Error {
   readonly quiet: boolean;
   /** True when the message is the session's whole answer, posted as its response. */
   readonly response: boolean;
-  constructor(message: string, options: { quiet?: boolean; response?: boolean } = {}) {
+  readonly journaled: boolean;
+  constructor(
+    message: string,
+    options: { quiet?: boolean; response?: boolean; journaled?: boolean } = {},
+  ) {
     super(message);
     this.quiet = options.quiet === true;
     this.response = options.response === true;
+    this.journaled = options.journaled === true;
   }
 }
 
@@ -99,6 +104,10 @@ export async function acknowledgeNewSession(
     if (options.signal?.aborted) throw error;
 
     if (error instanceof LinearIntakeRefusedError) {
+      if (!error.journaled)
+        journal(
+          `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} refused: ${error.message}`,
+        );
       if (
         !error.quiet &&
         event.action === "created" &&
@@ -115,9 +124,6 @@ export async function acknowledgeNewSession(
               },
           { signal: options.signal },
         );
-      journal(
-        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} refused: ${error.message}`,
-      );
       return false;
     }
     if (error instanceof LinearIssueClosedError && event.sessionId !== null) {

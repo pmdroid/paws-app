@@ -784,9 +784,9 @@ test("a session Paws started without a stored delegator is refused without a Lin
     await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
     expect(await listWorkItems(f.db)).toHaveLength(0);
     expect(f.tracker.progress.slice(1)).toEqual([]);
-    expect(lines.join("\n")).toContain(
+    expect(lines.filter((line) => line.includes("could not tell who started"))).toEqual([
       "linear intake issue session session refused: Paws could not tell who started this session.",
-    );
+    ]);
   } finally {
     restore();
     await f.close();
