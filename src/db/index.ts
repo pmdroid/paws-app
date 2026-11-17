@@ -25,6 +25,7 @@ export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
+export { idleBackstopMs, listenForNotify } from "./notify";
 export { PG_MIGRATIONS_FOLDER, migrationTags } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";

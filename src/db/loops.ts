@@ -3,7 +3,7 @@ import { systemClock, type Clock } from "../core";
 import type { Db } from "./db";
 import { OutboxDispatcher } from "./dispatcher";
 import { roleRunsJobs, type InstanceRole } from "./instances";
-import { JOB_IDLE_CLAIM_MS, JobLoop } from "./loop";
+import { jobIdleClaimMs, JobLoop } from "./loop";
 import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
 const JOB_LEASE_MS = 120_000;
@@ -34,7 +34,7 @@ export async function startLoops(input: {
     instanceId: input.instanceId,
     concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
-    pollMs: JOB_IDLE_CLAIM_MS,
+    pollMs: jobIdleClaimMs(input.store ?? input.db),
     ...(input.mergeParallel ? { mergeParallel: input.mergeParallel } : {}),
   });
   const outbox = new OutboxDispatcher(input.db, clock, {

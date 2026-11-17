@@ -19,7 +19,12 @@ import {
   type LinearUsage,
 } from "./budget";
 import { createInboxStore } from "./inbox";
-import { createLinearIntake, type IntakeQueue } from "./intake-queue";
+import {
+  createLinearIntake,
+  intakePollMs,
+  wakeIntakeOnInsert,
+  type IntakeQueue,
+} from "./intake-queue";
 import {
   createLinearAuth,
   readLinearEnv,
@@ -136,6 +141,7 @@ export async function openLinear(options: {
           sessionBusy: (sessionId) => sessionHasItemInFlight(options.store, sessionId),
           signal,
           ledger,
+          pollMs: intakePollMs(options.store),
         });
   const onEvent = intake?.onEvent;
   let running: Promise<LinearRunning> | null = null;
@@ -197,6 +203,10 @@ export async function openLinear(options: {
             (async (command) => await persistStopCommand(options.store, command)),
         })
       : null;
+    const unlisten =
+      poller !== null && intake !== undefined
+        ? wakeIntakeOnInsert(options.store, intake.queue)
+        : async () => {};
     if (poller !== null) intake?.queue.wake();
     return {
       async catchUp() {
@@ -211,8 +221,7 @@ export async function openLinear(options: {
         stopping.abort();
         const polling = poller?.stop();
         const queued = intake?.queue.stop();
-        await Promise.all([polling, queued]);
-        await onEvent?.close();
+        await Promise.all([polling, queued, onEvent?.close(), unlisten()]);
       },
     };
   }
