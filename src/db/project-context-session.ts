@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db, Q } from "./db";
 import {
   contextRecordColumns,
@@ -57,28 +57,29 @@ export async function getContextSession(
 
 export function* saveContextSessionSteps(q: Q, input: ContextSessionSave) {
   const s = q.t.contextSession;
-  const previous = yield* readContextSessionSteps(q, input.consumerKey);
-  const version = (previous?.version ?? 0) + 1;
   const values = {
     workspaceId: input.namespace.workspaceId,
     scopeKind: input.namespace.scopeKind,
     scopeId: input.namespace.scopeId,
     requesterId: input.requesterId,
     audience: input.audience,
-    version,
     generation: input.generation,
     status: input.status,
     packHash: input.packHash,
     manifest: input.manifest,
     updatedAt: input.now,
   };
-  if (previous)
-    yield* q.exec(q.orm.update(s).set(values).where(eq(s.consumerKey, input.consumerKey)));
-  else
-    yield* q.exec(
-      q.orm.insert(s).values({ consumerKey: input.consumerKey, createdAt: input.now, ...values }),
-    );
-  return version;
+  const row = yield* q.one(
+    q.orm
+      .insert(s)
+      .values({ consumerKey: input.consumerKey, createdAt: input.now, version: 1, ...values })
+      .onConflictDoUpdate({
+        target: s.consumerKey,
+        set: { ...values, version: sql`${s.version} + 1` },
+      })
+      .returning({ version: s.version }),
+  );
+  return row!.version;
 }
 
 export async function saveContextSession(store: Db, input: ContextSessionSave): Promise<number> {

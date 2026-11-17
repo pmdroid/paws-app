@@ -5,6 +5,7 @@ import {
   createFakeContextAccess,
   createFakeProjectContextReads,
   createProjectSessionContext,
+  forgetContextSource,
   recordWorkItemContext,
   type ContextManifest,
   type ProjectSessionContext,
@@ -34,6 +35,16 @@ reads.projects.set(PROJECT, {
   revisionAt: Date.parse("2026-11-17T00:00:00.000Z"),
   teamIds: ["team-a"],
   content: "## Constraints\n- Requirement: Counts are whole numbers.",
+});
+reads.documents.set("doc-forgotten", {
+  id: "doc-forgotten",
+  projectId: PROJECT,
+  title: "Old plan",
+  url: "https://linear.app/acme/document/doc-forgotten",
+  revision: "2026-11-16T00:00:00.000Z",
+  revisionAt: Date.parse("2026-11-16T00:00:00.000Z"),
+  creatorId: CREATOR,
+  content: "## Decisions\n- Decision: FORGOTTEN-DOC shelves are counted by hand.",
 });
 const services: ProjectSessionContext[] = [];
 
@@ -145,7 +156,29 @@ export default {
       { status: preview.status, held, launches: proof.launches.length },
     );
 
-    proof.linear.mergeContexts.set(ACME.issueId, { projectId: PROJECT, labels: [] });
+    const forgotten = await forgetContextSource(proof.store, access, {
+      namespace,
+      requester,
+      source: { kind: "linear_project_document", id: "doc-forgotten" },
+      now: Date.now(),
+    });
+    proof.expect(
+      "the old plan was read into context, then forgotten",
+      preview.text.includes("FORGOTTEN-DOC") && forgotten.status === "forgotten",
+      forgotten.status,
+    );
+
+    proof.linear.mergeContexts.set(ACME.issueId, {
+      projectId: PROJECT,
+      labels: [],
+      overview: {
+        name: "Warehouse",
+        content: "Requirement: Counts are whole numbers.",
+        documents: [
+          { title: "Old plan", content: "Decision: FORGOTTEN-DOC shelves are counted by hand." },
+        ],
+      },
+    });
     await proof.delegate();
     const merged = await proof.waitFor(
       "the item is merged",
@@ -180,6 +213,11 @@ export default {
     proof.expect(
       "no other project, workspace, private source or channel canary reached the prompt",
       leaked.length === 0 && !prompt.includes("canary-private-source"),
+      leaked,
+    );
+    proof.expect(
+      "the forgotten document stays out of the prompt, even though Linear's raw overview still has it",
+      !prompt.includes("FORGOTTEN-DOC") && !prompt.includes("Project document: Old plan"),
       leaked,
     );
     const [item] = await listWorkItemsByStates(proof.store, ["merged"]);

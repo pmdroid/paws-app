@@ -9,6 +9,7 @@ export type ProjectOverview = { name: string; content: string; documents?: Proje
 
 export const PROJECT_OVERVIEW_MAX = 12_000;
 const PROJECT_OVERVIEW_DOCUMENT_MIN = 200;
+const PROJECT_OVERVIEW_OMITTED_RESERVE = 64;
 
 /** Every query that feeds `projectOverviewFrom` selects these same project fields. */
 const OVERVIEW_QUERY = `query PawsIssueProjectOverview($id: String!) {
@@ -37,24 +38,25 @@ export function projectOverviewText(overview: ProjectOverview | null | undefined
   if (!overview) return "";
   const documents = (overview.documents ?? []).filter((document) => document.content.trim());
   if (!overview.name || (!overview.content.trim() && documents.length === 0)) return "";
+  const budget = PROJECT_OVERVIEW_MAX - PROJECT_OVERVIEW_OMITTED_RESERVE;
   const head = clipped(
     overview.content.trim()
       ? `Project overview: ${overview.name}\n\n${overview.content}`
       : `Project: ${overview.name}`,
-    PROJECT_OVERVIEW_MAX,
+    budget,
   );
   const parts = [head];
   let used = head.length;
   let omitted = 0;
   for (const document of documents) {
-    const room = PROJECT_OVERVIEW_MAX - used;
+    const room = budget - used - 2;
     if (room < PROJECT_OVERVIEW_DOCUMENT_MIN) {
       omitted++;
       continue;
     }
     const text = clipped(`Project document: ${document.title}\n\n${document.content}`, room);
     parts.push(text);
-    used += text.length;
+    used += text.length + 2;
   }
   if (omitted)
     parts.push(
@@ -65,7 +67,8 @@ export function projectOverviewText(overview: ProjectOverview | null | undefined
 
 function clipped(content: string, max: number): string {
   if (content.length <= max) return content;
-  return `${content.slice(0, max)}\n\n[Cut at ${max.toLocaleString("en-US")} characters. The rest is in Linear.]`;
+  const note = `\n\n[Cut at ${max.toLocaleString("en-US")} characters. The rest is in Linear.]`;
+  return `${content.slice(0, Math.max(0, max - note.length))}${note}`;
 }
 
 export function createLinearProjectScopeReads(client: LinearClient) {

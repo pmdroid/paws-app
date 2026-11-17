@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  contextSourceRestriction,
   currentContextRecords,
   getContextSession,
   listContextSummaries,
@@ -21,6 +22,7 @@ import {
 import { ingestLinearProjectContext, type ProjectContextReads } from "./linear";
 import {
   audienceLineage,
+  canSee,
   destinationAllowed,
   requesterAccess,
   type ContextAccess,
@@ -124,7 +126,25 @@ async function selectAndSave(
   };
 }
 
+const preparing = new Map<string, Promise<unknown>>();
+
 export async function prepareSessionContext(
+  db: Db,
+  access: ContextAccess,
+  request: ContextConsumerRequest,
+): Promise<SessionContext> {
+  const key = request.consumerKey;
+  const previous = preparing.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(() => prepareOnce(db, access, request));
+  preparing.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (preparing.get(key) === current) preparing.delete(key);
+  }
+}
+
+async function prepareOnce(
   db: Db,
   access: ContextAccess,
   request: ContextConsumerRequest,
@@ -367,17 +387,29 @@ export function createProjectSessionContext(options: {
     const key = `${input.organizationId}\0${input.projectId}`;
     const last = refreshed.get(key);
     if (last !== undefined && now() - last < refreshMs) return;
-    refreshed.delete(key);
-    refreshed.set(key, now());
-    while (refreshed.size > PROJECT_SESSION_DEFAULTS.projectsRemembered)
-      refreshed.delete(refreshed.keys().next().value!);
-    await ingestLinearProjectContext(options.db, options.access, options.reads, {
+    const started = now();
+    const result = await ingestLinearProjectContext(options.db, options.access, options.reads, {
       workspaceId: input.organizationId,
       projectId: input.projectId,
       requester,
-      now: now(),
+      now: started,
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    const first = result.sources[0]?.outcome;
+    if (result.status !== "read" || first === "refused" || first === "disconnected") return;
+    refreshed.delete(key);
+    refreshed.set(key, started);
+    while (refreshed.size > PROJECT_SESSION_DEFAULTS.projectsRemembered)
+      refreshed.delete(refreshed.keys().next().value!);
+  }
+  async function projectVisible(namespace: ContextNamespace, requester: ContextRequester) {
+    const state = await contextSourceRestriction(options.db, namespace, {
+      kind: "linear_project_description",
+      id: namespace.scopeId,
+    });
+    if (!state) return false;
+    const current = await requesterAccess(options.access, requester);
+    return current !== null && canSee(current, state.restriction);
   }
   return {
     async prepare(input) {
@@ -405,7 +437,9 @@ export function createProjectSessionContext(options: {
         ...(options.settings ? { settings: options.settings } : {}),
         now: now(),
       };
-      const prepared = await prepareSessionContext(options.db, options.access, request);
+      let prepared = await prepareSessionContext(options.db, options.access, request);
+      if (prepared.reason === "empty" && !(await projectVisible(namespace, requester)))
+        prepared = { ...prepared, reason: "refused", text: CONTEXT_SESSION_UNAVAILABLE };
       const compaction = prepared.manifest?.compaction;
       if (compaction === "requested" || compaction === "coalesced")
         await compactContext(options.db, options.access, summarizer, capacity, {

@@ -10075,14 +10075,14 @@ export class Orchestrator {
       const resolved = (await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id)))
         ?.resolved["projectId"];
       const projectId = item.linearProjectId ?? (typeof resolved === "string" ? resolved : null);
-      if (!projectId) return "";
+      if (!projectId) return undefined;
       const session = item.sessionKey
         ? await this.store.run((q) => getLinearSessionSteps(q, item.sessionKey!))
         : null;
       if (!session?.organizationId || !session.creatorId) return CONTEXT_SESSION_UNAVAILABLE;
       const turns = await this.store.run((q) => listLinearTurnsForItemSteps(q, item.id));
-      const brief = renderWorkBrief(item.brief);
-      const request = brief.slice(0, PROJECT_CONTEXT_REQUEST_CHARS);
+      const task = [renderWorkBrief(item.brief), ...turns.map((turn) => turn.body)].join("\n\n");
+      const request = task.slice(0, PROJECT_CONTEXT_REQUEST_CHARS);
       const prepared = await service.prepare({
         consumerKey: `work_item:${item.id}`,
         organizationId: session.organizationId,
@@ -10090,10 +10090,10 @@ export class Orchestrator {
         requesterId: session.creatorId,
         instructions: "",
         request,
-        toolsTokens: Math.ceil((brief.length - request.length) / 2),
-        recent: turns.map((turn) => ({ text: turn.body, at: turn.createdAtMs })),
+        toolsTokens: Math.ceil((task.length - request.length) / 2),
       });
-      return prepared.text;
+      if (prepared.status === "injected" || prepared.reason === "empty") return prepared.text;
+      return CONTEXT_SESSION_UNAVAILABLE;
     } catch (error) {
       journalCaught(
         error,

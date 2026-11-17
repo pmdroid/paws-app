@@ -67,7 +67,7 @@ test("project documents follow the description in the overview text", async () =
     "Project overview: Exports\n\nRows leave as files.\n\nProject document: Spec\n\nCSV first.\n\nProject document: Long\n\n",
   );
   expect(text).toEndWith("characters. The rest is in Linear.]");
-  expect(text.length).toBeLessThan(12_100);
+  expect(text.length).toBeLessThanOrEqual(12_000);
 });
 
 test("a project with documents and no description still has an overview", async () => {
@@ -90,4 +90,18 @@ test("a project with documents and no description still has an overview", async 
   expect(projectOverviewText(overview)).toBe(
     "Project: Exports\n\nProject document: Spec\n\nCSV first.",
   );
+});
+
+test("a long description stays within the overview cap and names the documents left in Linear", () => {
+  const text = projectOverviewText({
+    name: "Exports",
+    content: "d".repeat(30_000),
+    documents: [
+      { title: "Spec", content: "CSV first." },
+      { title: "Plan", content: "Ship it." },
+    ],
+  });
+  expect(text.length).toBeLessThanOrEqual(12_000);
+  expect(text).toContain("The rest is in Linear.]");
+  expect(text).toEndWith("[2 more project documents are in Linear.]");
 });

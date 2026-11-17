@@ -733,3 +733,92 @@ test("Linear membership decides access and an inactive or foreign member sees no
   expect(await access.currentAccess({ workspaceId: "org", userId: "gone" })).toBeNull();
   expect(await access.currentAccess({ workspaceId: "org", userId: "foreign" })).toBeNull();
 });
+
+test("concurrent prepares for one session are serialized and each stays deliverable", async () => {
+  const { namespace, alice, access } = fixture();
+  await sessionA(access, namespace, alice);
+  const results = await Promise.all(
+    [0, 1, 2].map(() => prepareSessionContext(db, access, consumer(namespace, alice))),
+  );
+  expect(results.map((result) => result.status)).toEqual(["injected", "injected", "injected"]);
+  expect(results.map((result) => result.version).sort()).toEqual([1, 2, 3]);
+  expect((await getContextSession(db, `work_item:b-${seq}`))?.version).toBe(3);
+});
+
+test("a failed or refused project read does not hold off the next requester's refresh", async () => {
+  const { workspaceId, projectId, alice, access } = fixture();
+  const reads = createFakeProjectContextReads();
+  reads.projects.set(projectId, {
+    id: projectId,
+    name: "Exports",
+    url: `https://linear.app/p/${projectId}`,
+    revision: "p1",
+    revisionAt: T0,
+    teamIds: ["team-a"],
+    content: "## Decisions\n- Decision: REFRESHED exports ship weekly.",
+  });
+  const service = createProjectSessionContext({
+    db,
+    access,
+    reads,
+    settings: SMALL,
+    now: () => T0 + MINUTE,
+  });
+  const input = (requesterId: string, key: string) => ({
+    consumerKey: key,
+    organizationId: workspaceId,
+    projectId,
+    requesterId,
+    instructions: "",
+    request: "exports",
+  });
+  const outsider = await service.prepare(input(`outsider-${seq}`, `outsider-${seq}`));
+  expect(outsider).toMatchObject({ status: "withheld", text: CONTEXT_SESSION_UNAVAILABLE });
+  reads.failures.project = new Error("Linear is down");
+  expect((await service.prepare(input(alice.userId, `fail-${seq}`))).text).toBe(
+    CONTEXT_SESSION_UNAVAILABLE,
+  );
+  delete reads.failures.project;
+  const after = injected(await service.prepare(input(alice.userId, `ok-${seq}`)));
+  expect(after.text).toContain("REFRESHED");
+  const calls = reads.calls.filter((call) => call.kind === "project").length;
+  await service.prepare(input(alice.userId, `again-${seq}`));
+  expect(reads.calls.filter((call) => call.kind === "project").length).toBe(calls);
+});
+
+test("an empty project gives nothing to a member and the note to anyone else", async () => {
+  const { workspaceId, projectId, alice, access } = fixture();
+  const reads = createFakeProjectContextReads();
+  reads.projects.set(projectId, {
+    id: projectId,
+    name: "Empty",
+    url: `https://linear.app/p/${projectId}`,
+    revision: "p1",
+    revisionAt: T0,
+    teamIds: ["team-a"],
+    content: "",
+  });
+  const service = createProjectSessionContext({
+    db,
+    access,
+    reads,
+    settings: SMALL,
+    now: () => T0 + MINUTE,
+  });
+  const base = { organizationId: workspaceId, projectId, instructions: "", request: "x" };
+  const member = await service.prepare({
+    ...base,
+    consumerKey: `empty-${seq}`,
+    requesterId: alice.userId,
+  });
+  expect(member).toMatchObject({ status: "withheld", reason: "empty", text: "" });
+  const bob: ContextRequester = { workspaceId, userId: `bob-${seq}` };
+  access.grant(bob, { teamIds: ["team-b"], repositories: [], channelIds: [] });
+  const other = await service.prepare({
+    ...base,
+    consumerKey: `empty-bob-${seq}`,
+    requesterId: bob.userId,
+  });
+  expect(other).toMatchObject({ status: "withheld", reason: "refused" });
+  expect(other.text).toBe(CONTEXT_SESSION_UNAVAILABLE);
+});
