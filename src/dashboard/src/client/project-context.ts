@@ -100,7 +100,7 @@ function recordRow(item: ContextViewRecord, selected: string | null): string {
         ? badge(["Corrected", "ok"])
         : "";
   const current = item.id === selected;
-  return `<li class="context-record" aria-current="${current}"><div class="row">${badge(KIND[item.classification] ?? ["Record", ""])}${status}</div><p>${esc(item.text)}</p><p class="muted">${sourceLine(item.source)} · ${when(item.observedAt)}</p><div><button class="btn sm" type="button" data-context-record="${esc(item.id)}" aria-pressed="${current}" aria-label="Provenance for this record">Provenance</button></div></li>`;
+  return `<li class="context-record" aria-current="${current}"><div class="row">${badge(KIND[item.classification] ?? ["Record", ""])}${status}<button class="btn sm ml-auto" type="button" data-context-record="${esc(item.id)}" aria-pressed="${current}" aria-label="Provenance for this record">Provenance</button></div><p>${esc(item.text)}</p><p class="muted">${sourceLine(item.source)} · ${when(item.observedAt)}</p></li>`;
 }
 
 const recordList = (items: ContextViewRecord[], selected: string | null, label: string) =>
