@@ -195,7 +195,9 @@ function roundSizes(rounds: LinkAskRounds): string {
   const sizes = sized.map(
     (round) =>
       `${shortCommit(round.head)} ${round.lines!.toLocaleString("en-US")} ${round.lines === 1 ? "line" : "lines"}${
-        round.files === undefined ? "" : ` in ${round.files} ${round.files === 1 ? "file" : "files"}`
+        round.files === undefined
+          ? ""
+          : ` in ${round.files} ${round.files === 1 ? "file" : "files"}`
       }`,
   );
   return ` Diff size per round: ${sizes.join(", ")}.`;

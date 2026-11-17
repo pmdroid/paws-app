@@ -3,7 +3,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { candidateGrowth, candidateSize, narrowBackHandoff, type CandidateSize } from "./narrow-back";
+import {
+  candidateGrowth,
+  candidateSize,
+  narrowBackHandoff,
+  type CandidateSize,
+} from "./narrow-back";
 
 const size = (head: string, lines: number, files = 1): CandidateSize => ({ head, lines, files });
 
@@ -22,7 +27,11 @@ test("past the limit, the last smaller head is the latest round under it", () =>
 
 test("a candidate that doubles between two rounds narrows back under the limit too", () => {
   const growth = candidateGrowth([size("a", 150), size("b", 320)], 800);
-  expect(growth).toMatchObject({ previous: size("a", 150), smaller: size("a", 150), doubled: true });
+  expect(growth).toMatchObject({
+    previous: size("a", 150),
+    smaller: size("a", 150),
+    doubled: true,
+  });
 });
 
 test("a limit of 0 turns the size check off", () => {
@@ -38,7 +47,9 @@ test("the handoff lists the files and commits added since the last smaller head"
   const repo = mkdtempSync(join(tmpdir(), "paws-narrow-"));
   roots.push(repo);
   const run = (...args: string[]) =>
-    execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" }).toString().trim();
+    execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" })
+      .toString()
+      .trim();
   const commit = (message: string) => {
     run("add", "-A");
     run("-c", "user.name=Acme", "-c", "user.email=acme@example.com", "commit", "-qm", message);
@@ -53,8 +64,7 @@ test("the handoff lists the files and commits added since the last smaller head"
   writeFileSync(join(repo, "admission.ts"), `${lines(900)}\n`);
   writeFileSync(join(repo, "fix.ts"), `${lines(45)}\n`);
   const grown = commit("Add an admission layer");
-  const git = async (args: string[]) =>
-    execFileSync("git", args, { stdio: "pipe" }).toString();
+  const git = async (args: string[]) => execFileSync("git", args, { stdio: "pipe" }).toString();
 
   const sizes = [
     await candidateSize(git, repo, base, small),

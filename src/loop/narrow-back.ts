@@ -66,16 +66,7 @@ export async function narrowBackHandoff(
   const [changed, grown, log] = await Promise.all([
     git(["-C", repo, "diff", "--name-only", "--no-renames", "-z", `${base}...${current.head}`]),
     git(["-C", repo, "diff", "--numstat", "--no-renames", from, current.head, "--"]),
-    git([
-      "-C",
-      repo,
-      "log",
-      "--no-merges",
-      "--format=%h %s",
-      current.head,
-      `^${from}`,
-      `^${base}`,
-    ]),
+    git(["-C", repo, "log", "--no-merges", "--format=%h %s", current.head, `^${from}`, `^${base}`]),
   ]);
   const candidateFiles = new Set(changed.split("\0").filter((path) => path !== ""));
   const files = numstat(grown)
@@ -104,7 +95,8 @@ export async function narrowBackHandoff(
 export function growthLine(growth: Growth): string {
   const { current, previous, limit, doubled } = growth;
   const size = `the change grew to ${lineCount(current.lines)} in ${fileCount(current.files)}`;
-  const past = current.lines > limit ? `, past the ${limit.toLocaleString("en-US")}-line limit` : "";
+  const past =
+    current.lines > limit ? `, past the ${limit.toLocaleString("en-US")}-line limit` : "";
   const twice =
     doubled && previous !== null
       ? `${past === "" ? "," : " and"} double the ${lineCount(previous.lines)} at ${shortCommit(previous.head)}`

@@ -3654,21 +3654,25 @@ async function runCiFix(options: {
     }),
     launch(input) {
       if (input.role === "reviewer") reviewerLaunches += 1;
-      if ((input.purpose === "implement" || input.purpose === "fix") && ++launches === 1 && options.rateLimitFirstLaunch)
+      if (
+        (input.purpose === "implement" || input.purpose === "fix") &&
+        ++launches === 1 &&
+        options.rateLimitFirstLaunch
+      )
         throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
       const scriptPath = path.join(layout.root, `ci-rounds-${sequence}.json`);
       const resultPath =
-        (input.purpose === "implement" || input.purpose === "fix")
+        input.purpose === "implement" || input.purpose === "fix"
           ? path.join(layout.root, `ci-rounds-result-${sequence}.json`)
           : "";
-      if ((input.purpose === "implement" || input.purpose === "fix")) {
+      if (input.purpose === "implement" || input.purpose === "fix") {
         implementRuns += 1;
         prompts.push(input.prompt);
         implementResults.push(resultPath);
       }
       const steps: FakeScript["steps"] =
-        (input.purpose === "implement" || input.purpose === "fix")
+        input.purpose === "implement" || input.purpose === "fix"
           ? (options.implement?.(implementRuns, input.worktree, {
               merged: github.merged.length,
               reviews: reviewerLaunches,
