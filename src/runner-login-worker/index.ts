@@ -1,4 +1,3 @@
-import { writeFileSync } from "node:fs";
 import { journalCaught } from "../journal";
 import { runGrokLogin } from "./grok";
 import { discardLoginHome, publishCredentials, stageLoginHome } from "./credentials";
@@ -19,14 +18,18 @@ export async function runProviderLogin(options: {
   // Turns on this runner read the live home while the provider signs in to a staged one.
   let home: string | undefined;
   try {
-    if (options.agent === "opencode" && !options.account) {
-      await signIn(options);
+    const agent = options.agent;
+    if (agent === "claude")
+      throw new Error("Claude signs in with a pasted setup token on Paws, not on the runner");
+    if (agent === "codex") throw new Error("Codex signs in through Paws, not on the runner");
+    if (agent === "opencode" && !options.account) {
+      await signIn({ ...options, agent });
     } else {
       const staged = stageLoginHome(options.home);
       home = staged;
-      await signIn({ ...options, home: staged });
+      await signIn({ ...options, agent, home: staged });
       options.signal.throwIfAborted();
-      const write = () => publishCredentials(options.agent, staged, options.home);
+      const write = () => publishCredentials(agent, staged, options.home);
       if (options.account) options.account.publish(write);
       else write();
     }
@@ -40,28 +43,27 @@ export async function runProviderLogin(options: {
   }
 }
 
-export function providerLoginCommand(agent: "claude" | "opencode") {
-  return agent === "claude"
-    ? ["/opt/paws-runner/bin/claude", "setup-token"]
-    : [
-        resolveOpencodeCommand().command,
-        "auth",
-        "login",
-        "--standalone",
-        "--method",
-        "device",
-        "opencode",
-      ];
+export function providerLoginCommand(agent: "opencode") {
+  return [
+    resolveOpencodeCommand().command,
+    "auth",
+    "login",
+    "--standalone",
+    "--method",
+    "device",
+    agent,
+  ];
 }
 
-async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
+async function signIn(
+  options: Omit<Parameters<typeof runProviderLogin>[0], "agent"> & { agent: "grok" | "opencode" },
+) {
   const env = minimalAgentEnv({
     HOME: options.home,
     PATH: "/opt/paws-runner/bin:/usr/bin:/bin",
     TERM: "xterm-256color",
     LANG: "C.UTF-8",
     CODEX_HOME: `${options.home}/.codex`,
-    CLAUDE_CONFIG_DIR: `${options.home}/.claude`,
     ...(options.account ? accountAgentEnv(options.home) : {}),
   });
   const state: RunnerLoginUpdate = {
@@ -72,7 +74,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
   };
   if (options.agent === "grok") {
     await runGrokLogin({ ...options, env });
-  } else if (options.agent === "claude" || options.agent === "opencode") {
+  } else {
     state.state = "waiting";
     state.inputId = randomUUID();
     const decoder = new TextDecoder();
@@ -90,17 +92,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
           return;
         }
         rawOutput += decoder.decode(bytes, { stream: true });
-        let visible = rawOutput;
-        if (options.agent === "claude") {
-          const prefix = "sk-ant-oat01-";
-          for (let length = 1; length < prefix.length; length++)
-            if (visible.endsWith(prefix.slice(0, length))) {
-              visible = visible.slice(0, -length);
-              break;
-            }
-          visible = visible.replace(/sk-ant-oat01-[A-Za-z0-9_-]*/g, "[masked]");
-        }
-        state.terminal = visible.slice(-32768);
+        state.terminal = rawOutput.slice(-32768);
         options.emit({ ...state });
       },
     });
@@ -139,21 +131,6 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       });
       options.signal.throwIfAborted();
       if (code !== 0) throw new Error("Provider login did not complete");
-      if (options.agent === "claude") {
-        const token = rawOutput.match(/sk-ant-oat01-[A-Za-z0-9_-]+/)?.[0];
-        if (!token) throw new Error("Provider did not print an OAuth token");
-        const createdAt = Date.now();
-        writeFileSync(
-          `${options.home}/.claude/paws-oauth.json`,
-          JSON.stringify({
-            kind: "oauth_token",
-            token,
-            createdAt,
-            expiresAt: createdAt + 365 * 86400000,
-          }),
-          { mode: 0o600 },
-        );
-      }
     } finally {
       signal.removeEventListener("abort", kill);
       abort.abort();
@@ -161,7 +138,5 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       await child?.exited;
       terminal.close();
     }
-  } else {
-    throw new Error("Codex signs in through Paws, not on the runner");
   }
 }
