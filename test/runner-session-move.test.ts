@@ -28,6 +28,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
+import { CURRENT_RUNNER_VERSION } from "./pglite-fixtures";
 
 type Setup = Awaited<ReturnType<typeof setup>>;
 
@@ -207,7 +208,7 @@ async function setup() {
     return { id, runId: started.id };
   }
   /**
-   * Both runners online, restore-capable for Claude, Codex and Grok, signed in to Claude 2.1.7,
+   * Both runners online at the current release, signed in to Claude 2.1.7,
    * Codex 2.1.1 and Grok 1.0.50, owned by the delegator.
    */
   async function reset() {
@@ -216,7 +217,7 @@ async function setup() {
         sql`UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=${userId} WHERE id=${runnerId}`,
       );
       await work.heartbeat(runnerId);
-      await exec(sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},'0.1.46',${now})
+      await exec(sql`INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(${runnerId},${CURRENT_RUNNER_VERSION},${now})
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`);
       await exec(sql`DELETE FROM runner_agent_policy WHERE runner_id=${runnerId}`);
       await exec(sql`DELETE FROM runner_agent WHERE runner_id=${runnerId}`);
@@ -468,16 +469,6 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
 const INELIGIBLE: [string, string, Parameters<Setup["move"]>[0]][] = [
   ["no saved session", "no saved session", { snapshot: false }],
   [
-    "B's runner is too old",
-    "B's runner is too old",
-    {
-      change: () =>
-        exec(
-          sql`UPDATE runner_host_status SET runner_version='0.1.42' WHERE runner_id=${context.runners.b}`,
-        ),
-    },
-  ],
-  [
     "another member's snapshot",
     "B is signed in to a different Claude account",
     {
@@ -545,7 +536,7 @@ test("a run that stays on its runner never sends restoreSession", async () => {
   expect(notices.some((notice) => notice.startsWith("Moved this run"))).toBe(false);
 });
 
-test("a moved Codex run restores its rollout on a runner from 0.1.45", async () => {
+test("a moved Codex run restores its rollout", async () => {
   const { onB, sealed, notices } = await context.move({
     agent: "codex",
     events: [{ type: "session_restore", restored: true }],
@@ -565,18 +556,6 @@ test("a moved Codex run restores its rollout on a runner from 0.1.45", async () 
   ]);
 });
 
-test("a Codex run never restores on a runner that only restores Claude", async () => {
-  const { runners } = context;
-  const { onB, notices } = await context.move({
-    agent: "codex",
-    change: () =>
-      exec(sql`UPDATE runner_host_status SET runner_version='0.1.44' WHERE runner_id=${runners.b}`),
-  });
-  expect(onB.restoreSession).toBeUndefined();
-  expect(onB.resumeSessionId).toBeUndefined();
-  expect(notices).toEqual([`${FALLBACK} (B's runner is too old).\n`]);
-});
-
 test("another Codex version still restores, and a failed load names both versions", async () => {
   const { runners } = context;
   const { onB, notices } = await context.move({
@@ -593,7 +572,7 @@ test("another Codex version still restores, and a failed load names both version
   ]);
 });
 
-test("a moved Grok run restores its session folder on a runner from 0.1.46", async () => {
+test("a moved Grok run restores its session folder", async () => {
   const { onB, sealed, notices } = await context.move({
     agent: "grok",
     events: [{ type: "session_restore", restored: true }],
@@ -611,18 +590,6 @@ test("a moved Grok run restores its session folder on a runner from 0.1.46", asy
   expect(notices).toEqual([
     `Moved this run to B because A is offline. Continuing the agent's session from turn ${sealed!.generation}.\n`,
   ]);
-});
-
-test("a Grok run never restores on a runner that only restores Claude and Codex", async () => {
-  const { runners } = context;
-  const { onB, notices } = await context.move({
-    agent: "grok",
-    change: () =>
-      exec(sql`UPDATE runner_host_status SET runner_version='0.1.45' WHERE runner_id=${runners.b}`),
-  });
-  expect(onB.restoreSession).toBeUndefined();
-  expect(onB.resumeSessionId).toBeUndefined();
-  expect(notices).toEqual([`${FALLBACK} (B's runner is too old).\n`]);
 });
 
 test("a Grok run never restores onto another member's runner", async () => {

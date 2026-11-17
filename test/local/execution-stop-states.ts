@@ -148,6 +148,7 @@ async function remoteFixture(
       repository,
       profile: { agent: "claude", model: "fixture-model" },
       prompt: "Wait for the selected Stop verification.",
+      ...(state === "verifying" ? {} : { checkpoint: false as const }),
     });
     const script = join(root, "agent-script.json");
     const result = join(root, "agent-result.json");

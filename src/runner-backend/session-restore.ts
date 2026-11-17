@@ -9,27 +9,15 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import {
-  CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
-  CODEX_SESSION_RUNNER_VERSION,
-  GROK_SESSION_RUNNER_VERSION,
-  type RunnerCommand,
-  type RunnerVersion,
-} from "../runner-protocol";
+import type { RunnerCommand } from "../runner-protocol";
 
-/** The runner release each agent's restore needs. */
-const RESTORE_RUNNER_VERSION = new Map<string, RunnerVersion>([
-  ["claude", CLAUDE_SESSION_RESTORE_RUNNER_VERSION],
-  ["codex", CODEX_SESSION_RUNNER_VERSION],
-  ["grok", GROK_SESSION_RUNNER_VERSION],
-]);
+const RESTORABLE_AGENTS = new Set(["claude", "codex", "grok"]);
 
 type RestoreSession = NonNullable<Extract<RunnerCommand, { type: "run" }>["restoreSession"]>;
 
 /** Why a moved run starts a new session; the runner reports the last three. */
 export type SessionRestoreFailure =
   | "no_snapshot"
-  | "old_runner"
   | "other_account"
   | "not_installed"
   | "download"
@@ -51,23 +39,9 @@ export type SessionRestorePlan =
 
 const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 
-export function versionAtLeast(
-  version: string | null | undefined,
-  minimum: RunnerVersion,
-): boolean {
-  const parts = version
-    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
-    ?.slice(1)
-    .map(Number);
-  if (!parts) return false;
-  for (const [index, part] of parts.entries())
-    if (part !== minimum[index]) return part > minimum[index]!;
-  return true;
-}
-
 /**
  * Whether the run's latest sealed session snapshot may be restored on `targetRunnerId`: same
- * agent, a runner release that restores, the same owner and account as
+ * agent, the same owner and account as
  * the snapshot, and the agent installed. A different agent version does not refuse the restore: the
  * runner tries `session/load`, and the notice names both versions if the load fails.
  */
@@ -84,18 +58,15 @@ export function* planSessionRestoreSteps(
 ): Steps<SessionRestorePlan> {
   const snapshot = yield* latestSealedSnapshotSteps(q, input.runId);
   // Another agent's snapshot is not this run's session.
-  const minimum = snapshot && RESTORE_RUNNER_VERSION.get(snapshot.agent);
   if (
     !snapshot ||
-    !minimum ||
+    !RESTORABLE_AGENTS.has(snapshot.agent) ||
     snapshot.agent !== input.agent ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(snapshot.sessionId)
   )
     return { eligible: false, failure: "no_snapshot" };
   const target = yield* runnerTargetForRestoreSteps(q, input.targetRunnerId);
-  if (!target || !versionAtLeast(target.version, minimum))
-    return { eligible: false, failure: "old_runner" };
-  if (target.ownerUserId !== snapshot.ownerUserId)
+  if (!target || target.ownerUserId !== snapshot.ownerUserId)
     return { eligible: false, failure: "other_account" };
   const source = yield* lastRunCommandAccountSteps(q, input.runId, snapshot.generation);
   const sourceNamed = source?.named === 1;
@@ -173,7 +144,6 @@ export async function sessionMoveNotice(input: {
       : undefined;
   const reason = {
     no_snapshot: "no saved session",
-    old_runner: `${to}'s runner is too old`,
     other_account: `${to} is signed in to a different ${agent} account`,
     not_installed: `${agent} isn't installed on ${to}`,
     download: "the saved session couldn't be downloaded",

@@ -11,19 +11,13 @@ import {
   linearSessionClientIdSteps,
   recentRunnersSteps,
   runnerHelperAvailabilitySteps,
-  runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
   undeliveredHelperStreakSteps,
   workspaceSessionIdsSteps,
   type Db,
 } from "../db";
-import {
-  FINDING_GROUPS_RUNNER_VERSION,
-  type RunnerCommand,
-  type RunnerHelperResult,
-} from "../runner-protocol";
-import { versionAtLeast } from "./session-restore";
+import { type RunnerCommand, type RunnerHelperResult } from "../runner-protocol";
 import { usageLimitWait } from "./usage-limit-wait";
 
 import {
@@ -191,15 +185,6 @@ export function createRemoteSessionAgentRunner(options: {
             )
               continue;
             if (purpose === "finding_groups") {
-              if (
-                !versionAtLeast(
-                  await store.run((q) => runnerHostVersionSteps(q, runner.id)),
-                  FINDING_GROUPS_RUNNER_VERSION,
-                )
-              ) {
-                note(runner.id, "runner version too old");
-                continue;
-              }
               const owner = await store.run((q) => runnerOwnerSteps(q, runner.id));
               const clientId = await store.run((q) => linearSessionClientIdSteps(q, sessionId));
               if (

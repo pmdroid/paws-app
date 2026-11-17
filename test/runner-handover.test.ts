@@ -28,7 +28,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { CURRENT_RUNNER_VERSION, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
@@ -132,7 +132,7 @@ async function setup() {
           .where(eq(q.t.runnerWork.runId, runId)),
       ),
     ))!;
-  await release("0.1.44");
+  await release(CURRENT_RUNNER_VERSION);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     store: db,
@@ -392,7 +392,6 @@ async function setup() {
     submit,
     handOver,
     next,
-    release,
     commands,
     runnerWork,
     work,
@@ -577,145 +576,62 @@ test("an item with no running session has nothing to hand over", async () => {
   expect(await context.backend.handOverItem("missing-item")).toEqual({ status: "not_running" });
 });
 
-test("a runner release that cannot hand over is never sent the command", async () => {
-  const record = await context.item();
-  await context.release("0.1.43");
-  try {
-    const { result } = await context.turn(record, async (command) => {
-      expect(await context.backend.handOverItem(record.id)).toEqual({ status: "old_runner" });
-      expect(await context.commands(command.runId, "handover")).toEqual([]);
-      await context.submit(command, { candidateSha: context.base });
-    });
-    expect(result.stopReason).toBe("end_turn");
-  } finally {
-    await context.release("0.1.44");
-  }
-});
-
 test("a run stopped for the time cap saves its runner's work first, and the restarted turn starts from it", async () => {
   const { db, git, paws, runner } = context;
   const record = await context.item();
-  await context.release("0.1.46");
-  try {
-    const stop = new AbortController();
-    let interval = "";
-    let snapshot = "";
-    const { result } = await context.turn(
-      record,
-      async (command) => {
-        // The agent commits twice in one long turn and never ends it.
-        writeFileSync(join(runner, "contract.ts"), "export type Finding = {};\n");
-        git(["-C", runner, "add", "-A"]);
-        git(["-C", runner, "commit", "-q", "-m", "Add the findings contract"]);
-        interval = git(["-C", runner, "rev-parse", "HEAD"]);
-        // An interval checkpoint becomes the item's checkpoint while the turn runs.
-        await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
-        while ((await getWorkItem(db, record.id))?.checkpoint?.wipCommit !== interval)
-          await delay(1);
-        writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
-        git(["-C", runner, "add", "-A"]);
-        git(["-C", runner, "commit", "-q", "-m", "Show the findings"]);
-        writeFileSync(join(runner, "notes.txt"), "next: tests");
-        // What the runner publishes: a WIP commit on top of both, with the uncommitted file.
-        git(["-C", runner, "add", "-A"]);
-        snapshot = git([
-          "-C",
-          runner,
-          "commit-tree",
-          git(["-C", runner, "write-tree"]),
-          "-p",
-          "HEAD",
-          "-m",
-          "Save work in progress so far",
-        ]);
-        // The time cap asks in Linear, and Paws stops the agent.
-        await seed(db, (q) =>
-          q.orm
-            .update(q.t.workItem)
-            .set({
-              awakeMs: sql`${q.t.workItem.maxAwakeMs}`,
-              implementMs: sql`${q.t.workItem.maxAwakeMs}`,
-            })
-            .where(eq(q.t.workItem.id, record.id)),
-        );
-        expect(await accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
-          asked: true,
-          stopAgent: true,
-        });
-        await applyWorkItemEvent(db, record.id, "blocking_question");
-        stop.abort();
-        expect(await context.next()).toMatchObject({
-          type: "checkpoint",
-          runId: command.runId,
-          generation: command.generation,
-        });
-        await context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
-        // Only then does Paws cancel the run.
-        expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
-      },
-      undefined,
-      stop.signal,
-      true,
-    );
-    expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-    expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(snapshot);
-    const thoughts = await db.run((q) =>
-      q.all(
-        q.orm
-          .select({ payload: q.t.outbox.payload })
-          .from(q.t.outbox)
-          .where(
-            and(
-              eq(q.t.outbox.target, "linear"),
-              like(q.t.outbox.idempotencyKey, `checkpoint-saved:${record.runId}:%`),
-            ),
-          ),
-      ),
-    );
-    expect(thoughts.map((row) => row.payload)).toEqual([
-      expect.objectContaining({
-        kind: "thought",
-        body: `Saved the work so far at ${snapshot.slice(0, 7)} before stopping.`,
-      }),
-    ]);
-
-    // The auto-retry restarts the item; its turn starts from the saved work.
-    await seed(
-      db,
-      (q) =>
-        q.orm
-          .update(q.t.workItem)
-          .set({ state: "running", cancelRequested: 0 })
-          .where(eq(q.t.workItem.id, record.id)),
-      (q) => q.orm.update(q.t.run).set({ status: "active" }).where(eq(q.t.run.id, record.runId)),
-    );
-    const restarted = await context.turn(record, async (command) => {
-      expect(command.repository.baseSha).toBe(snapshot);
-      await context.submit(command, { candidateSha: snapshot });
-    });
-    expect(restarted.result.stopReason).toBe("end_turn");
-    const ref = context.head(record.id);
-    expect(git(["--git-dir", paws, "rev-parse", ref])).toBe(snapshot);
-    expect(git(["--git-dir", paws, "log", "--format=%s", "-3", ref]).split("\n")).toEqual([
-      "Save work in progress so far",
-      "Show the findings",
-      "Add the findings contract",
-    ]);
-    expect(
-      git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort(),
-    ).toEqual(["contract.ts", "findings.tsx", "notes.txt", "result.txt"]);
-  } finally {
-    await context.release("0.1.44");
-  }
-});
-
-test("a runner release that cannot checkpoint is cancelled at once", async () => {
-  const record = await context.item();
   const stop = new AbortController();
+  let interval = "";
+  let snapshot = "";
   const { result } = await context.turn(
     record,
     async (command) => {
+      // The agent commits twice in one long turn and never ends it.
+      writeFileSync(join(runner, "contract.ts"), "export type Finding = {};\n");
+      git(["-C", runner, "add", "-A"]);
+      git(["-C", runner, "commit", "-q", "-m", "Add the findings contract"]);
+      interval = git(["-C", runner, "rev-parse", "HEAD"]);
+      // An interval checkpoint becomes the item's checkpoint while the turn runs.
+      await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
+      while ((await getWorkItem(db, record.id))?.checkpoint?.wipCommit !== interval) await delay(1);
+      writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
+      git(["-C", runner, "add", "-A"]);
+      git(["-C", runner, "commit", "-q", "-m", "Show the findings"]);
+      writeFileSync(join(runner, "notes.txt"), "next: tests");
+      // What the runner publishes: a WIP commit on top of both, with the uncommitted file.
+      git(["-C", runner, "add", "-A"]);
+      snapshot = git([
+        "-C",
+        runner,
+        "commit-tree",
+        git(["-C", runner, "write-tree"]),
+        "-p",
+        "HEAD",
+        "-m",
+        "Save work in progress so far",
+      ]);
+      // The time cap asks in Linear, and Paws stops the agent.
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({
+            awakeMs: sql`${q.t.workItem.maxAwakeMs}`,
+            implementMs: sql`${q.t.workItem.maxAwakeMs}`,
+          })
+          .where(eq(q.t.workItem.id, record.id)),
+      );
+      expect(await accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
+        asked: true,
+        stopAgent: true,
+      });
+      await applyWorkItemEvent(db, record.id, "blocking_question");
       stop.abort();
+      expect(await context.next()).toMatchObject({
+        type: "checkpoint",
+        runId: command.runId,
+        generation: command.generation,
+      });
+      await context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
+      // Only then does Paws cancel the run.
       expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
     },
     undefined,
@@ -723,7 +639,55 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
     true,
   );
   expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-  expect(await context.commands(record.runId, "checkpoint")).toEqual([]);
+  expect((await getWorkItem(db, record.id))?.checkpoint?.wipCommit).toBe(snapshot);
+  const thoughts = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ payload: q.t.outbox.payload })
+        .from(q.t.outbox)
+        .where(
+          and(
+            eq(q.t.outbox.target, "linear"),
+            like(q.t.outbox.idempotencyKey, `checkpoint-saved:${record.runId}:%`),
+          ),
+        ),
+    ),
+  );
+  expect(thoughts.map((row) => row.payload)).toEqual([
+    expect.objectContaining({
+      kind: "thought",
+      body: `Saved the work so far at ${snapshot.slice(0, 7)} before stopping.`,
+    }),
+  ]);
+
+  // The auto-retry restarts the item; its turn starts from the saved work.
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ state: "running", cancelRequested: 0 })
+        .where(eq(q.t.workItem.id, record.id)),
+    (q) => q.orm.update(q.t.run).set({ status: "active" }).where(eq(q.t.run.id, record.runId)),
+  );
+  const restarted = await context.turn(record, async (command) => {
+    expect(command.repository.baseSha).toBe(snapshot);
+    await context.submit(command, { candidateSha: snapshot });
+  });
+  expect(restarted.result.stopReason).toBe("end_turn");
+  const ref = context.head(record.id);
+  expect(git(["--git-dir", paws, "rev-parse", ref])).toBe(snapshot);
+  expect(git(["--git-dir", paws, "log", "--format=%s", "-3", ref]).split("\n")).toEqual([
+    "Save work in progress so far",
+    "Show the findings",
+    "Add the findings contract",
+  ]);
+  expect(git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort()).toEqual([
+    "contract.ts",
+    "findings.tsx",
+    "notes.txt",
+    "result.txt",
+  ]);
 });
 
 test("a restarted turn whose saved work cannot be fetched fails instead of starting from an older head", async () => {
@@ -760,69 +724,56 @@ test("a cancelled item's run cannot save work in progress once a newer item hold
       q.orm.update(q.t.workItem).set({ branchName: name }).where(eq(q.t.workItem.id, id)),
     );
   await branch(older.id, "paws/eng-7");
-  await context.release("0.1.46");
   const stop = new AbortController();
-  try {
-    await context.turn(
-      older,
-      async (command) => {
-        await seed(db, (q) =>
-          q.orm
-            .update(q.t.workItem)
-            .set({ cancelRequested: 1 })
-            .where(eq(q.t.workItem.id, older.id)),
-        );
-        stop.abort();
-        expect(await context.next()).toMatchObject({ type: "checkpoint", runId: command.runId });
-        const { runId, generation } = command;
-        const { token } = await work.issueGrant({
-          runnerId,
-          runId,
-          commandId: command.id,
-          generation,
-        });
-        const access = { runnerId, runId, generation, token };
-        expect((await work.authorizeAsync(access)).branch).toBe("paws/eng-7");
-        await insertQueuedItem(db, { id: newer, now: Date.now(), sessionKey: `session-${newer}` });
-        await branch(newer, "paws/eng-7");
-        await expect(work.authorizeAsync(access)).rejects.toThrow("Run is no longer active.");
-        const saved = { type: "checkpoint", reason: "stop", sha: "c".repeat(40) } as const;
-        await expect(context.events(command, [saved])).rejects.toThrow("no longer active");
-        await branch(newer, "paws/eng-7-done");
-        await context.events(command, [{ type: "checkpoint", reason: "stop", dropped: "stopped" }]);
-        expect(await context.next()).toMatchObject({ type: "cancel", runId });
-      },
-      undefined,
-      stop.signal,
-      true,
-    );
-  } finally {
-    await context.release("0.1.44");
-  }
+  await context.turn(
+    older,
+    async (command) => {
+      await seed(db, (q) =>
+        q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, older.id)),
+      );
+      stop.abort();
+      expect(await context.next()).toMatchObject({ type: "checkpoint", runId: command.runId });
+      const { runId, generation } = command;
+      const { token } = await work.issueGrant({
+        runnerId,
+        runId,
+        commandId: command.id,
+        generation,
+      });
+      const access = { runnerId, runId, generation, token };
+      expect((await work.authorizeAsync(access)).branch).toBe("paws/eng-7");
+      await insertQueuedItem(db, { id: newer, now: Date.now(), sessionKey: `session-${newer}` });
+      await branch(newer, "paws/eng-7");
+      await expect(work.authorizeAsync(access)).rejects.toThrow("Run is no longer active.");
+      const saved = { type: "checkpoint", reason: "stop", sha: "c".repeat(40) } as const;
+      await expect(context.events(command, [saved])).rejects.toThrow("no longer active");
+      await branch(newer, "paws/eng-7-done");
+      await context.events(command, [{ type: "checkpoint", reason: "stop", dropped: "stopped" }]);
+      expect(await context.next()).toMatchObject({ type: "cancel", runId });
+    },
+    undefined,
+    stop.signal,
+    true,
+  );
 });
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {
   const record = await context.item();
-  await context.release("0.1.46");
-  try {
-    const stop = new AbortController();
-    const { result } = await context.turn(
-      record,
-      async (command) => {
-        // The handover waits for a result that never comes; the stop ends the turn first.
-        void context.backend.handOverItem(record.id).catch(() => undefined);
-        expect(await context.next()).toMatchObject({ type: "handover", runId: command.runId });
-        // The handover publishes the WIP commit; a stop checkpoint would race it.
-        stop.abort();
-        expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
-      },
-      undefined,
-      stop.signal,
-      true,
-    );
-    expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-    expect(await context.commands(record.runId, "checkpoint")).toEqual([]);
-  } finally {
-    await context.release("0.1.44");
-  }
+  const stop = new AbortController();
+  const { result } = await context.turn(
+    record,
+    async (command) => {
+      // The handover waits for a result that never comes; the stop ends the turn first.
+      void context.backend.handOverItem(record.id).catch(() => undefined);
+      expect(await context.next()).toMatchObject({ type: "handover", runId: command.runId });
+      // The handover publishes the WIP commit; a stop checkpoint would race it.
+      stop.abort();
+      expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
+    },
+    undefined,
+    stop.signal,
+    true,
+  );
+  expect(result?.stopReason ?? "cancelled").toBe("cancelled");
+  expect(await context.commands(record.runId, "checkpoint")).toEqual([]);
 });

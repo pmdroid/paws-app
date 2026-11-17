@@ -35,8 +35,6 @@ A tool name cannot start with `-` and may contain only letters, digits and `@ . 
 
 Backends such as `npm:`, `cargo:`, `pipx:` and `go:` build or install the package with its own scripts on the runner, in the runtime cache every task on that runner shares. They need their toolchain: list `node`, `rust`, `python` or `go` before them in the same config, and Paws puts each runtime it has installed on `PATH` for the installs after it.
 
-Runners before 0.1.52 accept only core tools and `aqua:` tools. Paws sends those runners only that part of the list and says in Linear which tools it held back.
-
 ## Versions
 
 A version is a plain string of letters, digits, and `.`, `_`, `+`, or `-`, up to 64 characters. A prefix such as `"22"` installs the newest matching release, and `"lts"` or `"latest"` work as mise defines them. A tool may list several versions, such as `python = ["3.12", "3.11"]`. The first one comes first on `PATH`.
