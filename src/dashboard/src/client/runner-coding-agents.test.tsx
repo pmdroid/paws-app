@@ -4,7 +4,6 @@ import {
   agentCatalogMarkup,
   codingAgentsBehind,
   codingAgentsButtonMarkup,
-  runnerCodingAgentsMarkup,
   runnerDetailMarkup,
   type AgentCatalogEntry,
   type Runner,
@@ -114,20 +113,19 @@ describe("coding agent versions", () => {
     expect(modal([runner], true, 0)).not.toContain("Update all runners");
   });
 
-  test("the runner page keeps one line of versions", () => {
-    const detail = runnerDetailMarkup(runner, view);
-    expect(detail).toContain(`<h3 id="runner-${owner.runnerId}-coding-agents">Coding agents</h3>`);
-    expect(runnerCodingAgentsMarkup([claude, codex])).toBe(
-      '<p class="runner-skill-name" data-coding-agents><span><b>Claude</b> <span class="mono">2.0.0</span></span><span aria-hidden="true">·</span><span><b>Codex</b> <span class="mono">0.9.0</span></span></p>',
-    );
+  test("the runner card's Agents block lists versions with the catalog's update status", () => {
+    const detail = runnerDetailMarkup(runner, { ...view, catalog });
+    expect(detail).not.toContain(`id="runner-${owner.runnerId}-coding-agents"`);
+    expect(detail).toContain('<b>Claude</b><span class="mono">2.0.0</span>');
+    expect(detail).toContain('<span class="tag warn">Update available</span>');
+    expect(detail).toContain('<b>Codex</b><span class="mono">0.9.0</span>');
+    expect(detail).toContain('<span class="tag ok">Up to date</span>');
     expect(detail).not.toContain('<button class="btn" data-agent-update');
     expect(runnerDetailMarkup({ ...runner, codingAgents: [] }, view)).toContain(
-      "This runner does not report its coding agent versions.",
+      "This runner does not report its coding agents.",
     );
-    const { codingAgents: _, ...older } = runner;
-    expect(runnerDetailMarkup(older, view)).not.toContain("-coding-agents");
     expect(runnerDetailMarkup({ ...runner, status: "revoked" }, view)).not.toContain(
-      "-coding-agents",
+      `id="runner-${owner.runnerId}-agents"`,
     );
   });
 });

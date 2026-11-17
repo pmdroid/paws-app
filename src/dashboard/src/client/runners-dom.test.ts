@@ -36,9 +36,9 @@ const runner: Runner = {
   os: null,
   version: "1.2.0",
   idle: true,
-  agents: [
-    { agent: "claude", status: "signed_in", checkedAt: 1 },
-    { agent: "codex", status: "signed_out", checkedAt: 1 },
+  codingAgents: [
+    { agent: "claude", current: "2.0.0", pending: null, reportedAt: 1 },
+    { agent: "codex", current: "0.9.0", pending: null, reportedAt: 1 },
   ],
 };
 
@@ -75,23 +75,29 @@ afterEach(async () => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
-test("the extra usage switch posts the runner agent's extra-usage route", async () => {
+test("the Agents block lists agents and versions without sign-in or usage", async () => {
   const root = window.document.createElement("div") as unknown as HTMLElement;
   window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
   createRunners().mount(root, ORIGIN, "live", RUNNER);
   await settle();
-  const box = root.querySelector<HTMLInputElement>(
-    'tr[data-agent="claude"] input[data-runner-extra-usage]',
-  )!;
-  expect(box).not.toBeNull();
-  expect(root.querySelector("button[data-runner-signin]")).toBeNull();
-  box.checked = true;
-  box.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
-  await settle();
-  const post = requests.find((request) => request.init?.method === "POST");
-  expect(post?.url).toBe(`/api/runners/${RUNNER}/agents/claude/extra-usage`);
-  expect(JSON.parse(String(post!.init!.body))).toEqual({ extraUsage: true });
-  expect(new Headers(post!.init!.headers).get("x-paws-csrf")).toBe("token-1");
+  const block = root.querySelector(`section[aria-labelledby="runner-${RUNNER}-agents"]`)!;
+  expect(block).not.toBeNull();
+  const rows = [...block.querySelectorAll<HTMLElement>("li[data-coding-agent]")].map((row) => [
+    row.querySelector("b")!.textContent,
+    row.querySelector(".mono")!.textContent,
+  ]);
+  expect(rows).toEqual([
+    ["Claude", "2.0.0"],
+    ["Codex", "0.9.0"],
+  ]);
+  expect(block.querySelector("table, th, input[type=checkbox]")).toBeNull();
+  const list = block.querySelector("ul")!.textContent;
+  for (const text of ["Sign-in", "Signed", "Usage", "Extra usage", "Sign in first"])
+    expect(list).not.toContain(text);
+  expect(block.textContent).toContain("Sign-in and usage are in Settings › Agent accounts");
+  expect(block.querySelector("a")!.getAttribute("href")).toBe("/dashboard/settings/agent-accounts");
+  expect(root.querySelector("input[data-runner-extra-usage]")).toBeNull();
+  expect(requests.some((request) => request.url.endsWith("/extra-usage"))).toBe(false);
 });
 
 test("Add a runner shows the server's refusal instead of a command", async () => {

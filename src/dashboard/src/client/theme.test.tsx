@@ -203,7 +203,6 @@ describe("runner card", () => {
     idle: false,
     slots: { used: 3, total: 16 },
     concurrency: { desired: 3, applied: 3, ceiling: 16 },
-    agents: [{ agent: "claude", status: "signed_in", checkedAt: now }],
   };
   const card = (patch: Partial<Runner> = {}) =>
     markup(
@@ -254,8 +253,6 @@ describe("runner card", () => {
     expect(gauges).toContain("min-w-0");
     expect(classNames(html, "runner-setting")[0]).toContain("grid-cols-1");
     expect(classNames(html, "runner-setting")[0]).toContain("sm:grid-cols-[10rem_minmax(0,1fr)]");
-    expect(html).toContain("max-sm:[&amp;_tr]:flex-col");
-    for (const value of classNames(html, "runner-agent-cell")) expect(value).toContain("flex-wrap");
     // Every gauge reserves its label and bar rows, so bars in a row line up.
     for (const value of classNames(html, "runner-gauge")) {
       expect(value).toContain("content-start");

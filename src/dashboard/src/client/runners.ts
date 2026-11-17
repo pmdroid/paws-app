@@ -15,16 +15,6 @@ export const RUNNER_OFFLINE_MS = 4 * RUNNER_HEARTBEAT_MS;
 export const RUNNER_STALE_MS = 2 * RUNNER_HEARTBEAT_MS;
 
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
-export type AgentSignIn = {
-  agent: string;
-  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "extra_usage" | "unknown";
-  checkedAt: number | null;
-  extraUsage?: true;
-  resetsAt?: number | null;
-  limits?: AgentLimit[];
-  limitsAt?: number;
-};
-export type AgentLimit = { window: string; usedPercent: number; resetsAt: number | null };
 export type Runner = {
   id: string;
   name: string;
@@ -57,7 +47,6 @@ export type Runner = {
   slots?: { used: number; total: number };
   /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
   concurrency?: { desired: number | null; applied: number; ceiling: number | null } | null;
-  agents?: AgentSignIn[];
   /** Sessions with a live work lease on this runner, oldest first. */
   running?: RunningSession[];
   skills?: RunnerSkill[];
@@ -415,20 +404,11 @@ export function hostEnrollmentCommand(
   ].join(" && \\\n  ");
 }
 
-const AGENTS = ["claude", "codex", "grok", "opencode"] as const;
 const AGENT_LABELS: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
   grok: "Grok",
   opencode: "OpenCode",
-};
-const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
-  signed_in: ["ok", "Signed in"],
-  signed_out: ["bad", "Signed out"],
-  checking: ["running", "Checking"],
-  usage_limit: ["ok", "Signed in"],
-  extra_usage: ["ok", "Signed in"],
-  unknown: ["", "Not checked"],
 };
 
 /** Negative when `a` is older than `b`; null when either is not a dotted version. */
@@ -606,23 +586,11 @@ function codingAgentRows(
     .join("");
 }
 
-/** The coding agent versions a runner reports, on one line. */
-export function runnerCodingAgentsMarkup(agents: readonly RunnerCodingAgent[]): string {
-  if (!agents.length)
-    return '<p class="muted">This runner does not report its coding agent versions. Update the runner package to manage them here.</p>';
-  return `<p class="runner-skill-name" data-coding-agents>${agents
-    .map(
-      (entry) =>
-        `<span><b>${esc(AGENT_NAMES[entry.agent] ?? entry.agent)}</b> <span class="mono">${esc(entry.current ?? "not reported")}</span></span>`,
-    )
-    .join('<span aria-hidden="true">·</span>')}</p>`;
-}
-
 type AccountSummary = {
   agent: string;
   credential: unknown;
   extraUsage: boolean;
-  usage: { limits: AgentLimit[] } | null;
+  usage: { limits: { usedPercent: number; resetsAt: number | null }[] } | null;
 };
 type RunnerListView = {
   now: number;
@@ -665,15 +633,8 @@ function runnerRowTags(
           const name = AGENT_LABELS[entry.agent] ?? entry.agent;
           if (!view.accounts) return ["", `${name} accounts unavailable`];
           const central = view.accounts.filter((account) => account.agent === entry.agent);
-          const local = runner.agents?.find((agent) => agent.agent === entry.agent);
-          const usableLocal = !central.length && local && SIGNED_IN.has(local.status);
           const signedIn = central.filter((account) => account.credential);
-          if (!signedIn.length && !usableLocal) return ["bad", `${name} needs sign-in`];
-          const localReset = usableLocal
-            ? local.status === "usage_limit" && !local.extraUsage
-              ? (local.resetsAt ?? Infinity)
-              : 0
-            : Infinity;
+          if (!signedIn.length) return ["bad", `${name} needs sign-in`];
           const resets = signedIn.map(({ extraUsage, usage }) =>
             Math.max(
               0,
@@ -686,7 +647,7 @@ function runnerRowTags(
                 .map((limit) => limit.resetsAt ?? Infinity),
             ),
           );
-          const until = Math.min(localReset, ...resets);
+          const until = Math.min(...resets);
           if (!until) return ["", `${name} signed in`];
           return [
             "warn",
@@ -1193,75 +1154,19 @@ export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): st
   return `<section class="runner-host" aria-label="Runner metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges md:grid-cols-4${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
 }
 
-function resetTime(at: number, now: number): string {
-  const options: Intl.DateTimeFormatOptions =
-    at - now < 24 * 60 * 60_000
-      ? { hour: "numeric", minute: "2-digit" }
-      : { weekday: "short", month: "short", day: "numeric" };
-  return new Date(at).toLocaleString([], options);
-}
-
-function resetLabel(at: number, now: number): string {
-  return `Resets ${resetTime(at, now)}`;
-}
-
-const SIGNED_IN = new Set<AgentSignIn["status"]>(["signed_in", "usage_limit", "extra_usage"]);
-
-export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
-  if (!SIGNED_IN.has(entry.status)) return "";
-  const limits = (entry.limits ?? []).filter((limit) => !limit.resetsAt || limit.resetsAt > now);
-  const spentWindow = limits.some((limit) => limit.usedPercent >= 100);
-  const spent =
-    entry.status === "extra_usage" ||
-    (entry.status === "signed_in" && spentWindow && entry.extraUsage)
-      ? "Running on extra usage"
-      : entry.status === "usage_limit" || spentWindow
-        ? "Usage limit"
-        : "";
-  const windows = limits
-    .map(
-      (limit) =>
-        `${limit.window} ${Math.round(limit.usedPercent)}%${limit.resetsAt ? ` · resets ${resetTime(limit.resetsAt, now)}` : ""}`,
-    )
-    .join(" · ");
-  return [
-    spent ? `<span class="tag warn">${spent}</span>` : "",
-    windows
-      ? `<span class="tabular-nums">${esc(windows)}</span>`
-      : spent
-        ? ""
-        : '<span class="muted">Usage not reported</span>',
-    spent && entry.resetsAt
-      ? `<span class="muted">${esc(resetLabel(entry.resetsAt, now))}</span>`
-      : "",
-    windows && entry.limitsAt
-      ? `<span class="muted">As of ${esc(updatedLabel(entry.limitsAt, now))}</span>`
-      : "",
-  ].join("");
-}
-
 export function runnerAgentsMarkup(
-  runner: Pick<Runner, "id" | "name">,
-  agents: readonly AgentSignIn[],
-  view: { now: number; switches: boolean; busy: boolean },
+  runner: Pick<Runner, "name" | "codingAgents">,
+  catalog: readonly AgentCatalogEntry[],
 ): string {
-  const id = esc(runner.id);
-  const name = esc(runner.name);
-  const disabled = view.busy ? " disabled" : "";
-  const rows = agents.map((entry) => {
-    const agent = esc(entry.agent);
-    const label = esc(AGENT_LABELS[entry.agent] ?? entry.agent);
-    const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-    const usage = agentUsageMarkup(entry, view.now);
-    const on = entry.extraUsage === true || entry.status === "extra_usage";
-    const extra = !view.switches
-      ? `<span class="muted">Extra usage ${on ? "on" : "off"}</span>`
-      : entry.status === "unknown" && !on
-        ? '<span class="muted">Sign in first</span>'
-        : `<label class="runner-consent"><input type="checkbox" data-runner-extra-usage="${id}" data-extra-agent="${agent}" data-focus="extra:${id}:${agent}"${on ? " checked" : ""}${disabled}><span>Keep running on extra usage</span></label>`;
-    return `<tr data-agent="${agent}"><td><b>${label}</b></td><td><span class="runner-agent-cell"><span class="tag ${tone}">${text}</span></span></td><td>${usage ? `<span class="runner-agent-cell">${usage}</span>` : ""}</td><td>${extra}</td></tr>`;
-  });
-  return `<table class="runner-agents" aria-label="Agents on ${name}"><thead><tr><th scope="col">Agent</th><th scope="col">Sign-in</th><th scope="col">Usage</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows.join("")}</tbody></table><p class="muted">Keep running on extra usage: when a usage window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage.</p>`;
+  const rows = codingAgentRows(
+    (runner.codingAgents ?? []).map((entry) => ({
+      ...entry,
+      name: AGENT_LABELS[entry.agent] ?? entry.agent,
+    })),
+    { catalog },
+  );
+  const link = `<p class="muted">Sign-in and usage are in <a href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">Settings › Agent accounts</a>.</p>`;
+  return `${rows ? `<ul class="runner-skill-list" role="list" aria-label="Agents on ${esc(runner.name)}">${rows}</ul>` : '<p class="muted">This runner does not report its coding agents. Update the runner package to list them here.</p>'}${link}`;
 }
 
 function statusLine(runner: Runner, view: RunnerListView): string {
@@ -1304,6 +1209,7 @@ export function runnerDetailMarkup(
     fixSlotsDraft?: string;
     repositoryDraft?: readonly string[] | null;
     workspaceRepositories?: readonly string[];
+    catalog?: readonly AgentCatalogEntry[];
   },
 ): string {
   const id = esc(runner.id);
@@ -1328,9 +1234,6 @@ export function runnerDetailMarkup(
     view.role !== null &&
     !revoked;
   const editable = owns && !view.busy ? "" : " disabled";
-  const signIns = runner.agents?.length
-    ? runner.agents
-    : AGENTS.map((agent): AgentSignIn => ({ agent, status: "unknown", checkedAt: null }));
   const slots = runner.slots;
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(runnerSlotsLabel(runner.running ?? [], slots))}</span>`
@@ -1384,27 +1287,10 @@ export function runnerDetailMarkup(
               manages ? { runnerId: runner.id, busy: view.busy } : undefined,
             ),
         )
-  }${
-    revoked
-      ? ""
-      : block(
-          "agents",
-          "Agents",
-          "",
-          runnerAgentsMarkup(runner, signIns, {
-            now: view.now,
-            switches: owns || manages,
-            busy: view.busy,
-          }),
-        )
-  }${
+  }${revoked ? "" : block("agents", "Agents", "", runnerAgentsMarkup(runner, view.catalog ?? []))}${
     skills && runtimes
       ? `<div class="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2">${skills}${runtimes}</div>`
       : skills + runtimes
-  }${
-    revoked || runner.codingAgents === undefined
-      ? ""
-      : block("coding-agents", "Coding agents", "", runnerCodingAgentsMarkup(runner.codingAgents))
   }${block("host", "Runner", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length
       ? block("strays", "Stray processes", "", runnerStrayMarkup(metrics.strayProcesses))
@@ -1774,6 +1660,7 @@ export function createRunners() {
         ? { repositoryDraft: repositoryDrafts.get(runner.id)! }
         : {}),
       workspaceRepositories,
+      catalog: agentCatalog,
     })}${runnerVm ? runnerVmMarkup(runnerVm, { busy, pools, denied: adoptDenied }) : ""}<section class="${CARD}" aria-labelledby="runner-history-heading"><div class="runner-block-head border-b border-border px-4 py-2"><h3 id="runner-history-heading">Execution history</h3></div><div class="flex min-w-0 flex-col gap-3 p-4">${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</div></section>${deleteDialog()}`;
   }
   function markup(open: ReadonlySet<string>): string {
@@ -2046,19 +1933,6 @@ export function createRunners() {
             },
           )
           .finally(paint);
-      });
-    for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-extra-usage]"))
-      box.addEventListener("change", () => {
-        const runnerId = box.dataset.runnerExtraUsage!;
-        const agent = box.dataset.extraAgent!;
-        refocus(`extra:${runnerId}:${agent}`);
-        void change(async () => {
-          await api(
-            `/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(agent)}/extra-usage`,
-            { extraUsage: box.checked },
-          );
-          feedback = "Extra usage saved.";
-        }, false);
       });
     for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-concurrency]")) {
       const runnerId = form.dataset.runnerConcurrency!;

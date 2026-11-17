@@ -1,4 +1,4 @@
-// The Runners page's Agents table: sign-in, usage and extra usage in one place, at 1440 and 390 px.
+// The runner card's Agents block: installed coding agents and a link to Agent accounts, at 1440 and 390 px.
 // Usage: bun run build:dashboard && bun scripts/verify-runner-agents-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -23,30 +23,24 @@ const runner = {
   idle: true,
   slots: { used: 0, total: 2 },
   running: [],
-  agents: [
+  codingAgents: [
+    { agent: "claude", current: "2.0.14", pending: null, reportedAt: now },
     {
-      agent: "claude",
-      status: "signed_in",
-      checkedAt: now,
-      limitsAt: now - 4 * 60_000,
-      limits: [
-        { window: "5-hour", usedPercent: 62, resetsAt: now + 3 * 3_600_000 },
-        { window: "weekly", usedPercent: 3, resetsAt: now + 5 * 86_400_000 },
-      ],
+      agent: "codex",
+      current: "0.40.0",
+      pending: {
+        version: "0.41.0",
+        status: "installing",
+        sessions: null,
+        error: null,
+        requestedAt: now,
+      },
+      reportedAt: now,
     },
-    { agent: "codex", status: "signed_out", checkedAt: now },
-    {
-      agent: "grok",
-      status: "extra_usage",
-      checkedAt: now,
-      extraUsage: true,
-      resetsAt: now + 3_600_000,
-      limits: [{ window: "5-hour", usedPercent: 100, resetsAt: now + 3_600_000 }],
-    },
-    { agent: "opencode", status: "unknown", checkedAt: null },
+    { agent: "grok", current: "0.1.9", pending: null, reportedAt: now },
   ],
 };
-const posts: { path: string; body: unknown }[] = [];
+const requests: string[] = [];
 const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const server = Bun.serve({
@@ -54,6 +48,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    requests.push(path);
     if (path === "/api/auth/session")
       return Response.json({
         userId: "admin",
@@ -64,13 +59,17 @@ const server = Bun.serve({
         user: { name: "Pascal" },
       });
     if (path === "/api/runners")
-      return Response.json({ runners: [runner], serverVersion: null, agentVersions: [] });
+      return Response.json({
+        runners: [runner],
+        serverVersion: null,
+        agentVersions: [
+          { agent: "claude", offered: "2.0.20", refused: [], checkedAt: now },
+          { agent: "codex", offered: "0.41.0", refused: [], checkedAt: now },
+          { agent: "grok", offered: "0.1.9", refused: [], checkedAt: now },
+        ],
+      });
     if (path === `/api/runners/${runner.id}/policy`)
       return Response.json({ ownerUserId: "admin", sharing: 0 });
-    if (path.endsWith("/extra-usage") && request.method === "POST") {
-      posts.push({ path, body: await request.json() });
-      return Response.json({ ok: true });
-    }
     if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
     if (path === "/api/runners/vm") return Response.json({ available: false, vm: null });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
@@ -108,16 +107,18 @@ try {
         fullPage: true,
       });
       await page.goto(`${base}/runners/${runner.id}`);
-      const table = page.getByRole("table", { name: `Agents on ${runner.name}` });
-      await expect(table).toBeVisible();
-      await expect(table.locator('tr[data-agent="claude"]')).toContainText(
-        /5-hour 62% · resets \d{1,2}:\d{2}\s?[AP]M · weekly 3% · resets \w{3}, \w{3} \d{1,2}/,
+      const block = page.locator(`section[aria-labelledby="runner-${runner.id}-agents"]`);
+      const list = block.getByRole("list", { name: `Agents on ${runner.name}` });
+      await expect(list.locator('[data-coding-agent="claude"]')).toContainText("2.0.14");
+      await expect(list.locator('[data-coding-agent="claude"]')).toContainText("Update available");
+      await expect(list.locator('[data-coding-agent="codex"]')).toContainText("Installing");
+      await expect(list.locator('[data-coding-agent="grok"]')).toContainText("Up to date");
+      await expect(block.locator("table, input[type=checkbox]")).toHaveCount(0);
+      await expect(list).not.toContainText(/Sign|Usage|usage/);
+      await expect(block.getByRole("link", { name: "Settings › Agent accounts" })).toHaveAttribute(
+        "href",
+        "/dashboard/settings/agent-accounts",
       );
-      await expect(table.locator('tr[data-agent="grok"]')).toContainText("Running on extra usage");
-      await expect(
-        page.getByRole("button", { name: `Sign in to Codex on ${runner.name}` }),
-      ).toBeVisible();
-      await expect(page.getByLabel("Agent sign-in and usage")).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,
       );
@@ -125,18 +126,14 @@ try {
         path: join(directory, `runner-${width}-${scheme}.png`),
         fullPage: true,
       });
-      await table.locator('tr[data-agent="claude"] input[type="checkbox"]').click();
-      await expect(page.getByText("Extra usage saved.")).toBeVisible();
       await page.close();
     }
-  expect(posts).toEqual(
-    Array.from({ length: 4 }, () => ({
-      path: `/api/runners/${runner.id}/agents/claude/extra-usage`,
-      body: { extraUsage: true },
-    })),
-  );
+  expect(requests.filter((path) => path.endsWith("/extra-usage"))).toEqual([]);
   expect(errors).toEqual([]);
-  writeFileSync(join(directory, "observations.json"), JSON.stringify({ errors, posts }, null, 2));
+  writeFileSync(
+    join(directory, "observations.json"),
+    JSON.stringify({ errors, requests }, null, 2),
+  );
   console.log(`Runner agents checks passed. Screenshots in ${directory}`);
 } finally {
   await browser.close();

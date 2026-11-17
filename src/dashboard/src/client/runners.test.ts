@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   agentCatalogMarkup,
-  agentUsageMarkup,
   compareVersions,
   hostEnrollmentCommand,
   listedRunners,
@@ -29,10 +28,6 @@ import { esc } from "./format";
 import { parseRoute, routeHref } from "./route";
 
 const now = 1_000_000_000;
-const clock = (at: number) =>
-  new Date(at).toLocaleString([], { hour: "numeric", minute: "2-digit" });
-const day = (at: number) =>
-  new Date(at).toLocaleString([], { weekday: "short", month: "short", day: "numeric" });
 const runner: Runner = {
   id: "01JRUNNER0000000000000000A",
   name: "build-box",
@@ -53,21 +48,10 @@ const runner: Runner = {
   version: "1.2.0",
   idle: true,
   codingAgents: [{ agent: "claude", current: "1", pending: null, reportedAt: now }],
-  agents: [
-    { agent: "claude", status: "signed_in", checkedAt: now - 1_000 },
-    { agent: "codex", status: "unknown", checkedAt: null },
-  ],
 };
 /** The single status line under the runner name. */
 function statusLine(html: string): string | undefined {
   return /<p class="runner-status">(.*?)<\/p>/.exec(html)?.[1];
-}
-
-function agentRows(html: string): { agent: string; html: string }[] {
-  return [...html.matchAll(/<tr data-agent="([^"]+)">(.*?)<\/tr>/g)].map((match) => ({
-    agent: match[1]!,
-    html: match[2]!,
-  }));
 }
 
 /** One gauge's markup, from its `data-gauge` wrapper to the closing tag. */
@@ -141,7 +125,7 @@ describe("runner list rows", () => {
     expect(html).not.toContain("Update available");
     expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("<dl");
-    expect(runnerRowMarkup(runner, { ...row, accounts: [] })).toContain("Claude signed in");
+    expect(runnerRowMarkup(runner, { ...row, accounts: [] })).toContain("Claude needs sign-in");
   });
 
   test("a row flags offline hosts, paused status, signed-out agents and old versions", () => {
@@ -152,7 +136,6 @@ describe("runner list rows", () => {
         version: "1.1.0",
         metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 },
         codingAgents: [{ agent: "codex", current: "1", pending: null, reportedAt: now }],
-        agents: [{ agent: "codex", status: "signed_out", checkedAt: now }],
       },
       row,
     );
@@ -602,7 +585,7 @@ test("runner routes carry the selected runner", () => {
 });
 
 describe("runner details", () => {
-  test("an idle runner shows its host metrics, sign-in, sharing and controls", () => {
+  test("an idle runner shows its host metrics, agents, sharing and controls", () => {
     const html = runnerDetailMarkup(runner, view);
     expect(html).toContain("build-box");
     expect(statusLine(html)).toBe('<span class="tag ok">Idle</span>');
@@ -622,9 +605,8 @@ describe("runner details", () => {
     expect(
       runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
     ).toContain('title="2 of 10 slots in use"');
-    expect(html).toContain('<span class="tag ok">Signed in</span>');
-    expect(html).toContain('<span class="tag ">Not checked</span>');
-    expect(html).not.toContain("account type");
+    expect(html).toContain('<span class="tag ok">Up to date</span>');
+    expect(html).not.toContain("Signed in");
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* checked/);
     expect(html).toContain(">Pause<");
     expect(html).toContain(">Drain<");
@@ -699,16 +681,8 @@ describe("runner details", () => {
     expect(runnerDetailMarkup({ ...runner, agentUser: null }, view)).not.toContain("Agents run as");
   });
 
-  test("a signed-out agent and an older runner version are flagged", () => {
-    const html = runnerDetailMarkup(
-      {
-        ...runner,
-        version: "1.1.9",
-        agents: [{ agent: "claude", status: "signed_out", checkedAt: now }],
-      },
-      view,
-    );
-    expect(html).toContain('<span class="tag bad">Signed out</span>');
+  test("an older runner version is flagged", () => {
+    const html = runnerDetailMarkup({ ...runner, version: "1.1.9" }, view);
     expect(html).toContain("Update available");
   });
 
@@ -915,9 +889,7 @@ describe("simpler runner card", () => {
     expect(statusLine(html)).toBe(
       '<span class="tag running">Busy</span><span>Draining</span><span>Update available</span>',
     );
-    expect(html.match(/class="tag /g)?.length).toBe(
-      1 + (runner.agents?.length ?? 0), // the status and one per agent
-    );
+    expect(html.match(/class="tag /g)?.length).toBe(1 + (runner.codingAgents?.length ?? 0));
   });
 
   test("the runner id sits behind a copy action instead of a chip", () => {
@@ -928,174 +900,46 @@ describe("simpler runner card", () => {
     expect(html).not.toContain(`<code>${runner.id}</code>`);
   });
 
-  test("agents share one table row each, with sign-in, usage and extra usage", () => {
-    const html = runnerDetailMarkup(runner, view);
-    expect(html).toContain(
-      `<h3 id="runner-${runner.id}-agents">Agents</h3></div><div class="flex min-w-0 flex-col gap-3 p-4"><table`,
-    );
-    expect(agentRows(html).map((row) => row.agent)).toEqual(["claude", "codex"]);
-    expect(agentRows(html)[0]!.html).toContain('<span class="tag ok">Signed in</span>');
-    expect(agentRows(html)[0]!.html).toContain("Usage not reported");
-    expect(agentRows(html)[1]!.html).toContain('<span class="tag ">Not checked</span>');
-    expect(html).toContain("Keep running on extra usage: when a usage window is spent");
-    expect(html).not.toContain("Agent sign-in and usage");
-  });
-
-  test("Claude at 62% and Codex not signed in: usage and status, with no sign-in button", () => {
+  test("the Agents block lists each coding agent with its installed version and install status", () => {
     const html = runnerDetailMarkup(
       {
         ...runner,
-        agents: [
+        codingAgents: [
+          { agent: "claude", current: "2.0.0", pending: null, reportedAt: now },
           {
-            agent: "claude",
-            status: "signed_in",
-            checkedAt: now,
-            limits: [
-              { window: "5-hour", usedPercent: 62, resetsAt: now + 3_600_000 },
-              { window: "weekly", usedPercent: 3, resetsAt: null },
-            ],
-          },
-          { agent: "codex", status: "signed_out", checkedAt: now },
-        ],
-      },
-      view,
-    );
-    const [claude, codex] = agentRows(html);
-    expect(agentRows(html)).toHaveLength(2);
-    expect(claude!.html).toContain(`5-hour 62% · resets ${clock(now + 3_600_000)} · weekly 3%<`);
-    expect(codex!.html).toContain('<span class="tag bad">Signed out</span>');
-    for (const row of [claude!, codex!]) expect(row.html).not.toContain("<button");
-  });
-
-  test("a spent window reads as running on extra usage with the switch on, and Usage limit with it off", () => {
-    const spent = { window: "5-hour", usedPercent: 100, resetsAt: now + 3_600_000 };
-    const on = agentRows(
-      runnerDetailMarkup(
-        {
-          ...runner,
-          agents: [
-            {
-              agent: "claude",
-              status: "extra_usage",
-              checkedAt: now,
-              extraUsage: true,
-              limits: [spent],
+            agent: "codex",
+            current: "0.9.0",
+            pending: {
+              version: "1.0.0",
+              status: "installing",
+              sessions: null,
+              error: null,
+              requestedAt: now,
             },
-          ],
-        },
-        view,
-      ),
-    )[0]!.html;
-    expect(on).toContain('<span class="tag warn">Running on extra usage</span>');
-    expect(on).not.toContain("Usage limit");
-    expect(on).toMatch(/data-runner-extra-usage="[^"]+" data-extra-agent="claude"[^>]* checked/);
-    const off = agentRows(
-      runnerDetailMarkup(
-        {
-          ...runner,
-          agents: [
-            {
-              agent: "claude",
-              status: "usage_limit",
-              checkedAt: now,
-              resetsAt: now + 3_600_000,
-              limits: [spent],
-            },
-          ],
-        },
-        view,
-      ),
-    )[0]!.html;
-    expect(off).toContain('<span class="tag warn">Usage limit</span>');
-    expect(off).not.toContain("Running on extra usage");
-    expect(off).toContain("5-hour 100%");
-    expect(off).toContain("Resets ");
-    expect(off).not.toMatch(/data-extra-agent="claude"[^>]* checked/);
-  });
-
-  test("each window shows when it resets, and a window without a reset time shows only its percentage", () => {
-    const html = agentUsageMarkup(
-      {
-        agent: "claude",
-        status: "signed_in",
-        checkedAt: now,
-        limits: [
-          { window: "5-hour", usedPercent: 62, resetsAt: now + 3_600_000 },
-          { window: "weekly", usedPercent: 3, resetsAt: now + 6 * 86_400_000 },
-          { window: "monthly", usedPercent: 10, resetsAt: null },
-          { window: "daily", usedPercent: 90, resetsAt: now - 1 },
-        ],
-      },
-      now,
-    );
-    expect(html).toContain(
-      `5-hour 62% · resets ${clock(now + 3_600_000)} · weekly 3% · resets ${day(now + 6 * 86_400_000)} · monthly 10%</span>`,
-    );
-    expect(html).not.toContain("daily");
-    expect(html).not.toContain("Usage limit");
-  });
-
-  test("stored usage says how old it is and drops windows that have reset since", () => {
-    const html = runnerDetailMarkup(
-      {
-        ...runner,
-        agents: [
-          {
-            agent: "claude",
-            status: "signed_in",
-            checkedAt: now,
-            limitsAt: now - 12 * 60_000,
-            limits: [
-              { window: "5-hour", usedPercent: 80, resetsAt: now - 1 },
-              { window: "Weekly", usedPercent: 30, resetsAt: now + 86_400_000 },
-            ],
+            reportedAt: now,
           },
         ],
       },
       view,
     );
-    expect(html).toContain('<span class="muted">As of 12 min ago</span>');
-    expect(html).not.toContain("5-hour");
-    expect(html).toContain(`Weekly 30% · resets ${day(now + 86_400_000)}<`);
-    const reset = runnerDetailMarkup(
-      {
-        ...runner,
-        agents: [
-          {
-            agent: "claude",
-            status: "signed_in",
-            checkedAt: now,
-            limitsAt: now - 60_000,
-            limits: [{ window: "5-hour", usedPercent: 80, resetsAt: now - 1 }],
-          },
-        ],
-      },
-      view,
+    const block = /id="runner-[^"]+-agents">Agents<\/h3>.*?<\/section>/.exec(html)?.[0] ?? "";
+    expect(block).toContain('<li class="runner-skill" data-coding-agent="claude">');
+    expect(block).toContain('<b>Claude</b><span class="mono">2.0.0</span>');
+    expect(block).toContain('<b>Codex</b><span class="mono">0.9.0</span>');
+    expect(block).toContain('<span class="tag running">Installing</span>');
+    expect(block).toContain(
+      'Sign-in and usage are in <a href="/settings/agent-accounts">Settings › Agent accounts</a>.',
     );
-    expect(reset).toContain("Usage not reported");
-  });
-
-  test("a member who neither owns the runner nor administers sees the table without controls", () => {
-    const html = runnerDetailMarkup(
-      {
-        ...runner,
-        agents: [
-          ...runner.agents!,
-          { agent: "grok", status: "signed_in", checkedAt: now, extraUsage: true },
-        ],
-      },
-      { ...view, userId: "someone", role: "member" },
-    );
-    expect(agentRows(html).map((row) => row.agent)).toEqual(["claude", "codex", "grok"]);
-    expect(html).not.toContain("data-runner-signin");
+    for (const text of ["Sign-in<", "Usage<", "Extra usage", "Sign in first", "<table"])
+      expect(block).not.toContain(text);
     expect(html).not.toContain("data-runner-extra-usage");
-    expect(agentRows(html)[0]!.html).toContain("Extra usage off");
-    expect(agentRows(html)[2]!.html).toContain("Extra usage on");
   });
 
-  test("an admin who does not own the runner gets the extra usage switch", () => {
-    const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "admin" });
-    expect(html).toContain('data-extra-agent="claude"');
+  test("a runner that reports no coding agents says so and still links to Agent accounts", () => {
+    const { codingAgents: _, ...older } = runner;
+    const html = runnerDetailMarkup(older, view);
+    expect(html).toContain("This runner does not report its coding agents.");
+    expect(html).toContain('href="/settings/agent-accounts"');
   });
 
   test("heartbeats in a second render update the values in place", () => {
