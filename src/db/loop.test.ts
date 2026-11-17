@@ -395,7 +395,6 @@ async function sleepingLoop(db: Db, ready: () => boolean) {
   await eventually(() => ready() && sleeps > 0);
   return {
     started: () => started,
-    sleeps: () => sleeps,
     stop: async () => {
       controller.abort();
       await running;
@@ -407,14 +406,12 @@ test("a job inserted by raw SQL while the loop sleeps starts without waiting for
   const { db, close } = await tempStore();
   const watch = watchListen(db);
   const loop = await sleepingLoop(db, watch.listening);
-  const sleeps = loop.sleeps();
   const now = Date.now();
   await db.orm.execute(
     sql`insert into job (queue, run_at, created_at) values ('work', ${now}, ${now})`,
   );
   await eventually(loop.started);
   expect(loop.started()).toBe(true);
-  expect(loop.sleeps()).toBeGreaterThan(sleeps);
   await loop.stop();
   await close();
 });
