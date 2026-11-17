@@ -2,7 +2,8 @@ import { journalCaught } from "../journal";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isTransient, isTransientGitError } from "../core";
+import { ZodError } from "zod";
+import { isTransient, isTransientGitError, RunnerCommandRejectedError } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -1015,7 +1016,8 @@ async function addReviewEvidence(
         },
       );
       const blocked = failure("blocked", null, detail, input.head);
-      return reviewerThrew ? { ...blocked, reviewerFault: detail } : blocked;
+      const refused = error instanceof RunnerCommandRejectedError || error instanceof ZodError;
+      return reviewerThrew && !refused ? { ...blocked, reviewerFault: detail } : blocked;
     }
     metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {
@@ -1246,7 +1248,39 @@ function reviewGaps(decision: DecisionDocument): CloseoutItem[] {
   );
 }
 
-function toGateDecision(document: SpecDecision): DecisionDocument {
+const BLOCKING_STATES: readonly string[] = [
+  "exhausted",
+  "unsupported",
+  "missing",
+  "stale",
+  "invalid",
+  "untrusted",
+  "independence",
+];
+
+function withoutEmptyChangeReviews(document: SpecDecision): SpecDecision {
+  if (document.base !== document.head || document.message !== undefined) return document;
+  const items = document.items.map((item) =>
+    item.kind === "review" && (item.state === "missing" || item.state === "stale")
+      ? {
+          id: item.id,
+          kind: item.kind,
+          state: "skipped" as const,
+          message: "no commits beyond base",
+        }
+      : item,
+  );
+  if (items.every((item, index) => item === document.items[index])) return document;
+  const decision = items.some((item) => BLOCKING_STATES.includes(item.state))
+    ? "blocked"
+    : items.some((item) => item.state === "failed")
+      ? "rejected"
+      : "accepted";
+  return { ...document, decision, items };
+}
+
+function toGateDecision(spec: SpecDecision): DecisionDocument {
+  const document = withoutEmptyChangeReviews(spec);
   const decision: DecisionDocument = {
     specVersion: "0.1",
     decision: document.decision,
