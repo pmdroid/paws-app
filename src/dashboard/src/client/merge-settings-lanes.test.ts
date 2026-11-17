@@ -32,7 +32,7 @@ const QUEUE = {
     ...{ id, title: id, owner, pr: null },
     project: name && { id: name, name },
   })),
-  ...{ history: [], pushOutages: [], policyRunnerWarnings: [] },
+  ...{ history: [], pushOutages: [] },
 };
 
 let window: Window;

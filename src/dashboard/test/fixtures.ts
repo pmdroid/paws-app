@@ -23,7 +23,6 @@ import {
   type StatusMergedTimes,
   type StatusMergeEntry,
   type StatusMergeOutcome,
-  type StatusPolicyRunnerWarning,
   type StatusProject,
   type StatusPushOutage,
   type StatusQuestion,
@@ -56,7 +55,6 @@ export interface FullStatus {
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
   pushOutages?: StatusPushOutage[];
-  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
   mergedTimes?: StatusMergedTimes;
   risk?: StatusItemRisk | null;
 }
@@ -787,7 +785,6 @@ export function mergeQueueOf(full: FullStatus): MergeQueueResponse {
       pr,
     })),
     pushOutages: full.pushOutages ?? [],
-    policyRunnerWarnings: full.policyRunnerWarnings ?? [],
   };
 }
 
@@ -867,7 +864,6 @@ export function overviewOf(full: FullStatus): OverviewResponse {
         linearBudget: full.linearBudget ?? null,
         linearWebhook: full.linearWebhook ?? null,
         pushOutages: full.pushOutages ?? [],
-        policyRunnerWarnings: full.policyRunnerWarnings ?? [],
         mergeQueueCount: full.mergeQueue.length,
         setup: { github: true, runner: true, agent: true, delegated: full.items.length > 0 },
       }),

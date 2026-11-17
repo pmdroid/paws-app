@@ -58,7 +58,6 @@ import { renderMergeQueue, type LaneFilter } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderSetupChecklist } from "./setup-checklist";
 import { renderPushOutages } from "./push-outage";
-import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { hoursLabel, itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import {
   doingLabel,
@@ -200,7 +199,7 @@ function renderBanner(model: RenderModel): string {
 function viewMergeQueue(model: RenderModel): string {
   const queue = model.mergeQueue;
   if (!queue || model.phase === "loading") return renderPending(model);
-  return `${pageHeading("mergeQueue")}${renderPushOutages(queue)}${renderPolicyRunnerWarnings(queue)}${renderMergeQueue(queue, model.mergeLanes)}`;
+  return `${pageHeading("mergeQueue")}${renderPushOutages(queue)}${renderMergeQueue(queue, model.mergeLanes)}`;
 }
 
 function renderPending(model: RenderModel): string {
@@ -375,7 +374,7 @@ function waitingCell(item: OverviewIssue, now: number): string {
 }
 
 function viewOverview(overview: OverviewResponse): string {
-  const warnings = `${renderSetupChecklist(overview.setup)}${renderPushOutages(overview)}${renderPolicyRunnerWarnings(overview)}`;
+  const warnings = `${renderSetupChecklist(overview.setup)}${renderPushOutages(overview)}`;
   const intake = renderIntake(overview);
   if (!overview.issues.length && !overview.questions.length)
     return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}<p class="muted">${esc(EMPTY_PAGES)}</p></div>`;

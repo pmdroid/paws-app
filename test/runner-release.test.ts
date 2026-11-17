@@ -312,19 +312,16 @@ print(json.dumps({"gh": {"mode": gh.mode, "uid": gh.uid, "content": archive.extr
   }
 });
 
-test("the release fails before building when a minimum runner version is above the tag, and names it", async () => {
+test("the release fails before building when the minimum runner version is above the tag, and names it", async () => {
   const steps: { name?: string; run?: string }[] = workflow.jobs.prepare.steps;
   const check = steps.findIndex((value) => value.name === "Check minimum runner versions");
   expect(check).toBeGreaterThan(
     steps.findIndex((value) => value.name === "Validate release version"),
   );
   expect(check).toBeLessThan(steps.findIndex((value) => value.name === "Build runner archive"));
-  const constants = Object.entries(await import("../src/runner-protocol/versions"));
-  const highest = constants
-    .map(([, version]) => [...version])
-    .sort((left, right) => left[0]! - right[0]! || left[1]! - right[1]! || left[2]! - right[2]!)
-    .at(-1)!;
-  const below = [...highest.slice(0, 2), highest[2]! - 1].join(".");
+  const { MINIMUM_RUNNER_VERSION } = await import("../src/runner-protocol/versions");
+  const minimum = [...MINIMUM_RUNNER_VERSION];
+  const below = [...minimum.slice(0, 2), minimum[2]! - 1].join(".");
   const run = async (version: string) => {
     const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", steps[check]!.run!], {
       cwd: new URL("../", import.meta.url).pathname,
@@ -337,13 +334,11 @@ test("the release fails before building when a minimum runner version is above t
   };
   const failed = await run(below);
   expect(failed.code).not.toBe(0);
-  for (const [name, version] of constants)
-    if (version.join(".") === highest.join("."))
-      expect(failed.stderr).toContain(
-        `${name} needs runner ${highest.join(".")}, but this release is ${below}.`,
-      );
-  expect((await run(highest.join("."))).code).toBe(0);
-  expect((await run([highest[0], highest[1]! + 1, 0].join("."))).code).toBe(0);
+  expect(failed.stderr).toContain(
+    `MINIMUM_RUNNER_VERSION needs runner ${minimum.join(".")}, but this release is ${below}.`,
+  );
+  expect((await run(minimum.join("."))).code).toBe(0);
+  expect((await run([minimum[0], minimum[1]! + 1, 0].join("."))).code).toBe(0);
 });
 
 test("release actions are immutable and builds have no environment or secrets", () => {

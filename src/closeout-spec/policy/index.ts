@@ -27,4 +27,3 @@ export {
 export { anyPathMatches, pathsMatch } from "./paths";
 export { POLICY_MAX_BYTES, PUBLIC_POLICY_PATH, UNKNOWN_POLICY_KEYS_CODE } from "./resolve";
 export { createPolicyParser, parsePolicy, type ParsedPolicy, type PolicyParser } from "./document";
-export { policyKeys } from "./keys";

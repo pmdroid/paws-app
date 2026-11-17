@@ -7,7 +7,6 @@ export {
   trustedMergeResultPolicyError,
   POLICY_SCHEMA_SUMMARY,
   parseFindings,
-  policyKeys,
   scrubText,
   type PolicyDigests,
 } from "../closeout-spec";

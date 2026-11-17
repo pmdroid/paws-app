@@ -93,15 +93,6 @@ snapshot.pushOutages = [
     installationUrl: null,
   },
 ];
-snapshot.policyRunnerWarnings = [
-  {
-    repository: "acme/platform",
-    policyDigest: `sha256:${"a".repeat(64)}`,
-    runnerVersion: "0.1.48",
-    keys: [{ key: "items[].ci", needs: "0.1.49" }],
-    checkedAt: at(1),
-  },
-];
 
 const requested: string[] = [];
 const server = Bun.serve({
@@ -143,9 +134,6 @@ try {
     await expect(page.getByText("Back with the agent")).toBeVisible();
     await expect(page.getByText("Waiting for review")).toBeVisible();
     await expect(page.getByRole("alert", { name: "Push outage on acme/web" })).toBeVisible();
-    await expect(
-      page.getByRole("alert", { name: "Closeout policy needs a newer runner for acme/platform" }),
-    ).toBeVisible();
     await expect(page.locator('a[href="/dashboard/issues/ENG-101"]').first()).toBeVisible();
     if (width > 768) {
       const navigation = page.getByRole("link", { name: /Merge queue/ });

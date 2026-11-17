@@ -104,7 +104,6 @@ import {
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listOutboxSteps,
-  listPolicyRunnerWarningsSteps,
   listPushOutagesSteps,
   listQueuePositions,
   listRunsSteps,
@@ -178,7 +177,6 @@ import {
   type StatusIntakeEntry,
   type StatusLinearBudget,
   type StatusLinearWebhook,
-  type StatusPolicyRunnerWarning,
   type StatusPushOutage,
   type StatusVerdict,
   type StatusVisualReview,
@@ -485,8 +483,6 @@ async function readMergeQueue(store: Db, options: LiveStatusOptions): Promise<Me
     history,
     issues: issues.filter((issue) => shown.has(issue.id)),
     pushOutages: (await readPushOutages(store, options)).pushOutages ?? [],
-    policyRunnerWarnings:
-      (await readPolicyRunnerWarnings(store, options)).policyRunnerWarnings ?? [],
   };
 }
 
@@ -800,7 +796,6 @@ export function emptyMergeQueue(
     history: [],
     issues: [],
     pushOutages: [],
-    policyRunnerWarnings: [],
   };
 }
 
@@ -855,38 +850,11 @@ export async function readPushOutages(
   };
 }
 
-/** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-export async function readPolicyRunnerWarnings(
-  store: Db,
-  options: Pick<LiveStatusOptions, "sessionIds"> = {},
-): Promise<{
-  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
-}> {
-  const warnings = await visibleDiagnosticsAsync(
-    store,
-    options,
-    await store.run(listPolicyRunnerWarningsSteps),
-  );
-  if (!warnings.length) return {};
-  return {
-    policyRunnerWarnings: warnings.map((warning) => ({
-      repository: warning.repository,
-      policyDigest: warning.policyDigest,
-      runnerVersion: warning.runnerVersion,
-      keys: warning.keys,
-      checkedAt: iso(warning.checkedAt),
-    })),
-  };
-}
-
 export async function visibleDiagnosticRepositories(
   store: Db,
   options: Pick<LiveStatusOptions, "sessionIds">,
 ): Promise<string[]> {
-  const rows = [
-    ...(await store.run(listPushOutagesSteps)),
-    ...(await store.run(listPolicyRunnerWarningsSteps)),
-  ];
+  const rows = await store.run(listPushOutagesSteps);
   const visible = await visibleDiagnosticsAsync(store, options, rows);
   return [...new Set(visible.map((row) => row.repository))].sort();
 }
