@@ -36,7 +36,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(runnerVersion = "0.1.61") {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-account-sign-in-"));
   roots.push(root);
   const { db, close } = await tempStore();
@@ -99,7 +99,7 @@ async function fixture(runnerVersion = "0.1.61") {
       new Request("https://runner.invalid/v1/heartbeat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runnerVersion, accounts: { protocol: 1, bindings } }),
+        body: JSON.stringify({ runnerVersion: "0.1.84", accounts: { protocol: 1, bindings } }),
       }),
       runnerId,
     ))!.status;
@@ -396,15 +396,6 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
   expect((await browser(`codex/login?binding=${elsewhere.id}`))!.status).toBe(409);
   expect((await browser("codex/login?binding=..%2Fx"))!.status).toBe(400);
   expect((await browser("codex/login?binding=01JMISSING0000000000000000"))!.status).toBe(403);
-});
-
-test("a runner without account sign-in keeps refusing a named sign-in", async () => {
-  const { runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
-  await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(/0\.1\.61/);
-  const response = (await browser(`codex/login?binding=${binding.id}`))!;
-  expect(response.status).toBe(409);
-  expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.61/);
-  expect(await queued()).toEqual([]);
 });
 
 test("re-signing in a binding waits until its running work drains", async () => {

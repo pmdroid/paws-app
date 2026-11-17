@@ -29,11 +29,7 @@ import {
   undeliveredHelperStreakSteps,
   wakeRunnerSlotWaitsSteps,
 } from "./runner-capacity";
-import {
-  AGENT_USER_RUNNER_VERSION,
-  runnerReleaseAtLeast,
-  type RunnerAgentUser,
-} from "../runner-protocol";
+import type { RunnerAgentUser } from "../runner-protocol";
 import type { RunnerSessionMove } from "./runner-session-moves";
 import { listSkillsSteps, runnerSkillStatesSteps, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimesSteps, type RunnerRuntimeStatus } from "./runner-runtimes";
@@ -502,12 +498,7 @@ export function* listRunnerOverviewSteps(
           ? null
           : { id: row.osId, version: row.osVersion },
       version: row.runnerVersion,
-      agentUser:
-        row.agentUser ??
-        (row.runnerVersion !== null &&
-        !runnerReleaseAtLeast(row.runnerVersion, AGENT_USER_RUNNER_VERSION)
-          ? "runner"
-          : null),
+      agentUser: row.agentUser,
       idle: row.busy === 0,
       helpersUndelivered: yield* undeliveredHelperStreakSteps(q, row.id, now, 3),
       slots: { used: row.used, total: row.total },

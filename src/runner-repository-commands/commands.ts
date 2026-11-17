@@ -11,7 +11,6 @@ import {
   repositoryCommandReachedRunnerSteps,
   repositoryCommandRowSteps,
   repositoryCommandSettlementSteps,
-  runnerHostVersionSteps,
   setRepositoryCommandGrantSteps,
   usableRunnerSteps,
   type Db,
@@ -20,11 +19,8 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import {
-  REPOSITORY_COMMAND_RUNNER_VERSION,
   RunnerCommandSchema,
   RunnerRepositoryCommandResultSchema,
-  SQUASH_REBASE_RUNNER_VERSION,
-  runnerReleaseAtLeast,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
 } from "../runner-protocol";
@@ -124,21 +120,13 @@ export async function enqueueRepositoryCommand(
   return store.transaction(function* (q) {
     if (!(yield* activeRunnerSteps(q, command.runnerId, command.workspaceId)))
       throw new RepositoryCommandDeniedError("Runner is not accepting repository commands.");
-    const version = yield* runnerHostVersionSteps(q, command.runnerId);
-    if (!runnerReleaseAtLeast(version, REPOSITORY_COMMAND_RUNNER_VERSION))
-      throw new RepositoryCommandDeniedError(
-        `Repository commands need runner ${REPOSITORY_COMMAND_RUNNER_VERSION.join(".")} or later.`,
-      );
     if (!(yield* itemMatchesSteps(q, command)))
       throw new RepositoryCommandDeniedError("Repository command does not match its work item.");
-    const { title: _title, ...untitled } = command;
     yield* insertRepositoryCommandSteps(q, {
       id: command.id,
       runnerId: command.runnerId,
       itemId: command.itemId,
-      payload: JSON.stringify(
-        runnerReleaseAtLeast(version, SQUASH_REBASE_RUNNER_VERSION) ? command : untitled,
-      ),
+      payload: JSON.stringify(command),
       expiresAt: command.expiresAt,
       createdAt: at,
     });

@@ -18,12 +18,9 @@ import {
   sql,
 } from "drizzle-orm";
 import {
-  ACCESS_CREDENTIAL_RUNNER_VERSION,
-  AGENT_ACCOUNTS_RUNNER_VERSION,
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   runnerAccountAgentUnsupported,
-  runnerReleaseAtLeast,
   type RunnerAccountCapability,
   type RunnerCodingAgent,
   type RunnerCommand,
@@ -635,12 +632,7 @@ export function* runnerAccountUnsupportedSteps(
   agent: RunnerCodingAgent,
   options: { signIn?: boolean; reported?: boolean } = {},
 ) {
-  const { runnerAccountCapability: c, runnerHostStatus: h } = q.t;
-  const status = yield* q.one(
-    q.orm.select({ version: h.runnerVersion }).from(h).where(eq(h.runnerId, runnerId)),
-  );
-  if (!runnerReleaseAtLeast(status?.version, AGENT_ACCOUNTS_RUNNER_VERSION))
-    return `Named agent accounts need runner ${AGENT_ACCOUNTS_RUNNER_VERSION.join(".")} or later`;
+  const { runnerAccountCapability: c } = q.t;
   const row = yield* q.one(
     q.orm
       .select({ protocol: c.protocol, bindings: jsonText(q, c.bindings) })
@@ -652,12 +644,7 @@ export function* runnerAccountUnsupportedSteps(
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
   if (agentUnsupported) return agentUnsupported;
   if (options.signIn) return null;
-  if (
-    !options.reported &&
-    runnerReleaseAtLeast(status?.version, ACCESS_CREDENTIAL_RUNNER_VERSION) &&
-    (yield* bindingHasControlPlaneAuthSteps(q, bindingId))
-  )
-    return null;
+  if (!options.reported && (yield* bindingHasControlPlaneAuthSteps(q, bindingId))) return null;
   const capability = RunnerAccountCapabilitySchema.safeParse({
     protocol: row.protocol,
     bindings: JSON.parse(row.bindings),

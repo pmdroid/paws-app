@@ -13,11 +13,9 @@ import {
 } from "drizzle-orm";
 import {
   creditedLeaseUntil,
-  OFFLINE_LEASE_RUNNER_VERSION,
   PAWS_ALIVE_LEASE_SKEW_MS,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
-  runnerReleaseAtLeast,
 } from "../runner-protocol";
 import { type Q, type Db } from "./db";
 import { ownerGoneSteps } from "./instances";
@@ -176,19 +174,14 @@ export function* shiftRunnerLeasesForDowntimeSteps(
   budgetMs = RUNNER_OFFLINE_BUDGET_MS,
   self?: string,
 ) {
-  const { instance, runner, runnerCommand, runnerHostStatus, runnerWork, run } = q.t;
+  const { instance, runner, runnerCommand, runnerWork, run } = q.t;
   const hosts = yield* q.all(
     q.orm
-      .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
+      .select({ id: runner.id })
       .from(runner)
-      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
       .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked"))),
   );
-  const eligible = new Set(
-    hosts
-      .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
-      .map((host) => host.id),
-  );
+  const eligible = new Set(hosts.map((host) => host.id));
   if (eligible.size === 0) return;
   const open = yield* q.all(
     q.orm
@@ -244,8 +237,7 @@ export function* shiftRunnerLeasesForDowntimeSteps(
  * as its owner. The new deadline is `creditedLeaseUntil`, capped by `budgetMs` and by each
  * command's `expiresAt`. Work the runner gave up on stays given up: a row with a result, an
  * acknowledged cancel, or a lease already past the grace when its owner was last alive is not
- * extended. A runner older than `OFFLINE_LEASE_RUNNER_VERSION` still stops at its own grace, so
- * its lease is not moved. Run inside the transaction that takes the runs over.
+ * extended. Run inside the transaction that takes the runs over.
  */
 export async function shiftRunnerLeasesForDowntime(
   store: Db,

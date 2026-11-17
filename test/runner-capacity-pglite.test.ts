@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   activeRunnerIdsSteps,
   pinnedSlotsReservedSteps,
@@ -510,21 +510,11 @@ describePglite((connect) => {
     ]);
   });
 
-  test("the conversation lane needs a limit, a new runner and a free seat", async () => {
+  test("the conversation lane needs a limit and a free seat", async () => {
     const db = await connected(connect);
     const lane = () => db.run((q) => runnerConversationLaneSteps(q, "box", NOW));
-    const report = (runnerVersion: string) =>
-      seed(db, (q) =>
-        q.orm
-          .insert(q.t.runnerHostStatus)
-          .values({ runnerId: "box", runnerVersion, reportedAt: NOW }),
-      );
     expect(await lane()).toBe("closed");
     await seedCapacity(db, "box", { conversation: 1 });
-    expect(await lane()).toBe("closed");
-    await report("0.1.76");
-    expect(await lane()).toBe("closed");
-    await seed(db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion: "0.1.77" }));
     expect(await lane()).toBe("free");
     expect(await db.run((q) => runnerHelperAvailabilitySteps(q, "box", NOW, true, true))).toEqual({
       available: true,
@@ -533,13 +523,6 @@ describePglite((connect) => {
     });
     await seedHelper(db, "talking", { purpose: "conversation" });
     expect(await lane()).toBe("full");
-    await seed(db, (q) =>
-      q.orm
-        .update(q.t.runnerHostStatus)
-        .set({ runnerVersion: "0.1.73" })
-        .where(and(eq(q.t.runnerHostStatus.runnerId, "box"))),
-    );
-    expect(await lane()).toBe("closed");
   });
 
   test("unfinished conversation helpers read back as stored JSON text", async () => {

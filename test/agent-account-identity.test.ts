@@ -75,7 +75,7 @@ async function fixture() {
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)
-          .values({ runnerId: id, runnerVersion: "0.1.61", reportedAt: clock }),
+          .values({ runnerId: id, runnerVersion: "0.1.84", reportedAt: clock }),
     );
   const named = async (label: string) =>
     (

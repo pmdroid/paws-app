@@ -227,7 +227,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
             );
             let pending = yield* pendingHealthChecksSteps(q, runner.id, at);
             for (const agent of runnerAgents) {
-              if (!(yield* work.supportsAgentSteps(q, runner.id, agent))) continue;
               if (pending >= 4) return;
               if (!checkDue(last(agent), states.get(agent), at)) continue;
               yield* queueCheckSteps(q, runner, agent, at);
@@ -248,7 +247,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
         const runner = yield* getRunnerSteps(q, runnerId);
         if (
           !runner ||
-          !(yield* work.supportsAgentSteps(q, runnerId, agent)) ||
           runner.status !== "active" ||
           !workspaceMemberUsable(
             yield* workspaceMemberSteps(q, runner.workspaceId, runner.ownerUserId),

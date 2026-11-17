@@ -27,13 +27,10 @@ export const RunnerHeartbeatSchema = z.strictObject({
   skills: RunnerSkillManifestSchema.optional(),
   /** Agent versions Paws asks for, sent only to runners that report their coding agents. */
   agents: RunnerAgentTargetsSchema.optional(),
-  /**
-   * Set together, and only for a runner at `OFFLINE_LEASE_RUNNER_VERSION` or newer.
-   * While heartbeats fail, that runner passes them to `creditedLeaseUntil`.
-   */
+  /** Set together. While heartbeats fail, the runner passes them to `creditedLeaseUntil`. */
   offlineBudgetMs: z.number().int().positive().max(RUNNER_OFFLINE_BUDGET_MS).optional(),
   aliveAt: timestamp.optional(),
-  /** The control plane's level, sent only to `CONTROL_PLANE_LEVEL_RUNNER_VERSION` or newer. */
+  /** The control plane's level. */
   protocolLevel: z.string().max(32).optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });

@@ -373,12 +373,6 @@ describePglite((connect) => {
     const named = { accountId: a.id, bindingId: bound.id };
     const unsupported = () =>
       db.run((q) => runnerAccountUnsupportedSteps(q, "R1", bound.id, "claude"));
-    expect(await unsupported()).toMatch(/need runner/);
-    await seed(db, (q) =>
-      q.orm
-        .insert(q.t.runnerHostStatus)
-        .values({ runnerId: "R1", runnerVersion: "0.1.61", reportedAt: NOW }),
-    );
     expect(await unsupported()).toBe("The runner has not reported agent account support");
     const report = (bindings: { bindingId: string; agent: "claude" | "codex" }[] | undefined) =>
       db.run((q) =>

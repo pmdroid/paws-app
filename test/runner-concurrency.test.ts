@@ -14,6 +14,7 @@ import {
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
+import { CONTROL_PLANE_PROTOCOL_LEVEL } from "../src/runner-protocol";
 import {
   issueWorkspaceBootstrap,
   workspaceId,
@@ -151,8 +152,8 @@ async function fixture() {
 
 test("the heartbeat reply carries the chosen concurrency only to runners that report a ceiling", async () => {
   const runner = await fixture();
-  const reply = await runner.heartbeat({ capacity: 4, runnerVersion: "0.1.75" });
-  expect(reply).toEqual({ leases: [], fenced: [] });
+  const reply = await runner.heartbeat({ capacity: 4, runnerVersion: "0.1.84" });
+  expect(reply).toEqual({ leases: [], fenced: [], protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL });
   expect((await runner.list()).concurrency).toEqual({ desired: null, applied: 4, ceiling: null });
   const old = await runner.set(2);
   expect(old.status).toBe(400);
@@ -162,6 +163,7 @@ test("the heartbeat reply carries the chosen concurrency only to runners that re
     leases: [],
     fenced: [],
     concurrency: 4,
+    protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL,
   });
   expect(await runner.list()).toMatchObject({
     slots: { used: 0, total: 4 },

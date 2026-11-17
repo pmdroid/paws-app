@@ -94,17 +94,10 @@ async function fixture() {
       (q) =>
         q.orm
           .insert(q.t.runnerHostStatus)
-          .values({ runnerId: id, runnerVersion: "0.1.83", reportedAt: at }),
+          .values({ runnerId: id, runnerVersion: "0.1.84", reportedAt: at }),
     );
     return id;
   };
-  const version = (runnerId: string, runnerVersion: string) =>
-    seed(db, (q) =>
-      q.orm
-        .update(q.t.runnerHostStatus)
-        .set({ runnerVersion })
-        .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
-    );
   const checks = async (runnerId?: string) =>
     (
       await db.run((q) =>
@@ -223,7 +216,6 @@ async function fixture() {
     work,
     health,
     runner,
-    version,
     setPolicy,
     policy,
     checks,
@@ -344,7 +336,6 @@ test("a pending helper goes out before a queued login check, which waits until t
 test("a helper that expired unserved, or a conversation in its own lane, holds no check back", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
-  await f.version(runnerId, "0.1.77");
   await recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
   await f.health.refresh();
   await f.helper(runnerId, "conversation");
@@ -683,26 +674,6 @@ test("a sign-in check's usage reading replaces a stale usage limit", async () =>
     resetsAt: reset,
     cooldownUntil: reset,
   });
-});
-
-test("older runners keep their three login checks and reject OpenCode before dispatch", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  await f.version(runnerId, "0.1.52");
-  await f.health.refresh();
-  expect((await f.checks()).map((command) => command.agent)).toEqual(["claude", "codex", "grok"]);
-  await expect(
-    f.health.request(f.owner, runnerId, { type: "login_check", agent: "opencode" }),
-  ).rejects.toThrow("OpenCode needs runner 0.1.53");
-  expect(await f.checks()).toHaveLength(3);
-  await f.version(runnerId, "0.1.53");
-  await f.health.refresh();
-  expect((await f.checks()).map((command) => command.agent)).toEqual([
-    "claude",
-    "codex",
-    "grok",
-    "opencode",
-  ]);
 });
 
 test("a sign-in check asked for after an auth error waits for the runner's answer", async () => {

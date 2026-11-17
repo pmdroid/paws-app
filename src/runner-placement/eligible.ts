@@ -17,11 +17,7 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import {
-  MINIMUM_RUNNER_VERSION,
-  REPOSITORY_COMMAND_RUNNER_VERSION,
-  runnerReleaseAtLeast,
-} from "../runner-protocol";
+import { MINIMUM_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -218,10 +214,7 @@ export function* itemRepositoryRunnerSteps(q: Q, input: { itemId: string; now?: 
   }))
     if (
       runner.eligible &&
-      runnerReleaseAtLeast(
-        yield* runnerHostVersionSteps(q, runner.id),
-        REPOSITORY_COMMAND_RUNNER_VERSION,
-      )
+      runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), MINIMUM_RUNNER_VERSION)
     )
       eligible.push(runner);
   const runner =
