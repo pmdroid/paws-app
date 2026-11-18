@@ -539,8 +539,8 @@ test("sleep and wall-clock jumps spend no active command time", async () => {
   }
 });
 
-test("waiting for a question or finished result does not spend offline budget", async () => {
-  for (const wait of ["question", "result"]) {
+test("waiting for a question, a recall answer or finished result does not spend offline budget", async () => {
+  for (const wait of ["question", "recall", "result"]) {
     const f = await fixture();
     try {
       f.goDown();
@@ -552,6 +552,8 @@ test("waiting for a question or finished result does not spend offline budget", 
           question: "Continue?",
           options: [],
         });
+      else if (wait === "recall")
+        f.event({ type: "recall", requestId: crypto.randomUUID(), query: "invoice rounding" });
       else f.finish();
       await f.tick();
       await Bun.sleep(300);
@@ -563,6 +565,33 @@ test("waiting for a question or finished result does not spend offline budget", 
         await f.tickUntil(() => f.posted.length > 0);
         expect(f.posted[0]!.stopReason).toBe("end_turn");
       }
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("waiting for a host answer does not spend the command's work time", async () => {
+  for (const wait of ["question", "recall"]) {
+    const f = await fixture({ expiresMs: 10 * 60_000 });
+    try {
+      await f.tick();
+      f.event(
+        wait === "recall"
+          ? { type: "recall", requestId: crypto.randomUUID(), query: "invoice rounding" }
+          : {
+              type: "question",
+              requestId: crypto.randomUUID(),
+              question: "Continue?",
+              options: [],
+            },
+      );
+      await f.tick();
+      await Bun.sleep(300);
+      f.advance(15 * 60_000);
+      await f.tick();
+      await Bun.sleep(300);
+      expect({ wait, stopped: f.stopped() }).toEqual({ wait, stopped: 0 });
     } finally {
       await f.cleanup();
     }
