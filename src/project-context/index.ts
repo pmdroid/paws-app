@@ -51,8 +51,11 @@ export type {
   ContextSourceRevision,
 } from "../db";
 export {
+  createFakeContextDreamHelper,
   createFakeContextSummarizer,
   createFakeProjectContextReads,
+  type FakeContextDreamHelper,
+  type FakeDreamEntry,
   type FakeContextSummarizer,
   type FakeProjectContextReads,
   type FakeProjectDocument,
@@ -146,3 +149,10 @@ export {
   type RecallEntry,
   type RecallRequest,
 } from "./recall";
+export {
+  CONTEXT_DREAM_JOB,
+  CONTEXT_DREAM_LIMITS,
+  CONTEXT_DREAM_PROMPT,
+  dreamProjectContexts,
+  type ContextDreamHelper,
+} from "./dream";

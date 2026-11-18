@@ -49,6 +49,7 @@ export type ContextSummarizerInput = {
   readonly records: readonly {
     readonly id: string;
     readonly classification: ContextClassification;
+    readonly source?: string;
     readonly body: string;
   }[];
   readonly maxTokens: number;
@@ -142,9 +143,9 @@ export type ContextCompactionRequestInput = {
   readonly signal?: AbortSignal;
 };
 
-class SummarizerTimeout extends Error {}
+export class SummarizerTimeout extends Error {}
 
-async function summarizeBounded(
+export async function summarizeBounded(
   summarizer: ContextSummarizer,
   input: ContextSummarizerInput,
   timeoutMs: number,

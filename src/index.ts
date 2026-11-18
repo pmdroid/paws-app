@@ -98,6 +98,7 @@ import {
   loadRunnerControl,
   pawsPaths,
   readMergeSettings,
+  readProjectMemorySettings,
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
@@ -255,7 +256,10 @@ import {
 import {
   createLinearContextAccess,
   createProjectContextHttp,
+  CONTEXT_DREAM_JOB,
+  CONTEXT_DREAM_LIMITS,
   createProjectSessionContext,
+  dreamProjectContexts,
 } from "./project-context";
 import {
   acceptGitHubDelivery,
@@ -1351,19 +1355,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   void remote?.catch((caughtError4) => {
     journalCaught(caughtError4, "index.startPaws", null);
   });
+  const readOnlyHelper = createFindingGroupHelper({
+    store,
+    helpers: async () => {
+      const coordinator = await runnerReady;
+      if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
+      return coordinator.helpers;
+    },
+    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+  });
   const findingGrouping = linear?.findingIssues
     ? await createFindingGrouping({
         store,
         issues: linear.findingIssues,
-        helper: createFindingGroupHelper({
-          store,
-          helpers: async () => {
-            const coordinator = await runnerReady;
-            if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
-            return coordinator.helpers;
-          },
-          profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
-        }),
+        helper: readOnlyHelper,
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];
           return workspaceGroupingSources(store, workspaceId, runtime.linearClientId);
@@ -2260,6 +2265,24 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
+      if (members && linear?.projectContext) {
+        const dreamAccess = createLinearContextAccess(members);
+        created.jobs.register(CONTEXT_DREAM_JOB, async (_job, context) => {
+          await dreamProjectContexts(store, dreamAccess, {
+            enabled: readProjectMemorySettings(loadConfigFile(paths.configFile)).dream,
+            helper: readOnlyHelper,
+            now: Date.now(),
+            signal: AbortSignal.any([context.signal, abort.signal]),
+            journal,
+          });
+        });
+        await enqueueJobOnce(store, {
+          queue: CONTEXT_DREAM_JOB,
+          jobKey: CONTEXT_DREAM_JOB,
+          recurringEveryMs: CONTEXT_DREAM_LIMITS.checkEveryMs,
+          now: Date.now(),
+        });
+      }
       await registerScheduler(created.jobs, () => attached.reconcileExecution());
       await enqueueRunnerSetupChecks(store, Date.now());
       // A conversation blocked on an unverified cleanup continues once its runner reports the

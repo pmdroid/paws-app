@@ -343,6 +343,13 @@ test("a populated database from before entry forgetting migrates, and a forget s
   const forgetting = journal.entries.find((entry) => entry.tag === "0008_context_forgotten_entry")!;
   await sqlRun(opened.store, "DROP TABLE context_forgotten_entry");
   await sqlRun(opened.store, "ALTER TABLE queue_position DROP COLUMN waiting_for");
+  await sqlRun(opened.store, "DROP INDEX context_summary_partition");
+  await sqlRun(opened.store, "ALTER TABLE context_summary DROP COLUMN title");
+  await sqlRun(opened.store, "ALTER TABLE context_scope DROP COLUMN dreamed_at");
+  await sqlRun(
+    opened.store,
+    "CREATE UNIQUE INDEX context_summary_partition ON context_summary (workspace_id, scope_kind, scope_id, partition)",
+  );
   await sqlRun(
     opened.store,
     `DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= ${forgetting.when}`,

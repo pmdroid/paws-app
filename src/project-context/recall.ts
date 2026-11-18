@@ -1,6 +1,7 @@
 import { contextSourceRestriction, type ContextNamespace, type Db } from "../db";
 import { z } from "zod";
 import { tokenCounter, type ContextModelBudget } from "./budget";
+import { visibleContextTopics } from "./dream";
 import { canSee, requesterAccess, type ContextAccess } from "./policy";
 import { PROJECT_MEMORY_UNAVAILABLE } from "./remember";
 import { retrieveContextDetail, selectContext, type ContextDetail } from "./select";
@@ -94,7 +95,18 @@ export async function recallProjectContext(
     });
   if (parsed.data.id !== undefined) {
     const found = await detail(parsed.data.id, RECALL_LIMITS.tokens);
-    return found ? JSON.stringify(entry(found)) : RECALL_NO_ENTRY;
+    if (found) return JSON.stringify(entry(found));
+    const topic = (
+      await visibleContextTopics(db, current, {
+        namespace,
+        audience: "project_members",
+        ...scope,
+        now: request.now,
+      })
+    ).find((candidate) => candidate.id === parsed.data.id);
+    return topic
+      ? JSON.stringify({ id: topic.id, topic: topic.title, body: topic.body })
+      : RECALL_NO_ENTRY;
   }
   const selection = await selectContext(db, access, {
     namespace,
