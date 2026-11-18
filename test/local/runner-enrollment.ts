@@ -207,10 +207,10 @@ export async function probeRunnerEnrollment(
     );
 
     assert.deepEqual(await runnerRepositoryLists(db, identity.runnerId), {
-      admin: [],
+      admin: null,
       host: null,
     });
-    assert.equal(await runnerAllowsRepository(db, identity.runnerId, "owner/repo"), false);
+    assert.equal(await runnerAllowsRepository(db, identity.runnerId, "owner/other"), true);
     await setRunnerAdminRepositories(db, {
       runnerId: identity.runnerId,
       workspaceId: workspace.id,
@@ -232,7 +232,7 @@ export async function probeRunnerEnrollment(
     assert.equal(await runnerAllowsRepository(db, vmRunner.runnerId, "owner/repo"), true);
     assert.equal(await runnerAllowsRepository(db, vmRunner.runnerId, "owner/other"), false);
     observe(
-      "a dashboard enrollment starts with no assigned repositories and a Create VM one with none set",
+      "a dashboard enrollment and a Create VM one both start with All repositories",
       true,
       { runnerId: identity.runnerId, vmRunnerId: vmRunner.runnerId },
     );
