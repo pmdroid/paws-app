@@ -26,14 +26,12 @@ async function setup() {
   await seed(
     db,
     (q) =>
-      q.orm
-        .insert(q.t.workspace)
-        .values({
-          id: "workspace",
-          linearOrganizationId: "org",
-          name: "Workspace",
-          createdAt: time,
-        }),
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: time,
+      }),
     (q) =>
       q.orm
         .insert(q.t.workspaceUser)
