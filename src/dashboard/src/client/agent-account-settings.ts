@@ -141,7 +141,7 @@ function accountCard(account: CentralAccount, index: number, count: number, view
   if (view.removing === account.id)
     return `${open}><div class="card acct-card">${head}<div class="acct-confirm" role="alert"><p>Remove ${label}? Paws stops using it and forgets its sign-in. Runs using it stop at their next request.</p><div class="row"><button class="btn danger" type="button" data-account-action="remove-confirm"${busy}>Remove account</button><button class="btn" type="button" data-account-action="keep">Keep account</button></div></div></div></li>`;
   const signIn =
-    account.agent === "claude" || runnerless
+    account.agent === "claude" || (runnerless && account.agent !== "grok")
       ? ""
       : `<button class="btn${account.credential ? "" : " primary"}" type="button" data-account-action="sign-in"${busy}>${account.credential ? "Sign in again" : "Sign in"}</button>`;
   const signOut = account.credential
@@ -282,7 +282,7 @@ export function createAgentAccountSettings(open = openAgentAccounts): {
   const signIn = async (id: string) => {
     const account = view.accounts?.find((entry) => entry.id === id);
     if (!account) return;
-    if (account.agent === "codex") {
+    if (account.agent === "codex" || account.agent === "grok") {
       openAgentDeviceDialog(
         AGENTS[account.agent],
         account.label,

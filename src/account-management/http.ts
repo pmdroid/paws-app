@@ -174,11 +174,10 @@ export function createAccountManagement(
             },
             400,
           );
-        if (account.agent === "codex")
+        if (account.agent === "codex" || account.agent === "grok")
           return json(
             {
-              error:
-                "Codex signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+              error: `${account.agent === "codex" ? "Codex" : "Grok"} signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.`,
             },
             400,
           );

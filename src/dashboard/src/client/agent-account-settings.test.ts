@@ -68,7 +68,7 @@ beforeEach(() => {
         ? Response.json({ runners })
         : Response.json({ error: "down" }, { status: 500 });
     if (pathname.endsWith("/device")) {
-      if (agent !== "codex")
+      if (agent !== "codex" && agent !== "grok")
         return Response.json({ error: "Codex account is unavailable" }, { status: 404 });
       if (method === "GET") {
         polls++;
@@ -244,7 +244,7 @@ test("only Claude accounts render a setup token field", () => {
 
 test("an admin sees the API's error message", async () => {
   setSettingsAdmin(true);
-  agent = "grok";
+  agent = "opencode";
   const root = await mount();
   failure = "None of your runners is online with central sign-ins.";
   await click(root, "A1", "sign-in");
@@ -253,7 +253,7 @@ test("an admin sees the API's error message", async () => {
 });
 
 test("only the caller's own runners are offered for sign-in", async () => {
-  agent = "grok";
+  agent = "opencode";
   runners!.reverse();
   const root = await mount();
   expect(root.querySelector("[data-account-runnerless]")).toBeNull();
@@ -262,7 +262,7 @@ test("only the caller's own runners are offered for sign-in", async () => {
 });
 
 test("when runners cannot be loaded, the page says so and keeps sign-in", async () => {
-  agent = "grok";
+  agent = "opencode";
   runners = null;
   const root = await mount();
   expect(root.querySelector('[role="alert"]')?.textContent).toBe(
@@ -273,7 +273,7 @@ test("when runners cannot be loaded, the page says so and keeps sign-in", async 
 });
 
 test("with no own runner, Add a runner first replaces the sign-in controls", async () => {
-  agent = "grok";
+  agent = "opencode";
   runners = [{ id: "R2", name: "otherbox", ownerUserId: "U2" }];
   const root = await mount();
   const link = root.querySelector("[data-account-runnerless] a") as unknown as HTMLAnchorElement;
@@ -289,7 +289,7 @@ for (const code of [
   "Agent account belongs to another member",
 ]) {
   test(`a 403 "${code}" shows inline on the account row`, async () => {
-    agent = "grok";
+    agent = "opencode";
     const root = await mount();
     failure = code;
     status = 403;
@@ -306,7 +306,7 @@ for (const code of [
 }
 
 test("any other 403 stays a page-level error", async () => {
-  agent = "grok";
+  agent = "opencode";
   const root = await mount();
   failure = "Only workspace admins can do this.";
   status = 403;
@@ -370,7 +370,21 @@ for (const state of ["expired", "denied"]) {
   });
 }
 
-for (const provider of ["grok", "opencode"] as const) {
+test("Grok sign-in uses the device code and starts no runner login, even with no runner", async () => {
+  agent = "grok";
+  runners = [];
+  const root = await mount();
+  await click(root, "A1", "sign-in");
+  expect(requests[0]).toMatchObject({
+    method: "POST",
+    path: "/api/runners/agent-accounts/A1/device",
+  });
+  expect(window.document.querySelector("dialog h2")?.textContent).toBe("Sign in to Grok for Work");
+  expect(opened).toHaveLength(0);
+  (window.document.querySelector("[data-device-close]") as unknown as HTMLButtonElement).click();
+});
+
+for (const provider of ["opencode"] as const) {
   test(`${provider} keeps the supported runner sign-in flow`, async () => {
     agent = provider;
     const root = await mount();

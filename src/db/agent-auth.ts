@@ -4,7 +4,7 @@ import { AgentAccountError } from "./agent-accounts";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 import type { Q, Steps } from "./db";
 const key = (id: string) => `agent-auth:${id}`;
-const DEVICE_AGENTS = ["codex", "opencode"] as const;
+const DEVICE_AGENTS = ["codex", "grok", "opencode"] as const;
 export function* deviceAccountSteps(
   q: Q,
   workspaceId: string,

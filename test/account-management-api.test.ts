@@ -109,6 +109,14 @@ describePglite((connect) => {
             "Codex signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
         },
       });
+      const grok = (await send("POST", "", { agent: "grok", label: "Grok" })).body;
+      expect(await send("POST", `/${grok.id}/sign-in`)).toEqual({
+        status: 400,
+        body: {
+          error:
+            "Grok signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+        },
+      });
       const opencode = (await send("POST", "", { agent: "opencode", label: "OpenCode" })).body;
       expect(await send("POST", `/${opencode.id}/sign-in`)).toEqual({
         status: 400,

@@ -104,3 +104,54 @@ export function fakeOpencodeConsole() {
     close: () => server.stop(true),
   };
 }
+export function fakeXaiOAuth(now: () => number) {
+  const calls: { path: string; form: Record<string, string> }[] = [];
+  let state = "authorization_pending";
+  let generation = 0;
+  let refreshToken = "";
+  function jwt(body: object) {
+    return "header." + Buffer.from(JSON.stringify(body)).toString("base64url") + ".signature";
+  }
+  function issue() {
+    refreshToken = "xai-refresh-" + ++generation;
+    return Response.json({
+      access_token: "xai-access-" + generation,
+      refresh_token: refreshToken,
+      expires_in: 3600,
+      id_token: jwt({ sub: "user-42", email: "grok@test.invalid", iat: now() }),
+    });
+  }
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      const form = Object.fromEntries(new URLSearchParams(await request.text()));
+      calls.push({ path, form });
+      if (path === "/oauth2/device/code")
+        return Response.json({
+          device_code: "device-secret",
+          user_code: "GROK-CODE",
+          verification_uri: "https://accounts.x.ai/device",
+          verification_uri_complete: "https://accounts.x.ai/device?user_code=GROK-CODE",
+          expires_in: 600,
+          interval: 5,
+        });
+      if (form.grant_type === "refresh_token")
+        return form.refresh_token === refreshToken
+          ? issue()
+          : Response.json({ error: "invalid_grant" }, { status: 400 });
+      if (state !== "approved") return Response.json({ error: state }, { status: 400 });
+      return issue();
+    },
+  });
+  return {
+    calls,
+    issuer: server.url.origin,
+    approve: () => (state = "approved"),
+    slowDown: () => (state = "slow_down"),
+    deny: () => (state = "access_denied"),
+    expire: () => (state = "expired_token"),
+    close: () => server.stop(true),
+  };
+}
