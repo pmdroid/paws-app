@@ -20,6 +20,7 @@ export const contextScope = pgTable(
     status: text().notNull(),
     generation: bigint({ mode: "number" }).notNull(),
     changedAt: bigint("changed_at", { mode: "number" }).notNull(),
+    dreamedAt: bigint("dreamed_at", { mode: "number" }),
   },
   (table) => [
     primaryKey({
@@ -182,14 +183,12 @@ export const contextSummary = pgTable(
     failure: text(),
     builtAt: bigint("built_at", { mode: "number" }),
     changedAt: bigint("changed_at", { mode: "number" }).notNull(),
+    title: text(),
   },
   (table) => [
-    uniqueIndex("context_summary_partition").on(
-      table.workspaceId,
-      table.scopeKind,
-      table.scopeId,
-      table.partition,
-    ),
+    uniqueIndex("context_summary_partition")
+      .on(table.workspaceId, table.scopeKind, table.scopeId, table.partition)
+      .where(sql`title IS NULL`),
     index("context_summary_requested").on(table.requestedAt),
     check("context_summary_status", sql`status IN ('empty','current','invalidated')`),
   ],

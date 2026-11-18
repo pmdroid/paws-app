@@ -46,6 +46,7 @@ export type ContextSummaryRow = {
   attempts: number;
   failure: string | null;
   builtAt: number | null;
+  title: string | null;
 };
 
 export type ContextSummaryView = ContextSummaryRow & { valid: boolean };
@@ -111,6 +112,7 @@ const summaryColumns = (q: Q) => {
     attempts: s.attempts,
     failure: s.failure,
     builtAt: s.builtAt,
+    title: s.title,
   };
 };
 
@@ -180,6 +182,7 @@ export type ContextSummaryRead = {
   readonly partitions?: readonly string[];
   readonly visibility?: ContextVisibility;
   readonly limit?: number;
+  readonly topics?: boolean;
 };
 
 export function* listContextSummariesSteps(q: Q, input: ContextSummaryRead) {
@@ -193,6 +196,7 @@ export function* listContextSummariesSteps(q: Q, input: ContextSummaryRead) {
       .where(
         and(
           nsWhere(contextSummary, input.namespace),
+          input.topics ? isNotNull(contextSummary.title) : isNull(contextSummary.title),
           input.partitions ? inArray(contextSummary.partition, [...input.partitions]) : undefined,
           visibility
             ? and(
@@ -293,6 +297,7 @@ export function* requestContextCompactionSteps(q: Q, input: ContextCompactionReq
         and(
           nsWhere(contextSummary, input.namespace),
           eq(contextSummary.partition, partition),
+          isNull(contextSummary.title),
           isNull(contextSummary.requestedAt),
           or(
             isNull(contextSummary.failure),
@@ -308,7 +313,11 @@ export function* requestContextCompactionSteps(q: Q, input: ContextCompactionReq
       .select({ requestedAt: contextSummary.requestedAt })
       .from(contextSummary)
       .where(
-        and(nsWhere(contextSummary, input.namespace), eq(contextSummary.partition, partition)),
+        and(
+          nsWhere(contextSummary, input.namespace),
+          eq(contextSummary.partition, partition),
+          isNull(contextSummary.title),
+        ),
       ),
   );
   return pending?.requestedAt != null ? ("coalesced" as const) : ("backing_off" as const);
@@ -726,4 +735,186 @@ export function* clearDependentContextSummariesSteps(
     q.orm.delete(contextSummarySource).where(inArray(contextSummarySource.summaryId, ids)),
   );
   return ids.length;
+}
+
+export type ContextDreamTarget = {
+  readonly namespace: ContextNamespace;
+  readonly dreamedAt: number | null;
+  readonly workspaceId: string;
+  readonly sessionId: string;
+  readonly delegatorIds: readonly string[];
+};
+
+export function* listContextDreamTargetsSteps(
+  q: Q,
+  input: { readonly dueBefore: number; readonly limit: number },
+) {
+  const { contextScope, workItem, linearSession, workspace } = q.t;
+  const scopes = yield* q.all(
+    q.orm
+      .select({
+        workspaceId: contextScope.workspaceId,
+        scopeId: contextScope.scopeId,
+        dreamedAt: contextScope.dreamedAt,
+      })
+      .from(contextScope)
+      .where(
+        and(
+          eq(contextScope.scopeKind, "linear_project"),
+          eq(contextScope.status, "connected"),
+          or(isNull(contextScope.dreamedAt), lte(contextScope.dreamedAt, input.dueBefore)),
+        ),
+      )
+      .orderBy(contextScope.workspaceId, contextScope.scopeId)
+      .limit(input.limit),
+  );
+  const targets: ContextDreamTarget[] = [];
+  for (const scope of scopes) {
+    const sessions = yield* q.all(
+      q.orm
+        .select({
+          sessionId: linearSession.sessionId,
+          creatorId: linearSession.creatorId,
+          workspaceId: workspace.id,
+        })
+        .from(workItem)
+        .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
+        .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
+        .where(
+          and(
+            eq(workItem.linearProjectId, scope.scopeId),
+            eq(linearSession.organizationId, scope.workspaceId),
+            isNotNull(linearSession.creatorId),
+          ),
+        )
+        .orderBy(desc(workItem.createdAt))
+        .limit(50),
+    );
+    const first = sessions[0];
+    if (!first) continue;
+    targets.push({
+      namespace: {
+        workspaceId: scope.workspaceId,
+        scopeKind: "linear_project",
+        scopeId: scope.scopeId,
+      },
+      dreamedAt: scope.dreamedAt,
+      workspaceId: first.workspaceId,
+      sessionId: first.sessionId,
+      delegatorIds: [...new Set(sessions.map((session) => session.creatorId!))],
+    });
+  }
+  return targets;
+}
+
+export async function listContextDreamTargets(
+  store: Db,
+  input: { readonly dueBefore: number; readonly limit: number },
+): Promise<ContextDreamTarget[]> {
+  return store.run((q) => listContextDreamTargetsSteps(q, input));
+}
+
+export async function markContextDreamed(
+  store: Db,
+  namespace: ContextNamespace,
+  at: number,
+): Promise<void> {
+  await store.transaction(function* (q) {
+    yield* q.exec(
+      q.orm
+        .update(q.t.contextScope)
+        .set({ dreamedAt: at })
+        .where(nsWhere(q.t.contextScope, namespace)),
+    );
+  });
+}
+
+export type ContextTopic = {
+  readonly title: string;
+  readonly body: string;
+  readonly lineage: readonly ContextLineageEntry[];
+};
+
+export function* replaceContextTopicsSteps(
+  q: Q,
+  input: ContextSummaryPartition & {
+    readonly topics: readonly ContextTopic[];
+    readonly now: number;
+  },
+) {
+  const { contextSummary, contextSummarySource, contextScope } = q.t;
+  const partition = contextPartition(input.audienceLineage, input.restriction);
+  for (const topic of input.topics)
+    if (
+      !(yield* lineageCurrentSteps(q, {
+        namespace: input.namespace,
+        partition,
+        lineage: topic.lineage,
+        now: input.now,
+        lock: true,
+      }))
+    )
+      return "invalidated" as const;
+  const old = yield* q.all(
+    q.orm
+      .select({ id: contextSummary.id })
+      .from(contextSummary)
+      .where(and(nsWhere(contextSummary, input.namespace), isNotNull(contextSummary.title))),
+  );
+  if (old.length) {
+    const ids = old.map((row) => row.id);
+    yield* q.exec(
+      q.orm.delete(contextSummarySource).where(inArray(contextSummarySource.summaryId, ids)),
+    );
+    yield* q.exec(q.orm.delete(contextSummary).where(inArray(contextSummary.id, ids)));
+  }
+  const scope = yield* q.one(
+    q.orm
+      .select({ generation: contextScope.generation })
+      .from(contextScope)
+      .where(nsWhere(contextScope, input.namespace)),
+  );
+  for (const topic of input.topics) {
+    const id = ulid(input.now);
+    yield* q.exec(
+      q.orm.insert(contextSummary).values({
+        id,
+        ...input.namespace,
+        partition,
+        audience: input.audience,
+        audienceLineage: input.audienceLineage,
+        restriction: input.restriction,
+        version: 1,
+        status: "current",
+        body: topic.body,
+        bodyBytes: Buffer.byteLength(topic.body, "utf8"),
+        covered: topic.lineage.length,
+        generation: scope?.generation ?? 0,
+        attempts: 0,
+        builtAt: input.now,
+        changedAt: input.now,
+        title: topic.title,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(contextSummarySource).values(
+        topic.lineage.map((entry) => ({
+          summaryId: id,
+          recordId: entry.recordId,
+          recordVersion: entry.version,
+        })),
+      ),
+    );
+  }
+  return "published" as const;
+}
+
+export async function replaceContextTopics(
+  store: Db,
+  input: ContextSummaryPartition & {
+    readonly topics: readonly ContextTopic[];
+    readonly now: number;
+  },
+): Promise<"published" | "invalidated"> {
+  return store.transaction((q) => replaceContextTopicsSteps(q, input));
 }
