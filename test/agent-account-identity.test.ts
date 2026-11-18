@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { accountAgentEnv } from "../src/acp";
+import { accountHomeEnv } from "../src/acp";
 import {
   AgentAccountError,
   bindAgentAccount,
@@ -206,7 +206,7 @@ test("every advertised adapter isolates a binding's config, sessions and caches 
     runnerAccountHome(agentHome, { accountId: "01JACCOUNTA000000000000000", bindingId }),
   );
   expect(runnerAccountHome(agentHome)).toBe(agentHome);
-  const [first, second] = homes.map((home) => accountAgentEnv(home));
+  const [first, second] = homes.map((home) => accountHomeEnv(home));
   for (const [key, value] of Object.entries(first!)) {
     expect(value.startsWith(`${homes[0]}`)).toBe(true);
     expect(second![key]!.startsWith(`${homes[1]}`)).toBe(true);

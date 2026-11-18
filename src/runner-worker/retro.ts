@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { scrubText } from "../closeout-spec";
 import {
-  accountAgentEnv,
+  accountHomeEnv,
   minimalAgentEnv,
   runAgent,
   type RunAgentOptions,
@@ -334,7 +334,7 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
       PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
       ...(command.account
-        ? accountAgentEnv(home)
+        ? accountHomeEnv(home)
         : {
             HOME: home,
             CODEX_HOME: join(home, ".codex"),

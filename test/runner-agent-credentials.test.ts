@@ -450,7 +450,7 @@ test("central Codex credentials are access-only, replaced ten minutes before exp
 });
 
 test("Claude OAuth accounts use the token environment and never return refreshed credentials", async () => {
-  const { claudeAgentEnv, accountAgentEnv, minimalAgentEnv } = await import("../src/acp");
+  const { accountAgentEnv, accountHomeEnv, minimalAgentEnv } = await import("../src/acp");
   const { claudeTokenHealth } = await import("../src/runner-protocol");
   const root = mkdtempSync(join(tmpdir(), "paws-oauth-"));
   const createdAt = Date.now();
@@ -475,10 +475,10 @@ test("Claude OAuth accounts use the token environment and never return refreshed
     credentials.write(account, "claude", incoming);
     const home = openRunnerAccountHome(root, account, "claude");
     expect(
-      minimalAgentEnv({ ...accountAgentEnv(home), ...claudeAgentEnv(home) })
+      minimalAgentEnv({ ...accountHomeEnv(home), ...accountAgentEnv("claude", home) })
         .CLAUDE_CODE_OAUTH_TOKEN,
     ).toBeUndefined();
-    expect(claudeAgentEnv(home).CLAUDE_CODE_OAUTH_TOKEN).toBe(credential.token);
+    expect(accountAgentEnv("claude", home).CLAUDE_CODE_OAUTH_TOKEN).toBe(credential.token);
     mkdirSync(active, { recursive: true });
     writeFileSync(
       join(active, "01J0000000000000000000EXE2"),
@@ -491,7 +491,7 @@ test("Claude OAuth accounts use the token environment and never return refreshed
         data: Buffer.from(JSON.stringify(renewed)).toString("base64"),
       },
     ]);
-    expect(claudeAgentEnv(home).CLAUDE_CODE_OAUTH_TOKEN).toBe(renewed.token);
+    expect(accountAgentEnv("claude", home).CLAUDE_CODE_OAUTH_TOKEN).toBe(renewed.token);
     let returned = false;
     returnRunnerAgentCredentials(home, "claude", "execution", () => {
       returned = true;
