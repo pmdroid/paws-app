@@ -231,3 +231,30 @@ export const contextSession = pgTable(
     check("context_session_version", sql`version > 0`),
   ],
 );
+
+export const contextForgottenEntry = pgTable(
+  "context_forgotten_entry",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    recordKey: text("record_key").notNull(),
+    forgottenBy: text("forgotten_by").notNull(),
+    forgottenAt: bigint("forgotten_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.workspaceId,
+        table.scopeKind,
+        table.scopeId,
+        table.sourceKind,
+        table.sourceId,
+        table.recordKey,
+      ],
+      name: "context_forgotten_entry_pk",
+    }),
+  ],
+);

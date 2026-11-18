@@ -231,6 +231,40 @@ function* sourceStateSteps(q: Q, namespace: ContextNamespace, source: ContextSou
   );
 }
 
+function* lockSourceSteps(q: Q, namespace: ContextNamespace, source: ContextSourceRef) {
+  const { contextSource } = q.t;
+  yield* q.all(
+    q.orm
+      .select({ status: contextSource.status })
+      .from(contextSource)
+      .where(sourceWhere(q, namespace, source))
+      .for("update"),
+  );
+}
+
+function* forgottenKeysSteps(
+  q: Q,
+  namespace: ContextNamespace,
+  source: ContextSourceRef,
+  keys?: readonly string[],
+) {
+  const { contextForgottenEntry } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ recordKey: contextForgottenEntry.recordKey })
+      .from(contextForgottenEntry)
+      .where(
+        and(
+          nsWhere(contextForgottenEntry, namespace),
+          eq(contextForgottenEntry.sourceKind, source.kind),
+          eq(contextForgottenEntry.sourceId, source.id),
+          keys ? inArray(contextForgottenEntry.recordKey, [...keys]) : undefined,
+        ),
+      ),
+  );
+  return new Set(rows.map((row) => row.recordKey));
+}
+
 type InvalidatedRow = {
   id: string;
   workspaceId: string;
@@ -374,6 +408,7 @@ export function* ingestContextSourceSteps(q: Q, input: ContextIngest) {
   const { namespace, source, now } = input;
   const scope = yield* scopeStatusSteps(q, namespace);
   if (scope?.status === "disconnected") return { status: "disconnected" } as ContextIngestResult;
+  yield* lockSourceSteps(q, namespace, source);
   const state = yield* sourceStateSteps(q, namespace, source);
   if (state?.status === "forgotten") return { status: "forgotten" } as ContextIngestResult;
   if (state?.blockedThrough != null && source.revisionAt <= state.blockedThrough)
@@ -413,8 +448,9 @@ export function* ingestContextSourceSteps(q: Q, input: ContextIngest) {
   let unchanged = 0;
   const superseded: ContextAffectedRecord[] = [];
   const seenKeys = new Set<string>();
+  const forgotten = yield* forgottenKeysSteps(q, namespace, source);
   for (const claim of input.claims) {
-    if (seenKeys.has(claim.key)) continue;
+    if (seenKeys.has(claim.key) || forgotten.has(claim.key)) continue;
     seenKeys.add(claim.key);
     const hash = hashOf(claim.body);
     const rows = byKey.get(claim.key) ?? [];
@@ -658,8 +694,13 @@ export function* getCurrentContextRecordSteps(
 }
 
 export function* correctContextRecordSteps(q: Q, input: ContextCorrection) {
+  const found = yield* getCurrentContextRecordSteps(q, input.namespace, input.recordId, input.now);
+  if (!found) return { status: "not_found" } as ContextCorrectionResult;
+  const source = { kind: found.sourceKind, id: found.sourceId };
+  yield* lockSourceSteps(q, input.namespace, source);
   const old = yield* getCurrentContextRecordSteps(q, input.namespace, input.recordId, input.now);
-  if (!old) return { status: "not_found" } as ContextCorrectionResult;
+  if (!old || (yield* forgottenKeysSteps(q, input.namespace, source, [old.recordKey])).size)
+    return { status: "not_found" } as ContextCorrectionResult;
   const classification = input.classification ?? old.classification;
   if (classification === "decision" && old.classification !== "decision")
     return { status: "upgrade_refused" } as ContextCorrectionResult;
@@ -1047,6 +1088,81 @@ export async function invalidateContextSource(
   input: ContextSourceChange,
 ): Promise<ContextInvalidation> {
   return store.transaction((q) => invalidateContextSourceSteps(q, input));
+}
+
+export type ContextEntryForget = {
+  readonly namespace: ContextNamespace;
+  readonly recordId: string;
+  readonly sourceKind: string;
+  readonly actorId: string;
+  readonly now: number;
+};
+
+export type ContextEntryForgetResult =
+  | { status: "forgotten"; source: ContextSourceRef; invalidation: ContextInvalidation }
+  | { status: "already_forgotten"; source: ContextSourceRef }
+  | { status: "not_found" };
+
+export function* forgetContextEntrySteps(q: Q, input: ContextEntryForget) {
+  const { namespace, now } = input;
+  const { contextRecord, contextForgottenEntry } = q.t;
+  const lookup = () =>
+    q.one(
+      q.orm
+        .select({
+          recordKey: contextRecord.recordKey,
+          sourceId: contextRecord.sourceId,
+          status: contextRecord.status,
+        })
+        .from(contextRecord)
+        .where(
+          and(
+            nsWhere(contextRecord, namespace),
+            eq(contextRecord.id, input.recordId),
+            eq(contextRecord.sourceKind, input.sourceKind),
+          ),
+        ),
+    );
+  const first = yield* lookup();
+  if (!first) return { status: "not_found" } as ContextEntryForgetResult;
+  const source = { kind: input.sourceKind, id: first.sourceId };
+  yield* lockSourceSteps(q, namespace, source);
+  const row = yield* lookup();
+  if (!row) return { status: "not_found" } as ContextEntryForgetResult;
+  if ((yield* forgottenKeysSteps(q, namespace, source, [row.recordKey])).size)
+    return { status: "already_forgotten", source } as ContextEntryForgetResult;
+  if (row.status === "invalidated") return { status: "not_found" } as ContextEntryForgetResult;
+  yield* q.exec(
+    q.orm.insert(contextForgottenEntry).values({
+      ...namespace,
+      sourceKind: source.kind,
+      sourceId: source.id,
+      recordKey: row.recordKey,
+      forgottenBy: input.actorId,
+      forgottenAt: now,
+    }),
+  );
+  const rows = yield* invalidateRowsSteps(
+    q,
+    and(recordSourceWhere(q, namespace, source), eq(contextRecord.recordKey, row.recordKey)),
+    "forgotten",
+    now,
+  );
+  const records = affected(rows, "forgotten");
+  const scopes = yield* bumpAffectedSteps(q, records, [namespace], now);
+  yield* auditSteps(q, namespace, "forget_entry", input.actorId, source, now);
+  return {
+    status: "forgotten",
+    source,
+    invalidation: { scopes, records },
+  } as ContextEntryForgetResult;
+}
+
+export async function forgetContextEntry(
+  store: Db,
+  input: ContextEntryForget,
+): Promise<ContextEntryForgetResult> {
+  return store.transaction((q) => forgetContextEntrySteps(q, input));
 }
 
 export function* readdContextSourceSteps(

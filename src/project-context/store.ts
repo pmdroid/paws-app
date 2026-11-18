@@ -4,6 +4,7 @@ import {
   contextSourceRestriction,
   correctContextRecord,
   disconnectContextScope,
+  forgetContextEntry,
   ingestContextSource,
   invalidateContextSource,
   listContextCandidates,
@@ -325,6 +326,49 @@ export async function forgetContextSource(
     now: request.now,
   });
   return { status: "forgotten", invalidation };
+}
+
+const FORGETTABLE_CONTEXT_SOURCE = "paws_work_item";
+
+export type ContextEntryForgetOutcome =
+  | { status: "forgotten"; invalidation: ContextInvalidation }
+  | { status: "refused" };
+
+export async function forgetContextRecord(
+  db: Db,
+  access: ContextAccess,
+  request: {
+    namespace: ContextNamespace;
+    requester: ContextRequester;
+    recordId: string;
+    now: number;
+  },
+): Promise<ContextEntryForgetOutcome> {
+  const { namespace, requester } = request;
+  if (!validNamespace(namespace) || requester.workspaceId !== namespace.workspaceId)
+    return { status: "refused" };
+  const current = await requesterAccess(access, requester);
+  if (!current) return { status: "refused" };
+  const found = await contextRecordHistory(db, namespace, request.recordId, 1, request.now);
+  if (
+    !found ||
+    found.record.sourceKind !== FORGETTABLE_CONTEXT_SOURCE ||
+    !canSee(current, found.record.restriction)
+  )
+    return { status: "refused" };
+  const source = { kind: found.record.sourceKind, id: found.record.sourceId };
+  if (!(await authorizedForSource(db, access, namespace, requester, source)))
+    return { status: "refused" };
+  const result = await forgetContextEntry(db, {
+    namespace,
+    recordId: request.recordId,
+    sourceKind: FORGETTABLE_CONTEXT_SOURCE,
+    actorId: requester.userId,
+    now: request.now,
+  });
+  return result.status === "forgotten"
+    ? { status: "forgotten", invalidation: result.invalidation }
+    : { status: "refused" };
 }
 
 export async function readdContext(
