@@ -1,10 +1,21 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { and, eq } from "drizzle-orm";
+import { createAccountManagement } from "../src/account-management";
+import { createAccountUsage } from "../src/agent-auth";
+import { JOB_KIND } from "../src/core";
+import { writeAgentCredentialSteps } from "../src/credentials";
 import {
   ACCOUNT_RESET_SLACK_MS,
   bindAgentAccountSteps,
   createAgentAccountSteps,
+  enqueueJobSteps,
+  onJobReady,
   providerUsageSteps,
   saveProviderUsageSteps,
+  type Db,
 } from "../src/db";
 import { bindingReadinessSteps } from "../src/runner-placement";
 import { tempStore } from "./pglite";
@@ -116,4 +127,115 @@ test("placement holds a spent account until the reset, then offers it again", as
     until: resetsAt + ACCOUNT_RESET_SLACK_MS,
   });
   expect((await ready(resetsAt + ACCOUNT_RESET_SLACK_MS + 1)).ready).toBe(true);
+});
+
+async function spentAccount() {
+  const { db, close } = await tempStore();
+  const secretsDir = mkdtempSync(join(tmpdir(), "extra-usage-"));
+  cleanup.push(close, () => rmSync(secretsDir, { recursive: true, force: true }));
+  const { pair, workspace, userId } = await workspaceWithRunners(db);
+  const runnerId = await pair("usage-runner", 1, [REPOSITORY]);
+  const spent = await db.transaction((q) =>
+    createAgentAccountSteps(q, {
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      agent: "claude",
+      label: "Spent",
+      now: NOW,
+    }),
+  );
+  await db.transaction((q) =>
+    writeAgentCredentialSteps(q, secretsDir, {
+      accountId: spent.id,
+      runnerId: null,
+      version: 1,
+      blob: JSON.stringify([{ path: ".claude/.credentials.json", data: "e30=" }]),
+      now: NOW,
+    }),
+  );
+  const binding = await db.transaction((q) =>
+    bindAgentAccountSteps(q, {
+      userId,
+      workspaceId: workspace.id,
+      accountId: spent.id,
+      runnerId,
+      now: NOW,
+    }),
+  );
+  const resetsAt = NOW + 3_600_000;
+  const limits = [{ window: "Weekly", usedPercent: 100, resetsAt }];
+  await db.transaction((q) => saveProviderUsageSteps(q, spent, limits, NOW));
+  await seed(db, (q) => q.orm.update(q.t.runner).set({ lastSeenAt: NOW + 1_000 }));
+  const held = await db.transaction((q) =>
+    enqueueJobSteps(q, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "held", capacityWait: { since: NOW, attempt: 1, runnerIds: [] } },
+      runAt: resetsAt + ACCOUNT_RESET_SLACK_MS,
+      now: NOW,
+    }),
+  );
+  const at = NOW + 500;
+  const api = createAccountManagement({ store: db, secretsDir, now: () => at });
+  const extraUsage = (on: boolean) =>
+    api(
+      new Request(`http://127.0.0.1:8787/api/runners/agent-accounts/${spent.id}/extra-usage`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ extraUsage: on }),
+      }),
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: NOW, teamIds: [] },
+    );
+  return { db, secretsDir, spent, binding, limits, held, at, extraUsage };
+}
+
+const jobs = (db: Db, queue: string) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.job.id, runAt: q.t.job.runAt, payload: q.t.job.payload })
+        .from(q.t.job)
+        .where(and(eq(q.t.job.queue, queue), eq(q.t.job.status, "pending"))),
+    ),
+  );
+
+test("turning extra usage on re-checks a spent account at once and places the held item", async () => {
+  const { db, secretsDir, spent, binding, limits, held, at, extraUsage } = await spentAccount();
+  let woken = 0;
+  const stop = onJobReady((store) => store === db && woken++);
+  cleanup.push(stop);
+  expect(
+    (await db.run((q) => bindingReadinessSteps(q, { bindingId: binding.id, now: at }))).ready,
+  ).toBe(false);
+  expect((await extraUsage(true))?.status).toBe(200);
+  expect(woken).toBeGreaterThan(0);
+  expect((await db.run((q) => providerUsageSteps(q, spent.id)))?.nextCheckAt).toBe(at);
+  const usageJobs = await jobs(db, "agent.usage.after-run");
+  expect(usageJobs).toHaveLength(1);
+  expect(usageJobs[0]!.runAt).toBe(at);
+  let reads = 0;
+  await createAccountUsage({
+    store: db,
+    secretsDir,
+    now: () => at,
+    readUsage: async () => {
+      reads++;
+      return limits;
+    },
+  }).tick((usageJobs[0]!.payload as { accountId: string }).accountId);
+  expect(reads).toBe(1);
+  expect(
+    await db.run((q) => bindingReadinessSteps(q, { bindingId: binding.id, now: at + 1 })),
+  ).toMatchObject({ ready: true });
+  expect((await jobs(db, JOB_KIND.start)).find((job) => job.id === held)?.runAt).toBe(at);
+});
+
+test("turning extra usage off leaves the quota cooldown to the next scheduled reading", async () => {
+  const { db, spent, held, extraUsage } = await spentAccount();
+  const before = await db.run((q) => providerUsageSteps(q, spent.id));
+  expect((await extraUsage(false))?.status).toBe(200);
+  expect(await db.run((q) => providerUsageSteps(q, spent.id))).toEqual(before);
+  expect(await jobs(db, "agent.usage.after-run")).toEqual([]);
+  expect((await jobs(db, JOB_KIND.start)).find((job) => job.id === held)?.runAt).toBe(
+    before!.nextCheckAt,
+  );
 });

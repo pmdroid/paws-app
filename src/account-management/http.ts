@@ -11,6 +11,7 @@ import {
   setAgentAccountExtraUsageSteps,
   removeAgentAccountSteps,
   signOutAgentAccountSteps,
+  emitJobReady,
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -155,7 +156,7 @@ export function createAccountManagement(
       }
       if (action === "extra-usage" && method === "PUT") {
         const { extraUsage } = ExtraUsage.parse(await request.json());
-        await store.transaction((q) =>
+        const cleared = await store.transaction((q) =>
           setAgentAccountExtraUsageSteps(q, {
             workspaceId,
             accountId: accountId!,
@@ -163,6 +164,7 @@ export function createAccountManagement(
             now: now(),
           }),
         );
+        if (cleared) emitJobReady(store);
         return json({ ok: true });
       }
       if (action === "enabled" && method === "PUT") {
