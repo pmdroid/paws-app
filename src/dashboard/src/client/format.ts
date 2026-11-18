@@ -279,6 +279,13 @@ export function queueLine(queue: StatusQueuePosition): string {
   return `Queued, ${queue.position}${suffix} in line. ${queue.busySlots} of ${queue.totalSlots} ${slots} ${queue.busySlots === 1 ? "is" : "are"} busy.`;
 }
 
+export function queueHeading(queue: StatusQueuePosition): string {
+  const waiting = queue.waitingFor;
+  if (!waiting) return queueLine(queue);
+  const until = waiting.until === undefined ? "" : clock24(new Date(waiting.until).toISOString());
+  return until ? `${waiting.text} until ${until}` : waiting.text;
+}
+
 export function skillVersionLabel(version: string): string {
   return /^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version;
 }
