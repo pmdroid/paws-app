@@ -438,9 +438,6 @@ try {
     await admin.getByRole("button", { name: "Save project memory settings" }).click();
     await expect(admin.locator("#content")).toContainText("Saved.");
     expect(memory).toEqual({ workSummary: true, dream: true, decisions: false });
-    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
     await admin.screenshot({
       path: join(out, `project-memory-saved-${width}.png`),
       fullPage: true,

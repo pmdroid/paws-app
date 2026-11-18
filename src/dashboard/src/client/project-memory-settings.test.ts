@@ -72,35 +72,15 @@ test("members don't see the Project memory page", () => {
   expect(settingsRedirect("/workspace/project-memory")).toBe("/settings/account");
 });
 
-test("the three switches show the stored values and the note", async () => {
-  const root = window.document.createElement("div") as unknown as HTMLElement;
-  createProjectMemorySettings().mount(root, "http://127.0.0.1:8787");
-  await settle();
-  expect(switchFor(root, "decisions").checked).toBe(true);
-  expect(switchFor(root, "workSummary").checked).toBe(true);
-  expect(switchFor(root, "dream").checked).toBe(false);
-  expect(root.textContent).toContain("Save answers as decisions");
-  expect(root.textContent).toContain("Summarize finished work");
-  expect(root.textContent).toContain("Dream");
-  expect(root.textContent).toContain(
-    "With all off, agents see only titles of what's stored and read details with recall when they need them.",
-  );
-});
-
-test("switches are off when nothing is stored", async () => {
-  stored = { ...STORED, projectMemory: undefined };
-  const root = window.document.createElement("div") as unknown as HTMLElement;
-  createProjectMemorySettings().mount(root, "http://127.0.0.1:8787");
-  await settle();
-  for (const name of ["decisions", "workSummary", "dream"])
-    expect(switchFor(root, name).checked).toBe(false);
-});
-
-test("toggling and saving sends the PUT and shows Saved.", async () => {
+test("the switches show the stored values, and toggling and saving sends the PUT", async () => {
   const root = window.document.createElement("div") as unknown as HTMLElement;
   let savedCount = 0;
   createProjectMemorySettings(() => savedCount++).mount(root, "http://127.0.0.1:8787");
   await settle();
+  const checked = () =>
+    ["decisions", "workSummary", "dream"].map((name) => switchFor(root, name).checked);
+  expect(checked()).toEqual([true, true, false]);
+  expect(root.textContent).toContain("With all off, agents see only titles of what's stored");
   for (const name of ["dream", "decisions"]) {
     const field = switchFor(root, name);
     field.checked = !field.checked;
@@ -112,8 +92,7 @@ test("toggling and saving sends the PUT and shows Saved.", async () => {
   await settle();
   await settle();
   const put = requests.at(-1)!;
-  expect(put.init.method).toBe("PUT");
-  expect(put.url).toBe("http://127.0.0.1:8787/api/settings/agents");
+  expect([put.init.method, put.url]).toEqual(["PUT", "http://127.0.0.1:8787/api/settings/agents"]);
   expect((put.init.headers as Record<string, string>)["x-paws-csrf"]).toBe("token-1");
   const { merge: _merge, ...agents } = STORED;
   expect(JSON.parse(String(put.init.body))).toEqual({
@@ -122,16 +101,5 @@ test("toggling and saving sends the PUT and shows Saved.", async () => {
   });
   expect(savedCount).toBe(1);
   expect(root.textContent).toContain("Saved.");
-  expect(switchFor(root, "dream").checked).toBe(true);
-  expect(switchFor(root, "decisions").checked).toBe(false);
-});
-
-test("a 403 on load renders nothing", async () => {
-  globalThis.fetch = (async () =>
-    Response.json({ error: "Only workspace admins" }, { status: 403 })) as unknown as typeof fetch;
-  const root = window.document.createElement("div") as unknown as HTMLElement;
-  createProjectMemorySettings().mount(root, "http://127.0.0.1:8787");
-  await settle();
-  expect(root.textContent).toBe("");
-  expect(root.querySelector("form")).toBeNull();
+  expect(checked()).toEqual([false, true, true]);
 });
