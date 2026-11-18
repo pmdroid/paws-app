@@ -145,6 +145,7 @@ import {
   RUNNER_ARTIFACT_COUNT_LIMIT,
   RunnerArtifactSchema,
   RunnerEventSchema,
+  parseRecallRequest,
   parseRememberOperations,
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
@@ -156,6 +157,7 @@ import {
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
+  type RunnerRecallRequest,
   type RunnerRememberOperation,
 } from "../runner-protocol";
 
@@ -435,6 +437,20 @@ export function remoteRemember(
   };
 }
 
+export function remoteRecall(
+  emit: (event: { type: "recall"; requestId: string } & RunnerRecallRequest) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): (request: unknown) => Promise<string> {
+  return async (value) => {
+    const parsed = parseRecallRequest(value);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const requestId = randomUUID();
+    emit({ type: "recall", requestId, ...parsed.request });
+    return decodeHostAnswer((await answer(requestId, signal)).answer, "recall");
+  };
+}
+
 function decodeHostAnswer(response: string, what: string): string {
   let decoded: { answer?: unknown; error?: unknown };
   try {
@@ -451,6 +467,7 @@ export type RunnerWorkerEvent =
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "remember"; requestId: string; operations: readonly RunnerRememberOperation[] }
+  | ({ type: "recall"; requestId: string } & RunnerRecallRequest)
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1467,6 +1484,15 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.remember && options.answer
         ? {
             remember: remoteRemember(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
+      ...(command.type === "run" && command.recall && options.answer
+        ? {
+            recall: remoteRecall(
               emit,
               options.answer,
               options.signal ?? new AbortController().signal,

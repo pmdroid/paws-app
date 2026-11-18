@@ -16,6 +16,7 @@ import {
   RunnerPermissionSchema,
   RunnerCommandSchema,
   RunnerEventSchema,
+  RECALL_LIMITS,
   RunnerRememberOperationsSchema,
   RunnerResultSchema,
   type RunnerResult,
@@ -76,6 +77,15 @@ const rememberRequest = z.strictObject({
   requestId: z.uuid(),
   operations: RunnerRememberOperationsSchema,
 });
+
+const recallRequest = z
+  .strictObject({
+    type: z.literal("recall"),
+    requestId: z.uuid(),
+    query: z.string().min(1).max(RECALL_LIMITS.query).optional(),
+    id: z.string().min(1).max(RECALL_LIMITS.id).optional(),
+  })
+  .refine((request) => (request.query === undefined) !== (request.id === undefined));
 
 function executionId(now: number): string {
   const bytes = randomBytes(16);
@@ -586,7 +596,14 @@ export function openExecutionJournal(root: string) {
           const policy = policyRequest.safeParse(raw);
           const ciRerun = ciRerunRequest.safeParse(raw);
           const remember = rememberRequest.safeParse(raw);
-          if (remember.success) {
+          const recall = recallRequest.safeParse(raw);
+          if (recall.success) {
+            event =
+              recall.data.id !== undefined
+                ? { type: "recall", id: recall.data.id }
+                : { type: "recall", query: recall.data.query! };
+            requestId = recall.data.requestId;
+          } else if (remember.success) {
             event = { type: "remember", operations: remember.data.operations };
             requestId = remember.data.requestId;
           } else if (ciRerun.success) {
@@ -719,9 +736,14 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
-              ["question", "artifact", "closeout_policy", "ci_rerun", "remember"].includes(
-                String(raw.type),
-              )
+              [
+                "question",
+                "artifact",
+                "closeout_policy",
+                "ci_rerun",
+                "remember",
+                "recall",
+              ].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
             const permission = z
@@ -911,7 +933,7 @@ export function openExecutionJournal(root: string) {
       if (
         !row ||
         row.sent !== 1 ||
-        !["question", "artifact", "closeout_policy", "ci_rerun", "remember"].includes(
+        !["question", "artifact", "closeout_policy", "ci_rerun", "remember", "recall"].includes(
           RunnerEventSchema.parse(JSON.parse(row.payload)).type,
         )
       )

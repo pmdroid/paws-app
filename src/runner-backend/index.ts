@@ -1651,6 +1651,9 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.remember && input.readOnly !== true
                         ? { remember: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" && input.recall && input.readOnly !== true
+                        ? { recall: true as const }
+                        : {}),
                       ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),
@@ -2076,7 +2079,8 @@ export function createRemoteAgentRunner(options: {
                 (event.type === "artifact" ||
                   event.type === "closeout_policy" ||
                   event.type === "ci_rerun" ||
-                  event.type === "remember") &&
+                  event.type === "remember" ||
+                  event.type === "recall") &&
                 (await results.answered(assigned.runId, assigned.generation, row.sequence)) !==
                   null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
@@ -2118,6 +2122,25 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(rerun),
+                });
+              }
+              if (event.type === "recall" && !answered) {
+                const recalled = input.recall
+                  ? await input
+                      .recall(event.id !== undefined ? { id: event.id } : { query: event.query })
+                      .then(
+                        (answer) => ({ answer }),
+                        (error: unknown) => ({
+                          error: error instanceof Error ? error.message : String(error),
+                        }),
+                      )
+                  : { error: "recall is unavailable for this run" };
+                signal.throwIfAborted();
+                await results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify(recalled),
                 });
               }
               if (event.type === "remember" && !answered) {

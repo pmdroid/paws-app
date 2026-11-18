@@ -280,6 +280,29 @@ const REMEMBER_TOOL = {
   },
 };
 
+const RECALL_TOOL = {
+  name: "recall",
+  description:
+    "Look up this Linear project's saved memory: facts, open questions and decisions that earlier Paws sessions, people's answers and the project's Linear documents left. Pass query to search, or id to read one entry from the memory index in your brief. Use it when the index mentions something relevant to your task; don't call it for things the issue already says.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+        description: "Words to search the project's memory for. Pass this or id, not both.",
+      },
+      id: {
+        type: "string",
+        minLength: 1,
+        description: "The id of one entry from the memory index. Pass this or query, not both.",
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
@@ -370,6 +393,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           RUN_CLOSEOUT_TOOL,
           RERUN_CI_TOOL,
           REMEMBER_TOOL,
+          RECALL_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;

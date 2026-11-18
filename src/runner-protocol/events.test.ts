@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { RunnerEventSchema, parseRememberOperations } from "./index";
+import { RunnerEventSchema, parseRecallRequest, parseRememberOperations } from "./index";
 
 test("a remember event round-trips through the runner event schema", () => {
   const event = {
@@ -30,5 +30,27 @@ test("a remember event refuses missing fields, extra fields and too many operati
   expect(parseRememberOperations([{ action: "patch", kind: "fact", content: "B." }])).toEqual({
     ok: false,
     error: expect.stringContaining("operations.0.old_text: old_text is required"),
+  });
+});
+
+test("a recall event round-trips with exactly one of query or id", () => {
+  for (const event of [
+    { type: "recall", query: "invoice rounding" },
+    { type: "recall", id: "01RECORD" },
+  ]) {
+    const parsed = RunnerEventSchema.parse(JSON.parse(JSON.stringify(event)));
+    expect(parsed).toEqual(event as typeof parsed);
+  }
+  for (const event of [
+    { type: "recall" },
+    { type: "recall", query: "a", id: "b" },
+    { type: "recall", query: "" },
+    { type: "recall", query: "x".repeat(201) },
+    { type: "recall", query: "a", scope: "workspace" },
+  ])
+    expect(RunnerEventSchema.safeParse(event).success).toBe(false);
+  expect(parseRecallRequest({ query: "a", id: "b" })).toEqual({
+    ok: false,
+    error: expect.stringContaining("exactly one of query or id"),
   });
 });

@@ -195,6 +195,7 @@ interface HostToolBridgeOptions {
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   ciRerun?: (reason: string) => Promise<string>;
   remember?: (operations: unknown) => Promise<string>;
+  recall?: (request: unknown) => Promise<string>;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
   /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
@@ -362,6 +363,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             closeout && allowCloseoutRun ? "run_closeout" : "",
             options.ciRerun ? "rerun_ci" : "",
             options.remember ? "remember" : "",
+            options.recall ? "recall" : "",
           ]
             .filter(Boolean)
             .join(","),
@@ -508,6 +510,18 @@ async function handleConnection(
       let answer: string;
       try {
         answer = await abortable(options.ciRerun(reason.trim()), options.signal);
+      } finally {
+        options.onHookEnd?.();
+      }
+      socket.end(`${JSON.stringify({ id, answer })}\n`);
+      return;
+    }
+    if (parsed.tool === "recall") {
+      if (!options.recall) throw new Error("recall is unavailable");
+      options.onHookStart?.();
+      let answer: string;
+      try {
+        answer = await abortable(options.recall(parsed.arguments ?? {}), options.signal);
       } finally {
         options.onHookEnd?.();
       }

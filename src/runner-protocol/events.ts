@@ -57,6 +57,40 @@ export function parseRememberOperations(
   return { ok: false, error: `Not saved: ${issues.join("; ")}` };
 }
 
+export const RECALL_LIMITS = { query: 200, id: 200 } as const;
+
+const recallFields = {
+  query: z.string().min(1).max(RECALL_LIMITS.query).optional(),
+  id: z.string().min(1).max(RECALL_LIMITS.id).optional(),
+};
+
+const oneRecallTarget = [
+  (request: { query?: string; id?: string }) =>
+    (request.query === undefined) !== (request.id === undefined),
+  { message: "pass exactly one of query or id" },
+] as const;
+
+const RunnerRecallRequestSchema = z.strictObject(recallFields).refine(...oneRecallTarget);
+
+export type RunnerRecallRequest = { query: string } | { id: string };
+
+export function parseRecallRequest(
+  value: unknown,
+): { ok: true; request: RunnerRecallRequest } | { ok: false; error: string } {
+  const parsed = RunnerRecallRequestSchema.safeParse(value);
+  if (!parsed.success)
+    return {
+      ok: false,
+      error: `Not recalled: ${parsed.error.issues
+        .map((issue) => (issue.path.length ? `${issue.path.join(".")}: ` : "") + issue.message)
+        .join("; ")}`,
+    };
+  return {
+    ok: true,
+    request: parsed.data.id !== undefined ? { id: parsed.data.id } : { query: parsed.data.query! },
+  };
+}
+
 const closeoutText = z.string().max(256);
 const closeoutHead = z.string().regex(/^([a-f0-9]{40}|)$/);
 const closeoutAttempt = {
@@ -227,6 +261,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("ci_rerun"), reason: z.string().min(1).max(2000) }),
   z.strictObject({ type: z.literal("remember"), operations: RunnerRememberOperationsSchema }),
+  z.strictObject({ type: z.literal("recall"), ...recallFields }).refine(...oneRecallTarget),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),
