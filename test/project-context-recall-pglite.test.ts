@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { currentSourceContextRecords, type ContextNamespace, type Db } from "../src/db";
+import { and, eq } from "drizzle-orm";
+import { currentSourceContextRecords, pgSchema, type ContextNamespace, type Db } from "../src/db";
 import {
   PROJECT_MEMORY_UNAVAILABLE,
+  compactContext,
+  correctContext,
+  createContextCapacity,
+  createFakeContextSummarizer,
+  forgetContextSource,
+  selectContext,
+  type ContextBudgetSettings,
+  type ContextRequester,
   RECALL_LIMITS,
   RECALL_NO_ENTRY,
   createFakeContextAccess,
@@ -58,7 +67,12 @@ async function fixture() {
     scopeKind: "linear_project",
     scopeId: projectId,
   };
-  const put = async (id: string, bodies: readonly string[], teamIds = ["team-a"]) => {
+  const put = async (
+    id: string,
+    bodies: readonly string[],
+    teamIds = ["team-a"],
+    importance = 1,
+  ) => {
     await ingestContext(db, access, {
       namespace,
       requester: teamIds.includes("team-b") ? bob : alice,
@@ -75,7 +89,7 @@ async function fixture() {
         key: `${id}-${index}`,
         layer: "observation",
         classification: "reported_fact",
-        importance: 1,
+        importance,
         body,
       })),
       now: T0,
@@ -96,7 +110,7 @@ async function fixture() {
       now: T0 + 1000,
       ...overrides,
     });
-  return { put, recall };
+  return { put, recall, access, namespace, alice, bob };
 }
 
 test("an id returns that record", async () => {
@@ -162,4 +176,162 @@ test("both query and id, neither, or an extra field is rejected", async () => {
     { query: "exports", scope: "workspace" },
   ])
     await expect(recall(request)).rejects.toThrow("Not recalled");
+});
+
+const SMALL: Partial<ContextBudgetSettings> = {
+  hardCapTokens: 4_000,
+  responseTokens: 1_000,
+  memoryTokens: 800,
+  recentTokens: 300,
+  softThresholdTokens: 500,
+  summaryOutputTokens: 200,
+  summaryInputTokens: 2_000,
+  candidates: 120,
+  references: 6,
+  summaryTimeoutMs: 1_000,
+  compactionRetryMs: 60_000,
+};
+
+const MATCH = "Invoices round half to even when exporting totals.";
+
+/** Stores the body with filler past the soft threshold, then compacts them into a valid summary. */
+async function compacted(
+  { put, access, namespace }: Awaited<ReturnType<typeof fixture>>,
+  requester: ContextRequester,
+  id: string,
+  body: string,
+  teamIds = ["team-a"],
+) {
+  // More important than the filler, so the summary's bounded input includes it.
+  const [target] = await put(id, [body], teamIds, 2);
+  await put(
+    `${id}-notes`,
+    Array.from(
+      { length: 30 },
+      (_, index) => `Exports note ${index}: batches retry in region eu-${index}.`,
+    ),
+    teamIds,
+  );
+  const prompt = {
+    namespace,
+    requester,
+    destination: { audience: "project_members" } as const,
+    instructions: "You are working on a Paws task.",
+    request: "Fix the export retry behaviour",
+    toolsTokens: 300,
+    model: { contextTokens: 100_000 },
+    settings: SMALL,
+  };
+  const before = await selectContext(db, access, { ...prompt, now: T0 + 1000 });
+  expect(before.status === "ok" && before.manifest.compaction).toBe("requested");
+  const run = await compactContext(
+    db,
+    access,
+    createFakeContextSummarizer(),
+    createContextCapacity(),
+    {
+      namespace,
+      requester,
+      destination: { audience: "project_members" },
+      settings: SMALL,
+      now: T0 + 2000,
+    },
+  );
+  expect(run.status).not.toBe("refused");
+  const covered = await db.orm
+    .select({ recordId: pgSchema.contextSummarySource.recordId })
+    .from(pgSchema.contextSummarySource)
+    .innerJoin(
+      pgSchema.contextSummary,
+      eq(pgSchema.contextSummary.id, pgSchema.contextSummarySource.summaryId),
+    )
+    .where(
+      and(
+        eq(pgSchema.contextSummary.workspaceId, namespace.workspaceId),
+        eq(pgSchema.contextSummarySource.recordId, target!.id),
+      ),
+    );
+  // The summary covers the matching record, so a prompt pack leaves it out.
+  expect(covered).toHaveLength(1);
+  const after = await selectContext(db, access, {
+    ...prompt,
+    request: "invoices round half even",
+    now: T0 + 3000,
+  });
+  if (after.status !== "ok") throw new Error(`selection ${after.status}`);
+  expect(after.manifest.summary).not.toBeNull();
+  expect(after.manifest.sources.map((source) => source.recordId)).not.toContain(target!.id);
+  return target!;
+}
+
+const later = { now: T0 + 4000 };
+
+test("a query finds a record a valid summary covers, and its id still retrieves it", async () => {
+  const f = await fixture();
+  const target = await compacted(f, f.alice, "doc-rounding", MATCH);
+  const entries = JSON.parse(
+    await f.recall({ query: "invoices round half even" }, later),
+  ) as RecallEntry[];
+  expect(entries.length).toBeLessThanOrEqual(RECALL_LIMITS.entries);
+  expect(entries[0]).toEqual({
+    id: target.id,
+    classification: "reported_fact",
+    source: {
+      kind: "linear_project_document",
+      id: "doc-rounding",
+      url: "https://linear.app/doc/doc-rounding",
+      revision: "r1",
+    },
+    body: MATCH,
+    truncated: false,
+  });
+  const tokens = entries.reduce((sum, entry) => sum + estimateContextTokens(entry.body), 0);
+  expect(tokens).toBeLessThanOrEqual(RECALL_LIMITS.tokens);
+  expect(JSON.parse(await f.recall({ id: target.id }, later))).toEqual(entries[0]);
+});
+
+test("a query over a compacted record returns its correction, not the replaced text", async () => {
+  const f = await fixture();
+  const target = await compacted(f, f.alice, "doc-rounding", MATCH);
+  const corrected = await correctContext(db, f.access, {
+    namespace: f.namespace,
+    requester: f.alice,
+    recordId: target.id,
+    body: "Correction: invoices round half up when exporting totals.",
+    now: T0 + 3500,
+  });
+  expect(corrected.status).toBe("corrected");
+  const text = await f.recall({ query: "invoices round exporting totals" }, later);
+  expect(text).toContain("Correction: invoices round half up when exporting totals.");
+  expect(text).not.toContain(MATCH);
+});
+
+test("a forgotten compacted source is not found by query or id", async () => {
+  const f = await fixture();
+  const target = await compacted(f, f.alice, "doc-rounding", MATCH);
+  const forgotten = await forgetContextSource(db, f.access, {
+    namespace: f.namespace,
+    requester: f.alice,
+    source: { kind: "linear_project_document", id: "doc-rounding" },
+    now: T0 + 3500,
+  });
+  expect(forgotten.status).not.toBe("refused");
+  const text = await f.recall({ query: "invoices round half even" }, later);
+  expect(text).not.toContain(MATCH);
+  expect(text).not.toContain(target.id);
+  expect(await f.recall({ id: target.id }, later)).toBe(RECALL_NO_ENTRY);
+});
+
+test("a compacted record behind access the requester lacks or lost stays hidden", async () => {
+  const f = await fixture();
+  const canary = "Canary: team B invoices round to the nearest dime.";
+  const target = await compacted(f, f.bob, "doc-team-b", canary, ["team-b"]);
+  const bob = { requesterId: f.bob.userId, ...later };
+  expect(await f.recall({ query: "canary team invoices dime" }, bob)).toContain(canary);
+  // Alice never had team B; Bob loses it.
+  expect(await f.recall({ query: "canary team invoices dime" }, later)).not.toContain(canary);
+  expect(await f.recall({ id: target.id }, later)).toBe(RECALL_NO_ENTRY);
+  f.access.grant(f.bob, { teamIds: ["team-a"], repositories: [], channelIds: [] });
+  expect(await f.recall({ query: "canary team invoices dime" }, bob)).not.toContain(canary);
+  expect(await f.recall({ id: target.id }, bob)).toBe(RECALL_NO_ENTRY);
 });

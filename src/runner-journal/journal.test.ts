@@ -188,6 +188,58 @@ test("answer receipts require delivered questions and preserve gaps over progres
   }
 });
 
+test("a recall request waits for its answer, holds answer order and survives reopening", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-recall-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const recall = {
+      type: "recall",
+      requestId: "11111111-1111-4111-8111-111111111111",
+      query: "invoice rounding",
+    };
+    const question = {
+      type: "question",
+      requestId: "22222222-2222-4222-8222-222222222222",
+      question: "Which API?",
+      options: [],
+    };
+    const lines = [recall, question].map((value) => JSON.stringify(value) + "\n").join("");
+    await journal.ingest(execution.id, Buffer.from(lines));
+    expect(journal.pending(execution.id)).toEqual([
+      { sequence: 1, event: { type: "recall", query: "invoice rounding" } },
+      {
+        sequence: 2,
+        event: { type: "question", text: "Which API?", options: [] },
+      },
+    ]);
+    expect(journal.waiting(execution.id)).toBe(true);
+    journal.sent(execution.id, 1);
+    journal.sent(execution.id, 2);
+    // The question's answer cannot pass the recall still waiting before it.
+    expect(() => journal.answered(execution.id, 2)).toThrow("earlier question or artifact");
+    journal.close();
+    journal = openExecutionJournal(root);
+    expect(journal.waiting(execution.id)).toBe(true);
+    expect(journal.answerCursor(execution.id)).toBe(0);
+    expect(() => journal.answered(execution.id, 2)).toThrow("earlier question or artifact");
+    journal.answered(execution.id, 1);
+    expect(journal.waiting(execution.id)).toBe(true);
+    journal.answered(execution.id, 2);
+    expect(journal.waiting(execution.id)).toBe(false);
+    expect(journal.answerCursor(execution.id)).toBe(2);
+    // A redelivered answer after reopening keeps the cursor.
+    journal.close();
+    journal = openExecutionJournal(root);
+    journal.answered(execution.id, 1);
+    expect(journal.answerCursor(execution.id)).toBe(2);
+    expect(journal.waiting(execution.id)).toBe(false);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("live deliveries include tool status and output while private thoughts stay local", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-tool-progress-"));
   const journal = openExecutionJournal(root);

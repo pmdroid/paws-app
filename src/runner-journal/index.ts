@@ -107,7 +107,16 @@ export type TerminalExecution = {
 const TERMINAL_PHASES = ["complete", "interrupted"];
 const payloadRunId = sql<string>`json_extract(${execution.payload},'$.runId')`;
 const payloadGeneration = sql<number>`json_extract(${execution.payload},'$.generation')`;
-const awaitsAnswer = sql`json_extract(${delivery.payload},'$.type') IN ('question','artifact','closeout_policy','ci_rerun','remember')`;
+// Host requests the agent waits on: each holds the answer cursor and pauses work accounting.
+const ANSWERED_TYPES = [
+  "question",
+  "artifact",
+  "closeout_policy",
+  "ci_rerun",
+  "remember",
+  "recall",
+] as const;
+const awaitsAnswer = inArray(sql`json_extract(${delivery.payload},'$.type')`, [...ANSWERED_TYPES]);
 const one = { one: sql`1` };
 
 function rowid(table: SQLiteTable) {
@@ -736,14 +745,7 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
-              [
-                "question",
-                "artifact",
-                "closeout_policy",
-                "ci_rerun",
-                "remember",
-                "recall",
-              ].includes(String(raw.type))
+              (ANSWERED_TYPES as readonly string[]).includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
             const permission = z
@@ -933,7 +935,7 @@ export function openExecutionJournal(root: string) {
       if (
         !row ||
         row.sent !== 1 ||
-        !["question", "artifact", "closeout_policy", "ci_rerun", "remember", "recall"].includes(
+        !(ANSWERED_TYPES as readonly string[]).includes(
           RunnerEventSchema.parse(JSON.parse(row.payload)).type,
         )
       )
