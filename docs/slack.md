@@ -18,6 +18,7 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 
 - The link works once, for ten minutes, for the admin, session and Paws workspace that started it. On return Paws checks that the person is still an admin before it saves the team, app and bot Slack returned.
 - A Slack workspace connects to one Paws workspace. To switch to another Slack workspace, disconnect first. A denial, a failure, or a reconnect that returns another team or app leaves the connection as it was.
+- When the setup starts from Slack with that Slack team and, optionally, a channel, Slack offers that team and a successful install returns the admin to the channel, or to the Paws app's messages when no channel was given. Otherwise the admin returns to Integrations.
 - **Disconnect** deletes the token and revokes it with Slack. Each change is in the workspace audit.
 
 `paws login slack` keeps working on its own.

@@ -36,6 +36,37 @@ import { SLACK_CALLBACK_PATH, SLACK_INSTALL_SCOPES, slackCapabilities } from "./
 const STATUS = "/api/workspaces/slack";
 const CONNECT = "/api/workspaces/slack/connect";
 const IDENTITY = ["teamId", "teamName", "appId", "botUserId"];
+const TEAM_ID = /^T[A-Z0-9]{2,20}$/;
+const CHANNEL_ID = /^[CGD][A-Z0-9]{2,20}$/;
+
+type Origin = { teamId?: string; channelId?: string };
+
+async function originOf(request: Request): Promise<Origin | null> {
+  const text = await request.text().catch(() => null);
+  if (text === null) return null;
+  if (!text.trim()) return {};
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const { teamId, channelId } = body as Record<string, unknown>;
+  if (teamId === undefined && channelId === undefined) return {};
+  if (typeof teamId !== "string" || !TEAM_ID.test(teamId)) return null;
+  if (channelId === undefined) return { teamId };
+  if (typeof channelId !== "string" || !CHANNEL_ID.test(channelId)) return null;
+  return { teamId, channelId };
+}
+
+function slackReturn(intent: string, token: SlackToken): Response | null {
+  const { teamId, channelId } = JSON.parse(intent) as Origin;
+  if (!teamId || teamId !== token.teamId) return null;
+  const query = new URLSearchParams(channelId ? { channel: channelId } : { app: token.appId! });
+  query.set("team", teamId);
+  return redirect(`https://slack.com/app_redirect?${query}`);
+}
 
 export function createSlackConnect(options: {
   store: Db;
@@ -81,8 +112,11 @@ export function createSlackConnect(options: {
     }
     if (url.pathname === STATUS && request.method === "GET") return json(await status(principal));
     if (url.pathname === STATUS && request.method === "DELETE") return disconnect(principal);
-    if (url.pathname === CONNECT && request.method === "POST")
-      return connect(principal, access!.session.tokenHash);
+    if (url.pathname === CONNECT && request.method === "POST") {
+      const from = await originOf(request);
+      if (!from) return json({ error: "Invalid Slack team or channel ID." }, 400);
+      return connect(principal, access!.session.tokenHash, from);
+    }
     return json({ error: "Method not allowed." }, 405);
   };
 
@@ -97,7 +131,7 @@ export function createSlackConnect(options: {
     };
   }
 
-  async function connect(principal: WorkspacePrincipal, sessionHash: string) {
+  async function connect(principal: WorkspacePrincipal, sessionHash: string, from: Origin) {
     const app = resolveSlackApp(home, env);
     if (!app) return json({ error: "Set the Slack app credentials on the server first." }, 409);
     const state = workspaceSecret();
@@ -110,7 +144,7 @@ export function createSlackConnect(options: {
         sessionHash,
         secretId: "slack",
         expectedGeneration: current?.updatedAt ?? 0,
-        intent: JSON.stringify({ kind: "slack" }),
+        intent: JSON.stringify({ kind: "slack", ...from }),
         expiresAt: now() + 10 * 60_000,
       });
       yield* auditSteps(q, principal, "slack.started");
@@ -122,6 +156,7 @@ export function createSlackConnect(options: {
       state,
       redirect_uri: redirectUri,
     });
+    if (from.teamId) query.set("team", from.teamId);
     return json({ url: `https://slack.com/oauth/v2/authorize?${query}` });
   }
 
@@ -172,7 +207,8 @@ export function createSlackConnect(options: {
       yield* auditSteps(q, principal, "slack.connected", `slack:${token.teamId}`);
       return "connected";
     });
-    return saved === "connected" ? back(saved) : fail(saved);
+    if (saved !== "connected") return fail(saved);
+    return slackReturn(claimed.intent, token) ?? back(saved);
   }
 
   async function disconnect(principal: WorkspacePrincipal) {

@@ -104,8 +104,8 @@ async function fixture() {
       new Request(ORIGIN + path, { method, headers, body: body && JSON.stringify(body) }),
     ))!;
   }
-  async function start(user: string) {
-    const response = await call(user, "/api/workspaces/slack/connect", "POST", {});
+  async function start(user: string, body: object = {}) {
+    const response = await call(user, "/api/workspaces/slack/connect", "POST", body);
     const url = new URL(((await response.json()) as { url: string }).url);
     return url.searchParams.get("state")!;
   }
@@ -218,4 +218,33 @@ test("concurrent reconnects commit once, and a stale disconnect keeps the newer 
   const key = { kind: "slack" as const, workspace: "ws1" };
   expect(await f.db.run((q) => deleteCredentialCiphertextSteps(q, key, stale))).toBe(false);
   expect(await f.credentials()).toHaveLength(1);
+});
+
+test("an install started from Slack returns to its channel or the app DM", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  const connect = (body: object) => f.call("alice", "/api/workspaces/slack/connect", "POST", body);
+  for (const body of [
+    { teamId: "t1" },
+    { teamId: "T111111", channelId: "X1" },
+    { channelId: "C123456" },
+    { teamId: "T111111", channelId: "C1&team=T9" },
+  ])
+    expect((await connect(body)).status).toBe(400);
+  const started = (await (await connect({ teamId: "T111111", channelId: "C123456" })).json()) as {
+    url: string;
+  };
+  const authorize = new URL(started.url);
+  expect(authorize.searchParams.get("team")).toBe("T111111");
+  const state = authorize.searchParams.get("state")!;
+  expect(await f.finish("alice", state, { team: "T111111" })).toBe(
+    "https://slack.com/app_redirect?channel=C123456&team=T111111",
+  );
+  expect(
+    await f.finish("alice", await f.start("alice", { teamId: "T111111" }), { team: "T111111" }),
+  ).toBe("https://slack.com/app_redirect?app=A1&team=T111111");
+  const other = await f.start("alice", { teamId: "T222222", channelId: "C123456" });
+  expect(await f.finish("alice", other, { team: "T333333" })).toContain("slack=different_team");
+  const denied = await f.start("alice", { teamId: "T111111", channelId: "C123456" });
+  expect(await f.finish("alice", denied, "deny")).toContain("slack=denied");
 });
