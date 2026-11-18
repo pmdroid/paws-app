@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { join } from "node:path";
 /** Variables an agent and its hooks may inherit. Everything else stays with Paws. */
 export const ALLOWED_AGENT_ENV: readonly string[] = [
@@ -121,7 +121,7 @@ function isBenignProxy(value: string): boolean {
   }
 }
 
-export function accountAgentEnv(home: string): Record<string, string> {
+export function accountHomeEnv(home: string): Record<string, string> {
   return {
     HOME: home,
     CODEX_HOME: join(home, ".codex"),
@@ -133,16 +133,45 @@ export function accountAgentEnv(home: string): Record<string, string> {
   };
 }
 
-export function claudeAgentEnv(home: string): Record<string, string> {
-  const path = join(home, ".claude/paws-oauth.json");
-  const credential = existsSync(path)
-    ? (JSON.parse(readFileSync(path, "utf8")) as { kind?: string; token?: string })
-    : null;
-  const token =
-    credential?.kind === "oauth_token" &&
-    typeof credential.token === "string" &&
-    /^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(credential.token)
-      ? credential.token
-      : undefined;
-  return token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
+const API_KEY_ENV: Readonly<Record<string, string>> = {
+  claude: "ANTHROPIC_API_KEY",
+  codex: "OPENAI_API_KEY",
+  grok: "XAI_API_KEY",
+  opencode: "OPENROUTER_API_KEY",
+};
+
+function readCredential(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    journal(`agent account credential ${path} is not valid JSON`);
+    return null;
+  }
+}
+
+export function accountAgentEnv(agent: string, home: string): Record<string, string> {
+  if (agent === "claude") {
+    const oauthPath = join(home, ".claude/paws-oauth.json");
+    const oauth = existsSync(oauthPath)
+      ? (JSON.parse(readFileSync(oauthPath, "utf8")) as { kind?: unknown; token?: unknown } | null)
+      : null;
+    if (
+      oauth?.kind === "oauth_token" &&
+      typeof oauth.token === "string" &&
+      /^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(oauth.token)
+    )
+      return { CLAUDE_CODE_OAUTH_TOKEN: oauth.token };
+  }
+  const variable = Object.hasOwn(API_KEY_ENV, agent) ? API_KEY_ENV[agent] : undefined;
+  if (!variable) return {};
+  const path = join(home, ".paws/api-key.json");
+  const credential = readCredential(path);
+  if (credential?.kind !== "api_key" || credential.agent !== agent) return {};
+  if (typeof credential.key !== "string" || !/^\S{1,512}$/.test(credential.key)) {
+    journal(`agent account API key in ${path} is malformed; no key set`);
+    return {};
+  }
+  return { [variable]: credential.key };
 }

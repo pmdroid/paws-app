@@ -73,8 +73,8 @@ import {
   git,
   runAgent,
   runWithShellRecovery,
+  accountHomeEnv,
   accountAgentEnv,
-  claudeAgentEnv,
   minimalAgentEnv,
   reconstructAcpPrompt,
   currentRequest,
@@ -717,7 +717,7 @@ export function reviewCommandEnv(
   agent: "claude" | "codex",
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  return agent === "claude" && env.HOME ? { ...env, ...claudeAgentEnv(env.HOME) } : env;
+  return env.HOME ? { ...env, ...accountAgentEnv(agent, env.HOME) } : env;
 }
 
 /**
@@ -900,7 +900,7 @@ export async function executeRunnerCommand(
     }
   };
   const homeEnv = binding
-    ? accountAgentEnv(home)
+    ? accountHomeEnv(home)
     : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
   for (const provider of [".codex", ".claude", ".grok"]) {
     const folder = join(home, provider);
@@ -2287,7 +2287,10 @@ export async function executeRunnerCommand(
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
-      const loginEnv = { ...agentEnv, ...(command.agent === "claude" ? claudeAgentEnv(home) : {}) };
+      const loginEnv = {
+        ...agentEnv,
+        ...(command.agent === "claude" ? accountAgentEnv("claude", home) : {}),
+      };
       const checked =
         command.agent === "claude" || command.agent === "codex"
           ? await checkDeveloperLogin({
