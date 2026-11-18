@@ -35,6 +35,7 @@ import {
   type ContextDestination,
   type ContextRequester,
 } from "./policy";
+import { recallProjectContext, type RecallRequest } from "./recall";
 import { rememberWorkItemContext, type RememberRequest } from "./remember";
 import { contextKey } from "./sanitize";
 import {
@@ -377,6 +378,7 @@ export type ProjectSessionContext = {
   prepare(input: ProjectSessionInput): Promise<SessionContext>;
   recordDecision(input: AnsweredDecision): Promise<AnsweredDecisionOutcome>;
   remember?(request: RememberRequest): Promise<string>;
+  recall?(request: RecallRequest): Promise<string>;
 };
 
 export const PROJECT_SESSION_DEFAULTS = {
@@ -433,6 +435,7 @@ export function createProjectSessionContext(options: {
   return {
     recordDecision: (input) => recordAnsweredDecision(options.db, options.access, input),
     remember: (request) => rememberWorkItemContext(options.db, options.access, request),
+    recall: (request) => recallProjectContext(options.db, options.access, request),
     async prepare(input) {
       const namespace: ContextNamespace = {
         workspaceId: input.organizationId,
