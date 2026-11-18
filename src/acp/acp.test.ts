@@ -815,6 +815,41 @@ test("remember is offered only when the run options ask for it", async () => {
   expect(await hostTools()).toContain("remember");
 });
 
+test("recall is offered only when the run options ask for it", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  const run = (recall?: RunAgentOptions["recall"]) =>
+    runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: recall ? "run-recall" : "run-no-recall",
+      prompt: "Work.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      askTeam: { ask: async () => ({ answer: "yes" }) },
+      remember: async () => "Saved.",
+      ...(recall ? { recall } : {}),
+    });
+  const hostTools = async () =>
+    (
+      (await readResult(files.resultPath)).mcpServers[0] as {
+        env: { name: string; value: string }[];
+      }
+    ).env
+      .find((entry) => entry.name === "PAWS_HOST_TOOLS")!
+      .value.split(",");
+  await run();
+  expect(await hostTools()).toContain("remember");
+  expect(await hostTools()).not.toContain("recall");
+  await run(async () => "[]");
+  expect(await hostTools()).toContain("recall");
+});
+
 test("get_closeout lists the pending check and run_closeout runs it", async () => {
   const layout = await layoutRepo();
   await mkdir(join(layout.worktree, ".agents"), { recursive: true });

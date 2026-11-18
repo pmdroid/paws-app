@@ -384,7 +384,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.reply ||
       options.startWork ||
       options.publishArtifact ||
-      (options.remember && options.readOnly !== true)
+      (options.remember && options.readOnly !== true) ||
+      (options.recall && options.readOnly !== true)
     ) {
       bridge = await startAskTeamBridge({
         socketPath,
@@ -407,6 +408,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         ...(options.closeoutPolicy ? { closeoutPolicy: options.closeoutPolicy } : {}),
         ...(options.ciRerun && options.readOnly !== true ? { ciRerun: options.ciRerun } : {}),
         ...(options.remember && options.readOnly !== true ? { remember: options.remember } : {}),
+        ...(options.recall && options.readOnly !== true ? { recall: options.recall } : {}),
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined
           ? { closeoutBasePath: options.closeoutBasePath }

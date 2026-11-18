@@ -51,6 +51,7 @@ const QUESTION_TYPES: readonly string[] = [
   "closeout_policy",
   "ci_rerun",
   "remember",
+  "recall",
 ];
 
 export function createRunnerResults(options: { store: Db; work: RunnerWork; now?: () => number }) {

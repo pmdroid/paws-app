@@ -59,11 +59,14 @@ export {
 } from "./github-read";
 
 export {
+  RECALL_LIMITS,
   REMEMBER_LIMITS,
   RunnerEventSchema,
   RunnerPlanStepSchema,
   RunnerRememberOperationsSchema,
+  parseRecallRequest,
   parseRememberOperations,
+  type RunnerRecallRequest,
   type RunnerRememberOperation,
   withoutJournalTime,
   type RunnerEvent,
