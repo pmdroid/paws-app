@@ -141,20 +141,44 @@ export async function loginSlack(input: {
   return token;
 }
 
-export function createSlackAuth(input: { home: string; db: Db; fetch?: SlackFetch }) {
+export function createSlackAuth(input: {
+  home: string;
+  db: Db;
+  fetch?: SlackFetch;
+  workspaceId?: string;
+  env?: Record<string, string | undefined>;
+}) {
+  const { home, workspaceId } = input;
+  const read = (q: Q): Steps<SlackToken | null> =>
+    workspaceId === undefined
+      ? readSlackTokenSteps(q, home)
+      : (function* () {
+          return (yield* installedSlackTokenSteps(q, home, workspaceId)) ?? null;
+        })();
+  function* write(q: Q, token: SlackToken): Steps<boolean> {
+    if (workspaceId === undefined) return yield* writeSlackTokenSteps(q, home, token);
+    const current = yield* installedSlackTokenSteps(q, home, workspaceId);
+    const expected = current?.updatedAt;
+    if (expected === undefined || current?.teamId !== token.teamId)
+      throw new Error("Slack credentials changed during refresh.");
+    if (!(yield* saveInstalledSlackTokenSteps(q, home, workspaceId, token, expected)))
+      throw new Error("Slack credentials changed during refresh.");
+    return true;
+  }
+  const missing = workspaceId === undefined ? "Run paws login slack." : "Reconnect Slack.";
   return {
     async ensureFresh(): Promise<string> {
-      const current = await readSlackToken(input.db, input.home);
-      if (current === null) throw new Error("Run paws login slack.");
+      const current = await input.db.run(read);
+      if (current === null) throw new Error(missing);
       if (current.expiresAtMs === null || current.expiresAtMs > Date.now() + 60_000)
         return current.accessToken;
-      const app = readSlackApp(input.home);
-      if (app === null) throw new Error("Run paws login slack.");
+      const app = resolveSlackApp(home, input.env ?? {});
+      if (app === null) throw new Error(missing);
       const saved = await refreshCredential({
         db: input.db,
-        identity: "slack",
-        read: (q) => readSlackTokenSteps(q, input.home),
-        write: (q, token) => writeSlackTokenSteps(q, input.home, token),
+        identity: workspaceId === undefined ? "slack" : `slack:${workspaceId}`,
+        read,
+        write,
         refresh: (token, signal) =>
           requestSlackToken(
             app,
@@ -165,6 +189,7 @@ export function createSlackAuth(input: { home: string; db: Db; fetch?: SlackFetc
             input.fetch ?? fetch,
             signal,
             token,
+            workspaceId === undefined ? undefined : [],
           ),
       });
       return saved.accessToken;

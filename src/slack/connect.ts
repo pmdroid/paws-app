@@ -23,6 +23,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { journalCaught } from "../journal";
 import {
+  createSlackAuth,
   installedSlackTokenSteps,
   loginSlackTokenSteps,
   slackTeamOwnerSteps,
@@ -128,7 +129,22 @@ export function createSlackConnect(options: {
       const installed = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
       return [installed, installed ? null : yield* loginSlackTokenSteps(q, home)] as const;
     });
+    let reconnect: string | null = null;
+    if (token?.refreshToken != null)
+      await createSlackAuth({
+        home,
+        db: store,
+        fetch: slackFetch,
+        env,
+        workspaceId: principal.workspaceId,
+      })
+        .ensureFresh()
+        .catch((caught: unknown) => {
+          journalCaught(caught, "slack.connect.refresh", null);
+          reconnect = "Slack could not refresh its token. Reconnect Slack.";
+        });
     return {
+      reconnect,
       configured: resolveSlackApp(home, env) !== null,
       redirectUrl: redirectUri,
       eventsUrl: `${origin}/webhooks/slack`,
@@ -194,7 +210,6 @@ export function createSlackConnect(options: {
       token = await requestSlackToken(app, body, slackFetch, signal, undefined, []);
       if (!token.appId || (env.SLACK_APP_ID && token.appId !== env.SLACK_APP_ID))
         throw new Error("Slack returned a different app.");
-      if (token.refreshToken !== null) return fail("rotating");
     } catch (caught) {
       journalCaught(caught, "slack.connect.exchange", null);
       return fail("failed");

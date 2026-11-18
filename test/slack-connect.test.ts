@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import { rmSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import {
@@ -13,7 +14,12 @@ import {
   workspaceTokenHash,
   WORKSPACE_COOKIE,
 } from "../src/workspace";
-import { createSlackConnect, SLACK_INSTALL_SCOPES } from "../src/slack";
+import {
+  createSlackConnect,
+  createSlackRevocation,
+  handleSlackWebhook,
+  SLACK_INSTALL_SCOPES,
+} from "../src/slack";
 import { writeCredential } from "../src/credentials";
 import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
@@ -30,10 +36,11 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 type View = {
+  reconnect: string | null;
   connection: Record<string, string> | null;
   capabilities: Record<string, { ready: boolean; message?: string }> & { missing: string[] };
 };
-type Grant = { team: string; scope?: string; app?: string; rotate?: boolean };
+type Grant = { team: string; scope?: string; app?: string; rotate?: boolean; expiresIn?: number };
 
 async function fixture() {
   const home = tempHome();
@@ -42,6 +49,8 @@ async function fixture() {
   let now = Date.now();
   const grants: Grant[] = [];
   const revoked: string[] = [];
+  const refreshed: string[] = [];
+  let refreshFails = false;
   const handle = createSlackConnect({
     store: db,
     home,
@@ -51,6 +60,19 @@ async function fixture() {
     fetch: async (url, init) => {
       const auth = new Headers(init?.headers).get("authorization") ?? "";
       if (url.endsWith("/auth.revoke")) revoked.push(auth);
+      const form = new URLSearchParams(String(init?.body));
+      if (form.get("grant_type") === "refresh_token") {
+        const old = form.get("refresh_token")!;
+        refreshed.push(old);
+        if (refreshFails) return Response.json({ ok: false, error: "invalid_refresh_token" });
+        return Response.json({
+          ok: true,
+          token_type: "bot",
+          access_token: `${old}-access`,
+          refresh_token: `${old}-next`,
+          expires_in: 43200,
+        });
+      }
       const grant = grants[Number(new URLSearchParams(String(init?.body)).get("code"))]!;
       return Response.json({
         ok: true,
@@ -58,7 +80,9 @@ async function fixture() {
         access_token: `xoxb-${grant.team}-${grants.length}`,
         scope: grant.scope ?? SLACK_INSTALL_SCOPES.join(","),
         app_id: grant.app ?? "A1",
-        ...(grant.rotate ? { refresh_token: "xoxe-refresh", expires_in: 43200 } : {}),
+        ...(grant.rotate
+          ? { refresh_token: `xoxe-${grant.team}`, expires_in: grant.expiresIn ?? 43200 }
+          : {}),
         bot_user_id: `B${grant.team}`,
         team: { id: grant.team, name: `Team ${grant.team}` },
       });
@@ -119,9 +143,36 @@ async function fixture() {
     expect(response.status).toBe(303);
     return response.headers.get("location")!;
   }
+  const secret = "s";
+  const revoke = createSlackRevocation({ store: db, home, now: () => now });
+  async function event(payload: object) {
+    const raw = JSON.stringify({ event_time: Math.floor(Date.now() / 1000), ...payload });
+    const time = String(Math.floor(Date.now() / 1000));
+    const signature = `v0=${createHmac("sha256", secret).update(`v0:${time}:${raw}`).digest("hex")}`;
+    const request = new Request(`${ORIGIN}/webhooks/slack`, {
+      method: "POST",
+      headers: { "x-slack-signature": signature, "x-slack-request-timestamp": time },
+      body: raw,
+    });
+    return handleSlackWebhook(request, secret, Date.now(), revoke);
+  }
+  const audit = () => db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit)));
   return {
     db,
     home,
+    event,
+    audit,
+    refreshed,
+    failRefresh: (value: boolean) => (refreshFails = value),
+    owners: async () =>
+      (
+        await db.run((q) =>
+          q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
+        )
+      )
+        .map((row) => row.workspace)
+        .filter((name) => name.startsWith("team:"))
+        .sort(),
     workspace,
     setRole,
     call,
@@ -199,7 +250,6 @@ test("a denial, another team or app keeps the connection, and teams never cross 
   await f.workspace("ws1", { alice: "admin" });
   await f.workspace("ws2", { dave: "admin" });
   await f.again("alice", { team: "T111111" });
-  expect(await f.again("dave", { team: "T222222", rotate: true })).toContain("slack=rotating");
   await f.again("dave", { team: "T222222" });
   expect(await f.again("alice", "deny")).toContain("slack=denied");
   expect(await f.again("alice", { team: "T333333" })).toContain("slack=different_team");
@@ -325,4 +375,99 @@ test("adoption refuses a taken team, a rotating token or no app and keeps the lo
     "team:T111111",
     "ws1",
   ]);
+});
+
+test("a rotating token refreshes for its own workspace, and a failed refresh asks for a reconnect", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  await f.workspace("ws2", { dave: "admin" });
+  await f.workspace("ws3", { erin: "admin" });
+  expect(await f.again("alice", { team: "T111111", rotate: true, expiresIn: 30 })).toContain(
+    "slack=connected",
+  );
+  await f.again("dave", { team: "T222222", rotate: true });
+  await f.again("erin", { team: "T333333", rotate: true, expiresIn: 30 });
+  const before = Object.fromEntries((await f.credentials()).map((row) => [row.workspace, row]));
+  expect((await f.status("alice")).reconnect).toBeNull();
+  expect((await f.status("dave")).reconnect).toBeNull();
+  expect(f.refreshed).toEqual(["xoxe-T111111"]);
+  const after = Object.fromEntries((await f.credentials()).map((row) => [row.workspace, row]));
+  expect(after.ws1!.updatedAt).toBeGreaterThan(before.ws1!.updatedAt);
+  expect(after.ws2).toEqual(before.ws2!);
+  expect(after.ws3).toEqual(before.ws3!);
+  expect((await f.status("alice")).connection!.teamId).toBe("T111111");
+  expect(f.refreshed).toEqual(["xoxe-T111111"]);
+  f.failRefresh(true);
+  const failed = await f.status("erin");
+  expect(failed.reconnect).toBe("Slack could not refresh its token. Reconnect Slack.");
+  expect(JSON.stringify(failed)).not.toContain("xoxe");
+  expect((await f.credentials()).find((row) => row.workspace === "ws3")).toEqual(after.ws3!);
+  expect((await f.status("dave")).reconnect).toBeNull();
+});
+
+test("app_uninstalled and bot tokens_revoked end only that team's installation", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  await f.workspace("ws2", { dave: "admin" });
+  await f.again("alice", { team: "T111111" });
+  await f.again("dave", { team: "T222222" });
+  const revoked = (team: string, bot: string[], oauth: string[] = []) => ({
+    type: "event_callback",
+    team_id: team,
+    api_app_id: "A1",
+    event: { type: "tokens_revoked", tokens: { oauth, bot } },
+  });
+  expect((await f.event(revoked("T111111", [], ["U1"]))).status).toBe(400);
+  expect((await f.event(revoked("T111111", ["BT999999"]))).status).toBe(200);
+  expect(
+    (
+      await f.event({
+        ...revoked("T111111", []),
+        event: { type: "app_uninstalled" },
+        api_app_id: "A9",
+      })
+    ).status,
+  ).toBe(200);
+  expect((await f.credentials()).map((row) => row.workspace).sort()).toEqual(["ws1", "ws2"]);
+  expect((await f.event(revoked("T111111", ["BT111111"]))).status).toBe(200);
+  expect((await f.credentials()).map((row) => row.workspace)).toEqual(["ws2"]);
+  expect(await f.owners()).toEqual(["team:T222222"]);
+  expect((await f.status("alice")).connection).toBeNull();
+  const uninstall = {
+    type: "event_callback",
+    team_id: "T222222",
+    api_app_id: "A1",
+    event: { type: "app_uninstalled" },
+  };
+  expect((await f.event(uninstall)).status).toBe(200);
+  expect((await f.event(uninstall)).status).toBe(200);
+  expect(await f.credentials()).toEqual([]);
+  expect(await f.owners()).toEqual([]);
+  const audits = (await f.audit()).filter((row) => row.action === "slack.revoked");
+  expect(audits.map((row) => [row.workspaceId, row.subject, row.userId])).toEqual([
+    ["ws1", "slack:T111111", null],
+    ["ws2", "slack:T222222", null],
+  ]);
+  expect(await f.again("alice", { team: "T222222" })).toContain("slack=connected");
+});
+
+test("a delayed or replayed revocation from before a reconnect keeps the newer installation", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  await f.again("alice", { team: "T111111" });
+  const uninstall = (event_time?: number) => ({
+    type: "event_callback",
+    team_id: "T111111",
+    api_app_id: "A1",
+    event_time,
+    event: { type: "app_uninstalled" },
+  });
+  const earlier = Math.floor(Date.now() / 1000) - 5;
+  expect((await f.event(uninstall(earlier))).status).toBe(200);
+  expect((await f.event({ ...uninstall(), event_time: "soon" })).status).toBe(400);
+  expect((await f.credentials()).map((row) => row.workspace)).toEqual(["ws1"]);
+  expect(await f.owners()).toEqual(["team:T111111"]);
+  expect((await f.audit()).filter((row) => row.action === "slack.revoked")).toEqual([]);
+  expect((await f.event(uninstall(earlier + 10))).status).toBe(200);
+  expect(await f.credentials()).toEqual([]);
 });

@@ -10,7 +10,7 @@ import {
   refreshingInstallations,
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
-import { createSlackConnect, handleSlackWebhook } from "../slack";
+import { createSlackConnect, createSlackRevocation, handleSlackWebhook } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
@@ -937,7 +937,18 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
     return new Response(status.body, { status: status.status, headers });
   }
-  if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
+  if (path === "/webhooks/slack")
+    return handleSlackWebhook(
+      request,
+      secrets.slackSigningSecret,
+      Date.now(),
+      secrets.store
+        ? createSlackRevocation({
+            store: secrets.store,
+            home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+          })
+        : undefined,
+    );
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (request.method === "POST" && path === "/webhooks/github") {
       const saved = loadGitHubAppCredentials(

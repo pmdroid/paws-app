@@ -5,8 +5,8 @@ A workspace admin connects one Slack workspace to a Paws workspace in **Workspac
 ## Create the Slack app
 
 1. On [api.slack.com/apps](https://api.slack.com/apps), create an app. Under **OAuth & Permissions**, add the redirect URL `https://<paws>/oauth/slack/callback` and the bot scopes below. Turn on **Agents & AI Apps** and the **Messages Tab** in **App Home**.
-2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im` and `assistant_thread_started`. Turn on **Manage Distribution** to install it in more than one Slack workspace.
-3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or save them with `bun run paws install secrets`. Set `SLACK_APP_ID` so Paws refuses any other app. Leave **Token Rotation** off: Paws refuses a rotating token. Slack must reach Paws over HTTPS.
+2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im`, `assistant_thread_started`, `app_uninstalled` and `tokens_revoked`. Turn on **Manage Distribution** to install it in more than one Slack workspace.
+3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or save them with `bun run paws install secrets`. Set `SLACK_APP_ID` so Paws refuses any other app. **Token Rotation** may be on or off; with it on, Paws refreshes a workspace's token when it is about to expire. Slack must reach Paws over HTTPS.
 
 ## Scopes
 
@@ -20,6 +20,8 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 - A Slack workspace connects to one Paws workspace. To switch to another Slack workspace, disconnect first. A denial, a failure, or a reconnect that returns another team or app leaves the connection as it was.
 - When the setup starts from Slack with that Slack team and, optionally, a channel, Slack offers that team and a successful install returns the admin to the channel, or to the Paws app's messages when no channel was given. Otherwise the admin returns to Integrations.
 - **Disconnect** deletes the token and revokes it with Slack. Each change is in the workspace audit.
+- When the app is uninstalled from Slack, or Slack revokes its bot token, Paws deletes that workspace's token and records `slack.revoked` in the audit. Other connected workspaces are unaffected, and an event from before the current installation is ignored. Add to Slack connects it again.
+- If a rotating token can't be refreshed, the card asks the admin to reconnect.
 
 ## Use a `paws login slack` connection
 
