@@ -240,6 +240,46 @@ const RERUN_CI_TOOL = {
   },
 };
 
+const REMEMBER_TOOL = {
+  name: "remember",
+  description:
+    "Save a durable fact about this Linear project for future Paws sessions. Saved entries are shown to later agents working on the same project as background, so keep each entry short and high-signal. Save only what would change how a future agent works on this project: a convention, a constraint, a pitfall, or an open question nobody has answered. Skip anything that's in the code, the issue or the docs; task progress; and what you changed (that goes in the pull request). You cannot save decisions; Paws records those when a person answers ask_team.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operations: {
+        type: "array",
+        minItems: 1,
+        maxItems: 5,
+        items: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["add", "patch", "remove"] },
+            kind: { type: "string", enum: ["fact", "open_question"] },
+            content: {
+              type: "string",
+              minLength: 1,
+              maxLength: 400,
+              description: "The entry text. Required for add and patch.",
+            },
+            old_text: {
+              type: "string",
+              minLength: 1,
+              description:
+                "The exact text of one entry this task saved. Required for patch and remove.",
+            },
+          },
+          required: ["action", "kind"],
+          additionalProperties: false,
+        },
+        description: "At most 5 operations, applied together or not at all.",
+      },
+    },
+    required: ["operations"],
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
@@ -329,6 +369,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
           RERUN_CI_TOOL,
+          REMEMBER_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;

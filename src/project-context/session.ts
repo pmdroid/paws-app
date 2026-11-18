@@ -7,6 +7,7 @@ import {
   saveContextSession,
   type ContextClassification,
   type ContextNamespace,
+  type ContextRecordRow,
   type ContextRestriction,
   type Db,
 } from "../db";
@@ -295,6 +296,7 @@ export async function recordWorkItemContext(
     revisionAt: number;
     restriction: ContextRestriction;
     entries: readonly WorkItemContextEntry[];
+    kept?: readonly ContextRecordRow[];
     now: number;
   },
 ) {
@@ -310,16 +312,25 @@ export async function recordWorkItemContext(
       actorId: request.requester.userId,
       restriction: request.restriction,
     },
-    claims: request.entries.map((entry) => {
-      const body = entry.reason ? `${entry.body} Reason: ${entry.reason}` : entry.body;
-      return {
-        key: contextKey("observation", `${entry.classification}\0${entry.body}`),
-        layer: "observation" as const,
-        classification: entry.classification,
-        importance: ENTRY_IMPORTANCE[entry.classification],
-        body,
-      };
-    }),
+    claims: [
+      ...(request.kept ?? []).map((row) => ({
+        key: row.recordKey,
+        layer: row.layer,
+        classification: row.classification,
+        importance: row.importance,
+        body: row.body,
+      })),
+      ...request.entries.map((entry) => {
+        const body = entry.reason ? `${entry.body} Reason: ${entry.reason}` : entry.body;
+        return {
+          key: contextKey("observation", `${entry.classification}\0${entry.body}`),
+          layer: "observation" as const,
+          classification: entry.classification,
+          importance: ENTRY_IMPORTANCE[entry.classification],
+          body,
+        };
+      }),
+    ],
     now: request.now,
   });
 }

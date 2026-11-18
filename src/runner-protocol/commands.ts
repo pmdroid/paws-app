@@ -266,6 +266,7 @@ export const RunnerCommandSchema = z
         .optional(),
       githubRead: z.literal(true).optional(),
       ciRerun: z.literal(true).optional(),
+      remember: z.literal(true).optional(),
       questionEndsTurn: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),
