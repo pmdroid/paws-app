@@ -197,8 +197,13 @@ export async function openLinear(options: {
   };
 
   async function startRunning(): Promise<LinearRunning> {
-    const poller = (await accessAllowed())
-      ? await startPoller({
+    let poller: CatchUpPoller | null = null;
+    let starting: Promise<CatchUpPoller | null> | null = null;
+    let unlisten = async () => {};
+    const current = () =>
+      (starting ??= (async () => {
+        if (poller !== null || signal.aborted || !(await accessAllowed())) return poller;
+        poller = await startPoller({
           auth,
           onEvent,
           intake: intake?.queue,
@@ -211,24 +216,28 @@ export async function openLinear(options: {
           submitCommand:
             options.submitCommand ??
             (async (command) => await persistStopCommand(options.store, command)),
-        })
-      : null;
-    const unlisten =
-      poller !== null && intake !== undefined
-        ? wakeIntakeOnInsert(options.store, intake.queue)
-        : async () => {};
-    if (poller !== null) intake?.queue.wake();
+        });
+        if (poller !== null && intake !== undefined) {
+          unlisten = wakeIntakeOnInsert(options.store, intake.queue);
+          intake.queue.wake();
+        }
+        return poller;
+      })().finally(() => {
+        starting = null;
+      }));
+    await current();
     return {
       async catchUp() {
-        await poller?.pollNow();
+        await (await current())?.pollNow();
         intake?.queue.wake();
         await intake?.queue.idle();
       },
       async pollDue() {
-        await poller?.pollDue();
+        await (await current())?.pollDue();
       },
       async stop() {
         stopping.abort();
+        await starting;
         const polling = poller?.stop();
         const queued = intake?.queue.stop();
         await Promise.all([polling, queued, onEvent?.close(), unlisten()]);

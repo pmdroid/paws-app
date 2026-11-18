@@ -7,6 +7,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   lt,
   lte,
   ne,
@@ -633,6 +634,13 @@ export function* cancelItemPendingJobsSteps(q: Q, itemId: string, now: number) {
       .update(job)
       .set({ status: "cancelled", finishedAt: now })
       .where(and(eq(job.status, "pending"), eq(jobItemId(q), itemId))),
+  );
+}
+
+export function* deleteIdleQueueJobsSteps(q: Q, queuePrefix: string) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm.delete(job).where(and(like(job.queue, `${queuePrefix}%`), ne(job.status, "running"))),
   );
 }
 

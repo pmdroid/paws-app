@@ -10,7 +10,7 @@ export {
   envelopeSubkey,
 } from "./files";
 export { checkSecrets, useDatabaseSecrets } from "./secret-table";
-export { refreshCredential } from "./refresh";
+export { clearCredentialRefreshSteps, refreshCredential } from "./refresh";
 export { loadSecretKey, storeSecretKeys } from "./key";
 export {
   importCredentialFile,

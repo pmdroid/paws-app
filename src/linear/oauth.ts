@@ -1,5 +1,6 @@
 import { LinearHttpError } from "./graphql";
 import {
+  clearCredentialRefreshSteps,
   importCredentialFile,
   readCredentialSteps,
   refreshCredential,
@@ -142,7 +143,7 @@ export async function createLinearAuth(options: {
   async function refreshOnce(): Promise<string> {
     await assertAuthorized();
     if ((await readToken())?.refreshToken == null) {
-      throw new Error("Linear access token expired and no refresh token is stored");
+      throw new LinearReconnectError("Linear access token expired and no refresh token is stored");
     }
     const rotate = async (
       token: StoredLinearToken,
@@ -167,6 +168,10 @@ export async function createLinearAuth(options: {
       read: (q) => readStoredTokenSteps(q, secretsDir),
       write: (q, token) => writeStoredTokenSteps(q, secretsDir, token),
       refresh: rotate,
+    }).catch((error: unknown) => {
+      throw new LinearReconnectError(error instanceof Error ? error.message : String(error), {
+        cause: error,
+      });
     });
     await assertAuthorized();
     return saved.accessToken;
@@ -184,7 +189,9 @@ export async function createLinearAuth(options: {
       if (current.expiresAtMs - REFRESH_SKEW_MS > now()) return current.accessToken;
       if (current.refreshToken === null) {
         if (current.expiresAtMs > now()) return current.accessToken;
-        throw new Error("Linear access token expired and no refresh token is stored");
+        throw new LinearReconnectError(
+          "Linear access token expired and no refresh token is stored",
+        );
       }
       return refresh();
     },
@@ -192,6 +199,18 @@ export async function createLinearAuth(options: {
       return refresh();
     },
   };
+}
+
+export class LinearReconnectError extends Error {}
+
+export function linearNeedsReconnect(error: unknown): boolean {
+  for (let current = error; current instanceof Error; current = current.cause)
+    if (current instanceof LinearReconnectError) return true;
+  return false;
+}
+
+export function* clearLinearRefreshSteps(q: Q): Steps<void> {
+  yield* clearCredentialRefreshSteps(q, "linear");
 }
 
 export async function exchangeLinearCode(input: {
