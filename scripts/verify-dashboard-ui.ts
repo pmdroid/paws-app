@@ -700,6 +700,30 @@ try {
       slack.getByRole("button", { name: "Use the paws login slack connection" }),
     ).toBeVisible();
     await admin.unroute("**/api/workspaces/slack");
+    await admin.route("**/api/workspaces/slack", (route) =>
+      route.fulfill({
+        json: {
+          configured: true,
+          reconnect: "Slack could not refresh its token. Reconnect Slack.",
+          redirectUrl: "https://paws.example/oauth/slack/callback",
+          eventsUrl: "https://paws.example/webhooks/slack",
+          connection: { teamId: "T111111", teamName: "Acme", appId: "A1", botUserId: "B1" },
+          capabilities: { missing: [], threads: { ready: true } },
+        },
+      }),
+    );
+    await visit(
+      admin,
+      width,
+      "integrations-slack-reconnect",
+      "/dashboard/workspace/integrations",
+      "Integrations",
+    );
+    await expect(slack.locator("[data-slack-reconnect]")).toHaveText(
+      "Slack could not refresh its token. Reconnect Slack.",
+    );
+    await expect(slack.locator('[data-slack="reconnect"]')).toBeVisible();
+    await admin.unroute("**/api/workspaces/slack");
     await admin.unroute("**/api/workspaces/github-connect");
     await admin.unroute("**/api/workspaces/github-setup*");
     for (const [reader, name, canManage] of [

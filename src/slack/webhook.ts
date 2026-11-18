@@ -2,10 +2,20 @@ import { journalCaught } from "../journal";
 import { readWebhookBody } from "../webhook-body";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+export type SlackRevocation = {
+  teamId: string;
+  appId: string | null;
+  /** Bot user ids whose tokens Slack revoked; null when the whole app was uninstalled. */
+  botUserIds: string[] | null;
+  /** When Slack says the event happened; a token saved after it belongs to a newer install. */
+  eventTimeMs: number;
+};
+
 export async function handleSlackWebhook(
   request: Request,
   secret: string | null,
   now = Date.now(),
+  onRevoked?: (revocation: SlackRevocation) => Promise<unknown>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed.", { status: 405 });
   const signature = request.headers.get("x-slack-signature");
@@ -40,5 +50,32 @@ export async function handleSlackWebhook(
     typeof payload.challenge === "string"
   )
     return Response.json({ challenge: payload.challenge });
+  const revocation = slackRevocation(payload);
+  if (revocation && onRevoked) {
+    await onRevoked(revocation);
+    return new Response("ok", { status: 200 });
+  }
   return new Response("Unsupported Slack event.", { status: 400 });
+}
+
+function slackRevocation(payload: unknown): SlackRevocation | null {
+  if (!isRecord(payload) || payload.type !== "event_callback" || !isRecord(payload.event))
+    return null;
+  const teamId = payload.team_id;
+  if (typeof teamId !== "string" || teamId === "") return null;
+  const appId = typeof payload.api_app_id === "string" ? payload.api_app_id : null;
+  const time = payload.event_time;
+  if (typeof time !== "number" || !Number.isFinite(time) || time <= 0) return null;
+  const eventTimeMs = time * 1000;
+  const event = payload.event;
+  if (event.type === "app_uninstalled") return { teamId, appId, botUserIds: null, eventTimeMs };
+  if (event.type !== "tokens_revoked" || !isRecord(event.tokens)) return null;
+  const bot = event.tokens.bot;
+  if (!Array.isArray(bot)) return null;
+  const botUserIds = bot.filter((id): id is string => typeof id === "string");
+  return botUserIds.length > 0 ? { teamId, appId, botUserIds, eventTimeMs } : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

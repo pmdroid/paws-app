@@ -5,6 +5,7 @@ import { renderMarkup } from "./theme";
 type Capability = { ready: boolean; message?: string };
 type SlackStatus = {
   configured: boolean;
+  reconnect?: string | null;
   redirectUrl?: string;
   eventsUrl?: string;
   connection: { teamId: string; teamName: string | null; appId: string; botUserId: string } | null;
@@ -28,7 +29,6 @@ const RESULTS: Record<string, string> = {
   expired: "That Slack link expired or was already used. Start again.",
   forbidden: "Only a workspace admin can connect Slack.",
   failed: "Slack could not be connected. Try again.",
-  rotating: "Turn off token rotation for this Slack app, then reconnect.",
 };
 
 export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): void {
@@ -45,7 +45,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
     const response = await fetch("/api/workspaces/slack", { cache: "no-store" });
     if (!response.ok)
       return renderMarkup(section, '<p role="alert">Slack could not be checked.</p>');
-    const { configured, connection, capabilities, redirectUrl, eventsUrl, login } =
+    const { configured, connection, capabilities, redirectUrl, eventsUrl, login, reconnect } =
       (await response.json()) as SlackStatus;
     const rows = Object.entries(LABELS).map(([name, label]) => {
       const item = capabilities?.[name as keyof typeof LABELS];
@@ -74,7 +74,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
               ? `Not connected. <code>paws login slack</code> connected ${esc(login.teamName ?? login.teamId)} (${esc(login.teamId)}) on this server; you can use it here.`
               : "Not connected."
             : "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET on the server."
-      }</p><ul>${rows.join("")}</ul>${
+      }</p>${reconnect ? `<p data-slack-reconnect role="alert">${esc(reconnect)}</p>` : ""}<ul>${rows.join("")}</ul>${
         capabilities?.missing.length
           ? `<p data-slack-missing>Missing scopes: ${capabilities.missing.map(esc).join(", ")}</p>`
           : ""
