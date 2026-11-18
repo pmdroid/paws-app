@@ -12,13 +12,24 @@ const window = z.object({
 });
 const rate = z.object({ primary_window: window.nullish(), secondary_window: window.nullish() });
 export function createUsageReader(
-  origins = { codex: "https://chatgpt.com/backend-api", claude: "https://api.anthropic.com" },
+  origins: { codex: string; claude: string; grok?: string; opencode?: string } = {
+    codex: "https://chatgpt.com/backend-api",
+    claude: "https://api.anthropic.com",
+  },
   now = Date.now,
 ) {
   return async (agent: string, credential: string): Promise<AgentLimit[]> => {
     const files = z
       .array(z.object({ path: z.string(), data: z.string() }))
       .parse(JSON.parse(credential));
+    const decoded = (path: string) => {
+      const found = files.find((f) => f.path === path);
+      if (!found) throw new Error("Usage credential unavailable");
+      return JSON.parse(Buffer.from(found.data, "base64").toString()) as unknown;
+    };
+    if (agent === "grok") return grokLimits(origins.grok, decoded(".grok/auth.json"), now);
+    if (agent === "opencode")
+      return opencodeLimits(origins.opencode, decoded(".paws/opencode-credential.json"), now);
     const file =
       (agent === "claude" && files.find((f) => f.path === ".claude/paws-oauth.json")) ||
       files.find(
@@ -176,4 +187,133 @@ async function setupTokenLimits(origin: string, token: string): Promise<AgentLim
       ? new UsageUnavailable("Usage not available for this sign-in")
       : unavailable(response.status);
   return limits;
+}
+
+const GROK_SCOPE = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828";
+const resetTime = z
+  .union([z.string(), z.number().finite()])
+  .nullish()
+  .transform((value) => {
+    if (value == null) return null;
+    const time =
+      typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : Date.parse(value);
+    return Number.isFinite(time) ? time : null;
+  });
+
+async function getJson(url: URL, headers: Record<string, string>, absent?: number) {
+  const response = await fetch(url, {
+    headers: { accept: "application/json", ...headers },
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 401) throw new UsageCredentialExpired();
+  if (response.status === absent) return undefined;
+  if (!response.ok) throw unavailable(response.status);
+  return (await response.json()) as unknown;
+}
+
+async function grokLimits(
+  origin = "https://cli-chat-proxy.grok.com",
+  value: unknown,
+  now: () => number,
+): Promise<AgentLimit[]> {
+  const auth = z
+    .object({ key: z.string().min(1), user_id: z.string().min(1), expires_at: resetTime })
+    .parse(z.record(z.string(), z.unknown()).parse(value)[GROK_SCOPE]);
+  if (auth.expires_at !== null && auth.expires_at <= now()) throw new UsageCredentialExpired();
+  const url = new URL("v1/billing", origin + "/");
+  url.searchParams.set("format", "credits");
+  const body = await getJson(url, {
+    Authorization: `Bearer ${auth.key}`,
+    "X-XAI-Token-Auth": "xai-grok-cli",
+    "x-userid": auth.user_id,
+    "x-grok-client-version": "paws",
+  });
+  const config = z
+    .object({
+      credit_usage_percent: z.number().finite(),
+      current_period: z.object({ period_type: z.string().nullish(), end: resetTime }).nullish(),
+    })
+    .parse(z.object({ config: z.unknown() }).parse(body).config);
+  return [
+    {
+      window:
+        config.current_period?.period_type === "USAGE_PERIOD_TYPE_WEEKLY" ? "Weekly" : "Monthly",
+      usedPercent: config.credit_usage_percent,
+      resetsAt: config.current_period?.end ?? null,
+    },
+  ];
+}
+
+const goWindow = z.object({
+  status: z.string().nullish(),
+  percent: z.number().finite(),
+  resetsAt: resetTime,
+});
+
+async function opencodeLimits(
+  origin = "https://opencode.ai",
+  value: unknown,
+  now: () => number,
+): Promise<AgentLimit[]> {
+  const auth = z
+    .object({
+      access: z.string().min(1),
+      expires: z.number().finite(),
+      metadata: z.object({ orgID: z.string().nullish() }).nullish(),
+    })
+    .parse(value);
+  if (auth.expires <= now()) throw new UsageCredentialExpired();
+  const headers: Record<string, string> = { Authorization: `Bearer ${auth.access}` };
+  if (auth.metadata?.orgID) headers["x-opencode-org-id"] = auth.metadata.orgID;
+  const go = await getJson(new URL("zen/go/v1/usage", origin + "/"), headers, 403);
+  if (go !== undefined) {
+    const usage = z
+      .object({
+        usage: z.object({
+          rolling: goWindow.nullish(),
+          weekly: goWindow.nullish(),
+          monthly: goWindow.nullish(),
+        }),
+      })
+      .parse(go).usage;
+    return (
+      [
+        ["5-hour", usage.rolling],
+        ["Weekly", usage.weekly],
+        ["Monthly", usage.monthly],
+      ] as const
+    ).flatMap(([label, w]) =>
+      w
+        ? [
+            {
+              window: label,
+              usedPercent: w.status === "rate-limited" ? 100 : w.percent,
+              resetsAt: w.resetsAt,
+            },
+          ]
+        : [],
+    );
+  }
+  const budgets = await getJson(
+    new URL("console/api/policies/current-budgets", origin + "/"),
+    headers,
+    403,
+  );
+  if (budgets === undefined) return [];
+  return z
+    .array(
+      z.object({
+        limitDollars: z.number().finite(),
+        spentDollars: z.number().finite(),
+        resetsAt: resetTime,
+      }),
+    )
+    .parse(budgets)
+    .filter((b) => b.limitDollars > 0)
+    .map((b) => ({
+      window: "Monthly budget",
+      usedPercent: Math.min(100, (b.spentDollars / b.limitDollars) * 100),
+      resetsAt: b.resetsAt,
+    }));
 }
