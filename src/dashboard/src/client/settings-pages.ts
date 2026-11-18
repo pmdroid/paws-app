@@ -21,6 +21,11 @@ export const WORKSPACE_PAGES = [
       "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent per runner on the Runners page.",
   },
   {
+    id: "project-memory",
+    name: "Project memory",
+    description: "Choose what Paws saves to each project's memory.",
+  },
+  {
     id: "merging",
     name: "Merging",
     description: "Choose how accepted pull requests reach main.",
@@ -119,5 +124,5 @@ export function settingsRedirect(path: string): string | null {
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
   const page = settingsAdmin || isUserSettingsPage(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "project-memory" ? '<div id="project-memory-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }

@@ -25,6 +25,7 @@ export type AgentSettings = {
   merge?: { ciFixAttempts?: number };
   /** How long a task may wait for a runner slot. Missing means 24 hours. Null cap means no cap. */
   queue?: { startTimeoutHours: number; maxRunningPerOwner?: number | null };
+  projectMemory?: { workSummary: boolean; dream: boolean; decisions: boolean };
 };
 export type AgentModelCatalog = {
   agent: AgentProfile["agent"];

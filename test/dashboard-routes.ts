@@ -37,6 +37,7 @@ const USER_SETTINGS_PAGE_IDS = ["account", "agent-accounts"];
 
 const WORKSPACE_PAGE_IDS = [
   "agents",
+  "project-memory",
   "merging",
   "repositories",
   "linear",
