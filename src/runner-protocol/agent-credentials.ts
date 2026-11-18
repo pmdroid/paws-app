@@ -19,7 +19,7 @@ export const RUNNER_AGENT_CREDENTIAL_FILES: Record<RunnerCodingAgent, readonly s
   claude: [".claude/.credentials.json", ".claude/.claude.json", ".claude/paws-oauth.json"],
   codex: [".codex/auth.json"],
   grok: [".grok/auth.json"],
-  opencode: [".local/share/opencode/auth.json"],
+  opencode: [".local/share/opencode/auth.json", ".paws/opencode-credential.json"],
 };
 
 export const RunnerAgentCredentialFilesSchema = z
