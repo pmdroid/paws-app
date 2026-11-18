@@ -32,7 +32,7 @@ export function createOpencodeProvider(
   now = Date.now,
 ): AuthProvider<OpencodeTokens> {
   async function post(path: string, body: Record<string, string | boolean>) {
-    return fetch(server + path, {
+    return fetch(`${server}/${path}`, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(30_000),
@@ -41,7 +41,7 @@ export function createOpencodeProvider(
     });
   }
   async function get(path: string, access: string) {
-    const response = await fetch(server + path, {
+    const response = await fetch(`${server}/${path}`, {
       redirect: "error",
       signal: AbortSignal.timeout(30_000),
       headers: { accept: "application/json", authorization: `Bearer ${access}` },
@@ -52,10 +52,10 @@ export function createOpencodeProvider(
   async function signedIn(value: z.infer<typeof granted>): Promise<OpencodeTokens> {
     const user = z
       .object({ id: z.string().min(1), email: z.string() })
-      .parse(await get("/api/user", value.access_token));
+      .parse(await get("api/user", value.access_token));
     const orgs = z
       .array(z.object({ id: z.string().min(1), name: z.string() }))
-      .parse(await get("/api/orgs", value.access_token))
+      .parse(await get("api/orgs", value.access_token))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const org = orgs.find((entry) => entry.id === value.org_id) ?? orgs[0];
     return tokens(
@@ -78,7 +78,7 @@ export function createOpencodeProvider(
   }
   return {
     async startDevice() {
-      const response = await post("/auth/device/code", {
+      const response = await post("auth/device/code", {
         client_id: CLIENT,
         supports_org_scope: true,
       });
@@ -105,7 +105,7 @@ export function createOpencodeProvider(
     },
     async pollDevice(device) {
       if (device.expiresAt <= now()) return { state: "expired" };
-      const response = await post("/auth/device/token", {
+      const response = await post("auth/device/token", {
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: device.deviceId,
         client_id: CLIENT,
@@ -124,7 +124,7 @@ export function createOpencodeProvider(
       throw new Error("OpenCode device poll failed");
     },
     async refresh(previous) {
-      const response = await post("/auth/device/token", {
+      const response = await post("auth/device/token", {
         grant_type: "refresh_token",
         refresh_token: previous.refresh,
         client_id: CLIENT,
