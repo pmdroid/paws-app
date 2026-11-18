@@ -28,6 +28,7 @@ import {
   linkList,
   mergeQueueLine,
   queueLine,
+  queueHeading,
   capLine,
   heldLine,
   waitReason,
@@ -1049,7 +1050,14 @@ function queueNotice(item: StatusItem, generatedAt: string): string {
     return held
       ? `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">II</span><div><h3 id="queue-${esc(item.id)}">${esc(held)}</h3><p>It holds no runner slot while it waits.</p>${check}</div></section>`
       : "";
-  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p>${check}</div></section>`;
+  const kind = item.queue.waitingFor?.kind ?? "slots";
+  const detail =
+    kind === "slots"
+      ? `<p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p>`
+      : kind === "quota"
+        ? `<p><a href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">Manage agent accounts</a></p>`
+        : "";
+  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueHeading(item.queue))}</h3>${detail}${check}</div></section>`;
 }
 
 function blockerCheck(item: StatusItem, generatedAt: string): string {

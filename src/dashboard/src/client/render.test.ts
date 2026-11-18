@@ -1,7 +1,7 @@
 import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { issueRowMatches, NO_PROJECT_FILTER, render, type RenderModel } from "./render";
-import { parseRoute } from "./route";
+import { parseRoute, routeHref } from "./route";
 import { checkKey } from "./closeout";
 import { clock24, esc } from "./format";
 
@@ -451,6 +451,47 @@ describe("status views", () => {
     expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
       "in line",
     );
+  });
+
+  test("a queued item names what it waits for instead of slots", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items[0]!;
+    item.state = "queued";
+    delete item.held;
+    const issue = () => render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    const until = Date.UTC(2026, 10, 18, 21, 30);
+    item.queue = {
+      position: 1,
+      busySlots: 1,
+      totalSlots: 4,
+      waitingFor: {
+        kind: "quota",
+        text: "Waiting for an agent account's quota: claude-main resets at 2026-11-18 21:30 UTC",
+        until,
+      },
+    };
+    const quota =
+      issue().match(/<section class="closeout-result queue-notice".*?<\/section>/)?.[0] ?? "";
+    expect(quota).toContain(
+      esc(
+        `Waiting for an agent account's quota: claude-main resets at 2026-11-18 21:30 UTC until ${clock24(new Date(until).toISOString())}`,
+      ),
+    );
+    expect(quota).toContain(
+      `<a href="${esc(routeHref({ view: "settings", page: "agent-accounts" }))}">Manage agent accounts</a>`,
+    );
+    expect(quota).not.toContain("runner slot");
+    expect(quota).not.toContain("when a slot frees");
+    item.queue = {
+      position: 2,
+      busySlots: 4,
+      totalSlots: 4,
+      waitingFor: { kind: "slots", text: "Queued, 2nd in line. 4 of 4 runner slots are busy." },
+    };
+    const slots = issue();
+    expect(slots).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
+    expect(slots).toContain(`Paws starts ${item.id} when a slot frees.`);
+    expect(slots).not.toContain("Manage agent accounts");
   });
 
   test("a held item shows why it waits on its issue page", () => {
