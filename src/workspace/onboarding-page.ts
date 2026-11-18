@@ -140,6 +140,11 @@ form[method="post"]{margin:10px 0 0;display:grid;gap:8px;font-size:.85rem}
 form[method="post"] button{justify-self:start;font:inherit;font-weight:600;border:2px solid #17151f;padding:6px 12px;background:#ff7a3d;cursor:pointer}
 `;
 
+const RUNNER_RELEASES = "https://github.com/pmdroid/paws-app/releases";
+
+const MERGE_CONFIG =
+  'import json,sys; p="/etc/paws-runner/config.json"; c=json.load(open(p)); c.update(json.loads(sys.argv[1])); open(p,"w").write(json.dumps(c,indent=2)+"\\n")';
+
 /**
  * Runs on the page. Create VM and Retry post to the existing member VM routes, and Add a host to
  * the existing enrollment route, with the session's CSRF token. The page then re-reads itself,
@@ -166,12 +171,24 @@ const SCRIPT = String.raw`(() => {
     error.hidden = text === "";
   };
   const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  // The same command as hostEnrollmentCommand on the Runners page, with Docker for agent jobs
+  // granted, that page's default.
+  const releases = ${JSON.stringify(RUNNER_RELEASES)};
+  const mergeConfig = ${JSON.stringify(MERGE_CONFIG)};
+  const tagName = "$" + "{tag##*/}";
   const command = (enrollment) => {
     const config = JSON.stringify(enrollment.config);
     return [
-      "curl -fsSL https://get.paws.boo | sudo sh",
+      "tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' " + releases + "/latest)",
+      'deb="paws-runner_' + "$" + '{tag##*/v}_$(dpkg --print-architecture).deb"',
+      'cd "$(mktemp -d)"',
+      'curl -fsSL -O "' + releases + "/download/" + tagName + '/$deb" -O "' + releases + "/download/" + tagName + '/$deb.sha256"',
+      'sha256sum --check "$deb.sha256"',
+      "sudo apt-get update",
+      "{ ! command -v dockerd >/dev/null || sudo apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session; }",
+      'sudo env DEBIAN_FRONTEND=noninteractive PAWS_RUNNER_DOCKER_ACCESS=grant apt-get install -y --reinstall "./$deb"',
       "printf '%s\\n' " + quote(enrollment.token) + " | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
-      "printf '%s\\n' " + quote(config) + " | sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json",
+      "if sudo test -e /etc/paws-runner/config.json; then sudo python3 -I -c " + quote(mergeConfig) + " " + quote(config) + "; else printf '%s\\n' " + quote(config) + " | sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json; fi",
       "sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name " + quote(enrollment.name) + " --token-file /etc/paws-runner/enrollment-token",
       "sudo rm -f /etc/paws-runner/enrollment-token",
       "sudo systemctl enable --now paws-runner.service",

@@ -42,6 +42,7 @@ import {
 import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 import { requestTracker } from "./wait-for";
+import { hostEnrollmentCommand } from "../src/dashboard/src/client/host-command";
 
 const ORIGIN = "https://paws.test";
 const CSRF = "csrf-token";
@@ -466,18 +467,14 @@ test("Add a host shows the one command with a single-use token that a reload nev
   const shown = page.document.querySelector("#host-command-text")?.textContent ?? "";
   const token = /printf '%s\\n' '([^']+)' \| sudo install -o root -g root/.exec(shown)?.[1];
   expect(token).toBeDefined();
-  // The same command the Runners page shows (`hostEnrollmentCommand` in the dashboard).
-  const config = JSON.stringify(HOST_CONFIG);
+  // The same command the Runners page shows, with its default of Docker for agent jobs granted:
+  // the GitHub release .deb checked against its .sha256, and a config merged into an existing one.
   expect(shown).toBe(
-    [
-      "curl -fsSL https://get.paws.boo | sudo sh",
-      `printf '%s\\n' '${token}' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token`,
-      `printf '%s\\n' '${config}' | sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json`,
-      "sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name 'ada-host' --token-file /etc/paws-runner/enrollment-token",
-      "sudo rm -f /etc/paws-runner/enrollment-token",
-      "sudo systemctl enable --now paws-runner.service",
-    ].join(" && \\\n  "),
+    hostEnrollmentCommand({ token: token!, name: "ada-host", config: HOST_CONFIG }, true),
   );
+  expect(shown).not.toContain("get.paws.boo");
+  expect(shown).toContain('sha256sum --check "$deb.sha256"');
+  expect(shown).toContain("if sudo test -e /etc/paws-runner/config.json; then sudo python3 -I -c");
   expect(page.document.querySelector("#host-command")?.textContent).toContain("works once");
 
   // A poll swaps the steps but keeps the command on screen.
