@@ -13,7 +13,7 @@ import { settleReactWork } from "./settle-react";
 const STORED: AgentSettings = {
   defaults: {
     implementer: { agent: "claude", model: null },
-    reviewer: { agent: "codex", model: "gpt-5.4" },
+    reviewer: { agent: "codex", model: null },
   },
   merge: { ciFixAttempts: 3 },
   projectMemory: { workSummary: true, dream: false, decisions: true },
@@ -25,12 +25,10 @@ const realFetch = globalThis.fetch;
 const saved = new Map<string, unknown>();
 const GLOBALS = ["window", "document", "Element", "HTMLElement", "Event"] as const;
 let requests: { url: string; init: RequestInit }[];
-let stored: AgentSettings;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   setSettingsAdmin(true);
-  stored = STORED;
   window = new Window({ url: "http://127.0.0.1:8787/workspace/project-memory" });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
@@ -41,8 +39,8 @@ beforeEach(() => {
   requests = [];
   globalThis.fetch = (async (url: URL | string, init: RequestInit) => {
     requests.push({ url: String(url), init });
-    const body = init.body ? JSON.parse(String(init.body)) : stored;
-    return Response.json(init.body ? { ...stored, ...body, revision: "r2" } : body);
+    const body = init.body ? JSON.parse(String(init.body)) : STORED;
+    return Response.json(init.body ? { ...STORED, ...body, revision: "r2" } : body);
   }) as typeof fetch;
 });
 
