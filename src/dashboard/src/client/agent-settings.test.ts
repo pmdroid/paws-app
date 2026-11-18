@@ -57,6 +57,13 @@ describe("agent settings", () => {
     expect(html).not.toContain("merge-closeout-after-update");
   });
 
+  test("a retired saved section shows with a Remove button", () => {
+    const html = renderAgentSettings(view({ ...settings(), retiredSections: ["agents.grok"] }));
+    expect(html).toContain("<code>[agents.grok]</code>");
+    expect(html).toContain('data-settings="remove-retired" data-section="agents.grok"');
+    expect(renderAgentSettings(view())).not.toContain("remove-retired");
+  });
+
   test("the Agents page leaves Pull request checks to Settings → Merging", () => {
     const data = { ...settings(), merge: { ciFixAttempts: 11 } };
     const html = renderAgentSettings(view(data));

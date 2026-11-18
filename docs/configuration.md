@@ -2,7 +2,7 @@
 
 Paws reads two kinds of configuration:
 
-- `~/.paws/config.toml` supplies startup settings. Edit it while Paws is stopped. Once you save settings through the dashboard, manage those settings there; saved dashboard values take precedence over the corresponding file sections. `bun run paws doctor` reports ignored file settings as `settings-overrides`. Invalid settings stop startup with a line number and what to change.
+- `~/.paws/config.toml` supplies startup settings. Edit it while Paws is stopped. Once you save settings through the dashboard, manage those settings there; saved dashboard values take precedence over the corresponding file sections. `bun run paws doctor` reports ignored file settings as `settings-overrides`. Invalid settings stop startup with a line number and what to change. A section in the saved dashboard settings that this Paws no longer knows, such as one a newer or older build wrote, does not stop startup: Paws ignores it, journals its name, and Workspace › Agents lists it with a **Remove** button that deletes it from the saved settings.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).

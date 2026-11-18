@@ -72,7 +72,7 @@ async function saveSettings(
   await snapshot.store.update((stored) => {
     const file = readFileText(configPath);
     saved = withOwnedSections(
-      settingsSections(change(stored === null ? file : withSettings(file, stored))),
+      settingsSections(change(stored === null ? file : withSettings(file, knownSections(stored)))),
     );
     return saved;
   });
@@ -90,6 +90,52 @@ export function overriddenConfigSections(configPath: string): string[] {
     return false;
   });
   return [...sections];
+}
+
+export function knownConfigSection(section: string): boolean {
+  return (
+    /^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments|time_limits|skills)$/.test(
+      section,
+    ) ||
+    /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||
+    /^agents\.(defaults|projects|presets)(\.|$)/.test(section)
+  );
+}
+
+function knownSections(text: string): string {
+  return splitSections(
+    text,
+    (_settings, _heading, section) => section === "" || knownConfigSection(section.toLowerCase()),
+  );
+}
+
+export function retiredConfigSections(configPath: string): string[] {
+  const stored = snapshots.get(configPath)?.stored ?? null;
+  const sections = new Set<string>();
+  splitSections(stored ?? "", (_settings, heading) => {
+    if (heading !== undefined && !knownConfigSection(heading.toLowerCase()))
+      sections.add(heading.toLowerCase());
+    return false;
+  });
+  return [...sections];
+}
+
+export function describeRetiredSections(sections: readonly string[]): string {
+  return `Saved settings ${sections.map((name) => `[${name}]`).join(", ")} ${sections.length === 1 ? "is" : "are"} not known to this Paws and ${sections.length === 1 ? "is" : "are"} ignored: remove ${sections.length === 1 ? "it" : "them"} in Settings`;
+}
+
+export async function removeRetiredConfigSection(configPath: string, name: string): Promise<void> {
+  const snapshot = snapshots.get(configPath);
+  const section = name.toLowerCase();
+  if (snapshot === undefined || !retiredConfigSections(configPath).includes(section)) return;
+  let saved = "";
+  await snapshot.store.update((stored) => {
+    const kept = withoutConfigSection(stored ?? "", section);
+    saved = kept === "" ? "" : `${kept}\n`;
+    return saved;
+  });
+  snapshot.stored = saved;
+  snapshot.ticket = ++tickets;
 }
 
 export function describeOverriddenSections(sections: readonly string[]): string {
@@ -110,7 +156,8 @@ function replaceConfigText(path: string, next: string): void {
 }
 
 function storedSettings(configPath: string): string | null {
-  return snapshots.get(configPath)?.stored ?? null;
+  const stored = snapshots.get(configPath)?.stored ?? null;
+  return stored === null ? null : knownSections(stored);
 }
 
 function readFileText(configPath: string): string {
@@ -224,7 +271,10 @@ function withOwnedSections(saved: string): string {
 }
 
 function settingsSections(text: string): string {
-  const sections = splitSections(text, (settings) => settings);
+  const sections = splitSections(
+    text,
+    (settings, _heading, section) => settings && knownConfigSection(section.toLowerCase()),
+  );
   return sections === "" ? "" : `${sections}\n`;
 }
 

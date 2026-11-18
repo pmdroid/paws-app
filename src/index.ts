@@ -101,7 +101,9 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
+  describeRetiredSections,
   overriddenConfigSections,
+  retiredConfigSections,
   useSettingsStore,
   type EnvSource,
   type PawsEnv,
@@ -626,6 +628,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   };
   const overriddenSections = overriddenConfigSections(paths.configFile);
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
+  const retiredSections = retiredConfigSections(paths.configFile);
+  if (retiredSections.length > 0) journal(describeRetiredSections(retiredSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
   } catch (error) {

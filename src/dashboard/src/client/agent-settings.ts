@@ -40,7 +40,7 @@ function clearAccounts(settings: AgentSettings, role: string): void {
 
 export async function settingsRequest<T>(
   engine: string,
-  method: "GET" | "PUT",
+  method: "GET" | "PUT" | "DELETE",
   body?: unknown,
   csrf = "",
   fetchImpl: typeof fetch = fetch,
@@ -94,7 +94,11 @@ export function renderAgentSettings(view: SettingsView): string {
     : view.saved
       ? `<p class="settings-message" role="status">${view.waitingRuns === undefined ? "Agent settings saved. New work will use these profiles." : `Saved. ${view.waitingRuns} waiting ${view.waitingRuns === 1 ? "run will" : "runs will"} switch at their next step.`}</p>${view.warnings?.length ? `<p class="settings-message err" role="alert">${view.warnings.map(esc).join("<br>")} Closeout's review waits until a runner signs in to this agent.</p>` : ""}`
       : "";
-  return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
+  const retired = view.data.retiredSections ?? [];
+  const notice = retired.length
+    ? `<section class="settings-message err" role="alert"><p>Saved settings hold ${retired.length === 1 ? "a section" : "sections"} this Paws no longer knows. ${retired.length === 1 ? "It is" : "They are"} ignored until removed.</p>${retired.map((section) => `<p><code>[${esc(section)}]</code> <button class="btn" type="button" data-settings="remove-retired" data-section="${esc(section)}">Remove</button></p>`).join("")}</section>`
+    : "";
+  return `${intro}${notice}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
       <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by every repository. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], view.catalogs)).join("")}</div></section>
       <section class="settings-section"><div class="settings-label"><h2>Label presets</h2><p class="sub">Add a label with a preset's name to a Linear issue to run that issue with the preset's implementer and reviewer. A change applies from the issue's next run.</p></div><div class="col">
@@ -176,8 +180,15 @@ function presetError(error: string | null, name: string): string | null {
 
 function profilesOnly(
   settings: AgentSettings,
-): Omit<AgentSettings, "queue" | "merge" | "grok" | "opencode"> {
-  const { queue: _queue, merge: _merge, grok: _grok, opencode: _opencode, ...rest } = settings;
+): Omit<AgentSettings, "queue" | "merge" | "grok" | "opencode" | "retiredSections"> {
+  const {
+    queue: _queue,
+    merge: _merge,
+    grok: _grok,
+    opencode: _opencode,
+    retiredSections: _retired,
+    ...rest
+  } = settings;
   return rest;
 }
 
@@ -342,6 +353,23 @@ export function createAgentSettings(
       return;
     }
     draft();
+    if (action === "remove-retired" && view.data) {
+      const section = button.dataset.section;
+      const started = generation;
+      void request("Removing saved section…", async () => {
+        const data = await settingsRequest<Pick<AgentSettings, "retiredSections" | "revision">>(
+          engine!,
+          "DELETE",
+          { section },
+          readCsrfToken(document),
+        );
+        if (started !== generation || !view.data) return;
+        if (data.retiredSections) view.data.retiredSections = data.retiredSections;
+        else delete view.data.retiredSections;
+        if (data.revision) view.data.revision = data.revision;
+      });
+      return;
+    }
     if (action === "add-preset" && view.data) {
       view.presetRows ??= [];
       const { implementer, reviewer } = view.data.defaults;

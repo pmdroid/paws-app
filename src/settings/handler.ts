@@ -11,6 +11,8 @@ import {
   readConfigText,
   readMergeSettings,
   readQueueSettings,
+  removeRetiredConfigSection,
+  retiredConfigSections,
   storedMerge,
   writeAgentSettings,
   type ImplementerName,
@@ -54,15 +56,18 @@ export async function handleAgentSettingsRequest(
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
         revision: settingsRevision(options.configPath),
+        ...retired(options.configPath),
       });
     } catch (caughtError1) {
       journalCaught(caughtError1, "handler.handleAgentSettingsRequest.loadConfigFile", null);
       return json({ error: "Agent settings could not be read" }, 503);
     }
   }
-  if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
+  if (request.method !== "PUT" && request.method !== "DELETE")
+    return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
+  if (request.method === "DELETE") return removeRetired(request, options);
   let body: unknown;
   try {
     body = await readJson(request);
@@ -177,6 +182,31 @@ export async function handleAgentSettingsRequest(
     ...(applyToWaiting ? { waitingRuns } : {}),
     ...(warnings.length ? { warnings } : {}),
   });
+}
+
+function retired(configPath: string): { retiredSections?: string[] } {
+  const sections = retiredConfigSections(configPath);
+  return sections.length > 0 ? { retiredSections: sections } : {};
+}
+
+async function removeRetired(request: Request, options: AgentSettingsOptions): Promise<Response> {
+  let section: unknown;
+  try {
+    const body = await readJson(request);
+    section = isRecord(body) ? body.section : undefined;
+  } catch (error) {
+    journalCaught(error, "handler.removeRetired.readJson", null);
+  }
+  if (typeof section !== "string" || !retiredConfigSections(options.configPath).includes(section))
+    return json({ error: "Expected the section of a retired saved setting" }, 400);
+  try {
+    await removeRetiredConfigSection(options.configPath, section);
+  } catch (error) {
+    journalCaught(error, "handler.removeRetired.removeRetiredConfigSection", null);
+    return json({ error: "The saved setting could not be removed" }, 503);
+  }
+  await options.audit?.("settings.retired-section", `Removed saved settings [${section}]`);
+  return json({ ...retired(options.configPath), revision: settingsRevision(options.configPath) });
 }
 
 export function localRequest(request: Request, trustedOrigin?: string): boolean {
