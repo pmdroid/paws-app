@@ -94,7 +94,7 @@ export function overriddenConfigSections(configPath: string): string[] {
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments|time_limits|skills)$/.test(
+    /^(linear|github|github_access|tracker|closeout|merge|queue|project_memory|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments|time_limits|skills)$/.test(
       section,
     ) ||
     /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||
@@ -174,6 +174,7 @@ function isSettingsSection(section: string): boolean {
     within("agents.presets") ||
     within("merge") ||
     name === "queue" ||
+    name === "project_memory" ||
     within("time_limits") ||
     within("checkout.projects") ||
     within("closeout.projects") ||

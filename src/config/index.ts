@@ -143,6 +143,9 @@ export {
 } from "./queue";
 export type { QueueSettings } from "./queue";
 
+export { parseProjectMemorySettings, readProjectMemorySettings } from "./project-memory";
+export type { ProjectMemorySettings } from "./project-memory";
+
 export { loadRunnerControl } from "./runner-control";
 
 export { EXE_DEV_TOKEN_FILE, exeDevTokenPath, exeDevTokenStatus, readExeDevToken } from "./exe-dev";

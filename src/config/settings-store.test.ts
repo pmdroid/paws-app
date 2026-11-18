@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, parseConfigToml } from "./file";
+import { readProjectMemorySettings, setProjectMemorySettingsText } from "./project-memory";
 import { retiredConfigSections, updateConfigText, useSettingsStore } from "./settings-store";
 
 const cleanups: (() => void)[] = [];
@@ -23,6 +24,7 @@ const WRITER_SECTIONS = [
   "merge.projects.abc",
   `merge.repositories.${PROJECT}`,
   "queue",
+  "project_memory",
   "time_limits",
   `checkout.projects.${PROJECT}`,
   `closeout.projects.${PROJECT}`,
@@ -40,6 +42,7 @@ const BODIES: Record<string, string> = {
   "agents.presets.fast.implementer": 'agent = "claude"',
   "agents.presets.fast.reviewer": 'agent = "codex"',
   [`skills.projects.${PROJECT}`]: 'root = ".agents/skills"',
+  project_memory: "work_summary = true\ndream = false",
 };
 
 async function storedSettings(initial: string | null) {
@@ -75,6 +78,32 @@ test("every section the settings writer emits parses again", async () => {
   expect(() => parseConfigToml(saved)).not.toThrow();
   expect(loadConfigFile(configPath).linearTeam).toBe("ACME");
   expect(retiredConfigSections(configPath)).toEqual([]);
+});
+
+test("project memory defaults off and round-trips through the stored settings", async () => {
+  expect(readProjectMemorySettings(parseConfigToml(""))).toEqual({
+    workSummary: false,
+    dream: false,
+  });
+  expect(() => parseConfigToml("[project_memory]\nsummary = true\n")).toThrow("unknown key");
+  const { configPath, stored } = await storedSettings(null);
+  const written = setProjectMemorySettingsText('[linear]\nteam = "ACME"\n', {
+    workSummary: true,
+    dream: true,
+  });
+  expect(readProjectMemorySettings(parseConfigToml(written))).toEqual({
+    workSummary: true,
+    dream: true,
+  });
+  await updateConfigText(configPath, (current) =>
+    setProjectMemorySettingsText(current, { workSummary: false, dream: true }),
+  );
+  expect(stored()).toContain("[project_memory]\nwork_summary = false\ndream = true\n");
+  expect(readFileSync(configPath, "utf8")).not.toContain("project_memory");
+  expect(readProjectMemorySettings(loadConfigFile(configPath))).toEqual({
+    workSummary: false,
+    dream: true,
+  });
 });
 
 test("a save drops a retired section the stored settings still hold", async () => {

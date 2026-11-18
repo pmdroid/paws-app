@@ -820,7 +820,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     };
     const settings =
-      (await handleAgentSettingsRequest(request, shared)) ??
+      (await handleAgentSettingsRequest(request, {
+        ...shared,
+        ...(principal === undefined ? {} : { role: principal.role }),
+      })) ??
       (await handleBriefSettingsRequest(request, {
         ...shared,
         ...(path === BRIEF_SETTINGS_PATH && secrets.store

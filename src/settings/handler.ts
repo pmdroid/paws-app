@@ -6,19 +6,23 @@ import {
   loadConfigFile,
   parseAgentSettings,
   parseMergeSettings,
+  parseProjectMemorySettings,
   parseQueueSettings,
   readAgentSettings,
   readConfigText,
   readMergeSettings,
+  readProjectMemorySettings,
   readQueueSettings,
   removeRetiredConfigSection,
   retiredConfigSections,
   storedMerge,
   writeAgentSettings,
   type ImplementerName,
+  type ProjectMemorySettings,
   type QueueSettings,
   type StoredMerge,
 } from "../config";
+import { isWorkspaceAdmin } from "../workspace";
 import { reviewerRunnerWarnings, type RunnerReadiness } from "./reviewer-runners";
 
 export type AgentSettingsOptions = {
@@ -26,6 +30,7 @@ export type AgentSettingsOptions = {
   configPath: string;
   csrfToken: string;
   repos?: string[];
+  role?: string;
   /** Replace idle run profile snapshots after saving. Runs executing a turn are excluded. */
   applyToWaiting?: () => Promise<number>;
   /** Records a changed workspace setting in the audit history. */
@@ -48,6 +53,8 @@ export async function handleAgentSettingsRequest(
   if (url.pathname !== SETTINGS_PATH) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Agent settings are only available on the local Paws origin" }, 403);
+  if (options.role !== undefined && !isWorkspaceAdmin(options.role))
+    return json({ error: "Only workspace admins can read or change agent settings." }, 403);
   if (request.method === "GET" && url.pathname === SETTINGS_PATH) {
     try {
       const config = loadConfigFile(options.configPath);
@@ -55,6 +62,7 @@ export async function handleAgentSettingsRequest(
         ...readAgentSettings(config),
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
+        projectMemory: readProjectMemorySettings(config),
         revision: settingsRevision(options.configPath),
         ...retired(options.configPath),
       });
@@ -78,13 +86,15 @@ export async function handleAgentSettingsRequest(
   let settings;
   let mergeBody: unknown;
   let queueBody: unknown;
+  let projectMemoryBody: unknown;
   let applyToWaiting = false;
   let expectedRevision: string | undefined;
   try {
-    // The workspace merge and queue settings travel next to the agent profiles.
+    // The workspace merge, queue and project memory settings travel next to the agent profiles.
     const {
       merge,
       queue,
+      projectMemory: memory,
       applyToWaiting: apply,
       revision,
       ...agents
@@ -98,6 +108,7 @@ export async function handleAgentSettingsRequest(
     settings = parseAgentSettings(isRecord(body) ? agents : body);
     mergeBody = merge;
     queueBody = queue;
+    projectMemoryBody = memory;
   } catch (error) {
     journalCaught(error, "handler.handleAgentSettingsRequest.isRecord", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
@@ -105,15 +116,18 @@ export async function handleAgentSettingsRequest(
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
   let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
+  let previousMemory: ProjectMemorySettings = { workSummary: false, dream: false };
   try {
     const config = loadConfigFile(options.configPath);
     previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
+    previousMemory = readProjectMemorySettings(config);
   } catch (caughtError3) {
     journalCaught(caughtError3, "handler.handleAgentSettingsRequest.loadConfigFile", null);
   }
   let merge: StoredMerge | undefined;
   let queue: QueueSettings | undefined;
+  let projectMemory: ProjectMemorySettings | undefined;
   try {
     if (mergeBody !== undefined) merge = { ...previous, ...parseMergeSettings(mergeBody) };
     if (queueBody !== undefined)
@@ -124,6 +138,8 @@ export async function handleAgentSettingsRequest(
         }),
         ...parseQueueSettings(queueBody),
       };
+    if (projectMemoryBody !== undefined)
+      projectMemory = { ...previousMemory, ...parseProjectMemorySettings(projectMemoryBody) };
   } catch (error) {
     journalCaught(error, "handler.handleAgentSettingsRequest.parseMergeSettings", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
@@ -138,12 +154,14 @@ export async function handleAgentSettingsRequest(
     );
   let saved: number;
   let savedQueue: QueueSettings;
+  let savedMemory: ProjectMemorySettings;
   let waitingRuns = 0;
   try {
-    await writeAgentSettings(options.configPath, settings, merge, queue);
+    await writeAgentSettings(options.configPath, settings, merge, queue, projectMemory);
     const config = loadConfigFile(options.configPath);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
+    savedMemory = readProjectMemorySettings(config);
     if (applyToWaiting) waitingRuns = (await options.applyToWaiting?.()) ?? 0;
   } catch (caughtError4) {
     journalCaught(caughtError4, "handler.handleAgentSettingsRequest.writeAgentSettings", null);
@@ -167,6 +185,15 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
+  for (const [key, label] of [
+    ["workSummary", "Project memory work summaries"],
+    ["dream", "Project memory dream"],
+  ] as const)
+    if (projectMemory !== undefined && projectMemory[key] !== previousMemory[key])
+      await options.audit?.(
+        "settings.project-memory",
+        `${label} ${previousMemory[key] ? "on" : "off"} → ${projectMemory[key] ? "on" : "off"}`,
+      );
   let warnings: string[] = [];
   try {
     if (options.runnerReadiness)
@@ -178,6 +205,7 @@ export async function handleAgentSettingsRequest(
     ...settings,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
+    projectMemory: savedMemory,
     revision: settingsRevision(options.configPath),
     ...(applyToWaiting ? { waitingRuns } : {}),
     ...(warnings.length ? { warnings } : {}),

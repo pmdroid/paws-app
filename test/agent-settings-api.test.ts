@@ -68,6 +68,7 @@ describe("local agent settings API", () => {
       },
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      projectMemory: { workSummary: false, dream: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
@@ -85,6 +86,52 @@ describe("local agent settings API", () => {
       options,
     ))!.json()) as AgentSettings;
     expect(body.defaults.implementer).toEqual({ agent: "claude", model: null, fast: true });
+  });
+
+  test("an admin reads and saves the project memory switches", async () => {
+    const { options } = fixture();
+    const admin = { ...options, role: "admin" };
+    const audit: string[] = [];
+    const saved = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, projectMemory: { workSummary: true } }),
+      { ...admin, audit: async (_action, subject) => void audit.push(subject) },
+    );
+    expect(saved?.status).toBe(200);
+    expect(((await saved!.json()) as { projectMemory: unknown }).projectMemory).toEqual({
+      workSummary: true,
+      dream: false,
+    });
+    expect(audit).toEqual(["Project memory work summaries off → on"]);
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      "[project_memory]\nwork_summary = true\ndream = false\n",
+    );
+    await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, projectMemory: { dream: true } }),
+      admin,
+    );
+    const loaded = await handleAgentSettingsRequest(request(), admin);
+    expect(loaded?.status).toBe(200);
+    expect(((await loaded!.json()) as { projectMemory: unknown }).projectMemory).toEqual({
+      workSummary: true,
+      dream: true,
+    });
+    const invalid = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, projectMemory: { dream: "yes" } }),
+      admin,
+    );
+    expect(invalid?.status).toBe(400);
+  });
+
+  test("a member cannot read or change project memory", async () => {
+    const { options } = fixture();
+    const member = { ...options, role: "member" };
+    expect((await handleAgentSettingsRequest(request(), member))?.status).toBe(403);
+    const put = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, projectMemory: { dream: true } }),
+      member,
+    );
+    expect(put?.status).toBe(403);
+    expect(existsSync(options.configPath)).toBe(false);
   });
 
   test("a save from a stale revision is refused and the newer file is kept", async () => {
@@ -170,6 +217,7 @@ describe("local agent settings API", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      projectMemory: { workSummary: false, dream: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
@@ -503,6 +551,7 @@ describe("reviewer profile validation", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      projectMemory: { workSummary: false, dream: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
