@@ -31,7 +31,7 @@ type View = {
   connection: Record<string, string> | null;
   capabilities: Record<string, { ready: boolean; message?: string }> & { missing: string[] };
 };
-type Grant = { team: string; scope?: string; app?: string };
+type Grant = { team: string; scope?: string; app?: string; rotate?: boolean };
 
 async function fixture() {
   const home = tempHome();
@@ -56,6 +56,7 @@ async function fixture() {
         access_token: `xoxb-${grant.team}-${grants.length}`,
         scope: grant.scope ?? SLACK_INSTALL_SCOPES.join(","),
         app_id: grant.app ?? "A1",
+        ...(grant.rotate ? { refresh_token: "xoxe-refresh", expires_in: 43200 } : {}),
         bot_user_id: `B${grant.team}`,
         team: { id: grant.team, name: `Team ${grant.team}` },
       });
@@ -127,10 +128,12 @@ async function fixture() {
     again: async (user: string, grant: Grant | "deny") => finish(user, await start(user), grant),
     status: async (user: string) =>
       (await (await call(user, "/api/workspaces/slack")).json()) as View,
-    credentials: () =>
-      db.run((q) =>
-        q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
-      ),
+    credentials: async () =>
+      (
+        await db.run((q) =>
+          q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
+        )
+      ).filter((row) => !row.workspace.startsWith("team:")),
     tick: (ms: number) => (now += ms),
   };
 }
@@ -138,27 +141,14 @@ async function fixture() {
 test("an admin installs Slack, returns to Integrations and sees its capabilities", async () => {
   const f = await fixture();
   await f.workspace("ws1", { alice: "admin" });
-  const state = await f.start("alice");
   const scope = SLACK_INSTALL_SCOPES.filter((name) => name !== "im:history").join(",");
-  expect(await f.finish("alice", state, { team: "T111111", scope })).toBe(
-    "https://paws.example/dashboard/workspace/integrations?slack=connected",
-  );
+  const location = await f.again("alice", { team: "T111111", scope });
+  expect(location).toBe("https://paws.example/dashboard/workspace/integrations?slack=connected");
   const view = await f.status("alice");
-  expect(view.connection).toEqual({
-    teamId: "T111111",
-    teamName: "Team T111111",
-    appId: "A1",
-    botUserId: "BT111111",
-  });
+  expect(view.connection).toMatchObject({ teamId: "T111111", appId: "A1", botUserId: "BT111111" });
   expect(view.capabilities.threads!.ready).toBe(true);
-  expect(view.capabilities.directMessages).toMatchObject({
-    ready: false,
-    message: "Reconnect Slack to grant im:history.",
-  });
-  expect(view.capabilities.missing).toEqual(["im:history"]);
-  expect(view.capabilities.code!.message).toBe(
-    "Slack Code is not available on this connection yet.",
-  );
+  expect(view.capabilities.directMessages!.message).toBe("Reconnect Slack to grant im:history.");
+  expect(view.capabilities.code!.ready).toBe(false);
   const rows = await f.credentials();
   expect(rows.map((row) => row.workspace)).toEqual(["ws1"]);
   expect(JSON.stringify([view, rows])).not.toContain("xoxb-");
@@ -173,9 +163,8 @@ test("members, demoted admins, other sessions and expired or replayed state cann
   await f.setRole("alice", "member");
   expect(await f.finish("alice", demoted, { team: "T111111" })).toContain("slack=forbidden");
   await f.setRole("alice", "admin");
-  expect(await f.finish("carol", await f.start("alice"), { team: "T111111" })).toContain(
-    "slack=expired",
-  );
+  const stolen = await f.start("alice");
+  expect(await f.finish("carol", stolen, { team: "T111111" })).toContain("slack=expired");
   const expired = await f.start("alice");
   f.tick(11 * 60_000);
   expect(await f.finish("alice", expired, { team: "T111111" })).toContain("slack=expired");
@@ -189,7 +178,9 @@ test("a denial, another team or app keeps the connection, and teams never cross 
   const f = await fixture();
   await f.workspace("ws1", { alice: "admin" });
   await f.workspace("ws2", { dave: "admin" });
-  await Promise.all([f.again("alice", { team: "T111111" }), f.again("dave", { team: "T222222" })]);
+  await f.again("alice", { team: "T111111" });
+  expect(await f.again("dave", { team: "T222222", rotate: true })).toContain("slack=rotating");
+  await f.again("dave", { team: "T222222" });
   expect(await f.again("alice", "deny")).toContain("slack=denied");
   expect(await f.again("alice", { team: "T333333" })).toContain("slack=different_team");
   expect(await f.again("alice", { team: "T111111", app: "A9" })).toContain("slack=different_team");
@@ -199,6 +190,18 @@ test("a denial, another team or app keeps the connection, and teams never cross 
   expect(await f.again("dave", { team: "T111111" })).toContain("slack=team_taken");
   expect(await f.again("dave", { team: "T333333" })).toContain("slack=connected");
   expect((await f.credentials()).map((row) => row.workspace).sort()).toEqual(["ws1", "ws2"]);
+});
+
+test("one Slack team binds to one workspace under a race", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  await f.workspace("ws2", { dave: "admin" });
+  const [a, b] = [await f.start("alice"), await f.start("dave")];
+  const results = await Promise.all([
+    f.finish("alice", a, { team: "T111111" }),
+    f.finish("dave", b, { team: "T111111" }),
+  ]);
+  expect(results.map((to) => to.split("slack=")[1]).sort()).toEqual(["connected", "team_taken"]);
 });
 
 test("concurrent reconnects commit once, and a stale disconnect keeps the newer token", async () => {

@@ -25,13 +25,11 @@ export function* readCredentialSteps(
   return ciphertext === null ? null : openSecret(secretsDir, context(key), ciphertext);
 }
 
-type ScopedCredential = { workspace: string; value: string; updatedAt: number };
-
 export function* scopedCredentialsSteps(
   q: Q,
   secretsDir: string,
   kind: CredentialKind,
-): Steps<ScopedCredential[]> {
+): Steps<{ workspace: string; value: string; updatedAt: number }[]> {
   const rows = yield* credentialRowsSteps(q, kind);
   return rows.map((row) => ({
     workspace: row.workspace,
@@ -46,10 +44,9 @@ export function* replaceScopedCredentialSteps(
   key: CredentialKey,
   value: string,
   expected: number,
-  now: number,
 ): Steps<number | null> {
   const sealed = sealSecret(secretsDir, context(key), value);
-  return yield* replaceCredentialCiphertextSteps(q, key, sealed, expected, now);
+  return yield* replaceCredentialCiphertextSteps(q, key, sealed, expected);
 }
 
 export function readCredential(

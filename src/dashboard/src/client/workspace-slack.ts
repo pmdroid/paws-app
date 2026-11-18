@@ -5,8 +5,8 @@ import { renderMarkup } from "./theme";
 type Capability = { ready: boolean; message?: string };
 type SlackStatus = {
   configured: boolean;
-  redirectUrl: string;
-  eventsUrl: string;
+  redirectUrl?: string;
+  eventsUrl?: string;
   connection: { teamId: string; teamName: string | null; appId: string; botUserId: string } | null;
   capabilities: (Record<keyof typeof LABELS, Capability> & { missing: string[] }) | null;
 };
@@ -27,6 +27,7 @@ const RESULTS: Record<string, string> = {
   expired: "That Slack link expired or was already used. Start again.",
   forbidden: "Only a workspace admin can connect Slack.",
   failed: "Slack could not be connected. Try again.",
+  rotating: "Turn off token rotation for this Slack app, then reconnect.",
 };
 
 export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): void {
@@ -71,7 +72,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
         capabilities?.missing.length
           ? `<p data-slack-missing>Missing scopes: ${capabilities.missing.map(esc).join(", ")}</p>`
           : ""
-      }<p class="muted">Redirect URL <code>${esc(redirectUrl)}</code>, events URL <code>${esc(eventsUrl)}</code></p><p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
+      }<p class="muted">Redirect URL <code>${esc(redirectUrl ?? "")}</code>, events URL <code>${esc(eventsUrl ?? "")}</code></p><p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
         .map(([id, label]) => `<button class="btn" data-slack="${id}">${label}</button>`)
         .join("")}</div></div>`,
     );

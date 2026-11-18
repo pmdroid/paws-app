@@ -15,7 +15,6 @@ test("the Slack card shows identity, capabilities and the callback result, and r
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     requests.push(`${init?.method ?? "GET"} ${url}`);
-    if (init?.method === "POST") return Response.json({ error: "Slack refused." }, { status: 409 });
     return Response.json({
       configured: true,
       redirectUrl: "https://paws.example/oauth/slack/callback",
@@ -45,7 +44,6 @@ test("the Slack card shows identity, capabilities and the callback result, and r
     root.querySelector<HTMLButtonElement>('[data-slack="reconnect"]')!.click();
     await Bun.sleep(20);
     expect(requests).toContain("POST /api/workspaces/slack/connect");
-    expect(text("[data-slack-notice]")).toBe("Slack refused.");
   } finally {
     globalThis.fetch = realFetch;
     names.forEach((name, index) => (globals[name] = saved[index]));

@@ -47,7 +47,7 @@ export function resolveSlackApp(
 export function* installedSlackTokensSteps(q: Q, home: string): Steps<InstalledSlackToken[]> {
   const rows = yield* scopedCredentialsSteps(q, pawsPaths(home).secretsDir, "slack");
   return rows
-    .filter((row) => row.workspace !== "installation")
+    .filter((row) => row.workspace !== "installation" && !row.workspace.startsWith("team:"))
     .map((row) => ({
       ...parseJson<SlackToken>(row.value)!,
       workspaceId: row.workspace,
@@ -57,6 +57,17 @@ export function* installedSlackTokensSteps(q: Q, home: string): Steps<InstalledS
 
 export function* installedSlackTokenSteps(q: Q, home: string, workspaceId: string) {
   return (yield* installedSlackTokensSteps(q, home)).find((row) => row.workspaceId === workspaceId);
+}
+
+export function* slackTeamOwnerSteps(q: Q, home: string, teamId: string, claimFor?: string) {
+  const dir = pawsPaths(home).secretsDir;
+  const key = { kind: "slack" as const, workspace: `team:${teamId}` };
+  const owner = (yield* scopedCredentialsSteps(q, dir, "slack")).find(
+    (row) => row.workspace === key.workspace,
+  );
+  if (owner || !claimFor) return { key, owner };
+  const claimed = yield* replaceScopedCredentialSteps(q, dir, key, claimFor, 0);
+  return { key, owner: claimed === null ? undefined : { value: claimFor, updatedAt: claimed } };
 }
 
 export function* saveInstalledSlackTokenSteps(
@@ -69,7 +80,7 @@ export function* saveInstalledSlackTokenSteps(
   const value = JSON.stringify(token);
   const key = { kind: "slack" as const, workspace: workspaceId };
   const dir = pawsPaths(home).secretsDir;
-  return (yield* replaceScopedCredentialSteps(q, dir, key, value, expected, Date.now())) !== null;
+  return (yield* replaceScopedCredentialSteps(q, dir, key, value, expected)) !== null;
 }
 
 function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {
@@ -93,8 +104,13 @@ export async function loginSlack(input: {
   fetch?: SlackFetch;
   onAuthorize: (url: string, port: number) => void | Promise<void>;
 }): Promise<SlackToken> {
-  const app = resolveSlackApp(input.home, input.env);
-  if (!app)
+  const stored = readSlackApp(input.home);
+  const app = {
+    clientId: input.env.SLACK_CLIENT_ID ?? stored?.clientId,
+    clientSecret: input.env.SLACK_CLIENT_SECRET ?? stored?.clientSecret,
+    signingSecret: input.env.SLACK_SIGNING_SECRET ?? stored?.signingSecret,
+  };
+  if (!app.clientId || !app.clientSecret || !app.signingSecret)
     throw new Error(
       "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET before paws login slack.",
     );

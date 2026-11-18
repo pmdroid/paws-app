@@ -93,10 +93,9 @@ export function* replaceCredentialCiphertextSteps(
   key: CredentialKey,
   ciphertext: string,
   expected: number,
-  now: number,
 ) {
   const { credential } = q.t;
-  const updatedAt = Math.max(now, expected + 1);
+  const updatedAt = Math.max(Date.now(), expected + 1);
   const rows = yield* q.all(
     expected === 0
       ? q.orm

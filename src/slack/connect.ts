@@ -24,7 +24,7 @@ import { dashboardUrl } from "../dashboard-links";
 import { journalCaught } from "../journal";
 import {
   installedSlackTokenSteps,
-  installedSlackTokensSteps,
+  slackTeamOwnerSteps,
   requestSlackToken,
   resolveSlackApp,
   saveInstalledSlackTokenSteps,
@@ -115,23 +115,22 @@ export function createSlackConnect(options: {
       });
       yield* auditSteps(q, principal, "slack.started");
     });
-    const target = new URL("https://slack.com/oauth/v2/authorize");
-    target.search = new URLSearchParams({
+    const scope = SLACK_INSTALL_SCOPES.join(",");
+    const query = new URLSearchParams({
       client_id: app.clientId,
-      scope: SLACK_INSTALL_SCOPES.join(","),
+      scope,
       state,
       redirect_uri: redirectUri,
-    }).toString();
-    return json({ url: target.href });
+    });
+    return json({ url: `https://slack.com/oauth/v2/authorize?${query}` });
   }
 
   async function callback(url: URL, principal: WorkspacePrincipal, sessionHash: string) {
     const state = url.searchParams.get("state") ?? "";
-    const requester = { ...principal, sessionHash };
     const hash = workspaceTokenHash(state);
     const claimed = await store.run(function* (q) {
       if (state.length > 128 || !(yield* githubOAuthStateExistsSteps(q, hash, "slack"))) return;
-      return yield* claimGithubOAuthSteps(q, hash, requester, now());
+      return yield* claimGithubOAuthSteps(q, hash, { ...principal, sessionHash }, now());
     });
     if (!claimed) return back("expired");
     const fail = async (code: string) => {
@@ -153,19 +152,20 @@ export function createSlackConnect(options: {
       token = await requestSlackToken(app, body, slackFetch, signal, undefined, []);
       if (!token.appId || (env.SLACK_APP_ID && token.appId !== env.SLACK_APP_ID))
         throw new Error("Slack returned a different app.");
+      if (token.refreshToken !== null) return fail("rotating");
     } catch (caught) {
       journalCaught(caught, "slack.connect.exchange", null);
       return fail("failed");
     }
     const saved = await store.transaction(function* (q) {
       if (!(yield* adminSteps(q, principal))) return "forbidden";
-      const all = yield* installedSlackTokensSteps(q, home);
-      const current = all.find((row) => row.workspaceId === principal.workspaceId);
+      const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
       const expected = claimed.expected_generation;
       if ((current?.updatedAt ?? 0) !== expected) return "conflict";
-      if (all.some((row) => row !== current && row.teamId === token.teamId)) return "team_taken";
       if (current && (current.teamId !== token.teamId || current.appId !== token.appId))
         return "different_team";
+      const team = yield* slackTeamOwnerSteps(q, home, token.teamId, principal.workspaceId);
+      if (team.owner?.value !== principal.workspaceId) return "team_taken";
       if (!(yield* saveInstalledSlackTokenSteps(q, home, principal.workspaceId, token, expected)))
         return "conflict";
       yield* completeGithubOAuthSteps(q, claimed.state_hash);
@@ -181,6 +181,8 @@ export function createSlackConnect(options: {
       const key = { kind: "slack" as const, workspace: principal.workspaceId };
       if (!current || !(yield* deleteCredentialCiphertextSteps(q, key, current.updatedAt)))
         return null;
+      const team = yield* slackTeamOwnerSteps(q, home, current.teamId);
+      if (team.owner) yield* deleteCredentialCiphertextSteps(q, team.key, team.owner.updatedAt);
       yield* auditSteps(q, principal, "slack.disconnected", `slack:${current.teamId}`);
       return current;
     });
