@@ -7,6 +7,7 @@ import {
   readSessionDone,
   saveCandidateRiskSteps,
 } from "../db";
+import { queueWaitingFor } from "./queue-waiting-for";
 import {
   bindWorkItemRepositorySteps,
   listRepositoryCandidates,
@@ -8084,6 +8085,7 @@ export class Orchestrator {
         ? {
             itemRunners: (q: Q, itemId: string) =>
               this.itemRunnersSteps(q, itemId, itemRunners, config),
+            waitingFor: queueWaitingFor,
           }
         : {}),
       ...(ownerHasRunner && config

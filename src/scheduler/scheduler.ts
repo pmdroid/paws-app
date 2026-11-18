@@ -57,7 +57,6 @@ import {
   repositoryKey,
 } from "../db";
 import { blockingIssuesSteps, readyItemsSteps } from "../intake";
-import { queueWaitingFor } from "../runner-placement";
 import { createAdmission, type Admission as StartAdmission, type ItemAdmission } from "./admission";
 import {
   itemWaitsSteps,
@@ -93,6 +92,11 @@ export type SchedulerOptions = {
   onRunnerSetup?: (itemIds: readonly string[]) => void | Promise<void>;
   onWaits?: (waits: readonly ItemWait[]) => unknown;
   itemRunners?: (q: Q, itemId: string) => Steps<ItemRunnerVerdicts | null>;
+  waitingFor?: (
+    verdicts: ItemRunnerVerdicts | null,
+    open: boolean,
+    slots: string,
+  ) => QueueWaitingFor;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
   /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
@@ -845,7 +849,7 @@ async function admit(
     ].map(({ item }) => item.id);
     const busy = slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null;
     const waitingFor = new Map<string, QueueWaitingFor>();
-    if (busy && options.itemRunners)
+    if (busy && options.itemRunners && options.waitingFor)
       for (const [index, itemId] of line.entries()) {
         if (waiting.find(({ item }) => item.id === itemId)?.capped) continue;
         const slotText = queueLine({
@@ -855,7 +859,7 @@ async function admit(
         });
         waitingFor.set(
           itemId,
-          queueWaitingFor(
+          options.waitingFor(
             yield* verdictsFor(itemId),
             (yield* openRunner(itemId)) !== null,
             slotText,
