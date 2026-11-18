@@ -1,25 +1,31 @@
 import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { AgentAccountError } from "./agent-accounts";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 import type { Q, Steps } from "./db";
 const key = (id: string) => `agent-auth:${id}`;
-export function* deviceAccountSteps(q: Q, workspaceId: string, id: string): Steps<void> {
+const DEVICE_AGENTS = ["codex", "opencode"] as const;
+export function* deviceAccountSteps(
+  q: Q,
+  workspaceId: string,
+  id: string,
+): Steps<(typeof DEVICE_AGENTS)[number]> {
   const a = q.t.agentAccount;
   const row = yield* q.one(
     q.orm
-      .select()
+      .select({ agent: a.agent })
       .from(a)
       .where(
         and(
           eq(a.id, id),
           eq(a.workspaceId, workspaceId),
-          eq(a.agent, "codex"),
+          inArray(a.agent, [...DEVICE_AGENTS]),
           isNull(a.removedAt),
         ),
       ),
   );
-  if (!row) throw new AgentAccountError("not_found", "Codex account is unavailable");
+  if (!row) throw new AgentAccountError("not_found", "Device sign-in account is unavailable");
+  return row.agent as (typeof DEVICE_AGENTS)[number];
 }
 export function* readAgentAuthSteps(q: Q, id: string) {
   return yield* readSettingSteps(q, key(id));
@@ -46,13 +52,14 @@ export function* claimAgentAuthSteps(
 export function* listAgentAuthSteps(q: Q) {
   const s = q.t.setting;
   const a = q.t.agentAccount;
-  return yield* q.all(
+  const rows = yield* q.all(
     q.orm
-      .select({ id: a.id, value: s.value })
+      .select({ id: a.id, agent: a.agent, value: s.value })
       .from(a)
       .innerJoin(s, eq(s.key, sql`'agent-auth:' || ${a.id}`))
-      .where(and(eq(a.agent, "codex"), isNull(a.removedAt))),
+      .where(and(inArray(a.agent, [...DEVICE_AGENTS]), isNull(a.removedAt))),
   );
+  return rows.map((row) => ({ ...row, agent: row.agent as (typeof DEVICE_AGENTS)[number] }));
 }
 export function* agentAuthFailureSteps(q: Q, id: string) {
   const raw = yield* readAgentAuthSteps(q, id);

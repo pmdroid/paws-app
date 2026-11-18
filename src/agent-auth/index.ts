@@ -9,9 +9,14 @@ import {
   type Db,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
-import { createCodexProvider, type AuthProvider, type Device, type Tokens } from "./codex";
+import { createCodexProvider, type AuthProvider, type Device } from "./codex";
+import { createOpencodeProvider } from "./opencode";
 export { createCodexProvider } from "./codex";
+export { createOpencodeProvider } from "./opencode";
 export type { AuthProvider, Device, Tokens } from "./codex";
+export type { OpencodeTokens } from "./opencode";
+type Provider = AuthProvider<{ expiresAt: number }>;
+type Agent = "codex" | "opencode";
 type State = {
   state: "pending" | "signed-in" | "denied" | "expired";
   device?: Device;
@@ -27,22 +32,27 @@ type State = {
 export function createAgentAuth(options: {
   store: Db;
   secretsDir: string;
-  provider?: AuthProvider;
+  providers?: Partial<Record<Agent, Provider>>;
   now?: () => number;
 }) {
   const { store, secretsDir } = options;
   const now = options.now ?? Date.now;
-  const provider = options.provider ?? createCodexProvider();
+  const providers: Record<Agent, Provider> = {
+    codex: createCodexProvider(),
+    opencode: createOpencodeProvider(),
+    ...options.providers,
+  };
   async function claim(id: string, raw: string, state: State) {
     if ((state.lockUntil ?? 0) > now()) return null;
     const value = JSON.stringify({ ...state, lock: randomUUID(), lockUntil: now() + 120_000 });
     return (await store.transaction((q) => claimAgentAuthSteps(q, id, raw, value))) ? value : null;
   }
   async function save(
+    provider: Provider,
     id: string,
     locked: string,
     state: State,
-    tokens?: Tokens,
+    tokens?: { expiresAt: number },
     deviceSession = false,
   ) {
     delete state.lock;
@@ -76,7 +86,7 @@ export function createAgentAuth(options: {
   }
   return {
     async device(workspaceId: string, id: string, start: boolean) {
-      await store.run((q) => deviceAccountSteps(q, workspaceId, id));
+      const provider = providers[await store.run((q) => deviceAccountSteps(q, workspaceId, id))];
       if (start) {
         const device = await provider.startDevice();
         const state: State = {
@@ -112,6 +122,7 @@ export function createAgentAuth(options: {
           next.health = "ok";
         }
         const saved = await save(
+          provider,
           id,
           locked,
           next,
@@ -121,6 +132,7 @@ export function createAgentAuth(options: {
         return { state: saved || "pending" };
       } catch {
         await save(
+          provider,
           id,
           locked,
           { ...state, nextPoll: now() + state.device!.interval * 1000 },
@@ -133,6 +145,7 @@ export function createAgentAuth(options: {
     async tick() {
       for (const row of await store.run(listAgentAuthSteps)) {
         const state = JSON.parse(row.value) as State;
+        const provider = providers[row.agent];
         if (
           state.state !== "signed-in" ||
           (state.expiresAt ?? Infinity) > now() + 600_000 ||
@@ -146,19 +159,16 @@ export function createAgentAuth(options: {
             readAgentCredentialSteps(q, secretsDir, row.id),
           );
           if (!credential?.blob) {
-            await save(row.id, locked, { ...state, state: "expired" });
+            await save(provider, row.id, locked, { ...state, state: "expired" });
             continue;
           }
           state.version = credential.version;
-          const files = JSON.parse(credential.blob) as { data: string }[];
-          const previous = JSON.parse(Buffer.from(files[0]!.data, "base64").toString()) as {
-            tokens: Omit<Tokens, "expiresAt">;
-          };
           const tokens = await provider.refresh({
-            ...previous.tokens,
+            ...provider.storedTokens(JSON.parse(credential.blob)),
             expiresAt: state.expiresAt!,
           });
           await save(
+            provider,
             row.id,
             locked,
             { ...state, expiresAt: tokens.expiresAt, failures: 0, retryAt: 0, health: "ok" },
@@ -166,7 +176,7 @@ export function createAgentAuth(options: {
           );
         } catch {
           const failures = state.failures + 1;
-          await save(row.id, locked, {
+          await save(provider, row.id, locked, {
             ...state,
             health: "auth-expired",
             failures,

@@ -104,16 +104,27 @@ export function agentCredentialReturnContext(executionId: string) {
   return `paws-agent-credential-return:${executionId}`;
 }
 
+const OPENCODE_AUTH = ".local/share/opencode/auth.json";
+
 export function accessCredentialFiles(blob: string): RunnerAgentCredentialFiles {
   return RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)).map((file) => {
-    if (file.path !== ".codex/auth.json") throw new Error("Unsupported central credential");
+    if (file.path !== ".codex/auth.json" && file.path !== OPENCODE_AUTH)
+      throw new Error("Unsupported central credential");
     const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
-    auth.tokens.refresh_token = "";
+    if (file.path === OPENCODE_AUTH) auth.opencode.refresh = "";
+    else auth.tokens.refresh_token = "";
     return { ...file, data: Buffer.from(JSON.stringify(auth)).toString("base64") };
   });
 }
 
 export function accessCredentialExpiry(files: RunnerAgentCredentialFiles): number | null {
+  const opencode = files.find((entry) => entry.path === OPENCODE_AUTH);
+  if (opencode) {
+    const auth = JSON.parse(Buffer.from(opencode.data, "base64").toString());
+    if (auth.opencode?.type !== "oauth" || auth.opencode.refresh !== "") return null;
+    if (!Number.isFinite(auth.opencode.expires)) throw new Error("Missing access token expiry");
+    return auth.opencode.expires;
+  }
   const file = files.find((entry) => entry.path === ".codex/auth.json");
   if (!file) return null;
   const auth = JSON.parse(Buffer.from(file.data, "base64").toString());

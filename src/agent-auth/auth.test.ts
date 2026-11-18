@@ -71,7 +71,7 @@ async function setup(signedIn = false) {
   const auth = createAgentAuth({
     store: db,
     secretsDir: dir,
-    provider: createCodexProvider(fake.issuer, now),
+    providers: { codex: createCodexProvider(fake.issuer, now) },
     now,
   });
   if (signedIn) {
@@ -248,12 +248,14 @@ test("a replaced in-flight device poll cannot report sign-in success", async () 
     store: s.db,
     secretsDir: s.dir,
     now: s.now,
-    provider: {
-      ...provider,
-      async pollDevice(device) {
-        entered.resolve();
-        await release.promise;
-        return provider.pollDevice(device);
+    providers: {
+      codex: {
+        ...provider,
+        async pollDevice(device) {
+          entered.resolve();
+          await release.promise;
+          return provider.pollDevice(device);
+        },
       },
     },
   });

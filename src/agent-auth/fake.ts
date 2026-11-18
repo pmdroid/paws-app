@@ -42,3 +42,44 @@ export function fakeCodexOAuth(now: () => number) {
     close: () => server.stop(true),
   };
 }
+export function fakeOpencodeConsole() {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  let state = "authorization_pending";
+  let generation = 0;
+  let refreshToken = "";
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      const body = (await request.json()) as Record<string, unknown>;
+      calls.push({ path, body });
+      if (path === "/console/auth/device/code")
+        return Response.json({
+          device_code: "device-secret",
+          user_code: "XBDM-QQNL",
+          verification_uri_complete: "/console/device?user_code=XBDM-QQNL&client_id=opencode-cli",
+          expires_in: 600,
+          interval: 5,
+        });
+      if (body.grant_type === "refresh_token" && body.refresh_token !== refreshToken)
+        return Response.json({ error: "invalid_grant" }, { status: 400 });
+      if (body.grant_type !== "refresh_token" && state !== "approved")
+        return Response.json({ error: state }, { status: 400 });
+      refreshToken = "refresh-secret-" + ++generation;
+      return Response.json({
+        access_token: "access-secret-" + generation,
+        refresh_token: refreshToken,
+        expires_in: 3600,
+      });
+    },
+  });
+  return {
+    calls,
+    server: server.url.origin + "/console",
+    approve: () => (state = "approved"),
+    deny: () => (state = "access_denied"),
+    expire: () => (state = "expired_token"),
+    close: () => server.stop(true),
+  };
+}

@@ -7,14 +7,16 @@ export type Device = {
   expiresAt: number;
   deviceId: string;
 };
-export type DeviceResult =
+export type DeviceResult<T = Tokens> =
   | { state: "pending" | "denied" | "expired" }
-  | { state: "signed-in"; tokens: Tokens };
-export interface AuthProvider {
+  | { state: "signed-in"; tokens: T };
+type Files = { path: string; data: string }[];
+export interface AuthProvider<T extends { expiresAt: number } = Tokens> {
   startDevice(): Promise<Device>;
-  pollDevice(device: Device): Promise<DeviceResult>;
-  refresh(tokens: Tokens): Promise<Tokens>;
-  credentialFiles(tokens: Tokens): { path: string; data: string }[];
+  pollDevice(device: Device): Promise<DeviceResult<T>>;
+  refresh(tokens: T): Promise<T>;
+  storedTokens(files: Files): Omit<T, "expiresAt">;
+  credentialFiles(tokens: T): Files;
 }
 const CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann";
 const shape = z.object({
@@ -116,6 +118,9 @@ export function createCodexProvider(
         }),
         previous,
       );
+    },
+    storedTokens(files) {
+      return shape.parse(JSON.parse(Buffer.from(files[0]!.data, "base64").toString()).tokens);
     },
     credentialFiles(value) {
       const auth = claims(value.id_token)["https://api.openai.com/auth"] as
