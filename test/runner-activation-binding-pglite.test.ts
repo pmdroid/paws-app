@@ -24,7 +24,11 @@ async function workspace(db: Db) {
   );
 }
 
-async function account(db: Db, agent: string, options: { signedIn: boolean; owner?: string }) {
+async function account(
+  db: Db,
+  agent: "claude" | "codex" | "grok",
+  options: { signedIn: boolean; owner?: string },
+) {
   const created = await db.transaction((q) =>
     createAgentAccountSteps(q, {
       workspaceId: "acme",

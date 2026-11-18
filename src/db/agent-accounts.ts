@@ -509,6 +509,42 @@ export function* bindToOwnerRunnersSteps(q: Q, accountId: string, now: number) {
   }
 }
 
+export function* bindSignedInAccountsToRunnerSteps(q: Q, runnerId: string, now: number) {
+  const { agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
+  const owner = yield* q.one(
+    q.orm
+      .select({ workspaceId: r.workspaceId, ownerUserId: r.ownerUserId })
+      .from(r)
+      .where(and(eq(r.id, runnerId), eq(r.status, "active"), isNull(r.revokedAt))),
+  );
+  if (!owner || owner.ownerUserId === null) return;
+  const accounts = yield* q.all(
+    q.orm
+      .select({ id: a.id })
+      .from(a)
+      .innerJoin(c, eq(c.accountId, a.id))
+      .where(
+        and(
+          eq(a.workspaceId, owner.workspaceId),
+          eq(a.ownerUserId, owner.ownerUserId),
+          eq(a.enabled, 1),
+          isNull(a.removedAt),
+        ),
+      )
+      .orderBy(asc(a.id)),
+  );
+  for (const signedIn of accounts) {
+    if (yield* liveAccountBindingSteps(q, runnerId, signedIn.id)) continue;
+    yield* bindAgentAccountSteps(q, {
+      workspaceId: owner.workspaceId,
+      userId: owner.ownerUserId,
+      accountId: signedIn.id,
+      runnerId,
+      now,
+    });
+  }
+}
+
 export async function bindAgentAccount(
   store: Db,
   input: { workspaceId: string; userId: string; accountId: string; runnerId: string; now: number },
