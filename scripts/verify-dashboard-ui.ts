@@ -652,6 +652,18 @@ try {
         },
       }),
     );
+    await admin.route("**/api/workspaces/slack", (route) =>
+      route.fulfill({
+        json: {
+          configured: true,
+          redirectUrl: "https://paws.example/oauth/slack/callback",
+          eventsUrl: "https://paws.example/webhooks/slack",
+          connection: null,
+          capabilities: null,
+          login: { teamId: "T111111", teamName: "Acme" },
+        },
+      }),
+    );
     await visit(
       admin,
       width,
@@ -666,6 +678,12 @@ try {
     await expect(github.getByLabel("Match acme/app to Team")).toBeChecked();
     await expect(github.getByLabel("Match acme/site to Team")).not.toBeChecked();
     await expect(github.getByRole("button", { name: "Save repository access" })).toBeVisible();
+    const slack = admin.locator("#workspace-slack-integration");
+    await expect(slack.locator("[data-slack-status]")).toContainText("Acme (T111111)");
+    await expect(
+      slack.getByRole("button", { name: "Use the paws login slack connection" }),
+    ).toBeVisible();
+    await admin.unroute("**/api/workspaces/slack");
     await admin.unroute("**/api/workspaces/github-connect");
     await admin.unroute("**/api/workspaces/github-setup*");
     for (const [reader, name, canManage] of [

@@ -24,6 +24,7 @@ import { dashboardUrl } from "../dashboard-links";
 import { journalCaught } from "../journal";
 import {
   installedSlackTokenSteps,
+  loginSlackTokenSteps,
   slackTeamOwnerSteps,
   requestSlackToken,
   resolveSlackApp,
@@ -35,6 +36,7 @@ import { SLACK_CALLBACK_PATH, SLACK_INSTALL_SCOPES, slackCapabilities } from "./
 
 const STATUS = "/api/workspaces/slack";
 const CONNECT = "/api/workspaces/slack/connect";
+const ADOPT = "/api/workspaces/slack/adopt";
 const IDENTITY = ["teamId", "teamName", "appId", "botUserId"];
 const TEAM_ID = /^T[A-Z0-9]{2,20}$/;
 const CHANNEL_ID = /^[CGD][A-Z0-9]{2,20}$/;
@@ -92,7 +94,7 @@ export function createSlackConnect(options: {
 
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
-    if (![STATUS, CONNECT, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
+    if (![STATUS, CONNECT, ADOPT, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
     const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
     const principal = access?.principal;
     if (url.pathname === SLACK_CALLBACK_PATH) {
@@ -117,17 +119,22 @@ export function createSlackConnect(options: {
       if (!from) return json({ error: "Invalid Slack team or channel ID." }, 400);
       return connect(principal, access!.session.tokenHash, from);
     }
+    if (url.pathname === ADOPT && request.method === "POST") return adopt(principal);
     return json({ error: "Method not allowed." }, 405);
   };
 
   async function status(principal: WorkspacePrincipal) {
-    const token = await store.run((q) => installedSlackTokenSteps(q, home, principal.workspaceId));
+    const [token, login] = await store.run(function* (q) {
+      const installed = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
+      return [installed, installed ? null : yield* loginSlackTokenSteps(q, home)] as const;
+    });
     return {
       configured: resolveSlackApp(home, env) !== null,
       redirectUrl: redirectUri,
       eventsUrl: `${origin}/webhooks/slack`,
       connection: token ? JSON.parse(JSON.stringify(token, IDENTITY)) : null,
       capabilities: token ? slackCapabilities(token.scope) : null,
+      login: login ? JSON.parse(JSON.stringify(login.token, IDENTITY)) : null,
     };
   }
 
@@ -211,6 +218,35 @@ export function createSlackConnect(options: {
     return slackReturn(claimed.intent, token) ?? back(saved);
   }
 
+  async function adopt(principal: WorkspacePrincipal) {
+    const result = await store
+      .transaction(function* (q) {
+        const login = yield* loginSlackTokenSteps(q, home);
+        if (!login) return "missing";
+        const { token } = login;
+        if (yield* installedSlackTokenSteps(q, home, principal.workspaceId)) return "conflict";
+        if (token.refreshToken !== null) return "rotating";
+        if (!token.appId || (env.SLACK_APP_ID && token.appId !== env.SLACK_APP_ID))
+          return "different_team";
+        const team = yield* slackTeamOwnerSteps(q, home, token.teamId, principal.workspaceId);
+        if (team.owner?.value !== principal.workspaceId) return "team_taken";
+        // A lost race after the team claim rolls the whole adoption back.
+        if (
+          !(yield* saveInstalledSlackTokenSteps(q, home, principal.workspaceId, token, 0)) ||
+          !(yield* deleteCredentialCiphertextSteps(q, login.key, login.updatedAt))
+        )
+          throw new SlackAdoptRace();
+        yield* auditSteps(q, principal, "slack.adopted", `slack:${token.teamId}`);
+        return "adopted";
+      })
+      .catch((caught: unknown) => {
+        if (caught instanceof SlackAdoptRace) return "conflict";
+        throw caught;
+      });
+    if (result === "adopted") return json({ ok: true });
+    return json({ error: ADOPT_ERRORS[result], code: result }, result === "missing" ? 404 : 409);
+  }
+
   async function disconnect(principal: WorkspacePrincipal) {
     const ended = await store.transaction(function* (q) {
       const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
@@ -231,6 +267,16 @@ export function createSlackConnect(options: {
     return json({ ok: true });
   }
 }
+
+class SlackAdoptRace extends Error {}
+
+const ADOPT_ERRORS: Record<string, string> = {
+  missing: "There is no paws login slack connection to use.",
+  conflict: "Slack is already connected here, or it just changed. Reload and try again.",
+  rotating: "That connection uses token rotation. Turn it off and use Add to Slack instead.",
+  different_team: "That connection belongs to another Slack app.",
+  team_taken: "That Slack workspace is connected to another Paws workspace.",
+};
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store" } });

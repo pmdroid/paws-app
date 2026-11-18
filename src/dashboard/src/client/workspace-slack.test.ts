@@ -50,3 +50,42 @@ test("the Slack card shows identity, capabilities and the callback result, and r
     await window.happyDOM.close();
   }
 });
+
+test("the Slack card offers the paws login slack connection and adopts it", async () => {
+  const window = new Window({ url: "https://paws.example/dashboard/workspace" });
+  const globals = globalThis as Record<string, unknown>;
+  const names = ["window", "document", "location", "history", "HTMLElement"];
+  const saved = names.map((name) => globals[name]);
+  for (const name of names)
+    globals[name] =
+      name === "window" ? window : (window as unknown as Record<string, unknown>)[name];
+  const requests: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    requests.push(`${init?.method ?? "GET"} ${url}`);
+    if (init?.method === "POST") return Response.json({ ok: true });
+    return Response.json({
+      configured: true,
+      connection: null,
+      capabilities: null,
+      login: { teamId: "T111111", teamName: "Acme" },
+    });
+  }) as typeof fetch;
+  try {
+    const root = window.document.createElement("div") as unknown as HTMLElement;
+    initializeWorkspaceSlack(root, "csrf");
+    settingsPageShown("integrations");
+    await Bun.sleep(20);
+    expect(root.querySelector("[data-slack-status]")?.textContent).toContain("Acme (T111111)");
+    const button = root.querySelector<HTMLButtonElement>('[data-slack="adopt"]')!;
+    expect(button.textContent).toBe("Use the paws login slack connection");
+    button.click();
+    await Bun.sleep(20);
+    expect(requests).toContain("POST /api/workspaces/slack/adopt");
+    expect(root.querySelector("[data-slack-notice]")?.textContent).toBe("Slack is connected.");
+  } finally {
+    globalThis.fetch = realFetch;
+    names.forEach((name, index) => (globals[name] = saved[index]));
+    await window.happyDOM.close();
+  }
+});

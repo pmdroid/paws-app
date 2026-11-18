@@ -14,6 +14,8 @@ import {
   WORKSPACE_COOKIE,
 } from "../src/workspace";
 import { createSlackConnect, SLACK_INSTALL_SCOPES } from "../src/slack";
+import { writeCredential } from "../src/credentials";
+import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
@@ -119,6 +121,7 @@ async function fixture() {
   }
   return {
     db,
+    home,
     workspace,
     setRole,
     call,
@@ -128,12 +131,29 @@ async function fixture() {
     again: async (user: string, grant: Grant | "deny") => finish(user, await start(user), grant),
     status: async (user: string) =>
       (await (await call(user, "/api/workspaces/slack")).json()) as View,
-    credentials: async () =>
+    credentials: async (owners = false) =>
       (
         await db.run((q) =>
           q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
         )
-      ).filter((row) => !row.workspace.startsWith("team:")),
+      ).filter((row) => owners || !row.workspace.startsWith("team:")),
+    login: (token: Partial<Record<string, string | null>> = {}) =>
+      writeCredential(
+        db,
+        pawsPaths(home).secretsDir,
+        "slack",
+        JSON.stringify({
+          accessToken: "xoxb-login",
+          refreshToken: null,
+          expiresAtMs: null,
+          scope: "chat:write,users:read",
+          teamId: "T111111",
+          botUserId: "BL",
+          appId: "A1",
+          teamName: "Login team",
+          ...token,
+        }),
+      ),
     tick: (ms: number) => (now += ms),
   };
 }
@@ -247,4 +267,62 @@ test("an install started from Slack returns to its channel or the app DM", async
   expect(await f.finish("alice", other, { team: "T333333" })).toContain("slack=different_team");
   const denied = await f.start("alice", { teamId: "T111111", channelId: "C123456" });
   expect(await f.finish("alice", denied, "deny")).toContain("slack=denied");
+});
+
+test("an admin adopts the paws login slack connection with its scopes, once", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin", bob: "member" });
+  await f.workspace("ws2", { dave: "admin" });
+  const adopt = (user: string) => f.call(user, "/api/workspaces/slack/adopt", "POST", {});
+  expect((await adopt("alice")).status).toBe(404);
+  await f.login();
+  const view = (await f.status("alice")) as View & { login: Record<string, string> };
+  expect(view.login).toEqual({
+    teamId: "T111111",
+    teamName: "Login team",
+    appId: "A1",
+    botUserId: "BL",
+  });
+  expect(JSON.stringify(view)).not.toContain("xoxb-");
+  expect((await adopt("bob")).status).toBe(403);
+  expect((await f.call(null, "/api/workspaces/slack/adopt", "POST", {})).status).toBe(401);
+  const [a, b] = await Promise.all([adopt("alice"), adopt("dave")]);
+  expect([a.status, b.status].filter((code) => code === 200)).toHaveLength(1);
+  const winner = a.status === 200 ? "alice" : "dave";
+  const after = await f.status(winner);
+  expect(after.connection).toMatchObject({ teamId: "T111111", botUserId: "BL" });
+  expect(after.capabilities.threads!.ready).toBe(false);
+  const rows = await f.credentials(true);
+  expect(rows.map((row) => row.workspace).sort()).toEqual([
+    "team:T111111",
+    winner === "alice" ? "ws1" : "ws2",
+  ]);
+  expect((await adopt(winner)).status).toBe(404);
+  const audit = await f.db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit)));
+  expect(audit.filter((row) => row.action === "slack.adopted")).toHaveLength(1);
+});
+
+test("adoption refuses a taken team, a rotating token or no app and keeps the login row", async () => {
+  const f = await fixture();
+  await f.workspace("ws1", { alice: "admin" });
+  await f.workspace("ws2", { dave: "admin" });
+  await f.again("alice", { team: "T111111" });
+  await f.login();
+  const adopt = async (user: string) =>
+    (
+      (await (await f.call(user, "/api/workspaces/slack/adopt", "POST", {})).json()) as {
+        code?: string;
+      }
+    ).code;
+  expect(await adopt("alice")).toBe("conflict");
+  expect(await adopt("dave")).toBe("team_taken");
+  await f.login({ teamId: "T222222", refreshToken: "xoxe-r" });
+  expect(await adopt("dave")).toBe("rotating");
+  await f.login({ teamId: "T222222", appId: null });
+  expect(await adopt("dave")).toBe("different_team");
+  expect((await f.credentials(true)).map((row) => row.workspace).sort()).toEqual([
+    "installation",
+    "team:T111111",
+    "ws1",
+  ]);
 });
