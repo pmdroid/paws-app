@@ -22,6 +22,7 @@ export type MemoryIndexOptions = {
   readonly tokens: number;
   readonly trailer: string;
   readonly topics?: readonly ContextTopicView[];
+  readonly appendix?: string;
 };
 
 function indexLine(row: ContextRecordRow): string {
@@ -46,7 +47,7 @@ export function renderMemoryIndex(
   selection: Extract<ContextSelection, { status: "ok" }>,
   options: MemoryIndexOptions,
   count: (text: string) => number,
-): { text: string; manifest: ContextManifest } {
+): { text: string; manifest: ContextManifest } | null {
   const topics = options.topics ?? [];
   const covered = new Set(topics.flatMap((topic) => topic.recordIds));
   const uncovered = selection.ranked.filter((row) => !covered.has(row.id));
@@ -58,17 +59,17 @@ export function renderMemoryIndex(
     ...topics.map((topic) => `- Topic: ${clip(oneLine(topic.title), 80)} (id ${topic.id})`),
     ...ordered.map(indexLine),
   ];
+  const budget = Math.min(options.tokens, selection.manifest.tokens.memoryBudget);
+  const appendix = options.appendix ? count(`\n\n${options.appendix}`) : 0;
+  const cost = (kept: number) =>
+    count(render(lines.slice(0, kept), lines.length - kept, options.trailer)) + appendix;
   let kept = 0;
-  while (
-    kept < lines.length &&
-    count(render(lines.slice(0, kept + 1), lines.length - kept - 1, options.trailer)) <=
-      options.tokens
-  )
-    kept++;
+  while (kept < lines.length && cost(kept + 1) <= budget) kept++;
+  if (kept === 0) return null;
   const text = render(lines.slice(0, kept), lines.length - kept, options.trailer);
   const indexed = ordered.slice(0, Math.max(0, kept - topics.length));
   const { manifest } = selection;
-  const memoryUsed = count(text);
+  const memoryUsed = cost(kept);
   return {
     text,
     manifest: {
@@ -85,7 +86,7 @@ export function renderMemoryIndex(
       },
       tokens: {
         ...manifest.tokens,
-        memoryBudget: options.tokens,
+        memoryBudget: budget,
         memoryUsed,
         total: manifest.tokens.total - manifest.tokens.memoryUsed + memoryUsed,
       },

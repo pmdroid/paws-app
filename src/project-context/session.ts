@@ -119,13 +119,8 @@ async function selectAndSave(
   const selection = await selectContext(db, access, request);
   if (selection.status === "invalid_budget") return withhold(db, request, "invalid_budget");
   if (selection.status === "unavailable") return withhold(db, request, selection.reason);
-  if (selection.pack === "") return withhold(db, request, "empty");
-  let text = `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`;
-  let manifest = selection.manifest;
   if (request.index) {
     if (selection.ranked.length === 0) return withhold(db, request, "empty");
-    const count = tokenCounter(request.model);
-    const appendix = request.index.appendix ? count(`\n\n${request.index.appendix}`) : 0;
     const current = await requesterAccess(access, request.requester);
     const topics = current
       ? await visibleContextTopics(db, current, {
@@ -136,12 +131,36 @@ async function selectAndSave(
           now: request.now,
         })
       : [];
-    ({ text, manifest } = renderMemoryIndex(
+    const index = renderMemoryIndex(
       selection,
-      { tokens: request.index.tokens - appendix, trailer: CONTEXT_SESSION_NOTICE, topics },
-      count,
-    ));
+      {
+        tokens: request.index.tokens,
+        trailer: CONTEXT_SESSION_NOTICE,
+        topics,
+        ...(request.index.appendix ? { appendix: request.index.appendix } : {}),
+      },
+      tokenCounter(request.model),
+    );
+    if (!index) return withhold(db, request, "over_budget");
+    return saveInjected(db, request, selection.recent, index.text, index.manifest);
   }
+  if (selection.pack === "") return withhold(db, request, "empty");
+  return saveInjected(
+    db,
+    request,
+    selection.recent,
+    `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`,
+    selection.manifest,
+  );
+}
+
+async function saveInjected(
+  db: Db,
+  request: ContextConsumerRequest,
+  recent: string,
+  text: string,
+  manifest: ContextManifest,
+): Promise<SessionContext> {
   const version = await saveContextSession(db, {
     consumerKey: request.consumerKey,
     namespace: request.namespace,
@@ -156,7 +175,7 @@ async function selectAndSave(
   return {
     status: "injected",
     text,
-    recent: selection.recent,
+    recent,
     version,
     manifest,
   };

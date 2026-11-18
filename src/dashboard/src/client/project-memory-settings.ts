@@ -6,7 +6,22 @@ import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
 type Memory = NonNullable<AgentSettings["projectMemory"]>;
-type View = { memory: Memory | null; busy: boolean; error: string | null; saved: boolean };
+type View = {
+  memory: Memory | null;
+  busy: boolean;
+  error: string | null;
+  saved: boolean;
+  recall?: boolean;
+};
+
+const RECALL_ENABLED = false;
+
+export const PROJECT_MEMORY_ROLES = {
+  before:
+    "Work and conversation turns on project issues get the stored entries most relevant to the task in their brief and can save new ones with remember. Reviewers, read-only sessions and Closeout checks can't save entries.",
+  after:
+    "Work and conversation turns on project issues get a short index of what's stored in their brief, read an entry's details with recall and save new ones with remember. Reviewers, read-only sessions and Closeout checks can't use recall or remember.",
+} as const;
 
 const SWITCHES: Array<[keyof Memory, string, string]> = [
   [
@@ -40,7 +55,7 @@ export function renderProjectMemorySettings(view: View): string {
     ([key, label, help]) =>
       `<label class="settings-inherit"><input type="checkbox" role="switch" name="${key}" ${memory[key] ? "checked" : ""} aria-describedby="project-memory-${key}-help"><span class="min-w-0 flex-1">${label}</span></label><p class="sub" id="project-memory-${key}-help">${esc(help)}</p>`,
   ).join("");
-  return `<section class="settings-section"><form id="project-memory-form" class="col">${switches}<p class="sub">With all off, agents see only titles of what's stored and read details with recall when they need them.</p>${message}<div class="row"><button class="btn" type="submit" ${view.busy ? "disabled" : ""}>Save project memory settings</button></div></form></section>`;
+  return `<section class="settings-section"><form id="project-memory-form" class="col">${switches}<p class="sub">${esc(PROJECT_MEMORY_ROLES[(view.recall ?? RECALL_ENABLED) ? "after" : "before"])}</p>${message}<div class="row"><button class="btn" type="submit" ${view.busy ? "disabled" : ""}>Save project memory settings</button></div></form></section>`;
 }
 
 export function createProjectMemorySettings(onSaved: () => void = () => {}): {
