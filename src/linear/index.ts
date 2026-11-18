@@ -158,7 +158,6 @@ export {
   TIMESTAMP_WINDOW_MS,
   checkLinearSignature,
   handleLinearWebhook,
-  lastVerifiedSessionWebhookMs,
   lastVerifiedWebhookMs,
   parseAgentEvent,
   webhookVerificationFailures,
