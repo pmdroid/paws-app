@@ -114,7 +114,13 @@ export type ContextManifest = {
 };
 
 export type ContextSelection =
-  | { status: "ok"; pack: string; recent: string; manifest: ContextManifest }
+  | {
+      status: "ok";
+      pack: string;
+      recent: string;
+      manifest: ContextManifest;
+      ranked: ContextRecordRow[];
+    }
   | { status: "invalid_budget"; errors: string[] }
   | { status: "unavailable"; reason: "refused" | "over_budget" | "request_too_large" };
 
@@ -193,15 +199,15 @@ export function inRequestScope(
   return true;
 }
 
-function clip(text: string, chars: number): string {
+export function clip(text: string, chars: number): string {
   return text.length <= chars ? text : `${text.slice(0, chars - 1)}…`;
 }
 
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function sourceLabel(row: ContextRecordRow): string {
+export function sourceLabel(row: ContextRecordRow): string {
   const max = CONTEXT_SELECTION_LIMITS.referenceFieldChars;
   return `${row.sourceKind} ${clip(row.sourceId, max)}@${clip(row.sourceRevision, max)}`;
 }
@@ -215,7 +221,7 @@ function referenceLine(row: ContextRecordRow): string {
   return `- record ${row.id}: ${row.classification}, ${sourceLabel(row)}`;
 }
 
-function manifestSource(row: ContextRecordRow): ContextManifestSource {
+export function manifestSource(row: ContextRecordRow): ContextManifestSource {
   return {
     recordId: row.id,
     version: row.version,
@@ -563,6 +569,7 @@ export async function selectContext(
     status: "ok",
     pack: selected.memoryText,
     recent,
+    ranked: ranked.flatMap((item) => (item.kind === "record" ? [item.row] : [])),
     manifest: {
       scope: { ...namespace },
       audience: audienceLineage(audience),

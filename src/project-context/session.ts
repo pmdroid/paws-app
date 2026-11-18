@@ -12,7 +12,7 @@ import {
   type Db,
 } from "../db";
 import type { LinearMembershipReads } from "../linear";
-import type { ContextBudgetSettings, ContextModelBudget } from "./budget";
+import { tokenCounter, type ContextBudgetSettings, type ContextModelBudget } from "./budget";
 import {
   compactContext,
   createContextCapacity,
@@ -25,6 +25,7 @@ import {
   type AnsweredDecision,
   type AnsweredDecisionOutcome,
 } from "./decision";
+import { MEMORY_INDEX_LIMITS, renderMemoryIndex } from "./memory-index";
 import { ingestLinearProjectContext, type ProjectContextReads } from "./linear";
 import {
   audienceLineage,
@@ -52,7 +53,10 @@ export const CONTEXT_SESSION_NOTICE =
 export const CONTEXT_SESSION_UNAVAILABLE =
   "Project context is not included in this session. Ask in the conversation if the task needs project background.";
 
-export type ContextConsumerRequest = ContextSelectionRequest & { readonly consumerKey: string };
+export type ContextConsumerRequest = ContextSelectionRequest & {
+  readonly consumerKey: string;
+  readonly index?: { readonly tokens: number; readonly appendix?: string };
+};
 
 export type SessionContext = {
   readonly status: "injected" | "withheld";
@@ -113,16 +117,27 @@ async function selectAndSave(
   if (selection.status === "invalid_budget") return withhold(db, request, "invalid_budget");
   if (selection.status === "unavailable") return withhold(db, request, selection.reason);
   if (selection.pack === "") return withhold(db, request, "empty");
-  const text = `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`;
+  let text = `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`;
+  let manifest = selection.manifest;
+  if (request.index) {
+    if (selection.ranked.length === 0) return withhold(db, request, "empty");
+    const count = tokenCounter(request.model);
+    const appendix = request.index.appendix ? count(`\n\n${request.index.appendix}`) : 0;
+    ({ text, manifest } = renderMemoryIndex(
+      selection,
+      { tokens: request.index.tokens - appendix, trailer: CONTEXT_SESSION_NOTICE },
+      count,
+    ));
+  }
   const version = await saveContextSession(db, {
     consumerKey: request.consumerKey,
     namespace: request.namespace,
     requesterId: request.requester.userId,
     audience: request.destination.audience,
-    generation: selection.manifest.generation,
+    generation: manifest.generation,
     status: "injected",
     packHash: hash(text),
-    manifest: selection.manifest,
+    manifest,
     now: request.now,
   });
   return {
@@ -130,7 +145,7 @@ async function selectAndSave(
     text,
     recent: selection.recent,
     version,
-    manifest: selection.manifest,
+    manifest,
   };
 }
 
@@ -371,6 +386,7 @@ export type ProjectSessionInput = {
   readonly repository?: string;
   readonly ref?: string;
   readonly model?: ContextModelBudget;
+  readonly appendix?: string;
   readonly signal?: AbortSignal;
 };
 
@@ -396,6 +412,7 @@ export function createProjectSessionContext(options: {
   settings?: Partial<ContextBudgetSettings>;
   model?: ContextModelBudget;
   refreshMs?: number;
+  memoryIndex?: boolean;
   now?: () => number;
 }): ProjectSessionContext {
   const now = options.now ?? Date.now;
@@ -459,6 +476,14 @@ export function createProjectSessionContext(options: {
         ...(input.ref ? { ref: input.ref } : {}),
         model: input.model ?? options.model ?? PROJECT_SESSION_DEFAULTS.model,
         ...(options.settings ? { settings: options.settings } : {}),
+        ...(options.memoryIndex
+          ? {
+              index: {
+                tokens: MEMORY_INDEX_LIMITS.tokens,
+                ...(input.appendix ? { appendix: input.appendix } : {}),
+              },
+            }
+          : {}),
         now: now(),
       };
       let prepared = await prepareSessionContext(options.db, options.access, request);
