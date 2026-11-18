@@ -10184,6 +10184,7 @@ export class Orchestrator {
         instructions: "",
         request,
         toolsTokens: Math.ceil((task.length - request.length) / 2),
+        appendix: PROJECT_MEMORY_NOTE,
       });
       if (prepared.status === "injected" || prepared.reason === "empty")
         return { source: "context", text: prepared.text };

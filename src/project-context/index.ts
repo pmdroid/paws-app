@@ -126,6 +126,7 @@ export {
   type ContextViewSummary,
 } from "./view";
 export { createProjectContextHttp } from "./http";
+export { MEMORY_INDEX_HEADER, MEMORY_INDEX_LIMITS } from "./memory-index";
 export {
   recordAnsweredDecision,
   type AnsweredDecision,
