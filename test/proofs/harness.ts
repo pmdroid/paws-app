@@ -381,6 +381,7 @@ export type ProofContext = {
   pushToMain(path: string, content: string, message: string): Promise<void>;
   storedReviewFindings(): Promise<number>;
   closeoutReports(): string[];
+  hostTools(launch: LaunchInput): string[];
   heldWork(): Promise<{ activeRuns: number; reservations: number; runningJobs: number }>;
   ageCandidate(): Promise<boolean>;
   delegate(): Promise<void>;
@@ -589,6 +590,15 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         if (!existsSync(file)) return [];
         return (JSON.parse(readFileSync(file, "utf8")) as { closeouts?: string[] }).closeouts ?? [];
       }),
+    hostTools(input) {
+      const file = join(dir, `agent-${launches.indexOf(input) + 1}-result.json`);
+      if (!existsSync(file)) return [];
+      const { mcpServers } = JSON.parse(readFileSync(file, "utf8")) as {
+        mcpServers: { env?: { name: string; value: string }[] }[];
+      };
+      const tools = mcpServers[0]?.env?.find((entry) => entry.name === "PAWS_HOST_TOOLS");
+      return tools ? tools.value.split(",") : [];
+    },
     heldWork: async () => ({
       activeRuns: await count(
         (q) => q.t.run,

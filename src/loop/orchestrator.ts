@@ -3972,7 +3972,7 @@ export class Orchestrator {
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
-        brief: await this.workContext(item),
+        brief: await this.workContext(item, true),
         hiddenPaths: checkout.agent,
         ...(turnHandoff ? { handoff: turnHandoff } : {}),
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
@@ -10068,9 +10068,46 @@ export class Orchestrator {
     }
   }
 
-  private async workContext(item: WorkItemRecord): Promise<string> {
+  private async workContext(item: WorkItemRecord, work = false): Promise<string> {
+    return (await this.workBriefs(item))[work ? "work" : "brief"];
+  }
+
+  private async workBriefs(item: WorkItemRecord): Promise<{ brief: string; work: string }> {
     const projectContext = await this.projectContextFor(item);
-    return this.store.run((q) => this.workContextSteps(q, item, projectContext));
+    const memory = projectContext.source === "context" && !!(await this.rememberFor(item));
+    const brief = await this.store.run((q) => this.workContextSteps(q, item, projectContext));
+    const work = memory
+      ? await this.store.run((q) => this.workContextSteps(q, item, projectContext, true))
+      : brief;
+    return { brief, work };
+  }
+
+  private async projectScope(
+    item: WorkItemRecord,
+  ): Promise<
+    { organizationId: string; projectId: string; requesterId: string } | "none" | "withheld"
+  > {
+    const resolved = (await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id)))?.resolved[
+      "projectId"
+    ];
+    const projectId = item.linearProjectId ?? (typeof resolved === "string" ? resolved : null);
+    if (!projectId) return "none";
+    const session = item.sessionKey
+      ? await this.store.run((q) => getLinearSessionSteps(q, item.sessionKey!))
+      : null;
+    if (!session?.organizationId || !session.creatorId) return "withheld";
+    return { organizationId: session.organizationId, projectId, requesterId: session.creatorId };
+  }
+
+  private async rememberFor(item: WorkItemRecord): Promise<RunAgentOptions["remember"]> {
+    const service = this.options.projectContext;
+    if (!service?.remember) return undefined;
+    const mode = await this.store.run((q) => getTaskModeSteps(q, item.id));
+    if (mode !== null && mode !== "code") return undefined;
+    const scope = await this.projectScope(item);
+    if (typeof scope === "string") return undefined;
+    return (operations) =>
+      service.remember!({ workItemId: item.id, ...scope, operations, now: this.now() });
   }
 
   /**
@@ -10135,22 +10172,15 @@ export class Orchestrator {
     const service = this.options.projectContext;
     if (!service) return LEGACY_PROJECT_OVERVIEW;
     try {
-      const resolved = (await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id)))
-        ?.resolved["projectId"];
-      const projectId = item.linearProjectId ?? (typeof resolved === "string" ? resolved : null);
-      if (!projectId) return LEGACY_PROJECT_OVERVIEW;
-      const session = item.sessionKey
-        ? await this.store.run((q) => getLinearSessionSteps(q, item.sessionKey!))
-        : null;
-      if (!session?.organizationId || !session.creatorId) return CONTEXT_WITHHELD;
+      const scope = await this.projectScope(item);
+      if (scope === "none") return LEGACY_PROJECT_OVERVIEW;
+      if (scope === "withheld") return CONTEXT_WITHHELD;
       const turns = await this.store.run((q) => listLinearTurnsForItemSteps(q, item.id));
       const task = [renderWorkBrief(item.brief), ...turns.map((turn) => turn.body)].join("\n\n");
       const request = task.slice(0, PROJECT_CONTEXT_REQUEST_CHARS);
       const prepared = await service.prepare({
         consumerKey: `work_item:${item.id}`,
-        organizationId: session.organizationId,
-        projectId,
-        requesterId: session.creatorId,
+        ...scope,
         instructions: "",
         request,
         toolsTokens: Math.ceil((task.length - request.length) / 2),
@@ -10174,6 +10204,7 @@ export class Orchestrator {
     q: Q,
     item: WorkItemRecord,
     projectContext: ProjectOverviewSource = LEGACY_PROJECT_OVERVIEW,
+    memory = false,
   ): Steps<string> {
     const taskKey = yield* itemParentTaskKeySteps(q, item.id);
     const classification = taskKey ? yield* getTaskClassificationSteps(q, taskKey) : null;
@@ -10182,12 +10213,15 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    const projectOverview =
+    const overview =
       projectContext.source === "context"
         ? projectContext.text
         : (((yield* getTaskLinearReadSteps(q, item.id, "project_overview")) as
             | string
             | undefined) ?? "");
+    const projectOverview = memory
+      ? [overview, PROJECT_MEMORY_NOTE].filter(Boolean).join("\n\n")
+      : overview;
     const userUpdates = (yield* listLinearTurnsForItemSteps(q, item.id)).map((turn) => turn.body);
     const sessionContext = item.sessionKey
       ? yield* getLinearSessionContextSteps(q, item.sessionKey)
@@ -10877,7 +10911,7 @@ export class Orchestrator {
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
-      brief: await this.workContext(item),
+      ...(await this.workBriefs(item).then(({ brief, work }) => ({ brief, fixBrief: work }))),
     };
   }
 
@@ -11258,6 +11292,7 @@ export class Orchestrator {
       | "runtimes"
       | "githubRead"
       | "ciRerun"
+      | "remember"
       | "suggestedFindings"
       | "reviewFindings"
     >
@@ -11270,6 +11305,10 @@ export class Orchestrator {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
     };
     if (input.role !== "implementer") return runtimes;
+    const remember =
+      input.readOnly || input.runId.startsWith("checks-")
+        ? undefined
+        : await this.rememberFor(item);
     const { home, policyRoot } = await this.closeoutHome(item);
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     const github = pull ? this.githubForRepository(repository) : null;
@@ -11277,6 +11316,7 @@ export class Orchestrator {
     const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,
+      ...(remember ? { remember } : {}),
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item)
@@ -12020,6 +12060,8 @@ function retryCount(payload: unknown): number {
 const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 const MERGE_TURN_NOTE_MS = 10 * 60_000;
 const PROJECT_CONTEXT_REQUEST_CHARS = 16_000;
+const PROJECT_MEMORY_NOTE =
+  "Project memory: the context above is what earlier Paws sessions and the project's Linear documents left for this project. Treat it as background; the issue wins when they disagree. If you learn something a future agent on this project should know (a convention, a constraint, a pitfall, an unanswered question), save it with `remember` before you finish. Keep entries short, don't save what's in the code or the issue, and don't record progress or what you changed.";
 
 type ProjectOverviewSource = { source: "legacy" } | { source: "context"; text: string };
 const LEGACY_PROJECT_OVERVIEW: ProjectOverviewSource = { source: "legacy" };

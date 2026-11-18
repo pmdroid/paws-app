@@ -81,6 +81,21 @@ Every turn, including a restart or a resumed session, builds the selection again
 
 The selection ends with a note telling the agent that the context is background only. The agent should not copy it into Linear issues, comments or pull requests unless the task needs it. A remembered decision or approval never approves an action, a tool call, a run or a new issue. Starting work still goes through delegation and the normal runner placement.
 
+## What agents may save
+
+A work turn on an issue in a Linear project, including a follow-up conversation on it, gets the `remember` tool, and the project overview in its brief ends with a note that explains project memory. Answer, plan and artifact sessions, reviewers and Closeout checks don't get the tool or the note. Neither do items outside a project, or any item when Linear isn't connected.
+
+An agent may save short facts and open questions that a later agent on the project should know: a convention, a constraint, a pitfall or a question nobody has answered. It should not save what's already in the code, the issue or the docs, task progress, or what it changed. It can't save decisions or approvals: Paws records those when a person answers a question.
+
+| Limit                       | Value                                                      |
+| --------------------------- | ---------------------------------------------------------- |
+| Operations per call         | 1 to 5, applied together or not at all                     |
+| Entry text                  | 400 characters, cleaned of secrets like every record       |
+| Entries per issue           | 10. Patch or remove an entry this issue saved to make room |
+| Entries an agent can change | Only those saved for the same issue                        |
+
+Saved entries are records of the issue as a Paws task source, with the project's access restriction. They follow the same access checks, forgetting, expiry and caps as every other record.
+
 Preparing a selection, compacting it, inspecting what a session received, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
 
 ## Using project context from another consumer

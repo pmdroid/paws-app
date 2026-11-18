@@ -87,11 +87,12 @@ async function runtimesFor(
       orchestrator as unknown as {
         trustedRunInputs(
           item: WorkItemRecord,
-          input: { role: string; worktreePath: string; readOnly: boolean },
+          input: { role: string; runId: string; worktreePath: string; readOnly: boolean },
         ): Promise<{ runtimes?: () => Promise<RuntimeList> }>;
       }
     ).trustedRunInputs((await getWorkItem(db, "task"))!, {
       role: "implementer",
+      runId: "run",
       worktreePath: options.worktreePath,
       readOnly: options.mode !== "code",
     });

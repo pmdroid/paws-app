@@ -209,6 +209,26 @@ export default {
           prompt.indexOf(CONTEXT_PACK_HEADER),
       null,
     );
+    proof.expect(
+      "the work turn's project overview ends with the project memory note",
+      prompt.includes(
+        "Project memory: the context above is what earlier Paws sessions and the project's Linear documents left for this project.",
+      ) && prompt.indexOf(CONTEXT_PACK_HEADER) < prompt.indexOf("Project memory:"),
+      prompt.slice(prompt.indexOf("Project memory:"), prompt.indexOf("Project memory:") + 200),
+    );
+    proof.expect(
+      "the work turn lists remember in PAWS_HOST_TOOLS, and no reviewer gets the tool or the note",
+      first !== undefined &&
+        proof.hostTools(first).includes("remember") &&
+        proof.launches
+          .filter((launch) => launch.role === "reviewer")
+          .every(
+            (launch) =>
+              !proof.hostTools(launch).includes("remember") &&
+              !launch.prompt.includes("Project memory:"),
+          ),
+      proof.launches.map((launch) => [launch.purpose, proof.hostTools(launch)]),
+    );
     const leaked = CANARIES.filter((canary) => prompt.includes(canary));
     proof.expect(
       "no other project, workspace, private source or channel canary reached the prompt",
