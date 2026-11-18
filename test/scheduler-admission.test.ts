@@ -318,6 +318,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
       busySlots: 2,
       totalSlots: 2,
       ownerCap: null,
+      waitingFor: null,
     });
 
     // A slot frees and the first item starts: everyone behind it moves up.

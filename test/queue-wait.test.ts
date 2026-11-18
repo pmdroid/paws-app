@@ -388,9 +388,9 @@ describePglite((open) => {
       for (const id of ["a", "b", "c"]) await insertWorkItem(db, id);
       await saveQueuePositions(db, ["a", "b", "c"], { busy: 2, total: 2 }, 1, new Map([["c", 3]]));
       expect(await listQueuePositions(db)).toEqual([
-        { itemId: "a", position: 1, busySlots: 2, totalSlots: 2, ownerCap: null },
-        { itemId: "b", position: 2, busySlots: 2, totalSlots: 2, ownerCap: null },
-        { itemId: "c", position: 3, busySlots: 2, totalSlots: 2, ownerCap: 3 },
+        { itemId: "a", position: 1, busySlots: 2, totalSlots: 2, ownerCap: null, waitingFor: null },
+        { itemId: "b", position: 2, busySlots: 2, totalSlots: 2, ownerCap: null, waitingFor: null },
+        { itemId: "c", position: 3, busySlots: 2, totalSlots: 2, ownerCap: 3, waitingFor: null },
       ]);
       await saveQueuePositions(db, ["c", "b"], { busy: 1, total: 2 }, 2);
       expect(await getQueuePosition(db, "b")).toEqual({
@@ -399,6 +399,7 @@ describePglite((open) => {
         busySlots: 1,
         totalSlots: 2,
         ownerCap: null,
+        waitingFor: null,
       });
       expect(await getQueuePosition(db, "a")).toBeNull();
       await saveQueuePositions(db, ["a"], null, 3);

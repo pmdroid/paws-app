@@ -1,0 +1,1 @@
+ALTER TABLE "queue_position" ADD COLUMN "waiting_for" jsonb;
