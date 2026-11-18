@@ -125,6 +125,11 @@ export {
 } from "./view";
 export { createProjectContextHttp } from "./http";
 export {
+  recordAnsweredDecision,
+  type AnsweredDecision,
+  type AnsweredDecisionOutcome,
+} from "./decision";
+export {
   PROJECT_MEMORY_UNAVAILABLE,
   REMEMBER_ENTRIES_PER_ITEM,
   rememberWorkItemContext,

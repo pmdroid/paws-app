@@ -20,6 +20,11 @@ import {
   type ContextCapacity,
   type ContextSummarizer,
 } from "./compact";
+import {
+  recordAnsweredDecision,
+  type AnsweredDecision,
+  type AnsweredDecisionOutcome,
+} from "./decision";
 import { ingestLinearProjectContext, type ProjectContextReads } from "./linear";
 import {
   audienceLineage,
@@ -369,6 +374,7 @@ export type ProjectSessionInput = {
 
 export type ProjectSessionContext = {
   prepare(input: ProjectSessionInput): Promise<SessionContext>;
+  recordDecision(input: AnsweredDecision): Promise<AnsweredDecisionOutcome>;
 };
 
 export const PROJECT_SESSION_DEFAULTS = {
@@ -423,6 +429,7 @@ export function createProjectSessionContext(options: {
     return current !== null && canSee(current, state.restriction);
   }
   return {
+    recordDecision: (input) => recordAnsweredDecision(options.db, options.access, input),
     async prepare(input) {
       const namespace: ContextNamespace = {
         workspaceId: input.organizationId,
