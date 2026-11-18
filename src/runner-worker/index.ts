@@ -50,6 +50,11 @@ import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
+import {
+  collectOpenCodeCredential,
+  migrateOpenCodeDatabase,
+  placeOpenCodeCredential,
+} from "./opencode-credential";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
@@ -85,6 +90,7 @@ import {
   providerCliPath,
   type PolicyFilesLoad,
   withoutGitHubReadPrompt,
+  resolveOpencodeCommand,
 } from "../acp";
 import {
   shareAgentConfigFolders,
@@ -873,11 +879,13 @@ export async function executeRunnerCommand(
       })
     : options.home;
   let credentialsReturned = false;
+  let placedOpenCode: string | null = null;
   const returnCredentials = (signingIn = false) => {
     const recipient = job.credentials?.certificate;
     if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
     try {
+      if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
       returnRunnerAgentCredentials(
         home,
         binding.agent,
@@ -1369,6 +1377,10 @@ export async function executeRunnerCommand(
     const closeoutBasePath = withAgentBin(agentEnv.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     agentEnv.PATH = withAgentBin(prependRuntimePath(installed.binPaths, agentEnv.PATH));
+    if (binding)
+      placedOpenCode = await placeOpenCodeCredential(home, binding.agent, () =>
+        migrateOpenCodeDatabase(resolveOpencodeCommand().command, home, agentEnv),
+      );
     const toolchainQuestion =
       command.type === "run" && !installed.failure
         ? missingToolchainQuestion(worktree, agentEnv.PATH ?? "")
