@@ -43,17 +43,21 @@ export function fakeCodexOAuth(now: () => number) {
   };
 }
 export function fakeOpencodeConsole() {
-  const calls: { path: string; body: Record<string, unknown> }[] = [];
-  let state = "authorization_pending";
+  const calls: { path: string; body: Record<string, unknown>; authorization: string | null }[] = [];
+  const polls = ["authorization_pending", "slow_down"];
+  let final = "approved";
   let generation = 0;
   let refreshToken = "";
+  let orgId: string | undefined = "org-b";
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(request) {
       const path = new URL(request.url).pathname;
-      const body = (await request.json()) as Record<string, unknown>;
-      calls.push({ path, body });
+      const authorization = request.headers.get("authorization");
+      const body =
+        request.method === "POST" ? ((await request.json()) as Record<string, unknown>) : {};
+      calls.push({ path, body, authorization });
       if (path === "/console/auth/device/code")
         return Response.json({
           device_code: "device-secret",
@@ -62,24 +66,41 @@ export function fakeOpencodeConsole() {
           expires_in: 600,
           interval: 5,
         });
+      const bearer = authorization === "Bearer access-secret-" + generation;
+      if (path === "/console/api/user")
+        return bearer
+          ? Response.json({ id: "user-1", email: "person@test.invalid" })
+          : new Response(null, { status: 401 });
+      if (path === "/console/api/orgs")
+        return bearer
+          ? Response.json([
+              { id: "org-c", name: "Zeta" },
+              { id: "org-b", name: "Beta" },
+              { id: "org-a", name: "Beta" },
+            ])
+          : new Response(null, { status: 401 });
       if (body.grant_type === "refresh_token" && body.refresh_token !== refreshToken)
         return Response.json({ error: "invalid_grant" }, { status: 400 });
-      if (body.grant_type !== "refresh_token" && state !== "approved")
-        return Response.json({ error: state }, { status: 400 });
+      if (body.grant_type !== "refresh_token") {
+        const state = polls.shift() ?? final;
+        if (state !== "approved") return Response.json({ error: state }, { status: 400 });
+      }
       refreshToken = "refresh-secret-" + ++generation;
       return Response.json({
         access_token: "access-secret-" + generation,
         refresh_token: refreshToken,
         expires_in: 3600,
+        ...(orgId ? { org_id: orgId } : {}),
       });
     },
   });
   return {
     calls,
     server: server.url.origin + "/console",
-    approve: () => (state = "approved"),
-    deny: () => (state = "access_denied"),
-    expire: () => (state = "expired_token"),
+    deny: () => ((polls.length = 0), (final = "access_denied")),
+    expire: () => ((polls.length = 0), (final = "expired_token")),
+    org: (id: string | undefined) => (orgId = id),
+    revoke: () => (refreshToken = "revoked"),
     close: () => server.stop(true),
   };
 }

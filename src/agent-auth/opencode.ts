@@ -1,15 +1,31 @@
 import { z } from "zod";
 import type { AuthProvider } from "./codex";
-export type OpencodeTokens = { access: string; refresh: string; expiresAt: number };
+const metadata = z.object({
+  server: z.string(),
+  accountID: z.string(),
+  email: z.string(),
+  orgID: z.string().optional(),
+  orgName: z.string().optional(),
+});
+export type OpencodeTokens = {
+  access: string;
+  refresh: string;
+  expiresAt: number;
+  metadata: z.infer<typeof metadata>;
+};
 const CLIENT = "opencode-cli";
-const PATH = ".local/share/opencode/auth.json";
+const PATH = ".paws/opencode-credential.json";
 const granted = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1),
   expires_in: z.number().finite().positive(),
+  org_id: z.string().min(1).nullish(),
 });
 const stored = z.object({
-  opencode: z.object({ type: z.literal("oauth"), access: z.string(), refresh: z.string() }),
+  type: z.literal("oauth"),
+  access: z.string(),
+  refresh: z.string(),
+  metadata,
 });
 export function createOpencodeProvider(
   server = "https://opencode.ai/console",
@@ -24,11 +40,34 @@ export function createOpencodeProvider(
       body: JSON.stringify(body),
     });
   }
-  function tokens(value: z.infer<typeof granted>): OpencodeTokens {
+  async function get(path: string, access: string) {
+    const response = await fetch(server + path, {
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+      headers: { accept: "application/json", authorization: `Bearer ${access}` },
+    });
+    if (!response.ok) throw new Error("OpenCode account lookup failed");
+    return response.json();
+  }
+  async function signedIn(value: z.infer<typeof granted>): Promise<OpencodeTokens> {
+    const user = z
+      .object({ id: z.string().min(1), email: z.string() })
+      .parse(await get("/api/user", value.access_token));
+    const orgs = z
+      .array(z.object({ id: z.string().min(1), name: z.string() }))
+      .parse(await get("/api/orgs", value.access_token))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    const org = orgs.find((entry) => entry.id === value.org_id) ?? orgs[0];
     return {
       access: value.access_token,
       refresh: value.refresh_token,
       expiresAt: now() + value.expires_in * 1000,
+      metadata: {
+        server,
+        accountID: user.id,
+        email: user.email,
+        ...(org ? { orgID: org.id, orgName: org.name } : {}),
+      },
     };
   }
   return {
@@ -68,11 +107,12 @@ export function createOpencodeProvider(
       const body = await response.json().catch(() => null);
       const success = granted.safeParse(body);
       if (response.ok && success.success)
-        return { state: "signed-in", tokens: tokens(success.data) };
+        return { state: "signed-in", tokens: await signedIn(success.data) };
       const error = z.object({ error: z.string() }).safeParse(body);
       if (!error.success) throw new Error("OpenCode device poll failed");
-      if (["authorization_pending", "slow_down"].includes(error.data.error))
-        return { state: "pending" };
+      if (error.data.error === "authorization_pending") return { state: "pending" };
+      if (error.data.error === "slow_down")
+        return { state: "pending", interval: Math.min(device.interval + 5, 900) };
       if (error.data.error === "access_denied") return { state: "denied" };
       if (error.data.error === "expired_token") return { state: "expired" };
       throw new Error("OpenCode device poll failed");
@@ -84,23 +124,27 @@ export function createOpencodeProvider(
         client_id: CLIENT,
       });
       if (!response.ok) throw new Error("OpenCode token refresh failed");
-      return tokens(granted.parse(await response.json()));
+      const value = granted.parse(await response.json());
+      return {
+        access: value.access_token,
+        refresh: value.refresh_token,
+        expiresAt: now() + value.expires_in * 1000,
+        metadata: { ...previous.metadata, ...(value.org_id ? { orgID: value.org_id } : {}) },
+      };
     },
     storedTokens(files) {
       const file = files.find((entry) => entry.path === PATH);
-      const { opencode } = stored.parse(
-        JSON.parse(Buffer.from(file?.data ?? "", "base64").toString()),
-      );
-      return { access: opencode.access, refresh: opencode.refresh };
+      const value = stored.parse(JSON.parse(Buffer.from(file?.data ?? "", "base64").toString()));
+      return { access: value.access, refresh: value.refresh, metadata: value.metadata };
     },
     credentialFiles(value) {
       const json = JSON.stringify({
-        opencode: {
-          type: "oauth",
-          refresh: value.refresh,
-          access: value.access,
-          expires: value.expiresAt,
-        },
+        type: "oauth",
+        methodID: "device",
+        access: value.access,
+        refresh: value.refresh,
+        expires: value.expiresAt,
+        metadata: value.metadata,
       });
       return [{ path: PATH, data: Buffer.from(json).toString("base64") }];
     },

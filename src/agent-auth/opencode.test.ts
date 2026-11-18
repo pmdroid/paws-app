@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tempStore } from "../../test/pglite";
 import { seed } from "../../test/pglite-fixtures";
-import { agentCredentialCiphertextSteps, createAgentAccountSteps } from "../db";
+import {
+  agentAccountOverviewSteps,
+  agentCredentialCiphertextSteps,
+  centralAgentAccountsSteps,
+  createAgentAccountSteps,
+} from "../db";
 import { readAgentCredentialSteps } from "../credentials";
 import { accessCredentialExpiry, accessCredentialFiles } from "../runner-protocol";
 import { createAgentAuth, createOpencodeProvider } from "./index";
@@ -77,7 +82,7 @@ async function setup() {
   };
   return { db, fake, auth, id: account.id, now, file, advance: (ms: number) => (time += ms) };
 }
-test("an OpenCode device sign-in with no runner online writes the CLI auth file and binds the owner's runners", async () => {
+test("an OpenCode device sign-in with no runner online stores the credential and binds the owner's runners", async () => {
   const s = await setup();
   const device = await s.auth.device("workspace", s.id, true);
   expect(device).toEqual({
@@ -87,7 +92,7 @@ test("an OpenCode device sign-in with no runner online writes the CLI auth file 
     expiresAt: s.now() + 600_000,
   });
   expect(JSON.stringify(device)).not.toContain("device-secret");
-  expect(s.fake.calls[0]).toEqual({
+  expect(s.fake.calls[0]).toMatchObject({
     path: "/console/auth/device/code",
     body: { client_id: "opencode-cli", supports_org_scope: true },
   });
@@ -98,23 +103,37 @@ test("an OpenCode device sign-in with no runner online writes the CLI auth file 
     device_code: "device-secret",
     client_id: "opencode-cli",
   });
-  s.fake.approve();
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+  expect(s.fake.calls).toHaveLength(3);
   s.advance(5000);
   expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "signed-in" });
+  expect(s.fake.calls.slice(4).map((call) => [call.path, call.authorization])).toEqual([
+    ["/console/api/user", "Bearer access-secret-1"],
+    ["/console/api/orgs", "Bearer access-secret-1"],
+  ]);
   const stored = await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id));
   expect(stored!.ciphertext).not.toContain("secret");
   const { files, auth } = await s.file();
-  expect(files[0]!.path).toBe(".local/share/opencode/auth.json");
+  expect(files.map((entry) => entry.path)).toEqual([".paws/opencode-credential.json"]);
   expect(auth).toEqual({
-    opencode: {
-      type: "oauth",
-      refresh: "refresh-secret-1",
-      access: "access-secret-1",
-      expires: s.now() + 3_600_000,
+    type: "oauth",
+    methodID: "device",
+    access: "access-secret-1",
+    refresh: "refresh-secret-1",
+    expires: s.now() + 3_600_000,
+    metadata: {
+      server: s.fake.server,
+      accountID: "user-1",
+      email: "person@test.invalid",
+      orgID: "org-b",
+      orgName: "Beta",
     },
   });
   const access = accessCredentialFiles(JSON.stringify(files));
-  expect(JSON.parse(Buffer.from(access[0]!.data, "base64").toString()).opencode.refresh).toBe("");
+  expect(JSON.parse(Buffer.from(access[0]!.data, "base64").toString()).refresh).toBe("");
   expect(accessCredentialExpiry(access)).toBe(s.now() + 3_600_000);
   expect(accessCredentialExpiry(files)).toBeNull();
   const bindings = await s.db.run((q) =>
@@ -126,6 +145,7 @@ test("an OpenCode device sign-in with no runner online writes the CLI auth file 
     ),
   );
   expect(bindings).toEqual([{ runnerId: "offline" }]);
+  s.fake.org("org-c");
   s.advance(3_000_000);
   await s.auth.tick();
   expect(s.fake.calls.at(-1)!.body).toEqual({
@@ -133,11 +153,35 @@ test("an OpenCode device sign-in with no runner online writes the CLI auth file 
     refresh_token: "refresh-secret-1",
     client_id: "opencode-cli",
   });
-  expect((await s.file()).auth.opencode).toMatchObject({
-    refresh: "refresh-secret-2",
+  expect((await s.file()).auth).toMatchObject({
     access: "access-secret-2",
+    refresh: "refresh-secret-2",
     expires: s.now() + 3_600_000,
+    metadata: { accountID: "user-1", orgID: "org-c" },
   });
+  expect(await s.db.run((q) => centralAgentAccountsSteps(q, "workspace", "opencode"))).toHaveLength(
+    1,
+  );
+  s.fake.revoke();
+  s.advance(3_000_000);
+  await s.auth.tick();
+  expect(s.fake.calls.at(-1)!.body.refresh_token).toBe("refresh-secret-2");
+  expect(await s.db.run((q) => centralAgentAccountsSteps(q, "workspace", "opencode"))).toHaveLength(
+    0,
+  );
+  expect(
+    (await s.db.run((q) => agentAccountOverviewSteps(q, "workspace", s.now())))[0]!.credential,
+  ).toBeNull();
+});
+test("an OpenCode sign-in picks the first org by name then id when the token names none", async () => {
+  const s = await setup();
+  s.fake.org(undefined);
+  await s.auth.device("workspace", s.id, true);
+  for (const _ of [1, 2, 3]) {
+    s.advance(10_000);
+    await s.auth.device("workspace", s.id, false);
+  }
+  expect((await s.file()).auth.metadata).toMatchObject({ orgID: "org-a", orgName: "Beta" });
 });
 for (const outcome of ["denied", "expired"] as const)
   test(`an OpenCode sign-in that is ${outcome} stores nothing`, async () => {

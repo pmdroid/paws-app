@@ -8,7 +8,8 @@ export type Device = {
   deviceId: string;
 };
 export type DeviceResult<T = Tokens> =
-  | { state: "pending" | "denied" | "expired" }
+  | { state: "pending"; interval?: number }
+  | { state: "denied" | "expired" }
   | { state: "signed-in"; tokens: T };
 type Files = { path: string; data: string }[];
 export interface AuthProvider<T extends { expiresAt: number } = Tokens> {

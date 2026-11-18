@@ -111,10 +111,15 @@ export function createAgentAuth(options: {
       if (!locked) return { state: "pending" };
       try {
         const result = await provider.pollDevice(state.device!);
+        const device = {
+          ...state.device!,
+          interval: ("interval" in result && result.interval) || state.device!.interval,
+        };
         const next: State = {
           ...state,
+          device,
           state: result.state,
-          nextPoll: now() + state.device!.interval * 1000,
+          nextPoll: now() + device.interval * 1000,
         };
         if (result.state !== "pending") delete next.device;
         if (result.state === "signed-in") {

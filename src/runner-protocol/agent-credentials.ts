@@ -19,7 +19,7 @@ export const RUNNER_AGENT_CREDENTIAL_FILES: Record<RunnerCodingAgent, readonly s
   claude: [".claude/.credentials.json", ".claude/.claude.json", ".claude/paws-oauth.json"],
   codex: [".codex/auth.json"],
   grok: [".grok/auth.json"],
-  opencode: [".local/share/opencode/auth.json"],
+  opencode: [".local/share/opencode/auth.json", ".paws/opencode-credential.json"],
 };
 
 export const RunnerAgentCredentialFilesSchema = z
@@ -104,14 +104,14 @@ export function agentCredentialReturnContext(executionId: string) {
   return `paws-agent-credential-return:${executionId}`;
 }
 
-const OPENCODE_AUTH = ".local/share/opencode/auth.json";
+const OPENCODE_AUTH = ".paws/opencode-credential.json";
 
 export function accessCredentialFiles(blob: string): RunnerAgentCredentialFiles {
   return RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)).map((file) => {
     if (file.path !== ".codex/auth.json" && file.path !== OPENCODE_AUTH)
       throw new Error("Unsupported central credential");
     const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
-    if (file.path === OPENCODE_AUTH) auth.opencode.refresh = "";
+    if (file.path === OPENCODE_AUTH) auth.refresh = "";
     else auth.tokens.refresh_token = "";
     return { ...file, data: Buffer.from(JSON.stringify(auth)).toString("base64") };
   });
@@ -121,9 +121,9 @@ export function accessCredentialExpiry(files: RunnerAgentCredentialFiles): numbe
   const opencode = files.find((entry) => entry.path === OPENCODE_AUTH);
   if (opencode) {
     const auth = JSON.parse(Buffer.from(opencode.data, "base64").toString());
-    if (auth.opencode?.type !== "oauth" || auth.opencode.refresh !== "") return null;
-    if (!Number.isFinite(auth.opencode.expires)) throw new Error("Missing access token expiry");
-    return auth.opencode.expires;
+    if (auth.type !== "oauth" || auth.refresh !== "") return null;
+    if (!Number.isFinite(auth.expires)) throw new Error("Missing access token expiry");
+    return auth.expires;
   }
   const file = files.find((entry) => entry.path === ".codex/auth.json");
   if (!file) return null;
