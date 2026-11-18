@@ -4,6 +4,7 @@ import {
   currentContextRecords,
   readLinearProjectName,
   listWorkItemProjects,
+  workItemIdentifiersInProject,
   listContextPage,
   listContextSummaries,
   type ContextClassification,
@@ -19,7 +20,14 @@ import {
   type ContextRequester,
   type ContextRequesterAccess,
 } from "./policy";
-import { disclosable, inspectContext, view, type ContextRecordView } from "./store";
+import { AGENT_REVISION } from "./remember";
+import {
+  disclosable,
+  forgetContextRecord,
+  inspectContext,
+  view,
+  type ContextRecordView,
+} from "./store";
 
 export const CONTEXT_VIEW_LIMITS = {
   pageDefault: 25,
@@ -42,6 +50,7 @@ export type ContextViewSource = {
   id: string;
   url: string | null;
   revision: string;
+  label: string;
 };
 
 export type ContextViewRecord = {
@@ -54,6 +63,7 @@ export type ContextViewRecord = {
   corrected: boolean;
   observedAt: number;
   source: ContextViewSource;
+  forgettable: boolean;
 };
 
 export type ContextViewSummary = {
@@ -94,11 +104,49 @@ export type ContextViewRequest = {
   readonly requester: ContextRequester;
   readonly scope: { kind: string; id: string };
   readonly now: number;
+  readonly admin?: boolean;
 };
 
 const AUDIENCE = "project_members";
 
-function viewRecord(record: ContextRecordView): ContextViewRecord {
+const WORK_ITEM_SOURCE = "paws_work_item";
+
+const SOURCE_LABELS: Record<string, string> = {
+  linear_project_description: "Linear project description",
+  linear_project_document: "Linear document",
+};
+
+type Labels = (source: ContextRecordView["source"]) => string;
+
+async function sourceLabels(
+  db: Db,
+  namespace: ContextNamespace,
+  sources: readonly ContextRecordView["source"][],
+): Promise<Labels> {
+  const identifiers = await workItemIdentifiersInProject(
+    db,
+    namespace,
+    sources.filter((source) => source.kind === WORK_ITEM_SOURCE).map((source) => source.id),
+  );
+  return (source) => {
+    if (source.kind !== WORK_ITEM_SOURCE) return SOURCE_LABELS[source.kind] ?? "Source";
+    const identifier = identifiers.get(source.id);
+    if (!identifier) return "Work item memory";
+    return source.revision.startsWith(AGENT_REVISION)
+      ? `Agent on ${identifier}`
+      : `Work item memory on ${identifier}`;
+  };
+}
+
+const viewSource = (source: ContextRecordView["source"], labels: Labels): ContextViewSource => ({
+  kind: source.kind,
+  id: source.id,
+  url: source.url,
+  revision: source.revision,
+  label: labels(source),
+});
+
+function viewRecord(record: ContextRecordView, labels: Labels, admin: boolean): ContextViewRecord {
   const clipped = record.body.length > CONTEXT_VIEW_LIMITS.textChars;
   return {
     id: record.id,
@@ -111,7 +159,8 @@ function viewRecord(record: ContextRecordView): ContextViewRecord {
     status: record.status === "superseded" ? "superseded" : "current",
     corrected: record.correctedBy !== null,
     observedAt: record.observedAt,
-    source: { ...record.source },
+    source: viewSource(record.source, labels),
+    forgettable: admin && record.source.kind === WORK_ITEM_SOURCE && record.status === "current",
   };
 }
 
@@ -197,7 +246,7 @@ export async function readContextView(
         currentOnly: true,
         classifications: [classification],
       }),
-    ).map(viewRecord);
+    );
   const [latest] = readable(
     await listContextPage(db, { namespace, visibility, now, offset: 0, limit: 1 }),
   );
@@ -212,7 +261,9 @@ export async function readContextView(
       sourceKinds: ["linear_project_description"],
     }),
   );
-  const summaries: ContextViewSummary[] = [];
+  const summaries: (Omit<ContextViewSummary, "sources"> & {
+    sources: ContextRecordView["source"][];
+  })[] = [];
   for (const summary of await listContextSummaries(db, {
     namespace,
     now,
@@ -243,6 +294,15 @@ export async function readContextView(
       sources: [...sources.values()],
     });
   }
+  const decisions = await open("decision");
+  const questions = await open("unresolved_question");
+  const records = page.slice(0, limit);
+  const labels = await sourceLabels(db, namespace, [
+    ...[...decisions, ...questions, ...records].map((record) => record.source),
+    ...summaries.flatMap((summary) => summary.sources),
+  ]);
+  const admin = request.admin === true;
+  const shown = (rows: ContextRecordView[]) => rows.map((row) => viewRecord(row, labels, admin));
   return {
     scope: {
       kind: "project",
@@ -251,10 +311,13 @@ export async function readContextView(
       url: description?.source.url ?? null,
     },
     updatedAt: latest?.observedAt ?? null,
-    summaries,
-    decisions: await open("decision"),
-    questions: await open("unresolved_question"),
-    records: page.slice(0, limit).map(viewRecord),
+    summaries: summaries.map((summary) => ({
+      ...summary,
+      sources: summary.sources.map((source) => viewSource(source, labels)),
+    })),
+    decisions: shown(decisions),
+    questions: shown(questions),
+    records: shown(records),
     page: { offset, limit, search, more: page.length > limit },
   };
 }
@@ -275,9 +338,10 @@ export async function readContextRecord(
   });
   if (!found) return null;
   const { record } = found;
+  const labels = await sourceLabels(db, authorized.namespace, [record.source]);
   return {
     record: {
-      ...viewRecord(record),
+      ...viewRecord(record, labels, request.admin === true),
       body: record.body,
       actorId: record.actorId,
       correctedBy: record.correctedBy,
@@ -291,4 +355,20 @@ export async function readContextRecord(
       revision: version.source.revision,
     })),
   };
+}
+
+export async function forgetViewedContextRecord(
+  db: Db,
+  access: ContextAccess,
+  request: ContextViewRequest & { recordId: string },
+): Promise<boolean> {
+  const authorized = await authorize(db, access, request);
+  if (!authorized || !/^[\w-]{1,100}$/.test(request.recordId)) return false;
+  const outcome = await forgetContextRecord(db, access, {
+    namespace: authorized.namespace,
+    requester: request.requester,
+    recordId: request.recordId,
+    now: request.now,
+  });
+  return outcome.status === "forgotten";
 }

@@ -101,6 +101,8 @@ function apply(before: readonly Memory[], operations: readonly Operation[]): Mem
 
 const remembering = new Map<string, Promise<unknown>>();
 
+export const AGENT_REVISION = "remember-";
+
 export async function rememberWorkItemContext(
   db: Db,
   access: ContextAccess,
@@ -162,7 +164,7 @@ async function rememberOnce(
     requester,
     workItemId: request.workItemId,
     url: request.url ?? null,
-    revision: `remember-${request.now}`,
+    revision: `${AGENT_REVISION}${request.now}`,
     revisionAt: request.now,
     restriction: project.restriction,
     kept: [...others, ...after.flatMap((memory) => (memory.row ? [memory.row] : []))],

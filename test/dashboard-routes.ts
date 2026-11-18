@@ -198,6 +198,11 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET", "/api/context/:kind/:id/records/:record", "canonical", "PAS-2115", {
     via: "/api/context/:scope",
   }),
+  api("POST", "/api/context/:kind/:id/records/:record/forget", "canonical", "PAS-2146", {
+    via: "/api/context/:scope",
+    sample: "/api/context/project/{project}/records/{record}/forget",
+    member: 403,
+  }),
   api("GET", "/api/aliases/:kind/:id", "canonical", "PAS-902", {
     via: "/api/aliases",
     sample: "/api/aliases/runs/{run}",
