@@ -109,6 +109,14 @@ describePglite((connect) => {
             "Codex signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
         },
       });
+      const opencode = (await send("POST", "", { agent: "opencode", label: "OpenCode" })).body;
+      expect(await send("POST", `/${opencode.id}/sign-in`)).toEqual({
+        status: 400,
+        body: {
+          error:
+            "OpenCode signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+        },
+      });
       expect((await send("PUT", `/${claude.id}/token`, { token: "not-a-token" })).status).toBe(400);
       expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-bad" })).toEqual({
         status: 400,

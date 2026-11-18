@@ -182,6 +182,14 @@ export function createAccountManagement(
             },
             400,
           );
+        if (account.agent === "opencode")
+          return json(
+            {
+              error:
+                "OpenCode signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
+            },
+            400,
+          );
         return json(
           await store.transaction((q) =>
             centralSignInTargetSteps(q, {
