@@ -388,7 +388,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(12);
+    await expect(submenu).toHaveCount(13);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -421,6 +421,22 @@ try {
     });
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
+    let memory = { workSummary: false, dream: true, decisions: false };
+    await admin.route("**/api/settings/agents", async (route) => {
+      if (route.request().method() === "PUT") memory = route.request().postDataJSON().projectMemory;
+      await route.fulfill({ json: { defaults: {}, projectMemory: memory } });
+    });
+    const memoryPath = "/dashboard/workspace/project-memory";
+    await visit(admin, width, "project-memory", memoryPath, "Project memory");
+    await expect(admin.getByRole("switch", { name: "Dream" })).toBeChecked();
+    await admin.getByRole("switch", { name: "Summarize finished work" }).check();
+    await admin.getByRole("button", { name: "Save project memory settings" }).click();
+    await expect(admin.locator("#content")).toContainText("Saved.");
+    expect(memory).toEqual({ workSummary: true, dream: true, decisions: false });
+    await admin.screenshot({
+      path: join(out, `project-memory-saved-${width}.png`),
+      fullPage: true,
+    });
     await page.route("**/api/runners", (route) =>
       route.fulfill({
         json: {
