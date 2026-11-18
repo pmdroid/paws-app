@@ -7,6 +7,7 @@ import {
   type LinearInstallationRevocation,
 } from "../db";
 import {
+  clearLinearRefreshSteps,
   readStoredToken,
   writeStoredTokenSteps,
   readStoredTokenSteps,
@@ -43,7 +44,7 @@ export function createLinearReconnect(options?: {
       snapshot,
       async complete(input) {
         const candidates = revocations.filter((row) => row.oauthClientId === input.clientId);
-        if (candidates.length === 0) return false;
+        if (candidates.length === 0 && revocations.length > 0) return false;
         const next = fingerprint(input.token)!;
         if (next === previous) throw new Error("Reconnect Linear with a new authorization grant.");
         const response = await (options?.fetch ?? fetch)("https://api.linear.app/graphql", {
@@ -73,8 +74,8 @@ export function createLinearReconnect(options?: {
         )
           throw new Error("The new Linear app installation could not be verified.");
         const revoked = candidates.find((row) => row.organizationId === viewer.organization!.id);
-        if (revoked === undefined) return false;
-        if (!revoked.appUserIds.includes(viewer.id))
+        if (candidates.length > 0 && revoked === undefined) return false;
+        if (revoked && !revoked.appUserIds.includes(viewer.id))
           throw new Error(
             "The Linear app user must match a verified installation before reconnection.",
           );
@@ -82,6 +83,7 @@ export function createLinearReconnect(options?: {
           if (fingerprint(yield* readStoredTokenSteps(q, paths.secretsDir)) !== previous)
             throw new Error("The stored Linear authorization changed during reconnection.");
           if (
+            revoked &&
             !(yield* restoreLinearInstallationSteps(q, {
               organizationId: revoked.organizationId,
               oauthClientId: input.clientId,
@@ -93,6 +95,7 @@ export function createLinearReconnect(options?: {
           )
             throw new Error("Linear access changed during reconnection. Reconnect again.");
           yield* writeStoredTokenSteps(q, paths.secretsDir, input.token);
+          yield* clearLinearRefreshSteps(q);
         });
         return true;
       },

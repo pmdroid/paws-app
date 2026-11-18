@@ -254,7 +254,14 @@ export function createBrowserOnboarding(options: {
       }
     }
     if (url.pathname !== CALLBACK)
-      return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
+      return Response.json(
+        {
+          error: options.reconnect
+            ? "Linear needs reconnecting. Sign in as a workspace admin to reconnect it."
+            : "Sign in to connect your Linear workspace.",
+        },
+        { status: 401 },
+      );
     const stored = await readStoredToken(db, secretsDir);
     if (installing || (stored !== null && !options.reconnect && !options.setupToken))
       return retry("already-connected");

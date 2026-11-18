@@ -87,10 +87,12 @@ export type { IntakeQueue, LinearEventDelivery } from "./intake-queue";
 export {
   LINEAR_ACTOR,
   LINEAR_APP_SCOPES,
+  clearLinearRefreshSteps,
   createLinearAuth,
   exchangeLinearCode,
   importLinearTokenFile,
   linearAuthorizeUrl,
+  linearNeedsReconnect,
   readLinearEnv,
   readStoredToken,
   readStoredTokenSteps,

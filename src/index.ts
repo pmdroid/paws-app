@@ -233,6 +233,8 @@ import {
   linearItem,
   openLinear,
   importLinearTokenFile,
+  createLinearAuth,
+  linearNeedsReconnect,
   readStoredToken,
   parseLinearAdministration,
   parseLinearIssueClosed,
@@ -556,6 +558,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     join(paths.secretsDir, "slack-oauth.json"),
   );
   await store.run(clearUsagePausesSteps);
+  let linearReconnect = false;
+  const reconnectNeeded = Promise.withResolvers<void>();
+  const needsReconnect = (error: unknown) => {
+    if (!linearNeedsReconnect(error)) return false;
+    if (!linearReconnect)
+      journalCaught(error, "index.startPaws.linear", null, "Linear needs reconnecting");
+    linearReconnect = true;
+    reconnectNeeded.resolve();
+    return true;
+  };
   const linearRevoked = () =>
     store.run((q) =>
       isLinearAppRevokedSteps(q, {
@@ -628,7 +640,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         clientSecret: runtime.linearClientSecret,
         expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
-        installed() {},
+        installed() {
+          linearReconnect = false;
+        },
       })
     : null;
   const appActivation = createWorkspaceGitHubActivation(store, runtime.env.home, envSource);
@@ -804,7 +818,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     countItemRequest: async (itemId) => await countLinearRequest(store, itemId),
     budget: linearBudgetStore(store, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
-    isAuthorized: async () => !(await linearRevoked()),
+    isAuthorized: async () => !linearReconnect && !(await linearRevoked()),
     beforeEvent: async (event, request) => {
       members?.invalidate(event);
       const userChange = parseLinearUserChange(event);
@@ -943,6 +957,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     submitCommand: submitAsync,
   });
 
+  if (publicDashboard && (await readStoredToken(store, paths.secretsDir)) !== null)
+    await (
+      await createLinearAuth({
+        db: store,
+        secretsDir: paths.secretsDir,
+        clientId: runtime.linearClientId,
+        clientSecret: runtime.linearClientSecret,
+      })
+    )
+      .ensureFresh()
+      .catch(needsReconnect);
   if (linear !== null)
     linearTaskAccess = new LinearTaskAccess(store, {
       access: linear.access && linearCallerFor(linear.access, "task-access"),
@@ -1011,7 +1036,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         memberships: linear.memberships,
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
-        retryable: isTransient,
+        retryable: (error) => needsReconnect(error) || linearReconnect || isTransient(error),
         refreshIntervalMs: null,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
@@ -1388,7 +1413,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
     await runner?.stop();
   }
-  const ready = Promise.all([workspace?.access, runnerReady, remote]).then(() => {
+  const ready = Promise.all([
+    workspace && Promise.race([workspace.access, reconnectNeeded.promise]),
+    runnerReady,
+    remote,
+  ]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
   void ready.catch((caughtError6) => {
@@ -1414,7 +1443,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
-        (await linearRevoked())
+        (linearReconnect || (await linearRevoked()))
           ? reconnectLinear(request, client)
           : null,
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   claimNextJobSteps,
   completeJobSteps,
+  deleteIdleQueueJobsSteps,
   enqueueJobOnce,
   failJobSteps,
   getJobSteps,
@@ -73,6 +74,10 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
       throw new Error("Integration token refresh failed. Retry or reconnect the integration.");
     }
   }
+}
+
+export function* clearCredentialRefreshSteps(q: Q, identity: string): Steps<void> {
+  yield* deleteIdleQueueJobsSteps(q, `oauth.refresh.${digest(identity)}.`);
 }
 
 function digest(value: string): string {
