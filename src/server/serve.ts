@@ -10,7 +10,7 @@ import {
   refreshingInstallations,
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
-import { handleSlackWebhook } from "../slack";
+import { createSlackConnect, handleSlackWebhook } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
@@ -463,6 +463,25 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         origin: workspace.origin,
         cache: secrets.githubStatus,
       })(request))!;
+    }
+    if (
+      (path === "/oauth/slack/callback" || path.startsWith("/api/workspaces/slack")) &&
+      secrets.store
+    ) {
+      try {
+        await workspace.authenticate(request);
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "serve.route.authenticate", null);
+        return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
+      }
+      const env = secrets.statusEnv ?? process.env;
+      const slack = await createSlackConnect({
+        store: secrets.store,
+        home: loadRuntime(env).env.home,
+        env,
+        origin: workspace.origin,
+      })(request);
+      if (slack) return slack;
     }
     if (path.startsWith("/api/")) {
       let access;

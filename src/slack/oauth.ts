@@ -4,6 +4,8 @@ import {
   readCredentialSteps,
   readSecretFile,
   refreshCredential,
+  replaceScopedCredentialSteps,
+  scopedCredentialsSteps,
   writeCredentialSteps,
   saveSecret,
 } from "../credentials";
@@ -19,11 +21,66 @@ export type SlackToken = {
   scope: string;
   teamId: string;
   botUserId: string;
+  appId?: string | null;
+  teamName?: string | null;
 };
+export type InstalledSlackToken = SlackToken & { workspaceId: string; updatedAt: number };
 export type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export function readSlackApp(home: string): SlackApp | null {
   return readJson<SlackApp>(home, "slack-app.json");
+}
+
+export function resolveSlackApp(
+  home: string,
+  env: Record<string, string | undefined>,
+): SlackApp | null {
+  const stored = readSlackApp(home);
+  const clientId = env.SLACK_CLIENT_ID ?? stored?.clientId;
+  const clientSecret = env.SLACK_CLIENT_SECRET ?? stored?.clientSecret;
+  const signingSecret = env.SLACK_SIGNING_SECRET ?? stored?.signingSecret;
+  return clientId && clientSecret && signingSecret
+    ? { clientId, clientSecret, signingSecret }
+    : null;
+}
+
+export function* installedSlackTokensSteps(q: Q, home: string): Steps<InstalledSlackToken[]> {
+  const rows = yield* scopedCredentialsSteps(q, pawsPaths(home).secretsDir, "slack");
+  return rows
+    .filter((row) => row.workspace !== "installation" && !row.workspace.startsWith("team:"))
+    .map((row) => ({
+      ...parseJson<SlackToken>(row.value)!,
+      workspaceId: row.workspace,
+      updatedAt: row.updatedAt,
+    }));
+}
+
+export function* installedSlackTokenSteps(q: Q, home: string, workspaceId: string) {
+  return (yield* installedSlackTokensSteps(q, home)).find((row) => row.workspaceId === workspaceId);
+}
+
+export function* slackTeamOwnerSteps(q: Q, home: string, teamId: string, claimFor?: string) {
+  const dir = pawsPaths(home).secretsDir;
+  const key = { kind: "slack" as const, workspace: `team:${teamId}` };
+  const owner = (yield* scopedCredentialsSteps(q, dir, "slack")).find(
+    (row) => row.workspace === key.workspace,
+  );
+  if (owner || !claimFor) return { key, owner };
+  const claimed = yield* replaceScopedCredentialSteps(q, dir, key, claimFor, 0);
+  return { key, owner: claimed === null ? undefined : { value: claimFor, updatedAt: claimed } };
+}
+
+export function* saveInstalledSlackTokenSteps(
+  q: Q,
+  home: string,
+  workspaceId: string,
+  token: SlackToken,
+  expected: number,
+): Steps<boolean> {
+  const value = JSON.stringify(token);
+  const key = { kind: "slack" as const, workspace: workspaceId };
+  const dir = pawsPaths(home).secretsDir;
+  return (yield* replaceScopedCredentialSteps(q, dir, key, value, expected)) !== null;
 }
 
 function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {
@@ -113,6 +170,7 @@ export async function requestSlackToken(
   fetchImpl: SlackFetch,
   signal: AbortSignal,
   previous?: SlackToken,
+  required: readonly string[] = SLACK_BOT_SCOPES.split(","),
 ): Promise<SlackToken> {
   const response = await fetchImpl("https://slack.com/api/oauth.v2.access", {
     method: "POST",
@@ -134,7 +192,7 @@ export async function requestSlackToken(
     throw new Error("Slack did not return a bot token.");
   const scope = nonempty(data.scope) ? data.scope : (previous?.scope ?? "");
   const scopes = new Set(scope.split(/[ ,]+/));
-  if (!SLACK_BOT_SCOPES.split(",").every((required) => scopes.has(required)))
+  if (!required.every((name) => scopes.has(name)))
     throw new Error("Slack did not grant the required bot scopes.");
   const teamId = isRecord(data.team) && nonempty(data.team.id) ? data.team.id : previous?.teamId;
   const botUserId = nonempty(data.bot_user_id) ? data.bot_user_id : previous?.botUserId;
@@ -154,6 +212,11 @@ export async function requestSlackToken(
     teamId,
     botUserId,
     expiresAtMs: typeof expiry === "number" ? Date.now() + expiry * 1000 : null,
+    appId: nonempty(data.app_id) ? data.app_id : (previous?.appId ?? null),
+    teamName:
+      isRecord(data.team) && typeof data.team.name === "string"
+        ? data.team.name
+        : (previous?.teamName ?? null),
   };
 }
 

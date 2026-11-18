@@ -1,5 +1,7 @@
 import {
+  credentialRowsSteps,
   readCredentialCiphertextSteps,
+  replaceCredentialCiphertextSteps,
   writeCredentialCiphertextSteps,
   type CredentialKey,
   type CredentialWrite,
@@ -21,6 +23,30 @@ export function* readCredentialSteps(
   const key = { kind, workspace: INSTALLATION };
   const ciphertext = yield* readCredentialCiphertextSteps(q, key);
   return ciphertext === null ? null : openSecret(secretsDir, context(key), ciphertext);
+}
+
+export function* scopedCredentialsSteps(
+  q: Q,
+  secretsDir: string,
+  kind: CredentialKind,
+): Steps<{ workspace: string; value: string; updatedAt: number }[]> {
+  const rows = yield* credentialRowsSteps(q, kind);
+  return rows.map((row) => ({
+    workspace: row.workspace,
+    updatedAt: row.updatedAt,
+    value: openSecret(secretsDir, context({ kind, workspace: row.workspace }), row.ciphertext),
+  }));
+}
+
+export function* replaceScopedCredentialSteps(
+  q: Q,
+  secretsDir: string,
+  key: CredentialKey,
+  value: string,
+  expected: number,
+): Steps<number | null> {
+  const sealed = sealSecret(secretsDir, context(key), value);
+  return yield* replaceCredentialCiphertextSteps(q, key, sealed, expected);
 }
 
 export function readCredential(

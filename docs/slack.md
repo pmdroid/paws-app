@@ -1,0 +1,23 @@
+# Slack
+
+A workspace admin connects one Slack workspace to a Paws workspace in **Workspace › Integrations**. This installs the Paws app in Slack. It gives Slack users no Paws membership, repository access or permission to start work, and Paws reads no private messages except those sent to the app. Paws does not answer in Slack yet.
+
+## Create the Slack app
+
+1. On [api.slack.com/apps](https://api.slack.com/apps), create an app. Under **OAuth & Permissions**, add the redirect URL `https://<paws>/oauth/slack/callback` and the bot scopes below. Turn on **Agents & AI Apps** and the **Messages Tab** in **App Home**.
+2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im` and `assistant_thread_started`. Turn on **Manage Distribution** to install it in more than one Slack workspace.
+3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or save them with `bun run paws install secrets`. Set `SLACK_APP_ID` so Paws refuses any other app. Leave **Token Rotation** off: Paws refuses a rotating token. Slack must reach Paws over HTTPS.
+
+## Scopes
+
+Channel threads need `app_mentions:read`, `channels:history`, `channels:read` and `chat:write`. App messages need `im:history` and `im:write`. Agent status needs `assistant:write`. Member checks need `users:read` and `users:read.email`. The Integrations card shows each capability as ready, or names the scopes a reconnect adds. Slack Code is shown as not available yet.
+
+## Connect, reconnect and disconnect
+
+**Add to Slack** and **Reconnect** open Slack, which decides whether the admin may install. Where a Slack workspace requires app approval, a Slack admin approves the app first; a Paws admin role does not bypass that.
+
+- The link works once, for ten minutes, for the admin, session and Paws workspace that started it. On return Paws checks that the person is still an admin before it saves the team, app and bot Slack returned.
+- A Slack workspace connects to one Paws workspace. To switch to another Slack workspace, disconnect first. A denial, a failure, or a reconnect that returns another team or app leaves the connection as it was.
+- **Disconnect** deletes the token and revokes it with Slack. Each change is in the workspace audit.
+
+`paws login slack` keeps working on its own.

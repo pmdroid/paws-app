@@ -14,6 +14,8 @@ export { clearCredentialRefreshSteps, refreshCredential } from "./refresh";
 export { loadSecretKey, storeSecretKeys } from "./key";
 export {
   importCredentialFile,
+  replaceScopedCredentialSteps,
+  scopedCredentialsSteps,
   readCredential,
   readCredentialSteps,
   writeCredential,
