@@ -14,7 +14,7 @@ import {
 } from "../src/provisioning";
 
 const INSTALLER = readFileSync(
-  new URL("../deploy/linux/install-runner.sh", import.meta.url),
+  new URL("../deploy/linux/install.sh", import.meta.url),
   "utf8",
 );
 const VM = "ada-paws";
@@ -67,7 +67,7 @@ test("each missing prerequisite is named before any exe.dev call", async () => {
       },
       /latest runner release/,
     ],
-    [{ installer: () => null }, /install-runner\.sh/],
+    [{ installer: () => null }, /install\.sh/],
   ];
   for (const [overrides, message] of cases) {
     const { value, exeDev } = source(overrides);

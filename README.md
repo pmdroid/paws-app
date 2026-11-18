@@ -71,7 +71,14 @@ The dashboard shows issues, runs, questions, evidence, runners and settings. Use
 
 ## Install from the Paws apt repository
 
-Once the repository's first release is published:
+The one-line installer adds the signed repository and installs the control plane; add `--runner` to install a runner instead:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh
+curl -fsSL https://get.paws.boo | sudo sh -s -- --runner
+```
+
+Or set up the repository by hand:
 
 ```sh
 curl -fsSL https://get.paws.boo/apt/paws.gpg | sudo tee /usr/share/keyrings/paws.gpg >/dev/null

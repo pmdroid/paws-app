@@ -51,5 +51,5 @@ aws --endpoint-url "$endpoint" s3 cp "$work/paws.gpg" "$remote/paws.gpg"
 aws --endpoint-url "$endpoint" s3 cp "$work/repository/dists/stable/InRelease" "$remote/dists/stable/InRelease"
 if [[ "$1" == build ]]; then
   aws --endpoint-url "$endpoint" s3 sync "$work/repository/dists/stable/main/" "$remote/dists/stable/main/" --delete --exclude '*' --include '*/by-hash/*'
-  aws --endpoint-url "$endpoint" s3 cp "$(dirname "$script")/install-runner.sh" "$remote/install-runner.sh" --content-type 'text/x-shellscript; charset=utf-8'
+  aws --endpoint-url "$endpoint" s3 cp "$(dirname "$script")/install.sh" "$remote/install.sh" --content-type 'text/x-shellscript; charset=utf-8'
 fi

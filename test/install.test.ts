@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 
-const script = resolve(import.meta.dir, "../deploy/linux/install-runner.sh");
+const script = resolve(import.meta.dir, "../deploy/linux/install.sh");
 
 function digest(body: string) {
   return createHash("sha256").update(body).digest("hex");
@@ -56,6 +56,7 @@ if [ "$1" = install ]; then
       -y|--reinstall) shift ;;
       rootlesskit|uidmap|slirp4netns|dbus-user-session) shift ;;
       paws-runner*) printf package > "$PAWS_INSTALLED_DEB"; exit 0 ;;
+      paws-control-plane*) printf '%s' "$1" > "$PAWS_INSTALLED_DEB"; exit 0 ;;
       *) exit 1 ;;
     esac
   done
@@ -107,7 +108,7 @@ async function withRelease(
   latest: string,
   run: (origin: string, directory: string, aptLog: string, installed: string) => Promise<void>,
 ) {
-  const directory = mkdtempSync(join(tmpdir(), "paws-install-runner-"));
+  const directory = mkdtempSync(join(tmpdir(), "paws-install-"));
   const aptLog = join(directory, "apt.log");
   const installed = join(directory, "installed.deb");
   fakes(directory);
@@ -151,7 +152,7 @@ test("installer rejects a non-root caller before download", async () => {
     "/tag/v1.2.3",
     async (origin, directory, aptLog, installed) => {
       const result = await install(
-        [],
+        ["--runner"],
         envFor(origin, directory, aptLog, installed, { FAKE_UID: "1000" }),
       );
       expect(result.code).not.toBe(0);
@@ -171,7 +172,7 @@ test("installer installs latest through apt with the mirror keyring and source",
     },
     "/tag/v1.2.3/",
     async (origin, directory, aptLog, installed) => {
-      const result = await install([], envFor(origin, directory, aptLog, installed));
+      const result = await install(["--runner"], envFor(origin, directory, aptLog, installed));
       expect(result.code).toBe(0);
       expect(readFileSync(join(directory, "keyrings/paws.gpg"), "utf8")).toBe("repository-key");
       expect(readFileSync(join(directory, "sources/paws.list"), "utf8")).toContain(
@@ -197,7 +198,7 @@ test("installer selects the requested version and architecture", async () => {
     "/tag/v1.2.3",
     async (origin, directory, aptLog, installed) => {
       const result = await install(
-        ["v2.0.0"],
+        ["--runner", "v2.0.0"],
         envFor(origin, directory, aptLog, installed, { FAKE_ARCH: "arm64" }),
       );
       expect(result.code).toBe(0);
@@ -218,7 +219,10 @@ test("installer accepts a pinned version without a v prefix", async () => {
     },
     "/tag/0.4.0",
     async (origin, directory, aptLog, installed) => {
-      const result = await install(["0.4.0"], envFor(origin, directory, aptLog, installed));
+      const result = await install(
+        ["--runner", "0.4.0"],
+        envFor(origin, directory, aptLog, installed),
+      );
       expect(result.code).toBe(0);
       expect(readFileSync(installed, "utf8")).toBe("package");
     },
@@ -228,13 +232,13 @@ test("installer accepts a pinned version without a v prefix", async () => {
 test("installer refuses an unsupported architecture and an invalid version", async () => {
   await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
     const architecture = await install(
-      [],
+      ["--runner"],
       envFor(origin, directory, aptLog, installed, { FAKE_ARCH: "i386" }),
     );
     expect(architecture.code).not.toBe(0);
     expect(architecture.stderr).toContain("Unsupported architecture: i386");
     const version = await install(
-      ["1.2"],
+      ["--runner", "1.2"],
       envFor(origin, directory, aptLog, installed, { FAKE_UID: "1000" }),
     );
     expect(version.code).not.toBe(0);
@@ -251,7 +255,7 @@ test("installer help and the default download command stay on https", () => {
 test("installer refuses an http download base outside the loopback opt-in", async () => {
   await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
     const remote = await install(
-      ["1.2.3"],
+      ["--runner", "1.2.3"],
       envFor(origin, directory, aptLog, installed, {
         PAWS_RUNNER_DOWNLOAD_BASE: "http://example.com/releases",
       }),
@@ -259,7 +263,7 @@ test("installer refuses an http download base outside the loopback opt-in", asyn
     expect(remote.code).not.toBe(0);
     expect(remote.stderr).toContain("Download base must use https");
     const loopback = await install(
-      ["1.2.3"],
+      ["--runner", "1.2.3"],
       envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_ALLOW_HTTP_BASE: "" }),
     );
     expect(loopback.code).not.toBe(0);
@@ -280,21 +284,21 @@ test("installer passes the Docker access choice to package configuration", async
     async (origin, directory, aptLog, installed) => {
       const choice = () => readFileSync(`${aptLog}.docker`, "utf8").trim();
       const env = envFor(origin, directory, aptLog, installed);
-      expect((await install([], env)).code).toBe(0);
+      expect((await install(["--runner"], env)).code).toBe(0);
       expect(choice()).toBe("unset");
-      expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+      expect((await install(["--runner", "--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(choice()).toBe("grant");
       expect(readFileSync(aptLog, "utf8")).toContain("install --reinstall -y paws-runner=1.2.3");
-      expect((await install(["1.2.3", "--no-docker-access"], env)).code).toBe(0);
+      expect((await install(["--runner", "1.2.3", "--no-docker-access"], env)).code).toBe(0);
       expect(choice()).toBe("deny");
       const fromEnv = await install(
-        [],
+        ["--runner"],
         envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "grant" }),
       );
       expect(fromEnv.code).toBe(0);
       expect(choice()).toBe("grant");
       const flagWins = await install(
-        ["--no-docker-access"],
+        ["--runner", "--no-docker-access"],
         envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "grant" }),
       );
       expect(flagWins.code).toBe(0);
@@ -306,16 +310,16 @@ test("installer passes the Docker access choice to package configuration", async
 test("installer refuses conflicting or invalid Docker access choices before download", async () => {
   await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
     const env = envFor(origin, directory, aptLog, installed);
-    const both = await install(["--docker-access", "--no-docker-access"], env);
+    const both = await install(["--runner", "--docker-access", "--no-docker-access"], env);
     expect(both.code).not.toBe(0);
     expect(both.stderr).toContain("Pass only one of --docker-access and --no-docker-access");
     const invalid = await install(
-      ["1.2.3"],
+      ["--runner", "1.2.3"],
       envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "yes" }),
     );
     expect(invalid.code).not.toBe(0);
     expect(invalid.stderr).toContain("PAWS_RUNNER_DOCKER_ACCESS must be grant or deny");
-    const twoVersions = await install(["1.2.3", "1.2.4"], env);
+    const twoVersions = await install(["--runner", "1.2.3", "1.2.4"], env);
     expect(twoVersions.code).not.toBe(0);
     expect(existsSync(aptLog)).toBe(false);
   });
@@ -337,18 +341,18 @@ test("installer adds the rootless Docker tools before the package when Docker ac
           .split("\n")
           .filter((line) => line.startsWith("install "));
       writeExecutable(join(directory, "bin"), "dockerd", "#!/bin/sh\nexit 0\n");
-      expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+      expect((await install(["--runner", "--docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(2);
       expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns dbus-user-session");
       expect(installs()[1]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(aptLog);
-      expect((await install(["--no-docker-access", "1.2.3"], env)).code).toBe(0);
+      expect((await install(["--runner", "--no-docker-access", "1.2.3"], env)).code).toBe(0);
       expect(installs()).toHaveLength(1);
       expect(installs()[0]).toBe("install --reinstall -y paws-runner=1.2.3");
       rmSync(join(directory, "bin", "dockerd"));
       if (!existsSync("/usr/bin/dockerd") && !existsSync("/bin/dockerd")) {
         rmSync(aptLog);
-        expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+        expect((await install(["--runner", "--docker-access", "1.2.3"], env)).code).toBe(0);
         expect(installs()).toHaveLength(1);
       }
     },
@@ -366,4 +370,45 @@ test("the installer's Docker prompt offers rootless Docker for agent jobs, not t
     "runs as the account agents run as (paws-agent by default), not as root",
   );
   expect(prompt).not.toContain("Add the paws-runner service account to the docker group");
+});
+
+test("installer installs the control plane by default", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const result = await install([], envFor(origin, directory, aptLog, installed));
+    expect(result.code).toBe(0);
+    expect(readFileSync(join(directory, "sources/paws.list"), "utf8")).toContain(
+      origin + " stable main",
+    );
+    expect(readFileSync(installed, "utf8")).toBe("paws-control-plane");
+    expect(readFileSync(aptLog, "utf8")).toBe("update\ninstall -y paws-control-plane\n");
+    expect(result.stdout).toContain("/etc/paws/control-plane.env");
+  });
+});
+
+test("installer pins the control plane version", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const result = await install(["1.2.3"], envFor(origin, directory, aptLog, installed));
+    expect(result.code).toBe(0);
+    expect(readFileSync(installed, "utf8")).toBe("paws-control-plane=1.2.3");
+  });
+});
+
+test("installer refuses runner Docker options without --runner", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const result = await install(["--docker-access"], envFor(origin, directory, aptLog, installed));
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("add --runner");
+    expect(existsSync(aptLog)).toBe(false);
+  });
+});
+
+test("installer asks a non-root caller to rerun with --runner for a runner", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const result = await install(
+      ["--runner"],
+      envFor(origin, directory, aptLog, installed, { FAKE_UID: "1000" }),
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("curl -fsSL https://get.paws.boo | sudo sh -s -- --runner");
+  });
 });

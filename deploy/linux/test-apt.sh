@@ -87,8 +87,8 @@ cmp "$work/expected" "$work/phases"
 cmp "$work/public.gpg" "$work/remote/paws.gpg"
 gpgv --keyring "$work/remote/paws.gpg" "$work/remote/dists/stable/InRelease"
 test ! -e "$work/remote/dists/stable/Release" && test ! -e "$work/remote/dists/stable/Release.gpg"
-cmp "$(dirname "$publisher")/install-runner.sh" "$work/remote/install-runner.sh"
-test "$(tail -1 "$work/order" | awk '{print $1}')" = s3://fixture/install-runner.sh
+cmp "$(dirname "$publisher")/install.sh" "$work/remote/install.sh"
+test "$(tail -1 "$work/order" | awk '{print $1}')" = s3://fixture/install.sh
 cp -r "$work/remote" "$work/remote-before"
 : > "$work/aws.log"
 bash "$publisher" resign_only

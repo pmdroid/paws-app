@@ -10,7 +10,7 @@ const run = async (args: string[]) => {
   if (await child.exited) throw new Error(`Failed: ${args.join(" ")}`);
 };
 await run(["run", "build:dashboard"]);
-const files = ["package.json", "deploy/linux/install-runner.sh"];
+const files = ["package.json", "deploy/linux/install.sh"];
 function collect(dir: string) {
   for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
     const path = join(dir, entry.name);
