@@ -21,4 +21,6 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 - When the setup starts from Slack with that Slack team and, optionally, a channel, Slack offers that team and a successful install returns the admin to the channel, or to the Paws app's messages when no channel was given. Otherwise the admin returns to Integrations.
 - **Disconnect** deletes the token and revokes it with Slack. Each change is in the workspace audit.
 
-`paws login slack` keeps working on its own.
+## Use a `paws login slack` connection
+
+`paws login slack` connects Slack to the server rather than to a Paws workspace. When such a connection exists and the Paws workspace has none, the Integrations card offers **Use the paws login slack connection**. It moves that token, with the scopes it already has, into the admin's Paws workspace and removes the server-wide copy, without opening Slack or asking for new permissions. Paws refuses when the workspace is already connected, the Slack workspace belongs to another Paws workspace, the token rotates, or it was issued to an app other than `SLACK_APP_ID`. The move is recorded in the workspace audit as `slack.adopted`.

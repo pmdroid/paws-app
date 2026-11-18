@@ -8,6 +8,7 @@ type SlackStatus = {
   redirectUrl?: string;
   eventsUrl?: string;
   connection: { teamId: string; teamName: string | null; appId: string; botUserId: string } | null;
+  login?: { teamId: string; teamName: string | null } | null;
   capabilities: (Record<keyof typeof LABELS, Capability> & { missing: string[] }) | null;
 };
 
@@ -44,7 +45,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
     const response = await fetch("/api/workspaces/slack", { cache: "no-store" });
     if (!response.ok)
       return renderMarkup(section, '<p role="alert">Slack could not be checked.</p>');
-    const { configured, connection, capabilities, redirectUrl, eventsUrl } =
+    const { configured, connection, capabilities, redirectUrl, eventsUrl, login } =
       (await response.json()) as SlackStatus;
     const rows = Object.entries(LABELS).map(([name, label]) => {
       const item = capabilities?.[name as keyof typeof LABELS];
@@ -59,14 +60,19 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
             ["reconnect", "Reconnect"],
             ["disconnect", "Disconnect"],
           ]
-        : [["connect", "Add to Slack"]];
+        : [
+            ...(login ? [["adopt", "Use the paws login slack connection"]] : []),
+            ["connect", "Add to Slack"],
+          ];
     renderMarkup(
       section,
       `<div><h2>Slack</h2><p class="sub">Install Paws in Slack. Installing gives Slack users no access to Paws or its repositories.</p></div><div class="settings-account"><p data-slack-status role="status">${
         connection
           ? `Connected to ${esc(connection.teamName ?? connection.teamId)} (${esc(connection.teamId)}), app ${esc(connection.appId)}, bot ${esc(connection.botUserId)}.`
           : configured
-            ? "Not connected."
+            ? login
+              ? `Not connected. <code>paws login slack</code> connected ${esc(login.teamName ?? login.teamId)} (${esc(login.teamId)}) on this server; you can use it here.`
+              : "Not connected."
             : "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET on the server."
       }</p><ul>${rows.join("")}</ul>${
         capabilities?.missing.length
@@ -82,13 +88,15 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
 
   async function act(action: string) {
     const disconnect = action === "disconnect";
-    const response = await fetch(`/api/workspaces/slack${disconnect ? "" : "/connect"}`, {
+    const path = disconnect ? "" : action === "adopt" ? "/adopt" : "/connect";
+    const response = await fetch(`/api/workspaces/slack${path}`, {
       method: disconnect ? "DELETE" : "POST",
       headers: { "x-paws-csrf": csrfToken },
     });
     const data = (await response.json().catch(() => ({}))) as { url?: string; error?: string };
     if (response.ok && data.url) return location.assign(data.url);
-    notice = response.ok ? "Slack is disconnected." : (data.error ?? RESULTS.failed!);
+    const done = action === "adopt" ? RESULTS.connected! : "Slack is disconnected.";
+    notice = response.ok ? done : (data.error ?? RESULTS.failed!);
     await load();
   }
 

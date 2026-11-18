@@ -59,6 +59,14 @@ export function* installedSlackTokenSteps(q: Q, home: string, workspaceId: strin
   return (yield* installedSlackTokensSteps(q, home)).find((row) => row.workspaceId === workspaceId);
 }
 
+export function* loginSlackTokenSteps(q: Q, home: string) {
+  const rows = yield* scopedCredentialsSteps(q, pawsPaths(home).secretsDir, "slack");
+  const row = rows.find((item) => item.workspace === "installation");
+  if (!row) return null;
+  const key = { kind: "slack" as const, workspace: row.workspace };
+  return { key, token: parseJson<SlackToken>(row.value)!, updatedAt: row.updatedAt };
+}
+
 export function* slackTeamOwnerSteps(q: Q, home: string, teamId: string, claimFor?: string) {
   const dir = pawsPaths(home).secretsDir;
   const key = { kind: "slack" as const, workspace: `team:${teamId}` };
