@@ -170,6 +170,7 @@ import {
   agentReadAllowed,
   githubMirrorsOn,
   loadConfigFile,
+  readProjectMemorySettings,
   mergeLaneKey,
   parallelFiles,
   readMergeSettings,
@@ -10124,6 +10125,8 @@ export class Orchestrator {
     if (!service) return;
     let itemId: string | undefined;
     try {
+      const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      if (!readProjectMemorySettings(config).decisions) return;
       const found = await this.store.run(function* (q) {
         const question = yield* getQuestionSteps(q, questionId);
         const item = question ? yield* getWorkItemSteps(q, question.itemId) : null;

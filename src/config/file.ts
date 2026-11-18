@@ -96,7 +96,7 @@ export type PawsConfigFile = {
   queueStartTimeoutHours?: number;
   /** `[queue] max_running_per_owner`. Missing means no cap. */
   queueMaxRunningPerOwner?: number;
-  projectMemory?: { workSummary?: boolean; dream?: boolean };
+  projectMemory?: { workSummary?: boolean; dream?: boolean; decisions?: boolean };
   /** `[findings] grouping_time`, HH:MM UTC; default 06:00. */
   findingsGroupingTime?: string;
   projectSkills?: ProjectSkills[];
@@ -449,6 +449,7 @@ function assignConfig(
     const memory = (config.projectMemory ??= {});
     if (key === "work_summary") memory.workSummary = asBoolean(value, line);
     else if (key === "dream") memory.dream = asBoolean(value, line);
+    else if (key === "decisions") memory.decisions = asBoolean(value, line);
     else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }

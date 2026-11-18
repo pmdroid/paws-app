@@ -116,7 +116,11 @@ export async function handleAgentSettingsRequest(
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
   let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
-  let previousMemory: ProjectMemorySettings = { workSummary: false, dream: false };
+  let previousMemory: ProjectMemorySettings = {
+    workSummary: false,
+    dream: false,
+    decisions: false,
+  };
   try {
     const config = loadConfigFile(options.configPath);
     previous = storedMerge(config);
@@ -188,6 +192,7 @@ export async function handleAgentSettingsRequest(
   for (const [key, label] of [
     ["workSummary", "Project memory work summaries"],
     ["dream", "Project memory dream"],
+    ["decisions", "Project memory decisions"],
   ] as const)
     if (projectMemory !== undefined && projectMemory[key] !== previousMemory[key])
       await options.audit?.(

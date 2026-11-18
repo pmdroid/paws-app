@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { setJournalSink } from "../../src/journal";
 import {
@@ -16,7 +17,12 @@ const ORG = "org";
 const PROJECT = "project-acme";
 const ANSWERER = "acme-user";
 const QUESTION = "Should empty shelves count as 0 or be skipped?";
-const ANSWERS = ["Skip them.", "Count them as 0.", "Count them as 0, and say so in the report."];
+const ANSWERS = [
+  "Leave them out.",
+  "Skip them.",
+  "Count them as 0.",
+  "Count them as 0, and say so in the report.",
+];
 const TEAM = { teamIds: ["team-a"], repositories: [], channelIds: [] };
 
 const access = createFakeContextAccess();
@@ -44,15 +50,16 @@ export default {
     "src/project-context/session.ts",
     "src/questions/store.ts",
     "src/loop/orchestrator.ts",
+    "src/config/project-memory.ts",
   ],
   summary:
-    "The agent asks the same ask_team question three times. The first answer arrives while the answerer's project access can't be checked: Paws journals it, stores nothing and resumes the agent. The second answer is stored as one project decision with the answerer as actor, the third corrects it, and a later session in the project receives the decision.",
+    "The agent asks the same ask_team question four times. The first answer arrives with project memory decisions off, the default, and records nothing. Then decisions are turned on. The second answer arrives while the answerer's project access can't be checked: Paws journals it, stores nothing and resumes the agent. The third answer is stored as one project decision with the answerer as actor, the fourth corrects it, and a later session in the project receives the decision.",
   delegatePayload: { organizationId: ORG, agentSession: { creatorId: ANSWERER } },
   projectContext: (store) => (service = createProjectSessionContext({ db: store, access, reads })),
   agent: (input) =>
     input.purpose !== "implement"
       ? []
-      : !input.prompt.includes(ANSWERS[2]!)
+      : !input.prompt.includes(ANSWERS[3]!)
         ? [{ type: "ask_team", question: QUESTION }]
         : [
             { type: "fs_write", path: join(input.worktree, "widgets.txt"), content: "12\n0\n" },
@@ -91,12 +98,26 @@ export default {
         );
 
       await asked(1);
+      await proof.answerInLinear(ANSWERS[0]!);
+      const answeredOff = await asked(2);
+      proof.expect(
+        "with decisions off, an answered ask_team question resumes the agent and records nothing",
+        answeredOff &&
+          !lines.some((line) => line.includes("recordDecision")) &&
+          (await decisions()).length === 0,
+        lines.filter((line) => line.includes("recordDecision")),
+      );
+
+      appendFileSync(
+        join(process.env.PAWS_HOME!, "config.toml"),
+        "\n[project_memory]\ndecisions = true\n",
+      );
       access.grants.set(
         `${ORG}\0${ANSWERER}`,
         new Error("Linear membership could not be verified."),
       );
-      await proof.answerInLinear(ANSWERS[0]!);
-      const resumed = await asked(2);
+      await proof.answerInLinear(ANSWERS[1]!);
+      const resumed = await asked(3);
       proof.expect(
         "a failed access check journals one line, stores nothing and doesn't block the answer",
         resumed &&
@@ -107,19 +128,19 @@ export default {
       );
 
       access.grant({ workspaceId: ORG, userId: ANSWERER }, TEAM);
-      await proof.answerInLinear(ANSWERS[1]!);
-      await asked(3);
+      await proof.answerInLinear(ANSWERS[2]!);
+      await asked(4);
       const first = await decisions();
       proof.expect(
         "the answer is stored as one decision with the answerer as actor",
         first.length === 1 &&
           first[0]!.actorId === ANSWERER &&
           first[0]!.body ===
-            `${QUESTION} → ${ANSWERS[1]} Reason: Answered by ${ANSWERER} on ${ACME.identifier}`,
+            `${QUESTION} → ${ANSWERS[2]} Reason: Answered by ${ANSWERER} on ${ACME.identifier}`,
         first.map((row) => ({ body: row.body, actor: row.actorId })),
       );
 
-      await proof.answerInLinear(ANSWERS[2]!);
+      await proof.answerInLinear(ANSWERS[3]!);
       const merged = await proof.waitFor(
         "the item is merged",
         async () =>
@@ -131,7 +152,7 @@ export default {
         "the re-answer corrects the entry instead of adding a second one",
         corrected.length === 1 &&
           corrected[0]!.supersedes === first[0]?.id &&
-          corrected[0]!.body.includes(ANSWERS[2]!),
+          corrected[0]!.body.includes(ANSWERS[3]!),
         corrected.map((row) => row.body),
       );
 
@@ -145,7 +166,7 @@ export default {
       });
       proof.expect(
         "the next session in the project receives the decision",
-        next.status === "injected" && next.text.includes(`${QUESTION} → ${ANSWERS[2]}`),
+        next.status === "injected" && next.text.includes(`${QUESTION} → ${ANSWERS[3]}`),
         next.status,
       );
       proof.expect(

@@ -1,11 +1,16 @@
 import type { PawsConfigFile } from "./file";
 
-export type ProjectMemorySettings = { workSummary: boolean; dream: boolean };
+export type ProjectMemorySettings = {
+  workSummary: boolean;
+  dream: boolean;
+  decisions: boolean;
+};
 
 export function readProjectMemorySettings(config: PawsConfigFile): ProjectMemorySettings {
   return {
     workSummary: config.projectMemory?.workSummary ?? false,
     dream: config.projectMemory?.dream ?? false,
+    decisions: config.projectMemory?.decisions ?? false,
   };
 }
 
@@ -14,7 +19,7 @@ export function parseProjectMemorySettings(value: unknown): Partial<ProjectMemor
     throw new Error("projectMemory must be an object");
   const parsed: Partial<ProjectMemorySettings> = {};
   for (const [key, flag] of Object.entries(value)) {
-    if (key !== "workSummary" && key !== "dream")
+    if (key !== "workSummary" && key !== "dream" && key !== "decisions")
       throw new Error("projectMemory has an unknown key");
     if (typeof flag !== "boolean") throw new Error(`projectMemory.${key} must be true or false`);
     parsed[key] = flag;
@@ -36,6 +41,6 @@ export function setProjectMemorySettingsText(
     })
     .join("\n")
     .trimEnd();
-  const table = `[project_memory]\nwork_summary = ${settings.workSummary}\ndream = ${settings.dream}\n`;
+  const table = `[project_memory]\nwork_summary = ${settings.workSummary}\ndream = ${settings.dream}\ndecisions = ${settings.decisions}\n`;
   return retained === "" ? table : `${retained}\n\n${table}`;
 }

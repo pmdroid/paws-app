@@ -84,25 +84,31 @@ test("project memory defaults off and round-trips through the stored settings", 
   expect(readProjectMemorySettings(parseConfigToml(""))).toEqual({
     workSummary: false,
     dream: false,
+    decisions: false,
   });
   expect(() => parseConfigToml("[project_memory]\nsummary = true\n")).toThrow("unknown key");
   const { configPath, stored } = await storedSettings(null);
   const written = setProjectMemorySettingsText('[linear]\nteam = "ACME"\n', {
     workSummary: true,
     dream: true,
+    decisions: true,
   });
   expect(readProjectMemorySettings(parseConfigToml(written))).toEqual({
     workSummary: true,
     dream: true,
+    decisions: true,
   });
   await updateConfigText(configPath, (current) =>
-    setProjectMemorySettingsText(current, { workSummary: false, dream: true }),
+    setProjectMemorySettingsText(current, { workSummary: false, dream: true, decisions: true }),
   );
-  expect(stored()).toContain("[project_memory]\nwork_summary = false\ndream = true\n");
+  expect(stored()).toContain(
+    "[project_memory]\nwork_summary = false\ndream = true\ndecisions = true\n",
+  );
   expect(readFileSync(configPath, "utf8")).not.toContain("project_memory");
   expect(readProjectMemorySettings(loadConfigFile(configPath))).toEqual({
     workSummary: false,
     dream: true,
+    decisions: true,
   });
 });
 
