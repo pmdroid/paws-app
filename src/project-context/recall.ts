@@ -110,6 +110,7 @@ export async function recallProjectContext(
       recentTokens: 0,
     },
     now: request.now,
+    recordsOnly: true,
     ...scope,
   });
   if (selection.status !== "ok") return PROJECT_MEMORY_UNAVAILABLE;

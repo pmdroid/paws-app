@@ -56,6 +56,11 @@ export type ContextSelectionRequest = {
   readonly model: ContextModelBudget;
   readonly settings?: Partial<ContextBudgetSettings>;
   readonly now: number;
+  /**
+   * Rank individual records only, for a search. A derived summary suppresses the records it
+   * covers from a prompt pack, but a search still finds them; no compaction is requested.
+   */
+  readonly recordsOnly?: boolean;
 };
 
 export type ContextManifestSource = {
@@ -457,12 +462,14 @@ export async function selectContext(
     audience,
     audienceLineage: audienceLineage(audience),
   };
-  const summaries = await listContextSummaries(db, {
-    namespace,
-    visibility,
-    now: request.now,
-    limit: CONTEXT_SELECTION_LIMITS.partitions,
-  });
+  const summaries = request.recordsOnly
+    ? []
+    : await listContextSummaries(db, {
+        namespace,
+        visibility,
+        now: request.now,
+        limit: CONTEXT_SELECTION_LIMITS.partitions,
+      });
   const usable = summaries.filter((summary) => usableSummary(summary, current, audience, request));
   const preserved = await listContextCandidates(db, {
     namespace,
@@ -524,7 +531,7 @@ export async function selectContext(
   const uncovered = individual.filter(summarizable);
   const projected = summaryTokens + uncovered.reduce((sum, row) => sum + count(itemLine(row)), 0);
   let compaction: ContextManifest["compaction"] = "not_needed";
-  if (projected > settings.softThresholdTokens) {
+  if (!request.recordsOnly && projected > settings.softThresholdTokens) {
     const pending = new Set(
       uncovered.map((row) => contextPartition(row.audienceLineage, row.restriction)),
     );
