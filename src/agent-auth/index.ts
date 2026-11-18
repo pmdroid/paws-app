@@ -10,13 +10,15 @@ import {
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import { createCodexProvider, type AuthProvider, type Device } from "./codex";
+import { createGrokProvider } from "./grok";
 import { createOpencodeProvider } from "./opencode";
 export { createCodexProvider } from "./codex";
+export { createGrokProvider } from "./grok";
 export { createOpencodeProvider } from "./opencode";
 export type { AuthProvider, Device, Tokens } from "./codex";
 export type { OpencodeTokens } from "./opencode";
 type Provider = AuthProvider<{ expiresAt: number }>;
-type Agent = "codex" | "opencode";
+type Agent = "codex" | "grok" | "opencode";
 type State = {
   state: "pending" | "signed-in" | "denied" | "expired";
   device?: Device;
@@ -39,6 +41,7 @@ export function createAgentAuth(options: {
   const now = options.now ?? Date.now;
   const providers: Record<Agent, Provider> = {
     codex: createCodexProvider(),
+    grok: createGrokProvider(),
     opencode: createOpencodeProvider(),
     ...options.providers,
   };

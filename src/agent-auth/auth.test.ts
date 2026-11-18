@@ -22,14 +22,15 @@ import {
   createUsageReader,
   createAgentAuth,
   createCodexProvider,
+  createGrokProvider,
 } from "./index";
 import { UsageAuthExpired, UsageUnavailable } from "./usage";
-import { fakeCodexOAuth } from "./fake";
+import { fakeCodexOAuth, fakeXaiOAuth } from "./fake";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function setup(signedIn = false) {
+async function setup(signedIn = false, agent: "codex" | "grok" = "codex") {
   let time = 1_800_000_000_000;
   const now = () => time;
   const { db, close } = await tempStore();
@@ -38,6 +39,8 @@ async function setup(signedIn = false) {
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeCodexOAuth(now);
   cleanup.push(fake.close);
+  const xai = fakeXaiOAuth(now);
+  cleanup.push(xai.close);
   await seed(db, (q) =>
     q.orm
       .insert(q.t.workspace)
@@ -63,7 +66,7 @@ async function setup(signedIn = false) {
     createAgentAccountSteps(q, {
       ownerUserId: "user",
       workspaceId: "workspace",
-      agent: "codex",
+      agent,
       label: "Codex",
       now: time,
     }),
@@ -71,7 +74,10 @@ async function setup(signedIn = false) {
   const auth = createAgentAuth({
     store: db,
     secretsDir: dir,
-    providers: { codex: createCodexProvider(fake.issuer, now) },
+    providers: {
+      codex: createCodexProvider(fake.issuer, now),
+      grok: createGrokProvider(xai.issuer, now),
+    },
     now,
   });
   if (signedIn) {
@@ -84,6 +90,7 @@ async function setup(signedIn = false) {
     db,
     dir,
     fake,
+    xai,
     auth,
     id: account.id,
     now,
@@ -515,4 +522,116 @@ test("a read that fails without an HTTP status still stores that usage is unavai
   expect(
     JSON.parse((await s.db.run((q) => providerUsageSteps(q, s.id)))!.limitsJson!).unavailable,
   ).toBe("Usage unavailable");
+});
+const SCOPE = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828";
+async function grokFile(s: Awaited<ReturnType<typeof setup>>) {
+  const stored = await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id));
+  const files = JSON.parse(stored!.blob!) as { path: string; data: string }[];
+  expect(files.map((entry) => entry.path)).toEqual([".grok/auth.json"]);
+  return JSON.parse(Buffer.from(files[0]!.data, "base64").toString());
+}
+test("device approval with no runner online writes .grok/auth.json under the scope key and binds runners", async () => {
+  const s = await setup(false, "grok");
+  await seed(s.db, (q) =>
+    q.orm.insert(q.t.runner).values({
+      id: "offline",
+      workspaceId: "workspace",
+      ownerUserId: "user",
+      name: "Offline",
+      status: "active",
+      createdAt: s.now(),
+    }),
+  );
+  const started = await s.auth.device("workspace", s.id, true);
+  expect(started).toEqual({
+    userCode: "GROK-CODE",
+    verificationUri: "https://accounts.x.ai/device?user_code=GROK-CODE",
+    interval: 5,
+    expiresAt: s.now() + 600_000,
+  });
+  expect(s.xai.calls[0]).toEqual({
+    path: "/oauth2/device/code",
+    form: {
+      client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+      scope:
+        "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write",
+    },
+  });
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+  expect(s.xai.calls[1]!.form).toEqual({
+    grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+    device_code: "device-secret",
+    client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+  });
+  s.xai.slowDown();
+  s.advance(5000);
+  await s.auth.device("workspace", s.id, false);
+  s.xai.approve();
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+  expect(s.xai.calls).toHaveLength(3);
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "signed-in" });
+  const stored = await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id));
+  expect(stored!.ciphertext).not.toContain("xai-access");
+  expect(await grokFile(s)).toEqual({
+    [SCOPE]: {
+      key: "xai-access-1",
+      auth_mode: "oidc",
+      create_time: new Date(s.now()).toISOString(),
+      user_id: "user-42",
+      email: "grok@test.invalid",
+      refresh_token: "xai-refresh-1",
+      expires_at: new Date(s.now() + 3_600_000).toISOString(),
+      oidc_issuer: "https://auth.x.ai",
+      oidc_client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+      coding_data_retention_opt_out: true,
+      team_blocked_reasons: [],
+    },
+  });
+  const bindings = await s.db.run((q) =>
+    q.all(
+      q.orm
+        .select({ runnerId: q.t.agentAccountBinding.runnerId })
+        .from(q.t.agentAccountBinding)
+        .where(eq(q.t.agentAccountBinding.accountId, s.id)),
+    ),
+  );
+  expect(bindings).toEqual([{ runnerId: "offline" }]);
+});
+for (const outcome of ["deny", "expire"] as const)
+  test(`a device code that the person ${outcome === "deny" ? "denies" : "lets expire"} stores nothing`, async () => {
+    const s = await setup(false, "grok");
+    await s.auth.device("workspace", s.id, true);
+    s.xai[outcome]();
+    s.advance(5000);
+    expect(await s.auth.device("workspace", s.id, false)).toEqual({
+      state: outcome === "deny" ? "denied" : "expired",
+    });
+    expect(await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id))).toBeNull();
+  });
+test("refresh rotates the key with the refresh_token grant and keeps the identity", async () => {
+  const s = await setup(false, "grok");
+  await s.auth.device("workspace", s.id, true);
+  s.xai.approve();
+  s.advance(5000);
+  await s.auth.device("workspace", s.id, false);
+  s.advance(3_000_000);
+  await s.auth.tick();
+  expect(s.xai.calls.at(-1)).toEqual({
+    path: "/oauth2/token",
+    form: {
+      grant_type: "refresh_token",
+      refresh_token: "xai-refresh-1",
+      client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+    },
+  });
+  expect((await grokFile(s))[SCOPE]).toMatchObject({
+    key: "xai-access-2",
+    refresh_token: "xai-refresh-2",
+    user_id: "user-42",
+    email: "grok@test.invalid",
+    expires_at: new Date(s.now() + 3_600_000).toISOString(),
+  });
 });
