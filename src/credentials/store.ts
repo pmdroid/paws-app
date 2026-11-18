@@ -1,6 +1,7 @@
 import {
-  deleteCredentialCiphertextSteps,
+  credentialRowsSteps,
   readCredentialCiphertextSteps,
+  replaceCredentialCiphertextSteps,
   writeCredentialCiphertextSteps,
   type CredentialKey,
   type CredentialWrite,
@@ -19,29 +20,36 @@ export function* readCredentialSteps(
   secretsDir: string,
   kind: CredentialKind,
 ): Steps<string | null> {
-  return yield* readScopedCredentialSteps(q, secretsDir, { kind, workspace: INSTALLATION });
-}
-
-export function* readScopedCredentialSteps(
-  q: Q,
-  secretsDir: string,
-  key: CredentialKey,
-): Steps<string | null> {
+  const key = { kind, workspace: INSTALLATION };
   const ciphertext = yield* readCredentialCiphertextSteps(q, key);
   return ciphertext === null ? null : openSecret(secretsDir, context(key), ciphertext);
 }
 
-export function* writeScopedCredentialSteps(
+type ScopedCredential = { workspace: string; value: string; updatedAt: number };
+
+export function* scopedCredentialsSteps(
+  q: Q,
+  secretsDir: string,
+  kind: CredentialKind,
+): Steps<ScopedCredential[]> {
+  const rows = yield* credentialRowsSteps(q, kind);
+  return rows.map((row) => ({
+    workspace: row.workspace,
+    updatedAt: row.updatedAt,
+    value: openSecret(secretsDir, context({ kind, workspace: row.workspace }), row.ciphertext),
+  }));
+}
+
+export function* replaceScopedCredentialSteps(
   q: Q,
   secretsDir: string,
   key: CredentialKey,
   value: string,
-): Steps<boolean> {
-  return yield* writeCredentialCiphertextSteps(q, key, sealSecret(secretsDir, context(key), value));
-}
-
-export function* deleteScopedCredentialSteps(q: Q, key: CredentialKey): Steps<void> {
-  yield* deleteCredentialCiphertextSteps(q, key);
+  expected: number,
+  now: number,
+): Steps<number | null> {
+  const sealed = sealSecret(secretsDir, context(key), value);
+  return yield* replaceCredentialCiphertextSteps(q, key, sealed, expected, now);
 }
 
 export function readCredential(

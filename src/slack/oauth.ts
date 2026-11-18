@@ -2,11 +2,11 @@ import { join } from "node:path";
 import { pawsPaths } from "../config";
 import {
   readCredentialSteps,
-  readScopedCredentialSteps,
   readSecretFile,
   refreshCredential,
+  replaceScopedCredentialSteps,
+  scopedCredentialsSteps,
   writeCredentialSteps,
-  writeScopedCredentialSteps,
   saveSecret,
 } from "../credentials";
 import { type Db, type Q, type Steps } from "../db";
@@ -24,7 +24,7 @@ export type SlackToken = {
   appId?: string | null;
   teamName?: string | null;
 };
-export type SlackInstallationKey = { workspaceId: string; teamId: string };
+export type InstalledSlackToken = SlackToken & { workspaceId: string; updatedAt: number };
 export type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export function readSlackApp(home: string): SlackApp | null {
@@ -44,43 +44,36 @@ export function resolveSlackApp(
     : null;
 }
 
-export function slackCredentialKey(installation: SlackInstallationKey) {
-  return {
-    kind: "slack" as const,
-    workspace: `${installation.workspaceId}:${installation.teamId}`,
-  };
+export function* installedSlackTokensSteps(q: Q, home: string): Steps<InstalledSlackToken[]> {
+  const rows = yield* scopedCredentialsSteps(q, pawsPaths(home).secretsDir, "slack");
+  return rows
+    .filter((row) => row.workspace !== "installation")
+    .map((row) => ({
+      ...parseJson<SlackToken>(row.value)!,
+      workspaceId: row.workspace,
+      updatedAt: row.updatedAt,
+    }));
+}
+
+export function* installedSlackTokenSteps(q: Q, home: string, workspaceId: string) {
+  return (yield* installedSlackTokensSteps(q, home)).find((row) => row.workspaceId === workspaceId);
+}
+
+export function* saveInstalledSlackTokenSteps(
+  q: Q,
+  home: string,
+  workspaceId: string,
+  token: SlackToken,
+  expected: number,
+): Steps<boolean> {
+  const value = JSON.stringify(token);
+  const key = { kind: "slack" as const, workspace: workspaceId };
+  const dir = pawsPaths(home).secretsDir;
+  return (yield* replaceScopedCredentialSteps(q, dir, key, value, expected, Date.now())) !== null;
 }
 
 function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {
   return parseJson<SlackToken>(yield* readCredentialSteps(q, pawsPaths(home).secretsDir, "slack"));
-}
-
-export function* readInstalledSlackTokenSteps(
-  q: Q,
-  home: string,
-  installation: SlackInstallationKey,
-): Steps<SlackToken | null> {
-  return parseJson<SlackToken>(
-    yield* readScopedCredentialSteps(
-      q,
-      pawsPaths(home).secretsDir,
-      slackCredentialKey(installation),
-    ),
-  );
-}
-
-export function* writeInstalledSlackTokenSteps(
-  q: Q,
-  home: string,
-  installation: SlackInstallationKey,
-  token: SlackToken,
-): Steps<boolean> {
-  return yield* writeScopedCredentialSteps(
-    q,
-    pawsPaths(home).secretsDir,
-    slackCredentialKey(installation),
-    JSON.stringify(token),
-  );
 }
 
 export function readSlackToken(store: Db, home: string): Promise<SlackToken | null> {
@@ -124,37 +117,20 @@ export async function loginSlack(input: {
   return token;
 }
 
-export function createSlackAuth(input: {
-  home: string;
-  db: Db;
-  fetch?: SlackFetch;
-  installation?: SlackInstallationKey;
-  env?: Record<string, string | undefined>;
-}) {
-  const installation = input.installation;
-  const missing = installation
-    ? "Reconnect Slack in Workspace › Integrations."
-    : "Run paws login slack.";
-  const read = (q: Q) =>
-    installation
-      ? readInstalledSlackTokenSteps(q, input.home, installation)
-      : readSlackTokenSteps(q, input.home);
+export function createSlackAuth(input: { home: string; db: Db; fetch?: SlackFetch }) {
   return {
     async ensureFresh(): Promise<string> {
-      const current = await input.db.run(read);
-      if (current === null) throw new Error(missing);
+      const current = await readSlackToken(input.db, input.home);
+      if (current === null) throw new Error("Run paws login slack.");
       if (current.expiresAtMs === null || current.expiresAtMs > Date.now() + 60_000)
         return current.accessToken;
-      const app = resolveSlackApp(input.home, input.env ?? {});
-      if (app === null) throw new Error(missing);
+      const app = readSlackApp(input.home);
+      if (app === null) throw new Error("Run paws login slack.");
       const saved = await refreshCredential({
         db: input.db,
-        identity: installation ? slackCredentialKey(installation).workspace : "slack",
-        read,
-        write: (q, token) =>
-          installation
-            ? writeInstalledSlackTokenSteps(q, input.home, installation, token)
-            : writeSlackTokenSteps(q, input.home, token),
+        identity: "slack",
+        read: (q) => readSlackTokenSteps(q, input.home),
+        write: (q, token) => writeSlackTokenSteps(q, input.home, token),
         refresh: (token, signal) =>
           requestSlackToken(
             app,
@@ -165,7 +141,6 @@ export function createSlackAuth(input: {
             input.fetch ?? fetch,
             signal,
             token,
-            installation ? [] : undefined,
           ),
       });
       return saved.accessToken;

@@ -3,6 +3,7 @@ import { setSettingsAdmin, type SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
+import { initializeWorkspaceSlack } from "./workspace-slack";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
 import { initializeWorkspaceMembers } from "./workspace-members";
 import { routeHref } from "./route";
@@ -205,6 +206,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   initializeWorkspaceAttribution(root, session.csrfToken);
   if (session.role === "admin") {
     initializeWorkspaceGitHub(root, session.csrfToken, true);
+    initializeWorkspaceSlack(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
   showWorkspaceSettingsPage(page());

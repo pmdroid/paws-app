@@ -1,17 +1,15 @@
 import {
-  activeSlackTeamSteps,
   auditWorkspaceAccessSteps,
-  claimSlackOAuthSteps,
-  ensureSlackInstallationSteps,
-  finishSlackOAuthSteps,
-  insertSlackOAuthSteps,
-  saveSlackInstallationSteps,
-  slackInstallationSteps,
+  claimGithubOAuthSteps,
+  deleteCredentialCiphertextSteps,
+  completeGithubOAuthSteps,
+  failGithubOAuthSteps,
+  githubOAuthStateExistsSteps,
+  insertGithubOAuthSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type Db,
   type Q,
-  type SlackOAuthIntent,
   type Steps,
 } from "../db";
 import {
@@ -22,37 +20,22 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../workspace";
-import { deleteScopedCredentialSteps } from "../credentials";
 import { dashboardUrl } from "../dashboard-links";
 import { journalCaught } from "../journal";
 import {
-  readInstalledSlackTokenSteps,
-  readSlackToken,
+  installedSlackTokenSteps,
+  installedSlackTokensSteps,
   requestSlackToken,
   resolveSlackApp,
-  writeInstalledSlackTokenSteps,
+  saveInstalledSlackTokenSteps,
   type SlackFetch,
   type SlackToken,
 } from "./oauth";
-import {
-  SLACK_CALLBACK_PATH,
-  SLACK_EVENTS_PATH,
-  SLACK_INSTALL_SCOPES,
-  slackAppManifest,
-  slackCapabilities,
-} from "./manifest";
-import { dropSlackCredentialSteps, endSlackInstallationSteps } from "./installation";
+import { SLACK_CALLBACK_PATH, SLACK_INSTALL_SCOPES, slackCapabilities } from "./manifest";
 
 const STATUS = "/api/workspaces/slack";
 const CONNECT = "/api/workspaces/slack/connect";
-const ADOPT = "/api/workspaces/slack/adopt";
-const STATE_MS = 10 * 60_000;
-const SLACK_ID = /^[A-Z0-9]{6,20}$/;
-const INTENTS: readonly SlackOAuthIntent[] = ["install", "reconnect", "replace"];
-
-type Outcome =
-  | { ok: true; teamId: string; appId: string }
-  | { ok: false; code: "different_team" | "team_taken" | "conflict" | "forbidden" | "failed" };
+const IDENTITY = ["teamId", "teamName", "appId", "botUserId"];
 
 export function createSlackConnect(options: {
   store: Db;
@@ -62,119 +45,75 @@ export function createSlackConnect(options: {
   fetch?: SlackFetch;
   now?: () => number;
 }) {
-  const { store, home } = options;
+  const { store, home, env } = options;
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
   const slackFetch = options.fetch ?? fetch;
   const redirectUri = origin + SLACK_CALLBACK_PATH;
-  const integrations = (code: string) =>
+  const back = (code: string) =>
     redirect(`${dashboardUrl(origin, "/workspace/integrations")}?slack=${code}`);
-
   function* adminSteps(q: Q, principal: WorkspacePrincipal): Steps<boolean> {
     const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
   }
-  const auditSteps = (q: Q, principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccessSteps(q, {
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      action,
-      subject,
-      now: now(),
-    });
+  const auditSteps = (q: Q, principal: WorkspacePrincipal, action: string, subject = "slack") =>
+    auditWorkspaceAccessSteps(q, { ...principal, action, subject, now: now() });
 
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
-    if (![STATUS, CONNECT, ADOPT, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
+    if (![STATUS, CONNECT, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
     const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
-    if (url.pathname === SLACK_CALLBACK_PATH) return callback(url, access);
     const principal = access?.principal;
+    if (url.pathname === SLACK_CALLBACK_PATH) {
+      if (!principal) return back("forbidden");
+      return callback(url, principal, access!.session.tokenHash);
+    }
     const unsafe = request.method !== "GET";
-    const allowed =
-      principal !== undefined &&
-      (await store.run((q) => adminSteps(q, principal))) &&
-      (!unsafe ||
-        (request.headers.get("origin") === origin && validWorkspaceCsrf(request, access!.session)));
-    if (!allowed) {
+    if (
+      !principal ||
+      !(await store.run((q) => adminSteps(q, principal))) ||
+      (unsafe &&
+        (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access!.session)))
+    ) {
       if (principal)
         await store.run((q) => auditSteps(q, principal, "access.denied", url.pathname));
-      return json(
-        { code: "admin_required", error: "Ask a workspace admin to connect Slack." },
-        principal ? 403 : 401,
-      );
+      return json({ error: "Ask a workspace admin to connect Slack." }, principal ? 403 : 401);
     }
-    const { workspaceId } = principal;
-    if (url.pathname === STATUS && request.method === "GET") return json(await status(workspaceId));
-    if (url.pathname === STATUS && request.method === "DELETE")
-      return json(await disconnect(principal));
+    if (url.pathname === STATUS && request.method === "GET") return json(await status(principal));
+    if (url.pathname === STATUS && request.method === "DELETE") return disconnect(principal);
     if (url.pathname === CONNECT && request.method === "POST")
-      return connect(request, principal, access!.session.tokenHash);
-    if (url.pathname === ADOPT && request.method === "POST") return adopt(principal);
+      return connect(principal, access!.session.tokenHash);
     return json({ error: "Method not allowed." }, 405);
   };
 
-  async function status(workspaceId: string) {
-    const installation = await store.run((q) => slackInstallationSteps(q, workspaceId));
-    const cli = await readSlackToken(store, home).catch(() => null);
-    const active = installation?.status === "active" ? installation : null;
+  async function status(principal: WorkspacePrincipal) {
+    const token = await store.run((q) => installedSlackTokenSteps(q, home, principal.workspaceId));
     return {
-      configured: resolveSlackApp(home, options.env) !== null,
+      configured: resolveSlackApp(home, env) !== null,
       redirectUrl: redirectUri,
-      eventsUrl: origin + SLACK_EVENTS_PATH,
-      manifest: slackAppManifest(origin),
-      connection: installation?.teamId
-        ? {
-            status: installation.status,
-            teamId: installation.teamId,
-            teamName: installation.teamName,
-            appId: installation.appId,
-            botUserId: installation.botUserId,
-            source: installation.source,
-            updatedAt: installation.updatedAt,
-          }
-        : null,
-      capabilities: active ? slackCapabilities(active.scope) : null,
-      cli: cli ? { teamId: cli.teamId, botUserId: cli.botUserId } : null,
+      eventsUrl: `${origin}/webhooks/slack`,
+      connection: token ? JSON.parse(JSON.stringify(token, IDENTITY)) : null,
+      capabilities: token ? slackCapabilities(token.scope) : null,
     };
   }
 
-  async function connect(request: Request, principal: WorkspacePrincipal, sessionHash: string) {
-    const app = resolveSlackApp(home, options.env);
-    if (!app)
-      return json(
-        { error: "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET first." },
-        409,
-      );
-    const body = (await request.json().catch(() => null)) as {
-      intent?: unknown;
-      returnTo?: { teamId?: unknown; channelId?: unknown };
-    } | null;
-    const intent = INTENTS.find((value) => value === body?.intent);
-    const teamId = body?.returnTo?.teamId;
-    const channelId = body?.returnTo?.channelId;
-    if (
-      !intent ||
-      (teamId !== undefined && (typeof teamId !== "string" || !SLACK_ID.test(teamId))) ||
-      (channelId !== undefined &&
-        (typeof channelId !== "string" || !SLACK_ID.test(channelId) || teamId === undefined))
-    )
-      return json({ error: "Choose install, reconnect or replace." }, 400);
+  async function connect(principal: WorkspacePrincipal, sessionHash: string) {
+    const app = resolveSlackApp(home, env);
+    if (!app) return json({ error: "Set the Slack app credentials on the server first." }, 409);
     const state = workspaceSecret();
     await store.transaction(function* (q) {
-      yield* ensureSlackInstallationSteps(q, principal.workspaceId, now());
-      const current = (yield* slackInstallationSteps(q, principal.workspaceId))!;
-      yield* insertSlackOAuthSteps(q, {
+      const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
+      yield* insertGithubOAuthSteps(q, {
         stateHash: workspaceTokenHash(state),
         workspaceId: principal.workspaceId,
         userId: principal.userId,
         sessionHash,
-        intent,
-        expectedGeneration: current.generation,
-        returnTeamId: (teamId as string | undefined) ?? null,
-        returnChannelId: (channelId as string | undefined) ?? null,
-        expiresAt: now() + STATE_MS,
+        secretId: "slack",
+        expectedGeneration: current?.updatedAt ?? 0,
+        intent: JSON.stringify({ kind: "slack" }),
+        expiresAt: now() + 10 * 60_000,
       });
-      yield* auditSteps(q, principal, `slack.${intent}.started`, "slack");
+      yield* auditSteps(q, principal, "slack.started");
     });
     const target = new URL("https://slack.com/oauth/v2/authorize");
     target.search = new URLSearchParams({
@@ -182,197 +121,77 @@ export function createSlackConnect(options: {
       scope: SLACK_INSTALL_SCOPES.join(","),
       state,
       redirect_uri: redirectUri,
-      ...(typeof teamId === "string" ? { team: teamId } : {}),
     }).toString();
     return json({ url: target.href });
   }
 
-  async function callback(
-    url: URL,
-    access: { principal: WorkspacePrincipal; session: { tokenHash: string } } | null,
-  ): Promise<Response> {
-    const state = url.searchParams.get("state");
-    const claimed = state
-      ? await store.run((q) => claimSlackOAuthSteps(q, workspaceTokenHash(state), now()))
-      : undefined;
-    if (!claimed) return integrations("expired");
-    const principal = access?.principal;
-    const fail = async (code: string, action = `slack.${claimed.intent}.failed`) => {
+  async function callback(url: URL, principal: WorkspacePrincipal, sessionHash: string) {
+    const state = url.searchParams.get("state") ?? "";
+    const requester = { ...principal, sessionHash };
+    const hash = workspaceTokenHash(state);
+    const claimed = await store.run(function* (q) {
+      if (state.length > 128 || !(yield* githubOAuthStateExistsSteps(q, hash, "slack"))) return;
+      return yield* claimGithubOAuthSteps(q, hash, requester, now());
+    });
+    if (!claimed) return back("expired");
+    const fail = async (code: string) => {
       await store.transaction(function* (q) {
-        yield* finishSlackOAuthSteps(q, claimed.stateHash, "failed");
-        if (principal) yield* auditSteps(q, principal, action, "slack");
+        yield* failGithubOAuthSteps(q, claimed.state_hash, true);
+        yield* auditSteps(q, principal, `slack.${code}`);
       });
-      return integrations(code);
+      return back(code);
     };
-    const sameRequester = (q: Q) =>
-      (function* () {
-        return (
-          principal !== undefined &&
-          access!.session.tokenHash === claimed.sessionHash &&
-          principal.workspaceId === claimed.workspaceId &&
-          principal.userId === claimed.userId &&
-          (yield* adminSteps(q, principal))
-        );
-      })();
-    if (!(await store.run(sameRequester))) return fail("forbidden", "access.denied");
-    if (url.searchParams.has("error")) return fail("denied", `slack.${claimed.intent}.denied`);
+    if (!(await store.run((q) => adminSteps(q, principal)))) return fail("forbidden");
+    if (url.searchParams.has("error")) return fail("denied");
     const code = url.searchParams.get("code");
-    const app = resolveSlackApp(home, options.env);
+    const app = resolveSlackApp(home, env);
     if (!code || !app) return fail("failed");
     let token: SlackToken;
     try {
-      token = await requestSlackToken(
-        app,
-        new URLSearchParams({ code, redirect_uri: redirectUri }),
-        slackFetch,
-        AbortSignal.timeout(15_000),
-        undefined,
-        [],
-      );
-      if (!token.appId || !(await verifyBot(token, slackFetch)))
-        throw new Error("Slack returned an unverified bot.");
-      if (options.env.SLACK_APP_ID && token.appId !== options.env.SLACK_APP_ID)
+      const body = new URLSearchParams({ code, redirect_uri: redirectUri });
+      const signal = AbortSignal.timeout(15_000);
+      token = await requestSlackToken(app, body, slackFetch, signal, undefined, []);
+      if (!token.appId || (env.SLACK_APP_ID && token.appId !== env.SLACK_APP_ID))
         throw new Error("Slack returned a different app.");
     } catch (caught) {
       journalCaught(caught, "slack.connect.exchange", null);
       return fail("failed");
     }
-    const outcome = await store
-      .transaction(function* (q): Steps<Outcome> {
-        if (!(yield* sameRequester(q))) return { ok: false, code: "forbidden" };
-        const current = (yield* slackInstallationSteps(q, claimed.workspaceId))!;
-        if (current.generation !== claimed.expectedGeneration)
-          return { ok: false, code: "conflict" };
-        const elsewhere = yield* activeSlackTeamSteps(q, token.teamId);
-        if (elsewhere && elsewhere.workspaceId !== claimed.workspaceId)
-          return { ok: false, code: "team_taken" };
-        const switching = current.status === "active" && current.teamId !== token.teamId;
-        if (switching && claimed.intent !== "replace") return { ok: false, code: "different_team" };
-        if (current.status === "active" && current.appId && current.appId !== token.appId)
-          return { ok: false, code: "different_team" };
-        const saved = yield* saveSlackInstallationSteps(q, {
-          workspaceId: claimed.workspaceId,
-          expectedGeneration: current.generation,
-          status: "active",
-          actorId: claimed.userId,
-          now: now(),
-          identity: { ...identityOf(token), source: "oauth" },
-        });
-        if (!saved) return { ok: false, code: "conflict" };
-        if (switching) yield* dropSlackCredentialSteps(q, current);
-        yield* writeInstalledSlackTokenSteps(
-          q,
-          home,
-          { workspaceId: claimed.workspaceId, teamId: token.teamId },
-          token,
-        );
-        yield* finishSlackOAuthSteps(q, claimed.stateHash, "complete");
-        yield* auditSteps(
-          q,
-          principal!,
-          `slack.${claimed.intent}.completed`,
-          `slack:${token.teamId}`,
-        );
-        return { ok: true, teamId: token.teamId, appId: token.appId! };
-      })
-      .catch(taken);
-    if (!outcome.ok) return fail(outcome.code);
-    if (claimed.returnTeamId === outcome.teamId) {
-      const target = new URL("https://slack.com/app_redirect");
-      target.search = new URLSearchParams({
-        team: outcome.teamId,
-        ...(claimed.returnChannelId
-          ? { channel: claimed.returnChannelId }
-          : { app: outcome.appId }),
-      }).toString();
-      return redirect(target.href);
-    }
-    return integrations("connected");
+    const saved = await store.transaction(function* (q) {
+      if (!(yield* adminSteps(q, principal))) return "forbidden";
+      const all = yield* installedSlackTokensSteps(q, home);
+      const current = all.find((row) => row.workspaceId === principal.workspaceId);
+      const expected = claimed.expected_generation;
+      if ((current?.updatedAt ?? 0) !== expected) return "conflict";
+      if (all.some((row) => row !== current && row.teamId === token.teamId)) return "team_taken";
+      if (current && (current.teamId !== token.teamId || current.appId !== token.appId))
+        return "different_team";
+      if (!(yield* saveInstalledSlackTokenSteps(q, home, principal.workspaceId, token, expected)))
+        return "conflict";
+      yield* completeGithubOAuthSteps(q, claimed.state_hash);
+      yield* auditSteps(q, principal, "slack.connected", `slack:${token.teamId}`);
+      return "connected";
+    });
+    return saved === "connected" ? back(saved) : fail(saved);
   }
 
   async function disconnect(principal: WorkspacePrincipal) {
     const ended = await store.transaction(function* (q) {
-      const current = yield* slackInstallationSteps(q, principal.workspaceId);
-      if (current?.status !== "active" || !current.teamId) return null;
-      const key = { workspaceId: principal.workspaceId, teamId: current.teamId };
-      const token = yield* readInstalledSlackTokenSteps(q, home, key);
-      yield* endSlackInstallationSteps(q, current, "disconnected", principal.userId, now());
+      const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
+      const key = { kind: "slack" as const, workspace: principal.workspaceId };
+      if (!current || !(yield* deleteCredentialCiphertextSteps(q, key, current.updatedAt)))
+        return null;
       yield* auditSteps(q, principal, "slack.disconnected", `slack:${current.teamId}`);
-      return token;
+      return current;
     });
-    if (ended)
-      await slackFetch("https://slack.com/api/auth.revoke", {
-        method: "POST",
-        headers: { authorization: `Bearer ${ended.accessToken}` },
-        signal: AbortSignal.timeout(10_000),
-      }).catch((caught: unknown) => journalCaught(caught, "slack.connect.revoke", null));
-    return { ok: true };
+    if (!ended) return json({ error: "Slack is not connected, or it just changed." }, 409);
+    await slackFetch("https://slack.com/api/auth.revoke", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ended.accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caught: unknown) => journalCaught(caught, "slack.connect.revoke", null));
+    return json({ ok: true });
   }
-
-  async function adopt(principal: WorkspacePrincipal) {
-    const cli = await readSlackToken(store, home).catch(() => null);
-    if (!cli) return json({ error: "No Slack connection from paws login slack was found." }, 404);
-    if (!(await verifyBot(cli, slackFetch).catch(() => false)))
-      return json({ error: "Slack no longer accepts the paws login slack connection." }, 409);
-    const outcome = await store
-      .transaction(function* (q): Steps<Outcome> {
-        if (!(yield* adminSteps(q, principal))) return { ok: false, code: "forbidden" };
-        yield* ensureSlackInstallationSteps(q, principal.workspaceId, now());
-        const current = (yield* slackInstallationSteps(q, principal.workspaceId))!;
-        const elsewhere = yield* activeSlackTeamSteps(q, cli.teamId);
-        if (elsewhere && elsewhere.workspaceId !== principal.workspaceId)
-          return { ok: false, code: "team_taken" };
-        if (current.status === "active") return { ok: false, code: "different_team" };
-        const saved = yield* saveSlackInstallationSteps(q, {
-          workspaceId: principal.workspaceId,
-          expectedGeneration: current.generation,
-          status: "active",
-          actorId: principal.userId,
-          now: now(),
-          identity: { ...identityOf(cli), source: "cli" },
-        });
-        if (!saved) return { ok: false, code: "conflict" };
-        yield* writeInstalledSlackTokenSteps(
-          q,
-          home,
-          { workspaceId: principal.workspaceId, teamId: cli.teamId },
-          cli,
-        );
-        yield* deleteScopedCredentialSteps(q, { kind: "slack", workspace: "installation" });
-        yield* auditSteps(q, principal, "slack.adopted", `slack:${cli.teamId}`);
-        return { ok: true, teamId: cli.teamId, appId: cli.appId ?? "" };
-      })
-      .catch(taken);
-    return outcome.ok
-      ? json({ ok: true, teamId: outcome.teamId })
-      : json({ code: outcome.code, error: "Disconnect the current Slack connection first." }, 409);
-  }
-}
-
-// A concurrent install of the same team elsewhere trips the active-team unique index.
-function taken(caught: unknown): Outcome {
-  journalCaught(caught, "slack.connect.save", null);
-  return { ok: false, code: "team_taken" };
-}
-
-function identityOf(token: SlackToken) {
-  return {
-    teamId: token.teamId,
-    teamName: token.teamName ?? null,
-    appId: token.appId ?? null,
-    botUserId: token.botUserId,
-    scope: token.scope,
-  };
-}
-
-async function verifyBot(token: SlackToken, slackFetch: SlackFetch): Promise<boolean> {
-  const response = await slackFetch("https://slack.com/api/auth.test", {
-    method: "POST",
-    headers: { authorization: `Bearer ${token.accessToken}` },
-    signal: AbortSignal.timeout(10_000),
-  });
-  const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-  return data?.ok === true && data.team_id === token.teamId && data.user_id === token.botUserId;
 }
 
 function json(body: unknown, status = 200): Response {

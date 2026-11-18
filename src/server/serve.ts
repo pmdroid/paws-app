@@ -10,7 +10,7 @@ import {
   refreshingInstallations,
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
-import { createSlackConnect, handleSlackWebhook, revokeSlackTeam } from "../slack";
+import { createSlackConnect, handleSlackWebhook } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
@@ -465,12 +465,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })(request))!;
     }
     if (
-      [
-        "/api/workspaces/slack",
-        "/api/workspaces/slack/connect",
-        "/api/workspaces/slack/adopt",
-        "/oauth/slack/callback",
-      ].includes(path) &&
+      (path === "/oauth/slack/callback" || path.startsWith("/api/workspaces/slack")) &&
       secrets.store
     ) {
       try {
@@ -939,15 +934,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
     return new Response(status.body, { status: status.status, headers });
   }
-  if (path === "/webhooks/slack") {
-    const store = secrets.store;
-    return handleSlackWebhook(
-      request,
-      secrets.slackSigningSecret,
-      Date.now(),
-      store ? (event) => revokeSlackTeam(store, event) : undefined,
-    );
-  }
+  if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (request.method === "POST" && path === "/webhooks/github") {
       const saved = loadGitHubAppCredentials(

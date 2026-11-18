@@ -15,4 +15,3 @@ export * from "./asks";
 export * from "./accounts";
 export * from "./workspace";
 export * from "./project-context";
-export * from "./slack";
