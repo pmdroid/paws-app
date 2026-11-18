@@ -134,6 +134,6 @@ test("an index over the cap drops lines from the end and says how many more entr
   );
   expect(listed.slice(0, 2).every((line) => line.startsWith("- [decision] "))).toBe(true);
   expect(manifest.sources.map((source) => source.recordId)).toEqual(
-    listed.map((line) => line.match(/, id (\S+)\)$/)![1]),
+    listed.map((line) => line.match(/, id (\S+)\)$/)![1]!),
   );
 });
