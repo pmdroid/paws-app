@@ -402,32 +402,22 @@ try {
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await expect(admin.getByLabel("Grok binary path")).toHaveValue("");
-    await admin.getByLabel("Grok binary path").fill("/opt/grok");
-    await admin.getByLabel("OpenCode binary path").fill("/opt/opencode");
-    await admin.getByLabel("Let Grok use XAI_API_KEY").check();
+    await expect(admin.getByRole("heading", { name: "Agent commands" })).toHaveCount(0);
+    await expect(admin.getByLabel("Grok binary path")).toHaveCount(0);
     await admin.route("**/api/settings/agents", async (route) => {
       const body = route.request().postDataJSON();
-      expect(body.grok).toEqual({ path: "/opt/grok", allowApiKey: true });
-      expect(body.opencode).toEqual({ path: "/opt/opencode" });
-      await route.fulfill({ status: 400, json: { error: "grok.path must be an absolute path" } });
+      expect(body).not.toHaveProperty("grok");
+      expect(body).not.toHaveProperty("opencode");
+      await route.fulfill({ json: body });
     });
-    await admin.getByRole("button", { name: "Save settings", exact: true }).click();
-    await expect(
-      admin.getByRole("alert").filter({ hasText: "grok.path must be an absolute path" }),
-    ).toBeVisible();
-    await expect(admin.getByLabel("Grok binary path")).toHaveValue("/opt/grok");
-    await admin.route("**/api/settings/agents", async (route) =>
-      route.fulfill({ json: route.request().postDataJSON() }),
-    );
     await admin.getByRole("button", { name: "Save settings", exact: true }).click();
     await expect(
       admin.getByText("Agent settings saved. New work will use these profiles."),
     ).toBeVisible();
-    await expect(admin.getByLabel("Grok binary path")).toHaveValue("/opt/grok");
-    await expect(admin.getByLabel("OpenCode binary path")).toHaveValue("/opt/opencode");
-    await expect(admin.getByLabel("Let Grok use XAI_API_KEY")).toBeChecked();
-    await admin.screenshot({ path: join(out, `agent-commands-${width}.png`), fullPage: true });
+    await admin.screenshot({
+      path: join(out, `agent-settings-saved-${width}.png`),
+      fullPage: true,
+    });
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
     await page.route("**/api/runners", (route) =>
