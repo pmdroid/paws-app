@@ -9,6 +9,12 @@ import { renderMarkup } from "./theme";
 const AGENTS = { claude: "Claude", codex: "Codex", grok: "Grok", opencode: "OpenCode" } as const;
 type Agent = keyof typeof AGENTS;
 const PROVIDERS = { codex: "Codex", grok: "xAI", opencode: "OpenCode Console" } as const;
+const KEY_PROVIDERS = {
+  claude: "Anthropic",
+  codex: "OpenAI",
+  grok: "xAI",
+  opencode: "OpenRouter",
+} as const;
 
 export type CentralAccount = {
   id: string;
@@ -17,6 +23,7 @@ export type CentralAccount = {
   extraUsage: boolean;
   enabled?: boolean;
   signingIn: boolean;
+  auth?: "api_key";
   health?: "healthy" | "expiring";
   credential: { refreshedAt: number; runner: string | null; expiresAt?: number } | null;
   usage: AgentAccountUsage | null;
@@ -30,6 +37,7 @@ export type AccountsView = {
   rowError?: { id: string; message: string } | null;
   confirm: string | null;
   removing?: string | null;
+  apiKey?: string | null;
 };
 
 const DAY = 86_400_000;
@@ -86,6 +94,8 @@ function accountStatus(account: CentralAccount, runners: Record<string, string> 
 
 function accountUsage(account: CentralAccount): string {
   const usage = account.usage;
+  if (account.auth === "api_key" && account.credential)
+    return '<p class="sub" data-account-usage>API key · billed per use</p>';
   if (!usage) return account.credential ? '<p class="sub">Usage not reported yet</p>' : "";
   const soon = (time: number) => when(time, time - Date.now() > DAY / 2);
   const meters = usage.limits
@@ -111,6 +121,10 @@ function tokenForm(account: CentralAccount, busy: string): string {
   return account.credential
     ? `<details class="acct-token"><summary>Replace setup token</summary>${fields}</details>`
     : `<div class="acct-token">${fields}</div>`;
+}
+
+function apiKeyForm(account: CentralAccount, busy: string): string {
+  return `<div class="acct-token"><form class="acct-token-form" data-account-api-key><label class="field"><span>API key</span><input type="password" name="key" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="${KEY_PROVIDERS[account.agent]} API key"></label><button class="btn primary" type="submit"${busy}>Save key</button></form></div>`;
 }
 
 function accountCard(account: CentralAccount, index: number, count: number, view: AccountsView) {
@@ -153,8 +167,14 @@ function accountCard(account: CentralAccount, index: number, count: number, view
       : "";
   const toggle = `<button class="btn" type="button" data-account-action="${account.enabled === false ? "enable" : "disable"}"${busy}>${account.enabled === false ? "Enable" : "Disable"}</button>`;
   const remove = `<button class="btn danger" type="button" data-account-action="remove"${busy}>Remove</button>`;
-  const actions = `<div class="acct-actions">${signIn}${signOut}${toggle}${remove}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
-  const token = account.agent === "claude" ? tokenForm(account, busy) : "";
+  const keyOpen = view.apiKey === account.id;
+  const useKey = `<button class="btn" type="button" data-account-action="${keyOpen ? "api-key-cancel" : "api-key"}"${keyOpen ? "" : busy}>${keyOpen ? "Cancel" : "Use an API key"}</button>`;
+  const actions = `<div class="acct-actions">${signIn}${useKey}${signOut}${toggle}${remove}<label class="acct-extra"><input type="checkbox" data-account-action="extra-usage"${account.extraUsage ? " checked" : ""}${busy}><span>Keep running on extra usage</span></label>${move}</div>`;
+  const token = keyOpen
+    ? apiKeyForm(account, busy)
+    : account.agent === "claude"
+      ? tokenForm(account, busy)
+      : "";
   return `${open}${count > 1 ? ' draggable="true"' : ""}><div class="card acct-card">${head}${token}${actions}</div></li>`;
 }
 
@@ -180,7 +200,7 @@ export function renderAgentAccountSettings(view: AccountsView): string {
     ([id, name]) => `<option value="${id}">${name}</option>`,
   );
   const add = view.canManage
-    ? `<div class="card acct-add"><h2>Add an account</h2><form data-account-add class="acct-add-form"><label class="field"><span>Agent</span><select name="agent">${options.join("")}</select></label><label class="field"><span>Account name</span><input name="label" required maxlength="80" autocomplete="off" placeholder="Work"></label><button class="btn primary" type="submit"${view.busy ? " disabled" : ""}>Add account</button></form></div>`
+    ? `<div class="card acct-add"><h2>Add an account</h2><form data-account-add class="acct-add-form"><label class="field"><span>Agent</span><select name="agent">${options.join("")}</select></label><label class="field"><span>Sign in with</span><select name="auth"><option value="subscription" selected>Subscription</option><option value="api_key">API key</option></select></label><label class="field"><span>Account name</span><input name="label" required maxlength="80" autocomplete="off" placeholder="Work"></label><button class="btn primary" type="submit"${view.busy ? " disabled" : ""}>Add account</button></form></div>`
     : "";
   const runnerless =
     view.canManage && view.runners !== null && !Object.keys(view.runners).length
@@ -256,7 +276,8 @@ export function createAgentAccountSettings(): {
     } catch (error) {
       journalCaught(error, "agent-account-settings.run", null);
       const message = error instanceof Error ? error.message : "Try again.";
-      if (id && (error as { status?: number }).status === 403 && NOT_YOURS.has(message))
+      const status = (error as { status?: number }).status;
+      if (id && ((status === 403 && NOT_YOURS.has(message)) || view.apiKey === id))
         view.rowError = { id, message };
       else view.error = message;
     }
@@ -307,7 +328,12 @@ export function createAgentAccountSettings(): {
           }),
         id,
       );
-    else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id), id);
+    else if (action === "api-key" || action === "api-key-cancel") {
+      view.apiKey = action === "api-key" ? id : null;
+      view.rowError = null;
+      paint();
+      root?.querySelector<HTMLInputElement>("[data-account-api-key] input")?.focus();
+    } else if (action === "sign-in") void run("Starting sign-in…", () => signIn(id), id);
     else if (action === "sign-out" || action === "keep") {
       view.confirm = action === "keep" ? null : id;
       view.removing = null;
@@ -357,14 +383,38 @@ export function createAgentAccountSettings(): {
         );
       return;
     }
+    if (form.matches("[data-account-api-key]")) {
+      event.preventDefault();
+      const id = form.closest<HTMLElement>("[data-account-id]")?.dataset.accountId;
+      const input = form.querySelector<HTMLInputElement>("input")!;
+      const key = input.value.trim();
+      input.value = "";
+      if (id && key)
+        void run(
+          "Checking the key…",
+          async () => {
+            await request(`/api/runners/agent-accounts/${encodeURIComponent(id)}/api-key`, "PUT", {
+              key,
+            });
+            view.apiKey = null;
+          },
+          id,
+        );
+      return;
+    }
     if (!form.matches("[data-account-add]")) return;
     event.preventDefault();
-    const agent = form.querySelector<HTMLSelectElement>("select")!.value;
+    const agent = form.querySelector<HTMLSelectElement>('select[name="agent"]')!.value;
+    const auth = form.querySelector<HTMLSelectElement>('select[name="auth"]')!.value;
     const label = form.querySelector<HTMLInputElement>("input")!.value.trim();
     if (label)
-      void run("Adding the account…", () =>
-        request("/api/runners/agent-accounts", "POST", { agent, label }),
-      );
+      void run("Adding the account…", async () => {
+        const created = await request<{ id: string }>("/api/runners/agent-accounts", "POST", {
+          agent,
+          label,
+        });
+        if (auth === "api_key") view.apiKey = created.id;
+      });
   };
   const dragstart = (event: Event) => {
     dragged =

@@ -659,7 +659,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("acct-add-form"))
     return styled(
-      "grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-[12rem_minmax(0,1fr)_auto] [&>button]:justify-self-start",
+      "grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-[12rem_12rem_minmax(0,1fr)_auto] [&>button]:justify-self-start",
     );
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);

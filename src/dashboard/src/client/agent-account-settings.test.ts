@@ -26,6 +26,7 @@ let runners: { id: string; name: string; ownerUserId: string }[] | null;
 let agent: CentralAccount["agent"];
 let deviceState: string;
 let polls: number;
+let keyed: boolean;
 
 beforeEach(() => {
   window = new Window({ url: `${ENGINE}/settings/agent-accounts` });
@@ -46,6 +47,7 @@ beforeEach(() => {
   agent = "claude";
   deviceState = "pending";
   polls = 0;
+  keyed = false;
   window.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
   };
@@ -78,10 +80,23 @@ beforeEach(() => {
         expiresAt: Date.now() + 300000,
       });
     }
+    if (pathname.endsWith("/api-key")) keyed = true;
+    if (method === "POST" && pathname === "/api/runners/agent-accounts")
+      return Response.json({ id: "A1" }, { status: 201 });
     if (method !== "GET") return Response.json({ ok: true });
+    const first = { ...account("A1", "Work"), agent };
     return Response.json({
       canManage,
-      accounts: [{ ...account("A1", "Work"), agent }, account("A2", "Home")],
+      accounts: [
+        keyed
+          ? {
+              ...first,
+              auth: "api_key",
+              usage: { limits: [], observedAt: 0, unavailable: "Billed per use" },
+            }
+          : first,
+        account("A2", "Home"),
+      ],
     });
   }) as typeof fetch;
 });
@@ -423,3 +438,94 @@ for (const manage of [true, false]) {
     expect(window.document.querySelector("[data-account-usage]")).toBeNull();
   });
 }
+
+const submitKey = async (root: HTMLElement, key: string) => {
+  const form = root.querySelector('[data-account-id="A1"] [data-account-api-key]')!;
+  (form.querySelector("input") as unknown as HTMLInputElement).value = key;
+  (form.querySelector("button") as unknown as HTMLButtonElement).click();
+  await settle();
+};
+
+test("adding an API key signs the account in, billed per use, and never shows the key", async () => {
+  const root = await mount();
+  await click(root, "A1", "api-key");
+  const input = root.querySelector(
+    '[data-account-id="A1"] [data-account-api-key] input',
+  ) as unknown as HTMLInputElement;
+  expect(input.type).toBe("password");
+  expect(input.placeholder).toBe("Anthropic API key");
+  await submitKey(root, " sk-proj-secret-123 ");
+  expect(requests).toEqual([
+    {
+      method: "PUT",
+      path: "/api/runners/agent-accounts/A1/api-key",
+      body: { key: "sk-proj-secret-123" },
+    },
+  ]);
+  const card = root.querySelector('[data-account-id="A1"]')!;
+  expect(card.querySelector("[data-account-usage]")?.textContent).toBe("API key · billed per use");
+  expect(card.querySelector(".pill")?.textContent).toBe("Signed in");
+  expect(card.querySelector("progress")).toBeNull();
+  expect(card.querySelector("[data-account-api-key]")).toBeNull();
+  expect(card.querySelector("[data-account-rank]")?.textContent).toBe("1");
+  for (const action of ["sign-out", "disable", "remove", "api-key"])
+    expect(card.querySelector(`[data-account-action="${action}"]`)).not.toBeNull();
+  expect(root.innerHTML).not.toContain("sk-proj-secret-123");
+  for (const field of root.querySelectorAll("input"))
+    expect((field as unknown as HTMLInputElement).value).not.toContain("secret");
+});
+
+test("a rejected API key shows the server's message and keeps the field", async () => {
+  agent = "grok";
+  const root = await mount();
+  await click(root, "A1", "api-key");
+  failure = "This key was not accepted by xAI.";
+  status = 400;
+  await submitKey(root, "xai-bad");
+  const card = root.querySelector('[data-account-id="A1"]')!;
+  expect(card.querySelector("[data-account-error]")?.textContent).toBe(failure);
+  expect(card.querySelector("[data-account-api-key] input")).not.toBeNull();
+  expect(root.innerHTML).not.toContain("xai-bad");
+  await click(root, "A1", "api-key-cancel");
+  expect(root.querySelector("[data-account-api-key]")).toBeNull();
+});
+
+test("the API key placeholder names each agent's provider", () => {
+  for (const [agent, provider] of [
+    ["claude", "Anthropic"],
+    ["codex", "OpenAI"],
+    ["grok", "xAI"],
+    ["opencode", "OpenRouter"],
+  ] as const)
+    expect(
+      renderAgentAccountSettings({
+        canManage: true,
+        accounts: [{ ...account("A1", "Work"), agent }],
+        runners: {},
+        busy: null,
+        error: null,
+        confirm: null,
+        apiKey: "A1",
+      }),
+    ).toContain(`placeholder="${provider} API key"`);
+});
+
+test("adding an account with API key opens its key field; Subscription is the default", async () => {
+  const root = await mount();
+  const form = root.querySelector("[data-account-add]")!;
+  const auth = form.querySelector('select[name="auth"]') as unknown as HTMLSelectElement;
+  expect(auth.value).toBe("subscription");
+  auth.value = "api_key";
+  (form.querySelector("input") as unknown as HTMLInputElement).value = "Keys";
+  (form.querySelector("button") as unknown as HTMLButtonElement).click();
+  await settle();
+  expect(requests).toEqual([
+    {
+      method: "POST",
+      path: "/api/runners/agent-accounts",
+      body: { agent: "claude", label: "Keys" },
+    },
+  ]);
+  expect(root.querySelector('[data-account-id="A1"] [data-account-api-key]')).not.toBeNull();
+  expect(root.querySelector('[data-account-id="A2"] [data-account-api-key]')).toBeNull();
+});
