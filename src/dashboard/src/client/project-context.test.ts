@@ -48,7 +48,9 @@ const record = (id: string, text: string, extra: Partial<ContextViewRecord> = {}
       id: "doc",
       url: "https://linear.app/d",
       revision: "rev-1",
+      label: "Linear document",
     },
+    forgettable: false,
     ...extra,
   }) satisfies ContextViewRecord;
 
@@ -123,7 +125,13 @@ test("a populated view labels the summary, its state, open items, superseded rec
         record("r1", "Old <script>alert(1)</script>", { status: "superseded" }),
         record("r2", "Fixed", {
           corrected: true,
-          source: { kind: "paws_work_item", id: "i", url: "javascript:alert(1)", revision: "r" },
+          source: {
+            kind: "paws_work_item",
+            id: "i",
+            url: "javascript:alert(1)",
+            revision: "r",
+            label: "Agent on PAS-7",
+          },
         }),
       ]),
     }),
@@ -135,6 +143,8 @@ test("a populated view labels the summary, its state, open items, superseded rec
   expect(html).not.toContain("<script>");
   expect(html).not.toContain("javascript:");
   expect(html).toContain("Records covered");
+  expect(html).toContain("Agent on PAS-7");
+  expect(html).toContain("Linear document");
   for (const word of [
     ">Edit<",
     ">Forget<",
@@ -180,9 +190,11 @@ type Pending = { url: string; resolve: (response: Response) => void };
 function mounted() {
   const pending: Pending[] = [];
   const methods: string[] = [];
+  const inits: (RequestInit | undefined)[] = [];
   let search = "";
   const fetcher = ((url: URL, init?: RequestInit) => {
     methods.push(init?.method ?? "GET");
+    inits.push(init);
     return new Promise<Response>((resolve) =>
       pending.push({ url: url.pathname + url.search, resolve }),
     );
@@ -193,6 +205,7 @@ function mounted() {
   const context = createProjectContext({
     fetch: fetcher,
     search: () => search,
+    csrf: () => "csrf-token",
     go: (next) => {
       pages.push(next);
       search = next;
@@ -208,6 +221,7 @@ function mounted() {
     pending,
     pages,
     methods,
+    inits,
     answer,
     setSearch: (next: string) => (search = next),
     mount: (id: string) => context.mount(root, ORIGIN, { view: "context", kind: "project", id }),
@@ -321,4 +335,88 @@ test("the sidebar entry opens the project list, and a row opens that project's p
     id: "alpha-1",
   });
   projects.leave();
+});
+
+const memory = (id: string, text: string, forgettable: boolean) =>
+  record(id, text, {
+    forgettable,
+    source: {
+      kind: "paws_work_item",
+      id: "item-1",
+      url: null,
+      revision: "remember-1",
+      label: "Agent on PAS-12",
+    },
+  });
+
+test("only forgettable work item rows offer Forget; members and Linear documents get none", () => {
+  const records = { ...contextQuery(""), tab: "records" as const };
+  const admin = renderContext(
+    state({
+      query: records,
+      view: contextView("Alpha", [
+        memory("m1", "Agent memory", true),
+        record("doc1", "Document fact"),
+      ]),
+    }),
+  );
+  expect(admin.match(/data-context-forget="/g)).toHaveLength(1);
+  expect(admin).toContain('data-context-forget="m1"');
+  expect(admin).not.toContain('data-context-forget="doc1"');
+  expect(admin).not.toContain("Read-only");
+  const member = renderContext(
+    state({ query: records, view: contextView("Alpha", [memory("m1", "Agent memory", false)]) }),
+  );
+  expect(member).not.toContain("data-context-forget");
+  expect(member).toContain("Agent on PAS-12");
+  expect(member).toContain("Read-only");
+});
+
+test("Forget confirms inline, posts with the CSRF token and refreshes the view", async () => {
+  const page = mounted();
+  page.setSearch("?tab=records");
+  page.mount("alpha");
+  await page.answer(0, {
+    status: "ok",
+    view: contextView("Alpha", [memory("m1", "Agent memory", true)]),
+  });
+  const click = (selector: string) =>
+    (page.root.querySelector(selector) as unknown as HTMLElement).click();
+  click('[data-context-forget="m1"]');
+  expect(page.root.textContent).toContain(
+    "Forget this entry? Agents stop seeing it on their next turn.",
+  );
+  expect(page.pending).toHaveLength(1);
+  click("[data-context-forget-cancel]");
+  expect(page.root.textContent).not.toContain("Forget this entry?");
+  click('[data-context-forget="m1"]');
+  click('[data-context-forget-confirm="m1"]');
+  expect(page.pending[1]!.url).toBe("/api/context/project/alpha/records/m1/forget");
+  expect(page.methods[1]).toBe("POST");
+  expect(new Headers(page.inits[1]!.headers).get("x-paws-csrf")).toBe("csrf-token");
+  expect(page.root.textContent).toContain("Forgetting");
+  await page.answer(1, { status: "forgotten", forgotten: { entries: 1 } });
+  expect(page.pending[2]!.url).toBe("/api/context/project/alpha");
+  await page.answer(2, { status: "ok", view: contextView("Alpha", []) });
+  expect(page.root.textContent).not.toContain("Agent memory");
+  page.context.leave();
+});
+
+test("a refused Forget says so and keeps the entry", async () => {
+  const page = mounted();
+  page.setSearch("?tab=records");
+  page.mount("alpha");
+  await page.answer(0, {
+    status: "ok",
+    view: contextView("Alpha", [memory("m1", "Agent memory", true)]),
+  });
+  const click = (selector: string) =>
+    (page.root.querySelector(selector) as unknown as HTMLElement).click();
+  click('[data-context-forget="m1"]');
+  click('[data-context-forget-confirm="m1"]');
+  await page.answer(1, { status: "unavailable" }, 404);
+  expect(page.root.textContent).toContain("could not forget this entry");
+  expect(page.root.textContent).toContain("Agent memory");
+  expect(page.pending).toHaveLength(2);
+  page.context.leave();
 });

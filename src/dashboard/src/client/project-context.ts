@@ -6,6 +6,7 @@ import type {
   ContextViewSource,
   ContextViewSummary,
 } from "../project-context";
+import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
@@ -20,12 +21,17 @@ export type ContextQuery = {
 
 type Phase = "loading" | "ready" | "unavailable" | "error";
 
+export type ContextForget = { id: string; phase: "confirm" | "sending" | "error" };
+
 export type ContextState = {
   query: ContextQuery;
   phase: Phase;
   view: ContextView | null;
   detail: { phase: Phase; data: ContextViewDetail | null } | null;
+  forget?: ContextForget | null;
 };
+
+export const CONTEXT_FORGET_PROMPT = "Forget this entry? Agents stop seeing it on their next turn.";
 
 export function contextQuery(search: string): ContextQuery {
   const params = new URLSearchParams(search);
@@ -57,12 +63,6 @@ const KIND: Record<string, [string, string]> = {
   inference: ["Inference", ""],
 };
 
-const SOURCE: Record<string, string> = {
-  linear_project_description: "Project description",
-  linear_project_document: "Project document",
-  paws_work_item: "Paws issue",
-};
-
 const SUMMARY_STATE: Record<ContextViewSummary["state"], [string, string]> = {
   current: ["Current", "ok"],
   stale: ["Stale", "warn"],
@@ -84,7 +84,7 @@ function safeUrl(url: string | null): string | null {
 }
 
 function sourceLine(source: ContextViewSource): string {
-  const label = esc(SOURCE[source.kind] ?? "Source");
+  const label = esc(source.label || "Source");
   const url = safeUrl(source.url);
   const name = url
     ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
@@ -92,7 +92,23 @@ function sourceLine(source: ContextViewSource): string {
   return `${name} · <code title="${esc(source.revision)}">${esc(source.revision.slice(0, 18))}</code>`;
 }
 
-function recordRow(item: ContextViewRecord, selected: string | null): string {
+function forgetControl(item: ContextViewRecord, forget: ContextForget | null): string {
+  if (!item.forgettable) return "";
+  if (forget?.id !== item.id)
+    return `<button class="btn sm ghost" type="button" data-context-forget="${esc(item.id)}" aria-label="Forget this entry">Forget</button>`;
+  const sending = forget.phase === "sending";
+  const failed =
+    forget.phase === "error"
+      ? `<p role="alert">Paws could not forget this entry. Try again.</p>`
+      : "";
+  return `<div class="row context-forget" role="group" aria-label="Confirm forgetting this entry"><span>${esc(CONTEXT_FORGET_PROMPT)}</span><button class="btn danger sm" type="button" data-context-forget-confirm="${esc(item.id)}"${sending ? " disabled" : ""}>${sending ? "Forgetting…" : "Forget"}</button><button class="btn sm ghost" type="button" data-context-forget-cancel=""${sending ? " disabled" : ""}>Cancel</button></div>${failed}`;
+}
+
+function recordRow(
+  item: ContextViewRecord,
+  selected: string | null,
+  forget: ContextForget | null,
+): string {
   const status =
     item.status === "superseded"
       ? badge(["Superseded", "bad"])
@@ -100,16 +116,25 @@ function recordRow(item: ContextViewRecord, selected: string | null): string {
         ? badge(["Corrected", "ok"])
         : "";
   const current = item.id === selected;
-  return `<li class="context-record" aria-current="${current}"><div class="row">${badge(KIND[item.classification] ?? ["Record", ""])}${status}<button class="btn sm ml-auto" type="button" data-context-record="${esc(item.id)}" aria-pressed="${current}" aria-label="Provenance for this record">Provenance</button></div><p>${esc(item.text)}</p><p class="muted">${sourceLine(item.source)} · ${when(item.observedAt)}</p></li>`;
+  return `<li class="context-record" aria-current="${current}"><div class="row">${badge(KIND[item.classification] ?? ["Record", ""])}${status}<button class="btn sm ml-auto" type="button" data-context-record="${esc(item.id)}" aria-pressed="${current}" aria-label="Provenance for this record">Provenance</button>${forget?.id === item.id ? "" : forgetControl(item, null)}</div><p>${esc(item.text)}</p><p class="muted">${sourceLine(item.source)} · ${when(item.observedAt)}</p>${forget?.id === item.id ? forgetControl(item, forget) : ""}</li>`;
 }
 
-const recordList = (items: ContextViewRecord[], selected: string | null, label: string) =>
-  `<ul class="improvement-rows" aria-label="${label}">${items.map((item) => recordRow(item, selected)).join("")}</ul>`;
+const recordList = (
+  items: ContextViewRecord[],
+  selected: string | null,
+  label: string,
+  forget: ContextForget | null,
+) =>
+  `<ul class="improvement-rows" aria-label="${label}">${items.map((item) => recordRow(item, selected, forget)).join("")}</ul>`;
 
 const card = (title: string, body: string, extra = "") =>
   `<section class="improvement-detail"><div class="improvement-head"><h2>${title}</h2>${extra}</div>${body}</section>`;
 
-function summaryTab(view: ContextView, selected: string | null): string {
+function summaryTab(
+  view: ContextView,
+  selected: string | null,
+  forget: ContextForget | null,
+): string {
   const notice = `<p class="muted">Paws derived this summary from the records it keeps. It is not an authoritative decision and not the exact prompt any agent received.</p>`;
   const summaries = view.summaries.length
     ? view.summaries
@@ -123,11 +148,18 @@ function summaryTab(view: ContextView, selected: string | null): string {
         .join("")
     : card("Summary", `<p class="muted">Paws has not built a summary for this project yet.</p>`);
   const open = (title: string, items: ContextViewRecord[], none: string) =>
-    card(title, items.length ? recordList(items, selected, title) : `<p class="muted">${none}</p>`);
+    card(
+      title,
+      items.length ? recordList(items, selected, title, forget) : `<p class="muted">${none}</p>`,
+    );
   return `${summaries}${open("Decisions", view.decisions, "No decisions retained.")}${open("Open questions", view.questions, "No open questions retained.")}`;
 }
 
-function recordsTab(view: ContextView, selected: string | null): string {
+function recordsTab(
+  view: ContextView,
+  selected: string | null,
+  forget: ContextForget | null,
+): string {
   const { page } = view;
   const form = `<form class="row" role="search" aria-label="Search stored context" data-context-search=""><label><span class="sr-only">Search records</span><input name="q" type="search" value="${esc(page.search)}" placeholder="Search records" autocomplete="off" /></label><button class="btn sm" type="submit">Search</button></form>`;
   const empty = page.search
@@ -137,7 +169,7 @@ function recordsTab(view: ContextView, selected: string | null): string {
     page.offset > 0 || page.more
       ? `<div class="row" role="group" aria-label="Pages"><button class="btn sm" type="button" data-context-page="prev"${page.offset > 0 ? "" : " disabled"}>Previous</button><span class="muted">Records ${page.offset + 1}–${page.offset + view.records.length}</span><button class="btn sm" type="button" data-context-page="next"${page.more ? "" : " disabled"}>Next</button></div>`
       : "";
-  return `${form}${view.records.length ? recordList(view.records, selected, "Stored context") : `<div class="empty" role="status">${empty}</div>`}${pager}`;
+  return `${form}${view.records.length ? recordList(view.records, selected, "Stored context", forget) : `<div class="empty" role="status">${empty}</div>`}${pager}`;
 }
 
 function provenance(detail: ContextState["detail"]): string {
@@ -185,17 +217,23 @@ export function renderContext(state: ContextState): string {
   if (state.phase === "unavailable" || !state.view)
     return `<div class="empty" role="status"><div>Context unavailable</div>This context does not exist, or you cannot read it.</div>`;
   const { view, query } = state;
+  const forget = state.forget ?? null;
+  const editable = [...view.decisions, ...view.questions, ...view.records].some(
+    (item) => item.forgettable,
+  );
   const url = safeUrl(view.scope.url);
   const head = card(
     esc(view.scope.name ?? "Linear project"),
     `<p class="muted">Project <code>${esc(view.scope.id)}</code>${url ? ` · <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open in Linear</a>` : ""} · updated ${esc(when(view.updatedAt))}${view.summaries[0] ? ` · summary v${view.summaries[0].version}` : ""}</p>`,
-    `<span class="tag">Read-only</span>`,
+    editable ? "" : `<span class="tag">Read-only</span>`,
   );
   const tab = (id: ContextQuery["tab"], label: string) =>
     `<button class="seg" type="button" data-context-tab="${id}" aria-pressed="${query.tab === id}">${label}</button>`;
   const tabs = `<div class="segmented" role="group" aria-label="Context sections">${tab("summary", "Summary")}${tab("records", "Stored context")}</div>`;
   const main =
-    query.tab === "records" ? recordsTab(view, query.record) : summaryTab(view, query.record);
+    query.tab === "records"
+      ? recordsTab(view, query.record, forget)
+      : summaryTab(view, query.record, forget);
   const side = `${card("Provenance", provenance(state.detail))}${card("Compaction", compaction(view))}`;
   return `${head}${tabs}<div class="context-layout"><div class="improvement-detail-pane">${main}</div><aside class="improvement-detail-pane" aria-label="Provenance and compaction">${side}</aside></div>`;
 }
@@ -221,8 +259,10 @@ export function createProjectContext(options: {
   go: (search: string) => void;
   fetch?: typeof fetch;
   search?: () => string;
+  csrf?: () => string;
 }) {
   const fetcher = options.fetch ?? fetch;
+  const csrf = options.csrf ?? (() => readCsrfToken(document));
   const search = options.search ?? (() => location.search);
   let root: HTMLElement | null = null;
   let engine = "";
@@ -270,8 +310,44 @@ export function createProjectContext(options: {
   };
   const go = (change: Partial<ContextQuery>) =>
     options.go(contextSearch({ ...state!.query, ...change }));
+  const forgetEntry = async (id: string) => {
+    if (!state || state.forget?.phase === "sending") return;
+    const sending = (state.forget = { id, phase: "sending" });
+    paint();
+    let ok = false;
+    try {
+      const response = await fetcher(scopeUrl(`/records/${encodeURIComponent(id)}/forget`), {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "x-paws-csrf": csrf() },
+      });
+      ok = response.ok;
+    } catch (error) {
+      journalCaught(error, "projectContext.forget", null);
+    }
+    if (!state || state.forget !== sending) return;
+    if (!ok) {
+      state.forget = { id, phase: "error" };
+      return paint();
+    }
+    state.forget = null;
+    if (state.query.record === id) return go({ record: null });
+    void loadList();
+  };
   const click = (event: Event) => {
     const target = event.target as Element;
+    const ask = target.closest<HTMLElement>("[data-context-forget]");
+    if (ask && state) {
+      state.forget = { id: ask.dataset.contextForget!, phase: "confirm" };
+      return paint();
+    }
+    const confirm = target.closest<HTMLElement>("[data-context-forget-confirm]");
+    if (confirm) return void forgetEntry(confirm.dataset.contextForgetConfirm!);
+    if (target.closest("[data-context-forget-cancel]") && state) {
+      state.forget = null;
+      return paint();
+    }
     const tab = target.closest<HTMLElement>("[data-context-tab]");
     if (tab) return go({ tab: tab.dataset.contextTab as ContextQuery["tab"] });
     const pick = target.closest<HTMLElement>("[data-context-record]");
