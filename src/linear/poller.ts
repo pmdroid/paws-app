@@ -25,6 +25,7 @@ import { flightsFor, isPawsStop } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
 import {
+  lastVerifiedSessionWebhookMs,
   lastVerifiedWebhookMs,
   WEBHOOK_MISSED_CURSOR,
   webhookVerificationFailures,
@@ -65,6 +66,7 @@ const EMPTY_SIGHTING: IntakeSighting = {
 export type PollSignals = {
   now: number;
   lastWebhookMs: number | null;
+  lastSessionWebhookMs?: number | null;
   webhookFailures?: number;
   missedDeliveryMs?: number | null;
   budget?: LinearRateBudget | null;
@@ -72,7 +74,8 @@ export type PollSignals = {
 
 /**
  * 12 minutes as a backstop, once a minute when webhooks look broken: none verified yet,
- * repeated verification failures, or a delivery the poll found that no webhook brought.
+ * repeated verification failures, or a session event the poll found after the last session
+ * webhook.
  * A request budget under 20% stretches it to 5 minutes until the budget resets.
  */
 export function pollIntervalMs(signals: PollSignals): number {
@@ -86,8 +89,11 @@ export function pollIntervalMs(signals: PollSignals): number {
 function webhooksFailing(signals: PollSignals): boolean {
   if (signals.lastWebhookMs === null) return true;
   if ((signals.webhookFailures ?? 0) >= WEBHOOK_FAILURES_FAILING) return true;
-  const missed = signals.missedDeliveryMs ?? null;
-  return missed !== null && missed > signals.lastWebhookMs;
+  return sessionWebhooksMissing(signals.missedDeliveryMs ?? null, signals.lastSessionWebhookMs);
+}
+
+function sessionWebhooksMissing(missedMs: number | null, lastSessionMs?: number | null): boolean {
+  return missedMs !== null && missedMs > (lastSessionMs ?? Number.NEGATIVE_INFINITY);
 }
 
 export function linearBudgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
@@ -174,6 +180,7 @@ export function startCatchUpPoller(options: {
   let pending = false;
   let latestBudget: LinearRateBudget | null = null;
   let cycleStartedMs: number | null = null;
+  let sessionWebhooksBroken = false;
 
   function pollOnce(): Promise<void> {
     if (control.stopped) return Promise.resolve();
@@ -322,10 +329,16 @@ export function startCatchUpPoller(options: {
   }
 
   async function webhookMissed(event: AcceptedLinearEvent): Promise<boolean> {
-    const lastWebhookMs = await lastVerifiedWebhookMs(options.store);
-    if (lastWebhookMs === null || event.updatedAtMs <= lastWebhookMs) return false;
-    if (event.updatedAtMs > now() - MISSED_DELIVERY_GRACE_MS || event.signal === "stop") {
-      return false;
+    if ((await lastVerifiedWebhookMs(options.store)) === null) return false;
+    const lastSessionMs = await lastVerifiedSessionWebhookMs(options.store);
+    if (lastSessionMs !== null && event.updatedAtMs <= lastSessionMs) return false;
+    if (event.updatedAtMs > now() - MISSED_DELIVERY_GRACE_MS) return false;
+    if (event.signal === "stop") {
+      return (
+        event.activityId !== null &&
+        event.dedupeKey === `${activityKey(event.activityId)}:stop` &&
+        (await options.store.get(activityKey(event.activityId))) === null
+      );
     }
     if (event.action === "created") {
       return event.sessionId !== null && event.dedupeKey === sessionCreatedKey(event.sessionId);
@@ -388,12 +401,16 @@ export function startCatchUpPoller(options: {
     let delay = POLL_INTERVAL_FAILING_MS;
     try {
       await pollOnce();
+      const lastSessionWebhookMs = await lastVerifiedSessionWebhookMs(options.store);
+      const missedDeliveryMs = await options.store.getCursor(WEBHOOK_MISSED_CURSOR);
+      noteSessionWebhooks(sessionWebhooksMissing(missedDeliveryMs, lastSessionWebhookMs));
       delay = Math.max(
         pollIntervalMs({
           now: now(),
           lastWebhookMs: await lastVerifiedWebhookMs(options.store),
+          lastSessionWebhookMs,
           webhookFailures: await webhookVerificationFailures(options.store),
-          missedDeliveryMs: await options.store.getCursor(WEBHOOK_MISSED_CURSOR),
+          missedDeliveryMs,
           budget: latestBudget,
         }),
         budgetHoldMs(latestBudget, now()),
@@ -413,6 +430,16 @@ export function startCatchUpPoller(options: {
       );
     }
     return delay;
+  }
+
+  function noteSessionWebhooks(broken: boolean): void {
+    if (broken === sessionWebhooksBroken) return;
+    sessionWebhooksBroken = broken;
+    journal(
+      broken
+        ? "Linear session webhooks aren't arriving; Paws is polling every minute"
+        : "Linear session webhooks are arriving again; Paws is back to polling every 12 minutes",
+    );
   }
 
   async function pollDue(): Promise<void> {

@@ -51,9 +51,16 @@ export const WEBHOOK_FAILURES_CURSOR = "linear:webhook-failures";
 
 export const WEBHOOK_MISSED_CURSOR = "linear:webhook-missed";
 
+export const WEBHOOK_SESSION_CURSOR = "linear:webhook-session";
+
 /** When the last signed, well-formed delivery reached this inbox. Null before the first one. */
 export function lastVerifiedWebhookMs(store: InboxStore): Promise<number | null> {
   return store.getCursor(WEBHOOK_CURSOR);
+}
+
+/** When the last verified session delivery (created, prompted or stop) arrived. */
+export function lastVerifiedSessionWebhookMs(store: InboxStore): Promise<number | null> {
+  return store.getCursor(WEBHOOK_SESSION_CURSOR);
 }
 
 /** Signed deliveries rejected since the last verified one. */
@@ -145,6 +152,8 @@ export async function handleLinearWebhook(
   }
   await deps.store.setCursor(WEBHOOK_CURSOR, deps.now?.() ?? Date.now());
   await deps.store.clearCursor(WEBHOOK_FAILURES_CURSOR);
+  if (event.action !== "other")
+    await deps.store.setCursor(WEBHOOK_SESSION_CURSOR, deps.now?.() ?? Date.now());
   const committed = await deps.store.commit(event);
   if (deps.intake?.accepts(event)) {
     if (committed.inserted) deps.intake.arrive(event);

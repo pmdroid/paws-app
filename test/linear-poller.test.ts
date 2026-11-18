@@ -490,6 +490,9 @@ describe("linear intake poll", () => {
     );
     expect(pollIntervalMs({ ...quiet, missedDeliveryMs: NOW })).toBe(POLL_INTERVAL_FAILING_MS);
     expect(pollIntervalMs({ ...quiet, missedDeliveryMs: quiet.lastWebhookMs - 1 })).toBe(
+      POLL_INTERVAL_FAILING_MS,
+    );
+    expect(pollIntervalMs({ ...quiet, missedDeliveryMs: NOW - 1, lastSessionWebhookMs: NOW })).toBe(
       POLL_INTERVAL_WEBHOOK_MS,
     );
 

@@ -210,7 +210,7 @@ test("doctor warns when Linear may have disabled the webhook and says how to re-
   ready.facts.linearWebhook = { reason: "missed", lastVerifiedMs: 1000, missedMs: 2000 };
   const text = formatDoctor(doctorChecks(ready));
   expect(text).toContain(
-    "missing linear-webhook-delivery: Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
+    "missing linear-webhook-delivery: Linear session webhooks aren't arriving; Paws is polling every minute",
   );
   expect(text).toContain(`  fix: ${LINEAR_WEBHOOK_FIX}`);
   ready.facts.webhooks = false;
