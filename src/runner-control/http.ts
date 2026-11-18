@@ -104,7 +104,7 @@ export function createRunnerHttp(
           const input = enrollmentRequest.parse(await readJson(request));
           const config = (await options.hostConfig?.()) ?? null;
           return json({
-            ...(await control.createEnrollment(principal, { ...input, adminRepositories: [] })),
+            ...(await control.createEnrollment(principal, input)),
             config,
           });
         }
