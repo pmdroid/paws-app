@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   agentCatalogMarkup,
   compareVersions,
   hostEnrollmentCommand,
+  RUNNER_RELEASES,
   listedRunners,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
@@ -1034,13 +1038,59 @@ describe("hostEnrollmentCommand", () => {
     },
   };
   const command = hostEnrollmentCommand(enrollment, true);
+  const steps = command.split(" && \\\n  ");
   test("grants or denies Docker for agent jobs explicitly, so the installer never asks a terminal", () => {
-    expect(command.split(" && ")[0]).toBe(
-      "curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=grant sh",
+    expect(steps).toContain(
+      'sudo env DEBIAN_FRONTEND=noninteractive PAWS_RUNNER_DOCKER_ACCESS=grant apt-get install -y --reinstall "./$deb"',
     );
-    expect(hostEnrollmentCommand(enrollment, false).split(" && ")[0]).toBe(
-      "curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=deny sh",
+    expect(hostEnrollmentCommand(enrollment, false)).toContain(
+      'PAWS_RUNNER_DOCKER_ACCESS=deny apt-get install -y --reinstall "./$deb"',
     );
+    expect(hostEnrollmentCommand(enrollment, false)).not.toContain("rootlesskit");
+  });
+  test("installs the .deb the release workflow attaches and the docs name, checked against its .sha256", async () => {
+    const root = new URL("../../../../", import.meta.url);
+    const workflow = await Bun.file(new URL(".github/workflows/runner-release.yml", root)).text();
+    const docs = await Bun.file(new URL("docs/runner-enrollment.md", root)).text();
+    expect(workflow).toContain('gh release upload "$RELEASE_TAG" dist/*.deb dist/*.sha256');
+    expect(workflow).toContain("deb-package.py");
+    expect(RUNNER_RELEASES).toBe(
+      `https://github.com/${/--repo (\S+)/.exec(workflow)?.[1]}/releases`,
+    );
+    expect(docs).toContain(`${RUNNER_RELEASES}/latest`);
+    expect(steps[0]).toContain(`${RUNNER_RELEASES}/latest`);
+    expect(steps[1]).toBe('deb="paws-runner_${tag##*/v}_$(dpkg --print-architecture).deb"');
+    expect(steps[3]).toContain(`${RUNNER_RELEASES}/download/\${tag##*/}/$deb.sha256`);
+    expect(steps[4]).toBe('sha256sum --check "$deb.sha256"');
+    expect(command).not.toContain("get.paws.boo");
+  });
+  test("keeps every other key of an existing config.json and updates only the URLs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paws-runner-config-"));
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        controlPlaneUrl: "https://old.example.com",
+        runnerApiUrl: "https://old.example.com:8788",
+        allowedRepositories: ["acme/app"],
+        concurrency: 3,
+        agentUser: "runner",
+      }),
+    );
+    const step = steps
+      .find((each) => each.includes("then sudo python3"))!
+      .replaceAll("/etc/paws-runner/config.json", path)
+      .replaceAll("sudo ", "");
+    const run = Bun.spawnSync(["sh", "-c", step]);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      controlPlaneUrl: "https://paws.example.com",
+      runnerApiUrl: "https://paws.example.com:8788",
+      allowedRepositories: ["acme/app"],
+      concurrency: 3,
+      agentUser: "runner",
+    });
+    await rm(dir, { recursive: true });
   });
   test("installs, configures, enrolls with a token file and starts the daemon", () => {
     expect(command).toContain(
@@ -1052,7 +1102,6 @@ describe("hostEnrollmentCommand", () => {
     expect(command.endsWith("sudo systemctl enable --now paws-runner.service")).toBe(true);
   });
   test("passes the token only through the printf builtin into a root-owned 0600 file", () => {
-    const steps = command.split(" && \\\n  ");
     const carrying = steps.filter((step) => step.includes("tok_en-123"));
     expect(carrying).toEqual([
       "printf '%s\\n' 'tok_en-123' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",

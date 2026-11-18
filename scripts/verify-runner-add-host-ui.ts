@@ -80,10 +80,10 @@ try {
     await expect(dialog.getByRole("button", { name: "Copy command" })).toBeVisible();
     const docker = dialog.getByRole("checkbox", { name: /Docker for agent jobs/ });
     await expect(docker).toBeChecked();
-    await expect(command).toContainText("sudo env PAWS_RUNNER_DOCKER_ACCESS=grant sh");
+    await expect(command).toContainText("PAWS_RUNNER_DOCKER_ACCESS=grant apt-get install");
     await docker.uncheck();
     await expect(dialog.locator("#runner-enroll-command")).toContainText(
-      "sudo env PAWS_RUNNER_DOCKER_ACCESS=deny sh",
+      "PAWS_RUNNER_DOCKER_ACCESS=deny apt-get install",
     );
     await page.screenshot({
       path: join(directory, `runners-add-runner-no-docker-${width}.png`),
