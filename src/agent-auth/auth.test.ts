@@ -82,7 +82,7 @@ async function setup(signedIn = false, agent: "codex" | "grok" = "codex") {
   });
   if (signedIn) {
     await auth.device("workspace", account.id, true);
-    fake.approve();
+    (agent === "grok" ? xai : fake).approve();
     time += 5000;
     await auth.device("workspace", account.id, false);
   }
@@ -634,4 +634,40 @@ test("refresh rotates the key with the refresh_token grant and keeps the identit
     email: "grok@test.invalid",
     expires_at: new Date(s.now() + 3_600_000).toISOString(),
   });
+});
+
+test("an exhausted Grok window marks the account exhausted until it resets", async () => {
+  const s = await setup(true, "grok");
+  const end = s.now() + 86_400_000;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () =>
+      Response.json({
+        config: {
+          credit_usage_percent: 100,
+          current_period: {
+            period_type: "USAGE_PERIOD_TYPE_WEEKLY",
+            end: new Date(end).toISOString(),
+          },
+        },
+      }),
+  });
+  cleanup.push(() => server.stop(true));
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: createUsageReader(
+      { codex: server.url.origin, claude: server.url.origin, grok: server.url.origin },
+      s.now,
+    ),
+  });
+  await usage.tick();
+  const health = (await s.db.run((q) => providerUsageSteps(q, s.id)))!;
+  expect(health.state).toBe("exhausted");
+  expect(health.resetsAt).toBe(end);
+  expect(JSON.parse(health.limitsJson!).limits).toEqual([
+    { window: "Weekly", usedPercent: 100, resetsAt: end },
+  ]);
 });

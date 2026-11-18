@@ -72,7 +72,11 @@ export function createAccountUsage(options: {
     async tick(id?: string) {
       const failures: unknown[] = [];
       for (const account of await accounts()) {
-        if ((id && account.id !== id) || !["codex", "claude"].includes(account.agent)) continue;
+        if (
+          (id && account.id !== id) ||
+          !["codex", "claude", "grok", "opencode"].includes(account.agent)
+        )
+          continue;
         const previous = active.get(account.id);
         if (previous && !id) {
           await previous;

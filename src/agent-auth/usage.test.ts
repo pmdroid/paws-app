@@ -166,3 +166,142 @@ test("a setup token reads its limits from the rate-limit headers of a one-token 
     await server.stop(true);
   }
 });
+
+type Seen = { url: URL; headers: Record<string, string> };
+function serve(routes: Record<string, () => Response>, seen: Seen[]) {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      seen.push({ url: new URL(request.url), headers: request.headers.toJSON() });
+      const route = routes[new URL(request.url).pathname];
+      return route ? route() : new Response(null, { status: 404 });
+    },
+  });
+}
+const file = (path: string, value: unknown) =>
+  JSON.stringify([{ path, data: Buffer.from(JSON.stringify(value)).toString("base64") }]);
+
+test("grok reads one billing window with the CLI headers", async () => {
+  const seen: Seen[] = [];
+  let status = 200;
+  let period = "USAGE_PERIOD_TYPE_WEEKLY";
+  const server = serve(
+    {
+      "/v1/billing": () =>
+        Response.json(
+          {
+            config: {
+              credit_usage_percent: 37,
+              current_period: {
+                period_type: period,
+                start: "2027-01-01T00:00:00Z",
+                end: "2027-01-08T00:00:00Z",
+              },
+            },
+          },
+          { status },
+        ),
+    },
+    seen,
+  );
+  let time = 1800000000000;
+  const credential = file(".grok/auth.json", {
+    "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+      key: "xai-key",
+      user_id: "user-42",
+      create_time: "2026-11-18T00:00:00Z",
+      expires_at: new Date(1900000000000).toISOString(),
+    },
+  });
+  try {
+    const read = createUsageReader(
+      { codex: "http://127.0.0.1:1", claude: "http://127.0.0.1:1", grok: server.url.origin },
+      () => time,
+    );
+    expect(await read("grok", credential)).toEqual([
+      { window: "Weekly", usedPercent: 37, resetsAt: Date.parse("2027-01-08T00:00:00Z") },
+    ]);
+    expect(seen[0]!.url.search).toBe("?format=credits");
+    expect(seen[0]!.headers["authorization"]).toBe("Bearer xai-key");
+    expect(seen[0]!.headers["x-xai-token-auth"]).toBe("xai-grok-cli");
+    expect(seen[0]!.headers["x-userid"]).toBe("user-42");
+    expect(seen[0]!.headers["x-grok-client-version"]).toBe("paws");
+    period = "USAGE_PERIOD_TYPE_MONTHLY";
+    expect((await read("grok", credential))[0]!.window).toBe("Monthly");
+    status = 500;
+    await expect(read("grok", credential)).rejects.toBeInstanceOf(UsageUnavailable);
+    status = 401;
+    await expect(read("grok", credential)).rejects.toBeInstanceOf(UsageCredentialExpired);
+    time = 1900000000000;
+    await expect(read("grok", credential)).rejects.toBeInstanceOf(UsageCredentialExpired);
+    expect(seen).toHaveLength(4);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("opencode reads Go windows, falls back to budgets and saves nothing without either", async () => {
+  const seen: Seen[] = [];
+  let go = 200;
+  let budgets = 200;
+  const server = serve(
+    {
+      "/zen/go/v1/usage": () =>
+        Response.json(
+          {
+            usage: {
+              rolling: { status: "rate-limited", percent: 64, resetsAt: "2027-01-01T05:00:00Z" },
+              weekly: { status: "ok", percent: 40, resetsAt: "2027-01-04T00:00:00Z" },
+              monthly: { status: "ok", percent: 12, resetsAt: "2027-02-01T00:00:00Z" },
+            },
+          },
+          { status: go },
+        ),
+      "/console/api/policies/current-budgets": () =>
+        Response.json(
+          [
+            { limitDollars: 50, spentDollars: 20, resetsAt: "2027-02-01T00:00:00Z" },
+            { limitDollars: 10, spentDollars: 15, resetsAt: null },
+          ],
+          { status: budgets },
+        ),
+    },
+    seen,
+  );
+  const credential = file(".paws/opencode-credential.json", {
+    type: "oauth",
+    access: "oc-access",
+    refresh: "oc-refresh",
+    expires: 1900000000000,
+    metadata: { orgID: "org-1" },
+  });
+  try {
+    const read = createUsageReader(
+      { codex: "http://127.0.0.1:1", claude: "http://127.0.0.1:1", opencode: server.url.origin },
+      () => 1800000000000,
+    );
+    expect(await read("opencode", credential)).toEqual([
+      { window: "5-hour", usedPercent: 100, resetsAt: Date.parse("2027-01-01T05:00:00Z") },
+      { window: "Weekly", usedPercent: 40, resetsAt: Date.parse("2027-01-04T00:00:00Z") },
+      { window: "Monthly", usedPercent: 12, resetsAt: Date.parse("2027-02-01T00:00:00Z") },
+    ]);
+    expect(seen[0]!.headers["authorization"]).toBe("Bearer oc-access");
+    expect(seen[0]!.headers["x-opencode-org-id"]).toBe("org-1");
+    go = 403;
+    expect(await read("opencode", credential)).toEqual([
+      { window: "Monthly budget", usedPercent: 40, resetsAt: Date.parse("2027-02-01T00:00:00Z") },
+      { window: "Monthly budget", usedPercent: 100, resetsAt: null },
+    ]);
+    budgets = 403;
+    expect(await read("opencode", credential)).toEqual([]);
+    budgets = 401;
+    await expect(read("opencode", credential)).rejects.toBeInstanceOf(UsageCredentialExpired);
+    go = 401;
+    await expect(read("opencode", credential)).rejects.toBeInstanceOf(UsageCredentialExpired);
+    go = 502;
+    await expect(read("opencode", credential)).rejects.toBeInstanceOf(UsageUnavailable);
+  } finally {
+    await server.stop(true);
+  }
+});
