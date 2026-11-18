@@ -13,7 +13,10 @@ export { checkSecrets, useDatabaseSecrets } from "./secret-table";
 export { clearCredentialRefreshSteps, refreshCredential } from "./refresh";
 export { loadSecretKey, storeSecretKeys } from "./key";
 export {
+  deleteScopedCredentialSteps,
   importCredentialFile,
+  readScopedCredentialSteps,
+  writeScopedCredentialSteps,
   readCredential,
   readCredentialSteps,
   writeCredential,

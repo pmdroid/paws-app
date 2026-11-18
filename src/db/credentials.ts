@@ -82,3 +82,12 @@ export function* copySecretRowsSteps(q: Q, rows: readonly SecretRow[], now: numb
   );
   return copied.length;
 }
+
+export function* deleteCredentialCiphertextSteps(q: Q, key: CredentialKey) {
+  const { credential } = q.t;
+  yield* q.exec(
+    q.orm
+      .delete(credential)
+      .where(and(eq(credential.kind, key.kind), eq(credential.workspace, key.workspace))),
+  );
+}

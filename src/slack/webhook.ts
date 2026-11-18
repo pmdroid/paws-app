@@ -6,6 +6,7 @@ export async function handleSlackWebhook(
   request: Request,
   secret: string | null,
   now = Date.now(),
+  revoke?: (event: { teamId: string; appId: string | null }) => Promise<boolean>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed.", { status: 405 });
   const signature = request.headers.get("x-slack-signature");
@@ -40,5 +41,26 @@ export async function handleSlackWebhook(
     typeof payload.challenge === "string"
   )
     return Response.json({ challenge: payload.challenge });
+  const revocation = lifecycleRevocation(payload);
+  if (revocation && revoke) {
+    await revoke(revocation);
+    return new Response(null, { status: 200 });
+  }
   return new Response("Unsupported Slack event.", { status: 400 });
+}
+
+function lifecycleRevocation(payload: unknown): { teamId: string; appId: string | null } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const body = payload as Record<string, unknown>;
+  const event = body.event as Record<string, unknown> | undefined;
+  if (body.type !== "event_callback" || typeof body.team_id !== "string" || !event) return null;
+  const tokens = event.tokens as { bot?: unknown } | undefined;
+  const revoked =
+    event.type === "app_uninstalled" ||
+    (event.type === "tokens_revoked" && Array.isArray(tokens?.bot) && tokens.bot.length > 0);
+  if (!revoked) return null;
+  return {
+    teamId: body.team_id,
+    appId: typeof body.api_app_id === "string" ? body.api_app_id : null,
+  };
 }

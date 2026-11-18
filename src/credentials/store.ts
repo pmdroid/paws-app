@@ -1,4 +1,5 @@
 import {
+  deleteCredentialCiphertextSteps,
   readCredentialCiphertextSteps,
   writeCredentialCiphertextSteps,
   type CredentialKey,
@@ -18,9 +19,29 @@ export function* readCredentialSteps(
   secretsDir: string,
   kind: CredentialKind,
 ): Steps<string | null> {
-  const key = { kind, workspace: INSTALLATION };
+  return yield* readScopedCredentialSteps(q, secretsDir, { kind, workspace: INSTALLATION });
+}
+
+export function* readScopedCredentialSteps(
+  q: Q,
+  secretsDir: string,
+  key: CredentialKey,
+): Steps<string | null> {
   const ciphertext = yield* readCredentialCiphertextSteps(q, key);
   return ciphertext === null ? null : openSecret(secretsDir, context(key), ciphertext);
+}
+
+export function* writeScopedCredentialSteps(
+  q: Q,
+  secretsDir: string,
+  key: CredentialKey,
+  value: string,
+): Steps<boolean> {
+  return yield* writeCredentialCiphertextSteps(q, key, sealSecret(secretsDir, context(key), value));
+}
+
+export function* deleteScopedCredentialSteps(q: Q, key: CredentialKey): Steps<void> {
+  yield* deleteCredentialCiphertextSteps(q, key);
 }
 
 export function readCredential(

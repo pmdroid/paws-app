@@ -109,7 +109,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "worktree-checkout": ["journal"],
   config: ["journal", "core", "credentials", "worktree-checkout"],
   credentials: ["journal", "db"],
-  slack: ["journal", "config", "credentials", "db", "webhook-body"],
+  slack: ["journal", "config", "credentials", "db", "webhook-body", "workspace", "dashboard-links"],
   core: [],
   "host-operation": [],
   assets: [],
@@ -225,7 +225,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   auth: ["journal", "config", "github", "credentials", "core", "db"],
-  workspace: ["journal", "credentials", "db", "linear", "slack", "decisions", "dashboard-links"],
+  workspace: ["journal", "credentials", "db", "linear", "decisions", "dashboard-links"],
   "runner-identity": ["journal", "credentials"],
   "runner-repository-access": ["journal", "github", "runner-work", "runner-repository-commands"],
   "runner-repository-commands": ["journal", "db", "runner-protocol", "workspace"],

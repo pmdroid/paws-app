@@ -2,9 +2,11 @@ import { join } from "node:path";
 import { pawsPaths } from "../config";
 import {
   readCredentialSteps,
+  readScopedCredentialSteps,
   readSecretFile,
   refreshCredential,
   writeCredentialSteps,
+  writeScopedCredentialSteps,
   saveSecret,
 } from "../credentials";
 import { type Db, type Q, type Steps } from "../db";
@@ -19,15 +21,66 @@ export type SlackToken = {
   scope: string;
   teamId: string;
   botUserId: string;
+  appId?: string | null;
+  teamName?: string | null;
 };
+export type SlackInstallationKey = { workspaceId: string; teamId: string };
 export type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export function readSlackApp(home: string): SlackApp | null {
   return readJson<SlackApp>(home, "slack-app.json");
 }
 
+export function resolveSlackApp(
+  home: string,
+  env: Record<string, string | undefined>,
+): SlackApp | null {
+  const stored = readSlackApp(home);
+  const clientId = env.SLACK_CLIENT_ID ?? stored?.clientId;
+  const clientSecret = env.SLACK_CLIENT_SECRET ?? stored?.clientSecret;
+  const signingSecret = env.SLACK_SIGNING_SECRET ?? stored?.signingSecret;
+  return clientId && clientSecret && signingSecret
+    ? { clientId, clientSecret, signingSecret }
+    : null;
+}
+
+export function slackCredentialKey(installation: SlackInstallationKey) {
+  return {
+    kind: "slack" as const,
+    workspace: `${installation.workspaceId}:${installation.teamId}`,
+  };
+}
+
 function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {
   return parseJson<SlackToken>(yield* readCredentialSteps(q, pawsPaths(home).secretsDir, "slack"));
+}
+
+export function* readInstalledSlackTokenSteps(
+  q: Q,
+  home: string,
+  installation: SlackInstallationKey,
+): Steps<SlackToken | null> {
+  return parseJson<SlackToken>(
+    yield* readScopedCredentialSteps(
+      q,
+      pawsPaths(home).secretsDir,
+      slackCredentialKey(installation),
+    ),
+  );
+}
+
+export function* writeInstalledSlackTokenSteps(
+  q: Q,
+  home: string,
+  installation: SlackInstallationKey,
+  token: SlackToken,
+): Steps<boolean> {
+  return yield* writeScopedCredentialSteps(
+    q,
+    pawsPaths(home).secretsDir,
+    slackCredentialKey(installation),
+    JSON.stringify(token),
+  );
 }
 
 export function readSlackToken(store: Db, home: string): Promise<SlackToken | null> {
@@ -47,13 +100,8 @@ export async function loginSlack(input: {
   fetch?: SlackFetch;
   onAuthorize: (url: string, port: number) => void | Promise<void>;
 }): Promise<SlackToken> {
-  const stored = readSlackApp(input.home);
-  const app = {
-    clientId: input.env.SLACK_CLIENT_ID ?? stored?.clientId,
-    clientSecret: input.env.SLACK_CLIENT_SECRET ?? stored?.clientSecret,
-    signingSecret: input.env.SLACK_SIGNING_SECRET ?? stored?.signingSecret,
-  };
-  if (!app.clientId || !app.clientSecret || !app.signingSecret)
+  const app = resolveSlackApp(input.home, input.env);
+  if (!app)
     throw new Error(
       "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET before paws login slack.",
     );
@@ -76,20 +124,37 @@ export async function loginSlack(input: {
   return token;
 }
 
-export function createSlackAuth(input: { home: string; db: Db; fetch?: SlackFetch }) {
+export function createSlackAuth(input: {
+  home: string;
+  db: Db;
+  fetch?: SlackFetch;
+  installation?: SlackInstallationKey;
+  env?: Record<string, string | undefined>;
+}) {
+  const installation = input.installation;
+  const missing = installation
+    ? "Reconnect Slack in Workspace › Integrations."
+    : "Run paws login slack.";
+  const read = (q: Q) =>
+    installation
+      ? readInstalledSlackTokenSteps(q, input.home, installation)
+      : readSlackTokenSteps(q, input.home);
   return {
     async ensureFresh(): Promise<string> {
-      const current = await readSlackToken(input.db, input.home);
-      if (current === null) throw new Error("Run paws login slack.");
+      const current = await input.db.run(read);
+      if (current === null) throw new Error(missing);
       if (current.expiresAtMs === null || current.expiresAtMs > Date.now() + 60_000)
         return current.accessToken;
-      const app = readSlackApp(input.home);
-      if (app === null) throw new Error("Run paws login slack.");
+      const app = resolveSlackApp(input.home, input.env ?? {});
+      if (app === null) throw new Error(missing);
       const saved = await refreshCredential({
         db: input.db,
-        identity: "slack",
-        read: (q) => readSlackTokenSteps(q, input.home),
-        write: (q, token) => writeSlackTokenSteps(q, input.home, token),
+        identity: installation ? slackCredentialKey(installation).workspace : "slack",
+        read,
+        write: (q, token) =>
+          installation
+            ? writeInstalledSlackTokenSteps(q, input.home, installation, token)
+            : writeSlackTokenSteps(q, input.home, token),
         refresh: (token, signal) =>
           requestSlackToken(
             app,
@@ -100,6 +165,7 @@ export function createSlackAuth(input: { home: string; db: Db; fetch?: SlackFetc
             input.fetch ?? fetch,
             signal,
             token,
+            installation ? [] : undefined,
           ),
       });
       return saved.accessToken;
@@ -113,6 +179,7 @@ export async function requestSlackToken(
   fetchImpl: SlackFetch,
   signal: AbortSignal,
   previous?: SlackToken,
+  required: readonly string[] = SLACK_BOT_SCOPES.split(","),
 ): Promise<SlackToken> {
   const response = await fetchImpl("https://slack.com/api/oauth.v2.access", {
     method: "POST",
@@ -134,7 +201,7 @@ export async function requestSlackToken(
     throw new Error("Slack did not return a bot token.");
   const scope = nonempty(data.scope) ? data.scope : (previous?.scope ?? "");
   const scopes = new Set(scope.split(/[ ,]+/));
-  if (!SLACK_BOT_SCOPES.split(",").every((required) => scopes.has(required)))
+  if (!required.every((name) => scopes.has(name)))
     throw new Error("Slack did not grant the required bot scopes.");
   const teamId = isRecord(data.team) && nonempty(data.team.id) ? data.team.id : previous?.teamId;
   const botUserId = nonempty(data.bot_user_id) ? data.bot_user_id : previous?.botUserId;
@@ -154,6 +221,11 @@ export async function requestSlackToken(
     teamId,
     botUserId,
     expiresAtMs: typeof expiry === "number" ? Date.now() + expiry * 1000 : null,
+    appId: nonempty(data.app_id) ? data.app_id : (previous?.appId ?? null),
+    teamName:
+      isRecord(data.team) && typeof data.team.name === "string"
+        ? data.team.name
+        : (previous?.teamName ?? null),
   };
 }
 

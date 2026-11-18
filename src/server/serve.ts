@@ -10,7 +10,7 @@ import {
   refreshingInstallations,
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
-import { handleSlackWebhook } from "../slack";
+import { createSlackConnect, handleSlackWebhook, revokeSlackTeam } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
@@ -464,6 +464,30 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         cache: secrets.githubStatus,
       })(request))!;
     }
+    if (
+      [
+        "/api/workspaces/slack",
+        "/api/workspaces/slack/connect",
+        "/api/workspaces/slack/adopt",
+        "/oauth/slack/callback",
+      ].includes(path) &&
+      secrets.store
+    ) {
+      try {
+        await workspace.authenticate(request);
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "serve.route.authenticate", null);
+        return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
+      }
+      const env = secrets.statusEnv ?? process.env;
+      const slack = await createSlackConnect({
+        store: secrets.store,
+        home: loadRuntime(env).env.home,
+        env,
+        origin: workspace.origin,
+      })(request);
+      if (slack) return slack;
+    }
     if (path.startsWith("/api/")) {
       let access;
       try {
@@ -915,7 +939,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
     return new Response(status.body, { status: status.status, headers });
   }
-  if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
+  if (path === "/webhooks/slack") {
+    const store = secrets.store;
+    return handleSlackWebhook(
+      request,
+      secrets.slackSigningSecret,
+      Date.now(),
+      store ? (event) => revokeSlackTeam(store, event) : undefined,
+    );
+  }
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (request.method === "POST" && path === "/webhooks/github") {
       const saved = loadGitHubAppCredentials(

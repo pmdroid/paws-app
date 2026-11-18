@@ -176,6 +176,7 @@ export * from "./runner-control-reads";
 export * from "./runner-eligibility";
 export * from "./visual-review-rows";
 export * from "./github-oauth";
+export * from "./slack-installations";
 export * from "./runner-health-reads";
 export * from "./member-vm-delete";
 export * from "./fix-records";
