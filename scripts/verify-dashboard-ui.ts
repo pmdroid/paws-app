@@ -681,6 +681,53 @@ try {
       );
       await reader.unroute("**/api/runners/agent-accounts");
     }
+    for (const [agent, provider, link] of [
+      ["grok", "xAI", "https://accounts.x.ai/device"],
+      ["opencode", "OpenCode Console", "https://opencode.ai/auth/device"],
+    ] as const) {
+      await admin.route("**/api/runners/agent-accounts", (route) =>
+        route.fulfill({
+          json: {
+            canManage: true,
+            accounts: [{ ...AGENT_ACCOUNTS[2], id: "D1", agent, credential: null, usage: null }],
+          },
+        }),
+      );
+      await admin.route("**/api/runners/agent-accounts/D1/device", (route) =>
+        route.fulfill({
+          json:
+            route.request().method() === "POST"
+              ? {
+                  userCode: "WXYZ-2468",
+                  verificationUri: link,
+                  interval: 5,
+                  expiresAt: Date.now() + 600_000,
+                }
+              : { state: "pending" },
+        }),
+      );
+      await visit(
+        admin,
+        width,
+        `settings-agent-accounts-${agent}`,
+        "/dashboard/settings/agent-accounts",
+        "Agent accounts",
+      );
+      await admin.getByRole("button", { name: "Sign in", exact: true }).click();
+      const dialog = admin.getByRole("dialog");
+      await expect(dialog.locator("[data-device-code]")).toHaveText("WXYZ-2468");
+      await expect(dialog.getByRole("link", { name: `Open ${provider} sign-in` })).toHaveAttribute(
+        "href",
+        link,
+      );
+      await expect(dialog.getByRole("button", { name: "Copy code" })).toBeVisible();
+      await expect(dialog).toContainText("Waiting for you to approve");
+      await expect(admin.locator("pre, [data-agent-terminal]")).toHaveCount(0);
+      await admin.screenshot({ path: join(out, `agent-device-${agent}-${width}.png`) });
+      await dialog.locator("[data-device-close]").click();
+      await admin.unroute("**/api/runners/agent-accounts/D1/device");
+      await admin.unroute("**/api/runners/agent-accounts");
+    }
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 

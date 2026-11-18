@@ -49,7 +49,6 @@ beforeEach(() => {
   window.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
   };
-  opened.length = 0;
   globalThis.fetch = (async (url: URL | string, init: RequestInit) => {
     const { pathname, search } = new URL(String(url));
     const method = init.method ?? "GET";
@@ -68,8 +67,6 @@ beforeEach(() => {
         ? Response.json({ runners })
         : Response.json({ error: "down" }, { status: 500 });
     if (pathname.endsWith("/device")) {
-      if (agent !== "codex" && agent !== "grok")
-        return Response.json({ error: "Codex account is unavailable" }, { status: 404 });
       if (method === "GET") {
         polls++;
         return Response.json({ state: deviceState });
@@ -81,12 +78,6 @@ beforeEach(() => {
         expiresAt: Date.now() + 300000,
       });
     }
-    if (pathname.endsWith("/sign-in"))
-      return Response.json({
-        runnerId: "R1",
-        bindingId: "B1",
-        agent: pathname.includes("/A1/") ? agent : "claude",
-      });
     if (method !== "GET") return Response.json({ ok: true });
     return Response.json({
       canManage,
@@ -107,11 +98,10 @@ const settle = async () => {
   for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
   await settleReactWork();
 };
-const opened: unknown[][] = [];
 async function mount() {
   window.document.body.innerHTML = renderSettingsPage("agent-accounts");
   const root = window.document.querySelector("#agent-account-settings") as unknown as HTMLElement;
-  createAgentAccountSettings((...args) => void opened.push(args)).mount(root, ENGINE);
+  createAgentAccountSettings().mount(root, ENGINE);
   await settle();
   return root;
 }
@@ -244,25 +234,14 @@ test("only Claude accounts render a setup token field", () => {
 
 test("an admin sees the API's error message", async () => {
   setSettingsAdmin(true);
-  agent = "opencode";
   const root = await mount();
-  failure = "None of your runners is online with central sign-ins.";
-  await click(root, "A1", "sign-in");
+  failure = "Agent account is unavailable";
+  await click(root, "A1", "disable");
   expect(root.querySelector('[role="alert"]')?.textContent).toBe(failure);
-  expect(opened).toHaveLength(0);
-});
-
-test("only the caller's own runners are offered for sign-in", async () => {
-  agent = "opencode";
-  runners!.reverse();
-  const root = await mount();
-  expect(root.querySelector("[data-account-runnerless]")).toBeNull();
-  await click(root, "A1", "sign-in");
-  expect(opened[0]?.[0]).toEqual({ id: "R1", name: "agentbox" });
 });
 
 test("when runners cannot be loaded, the page says so and keeps sign-in", async () => {
-  agent = "opencode";
+  agent = "codex";
   runners = null;
   const root = await mount();
   expect(root.querySelector('[role="alert"]')?.textContent).toBe(
@@ -273,7 +252,7 @@ test("when runners cannot be loaded, the page says so and keeps sign-in", async 
 });
 
 test("with no own runner, Add a runner first replaces the sign-in controls", async () => {
-  agent = "opencode";
+  agent = "codex";
   runners = [{ id: "R2", name: "otherbox", ownerUserId: "U2" }];
   const root = await mount();
   const link = root.querySelector("[data-account-runnerless] a") as unknown as HTMLAnchorElement;
@@ -289,11 +268,10 @@ for (const code of [
   "Agent account belongs to another member",
 ]) {
   test(`a 403 "${code}" shows inline on the account row`, async () => {
-    agent = "opencode";
     const root = await mount();
     failure = code;
     status = 403;
-    await click(root, "A1", "sign-in");
+    await click(root, "A1", "disable");
     expect(root.querySelector('[data-account-id="A1"] [data-account-error]')?.textContent).toBe(
       code,
     );
@@ -306,11 +284,10 @@ for (const code of [
 }
 
 test("any other 403 stays a page-level error", async () => {
-  agent = "opencode";
   const root = await mount();
   failure = "Only workspace admins can do this.";
   status = 403;
-  await click(root, "A1", "sign-in");
+  await click(root, "A1", "disable");
   expect(root.querySelector("[data-account-error]")).toBeNull();
   expect(root.querySelector(".acct-page > [role='alert']")?.textContent).toBe(failure);
 });
@@ -338,7 +315,6 @@ test("Codex sign-in shows a device code, polls and closes after approval", async
   expect(dialog.textContent).toContain("Waiting for you to approve… expires in 5 min");
   expect(dialog.textContent).not.toContain("agentbox");
   expect(dialog.querySelector("pre")).toBeNull();
-  expect(opened).toHaveLength(0);
   await new Promise((resolve) => setTimeout(resolve, 45));
   expect(polls).toBeGreaterThan(0);
   deviceState = "signed-in";
@@ -370,32 +346,27 @@ for (const state of ["expired", "denied"]) {
   });
 }
 
-test("Grok sign-in uses the device code and starts no runner login, even with no runner", async () => {
-  agent = "grok";
-  runners = [];
-  const root = await mount();
-  await click(root, "A1", "sign-in");
-  expect(requests[0]).toMatchObject({
-    method: "POST",
-    path: "/api/runners/agent-accounts/A1/device",
-  });
-  expect(window.document.querySelector("dialog h2")?.textContent).toBe("Sign in to Grok for Work");
-  expect(opened).toHaveLength(0);
-  (window.document.querySelector("[data-device-close]") as unknown as HTMLButtonElement).click();
-});
-
-for (const provider of ["opencode"] as const) {
-  test(`${provider} keeps the supported runner sign-in flow`, async () => {
+for (const [provider, name, link] of [
+  ["grok", "Grok", "Open xAI sign-in"],
+  ["opencode", "OpenCode", "Open OpenCode Console sign-in"],
+] as const) {
+  test(`${name} sign-in shows the device dialog with no terminal, even with no runner`, async () => {
     agent = provider;
+    runners = [];
     const root = await mount();
     await click(root, "A1", "sign-in");
     expect(requests).toEqual([
-      { method: "POST", path: "/api/runners/agent-accounts/A1/sign-in", body: undefined },
+      { method: "POST", path: "/api/runners/agent-accounts/A1/device", body: undefined },
     ]);
-    expect(opened).toHaveLength(1);
-    expect(opened[0]?.slice(0, 2)).toEqual([{ id: "R1", name: "agentbox" }, provider]);
-    expect(opened[0]?.slice(3)).toEqual(["B1", "Work"]);
-    expect(window.document.querySelector("[data-device-code]")).toBeNull();
+    const dialog = window.document.querySelector("dialog")!;
+    expect(dialog.querySelector("h2")?.textContent).toBe(`Sign in to ${name} for Work`);
+    expect(dialog.querySelector("[data-device-code]")?.textContent).toBe("ABCD-1234");
+    expect(dialog.querySelector("a")?.textContent).toBe(link);
+    expect(dialog.querySelector("a")?.href).toBe("https://auth.openai.com/codex/device");
+    expect(dialog.textContent).toContain("Waiting for you to approve");
+    expect(dialog.textContent).not.toContain("Reply to");
+    expect(window.document.querySelector("pre, [data-agent-terminal]")).toBeNull();
+    (dialog.querySelector("[data-device-close]") as unknown as HTMLButtonElement).click();
   });
 }
 
