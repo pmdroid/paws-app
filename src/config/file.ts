@@ -18,7 +18,7 @@ import {
   type MergeOrder,
   type MergeRepositories,
 } from "./merge";
-import { readConfigText, updateConfigText } from "./settings-store";
+import { knownConfigSection, readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
@@ -139,15 +139,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     const heading = /^\[\[?\s*([^[\]]+?)\s*\]\]?$/.exec(line);
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
-      if (
-        !/^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments)$/.test(
-          section,
-        ) &&
-        !/^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) &&
-        !/^agents\.(defaults|projects|presets)(\.|$)/.test(section) &&
-        section !== "time_limits" &&
-        section !== "skills"
-      )
+      if (!knownConfigSection(section))
         throw new Error(`config.toml line ${index + 1} has an unknown section: ${section}`);
       continue;
     }

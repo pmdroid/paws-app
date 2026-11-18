@@ -18,6 +18,7 @@ export type AgentSettings = {
   };
   presets?: Record<string, AgentPreset>;
   revision?: string;
+  retiredSections?: string[];
   grok?: { path: string | null; allowApiKey: boolean };
   opencode?: { path: string | null };
   /** CI fix attempts. Missing means 3. Settings → Merging owns the other merge choices. */

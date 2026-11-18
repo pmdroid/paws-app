@@ -27,8 +27,11 @@ export type {
 } from "./file";
 export {
   describeOverriddenSections,
+  describeRetiredSections,
   overriddenConfigSections,
   readConfigText,
+  removeRetiredConfigSection,
+  retiredConfigSections,
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";
