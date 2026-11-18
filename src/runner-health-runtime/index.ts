@@ -3,7 +3,6 @@ import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { publishRunnerAnswer, removeRunnerAnswers } from "../runner-answers";
 import { openDatabase } from "../runner-journal";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -22,8 +21,6 @@ import {
 import type { RunnerAgentUser } from "../runner-protocol";
 import {
   RunnerCommandSchema,
-  RunnerLoginUpdateSchema,
-  type RunnerLoginUpdate,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
   type RunnerCommand,
@@ -31,7 +28,7 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 
-type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "login" | "helper" }>;
+type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "helper" }>;
 type Entry = {
   unreachable?: boolean;
   renewedUntil?: number;
@@ -39,7 +36,6 @@ type Entry = {
   command: Command;
   deadline: number;
   result?: RunnerHealthResult | RunnerHelperResult;
-  login?: RunnerLoginUpdate;
   stopped?: Promise<void>;
   pulsing?: Promise<void>;
 };
@@ -96,7 +92,6 @@ export async function openRunnerHealthRuntime(options: {
         | "pollHelperCommands"
         | "helperLease"
         | "postHelperResult"
-        | "exchangeLogin"
         | "carriesCredential"
         | "credentialRecipient"
         | "restoreCredentials"
@@ -156,26 +151,13 @@ export async function openRunnerHealthRuntime(options: {
       .orderBy(sql`rowid`)
       .all()) {
       await broker.stop(row.id);
-      const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-      if (command.type === "login") removeRunnerAnswers(options.spool, row.id);
-      if (command.type === "login" && command.expiresAt > now()) {
-        if (active) throw new Error("Multiple runner receipts are unfinished");
-        let update = row.result ? RunnerLoginUpdateSchema.parse(JSON.parse(row.result)) : null;
-        if (!update) {
-          try {
-            update = readLogin(row.id);
-          } catch (caughtError1) {
-            journalCaught(
-              caughtError1,
-              "runner-health-runtime.openRunnerHealthRuntime.readLogin",
-              null,
-            );
-            update = null;
-          }
-        }
-        active = { id: row.id, command, deadline: monotonic() + command.expiresAt - now() };
-        saveLogin(active, update?.state === "connected" ? "connected" : "failed");
-      } else if (
+      const parsed = RunnerCommandSchema.safeParse(JSON.parse(row.payload));
+      if (!parsed.success) {
+        setPhase(row.id, "interrupted");
+        continue;
+      }
+      const command = parsed.data;
+      if (
         row.phase === "publishing" &&
         command.type === "helper" &&
         row.result &&
@@ -206,28 +188,6 @@ export async function openRunnerHealthRuntime(options: {
   let stopping: Promise<void> | undefined;
   const report = (error?: unknown) =>
     options.onError?.(error instanceof Error ? error : new Error("Runner health operation failed"));
-  function readLogin(id: string): RunnerLoginUpdate | null {
-    let journal: string;
-    try {
-      journal = readRunnerResultFile(options.results, id, "events.jsonl").toString("utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        journalCaught(
-          error,
-          "runner-health-runtime.readLogin.toString",
-          null,
-          "optional file may be absent",
-        );
-        return null;
-      }
-      throw error;
-    }
-    const lines = journal.slice(0, journal.lastIndexOf("\n")).split("\n").filter(Boolean);
-    if (!lines.length) return null;
-    const event = JSON.parse(lines[lines.length - 1]!) as { type: string; update: unknown };
-    if (event.type !== "login") throw new Error("Unexpected login event");
-    return RunnerLoginUpdateSchema.parse(event.update);
-  }
   function returnCredentials(entry: Entry) {
     const { id } = entry.command;
     if (!options.daemon.returnCredentials || !options.daemon.carriesCredential?.(id)) return;
@@ -237,28 +197,9 @@ export async function openRunnerHealthRuntime(options: {
       readRunnerCredentials(options.results, entry.id),
     );
   }
-  function saveLogin(entry: Entry, state: "connected" | "failed") {
-    entry.login = { state, terminal: "", authorization: null, inputId: null };
-    markPublishing(entry.id, JSON.stringify(entry.login));
-  }
   async function interrupt(entry: Entry) {
     entry.stopped ??= (async () => {
       await broker.stop(entry.id);
-      if (entry.command.type === "login") {
-        removeRunnerAnswers(options.spool, entry.id);
-        if (entry.command.expiresAt > now()) {
-          if (entry.login?.state !== "connected" && entry.login?.state !== "failed") {
-            try {
-              entry.login = readLogin(entry.id) ?? undefined;
-            } catch (caughtError2) {
-              journalCaught(caughtError2, "runner-health-runtime.interrupt.readLogin", null);
-              entry.login = undefined;
-            }
-          }
-          saveLogin(entry, entry.login?.state === "connected" ? "connected" : "failed");
-          return;
-        }
-      }
       setPhase(entry.id, "interrupted");
     })();
     await entry.stopped;
@@ -300,15 +241,7 @@ export async function openRunnerHealthRuntime(options: {
   async function advance(entry: Entry): Promise<"released" | "finished" | "held"> {
     if (entry.stopped) {
       await entry.stopped;
-      if (
-        !closed &&
-        entry.command.type === "login" &&
-        entry.command.expiresAt > now() &&
-        options.daemon.status().phase === "paired"
-      ) {
-        entry.stopped = undefined;
-        entry.deadline = monotonic() + entry.command.expiresAt - now();
-      } else return "released";
+      return "released";
     }
     try {
       check(entry);
@@ -324,42 +257,6 @@ export async function openRunnerHealthRuntime(options: {
         }
       }
       check(entry);
-      if (entry.command.type === "login") {
-        if (!options.daemon.exchangeLogin)
-          throw new Error("Runner sign-in transport is unavailable");
-        let update = entry.login ?? {
-          state: "starting" as const,
-          terminal: "",
-          authorization: null,
-          inputId: null,
-        };
-        if (update.state !== "connected" && update.state !== "failed")
-          update = readLogin(entry.id) ?? update;
-        if (entry.login?.inputId && entry.login.inputId !== update.inputId)
-          removeRunnerAnswers(options.spool, entry.id);
-        entry.login = update;
-        if (update.state === "connected" || update.state === "failed") {
-          returnCredentials(entry);
-          saveLogin(entry, update.state);
-          update = entry.login!;
-          await broker.stop(entry.id);
-        }
-        check(entry);
-        const reply = await options.daemon.exchangeLogin(entry.command.id, update);
-        check(entry);
-        if (reply.cancelled || update.state === "connected" || update.state === "failed") {
-          await interrupt(entry);
-          setPhase(entry.id, "complete");
-          return "finished";
-        } else if (reply.input) {
-          if (reply.input.id !== update.inputId) throw new Error("Login input binding changed");
-          publishRunnerAnswer(options.spool, entry.id, {
-            requestId: reply.input.id,
-            answer: JSON.stringify(reply.input.value),
-          });
-        }
-        return "held";
-      }
       if (!entry.result) {
         let raw: Buffer;
         try {
@@ -463,12 +360,7 @@ export async function openRunnerHealthRuntime(options: {
     if (slot) await options.daemon.pollCommands();
     if (closed) return;
     for (const input of options.daemon.pendingCommands()) {
-      if (
-        input.type !== "probe" &&
-        input.type !== "login_check" &&
-        input.type !== "login" &&
-        input.type !== "helper"
-      )
+      if (input.type !== "probe" && input.type !== "login_check" && input.type !== "helper")
         continue;
       const talk = conversation(input);
       if (talk ? !room : !slot) continue;
@@ -477,7 +369,6 @@ export async function openRunnerHealthRuntime(options: {
         (!options.daemon.helperLease || !options.daemon.postHelperResult)
       )
         continue;
-      if (input.type === "login" && !options.daemon.exchangeLogin) continue;
       const command = RunnerCommandSchema.parse(input) as Command;
       const previous = q
         .select({ payload: healthExecution.payload })
@@ -501,9 +392,7 @@ export async function openRunnerHealthRuntime(options: {
       const entry: Entry = {
         id,
         command,
-        deadline:
-          monotonic() +
-          Math.min(command.type === "login" ? 600_000 : 60_000, command.expiresAt - now()),
+        deadline: monotonic() + Math.min(60_000, command.expiresAt - now()),
       };
       if (talk) talks.set(id, entry);
       else active = entry;
@@ -511,16 +400,6 @@ export async function openRunnerHealthRuntime(options: {
         check(entry);
         if (command.type === "helper") await pulse(entry);
         check(entry);
-        if (command.type === "login") {
-          const reply = await options.daemon.exchangeLogin!(command.id, {
-            state: "starting",
-            terminal: "",
-            authorization: null,
-            inputId: null,
-          });
-          if (reply.cancelled) throw new Error("Login was cancelled");
-          check(entry);
-        }
         options.daemon.restoreCredentials?.(command.id);
         publishRunnerJob(options.spool, {
           executionId: id,

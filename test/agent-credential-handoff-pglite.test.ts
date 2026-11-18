@@ -109,7 +109,7 @@ describePglite((connect) => {
     });
     const envelope = (
       runnerId: string,
-      type: "login" | "login_check",
+      type: "login_check",
       id: string,
       agent: "codex" | "claude" = "codex",
       accountId = stored,
@@ -144,9 +144,6 @@ describePglite((connect) => {
         agentCredentialContext("other", stored, 1),
       ),
     ).toThrow();
-
-    const [login] = await work.attachCredentials("new", [envelope("new", "login", "login")]);
-    expect(login!.credential).toEqual({ version: 1 });
 
     expect(await work.storeCredential("new", { accountId: stored, version: 2, files })).toBe(
       "written",

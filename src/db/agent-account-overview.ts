@@ -2,11 +2,7 @@ import { providerUsageSteps } from "./account-provider-usage";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { type RunnerCodingAgent } from "../runner-protocol";
-import {
-  AgentAccountError,
-  bindAgentAccountSteps,
-  liveAccountBindingSteps,
-} from "./agent-accounts";
+import { AgentAccountError } from "./agent-accounts";
 import type { Q, Steps } from "./db";
 import type { RunnerAgentLimit } from "./runners";
 
@@ -26,8 +22,6 @@ export type AgentAccountOverview = {
     unavailable?: string;
   } | null;
 };
-
-const ONLINE_MS = 60_000;
 
 export function* agentAccountOverviewSteps(
   q: Q,
@@ -189,46 +183,4 @@ export function* signOutAgentAccountSteps(
       .values({ accountId: row.id, ...signedOut })
       .onConflictDoUpdate({ target: c.accountId, set: signedOut }),
   );
-}
-
-export function* centralSignInTargetSteps(
-  q: Q,
-  input: { workspaceId: string; userId: string; accountId: string; now: number },
-): Steps<{ runnerId: string; bindingId: string; agent: RunnerCodingAgent }> {
-  const account = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
-  if (account.ownerUserId !== input.userId)
-    throw new AgentAccountError("not-your-account", "Agent account belongs to another member");
-  const { runner } = q.t;
-  const online = yield* q.all(
-    q.orm
-      .select({ id: runner.id })
-      .from(runner)
-      .where(
-        and(
-          eq(runner.workspaceId, input.workspaceId),
-          eq(runner.ownerUserId, input.userId),
-          eq(runner.status, "active"),
-          isNull(runner.revokedAt),
-          gt(runner.lastSeenAt, input.now - ONLINE_MS),
-        ),
-      )
-      .orderBy(asc(runner.name), asc(runner.id)),
-  );
-  const target = online[0];
-  if (!target)
-    throw new AgentAccountError(
-      "runner_unsupported",
-      "None of your runners is online. Start one of your runners, then try again.",
-    );
-  const agent = account.agent as RunnerCodingAgent;
-  const bound = yield* liveAccountBindingSteps(q, target.id, account.id);
-  if (bound) return { runnerId: target.id, bindingId: bound.id, agent };
-  const binding = yield* bindAgentAccountSteps(q, {
-    workspaceId: input.workspaceId,
-    userId: input.userId,
-    accountId: account.id,
-    runnerId: target.id,
-    now: input.now,
-  });
-  return { runnerId: target.id, bindingId: binding.id, agent };
 }

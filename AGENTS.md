@@ -83,8 +83,6 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/runner-identity`                                    | Runner certificates, identity authority and listener                  |
 | `src/runner-inputs`                                      | Runner input storage                                                  |
 | `src/runner-journal`                                     | Runner journal storage and delivery                                   |
-| `src/runner-login`                                       | Runner login command coordination                                     |
-| `src/runner-login-worker`                                | Login execution on the runner                                         |
 | `src/runner-mise`                                        | Runner tool installation and mise locking                             |
 | `src/runner-models`                                      | Runner model discovery and commands                                   |
 | `src/runner-placement`                                   | Runner eligibility, quotas and placement                              |

@@ -4,26 +4,17 @@ import {
   agentModelSourcesSteps,
   bindingRunningCountSteps,
   cachedAgentModelsSteps,
-  cancelPendingRunnerLoginsSteps,
-  closeRunnerLoginSteps,
   finishAgentModelProbeSteps,
   insertAgentModelProbeSteps,
-  insertRunnerLoginSteps,
   lastAgentModelProbeAtSteps,
-  latestAgentRunnerLoginIdSteps,
-  latestBindingRunnerLoginIdSteps,
   pendingAgentModelProbesSteps,
-  pendingRunnerLoginCountSteps,
-  pendingRunnerLoginIdSteps,
   runnerAgentOpenWorkCountSteps,
   runnerHasOpenWorkSteps,
   runnerHealthCommandOutstandingSteps,
   runnerLeaseCutoff,
-  runnerLoginRowSteps,
   runnerNamedBindingsSteps,
   saveAgentModelCatalogSteps,
   storedAgentBindingIdSteps,
-  updateRunnerLoginSteps,
   type Db,
   type Q,
 } from "../src/db";
@@ -49,27 +40,6 @@ async function opened(open: () => Promise<PgliteTestDb>) {
   await withoutForeignKeys(handle.db);
   await seedRunner(handle.db, "box", { lastSeenAt: NOW });
   return handle.db;
-}
-
-const login = (
-  id: string,
-  row: { agent?: string; bindingId?: string; expiresAt?: number } = {},
-) => ({
-  id,
-  runnerId: "box",
-  workspaceId: "acme",
-  userId: "owner",
-  agent: "codex",
-  expiresAt: NOW + 1_000,
-  updatedAt: NOW,
-  bindingId: null,
-  ...row,
-});
-
-function insertLogin(db: Db, ...logins: Parameters<typeof insertRunnerLoginSteps>[1][]) {
-  return db.run(function* (q) {
-    for (const row of logins) yield* insertRunnerLoginSteps(q, row);
-  });
 }
 
 const command =
@@ -124,107 +94,6 @@ async function seedOwnerMember(db: Db, revokedAt: number | null = null) {
 }
 
 describePglite((open) => {
-  test("a sign-in is stored as starting and reads back with its columns", async () => {
-    const db = await opened(open);
-    await insertLogin(db, login("a", { bindingId: "binding" }));
-    expect(await db.run((q) => runnerLoginRowSteps(q, "a"))).toEqual({
-      id: "a",
-      runnerId: "box",
-      workspaceId: "acme",
-      userId: "owner",
-      agent: "codex",
-      state: "starting",
-      expiresAt: NOW + 1_000,
-      terminal: "",
-      authorization: null,
-      inputId: null,
-      bindingId: "binding",
-    });
-    expect(await db.run((q) => runnerLoginRowSteps(q, "missing"))).toBeNull();
-  });
-
-  test("progress updates a sign-in and closing it clears what the person saw", async () => {
-    const db = await opened(open);
-    await insertLogin(db, login("a"));
-    await db.run((q) =>
-      updateRunnerLoginSteps(q, "a", {
-        state: "waiting",
-        terminal: "code",
-        authorization: '{"url":"https://auth.openai.com"}',
-        inputId: "input",
-        updatedAt: NOW + 5,
-      }),
-    );
-    expect(await db.run((q) => runnerLoginRowSteps(q, "a"))).toMatchObject({
-      state: "waiting",
-      terminal: "code",
-      authorization: '{"url":"https://auth.openai.com"}',
-      inputId: "input",
-    });
-    await db.run((q) => closeRunnerLoginSteps(q, "a", "expired"));
-    expect(await db.run((q) => runnerLoginRowSteps(q, "a"))).toMatchObject({
-      state: "expired",
-      terminal: "",
-      authorization: null,
-      inputId: null,
-    });
-  });
-
-  test("cancelling touches only pending sign-ins, one or all", async () => {
-    const db = await opened(open);
-    await insertLogin(db, login("a"), login("b"), login("done"));
-    await db.run((q) => closeRunnerLoginSteps(q, "done", "expired"));
-    await db.run((q) => cancelPendingRunnerLoginsSteps(q, "done"));
-    expect((await db.run((q) => runnerLoginRowSteps(q, "done")))?.state).toBe("expired");
-    await db.run((q) => cancelPendingRunnerLoginsSteps(q, "a"));
-    expect((await db.run((q) => runnerLoginRowSteps(q, "a")))?.state).toBe("cancelled");
-    expect((await db.run((q) => runnerLoginRowSteps(q, "b")))?.state).toBe("starting");
-    await db.run((q) => cancelPendingRunnerLoginsSteps(q));
-    expect((await db.run((q) => runnerLoginRowSteps(q, "b")))?.state).toBe("cancelled");
-    expect((await db.run((q) => runnerLoginRowSteps(q, "done")))?.state).toBe("expired");
-  });
-
-  test("the newest sign-in is found per agent account and per binding", async () => {
-    const db = await opened(open);
-    await insertLogin(
-      db,
-      login("older", { expiresAt: NOW + 1 }),
-      login("newer", { expiresAt: NOW + 2 }),
-      login("named-old", { bindingId: "binding", expiresAt: NOW + 3 }),
-      login("named-new", { bindingId: "binding", expiresAt: NOW + 4 }),
-      login("claude", { agent: "claude", expiresAt: NOW + 5 }),
-    );
-    expect(await db.run((q) => latestAgentRunnerLoginIdSteps(q, OWNER))).toBe("newer");
-    expect(
-      await db.run((q) =>
-        latestBindingRunnerLoginIdSteps(q, {
-          runnerId: "box",
-          userId: "owner",
-          bindingId: "binding",
-        }),
-      ),
-    ).toBe("named-new");
-    expect(
-      await db.run((q) => latestAgentRunnerLoginIdSteps(q, { ...OWNER, userId: "someone" })),
-    ).toBeNull();
-  });
-
-  test("a pending sign-in is matched on its binding, its state and its expiry", async () => {
-    const db = await opened(open);
-    await insertLogin(db, login("own"), login("named", { bindingId: "binding" }));
-    const find = (bindingId: string | null, at = NOW) =>
-      db.run((q) => pendingRunnerLoginIdSteps(q, { ...OWNER, bindingId, at }));
-    expect(await find(null)).toBe("own");
-    expect(await find("binding")).toBe("named");
-    expect(await find("other")).toBeNull();
-    expect(await find(null, NOW + 1_000)).toBeNull();
-    expect(await db.run((q) => pendingRunnerLoginCountSteps(q, "box", NOW))).toBe(2);
-    await db.run((q) => closeRunnerLoginSteps(q, "own", "cancelled"));
-    expect(await find(null)).toBeNull();
-    expect(await db.run((q) => pendingRunnerLoginCountSteps(q, "box", NOW))).toBe(1);
-    expect(await db.run((q) => pendingRunnerLoginCountSteps(q, "box", NOW + 1_000))).toBe(0);
-  });
-
   test("a health command stops occupying the lane once answered, expired or its sign-in ended", async () => {
     const db = await opened(open);
     const outstanding = (at = NOW) =>
@@ -242,10 +111,25 @@ describePglite((open) => {
       }),
     );
     expect(await outstanding()).toBe(false);
-    await seed(db, command("sign-in", "login"));
-    await insertLogin(db, login("sign-in"));
+    await seed(db, command("sign-in", "login"), (q) =>
+      q.orm.insert(q.t.runnerLogin).values({
+        id: "sign-in",
+        runnerId: "box",
+        workspaceId: "acme",
+        userId: "owner",
+        agent: "codex",
+        state: "starting",
+        expiresAt: NOW + 1_000,
+        updatedAt: NOW,
+      }),
+    );
     expect(await outstanding()).toBe(true);
-    await db.run((q) => closeRunnerLoginSteps(q, "sign-in", "cancelled"));
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerLogin)
+        .set({ state: "cancelled" })
+        .where(eq(q.t.runnerLogin.id, "sign-in")),
+    );
     expect(await outstanding()).toBe(false);
   });
 

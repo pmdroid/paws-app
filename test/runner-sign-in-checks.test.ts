@@ -2,11 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import {
-  bindAgentAccount,
-  createAgentAccount,
   putWorkspaceUser,
   recordLinearInstallation,
-  recordRunnerAccountCapability,
   recordRunnerCapacity,
   recordRunnerAgentUsage,
   runnerAgentUsage,
@@ -16,7 +13,6 @@ import {
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerHelpers } from "../src/runner-helpers";
-import { createRunnerLogin } from "../src/runner-login";
 import { createRunnerHttp, type RunnerControl } from "../src/runner-control";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import { RunnerHealthResultSchema, type RunnerCommand } from "../src/runner-protocol";
@@ -495,70 +491,6 @@ test("an older usage reading never replaces a newer one", async () => {
   await record(55, 3_000);
   expect((await runnerAgentUsage(f.db, runnerId, "codex"))!.limits).toEqual(reading(55));
   expect(await runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
-});
-
-test("a sign-in goes to the runner before sign-in checks queued ahead of it", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  const login = createRunnerLogin({ store: f.db, work: f.work, now: f.now });
-  for (const agent of ["codex", "grok"] as const)
-    await f.work.enqueue({
-      id: crypto.randomUUID(),
-      type: "login_check",
-      runnerId,
-      workspaceId: f.owner.workspaceId,
-      agent,
-      issuedAt: f.now(),
-      expiresAt: f.now() + 120_000,
-    });
-  const account = await createAgentAccount(f.db, {
-    workspaceId: f.owner.workspaceId,
-    ownerUserId: f.owner.userId,
-    agent: "claude",
-    label: "Claude",
-    now: f.now(),
-  });
-  const binding = await bindAgentAccount(f.db, {
-    workspaceId: f.owner.workspaceId,
-    userId: f.owner.userId,
-    accountId: account.id,
-    runnerId,
-    now: f.now(),
-  });
-  await recordRunnerAccountCapability(
-    f.db,
-    runnerId,
-    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
-    f.now(),
-  );
-  const session = await login.start(f.owner, runnerId, "claude", binding.id);
-  const delivered = async () =>
-    (await f.work.commands(runnerId)).map((envelope) => {
-      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
-        id: string;
-        type: string;
-        agent: string;
-      };
-      return { id: command.id, label: `${command.type} ${command.agent}` };
-    });
-  expect((await delivered()).map(({ label }) => label)).toEqual(["login claude"]);
-
-  await f.work.acknowledge(runnerId, session.id);
-  expect(await delivered()).toEqual([]);
-  await login.exchange(runnerId, session.id, {
-    state: "connected",
-    terminal: "",
-    authorization: null,
-    inputId: null,
-  });
-  const [codex] = await delivered();
-  expect(codex?.label).toBe("login_check codex");
-  expect((await delivered()).map(({ label }) => label)).toEqual(["login_check codex"]);
-
-  await f.work.acknowledge(runnerId, codex!.id);
-  expect(await delivered()).toEqual([]);
-  await f.answer({ id: codex!.id, runnerId, agent: "codex" });
-  expect((await delivered()).map(({ label }) => label)).toEqual(["login_check grok"]);
 });
 
 test("a sign-in check's usage reading replaces a stale usage limit", async () => {

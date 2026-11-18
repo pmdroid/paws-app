@@ -103,14 +103,6 @@ export {
 } from "./inputs";
 
 export {
-  RunnerLoginInputSchema,
-  RunnerLoginUpdateSchema,
-  RunnerLoginExchangeSchema,
-  type RunnerLoginUpdate,
-  type RunnerLoginInput,
-} from "./login";
-
-export {
   RunnerActivitySchema,
   RunnerPermissionSchema,
   redactGitHubTokens,

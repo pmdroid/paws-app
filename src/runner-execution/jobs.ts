@@ -8,12 +8,12 @@ import {
 
 export const ExecutionIdSchema = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
 const WorkCommandSchema = RunnerCommandSchema.refine((command) =>
-  ["run", "review", "task", "probe", "login_check", "login", "helper"].includes(command.type),
+  ["run", "review", "task", "probe", "login_check", "helper"].includes(command.type),
 ).transform(
   (command) =>
     command as Extract<
       RunnerCommand,
-      { type: "run" | "review" | "task" | "probe" | "login_check" | "login" | "helper" }
+      { type: "run" | "review" | "task" | "probe" | "login_check" | "helper" }
     >,
 );
 export const RunnerJobSchema = z.strictObject({
