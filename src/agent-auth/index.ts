@@ -197,6 +197,7 @@ export function createAgentAuth(options: {
 }
 export { createAccountUsage } from "./account-usage";
 export { createUsageReader } from "./usage";
+export { API_KEY_PROVIDER, checkApiKey, fakeApiKeyProvider } from "./api-key";
 
 export async function checkClaudeToken(
   token: string,

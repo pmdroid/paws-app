@@ -3,6 +3,7 @@ import { createAccountManagement } from "../src/account-management";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createAccountUsage, fakeApiKeyProvider } from "../src/agent-auth";
 import { readAgentCredentialSteps } from "../src/credentials";
 import {
   agentCredentialCiphertextSteps,
@@ -150,6 +151,99 @@ describePglite((connect) => {
       });
       const bindings = await db.run((q) => listAgentBindingsSteps(q, "acme", String(claude.id)));
       expect(bindings.map((binding) => binding.runnerId)).toEqual(["R1"]);
+    } finally {
+      rmSync(secretsDir, { recursive: true, force: true });
+      await handle.close();
+    }
+  });
+
+  test("an API key is checked with the provider, stored centrally and bound to the owner's runners", async () => {
+    const handle = await connect();
+    const { db } = handle;
+    const secretsDir = mkdtempSync(join(tmpdir(), "api-key-"));
+    try {
+      await withoutForeignKeys(db);
+      await seed(db, (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "acme", linearOrganizationId: "org", name: "acme", createdAt: NOW }),
+      );
+      await seedRunner(db, "R1", { lastSeenAt: NOW - 5_000, ownerUserId: "ada" });
+      await seedRunner(db, "R0", { lastSeenAt: NOW - 5_000, ownerUserId: "bea" });
+      const provider = fakeApiKeyProvider(["sk-good"]);
+      const api = createAccountManagement({
+        store: db,
+        secretsDir,
+        now: () => NOW,
+        checkApiKey: provider.check,
+      });
+      const send = (method: string, path: string, body?: unknown) =>
+        api(
+          new Request(`http://127.0.0.1:8787/api/runners/agent-accounts${path}`, {
+            method,
+            ...(body === undefined
+              ? {}
+              : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+          }),
+          principal,
+        ).then(async (response) => ({
+          status: response!.status,
+          body: (await response!.json()) as Record<string, unknown>,
+        }));
+      const codex = (await send("POST", "", { agent: "codex", label: "Key" })).body;
+      const id = String(codex.id);
+      expect(await send("PUT", `/${id}/api-key`, { key: "sk-bad" })).toEqual({
+        status: 400,
+        body: { error: "This key was not accepted by OpenAI." },
+      });
+      provider.setOffline(true);
+      expect(await send("PUT", `/${id}/api-key`, { key: "sk-good" })).toEqual({
+        status: 503,
+        body: { error: "OpenAI could not be reached to check the key. Try again." },
+      });
+      provider.setOffline(false);
+      expect(await db.run((q) => agentCredentialCiphertextSteps(q, id))).toBeNull();
+      expect(await db.run((q) => listAgentBindingsSteps(q, "acme", id))).toEqual([]);
+      expect(await send("PUT", `/${id}/api-key`, { key: "sk-good" })).toEqual({
+        status: 200,
+        body: { ok: true },
+      });
+      expect(provider.calls.at(-1)).toEqual({
+        url: "https://api.openai.com/v1/models",
+        headers: { Authorization: "Bearer sk-good" },
+      });
+      const stored = await db.run((q) => readAgentCredentialSteps(q, secretsDir, id));
+      const files = JSON.parse(stored!.blob!) as { path: string; data: string }[];
+      expect(files.map((file) => file.path)).toEqual([".paws/api-key.json"]);
+      expect(JSON.parse(Buffer.from(files[0]!.data, "base64").toString())).toEqual({
+        kind: "api_key",
+        agent: "codex",
+        key: "sk-good",
+      });
+      const bindings = await db.run((q) => listAgentBindingsSteps(q, "acme", id));
+      expect(bindings.map((binding) => binding.runnerId)).toEqual(["R1"]);
+      const listed = await send("GET", "");
+      expect(JSON.stringify(listed.body)).not.toContain("sk-good");
+      expect((listed.body.accounts as Record<string, unknown>[])[0]).toMatchObject({
+        id,
+        auth: "api_key",
+        usage: { limits: [], observedAt: NOW, unavailable: "Billed per use" },
+      });
+      let reads = 0;
+      await createAccountUsage({
+        store: db,
+        secretsDir,
+        now: () => NOW,
+        readUsage: async () => {
+          reads++;
+          return [];
+        },
+      }).tick();
+      expect(reads).toBe(0);
+      expect((await send("DELETE", `/${id}/credential`)).status).toBe(200);
+      expect(
+        ((await send("GET", "")).body.accounts as Record<string, unknown>[])[0]?.credential,
+      ).toBeNull();
     } finally {
       rmSync(secretsDir, { recursive: true, force: true });
       await handle.close();

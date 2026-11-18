@@ -28,6 +28,8 @@ export function createAccountUsage(options: {
       readAgentCredentialSteps(q, options.secretsDir, account.id),
     );
     if (!credential?.blob) return;
+    const files: { path: string }[] = JSON.parse(credential.blob);
+    if (files.some((file) => file.path === ".paws/api-key.json")) return;
     try {
       const limits = await readUsage(account.agent, credential.blob);
       await options.store.transaction(function* (q) {

@@ -1,5 +1,5 @@
 import { assetPath, buildVersion, compiled } from "./assets";
-import { checkClaudeToken, createAccountUsage, createAgentAuth } from "./agent-auth";
+import { checkApiKey, checkClaudeToken, createAccountUsage, createAgentAuth } from "./agent-auth";
 import { browserSetupRuntime } from "./onboarding";
 import {
   createFindingGrouping,
@@ -1288,6 +1288,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     agentAuth,
     secretsDir: paths.secretsDir,
     checkClaudeToken: (token) => checkClaudeToken(token),
+    checkApiKey: (agent, key) => checkApiKey(agent, key),
   });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
