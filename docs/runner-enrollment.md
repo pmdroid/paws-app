@@ -1,14 +1,8 @@
 # Enroll a remote Linux runner
 
-The installer adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
+The apt installer, `deploy/linux/install-runner.sh`, adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
 
-Existing runners need one manual install to move to apt. Wait for active work to finish, then run on each runner host:
-
-```sh
-curl -fsSL https://get.paws.boo | sudo sh
-```
-
-Paws does not upgrade runners through the control plane. Run the same command for later runner upgrades.
+The **Add a runner** command installs from the GitHub release instead: see [Add the host](#add-the-host). Paws does not upgrade runners through the control plane. To upgrade a runner, wait for active work to finish and install the latest release's `.deb` by hand as shown there.
 
 Enrollment connects a Linux host to your Paws workspace. The runner daemon runs as the non-root `paws-runner` user, and the coding agents (Claude, Codex, Grok, OpenCode) and everything they start run as `paws-agent`, which can't read the runner's identity keys. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
@@ -140,7 +134,18 @@ The runner's page on **Runners** has an **Agents** table with one row per agent 
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
 2. Select **Add a runner**, enter the name you want to see in Paws, leave **Docker for agent jobs** ticked or untick it, and select **Create command**. The command runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`, so it never depends on a terminal to ask.
-3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
+3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`. When `/etc/paws-runner/config.json` already exists, the command sets only its `controlPlaneUrl` and `runnerApiUrl` and keeps every other key, such as `allowedRepositories`, `concurrency` and `agentUser`.
+
+The command installs the `paws-runner` `.deb` that the latest GitHub release at https://github.com/pmdroid/paws-app/releases/latest attaches for the host's architecture, after checking it against the release's `.sha256` file. It needs `curl`, `apt-get`, `dpkg` and `sha256sum` on the host. To install the same package by hand:
+
+```sh
+tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/pmdroid/paws-app/releases/latest)
+deb="paws-runner_${tag##*/v}_$(dpkg --print-architecture).deb"
+curl -fsSL -O "https://github.com/pmdroid/paws-app/releases/download/${tag##*/}/$deb" \
+  -O "https://github.com/pmdroid/paws-app/releases/download/${tag##*/}/$deb.sha256"
+sha256sum --check "$deb.sha256"
+sudo apt-get install -y --reinstall "./$deb"
+```
 
 The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. It takes work once a workspace admin chooses its repositories on its runner page. Running the command again on an enrolled host that Paws still accepts changes nothing and leaves the token unused. If the token expires, create a new command.
 
