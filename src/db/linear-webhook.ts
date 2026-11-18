@@ -17,7 +17,8 @@ export function* linearWebhookWarningSteps(q: Q, nowMs: number) {
   const lastVerifiedMs = yield* cursorSteps(q, "linear:webhook");
   if (lastVerifiedMs === null) return null;
   const missedMs = yield* cursorSteps(q, "linear:webhook-missed");
-  if (missedMs !== null && missedMs > lastVerifiedMs)
+  const sessionMs = yield* cursorSteps(q, "linear:webhook-session");
+  if (missedMs !== null && missedMs > (sessionMs ?? Number.NEGATIVE_INFINITY))
     return { reason: "missed", lastVerifiedMs, missedMs } satisfies LinearWebhookWarning;
   if (nowMs - lastVerifiedMs <= LINEAR_WEBHOOK_SILENCE_MS) return null;
   const { workItem } = q.t;
@@ -47,7 +48,7 @@ export async function linearWebhookWarning(
 
 export function describeLinearWebhookWarning(warning: LinearWebhookWarning): string {
   return warning.reason === "missed"
-    ? "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered."
+    ? "Linear session webhooks aren't arriving; Paws is polling every minute"
     : "Linear may have disabled the Paws webhook: no verified delivery for over an hour while sessions are active.";
 }
 

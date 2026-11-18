@@ -173,6 +173,41 @@ describe("catch-up poll in a quiet workspace", () => {
     await close();
   });
 
+  test("a missed session event drops the poll to a minute through other webhooks until a session webhook arrives", async () => {
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
+    expect((await deliver(store, NOW, "secret")).status).toBe(200);
+    expect((await deliver(store, NOW + 10 * MINUTE, "secret", "Issue")).status).toBe(200);
+    let clock = NOW + 20 * MINUTE;
+    let page = missedPrompt;
+    const waits: number[] = [];
+    const poll = async () => {
+      const poller = startCatchUpPoller({
+        source: countingSource(() => page()).source,
+        store,
+        onEvent: () => {},
+        sleeper: recordingSleeper(waits),
+        now: () => clock,
+        mono: () => 0,
+      });
+      const seen = waits.length;
+      await waitFor(() => waits.length > seen);
+      await poller.stop();
+      return waits.at(-1);
+    };
+    expect(await poll()).toBe(MINUTE);
+    page = emptyData;
+    expect((await deliver(store, NOW + 21 * MINUTE, "secret", "Issue")).status).toBe(200);
+    clock = NOW + 22 * MINUTE;
+    expect(await poll()).toBe(MINUTE);
+    expect(await linearWebhookWarning(db, clock)).toMatchObject({ reason: "missed" });
+    expect((await deliver(store, NOW + 23 * MINUTE, "secret")).status).toBe(200);
+    clock = NOW + 24 * MINUTE;
+    expect(await poll()).toBe(12 * MINUTE);
+    expect(await linearWebhookWarning(db, clock)).toBeNull();
+    await close();
+  });
+
   test("an hour without a verified delivery warns only while sessions are active", async () => {
     const { db, close } = await tempStore();
     expect((await deliver(createInboxStore(db), NOW, "secret")).status).toBe(200);
@@ -192,10 +227,15 @@ describe("catch-up poll in a quiet workspace", () => {
 
 let deliveries = 0;
 
-function deliver(store: InboxStore, at: number, signingSecret: string): Promise<Response> {
+function deliver(
+  store: InboxStore,
+  at: number,
+  signingSecret: string,
+  type = "AgentSessionEvent",
+): Promise<Response> {
   deliveries += 1;
   const body = JSON.stringify({
-    type: "AgentSessionEvent",
+    type,
     action: "created",
     webhookTimestamp: at,
     agentSession: { id: "session-webhook", issueId: "iss_webhook" },

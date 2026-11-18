@@ -2097,8 +2097,7 @@ describe("live status provider", () => {
       q.orm.insert(q.t.syncCursor).values({ name: "linear:webhook-missed", cursorMs: 5000 }),
     );
     expect((await overview(10_000)).linearWebhook).toEqual({
-      warning:
-        "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
+      warning: "Linear session webhooks aren't arriving; Paws is polling every minute",
       fix: LINEAR_WEBHOOK_FIX,
       lastVerifiedAt: new Date(1000).toISOString(),
     });
