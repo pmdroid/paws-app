@@ -262,6 +262,8 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
   const originalFetch = globalThis.fetch;
   const data = {
     ...settings(),
+    grok: { path: "/opt/grok", allowApiKey: true },
+    opencode: { path: null },
     presets: {
       Opus: {
         implementer: { agent: "claude" as const, model: "sonnet", effort: "high" },
@@ -287,6 +289,8 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
     await settle();
     root.remove();
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Opus");
+    expect(root.textContent).not.toContain("Agent commands");
+    expect(root.querySelector('[name="grok-path"], [name="opencode-path"]')).toBeNull();
     expect(root.querySelector("#preset-0-implementer-effort")?.innerHTML).toContain("high");
     expect(root.querySelector<HTMLSelectElement>("#preset-0-reviewer-model")?.value).toBe(
       "gpt-5.4",
@@ -312,6 +316,8 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
       Codex: { implementer: data.defaults.implementer, reviewer: data.defaults.reviewer },
     });
     expect(body).not.toHaveProperty("projects");
+    expect(body).not.toHaveProperty("grok");
+    expect(body).not.toHaveProperty("opencode");
     click("remove-preset");
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Codex");
     const agent = root.querySelector<HTMLSelectElement>("#preset-0-reviewer-agent")!;
