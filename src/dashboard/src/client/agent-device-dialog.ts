@@ -6,6 +6,7 @@ type Status = { state: "pending" | "signed-in" | "denied" | "expired" };
 
 export function openAgentDeviceDialog(
   name: string,
+  provider: string,
   label: string,
   request: <T>(method: string) => Promise<T>,
   onClose: () => void,
@@ -14,7 +15,7 @@ export function openAgentDeviceDialog(
   document.body.append(host);
   renderMarkup(
     host,
-    `<dialog aria-labelledby="agent-device-heading"><div class="dialog-body col"><div class="between"><h2 id="agent-device-heading">Sign in to ${esc(name)} for ${esc(label)}</h2><button class="btn" data-device-close>Close</button></div><div data-device-challenge class="col" hidden><strong class="text-3xl break-all" data-device-code></strong><button class="btn" data-device-copy>Copy code</button><a class="btn primary" data-device-link target="_blank" rel="noopener noreferrer">Open ${esc(name)} sign-in</a></div><p role="status" aria-live="polite" data-device-status>Starting sign-in…</p><button class="btn" data-device-retry hidden>Retry</button></div></dialog>`,
+    `<dialog aria-labelledby="agent-device-heading"><div class="dialog-body col"><div class="between"><h2 id="agent-device-heading">Sign in to ${esc(name)} for ${esc(label)}</h2><button class="btn" data-device-close>Close</button></div><div data-device-challenge class="col" hidden><strong class="text-3xl break-all" data-device-code></strong><button class="btn" data-device-copy>Copy code</button><a class="btn primary" data-device-link target="_blank" rel="noopener noreferrer">Open ${esc(provider)} sign-in</a></div><p role="status" aria-live="polite" data-device-status>Starting sign-in…</p><button class="btn" data-device-retry hidden>Retry</button></div></dialog>`,
   );
   const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
   const status = host.querySelector<HTMLElement>("[data-device-status]")!;
