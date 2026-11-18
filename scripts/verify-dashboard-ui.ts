@@ -426,13 +426,8 @@ try {
       if (route.request().method() === "PUT") memory = route.request().postDataJSON().projectMemory;
       await route.fulfill({ json: { defaults: {}, projectMemory: memory } });
     });
-    await visit(
-      admin,
-      width,
-      "project-memory",
-      "/dashboard/workspace/project-memory",
-      "Project memory",
-    );
+    const memoryPath = "/dashboard/workspace/project-memory";
+    await visit(admin, width, "project-memory", memoryPath, "Project memory");
     await expect(admin.getByRole("switch", { name: "Dream" })).toBeChecked();
     await admin.getByRole("switch", { name: "Summarize finished work" }).check();
     await admin.getByRole("button", { name: "Save project memory settings" }).click();
