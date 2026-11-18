@@ -39,6 +39,20 @@ test("Quota exhaustion uses explicit reset evidence and keeps unknown cooldown s
     cooldownUntil: now + 900_000,
   });
 });
+test("an API key out of credit or quota is exhausted with the unknown-reset cooldown", () => {
+  for (const message of [
+    "Your credit balance is too low to access the Anthropic API.",
+    "You exceeded your current quota, please check your plan and billing details.",
+    "Your team has either used all available credits or reached its monthly spending limit.",
+    "Insufficient credits. Add more using https://openrouter.ai/credits",
+    "This request requires more credits, or fewer max_tokens.",
+  ])
+    expect(quotaSignal(message, now)).toEqual({
+      state: "exhausted",
+      resetsAt: null,
+      cooldownUntil: now + 900_000,
+    });
+});
 test("Claude plan limits name the clock time they reset at", () => {
   expect(
     quotaSignal("Internal error: You've hit your weekly limit · resets 4am (UTC)", now),
