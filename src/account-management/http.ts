@@ -5,7 +5,6 @@ import {
   bindToOwnerRunnersSteps,
   getAgentAccountSteps,
   agentAccountOverviewSteps,
-  centralSignInTargetSteps,
   createAgentAccountSteps,
   orderAgentAccountsSteps,
   setAgentAccountEnabledSteps,
@@ -189,16 +188,6 @@ export function createAccountManagement(
             },
             400,
           );
-        return json(
-          await store.transaction((q) =>
-            centralSignInTargetSteps(q, {
-              workspaceId,
-              userId: principal.userId,
-              accountId: accountId!,
-              now: now(),
-            }),
-          ),
-        );
       }
       if (action === "token" && method === "PUT") {
         const { secretsDir } = options;

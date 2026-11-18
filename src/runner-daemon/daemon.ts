@@ -35,9 +35,6 @@ import {
   type RunnerCodingAgent,
   type RunnerAccountCapability,
   RunnerCommandSchema,
-  RunnerLoginUpdateSchema,
-  RunnerLoginExchangeSchema,
-  type RunnerLoginUpdate,
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
@@ -1000,12 +997,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       );
       unchangedIdentity(identity);
       return bytes;
-    },
-    async exchangeLogin(id: string, update: RunnerLoginUpdate) {
-      z.uuid().parse(id);
-      return RunnerLoginExchangeSchema.parse(
-        await authenticated(`/v1/login/${id}`, "POST", RunnerLoginUpdateSchema.parse(update)),
-      );
     },
     async postHealth(result: RunnerHealthResult) {
       const body = RunnerHealthResultSchema.parse(result);

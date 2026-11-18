@@ -805,23 +805,21 @@ test.each([
   expect(ran.output).toMatch(/old runner rejects widened input|new command variant/);
 });
 
-test.each([
-  "RunnerPromptContextSchema",
-  "RunnerLoginInputSchema",
-  "SignedRunnerCommandSchema",
-  "RunnerAgentTargetSchema",
-])("%s protects its old strict reader", (name) => {
-  const ran = probe(
-    "api-contract",
-    namedSchemaChange(
-      name,
-      "z.strictObject({id:z.string()})",
-      "z.strictObject({id:z.string(), encoding:z.string().optional()})",
-    ),
-  );
-  expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain(`${name}.encoding\tnew field rejected by old strict reader`);
-});
+test.each(["RunnerPromptContextSchema", "SignedRunnerCommandSchema", "RunnerAgentTargetSchema"])(
+  "%s protects its old strict reader",
+  (name) => {
+    const ran = probe(
+      "api-contract",
+      namedSchemaChange(
+        name,
+        "z.strictObject({id:z.string()})",
+        "z.strictObject({id:z.string(), encoding:z.string().optional()})",
+      ),
+    );
+    expect(ran.exitCode).toBe(1);
+    expect(ran.output).toContain(`${name}.encoding\tnew field rejected by old strict reader`);
+  },
+);
 
 test("older readers require a formerly required input field", () => {
   const ran = probe(

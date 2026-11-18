@@ -345,7 +345,6 @@ export const RunnerCommandSchema = z
       account: work.account,
     }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent, account: work.account }),
-    z.strictObject({ ...common, type: z.literal("login"), agent, account: work.account }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
     z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
@@ -416,7 +415,6 @@ export const RunnerCommandSchema = z
         command.reviewCommand.base !== command.repository.baseSha),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
-  .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
   .refine(
     (command) =>
       command.type !== "helper" ||

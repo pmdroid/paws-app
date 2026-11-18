@@ -647,7 +647,7 @@ export function* runnerAccountUnsupportedSteps(
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
-  options: { signIn?: boolean; reported?: boolean } = {},
+  options: { reported?: boolean } = {},
 ) {
   const { runnerAccountCapability: c } = q.t;
   const row = yield* q.one(
@@ -660,7 +660,6 @@ export function* runnerAccountUnsupportedSteps(
     return "The runner has not reported agent account support";
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
   if (agentUnsupported) return agentUnsupported;
-  if (options.signIn) return null;
   if (!options.reported && (yield* bindingHasControlPlaneAuthSteps(q, bindingId))) return null;
   const capability = RunnerAccountCapabilitySchema.safeParse({
     protocol: row.protocol,
@@ -681,9 +680,8 @@ export async function runnerAccountUnsupported(
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
-  options: { signIn?: boolean } = {},
 ): Promise<string | null> {
-  return store.run((q) => runnerAccountUnsupportedSteps(q, runnerId, bindingId, agent, options));
+  return store.run((q) => runnerAccountUnsupportedSteps(q, runnerId, bindingId, agent));
 }
 
 function commandAgent(command: RunnerCommand | RunnerRetroCommand): RunnerCodingAgent | null {
@@ -707,14 +705,12 @@ export function* recordCommandAccountSteps(
       "binding_mismatch",
       "Agent account binding does not match the command",
     );
-  const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent, {
-    signIn: command.type === "login",
-  });
+  const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent);
   if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
   const owner = (yield* accountRowSteps(q, row.accountId))!;
   if (row.removedAt !== null || owner.removedAt !== null)
     throw new AgentAccountError("removed", "Agent account was removed");
-  if (!owner.enabled && command.type !== "login" && command.type !== "login_check")
+  if (!owner.enabled && command.type !== "login_check")
     throw new AgentAccountError("disabled", "Agent account is disabled");
   yield* q.exec(
     q.orm.insert(q.t.runnerCommandAccount).values({

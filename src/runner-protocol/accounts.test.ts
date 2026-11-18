@@ -64,18 +64,13 @@ test("a runner refuses a named account it does not hold, before claiming the com
   expect(verifyRunnerCommand(signed(named), held.verifier)).toEqual({ ok: true, command: named });
 });
 
-test.each<RunnerCommand["type"]>([
-  "run",
-  "review",
-  "task",
-  "helper",
-  "probe",
-  "login",
-  "login_check",
-])("%s commands carry an optional signed account", (type) => {
-  const shape = RunnerCommandSchema.options.find((option) => option.shape.type.value === type);
-  expect(shape?.shape).toHaveProperty("account");
-});
+test.each<RunnerCommand["type"]>(["run", "review", "task", "helper", "probe", "login_check"])(
+  "%s commands carry an optional signed account",
+  (type) => {
+    const shape = RunnerCommandSchema.options.find((option) => option.shape.type.value === type);
+    expect(shape?.shape).toHaveProperty("account");
+  },
+);
 
 test.each<RunnerCommand["type"]>(["cancel", "handover", "checkpoint", "upgrade"])(
   "%s commands carry no account",
@@ -135,27 +130,6 @@ test("results echo the command's account exactly", () => {
   expect(runnerAccountEchoed({ account }, { account: { ...account, bindingId: "other" } })).toBe(
     false,
   );
-});
-
-test("a named sign-in may reach a runner that does not hold the binding yet", () => {
-  const login: RunnerCommand = {
-    id: "command-2",
-    runnerId: "runner-1",
-    workspaceId: "workspace-1",
-    issuedAt: 1000,
-    expiresAt: 2000,
-    type: "login",
-    agent: "codex",
-    account,
-  };
-  const check: RunnerCommand = { ...login, id: "command-3", type: "login_check" };
-  const { verifier, claims } = context();
-  expect(verifyRunnerCommand(signed(login), verifier)).toEqual({ ok: true, command: login });
-  expect(verifyRunnerCommand(signed(check), verifier)).toEqual({
-    ok: false,
-    reason: "account_unavailable",
-  });
-  expect(claims()).toBe(1);
 });
 
 test("every runner agent declares whether it can run as a named account", () => {

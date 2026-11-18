@@ -226,7 +226,6 @@ export function createDirectWorkerSupervisor(options: {
       ensureDirectory(join(taskRoot, executionId), options.spool.agentGid, 0o770);
     if (!named) return agentHome;
     return openRunnerAccountHome(agentHome, named.account, named.agent, {
-      signIn: job.command.type === "login",
       folders: !asAgent,
       owners: { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
     });

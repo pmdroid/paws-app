@@ -91,7 +91,7 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false, showFails = false) {
 function prepared(
   root: string,
   account?: RunnerJob["command"]["account"],
-  type: "probe" | "login_check" | "login" = "probe",
+  type: "probe" | "login_check" = "probe",
 ) {
   const spoolRoot = join(root, "spool");
   mkdirSync(spoolRoot, { mode: 0o750 });
@@ -374,7 +374,7 @@ test("an account-bound paws-agent run shares the agent home's state, not its mis
   await supervisor.stop(id);
 });
 
-for (const type of ["login", "login_check", "probe"] as const)
+for (const type of ["login_check", "probe"] as const)
   test(`a ${type} for an account starts as paws-agent and leaves the agent folders to it`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
     roots.push(root);
@@ -385,13 +385,11 @@ for (const type of ["login", "login_check", "probe"] as const)
     const agentHome = join(root, "agent");
     mkdirSync(agentHome, { mode: 0o770 });
     chmodSync(agentHome, 0o770);
-    if (type !== "login") {
-      const home = openRunnerAccountHome(agentHome, account, "codex", {
-        signIn: true,
-        folders: false,
-      });
-      markRunnerAccountSignedIn(home, account, "codex");
-    }
+    const signedIn = openRunnerAccountHome(agentHome, account, "codex", {
+      signIn: true,
+      folders: false,
+    });
+    markRunnerAccountSignedIn(signedIn, account, "codex");
     const jobs = prepared(root, account, type);
     const { fake, launched, supervisor } = setup("paws-agent", undefined, {
       root,
@@ -402,9 +400,7 @@ for (const type of ["login", "login_check", "probe"] as const)
     expect(launched).toEqual([]);
     expect(fake.calls[0]).toEqual(["start", unit]);
     const home = join(agentHome, ".paws-accounts", account.bindingId);
-    expect(readdirSync(home).filter((name) => !name.startsWith("."))).toEqual(
-      type === "login" ? [] : ["account.json"],
-    );
+    expect(readdirSync(home).filter((name) => !name.startsWith("."))).toEqual(["account.json"]);
     for (const folder of [".codex", ".claude", ".config", ".local", ".cache"])
       expect(existsSync(join(home, folder))).toBe(false);
     await supervisor.stop(id);

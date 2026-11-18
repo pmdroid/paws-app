@@ -35,8 +35,6 @@ const RUNNER_INPUT_SCHEMAS = new Set([
   "RunnerPromptContextSchema",
   "RunnerInputFileSchema",
   "RunnerInputFilesSchema",
-  "RunnerLoginInputSchema",
-  "RunnerLoginExchangeSchema",
   "RunnerAgentTargetSchema",
   "RunnerAgentTargetsSchema",
   "RunnerSkillSchema",

@@ -20,7 +20,6 @@ import {
   takeRejectedFields,
   type RunnerRetroCommand,
 } from "../runner-protocol";
-import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
@@ -164,7 +163,6 @@ export async function openRunnerCoordinator(options: {
   });
   const results = createRunnerResults({ store: options.db, work, now: options.now });
   const health = createRunnerHealth({ store: options.db, work, now: options.now });
-  const login = createRunnerLogin({ store: options.db, work, now: options.now });
   const http = createRunnerHttp(control, {
     ...(options.hostWarnings ? { hostWarnings: options.hostWarnings } : {}),
     hostConfig: async () => {
@@ -251,7 +249,6 @@ export async function openRunnerCoordinator(options: {
         (await results.fetch(request, runnerId)) ??
         (await helpers.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
-        (await login.fetch(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
         (await agentReadAccess?.(request, runnerId)) ??
         (await repositoryCommands(request, runnerId)) ??
@@ -316,7 +313,6 @@ export async function openRunnerCoordinator(options: {
     results,
     health,
     models,
-    login,
     helpers,
     artifacts,
     inputs,
@@ -334,8 +330,7 @@ export async function openRunnerCoordinator(options: {
       return (
         (await models.browser(request, principal)) ??
         (await http.browser(request, principal, sessionIds)) ??
-        (await health.browser(request, principal)) ??
-        login.browser(request, principal)
+        health.browser(request, principal)
       );
     },
     /** `POST /api/runner-enrollments`: a host enrolls itself with a member's token. */
@@ -343,7 +338,6 @@ export async function openRunnerCoordinator(options: {
       return withSigningKeys(await http.hostEnrollment(request), signing.signingKeys);
     },
     async stop() {
-      await login.stop();
       clearInterval(timer);
       clearInterval(modelTimer);
       clearInterval(signInTimer);

@@ -42,11 +42,8 @@ test("the retired named-account routes are not handled", async () => {
   }
 });
 
-test("the Runners page's sign-in and health routes pass through to runner control", async () => {
+test("the Runners page's health routes pass through to runner control", async () => {
   for (const [method, path] of [
-    ["GET", `/api/runners/${RUNNER}/accounts`],
-    ["POST", `/api/runners/${RUNNER}/accounts/claude/login`],
-    ["GET", `/api/runners/${RUNNER}/accounts/claude/login/01JLOGIN00000000000000000A`],
     ["GET", `/api/runners/${RUNNER}/health`],
     ["GET", "/api/runners"],
   ])

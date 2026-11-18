@@ -7,12 +7,10 @@ import {
   type LivePreview,
   type LivePreviewSystem,
 } from "../live-preview";
-import { runProviderLogin } from "../runner-login-worker";
 import {
   redactGitHubTokens,
   redactedJson,
   runnerCommandAccount,
-  type RunnerLoginUpdate,
   isRunnerToken,
   agentCredentialReturnContext,
   sealForRunner,
@@ -96,12 +94,10 @@ import {
   shareAgentConfigFolders,
   shareRunnerWorkRoot,
   createRunnerResultDirectory,
-  markRunnerAccountSignedIn,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
   openRunnerCheckoutToGroup,
   openRunnerRunStatesToGroup,
-  publishRunnerAccountHome,
   readRunnerJob,
   readRunnerJobInputs,
   type RunnerJobInputs,
@@ -452,7 +448,6 @@ function decodeHostAnswer(response: string, what: string): string {
 }
 
 export type RunnerWorkerEvent =
-  | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "remember"; requestId: string; operations: readonly RunnerRememberOperation[] }
@@ -874,36 +869,29 @@ export async function executeRunnerCommand(
   const binding = runnerCommandAccount(command);
   const home = binding
     ? openRunnerAccountHome(options.home, binding.account, binding.agent, {
-        signIn: command.type === "login",
         ...(options.owners ? { owners: options.owners } : {}),
       })
     : options.home;
   let credentialsReturned = false;
   let placedOpenCode: string | null = null;
-  const returnCredentials = (signingIn = false) => {
+  const returnCredentials = () => {
     const recipient = job.credentials?.certificate;
     if (credentialsReturned || !recipient || !binding) return;
     credentialsReturned = true;
     try {
       if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
-      returnRunnerAgentCredentials(
-        home,
-        binding.agent,
-        job.executionId,
-        (files) =>
-          replaceOutputFile(
-            options,
-            "credentials.json",
-            sealForRunner(
-              recipient,
-              JSON.stringify(files),
-              agentCredentialReturnContext(job.executionId),
-            ),
+      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
+        replaceOutputFile(
+          options,
+          "credentials.json",
+          sealForRunner(
+            recipient,
+            JSON.stringify(files),
+            agentCredentialReturnContext(job.executionId),
           ),
-        command.type === "login",
+        ),
       );
     } catch (error) {
-      if (signingIn) throw error;
       journalCaught(
         error,
         "runner-worker.returnCredentials",
@@ -1014,57 +1002,6 @@ export async function executeRunnerCommand(
   const previewStart = new AbortController();
   try {
     enterPhase("checkout");
-    if (command.type === "login") {
-      if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
-      if (binding && !job.credentials) {
-        emit({
-          type: "login",
-          update: { state: "failed", terminal: "", authorization: null, inputId: null },
-        });
-        throw new Error("Paws cannot receive this sign-in's credentials");
-      }
-      await runProviderLogin({
-        agent: command.agent,
-        home,
-        signal: options.signal,
-        answer: options.answer,
-        emit: (update) => emit({ type: "login", update }),
-        ...(binding
-          ? {
-              account: {
-                publish: (write: () => void) =>
-                  publishRunnerAccountHome(
-                    home,
-                    job.executionId,
-                    () => {
-                      write();
-                      markRunnerAccountSignedIn(
-                        home,
-                        binding.account,
-                        binding.agent,
-                        options.owners,
-                      );
-                      returnCredentials(true);
-                    },
-                    options.owners,
-                  ),
-              },
-            }
-          : {}),
-      });
-      return {
-        executionId: job.executionId,
-        commandId: command.id,
-        run: {
-          role: "implementer",
-          stopReason: "end_turn",
-          cancelled: false,
-          timedOut: false,
-          authRequired: false,
-          agentExited: true,
-        },
-      };
-    }
     if (!task) {
       shareRunnerWorkRoot(options.workRoot, options.owners);
       if (options.owners && process.env.HOME)

@@ -651,11 +651,7 @@ export function createRunnerWork(options: {
             : null;
           const central = named && (yield* readAgentAuthSteps(q, named.account.accountId));
           if (central && !pem) throw new RunnerWorkFencedError();
-          if (
-            !named ||
-            !pem ||
-            (command.type !== "login" && (stored?.agent !== named.agent || stored.blob === null))
-          ) {
+          if (!named || !pem || stored?.agent !== named.agent || stored.blob === null) {
             sent.push(envelope);
             continue;
           }
@@ -665,15 +661,11 @@ export function createRunnerWork(options: {
             ...envelope,
             credential: {
               version: at,
-              ...(command.type === "login" || !stored?.blob
-                ? {}
-                : {
-                    sealed: sealForRunner(
-                      pem,
-                      central ? JSON.stringify(accessCredentialFiles(stored.blob)) : stored.blob,
-                      context,
-                    ),
-                  }),
+              sealed: sealForRunner(
+                pem,
+                central ? JSON.stringify(accessCredentialFiles(stored.blob)) : stored.blob,
+                context,
+              ),
             },
           });
         }

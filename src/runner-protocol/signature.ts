@@ -133,9 +133,7 @@ export function verifyRunnerCommand(
   if (
     named &&
     (runnerAccountAgentUnsupported(named.agent) ||
-      (command.type !== "login" &&
-        !opened.credential?.sealed &&
-        !context.accountBindings?.has(named.account.bindingId)))
+      (!opened.credential?.sealed && !context.accountBindings?.has(named.account.bindingId)))
   )
     return { ok: false, reason: "account_unavailable" };
   try {
