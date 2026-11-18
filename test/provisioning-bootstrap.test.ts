@@ -64,7 +64,7 @@ const RUN_SCRIPT = [
   "  export DEBIAN_FRONTEND=noninteractive",
   "  { apt-get update && apt-get install -y docker.io; } || fail 'Could not install Docker Engine (the docker.io package), which agent jobs on this runner need.'",
   "fi",
-  `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" '1.4.0'`,
+  `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install.sh" --runner '1.4.0'`,
   "tries=0",
   "until detail=$(runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker.sock info 2>&1 >/dev/null); do",
   "  tries=$((tries + 1))",
@@ -83,7 +83,7 @@ const RUN_SCRIPT = [
 
 const STAGE = [
   "sudo install -d -o root -g root -m 0700 /var/lib/paws-bootstrap",
-  `printf '%s' ${q(INSTALLER)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/install-runner.sh`,
+  `printf '%s' ${q(INSTALLER)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/install.sh`,
   `printf '%s' ${q(RUN_SCRIPT)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/run.sh`,
   `printf '%s\\n' ${q(CONFIG)} | sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/config.json`,
   "{ sudo test ! -e /etc/paws-runner/config.json || sudo install -o root -g paws-runner -m 0640 /var/lib/paws-bootstrap/config.json /etc/paws-runner/config.json; }",
@@ -524,7 +524,7 @@ test("the config carries the server CA but no repository list or secret", async 
   const exe = setup();
   const ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
   exe.scriptExec(VM, PROBE, { stdout: probe({}) });
-  exe.scriptExec(VM, /\/var\/lib\/paws-bootstrap\/install-runner\.sh/, {});
+  exe.scriptExec(VM, /\/var\/lib\/paws-bootstrap\/install\.sh/, {});
   scriptToken(exe);
   exe.scriptExec(VM, START_INSTALL, {});
   await createExeDevBootstrap({
@@ -623,13 +623,11 @@ function localVm() {
 test("the staged files land with the right modes and the commands are valid shell", () => {
   const vm = localVm();
   expect(vm.run(STAGE).exitCode).toBe(0);
-  expect(readFileSync(join(vm.stage, "install-runner.sh"), "utf8")).toBe(INSTALLER);
+  expect(readFileSync(join(vm.stage, "install.sh"), "utf8")).toBe(INSTALLER);
   expect(readFileSync(join(vm.stage, "run.sh"), "utf8")).toBe(vm.local(RUN_SCRIPT));
   expect(readFileSync(join(vm.stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
   expect(vm.modes()).toBe(
-    ["0700 <stage>/install-runner.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join(
-      "\n",
-    ),
+    ["0700 <stage>/install.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join("\n"),
   );
   for (const script of [
     RUN_SCRIPT,
@@ -713,7 +711,7 @@ test("the run script installs docker.io when the image has no Docker Engine and 
   expect(run.calls.slice(0, 4)).toEqual([
     "apt-get update",
     "apt-get install -y docker.io",
-    "sh access=grant <stage>/install-runner.sh 1.4.0",
+    "sh access=grant <stage>/install.sh --runner 1.4.0",
     "runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker.sock info",
   ]);
   // It goes on to mise, which this stub refuses.
@@ -724,7 +722,7 @@ test("the run script installs docker.io when the image has no Docker Engine and 
 test("the run script keeps an installed Docker Engine and fails clearly when the runner's daemon never answers", () => {
   const run = runInstall({ dockerd: true, aptGet: 0, runuser: 1 });
   expect(run.exitCode).toBe(1);
-  expect(run.calls[0]).toBe("sh access=grant <stage>/install-runner.sh 1.4.0");
+  expect(run.calls[0]).toBe("sh access=grant <stage>/install.sh --runner 1.4.0");
   expect(run.calls.filter((call) => call.startsWith("runuser ")).length).toBe(30);
   expect(run.calls.some((call) => call.startsWith("curl ") || call.startsWith("apt-get "))).toBe(
     false,

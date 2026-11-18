@@ -1,4 +1,4 @@
-import script from "../../../deploy/linux/install-runner.sh?raw";
+import script from "../../../deploy/linux/install.sh?raw";
 
 export function GET() {
   return new Response(script, {

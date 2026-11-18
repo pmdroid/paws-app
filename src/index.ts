@@ -1202,7 +1202,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       : {}),
     installer: () => {
       try {
-        return readFileSync(assetPath("deploy/linux/install-runner.sh"), "utf8");
+        return readFileSync(assetPath("deploy/linux/install.sh"), "utf8");
       } catch (caughtError3) {
         journalCaught(
           caughtError3,

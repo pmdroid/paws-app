@@ -63,7 +63,7 @@ export function createMemberVmProvisioning(
       );
     const installer = source.installer();
     if (installer === null)
-      throw new Error("Create VM needs deploy/linux/install-runner.sh next to Paws.");
+      throw new Error("Create VM needs deploy/linux/install.sh next to Paws.");
     const runnerApi = new URL(source.runnerUrl ?? source.publicUrl);
     if (!source.runnerUrl) runnerApi.port = String(control.port);
     const bootstrap = createExeDevBootstrap({

@@ -9,7 +9,8 @@ die() {
 }
 
 usage() {
-  printf '%s\n' "Usage: curl -fsSL https://get.paws.boo | sudo sh -s -- [--docker-access | --no-docker-access] [version]"
+  printf '%s\n' "Usage: curl -fsSL https://get.paws.boo | sudo sh -s -- [--runner [--docker-access | --no-docker-access]] [version]" \
+    "Installs paws-control-plane by default, or paws-runner with --runner."
 }
 
 semver_ok() {
@@ -88,11 +89,15 @@ architecture() {
 
 requested=""
 docker_access=""
+target=""
 for argument do
   case $argument in
     -h|--help)
       usage
       exit 0
+      ;;
+    --runner)
+      target=runner
       ;;
     --docker-access|--no-docker-access)
       choice=grant
@@ -116,7 +121,11 @@ for argument do
       ;;
   esac
 done
-if [ -z "$docker_access" ] && [ -n "${PAWS_RUNNER_DOCKER_ACCESS:-}" ]; then
+if [ -z "$target" ]; then
+  target=control-plane
+  [ -z "$docker_access" ] || die "Docker access is a runner option: add --runner"
+fi
+if [ "$target" = runner ] && [ -z "$docker_access" ] && [ -n "${PAWS_RUNNER_DOCKER_ACCESS:-}" ]; then
   case $PAWS_RUNNER_DOCKER_ACCESS in
     grant|deny) docker_access=$PAWS_RUNNER_DOCKER_ACCESS ;;
     *) die "PAWS_RUNNER_DOCKER_ACCESS must be grant or deny" ;;
@@ -132,8 +141,11 @@ if [ -n "$requested" ]; then
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
-  if [ -n "$requested" ]; then
-    die "Run the installer as root: curl -fsSL https://get.paws.boo | sudo sh -s -- ${requested}"
+  options=""
+  [ "$target" = control-plane ] || options="--runner"
+  [ -z "$requested" ] || options="${options:+$options }$requested"
+  if [ -n "$options" ]; then
+    die "Run the installer as root: curl -fsSL https://get.paws.boo | sudo sh -s -- ${options}"
   fi
   die "Run the installer as root: curl -fsSL https://get.paws.boo | sudo sh"
 fi
@@ -153,6 +165,18 @@ install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
 install -m 0644 "$workdir/paws.gpg" /usr/share/keyrings/paws.gpg
 printf '%s\n' "deb [signed-by=/usr/share/keyrings/paws.gpg] $base stable main" > /etc/apt/sources.list.d/paws.list
 chmod 0644 /etc/apt/sources.list.d/paws.list
+
+if [ "$target" = control-plane ]; then
+  printf '%s\n' "Installing paws-control-plane ${version} (${arch})"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  package=paws-control-plane
+  [ -z "$version" ] || package="paws-control-plane=$version"
+  apt-get install -y "$package"
+  printf '%s\n' "Installed paws-control-plane ${version}" \
+    "Set the public URL and TLS paths in /etc/paws/control-plane.env, then run: sudo systemctl restart paws.service"
+  exit 0
+fi
 
 # Docker access for agent jobs: a rootless Docker daemon that runs as the account agents run as. The package never
 # prompts; this script asks only on a terminal, when Docker Engine is installed and the daemon isn't set up.

@@ -1,10 +1,7 @@
 import { mkdtempSync, copyFileSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-const installer = readFileSync(
-  resolve(import.meta.dir, "../deploy/linux/install-runner.sh"),
-  "utf8",
-);
+const installer = readFileSync(resolve(import.meta.dir, "../deploy/linux/install.sh"), "utf8");
 const dir = mkdtempSync(join(tmpdir(), "paws-binary-"));
 const binary = join(dir, "paws");
 copyFileSync(resolve(process.argv[2] ?? "dist/paws-x64"), binary);
@@ -23,7 +20,7 @@ let server: ReturnType<typeof Bun.spawn> | undefined;
 try {
   if (!(await run(["--version"])).trim()) throw new Error("Missing version");
   const embeddedInstaller = [
-    ...new Bun.Glob("cache/assets/*/deploy/linux/install-runner.sh").scanSync({
+    ...new Bun.Glob("cache/assets/*/deploy/linux/install.sh").scanSync({
       cwd: env.PAWS_HOME,
       absolute: true,
     }),

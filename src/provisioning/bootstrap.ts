@@ -83,7 +83,7 @@ export type ExeDevBootstrapOptions = {
   exeDev: ExeDev;
   /** The exact runner release to install, like `1.4.0`. */
   runnerVersion: string;
-  /** The contents of `deploy/linux/install-runner.sh`. */
+  /** The contents of `deploy/linux/install.sh`. */
   installer: string;
   mise: MiseRelease;
   /** Where the runner reaches this Paws' runner API (mTLS listener). */
@@ -494,7 +494,7 @@ function validate(options: ExeDevBootstrapOptions): Pinned {
     options.installer.includes("\0") ||
     Buffer.byteLength(options.installer) > MAX_INSTALLER_BYTES
   )
-    refuse("The runner installer must be the install-runner.sh script.");
+    refuse("The runner installer must be the install.sh script.");
   const runnerApiUrl = origin(options.runnerApiUrl) ?? refuse("The runner API URL must be https.");
   const controlPlaneUrl =
     origin(options.controlPlaneUrl) ?? refuse("The control plane URL must be https.");
@@ -900,7 +900,7 @@ function runScript(pinned: Pinned): string {
     "  export DEBIAN_FRONTEND=noninteractive",
     "  { apt-get update && apt-get install -y docker.io; } || fail 'Could not install Docker Engine (the docker.io package), which agent jobs on this runner need.'",
     "fi",
-    `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" ${shellQuote(pinned.runnerVersion)}`,
+    `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install.sh" --runner ${shellQuote(pinned.runnerVersion)}`,
     "tries=0",
     `until detail=$(runuser -u paws-agent -- docker ${docker} info 2>&1 >/dev/null); do`,
     "  tries=$((tries + 1))",
@@ -927,7 +927,7 @@ function stageCommand(pinned: Pinned): string {
     `printf '${format}' ${shellQuote(content)} | sudo install -o root -g root -m ${mode} /dev/stdin ${BOOTSTRAP_STAGE_DIR}/${name}`;
   return [
     `sudo install -d -o root -g root -m 0700 ${BOOTSTRAP_STAGE_DIR}`,
-    write("%s", pinned.installer, "0700", "install-runner.sh"),
+    write("%s", pinned.installer, "0700", "install.sh"),
     write("%s", runScript(pinned), "0700", "run.sh"),
     write("%s\\n", pinned.config, "0600", "config.json"),
     `{ sudo test ! -e ${RUNNER_CONFIG_PATH} || sudo install -o root -g paws-runner -m 0640 ${BOOTSTRAP_STAGE_DIR}/config.json ${RUNNER_CONFIG_PATH}; }`,

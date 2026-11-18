@@ -1,6 +1,6 @@
 # Enroll a remote Linux runner
 
-The apt installer, `deploy/linux/install-runner.sh`, adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
+The apt installer, `deploy/linux/install.sh`, served at `https://get.paws.boo`, installs the runner with `--runner` (without it, it installs the control plane). It adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
 
 The **Add a runner** command installs from the GitHub release instead: see [Add the host](#add-the-host). Paws does not upgrade runners through the control plane. To upgrade a runner, wait for active work to finish and install the latest release's `.deb` by hand as shown there.
 
@@ -57,8 +57,8 @@ Runner work never uses the root Docker daemon at `/var/run/docker.sock`. When yo
 Only the account a daemon runs as can reach its socket: the socket's directory is mode 0700. `paws-agent` never gets access to `paws-runner`'s daemon, whose containers could mount the runner's identity keys and spool. Package configuration reads `agentUser` from `/etc/paws-runner/config.json` and sets up only that account's daemon; when the value changed, it stops and removes the other account's unit. Its report (`docker.agentJobs` in the install output) names the daemon that serves agent jobs and whether its account reached it, and it fails with `not-isolated` when the other account can open the socket too. While the daemon runs, the runner gives each worker the `DOCKER_HOST` of its own account's socket; the agent and the Closeout checks inherit it. After changing `agentUser`, run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner` to move Docker to the new account. An agent only ever gets a `DOCKER_HOST` that names a local `unix://` socket. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
 
 ```sh
-curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
-curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
+curl -fsSL https://get.paws.boo | sudo sh -s -- --runner --docker-access
+curl -fsSL https://get.paws.boo | sudo sh -s -- --runner --no-docker-access
 ```
 
 With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns dbus-user-session`. The package never installs Docker Engine itself.
