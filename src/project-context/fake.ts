@@ -9,6 +9,7 @@ import {
   type ContextSummarizer,
   type ContextSummarizerInput,
 } from "./compact";
+import type { ContextDreamHelper } from "./dream";
 import type { ProjectContextReads } from "./linear";
 
 export type FakeProjectDocument = ProjectContextDocument & {
@@ -109,4 +110,25 @@ export function createFakeContextSummarizer(): FakeContextSummarizer {
     },
   };
   return fake;
+}
+
+export type FakeDreamEntry = { id: string; classification: string; source: string; body: string };
+
+export type FakeContextDreamHelper = ContextDreamHelper & {
+  readonly calls: Parameters<ContextDreamHelper>[0][];
+  reply: string | Error | ((entries: FakeDreamEntry[]) => unknown);
+};
+
+export function createFakeContextDreamHelper(
+  reply: FakeContextDreamHelper["reply"] = "",
+): FakeContextDreamHelper {
+  const helper = (async (input) => {
+    helper.calls.push({ ...input });
+    if (helper.reply instanceof Error) throw helper.reply;
+    if (typeof helper.reply === "string") return { text: helper.reply };
+    const entries = JSON.parse(input.prompt.slice(input.prompt.lastIndexOf("\n\n") + 2));
+    return { text: JSON.stringify(helper.reply(entries)) };
+  }) as FakeContextDreamHelper;
+  Object.assign(helper, { calls: [], reply });
+  return helper;
 }

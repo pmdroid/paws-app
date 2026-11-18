@@ -25,6 +25,7 @@ import {
   type AnsweredDecision,
   type AnsweredDecisionOutcome,
 } from "./decision";
+import { visibleContextTopics } from "./dream";
 import { MEMORY_INDEX_LIMITS, renderMemoryIndex } from "./memory-index";
 import { ingestLinearProjectContext, type ProjectContextReads } from "./linear";
 import {
@@ -33,6 +34,7 @@ import {
   destinationAllowed,
   requesterAccess,
   type ContextAccess,
+  type ContextAudience,
   type ContextDestination,
   type ContextRequester,
 } from "./policy";
@@ -124,9 +126,19 @@ async function selectAndSave(
     if (selection.ranked.length === 0) return withhold(db, request, "empty");
     const count = tokenCounter(request.model);
     const appendix = request.index.appendix ? count(`\n\n${request.index.appendix}`) : 0;
+    const current = await requesterAccess(access, request.requester);
+    const topics = current
+      ? await visibleContextTopics(db, current, {
+          namespace: request.namespace,
+          audience: request.destination.audience as ContextAudience,
+          ...(request.repository ? { repository: request.repository } : {}),
+          ...(request.ref ? { ref: request.ref } : {}),
+          now: request.now,
+        })
+      : [];
     ({ text, manifest } = renderMemoryIndex(
       selection,
-      { tokens: request.index.tokens - appendix, trailer: CONTEXT_SESSION_NOTICE },
+      { tokens: request.index.tokens - appendix, trailer: CONTEXT_SESSION_NOTICE, topics },
       count,
     ));
   }

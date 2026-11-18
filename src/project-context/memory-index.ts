@@ -1,4 +1,5 @@
 import type { ContextRecordRow } from "../db";
+import type { ContextTopicView } from "./dream";
 import {
   clip,
   manifestSource,
@@ -20,6 +21,7 @@ export const MEMORY_INDEX_HEADER =
 export type MemoryIndexOptions = {
   readonly tokens: number;
   readonly trailer: string;
+  readonly topics?: readonly ContextTopicView[];
 };
 
 function indexLine(row: ContextRecordRow): string {
@@ -45,11 +47,17 @@ export function renderMemoryIndex(
   options: MemoryIndexOptions,
   count: (text: string) => number,
 ): { text: string; manifest: ContextManifest } {
+  const topics = options.topics ?? [];
+  const covered = new Set(topics.flatMap((topic) => topic.recordIds));
+  const uncovered = selection.ranked.filter((row) => !covered.has(row.id));
   const ordered = [
-    ...selection.ranked.filter((row) => row.classification === "decision"),
-    ...selection.ranked.filter((row) => row.classification !== "decision"),
+    ...uncovered.filter((row) => row.classification === "decision"),
+    ...uncovered.filter((row) => row.classification !== "decision"),
   ];
-  const lines = ordered.map(indexLine);
+  const lines = [
+    ...topics.map((topic) => `- Topic: ${clip(oneLine(topic.title), 80)} (id ${topic.id})`),
+    ...ordered.map(indexLine),
+  ];
   let kept = 0;
   while (
     kept < lines.length &&
@@ -58,7 +66,7 @@ export function renderMemoryIndex(
   )
     kept++;
   const text = render(lines.slice(0, kept), lines.length - kept, options.trailer);
-  const indexed = ordered.slice(0, kept);
+  const indexed = ordered.slice(0, Math.max(0, kept - topics.length));
   const { manifest } = selection;
   const memoryUsed = count(text);
   return {
