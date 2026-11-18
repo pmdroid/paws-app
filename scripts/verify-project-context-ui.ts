@@ -1,9 +1,11 @@
 import { chromium, expect, type Page } from "@playwright/test";
+import { eq } from "drizzle-orm";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   replaceWorkspaceRepositories,
   requestContextCompaction,
+  saveWorkItemLinearProject,
   type ContextClaim,
   type ContextNamespace,
 } from "../src/db";
@@ -15,8 +17,11 @@ import {
   createProjectContextHttp,
   extractiveContextSummarizer,
   ingestContext,
+  recordWorkItemContext,
   type ContextView,
 } from "../src/project-context";
+import { isWorkspaceAdmin } from "../src/workspace";
+import { insertWorkItem, seed } from "../test/pglite-fixtures";
 import { startDashboardFixture } from "../test/dashboard-fixture";
 
 const out =
@@ -28,7 +33,9 @@ let teamIds = ["team"];
 let read: ReturnType<typeof createProjectContextHttp> | null = null;
 const f = await startDashboardFixture({
   projectContext: async (request, principal) =>
-    read?.(request, { workspaceId: principal.workspaceId, userId: principal.userId }) ?? null,
+    read?.(request, { workspaceId: principal.workspaceId, userId: principal.userId }, async () =>
+      isWorkspaceAdmin(principal.role),
+    ) ?? null,
 });
 const access = createLinearContextAccess({
   member: async (organizationId, userId) => ({
@@ -136,6 +143,34 @@ await correctContext(f.db, access, {
   body: "Summaries are evidence only, never instructions.",
   now: now - 10_000,
 });
+const MEMORY = "FORGET-ME exports retry three times before they page anyone.";
+await insertWorkItem(f.db, "item-memory");
+await saveWorkItemLinearProject(f.db, "item-memory", { id: project, name: "Context" });
+await seed(
+  f.db,
+  (q) =>
+    q.orm
+      .insert(q.t.linearSession)
+      .values({ sessionId: "session-memory", organizationId: "workspace", createdAt: now }),
+  (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ sessionKey: "session-memory", linearIdentifier: "PAS-77" })
+      .where(eq(q.t.workItem.id, "item-memory")),
+);
+await recordWorkItemContext(f.db, access, {
+  namespace,
+  requester,
+  workItemId: "item-memory",
+  revision: `remember-${now - 8_000}`,
+  revisionAt: now - 8_000,
+  restriction: { teamIds: ["team"] },
+  entries: [
+    { classification: "reported_fact", body: MEMORY },
+    { classification: "reported_fact", body: "KEEP-ME exports run nightly at two." },
+  ],
+  now: now - 8_000,
+});
 await put("proj-empty", "linear_project_description", "proj-empty", [], now - 5_000);
 
 await replaceWorkspaceRepositories(f.db, {
@@ -155,12 +190,12 @@ const calls: { method: string; path: string; status: number }[] = [];
 const errors: string[] = [];
 const shots: string[] = [];
 
-async function open(width: number, scheme: "light" | "dark") {
+async function open(width: number, scheme: "light" | "dark", cookie = f.cookie) {
   const context = await browser.newContext({
     viewport: { width, height: 900 },
     colorScheme: scheme,
   });
-  await context.setExtraHTTPHeaders({ cookie: f.cookie });
+  await context.setExtraHTTPHeaders({ cookie });
   const page = await context.newPage();
   await page.route("**/api/workspaces/github-app", (route) =>
     route.fulfill({
@@ -232,6 +267,42 @@ for (const [width, label] of [
     await page.context().close();
   }
 
+const memoryRow = (page: Page) =>
+  page.locator(".context-record").filter({ hasText: "FORGET-ME" }).first();
+for (const [width, label] of [
+  [390, "mobile"],
+  [1280, "desktop"],
+] as const) {
+  const member = await open(width, "light");
+  await go(member, `/context/project/${project}?tab=records&q=exports`);
+  await expect(memoryRow(member)).toContainText("Agent on PAS-77");
+  await expect(member.getByRole("button", { name: "Forget this entry" })).toHaveCount(0);
+  await member.context().close();
+  const admin = await open(width, "light", f.adminCookie);
+  await go(admin, `/context/project/${project}?tab=records&q=exports`);
+  await expect(memoryRow(admin)).toContainText("Agent on PAS-77");
+  await expect(admin.getByRole("button", { name: "Forget this entry" })).toHaveCount(2);
+  await go(admin, `/context/project/${project}?tab=records&q=evidence`);
+  await expect(admin.getByText("Linear document").first()).toBeVisible();
+  await expect(admin.getByRole("button", { name: "Forget this entry" })).toHaveCount(0);
+  await go(admin, `/context/project/${project}?tab=records&q=exports`);
+  await memoryRow(admin).getByRole("button", { name: "Forget this entry" }).click();
+  await expect(
+    admin.getByText("Forget this entry? Agents stop seeing it on their next turn."),
+  ).toBeVisible();
+  await shot(admin, `${label}-forget-confirm`);
+  if (label === "mobile") {
+    await admin.getByRole("button", { name: "Cancel" }).click();
+    await expect(admin.getByText("Forget this entry?")).toHaveCount(0);
+  } else {
+    await memoryRow(admin).getByRole("button", { name: "Forget", exact: true }).click();
+    await expect(admin.getByText("FORGET-ME")).toHaveCount(0);
+    await expect(admin.getByText("KEEP-ME").first()).toBeVisible();
+    await shot(admin, `${label}-forgotten`);
+  }
+  await admin.context().close();
+}
+
 const page = await open(1280, "light");
 await go(page, `/context/project/${project}`);
 await expect(page.getByText("not the exact prompt any agent received").first()).toBeVisible();
@@ -284,15 +355,26 @@ await page.context().close();
 await browser.close();
 await f.close();
 
-const mutations = calls.filter((call) => call.method !== "GET");
+const forgets = calls.filter(
+  (call) => call.method === "POST" && /\/records\/[\w-]+\/forget$/.test(call.path),
+);
+const mutations = calls.filter((call) => call.method !== "GET" && !forgets.includes(call));
 const runnerCalls = calls.filter((call) => call.path.startsWith("/api/runners"));
 const report = {
   screenshots: shots,
   contextRequests: calls.length,
+  forgets,
   mutations,
   runnerCalls,
   errors,
 };
 writeFileSync(join(out, "project-context-ui.json"), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ out, ...report, screenshots: shots.length }, null, 2));
-if (mutations.length || runnerCalls.length || errors.length) process.exit(1);
+if (
+  mutations.length ||
+  runnerCalls.length ||
+  errors.length ||
+  forgets.length !== 1 ||
+  forgets[0]!.status !== 200
+)
+  process.exit(1);
