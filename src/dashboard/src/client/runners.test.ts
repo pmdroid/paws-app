@@ -5,8 +5,6 @@ import { join } from "node:path";
 import {
   agentCatalogMarkup,
   compareVersions,
-  hostEnrollmentCommand,
-  RUNNER_RELEASES,
   listedRunners,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
@@ -29,6 +27,7 @@ import {
   updatedLabel,
 } from "./runners";
 import { esc } from "./format";
+import { hostEnrollmentCommand, RUNNER_RELEASES } from "./host-command";
 import { parseRoute, routeHref } from "./route";
 
 const now = 1_000_000_000;
