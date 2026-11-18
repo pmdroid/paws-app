@@ -22,7 +22,7 @@ import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspa
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
-import { boundAgentAccountWhere } from "./agent-accounts";
+import { bindSignedInAccountsToRunnerSteps, boundAgentAccountWhere } from "./agent-accounts";
 import {
   conversationsInUseSteps,
   laneHelperSql,
@@ -859,7 +859,10 @@ export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps
       .returning({ id: runner.id }),
   );
   if (changed.length !== 1) throw new Error("Runner is unavailable.");
-  if (input.status === "active") yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
+  if (input.status === "active") {
+    yield* bindSignedInAccountsToRunnerSteps(q, input.runnerId, input.now);
+    yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
+  }
   const certificates = yield* q.all(
     q.orm
       .select({ fingerprint: runnerCertificate.fingerprint })
