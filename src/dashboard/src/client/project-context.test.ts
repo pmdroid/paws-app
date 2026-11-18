@@ -9,6 +9,8 @@ import {
   type ContextState,
 } from "./project-context";
 import { matchRoute, routePath } from "./route";
+import { createContextProjects } from "./context-projects";
+import { NAVIGATION } from "./navigation";
 import { settleReactWork } from "./settle-react";
 
 const ORIGIN = "http://127.0.0.1:8787";
@@ -285,4 +287,38 @@ test("an error offers Retry, and a revoked scope on retry shows unavailable with
   expect(page.root.textContent).toContain("Context unavailable");
   expect(page.root.textContent).not.toContain("Alpha");
   page.context.leave();
+});
+
+test("the sidebar entry opens the project list, and a row opens that project's page", async () => {
+  const manage = NAVIGATION.find((group) => group.label === "Manage")!;
+  expect(manage.views).toContain("context");
+  const list = matchRoute(routePath({ view: "context", kind: "projects" }))!;
+  expect(list).toEqual({ view: "context", kind: "projects" });
+  const urls: string[] = [];
+  let body: unknown = { status: "ok", projects: [] };
+  const fetcher = (async (url: URL) => {
+    urls.push(url.pathname);
+    return Response.json(body);
+  }) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  const projects = createContextProjects({ fetch: fetcher });
+  projects.mount(root, ORIGIN);
+  await settleReactWork();
+  expect(root.textContent).toContain(
+    "No projects yet. Paws lists a project here once it works on one of its issues.",
+  );
+  projects.leave();
+  body = { status: "ok", projects: [{ id: "alpha-1", name: "Alpha", items: 3 }] };
+  projects.mount(root, ORIGIN);
+  await settleReactWork();
+  expect(urls).toEqual(["/api/context/projects", "/api/context/projects"]);
+  expect(root.textContent).toContain("3 issues");
+  const href = root.querySelector("a")!.getAttribute("href")!;
+  expect(root.querySelector("a")!.textContent).toBe("Alpha");
+  expect(matchRoute(href.replace(/^\/dashboard/, ""))).toEqual({
+    view: "context",
+    kind: "project",
+    id: "alpha-1",
+  });
+  projects.leave();
 });

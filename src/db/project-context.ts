@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   exists,
@@ -942,6 +943,30 @@ export async function contextSourceRestriction(
   source: ContextSourceRef,
 ) {
   return store.run((q) => contextSourceRestrictionSteps(q, namespace, source));
+}
+
+export type WorkItemProject = { id: string; name: string | null; items: number };
+
+export async function listWorkItemProjects(store: Db, max: number): Promise<WorkItemProject[]> {
+  return store.run(function* (q) {
+    const { workItem } = q.t;
+    const rows = yield* q.all(
+      q.orm
+        .select({
+          id: workItem.linearProjectId,
+          name: sql<
+            string | null
+          >`(array_agg(${workItem.linearProjectName} ORDER BY ${workItem.createdAt} DESC) FILTER (WHERE ${workItem.linearProjectName} IS NOT NULL))[1]`,
+          items: count(),
+        })
+        .from(workItem)
+        .where(isNotNull(workItem.linearProjectId))
+        .groupBy(workItem.linearProjectId)
+        .orderBy(asc(workItem.linearProjectId))
+        .limit(max),
+    );
+    return rows.map((row) => ({ id: row.id!, name: row.name ?? null, items: Number(row.items) }));
+  });
 }
 
 export type ContextSourceChange = {

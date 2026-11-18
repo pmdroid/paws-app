@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   requestContextCompaction,
+  saveWorkItemLinearProject,
   type ContextClaim,
   type ContextClassification,
   type ContextNamespace,
@@ -24,6 +25,7 @@ import type {
   ContextViewDetail as ClientContextViewDetail,
 } from "../src/dashboard/src/project-context";
 import { tempStore } from "./pglite";
+import { insertWorkItem } from "./pglite-fixtures";
 
 const T0 = Date.parse("2026-11-17T12:00:00Z");
 const CANARY = "CANARY-private-repository-7f3a";
@@ -291,4 +293,39 @@ test("a large project stays bounded in records and bytes per page", async () => 
   expect(response.text.length).toBeLessThan(100_000);
   const fallback = viewOf((await get(alice, `/api/context/project/${projectId}?limit=nope`)).text);
   expect(fallback.records).toHaveLength(CONTEXT_VIEW_LIMITS.pageDefault);
+});
+
+test("the project list shows only projects the requester may read, with their work item counts", async () => {
+  const { projectId, alice, outsider, access, get } = await fixture();
+  const hidden = `hidden-${seq}`;
+  await ingestContext(db, access, {
+    namespace: { workspaceId: alice.workspaceId, scopeKind: "linear_project", scopeId: hidden },
+    requester: outsider,
+    source: {
+      kind: "linear_project_description",
+      id: hidden,
+      url: null,
+      revision: "rev-hidden",
+      revisionAt: T0,
+      actorId: "writer",
+      restriction: { teamIds: ["team-z"] },
+    },
+    claims: [claim("h1", "Hidden project fact")],
+    now: T0,
+  });
+  for (const [item, project, name] of [
+    [`list-a-${seq}`, projectId, "Old name"],
+    [`list-b-${seq}`, projectId, "Visible project"],
+    [`list-c-${seq}`, hidden, "Hidden project"],
+  ] as const) {
+    await insertWorkItem(db, item, item.endsWith(`b-${seq}`) ? 2 : 1);
+    await saveWorkItemLinearProject(db, item, { id: project, name });
+  }
+  const response = await get(alice, "/api/context/projects");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  const { projects } = JSON.parse(response.text) as { projects: unknown[] };
+  expect(projects).toEqual([{ id: projectId, name: "Visible project", items: 2 }]);
+  const other = JSON.parse((await get(outsider, "/api/context/projects")).text);
+  expect(other.projects).toEqual([{ id: hidden, name: "Hidden project", items: 1 }]);
 });

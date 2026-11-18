@@ -61,5 +61,5 @@ export const NAVIGATION = [
     label: "Work",
     views: ["overview", "issues", "questions", "mergeQueue", "findings", "improvements"],
   },
-  { label: "Manage", views: ["runners"] },
+  { label: "Manage", views: ["runners", "context"] },
 ] as const;

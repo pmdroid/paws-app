@@ -81,6 +81,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   spa("/questions", "questions", "canonical", "PAS-904"),
   spa("/questions/:id", "questions", "canonical", "PAS-904"),
   spa("/merge-queue", "mergeQueue", "canonical", "PAS-905"),
+  spa("/context", "context", "canonical", "PAS-2139"),
   spa("/context/project/:id", "context", "canonical", "PAS-2115"),
   spa("/evidence", "evidence", "canonical", "PAS-906"),
   spa("/evidence/:id", "evidence", "canonical", "PAS-906"),
@@ -184,6 +185,11 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("GET HEAD", "/api/evidence/*", "preserved", "src/evidence"),
   api("*", "/api/context/*", "canonical", "PAS-2115"),
+  api("GET", "/api/context/projects", "canonical", "PAS-2139", {
+    via: "/api/context/:scope",
+    sample: "/api/context/projects",
+    member: 404,
+  }),
   api("GET", "/api/context/:kind/:id", "canonical", "PAS-2115", {
     via: "/api/context/:scope",
     sample: "/api/context/project/{project}",
