@@ -38,6 +38,7 @@ const AGENT_ACCOUNTS = [
 ].map(([id, agent, label, extraUsage, credential], index) => ({
   ...{ id, agent, label, extraUsage, credential, signingIn: false },
   usage: index === 0 ? { limits: [{ window: "5h", usedPercent: 62 }] } : null,
+  ...(index === 2 ? { auth: "api_key" } : {}),
 }));
 
 async function open(width: number, cookie = f.cookie) {
@@ -677,8 +678,33 @@ try {
       await visit(reader, width, name, "/dashboard/settings/agent-accounts", "Agent accounts");
       await expect(reader.locator("#agent-account-settings li")).toHaveCount(3);
       await expect(reader.locator("#agent-account-settings button")).toHaveCount(
-        canManage ? 15 : 0,
+        canManage ? 18 : 0,
       );
+      await expect(reader.locator("#agent-account-settings")).toContainText(
+        "API key · billed per use",
+      );
+      if (canManage) {
+        await reader.route("**/api/runners/agent-accounts/A2/api-key", (route) =>
+          route.fulfill({
+            status: 400,
+            json: { error: "This key was not accepted by Anthropic." },
+          }),
+        );
+        const card = reader.locator('[data-account-id="A2"]');
+        await card.getByRole("button", { name: "Use an API key" }).click();
+        await expect(card.getByPlaceholder("Anthropic API key")).toBeVisible();
+        await card.getByPlaceholder("Anthropic API key").fill("sk-ant-api03-rejected");
+        await card.getByRole("button", { name: "Save key" }).click();
+        await expect(card.locator("[data-account-error]")).toHaveText(
+          "This key was not accepted by Anthropic.",
+        );
+        await expect(card.getByPlaceholder("Anthropic API key")).toHaveValue("");
+        await reader.screenshot({
+          path: join(out, `agent-account-api-key-${width}.png`),
+          fullPage: true,
+        });
+        await reader.unroute("**/api/runners/agent-accounts/A2/api-key");
+      }
       await reader.unroute("**/api/runners/agent-accounts");
     }
     for (const [agent, provider, link] of [
