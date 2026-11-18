@@ -420,6 +420,7 @@ import {
   moveDelegationSessionSteps,
   openTaskDependentsSteps,
   workspaceUserIdForLinearUserSteps,
+  workspaceUserContactSteps,
 } from "../db";
 import {
   publishAccepted,
@@ -511,6 +512,8 @@ import {
   renderLinearSessionContext,
 } from "../linear";
 import {
+  ASK_TEAM_REASON,
+  askedThroughAskTeam,
   answerSteps,
   type AnswerEffects,
   type QuestionReply,
@@ -7104,6 +7107,7 @@ export class Orchestrator {
       "agent",
       [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
       {
+        reason: ASK_TEAM_REASON,
         options: request.options ?? [],
         now: this.now(),
         amend: function* (reads, question) {
@@ -7534,6 +7538,7 @@ export class Orchestrator {
           );
           live.controller.abort(FOLLOW_UP_INTERRUPTION);
         }
+    if (outcome === "answered" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (item?.state === "completed")
@@ -10077,6 +10082,55 @@ export class Orchestrator {
    * still-authorized context or a non-sensitive clarification). Only without the service, or for
    * an item outside any project, does the brief keep the stored legacy overview.
    */
+  private async recordDecision(questionId: string): Promise<void> {
+    const service = this.options.projectContext;
+    if (!service) return;
+    let itemId: string | undefined;
+    try {
+      const found = await this.store.run(function* (q) {
+        const question = yield* getQuestionSteps(q, questionId);
+        const item = question ? yield* getWorkItemSteps(q, question.itemId) : null;
+        if (!question?.answer || !question.answeredBy || !item) return null;
+        const resolved = (yield* getTaskMergeSettingsSteps(q, item.id))?.resolved["projectId"];
+        const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
+        const userId = yield* workspaceUserIdForLinearUserSteps(q, question.answeredBy);
+        const contact = userId === null ? null : yield* workspaceUserContactSteps(q, userId);
+        return {
+          question: question.body,
+          answer: question.answer,
+          answeredBy: question.answeredBy,
+          item,
+          projectId: item.linearProjectId ?? (typeof resolved === "string" ? resolved : null),
+          organizationId: session?.organizationId ?? null,
+          name: contact?.name || question.answeredBy,
+        };
+      });
+      if (!found?.projectId) return;
+      itemId = found.item.id;
+      if (!found.organizationId) throw new Error("the item's Linear workspace is unknown");
+      await service.recordDecision({
+        organizationId: found.organizationId,
+        projectId: found.projectId,
+        workItemId: found.item.id,
+        issueIdentifier: found.item.linearIdentifier,
+        questionId,
+        question: found.question,
+        answer: found.answer,
+        answererId: found.answeredBy,
+        answererName: found.name,
+        now: this.now(),
+      });
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.recordDecision",
+        itemId ?? questionId,
+        undefined,
+        this.options.journal,
+      );
+    }
+  }
+
   private async projectContextFor(item: WorkItemRecord): Promise<ProjectOverviewSource> {
     const service = this.options.projectContext;
     if (!service) return LEGACY_PROJECT_OVERVIEW;

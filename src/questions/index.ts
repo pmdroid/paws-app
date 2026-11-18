@@ -52,6 +52,8 @@ export {
   type QuestionReply,
 } from "./lifecycle";
 export {
+  ASK_TEAM_REASON,
+  askedThroughAskTeam,
   findAskedQuestionSteps,
   findOpenQuestion,
   findOpenQuestionSteps,
