@@ -1035,6 +1035,31 @@ export async function listWorkItemProjects(store: Db, max: number): Promise<Work
   });
 }
 
+export async function workItemIdentifiersInProject(
+  store: Db,
+  namespace: ContextNamespace,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  if (namespace.scopeKind !== "linear_project" || ids.length === 0) return new Map();
+  return store.run(function* (q) {
+    const { workItem, linearSession } = q.t;
+    const rows = yield* q.all(
+      q.orm
+        .select({ id: workItem.id, identifier: workItem.linearIdentifier })
+        .from(workItem)
+        .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
+        .where(
+          and(
+            inArray(workItem.id, [...new Set(ids)]),
+            eq(workItem.linearProjectId, namespace.scopeId),
+            eq(linearSession.organizationId, namespace.workspaceId),
+          ),
+        ),
+    );
+    return new Map(rows.map((row) => [row.id, row.identifier]));
+  });
+}
+
 export type ContextSourceChange = {
   readonly namespace: ContextNamespace;
   readonly source: ContextSourceRef;

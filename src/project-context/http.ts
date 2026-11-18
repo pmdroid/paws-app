@@ -3,6 +3,7 @@ import type { ContextAccess, ContextRequester } from "./policy";
 import {
   CONTEXT_VIEW_LIMITS,
   contextViewSupported,
+  forgetViewedContextRecord,
   listContextProjects,
   readContextRecord,
   readContextView,
@@ -16,17 +17,32 @@ function answer(body: unknown, status = 200): Response {
 
 const UNAVAILABLE = { status: "unavailable", error: "This context is not available." };
 
+const ADMIN_ONLY = { status: "forbidden", error: "Only workspace admins can forget context." };
+
 export function createProjectContextHttp(options: {
   db: Db;
   access: ContextAccess;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
-  return async (request: Request, requester: ContextRequester): Promise<Response | null> => {
+  return async (
+    request: Request,
+    requester: ContextRequester,
+    currentAdmin?: () => Promise<boolean>,
+  ): Promise<Response | null> => {
+    const admin = async () => {
+      try {
+        return (await currentAdmin?.()) === true;
+      } catch {
+        return false;
+      }
+    };
     const url = new URL(request.url);
     const parts = url.pathname.split("/").slice(1);
     if (parts[0] !== "api" || parts[1] !== "context") return null;
-    if (request.method !== "GET") return answer({ error: "Context is read-only." }, 405);
+    const forget = parts.length === 7 && parts[4] === "records" && parts[6] === "forget";
+    if (request.method !== (forget ? "POST" : "GET"))
+      return answer({ error: forget ? "Forget with POST." : "Context is read-only here." }, 405);
     if (parts[2] === "projects" && parts.length === 3) {
       try {
         const projects = await listContextProjects(options.db, options.access, { requester });
@@ -48,7 +64,27 @@ export function createProjectContextHttp(options: {
         400,
       );
     const scope = { kind, id };
+    if (forget) {
+      if (!(await admin())) return answer(ADMIN_ONLY, 403);
+      try {
+        const forgotten = await forgetViewedContextRecord(options.db, options.access, {
+          requester,
+          scope,
+          now: now(),
+          recordId: recordId ?? "",
+        });
+        return forgotten
+          ? answer({ status: "forgotten", forgotten: { entries: 1 } })
+          : answer(UNAVAILABLE, 404);
+      } catch {
+        return answer(
+          { status: "error", error: "The entry could not be forgotten. Try again." },
+          503,
+        );
+      }
+    }
     try {
+      const isAdmin = await admin();
       if (records === undefined) {
         const number = (name: string, fallback: number) => {
           const value = Number(url.searchParams.get(name) ?? fallback);
@@ -58,6 +94,7 @@ export function createProjectContextHttp(options: {
           requester,
           scope,
           now: now(),
+          admin: isAdmin,
           offset: number("offset", 0),
           limit: number("limit", CONTEXT_VIEW_LIMITS.pageDefault),
           search: url.searchParams.get("q") ?? "",
@@ -70,6 +107,7 @@ export function createProjectContextHttp(options: {
         requester,
         scope,
         now: now(),
+        admin: isAdmin,
         recordId,
       });
       return detail ? answer({ status: "ok", detail }) : answer(UNAVAILABLE, 404);

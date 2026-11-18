@@ -1495,8 +1495,24 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 db: store,
                 access: createLinearContextAccess(members),
               });
-              return (request: Request, principal: WorkspacePrincipal) =>
-                read(request, { workspaceId: principal.workspaceId, userId: principal.userId });
+              return async (request: Request, principal: WorkspacePrincipal) => {
+                const requester = await store.run(function* (q) {
+                  const found = yield* getWorkspaceSteps(q, principal.workspaceId);
+                  const userId = yield* workspaceUserLinearIdSteps(q, principal.userId);
+                  return found && userId ? { workspaceId: found.organizationId, userId } : null;
+                });
+                if (!requester)
+                  return Response.json(
+                    { status: "unavailable", error: "This context is not available." },
+                    { status: 404, headers: { "cache-control": "no-store, private" } },
+                  );
+                return read(request, requester, async () => {
+                  const member = await store.run((q) =>
+                    workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+                  );
+                  return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
+                });
+              };
             })(),
           }
         : {}),

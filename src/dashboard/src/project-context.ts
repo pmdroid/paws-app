@@ -1,4 +1,10 @@
-export type ContextViewSource = { kind: string; id: string; url: string | null; revision: string };
+export type ContextViewSource = {
+  kind: string;
+  id: string;
+  url: string | null;
+  revision: string;
+  label: string;
+};
 
 export type ContextViewRecord = {
   id: string;
@@ -9,6 +15,7 @@ export type ContextViewRecord = {
   corrected: boolean;
   observedAt: number;
   source: ContextViewSource;
+  forgettable: boolean;
 };
 
 export type ContextViewSummary = {
