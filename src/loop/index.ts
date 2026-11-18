@@ -142,3 +142,4 @@ export {
 } from "./linear-comments";
 
 export { repositoryAtPath } from "./repository-location";
+export { recordPullRequestSummary } from "./work-summary";

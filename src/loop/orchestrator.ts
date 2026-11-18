@@ -701,6 +701,7 @@ import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./p
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { applyPullRequestDraft } from "./pull-request-text";
+import { recordPullRequestSummary } from "./work-summary";
 import {
   askAboutPushOutage,
   holdPush,
@@ -6532,6 +6533,7 @@ export class Orchestrator {
         this.now(),
       ),
     );
+    await this.recordWorkSummary(item, title, draft?.body ?? "");
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(
         item.id,
@@ -8698,7 +8700,7 @@ export class Orchestrator {
         await this.store.run((q) => savePullRequestDraftSteps(q, item.id, description, this.now()));
         const repository = await this.repositoryForItem(item);
         const signal = await this.signalForItem(item.id);
-        await applyPullRequestDraft({
+        const applied = await applyPullRequestDraft({
           store: this.store,
           itemId: item.id,
           issue: item.linearIdentifier,
@@ -8715,6 +8717,8 @@ export class Orchestrator {
           },
           ...(this.options.journal ? { journal: this.options.journal } : {}),
         });
+        if (applied === "updated")
+          await this.recordWorkSummary(item, description.title, description.body);
       },
     };
   }
@@ -10174,6 +10178,21 @@ export class Orchestrator {
         this.options.journal,
       );
     }
+  }
+
+  private recordWorkSummary(item: WorkItemRecord, title: string, description: string) {
+    return recordPullRequestSummary({
+      service: this.options.projectContext,
+      pawsRoot: this.options.pawsRoot,
+      workItemId: item.id,
+      scope: () => this.projectScope(item),
+      pullUrl: async () =>
+        (await this.store.run((q) => getItemPullRequestSteps(q, item.id)))?.pullUrl ?? null,
+      title,
+      description,
+      now: this.now(),
+      ...(this.options.journal ? { journal: this.options.journal } : {}),
+    });
   }
 
   private async projectContextFor(item: WorkItemRecord): Promise<ProjectOverviewSource> {
