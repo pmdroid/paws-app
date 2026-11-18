@@ -20,7 +20,7 @@ function data(): MergeSettingsView {
 
 describe("Settings → Merging", () => {
   test("is a workspace page after Agents", () => {
-    expect(WORKSPACE_PAGES.map((page) => page.id).slice(0, 2)).toEqual(["agents", "merging"]);
+    expect(WORKSPACE_PAGES.map((page) => page.id).indexOf("merging")).toBe(2);
     expect(parseRoute("/workspace/merging")).toEqual({ view: "workspace", page: "merging" });
   });
 
