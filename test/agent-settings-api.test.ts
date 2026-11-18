@@ -68,7 +68,7 @@ describe("local agent settings API", () => {
       },
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
-      projectMemory: { workSummary: false, dream: false },
+      projectMemory: { workSummary: false, dream: false, decisions: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
@@ -100,13 +100,14 @@ describe("local agent settings API", () => {
     expect(((await saved!.json()) as { projectMemory: unknown }).projectMemory).toEqual({
       workSummary: true,
       dream: false,
+      decisions: false,
     });
     expect(audit).toEqual(["Project memory work summaries off → on"]);
     expect(readFileSync(options.configPath, "utf8")).toContain(
-      "[project_memory]\nwork_summary = true\ndream = false\n",
+      "[project_memory]\nwork_summary = true\ndream = false\ndecisions = false\n",
     );
     await handleAgentSettingsRequest(
-      request(undefined, "PUT", { ...settings, projectMemory: { dream: true } }),
+      request(undefined, "PUT", { ...settings, projectMemory: { dream: true, decisions: true } }),
       admin,
     );
     const loaded = await handleAgentSettingsRequest(request(), admin);
@@ -114,6 +115,7 @@ describe("local agent settings API", () => {
     expect(((await loaded!.json()) as { projectMemory: unknown }).projectMemory).toEqual({
       workSummary: true,
       dream: true,
+      decisions: true,
     });
     const invalid = await handleAgentSettingsRequest(
       request(undefined, "PUT", { ...settings, projectMemory: { dream: "yes" } }),
@@ -127,7 +129,7 @@ describe("local agent settings API", () => {
     const member = { ...options, role: "member" };
     expect((await handleAgentSettingsRequest(request(), member))?.status).toBe(403);
     const put = await handleAgentSettingsRequest(
-      request(undefined, "PUT", { ...settings, projectMemory: { dream: true } }),
+      request(undefined, "PUT", { ...settings, projectMemory: { decisions: true } }),
       member,
     );
     expect(put?.status).toBe(403);
@@ -217,7 +219,7 @@ describe("local agent settings API", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
-      projectMemory: { workSummary: false, dream: false },
+      projectMemory: { workSummary: false, dream: false, decisions: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
@@ -551,7 +553,7 @@ describe("reviewer profile validation", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
-      projectMemory: { workSummary: false, dream: false },
+      projectMemory: { workSummary: false, dream: false, decisions: false },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
