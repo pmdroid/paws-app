@@ -1,6 +1,7 @@
 import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
+  bindingAccountHealthSteps,
   getAgentAccountSteps,
   getRunnerSteps,
   runnerHostVersionSteps,
@@ -31,6 +32,7 @@ type AccountRefusal = {
   reason: string;
   until?: number;
   account?: string;
+  resetsAt?: number | null;
   refusals?: AccountRefusal[];
 };
 type AccountFit = { account: PlacementAccount; low: boolean };
@@ -110,7 +112,13 @@ export function* signInFitSteps(
           : BINDING_REASON_TEXT[readiness.reason],
       ...(readiness.until !== null ? { until: readiness.until } : {}),
       ...(readiness.reason === "exhausted"
-        ? { account: (yield* getAgentAccountSteps(q, workspaceId, binding.accountId)).label }
+        ? {
+            account: (yield* getAgentAccountSteps(q, workspaceId, binding.accountId)).label,
+            resetsAt:
+              (yield* bindingAccountHealthSteps(q, binding.id, input.model)).find(
+                (row) => row.state === "exhausted",
+              )?.resetsAt ?? null,
+          }
         : {}),
     });
   }
@@ -177,14 +185,14 @@ function* runnerVerdictsSteps(
     }
     const cooling = (fit.refusals ?? [fit])
       .filter((refusal) => refusal.reason === BINDING_REASON_TEXT.exhausted)
-      .sort((a, b) => (a.until ?? Infinity) - (b.until ?? Infinity))[0];
+      .sort((a, b) => (a.resetsAt ?? Infinity) - (b.resetsAt ?? Infinity))[0];
     runners.push({
       ...verdict(fit.reason, null),
       ...(fit.reason === BINDING_REASON_TEXT.exhausted && cooling
         ? {
             cooldown: {
               account: cooling.account ?? "an agent account",
-              until: cooling.until ?? null,
+              until: cooling.resetsAt ?? null,
             },
           }
         : {}),

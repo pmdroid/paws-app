@@ -71,8 +71,9 @@ async function coolDown(db: Db, workspace: string, runnerId: string) {
     state: "exhausted",
     resetsAt: RESETS,
   });
-  return (await bindingAccountHealth(db, binding.id)).find((row) => row.state === "exhausted")!
-    .nextCheckAt!;
+  const row = (await bindingAccountHealth(db, binding.id)).find((r) => r.state === "exhausted")!;
+  expect(row.nextCheckAt).not.toBe(RESETS);
+  return row.resetsAt!;
 }
 
 test("a busy-slots hold posts the slot line", async () => {
@@ -115,7 +116,8 @@ test("a quota-cooldown hold names the account and its reset time once, in the th
     );
     await paws.reconcileExecution();
     await paws.reconcileExecution();
-    const time = `${new Date(until).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+    expect(until).toBe(RESETS);
+    const time = "2027-01-15 21:30 UTC";
     const text = `Waiting for an agent account's quota: ${account!.label} resets at ${time}`;
     for (const id of ["first", "second"]) {
       const posted = await thoughts(db, id);
