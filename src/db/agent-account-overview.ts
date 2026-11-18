@@ -2,7 +2,9 @@ import { providerUsageSteps } from "./account-provider-usage";
 import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { type RunnerCodingAgent } from "../runner-protocol";
-import { AgentAccountError } from "./agent-accounts";
+import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
+import { enqueueJobSteps } from "./jobs";
+import { wakeRunnerSlotWaitsSteps } from "./runner-capacity";
 import type { Q, Steps } from "./db";
 import type { RunnerAgentLimit } from "./runners";
 
@@ -150,8 +152,8 @@ export function* orderAgentAccountsSteps(
 export function* setAgentAccountExtraUsageSteps(
   q: Q,
   input: { workspaceId: string; accountId: string; extraUsage: boolean; now: number },
-): Steps<void> {
-  const { agentAccount: a } = q.t;
+): Steps<boolean> {
+  const { agentAccount: a, agentAccountHealth: h } = q.t;
   const row = yield* liveCentralAccountSteps(q, input.workspaceId, input.accountId);
   yield* q.exec(
     q.orm
@@ -159,6 +161,23 @@ export function* setAgentAccountExtraUsageSteps(
       .set({ extraUsage: input.extraUsage ? 1 : 0, updatedAt: input.now })
       .where(eq(a.id, row.id)),
   );
+  if (!input.extraUsage) return false;
+  const cleared = yield* q.all(
+    q.orm
+      .update(h)
+      .set({ nextCheckAt: input.now, updatedAt: input.now })
+      .where(and(eq(h.kind, "quota"), eq(h.scopeId, row.id), eq(h.state, "exhausted")))
+      .returning({ scopeId: h.scopeId }),
+  );
+  if (cleared.length === 0) return false;
+  yield* enqueueJobSteps(q, {
+    queue: "agent.usage.after-run",
+    payload: { accountId: row.id },
+    now: input.now,
+  });
+  for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId, row.id))
+    if (binding.removedAt === null) yield* wakeRunnerSlotWaitsSteps(q, binding.runnerId, input.now);
+  return true;
 }
 
 export function* signOutAgentAccountSteps(
