@@ -90,9 +90,7 @@ test("a save goes to the database, wins over the file and applies without a rest
   } finally {
     restore();
   }
-  expect(stored).toBe(
-    "[github_access]\nagent_read = false\nmirrors = false\n\n[agents.grok]\n\n[agents.opencode]\n\n[member_vm]\n",
-  );
+  expect(stored).toBe("[github_access]\nagent_read = false\nmirrors = false\n\n[member_vm]\n");
   expect(readFileSync(configPath, "utf8")).not.toContain("github_access");
   expect(lines.some((line) => line.includes("mirrors set to false"))).toBe(true);
   expect(audits).toEqual(["settings.github_access"]);

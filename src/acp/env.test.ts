@@ -145,13 +145,9 @@ test("only explicitly required runtime and own-login environment survives", () =
   });
 });
 
-test("only intentional Grok opt-in admits a nonempty XAI_API_KEY", () => {
+test("XAI_API_KEY from the host never reaches an agent", () => {
   expect(minimalAgentEnv(credentials)).toEqual({});
-  expect(minimalAgentEnv(credentials, { allowXaiApiKey: true })).toEqual({
-    XAI_API_KEY: credentials.XAI_API_KEY!,
-  });
-  expect(minimalAgentEnv({ XAI_API_KEY: "" }, { allowXaiApiKey: true })).toEqual({});
-  expect(minimalAgentEnv({}, { allowXaiApiKey: true })).toEqual({});
+  expect(minimalAgentEnv({ XAI_API_KEY: credentials.XAI_API_KEY })).toEqual({});
 });
 
 test("proxy settings cannot forward embedded credentials or token parameters", () => {
@@ -193,21 +189,16 @@ test("DOCKER_HOST reaches an agent only as a local unix socket", () => {
   }
 });
 
-test.each([false, true])(
-  "ACP child preserves own-login home with Grok opt-in %s",
-  async (allowXaiApiKey) => {
-    const root = await tempRoot();
-    const home = join(root, "home");
-    const resultPath = join(root, "child-env.json");
-    const fakePath = join(root, "fake-agent.ts");
-    await mkdir(home);
-    await writeFile(
-      join(home, "own-login.json"),
-      JSON.stringify({ account: "synthetic-own-login" }),
-    );
-    await writeFile(
-      fakePath,
-      `import { readFileSync, writeFileSync } from "node:fs";
+test("ACP child preserves own-login home", async () => {
+  const root = await tempRoot();
+  const home = join(root, "home");
+  const resultPath = join(root, "child-env.json");
+  const fakePath = join(root, "fake-agent.ts");
+  await mkdir(home);
+  await writeFile(join(home, "own-login.json"), JSON.stringify({ account: "synthetic-own-login" }));
+  await writeFile(
+    fakePath,
+    `import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const login = JSON.parse(readFileSync(process.env.HOME + "/own-login.json", "utf8"));
 writeFileSync(process.argv[2], JSON.stringify({ env: process.env, login }));
@@ -218,38 +209,35 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } }) + "\\n");
 });
 `,
-    );
-    const base = {
-      ...benign,
-      HOME: home,
-      ...credentials,
-      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/tmp/synthetic-system/bus",
-      DBUS_STARTER_ADDRESS: "unix:path=/tmp/synthetic-starter/bus",
-      DBUS_FUTURE_SECRET: "synthetic-dbus-secret",
-    };
-    const auth = await checkOwnLogin({
-      role: "implementer",
-      command: process.execPath,
-      args: ["--no-env-file", fakePath, resultPath],
-      env: base,
-      timeoutMs: 5_000,
-      allowXaiApiKey,
-    });
-    expect(auth.authMethods.map((method) => method.id)).toEqual(["own-login"]);
-    const observed = JSON.parse(await readFile(resultPath, "utf8"));
-    expect(observed.login).toEqual({ account: "synthetic-own-login" });
-    expect(observed.env.DBUS_SESSION_BUS_ADDRESS).toBe(benign.DBUS_SESSION_BUS_ADDRESS);
-    expect(observed.env.DBUS_SYSTEM_BUS_ADDRESS).toBeUndefined();
-    expect(observed.env.DBUS_STARTER_ADDRESS).toBeUndefined();
-    expect(observed.env.DBUS_FUTURE_SECRET).toBeUndefined();
-    expect(observed.env).toEqual({
-      ...benign,
-      HOME: home,
-      ...(allowXaiApiKey ? { XAI_API_KEY: credentials.XAI_API_KEY } : {}),
-      ...inheritedTag,
-    });
-  },
-);
+  );
+  const base = {
+    ...benign,
+    HOME: home,
+    ...credentials,
+    DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/tmp/synthetic-system/bus",
+    DBUS_STARTER_ADDRESS: "unix:path=/tmp/synthetic-starter/bus",
+    DBUS_FUTURE_SECRET: "synthetic-dbus-secret",
+  };
+  const auth = await checkOwnLogin({
+    role: "implementer",
+    command: process.execPath,
+    args: ["--no-env-file", fakePath, resultPath],
+    env: base,
+    timeoutMs: 5_000,
+  });
+  expect(auth.authMethods.map((method) => method.id)).toEqual(["own-login"]);
+  const observed = JSON.parse(await readFile(resultPath, "utf8"));
+  expect(observed.login).toEqual({ account: "synthetic-own-login" });
+  expect(observed.env.DBUS_SESSION_BUS_ADDRESS).toBe(benign.DBUS_SESSION_BUS_ADDRESS);
+  expect(observed.env.DBUS_SYSTEM_BUS_ADDRESS).toBeUndefined();
+  expect(observed.env.DBUS_STARTER_ADDRESS).toBeUndefined();
+  expect(observed.env.DBUS_FUTURE_SECRET).toBeUndefined();
+  expect(observed.env).toEqual({
+    ...benign,
+    HOME: home,
+    ...inheritedTag,
+  });
+});
 
 test("host terminal child cannot inherit or reintroduce rejected environment", async () => {
   const root = await tempRoot();

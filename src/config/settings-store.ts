@@ -125,8 +125,6 @@ function isSettingsSection(section: string): boolean {
     within("agents.defaults") ||
     within("agents.projects") ||
     within("agents.presets") ||
-    within("agents.grok") ||
-    within("agents.opencode") ||
     within("merge") ||
     name === "queue" ||
     within("time_limits") ||
@@ -141,7 +139,7 @@ function isSettingsSection(section: string): boolean {
   );
 }
 
-const FILE_UNTIL_SAVED = ["agents.grok", "agents.opencode", "member_vm"];
+const FILE_UNTIL_SAVED = ["member_vm"];
 
 function familyOf(section: string): string | undefined {
   const name = section.trim().toLowerCase();

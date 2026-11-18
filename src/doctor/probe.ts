@@ -120,9 +120,7 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
   const [claudeLogin, codexLogin, grokLogin, linear, githubDoctor] = await Promise.all([
     agents.has("claude") ? loginFact("claude", env) : unused,
     agents.has("codex") ? loginFact("codex", env) : unused,
-    agents.has("grok")
-      ? grokLoginStatus({ env, agents: runtime.file.agents, timeoutMs: LOGIN_TIMEOUT_MS })
-      : null,
+    agents.has("grok") ? grokLoginStatus({ env, timeoutMs: LOGIN_TIMEOUT_MS }) : null,
     linearFact(runtime, store),
     githubDoctorFact(runtime, repo),
   ]);

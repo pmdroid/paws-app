@@ -6,10 +6,9 @@ import {
   rejectAutoApprove,
   resolveGrokCommand,
   selectGrokAuthMethod,
-  xaiApiKeyPresent,
   type GrokCommand,
 } from "../acp";
-import { loadConfigFile, pawsPaths, type AgentsConfig, type EnvSource } from "../config";
+import type { EnvSource } from "../config";
 
 export type GrokLoginStatus = {
   installed: boolean;
@@ -22,7 +21,6 @@ export type GrokLoginStatus = {
 
 export type GrokLoginOptions = {
   env?: EnvSource;
-  agents?: AgentsConfig;
   packageRoot?: string;
   timeoutMs?: number;
   /** Test stand-in for the grok executable. */
@@ -36,10 +34,9 @@ export type GrokLoginOptions = {
  */
 export async function grokLoginStatus(options: GrokLoginOptions = {}): Promise<GrokLoginStatus> {
   const env = options.env ?? process.env;
-  const agents = options.agents ?? loadAgents(env);
   const resolved = options.command
     ? commandOverride(options.command, options.args)
-    : resolveGrokCommand(agents, options.packageRoot);
+    : resolveGrokCommand(options.packageRoot);
   if (resolved.error) {
     return {
       installed: false,
@@ -50,7 +47,6 @@ export async function grokLoginStatus(options: GrokLoginOptions = {}): Promise<G
     };
   }
   rejectAutoApprove(resolved.args);
-  const allowApiKey = agents.grok.allowApiKey;
   try {
     const auth = await checkOwnLogin({
       role: "implementer",
@@ -58,13 +54,9 @@ export async function grokLoginStatus(options: GrokLoginOptions = {}): Promise<G
       args: resolved.args,
       env,
       timeoutMs: options.timeoutMs ?? 15_000,
-      allowXaiApiKey: allowApiKey,
     });
     const authMethods = auth.authMethods.map((method) => method.id);
-    const methodId = selectGrokAuthMethod(auth.authMethods, {
-      apiKeyPresent: xaiApiKeyPresent(env),
-      allowApiKey,
-    });
+    const methodId = selectGrokAuthMethod(auth.authMethods);
     if (methodId === null) {
       return {
         installed: true,
@@ -97,12 +89,4 @@ export async function grokLoginStatus(options: GrokLoginOptions = {}): Promise<G
 
 function commandOverride(command: string, args: string[] | undefined): GrokCommand {
   return { command, args: args ?? [...GROK_AGENT_ARGS], error: null };
-}
-
-function loadAgents(env: EnvSource): AgentsConfig {
-  const home = env.PAWS_HOME;
-  if (home === undefined || home.length === 0) {
-    return { implementer: "claude", grok: { path: null, allowApiKey: false } };
-  }
-  return loadConfigFile(pawsPaths(home).configFile).agents;
 }

@@ -144,7 +144,7 @@ export function pinnedAdapters(root: string = pawsPackageRoot()): Record<AgentRo
  * Claude Code, Grok, or Codex for the implementer. Codex stays the reviewer.
  * Claude and Codex default to the absolute `node_modules/.bin` path.
  * Paws does not search PATH for those two unless `PAWS_CLAUDE_ACP` / `PAWS_CODEX_ACP` is set.
- * A PATH `grok` is used only when `agents.grok.path` is set.
+ * Grok and OpenCode always use the pinned packages.
  */
 export function resolveAdapter(
   role: AgentRole,
@@ -158,12 +158,12 @@ export function resolveAdapter(
   const implementer =
     selected ?? (role === "reviewer" ? "codex" : (agents?.implementer ?? "claude"));
   if (implementer === "grok") {
-    const resolved = resolveGrokCommand(agents, root);
+    const resolved = resolveGrokCommand(root);
     if (resolved.error) throw new Error(resolved.error);
     return { command: resolved.command, args: resolved.args };
   }
   if (implementer === "opencode") {
-    const resolved = resolveOpencodeCommand(agents, root);
+    const resolved = resolveOpencodeCommand(root);
     if (resolved.error) throw new Error(resolved.error);
     return { command: resolved.command, args: resolved.args };
   }
@@ -171,25 +171,13 @@ export function resolveAdapter(
   return fromPinnedOrEnv(env, "PAWS_CLAUDE_ACP", "implementer", root);
 }
 
-/** Pinned `@xai-official/grok` in `node_modules/.bin`, unless `agents.grok.path` is set. */
+/** Pinned `@xai-official/grok` in `node_modules/.bin`. */
 export function resolveGrokCommand(
-  agents?: AgentsConfig,
   packageRoot: string = pawsPackageRoot(),
   runnerBase: string = RUNNER_BASE,
 ): GrokCommand {
   const args = [...GROK_AGENT_ARGS];
   rejectAutoApprove(args);
-  const configured = agents?.grok.path?.trim() ?? "";
-  if (configured.length > 0) {
-    if (configured.includes("/") && !existsSync(configured)) {
-      return {
-        command: configured,
-        args,
-        error: `agents.grok.path does not exist: ${configured}`,
-      };
-    }
-    return { command: configured, args, error: null };
-  }
   const launcher = installedLauncher(packageRoot, "grok", runnerBase);
   if (launcher) return { command: launcher, args, error: null };
   const command = join(packageRoot, "node_modules", ".bin", "grok");
@@ -207,7 +195,7 @@ export function resolveGrokCommand(
     return {
       command,
       args,
-      error: `@xai-official/grok: no platform binary installed for ${target}. Set agents.grok.path to a grok executable.`,
+      error: `@xai-official/grok: no platform binary installed for ${target}. Run \`bun install\` in the Paws checkout.`,
     };
   }
   return { command, args, error: null };
@@ -222,41 +210,16 @@ export function rejectAutoApprove(args: readonly string[]): void {
   }
 }
 
-/**
- * `cached_token` is the default. `xai.api_key` is selected only when that
- * method is advertised, `XAI_API_KEY` is set, and `agents.grok.allow_api_key`
- * is true. The key value is not returned.
- */
-export function selectGrokAuthMethod(
-  methods: readonly { id: string }[],
-  options: { apiKeyPresent: boolean; allowApiKey: boolean },
-): string | null {
-  const ids = new Set(methods.map((method) => method.id));
-  if (options.apiKeyPresent && options.allowApiKey && ids.has("xai.api_key")) {
-    return "xai.api_key";
-  }
-  if (ids.has("cached_token")) return "cached_token";
-  return null;
+export function selectGrokAuthMethod(methods: readonly { id: string }[]): string | null {
+  return methods.some((method) => method.id === "cached_token") ? "cached_token" : null;
 }
 
 export function resolveOpencodeCommand(
-  agents?: AgentsConfig,
   packageRoot: string = pawsPackageRoot(),
   runnerBase: string = RUNNER_BASE,
 ): OpencodeCommand {
   const args = [...OPENCODE_AGENT_ARGS];
   rejectAutoApprove(args);
-  const configured = agents?.opencode?.path?.trim() ?? "";
-  if (configured.length > 0) {
-    if (configured.includes("/") && !existsSync(configured)) {
-      return {
-        command: configured,
-        args,
-        error: `agents.opencode.path does not exist: ${configured}`,
-      };
-    }
-    return { command: configured, args, error: null };
-  }
   const launcher = installedLauncher(packageRoot, OPENCODE_ACP_BIN, runnerBase);
   if (launcher) return { command: launcher, args, error: null };
   const native = join(
@@ -268,11 +231,6 @@ export function resolveOpencodeCommand(
     "opencode",
   );
   return { command: existsSync(native) ? native : OPENCODE_ACP_BIN, args, error: null };
-}
-
-export function xaiApiKeyPresent(env: NodeJS.ProcessEnv): boolean {
-  const value = env.XAI_API_KEY;
-  return typeof value === "string" && value.length > 0;
 }
 
 function fromPinnedOrEnv(

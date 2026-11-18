@@ -12,7 +12,6 @@ import {
   type PawsConfigFile,
 } from "../config";
 import { formatDoctor, type DoctorCheck } from "../doctor";
-import type { EnvFile } from "./env-file";
 import type { Prompter } from "./prompt";
 
 /** Bytes in a generated webhook secret. */
@@ -34,7 +33,6 @@ export const SECRETS_DOCTOR_CHECKS = [
 export type SecretsStepInput = {
   home: string;
   config: PawsConfigFile;
-  env: EnvFile;
   prompter: Prompter;
   publicUrl: string | null;
   /** Runs doctor with what was just written. */
@@ -72,11 +70,6 @@ export async function runSecretsStep(input: SecretsStepInput): Promise<void> {
   await textSecret(io, join(dir, TAILSCALE_AUTHKEY_FILE), "Tailscale auth key", tailnet);
 
   await slackApp(io, join(dir, "slack-app.json"));
-  if (input.config.agents.grok.allowApiKey) {
-    io.say("\nxAI API key for Grok ([agents.grok] allow_api_key is set).");
-    const value = await io.secret(prompt("XAI_API_KEY", input.env.get("XAI_API_KEY") !== null));
-    if (value) input.env.set("XAI_API_KEY", value);
-  }
 
   const names: readonly string[] = SECRETS_DOCTOR_CHECKS;
   const checks = (await input.doctor()).filter((check) => names.includes(check.name));

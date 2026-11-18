@@ -81,28 +81,15 @@ export function isBlockedEnv(key: string): boolean {
   return !ALLOWED_ENV.has(key);
 }
 
-export type AgentEnvOptions = {
-  /** Pass `XAI_API_KEY` through. Only the Grok implementer sets this, and only when config allows it. */
-  allowXaiApiKey?: boolean;
-};
-
 /**
  * Environment for a spawned adapter.
  * `HOME` is kept so the adapter can use the developer's existing login.
  * This function does not read credential files or `~/.grok/auth.json`.
- * `XAI_API_KEY` is removed unless `allowXaiApiKey` is set.
  */
-export function minimalAgentEnv(
-  base: NodeJS.ProcessEnv = process.env,
-  options: AgentEnvOptions = {},
-): Record<string, string> {
+export function minimalAgentEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (value == null) continue;
-    if (key === "XAI_API_KEY" && options.allowXaiApiKey && value.length > 0) {
-      env[key] = value;
-      continue;
-    }
     if (isBlockedEnv(key)) continue;
     if (PROXY_ENV.has(key) && !isBenignProxy(value)) continue;
     if (key === "DOCKER_HOST" && !isLocalDockerHost(value)) continue;

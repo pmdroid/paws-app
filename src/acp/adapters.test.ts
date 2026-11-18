@@ -12,19 +12,18 @@ import {
   selectGrokAuthMethod,
 } from "./adapters";
 
-const grok: AgentsConfig = {
-  implementer: "grok",
-  grok: { path: null, allowApiKey: false },
-};
+const grok: AgentsConfig = { implementer: "grok" };
 
 test("grok adapter args never auto-approve", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-grok-bin-"));
-  const bin = join(root, "grok");
+  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+  mkdirSync(
+    join(root, "node_modules", "@xai-official", `grok-${process.platform}-${process.arch}`),
+    { recursive: true },
+  );
+  const bin = join(root, "node_modules", ".bin", "grok");
   writeFileSync(bin, "");
-  const command = resolveAdapter("implementer", {}, undefined, undefined, {
-    ...grok,
-    grok: { path: bin, allowApiKey: false },
-  });
+  const command = resolveAdapter("implementer", {}, undefined, root, grok);
   expect(command).toEqual({
     command: bin,
     args: [...GROK_AGENT_ARGS],
@@ -34,14 +33,8 @@ test("grok adapter args never auto-approve", () => {
   expect(command.args).toEqual(["--no-auto-update", "agent", "stdio"]);
 });
 
-test("a PATH grok is used only when agents.grok.path is set", () => {
-  const named = resolveGrokCommand({
-    implementer: "grok",
-    grok: { path: "grok", allowApiKey: false },
-  });
-  expect(named.command).toBe("grok");
-  expect(named.error).toBeNull();
-  const missing = resolveGrokCommand(grok, mkdtempSync(join(tmpdir(), "paws-no-grok-")));
+test("a missing pinned grok says to run bun install", () => {
+  const missing = resolveGrokCommand(mkdtempSync(join(tmpdir(), "paws-no-grok-")));
   expect(missing.error).toContain("node_modules/.bin/grok");
   expect(missing.error).toContain("bun install");
 });
@@ -51,13 +44,14 @@ test("missing platform package is a clear error", () => {
   const binDir = join(root, "node_modules", ".bin");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, "grok"), "#!/bin/sh\n");
-  const resolved = resolveGrokCommand(grok, root);
+  const resolved = resolveGrokCommand(root);
   expect(resolved.error).toContain("no platform binary");
   expect(resolved.error).toContain(`${process.platform}-${process.arch}`);
+  expect(resolved.error).not.toContain("agents.grok");
 });
 
 test("pinned grok resolves from node_modules/.bin on a supported platform", () => {
-  const resolved = resolveGrokCommand(grok, pawsPackageRoot());
+  const resolved = resolveGrokCommand(pawsPackageRoot());
   expect(resolved.args).toEqual([...GROK_AGENT_ARGS]);
   if (process.platform === "linux" && process.arch === "x64") {
     expect(resolved.error).toBeNull();
@@ -78,21 +72,12 @@ test("reviewer stays codex when the implementer is grok", () => {
   });
 });
 
-test("selects cached_token unless the api key is allowed", () => {
-  const both = [{ id: "cached_token" }, { id: "xai.api_key" }];
-  expect(selectGrokAuthMethod(both, { apiKeyPresent: true, allowApiKey: false })).toBe(
+test("grok always signs in with its cached login", () => {
+  expect(selectGrokAuthMethod([{ id: "cached_token" }, { id: "xai.api_key" }])).toBe(
     "cached_token",
   );
-  expect(selectGrokAuthMethod(both, { apiKeyPresent: false, allowApiKey: true })).toBe(
-    "cached_token",
-  );
-  expect(selectGrokAuthMethod(both, { apiKeyPresent: true, allowApiKey: true })).toBe(
-    "xai.api_key",
-  );
-  expect(
-    selectGrokAuthMethod([{ id: "xai.api_key" }], { apiKeyPresent: true, allowApiKey: false }),
-  ).toBeNull();
-  expect(selectGrokAuthMethod([], { apiKeyPresent: false, allowApiKey: false })).toBeNull();
+  expect(selectGrokAuthMethod([{ id: "xai.api_key" }])).toBeNull();
+  expect(selectGrokAuthMethod([])).toBeNull();
 });
 
 test("a runner release without bundled agents runs the installed agent launchers", () => {
@@ -106,7 +91,7 @@ test("a runner release without bundled agents runs the installed agent launchers
   expect(adapterBinPath("reviewer", join(base, "current"), base)).toBe(
     join(base, "bin", "codex-acp"),
   );
-  expect(resolveGrokCommand(grok, release, base)).toEqual({
+  expect(resolveGrokCommand(release, base)).toEqual({
     command: join(base, "bin", "grok"),
     args: [...GROK_AGENT_ARGS],
     error: null,

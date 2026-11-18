@@ -38,7 +38,6 @@ export async function runInstallCli(
       runSecretsStep({
         home,
         config,
-        env,
         prompter: terminalPrompter(process.stdin, process.stdout, terminal),
         publicUrl: merged.PAWS_PUBLIC_URL || config.publicUrl,
         doctor: async () =>
