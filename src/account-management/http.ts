@@ -19,11 +19,13 @@ import {
   ClaudeOAuthTokenSchema,
   claudeTokenHealth,
   RUNNER_CODING_AGENTS,
+  type RunnerCodingAgent,
 } from "../runner-protocol";
+import { API_KEY_PROVIDER } from "../agent-auth";
 import { type WorkspacePrincipal } from "../workspace";
 
 const CENTRAL =
-  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?:\/(extra-usage|enabled|sign-in|credential|device|token))?)?$/;
+  /^\/api\/runners\/agent-accounts(?:\/(order)|\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?:\/(extra-usage|enabled|sign-in|credential|device|token|api-key))?)?$/;
 
 const agent = z.enum(RUNNER_CODING_AGENTS);
 const Create = z.strictObject({ agent, label: z.string().trim().min(1).max(80) });
@@ -31,6 +33,13 @@ const Order = z.strictObject({ agent, ids: z.array(z.string().min(1).max(128)).m
 const ExtraUsage = z.strictObject({ extraUsage: z.boolean() });
 const Enabled = z.strictObject({ enabled: z.boolean() });
 const PastedToken = z.strictObject({ token: z.string().trim().min(1).max(512) });
+const PastedKey = z.strictObject({
+  key: z
+    .string()
+    .trim()
+    .regex(/^\S{1,512}$/),
+});
+const API_KEY_FILE = ".paws/api-key.json";
 const TOKEN_DAYS = 365;
 
 const STATUS: Record<string, number> = {
@@ -54,6 +63,7 @@ export function createAccountManagement(
     now?: () => number;
     agentAuth?: { device(workspaceId: string, id: string, start: boolean): Promise<unknown> };
     checkClaudeToken?: (token: string) => Promise<boolean>;
+    checkApiKey?: (agent: RunnerCodingAgent, key: string) => Promise<boolean>;
   } = {},
 ) {
   const now = options.now ?? Date.now;
@@ -87,10 +97,20 @@ export function createAccountManagement(
           const result = [];
           for (const account of accounts) {
             const stored =
-              options.secretsDir && account.agent === "claude"
+              options.secretsDir && account.credential
                 ? yield* readAgentCredentialSteps(q, options.secretsDir, account.id)
                 : null;
-            const files = stored?.blob ? JSON.parse(stored.blob) : [];
+            const files: { path: string; data: string }[] = stored?.blob
+              ? JSON.parse(stored.blob)
+              : [];
+            if (files.some((entry) => entry.path === API_KEY_FILE)) {
+              result.push({
+                ...account,
+                auth: "api_key",
+                usage: { limits: [], observedAt: now(), unavailable: "Billed per use" },
+              });
+              continue;
+            }
             const file = files.find(
               (entry: { path: string }) => entry.path === ".claude/paws-oauth.json",
             );
@@ -214,6 +234,47 @@ export function createAccountManagement(
           {
             path: ".claude/paws-oauth.json",
             data: Buffer.from(JSON.stringify(value)).toString("base64"),
+          },
+        ]);
+        await store.transaction(function* (q) {
+          const previous = yield* agentCredentialCiphertextSteps(q, accountId!);
+          const written = yield* writeAgentCredentialSteps(q, secretsDir, {
+            accountId: accountId!,
+            runnerId: null,
+            version: (previous?.version ?? 0) + 1,
+            blob,
+            now: createdAt,
+          });
+          if (written !== "written") throw new Error("Agent credential write conflicted");
+          yield* bindToOwnerRunnersSteps(q, accountId!, createdAt);
+        });
+        return json({ ok: true });
+      }
+      if (action === "api-key" && method === "PUT") {
+        const { secretsDir, checkApiKey } = options;
+        if (!secretsDir || !checkApiKey)
+          return json({ error: "API key sign-in is unavailable." }, 503);
+        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
+        const codingAgent = account.agent as RunnerCodingAgent;
+        const provider = API_KEY_PROVIDER[codingAgent];
+        const { key } = PastedKey.parse(await request.json());
+        const accepted = await checkApiKey(codingAgent, key).catch((error: unknown) => {
+          journalCaught(error, "account-management.checkApiKey", null);
+          return null;
+        });
+        if (accepted === null)
+          return json(
+            { error: `${provider} could not be reached to check the key. Try again.` },
+            503,
+          );
+        if (!accepted) return json({ error: `This key was not accepted by ${provider}.` }, 400);
+        const createdAt = now();
+        const blob = JSON.stringify([
+          {
+            path: API_KEY_FILE,
+            data: Buffer.from(
+              JSON.stringify({ kind: "api_key", agent: codingAgent, key }),
+            ).toString("base64"),
           },
         ]);
         await store.transaction(function* (q) {

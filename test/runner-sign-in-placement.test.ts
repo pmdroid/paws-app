@@ -293,7 +293,7 @@ test("a Claude review with a setup token needs a runner that passes the token to
   for (const id of ["acme-1", "acme-2"]) await f.bind(id, selected.id);
   for (const [runnerId, runnerVersion] of [
     ["acme-1", "0.1.87"],
-    ["acme-2", "0.1.90"],
+    ["acme-2", "0.1.91"],
   ] as const)
     await seed(f.db, (q) =>
       q.orm
@@ -324,10 +324,10 @@ test("a Claude review with a setup token needs a runner that passes the token to
   };
   expect(await place("implementer")).toEqual({
     placed: ["acme-2"],
-    rejected: ["Upgrade this runner to 0.1.90"],
+    rejected: ["Upgrade this runner to 0.1.91"],
   });
   expect(await place("reviewer")).toEqual({
     placed: ["acme-2"],
-    rejected: ["Upgrade this runner to 0.1.90"],
+    rejected: ["Upgrade this runner to 0.1.91"],
   });
 });

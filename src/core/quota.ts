@@ -16,7 +16,7 @@ export function quotaSignal(message: string, now: number): QuotaSignal | null {
     );
   const percent = remaining ? Number(remaining[1]) : null;
   const exhausted =
-    /(?:quota|usage|rate|request|token)\s*limit(?:\s+(?:has been|was|is))?\s*(?:exceeded|reached|exhausted)|(?:exceeded|reached|exhausted)\s+(?:your\s+)?(?:quota|usage|rate|request|token)\s*limit|insufficient\s+quota|quota\s+(?:exceeded|exhausted)|hit\s+(?:your\s+|the\s+)?(?:usage\s+|rate\s+|quota\s+|session\s+|weekly\s+|daily\s+|monthly\s+|\d+-hour\s+)?limit|(?:weekly|daily|monthly|session|\d+-hour)\s+limit\s+reached|(?:HTTP|status(?:\s+code)?)\s*:?\s*429/i.test(
+    /(?:quota|usage|rate|request|token)\s*limit(?:\s+(?:has been|was|is))?\s*(?:exceeded|reached|exhausted)|(?:exceeded|reached|exhausted)\s+(?:your\s+)?(?:quota|usage|rate|request|token)\s*limit|insufficient\s+(?:quota|credits?)|credit\s+balance\s+is\s+too\s+low|used\s+all\s+(?:available\s+)?credits|requires\s+more\s+credits|(?:exceeded|reached)\s+(?:your\s+|its\s+)?(?:current\s+)?(?:quota|(?:monthly\s+)?spending\s+limit)|quota\s+(?:exceeded|exhausted)|hit\s+(?:your\s+|the\s+)?(?:usage\s+|rate\s+|quota\s+|session\s+|weekly\s+|daily\s+|monthly\s+|\d+-hour\s+)?limit|(?:weekly|daily|monthly|session|\d+-hour)\s+limit\s+reached|(?:HTTP|status(?:\s+code)?)\s*:?\s*429/i.test(
       text,
     ) || percent === 0;
   const low =
