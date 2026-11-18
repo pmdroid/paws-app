@@ -236,6 +236,6 @@ test("turning extra usage off leaves the quota cooldown to the next scheduled re
   expect(await db.run((q) => providerUsageSteps(q, spent.id))).toEqual(before);
   expect(await jobs(db, "agent.usage.after-run")).toEqual([]);
   expect((await jobs(db, JOB_KIND.start)).find((job) => job.id === held)?.runAt).toBe(
-    before!.nextCheckAt,
+    before!.nextCheckAt!,
   );
 });
