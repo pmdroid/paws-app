@@ -20,6 +20,7 @@ import {
   Lightbulb,
   Settings,
   Building2,
+  BookOpen,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -54,6 +55,7 @@ const ICONS = {
   improvements: Lightbulb,
   questions: CircleHelp,
   runners: Server,
+  context: BookOpen,
 };
 const ControllerRegions = memo(function ControllerRegions() {
   return (

@@ -694,6 +694,32 @@ try {
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
 
+    current = `context-projects@${width}`;
+    await page.route("**/api/context/projects", (route) =>
+      route.fulfill({
+        json: {
+          status: "ok",
+          projects: [
+            { id: "alpha-1", name: "Alpha launch", items: 3 },
+            { id: "beta-2", name: "Beta onboarding", items: 1 },
+          ],
+        },
+      }),
+    );
+    await page.goto(`${f.origin}/dashboard/issues`);
+    if (width < 768) await page.getByRole("button", { name: "Open navigation" }).click();
+    await page.getByRole("link", { name: "Project context" }).click();
+    await expect(page).toHaveURL(`${f.origin}/dashboard/context`);
+    await expect(page.getByRole("dialog", { name: "Paws navigation" })).toBeHidden();
+    await expect(page.locator("#content h1").first()).toHaveText("Project context");
+    await expect(page.getByRole("link", { name: "Alpha launch" })).toBeVisible();
+    await expect(page.locator("#context-page")).toContainText("3 issues");
+    await page.screenshot({ path: join(out, `context-projects-${width}.png`), fullPage: true });
+    await page.getByRole("link", { name: "Alpha launch" }).click();
+    await expect(page).toHaveURL(`${f.origin}/dashboard/context/project/alpha-1`);
+    await expect(page.locator("#content h1").first()).toHaveText("Project context");
+    await page.unroute("**/api/context/projects");
+
     current = `links@${width}`;
     await follow(
       page,

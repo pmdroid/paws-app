@@ -36,3 +36,5 @@ export type ContextViewDetail = {
   record: ContextViewRecord & { body: string; actorId: string | null; correctedBy: string | null };
   versions: { version: number; status: string; observedAt: number }[];
 };
+
+export type ContextProject = { id: string; name: string | null; items: number };

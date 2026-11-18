@@ -57,6 +57,7 @@ import { createRunners } from "./runners";
 import { createFindings } from "./findings";
 import { createImprovements } from "./improvements-page";
 import { createProjectContext } from "./project-context";
+import { createContextProjects } from "./context-projects";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -94,6 +95,7 @@ const findings = createFindings();
 const projectContext = createProjectContext({
   go: (search) => void router.navigate(`${routePath(currentRoute())}${search}`),
 });
+const contextProjects = createContextProjects();
 const improvements = createImprovements({
   counted: (total) => shell.setCounts({ improvements: total }),
   go: (route) => void router.navigate(routePath(route)),
@@ -510,9 +512,12 @@ function paint(): void {
     improvements.mount(improvementsRoot, currentEngine(), model.route, workspaceReader());
   else improvements.leave();
   const contextRoot = document.querySelector<HTMLElement>("#context-page");
-  if (contextRoot && model.route.view === "context")
+  if (contextRoot && model.route.view === "context" && model.route.kind === "project")
     projectContext.mount(contextRoot, currentEngine(), model.route);
   else projectContext.leave();
+  if (contextRoot && model.route.view === "context" && model.route.kind === "projects")
+    contextProjects.mount(contextRoot, currentEngine());
+  else contextProjects.leave();
   if (loadOpenLogs()) paint();
 }
 

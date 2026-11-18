@@ -3,6 +3,7 @@ import {
   contextSummaryLineage,
   currentContextRecords,
   readLinearProjectName,
+  listWorkItemProjects,
   listContextPage,
   listContextSummaries,
   type ContextClassification,
@@ -29,6 +30,7 @@ export const CONTEXT_VIEW_LIMITS = {
   searchChars: 200,
   textChars: 480,
   offsetMax: 10_000,
+  projects: 500,
 } as const;
 
 export const CONTEXT_VIEW_SCOPES = ["project"] as const;
@@ -119,7 +121,7 @@ type Authorized = {
   visibility: ContextRequesterAccess & { audience: string; audienceLineage: string };
 };
 
-async function authorize(db: Db, access: ContextAccess, request: ContextViewRequest) {
+async function projectScope(db: Db, request: Omit<ContextViewRequest, "now">) {
   if (request.scope.kind !== "project" || !/^[\w-]{1,100}$/.test(request.scope.id)) return null;
   const namespace: ContextNamespace = {
     workspaceId: request.requester.workspaceId,
@@ -130,11 +132,37 @@ async function authorize(db: Db, access: ContextAccess, request: ContextViewRequ
     kind: "linear_project_description",
     id: namespace.scopeId,
   });
-  if (!project || project.status !== "active") return null;
+  return project?.status === "active" ? { namespace, restriction: project.restriction } : null;
+}
+
+async function authorize(db: Db, access: ContextAccess, request: ContextViewRequest) {
+  const project = await projectScope(db, request);
+  if (!project) return null;
+  const { namespace } = project;
   const current = await requesterAccess(access, request.requester);
   if (!current || !canSee(current, project.restriction)) return null;
   const visibility = { ...current, audience: AUDIENCE, audienceLineage: audienceLineage(AUDIENCE) };
   return { namespace, current, visibility } satisfies Authorized;
+}
+
+export type ContextProject = { id: string; name: string | null; items: number };
+
+export async function listContextProjects(
+  db: Db,
+  access: ContextAccess,
+  request: { readonly requester: ContextRequester },
+): Promise<ContextProject[]> {
+  const current = await requesterAccess(access, request.requester);
+  if (!current) return [];
+  const projects: ContextProject[] = [];
+  for (const project of await listWorkItemProjects(db, CONTEXT_VIEW_LIMITS.projects)) {
+    const found = await projectScope(db, {
+      ...request,
+      scope: { kind: "project", id: project.id },
+    });
+    if (found && canSee(current, found.restriction)) projects.push(project);
+  }
+  return projects.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
 }
 
 export function contextViewSupported(kind: string): kind is ContextViewScopeKind {

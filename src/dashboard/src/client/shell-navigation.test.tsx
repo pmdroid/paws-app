@@ -28,16 +28,22 @@ function sidebar(
   }));
 }
 
-test("admins see Workspace under Manage below Runners, and Settings for everyone", () => {
+test("admins see Project context then Workspace under Manage below Runners, and Settings for everyone", () => {
   const links = sidebar(true, "/workspace/merging");
   const runners = links.findIndex((link) => link.text === "Runners");
   expect(links[runners + 1]).toEqual({
+    text: "Project context",
+    href: "/context",
+    current: null,
+    group: "Manage",
+  });
+  expect(links[runners + 2]).toEqual({
     text: "Workspace",
     href: "/workspace",
     current: null,
     group: "Manage",
   });
-  expect(links.slice(runners + 2, runners + 2 + WORKSPACE_PAGES.length)).toEqual(
+  expect(links.slice(runners + 3, runners + 3 + WORKSPACE_PAGES.length)).toEqual(
     WORKSPACE_PAGES.map((page) => ({
       text: page.name,
       href: `/workspace/${page.id}`,
@@ -48,9 +54,10 @@ test("admins see Workspace under Manage below Runners, and Settings for everyone
   expect(links.at(-1)).toMatchObject({ text: "Settings", href: "/settings", current: null });
 });
 
-test("members see Settings and no Workspace entry", () => {
+test("members see Settings and Project context, and no Workspace entry", () => {
   const links = sidebar(false, "/settings");
   expect(links.map((link) => link.text)).not.toContain("Workspace");
+  expect(links.map((link) => link.text)).toContain("Project context");
   expect(links.at(-1)).toMatchObject({ text: "Settings", href: "/settings" });
 });
 
@@ -95,4 +102,17 @@ test("the Settings submenu is closed away from Settings and opens on its first p
   expect(first.filter((link) => link.current === "page").map((link) => link.text)).toEqual([
     "Your account",
   ]);
+});
+
+test("Project context is marked active on the list and on a project page, with no submenu", () => {
+  for (const [path, route] of [
+    ["/context", { view: "context", kind: "projects" }],
+    ["/context/project/p1", { view: "context", kind: "project", id: "p1" }],
+  ] as const) {
+    const links = sidebar(false, path, route);
+    expect(links.filter((link) => link.current === "page").map((link) => link.text)).toEqual([
+      "Project context",
+    ]);
+    expect(links.filter((link) => link.href?.startsWith("/context/"))).toEqual([]);
+  }
 });

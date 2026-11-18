@@ -3,6 +3,7 @@ import type { ContextAccess, ContextRequester } from "./policy";
 import {
   CONTEXT_VIEW_LIMITS,
   contextViewSupported,
+  listContextProjects,
   readContextRecord,
   readContextView,
 } from "./view";
@@ -26,6 +27,14 @@ export function createProjectContextHttp(options: {
     const parts = url.pathname.split("/").slice(1);
     if (parts[0] !== "api" || parts[1] !== "context") return null;
     if (request.method !== "GET") return answer({ error: "Context is read-only." }, 405);
+    if (parts[2] === "projects" && parts.length === 3) {
+      try {
+        const projects = await listContextProjects(options.db, options.access, { requester });
+        return answer({ status: "ok", projects });
+      } catch {
+        return answer({ status: "error", error: "Projects could not be read. Try again." }, 503);
+      }
+    }
     const [kind = "", id = "", records, recordId, ...rest] = parts.slice(2).map((part) => {
       try {
         return decodeURIComponent(part);
