@@ -39,6 +39,7 @@ import {
 import { recallProjectContext, type RecallRequest } from "./recall";
 import { rememberWorkItemContext, type RememberRequest } from "./remember";
 import { contextKey } from "./sanitize";
+import { recordWorkSummary, type WorkSummary } from "./work-summary";
 import {
   selectContext,
   type ContextManifest,
@@ -298,6 +299,8 @@ export type WorkItemContextEntry = {
   >;
   readonly body: string;
   readonly reason?: string;
+  readonly key?: string;
+  readonly importance?: number;
 };
 
 const ENTRY_IMPORTANCE: Record<WorkItemContextEntry["classification"], number> = {
@@ -345,10 +348,10 @@ export async function recordWorkItemContext(
       ...request.entries.map((entry) => {
         const body = entry.reason ? `${entry.body} Reason: ${entry.reason}` : entry.body;
         return {
-          key: contextKey("observation", `${entry.classification}\0${entry.body}`),
+          key: entry.key ?? contextKey("observation", `${entry.classification}\0${entry.body}`),
           layer: "observation" as const,
           classification: entry.classification,
-          importance: ENTRY_IMPORTANCE[entry.classification],
+          importance: entry.importance ?? ENTRY_IMPORTANCE[entry.classification],
           body,
         };
       }),
@@ -395,6 +398,7 @@ export type ProjectSessionContext = {
   recordDecision(input: AnsweredDecision): Promise<AnsweredDecisionOutcome>;
   remember?(request: RememberRequest): Promise<string>;
   recall?(request: RecallRequest): Promise<string>;
+  recordWorkSummary?(input: WorkSummary): Promise<void>;
 };
 
 export const PROJECT_SESSION_DEFAULTS = {
@@ -453,6 +457,7 @@ export function createProjectSessionContext(options: {
     recordDecision: (input) => recordAnsweredDecision(options.db, options.access, input),
     remember: (request) => rememberWorkItemContext(options.db, options.access, request),
     recall: (request) => recallProjectContext(options.db, options.access, request),
+    recordWorkSummary: (input) => recordWorkSummary(options.db, options.access, input),
     async prepare(input) {
       const namespace: ContextNamespace = {
         workspaceId: input.organizationId,
