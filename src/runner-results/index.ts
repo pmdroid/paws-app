@@ -45,7 +45,13 @@ function followUpsSupported(version: string | null): boolean {
   return major > 0 || minor > 1 || (minor === 1 && patch >= 12);
 }
 
-const QUESTION_TYPES: readonly string[] = ["question", "artifact", "closeout_policy", "ci_rerun"];
+const QUESTION_TYPES: readonly string[] = [
+  "question",
+  "artifact",
+  "closeout_policy",
+  "ci_rerun",
+  "remember",
+];
 
 export function createRunnerResults(options: { store: Db; work: RunnerWork; now?: () => number }) {
   const { store, work } = options;

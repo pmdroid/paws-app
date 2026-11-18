@@ -153,6 +153,7 @@ export interface RunAgentOptions {
   serializeTranscript?: (record: unknown) => string;
   ghConfigDir?: string;
   ciRerun?: (reason: string) => Promise<string>;
+  remember?: (operations: unknown) => Promise<string>;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner
    * installs these before the agent starts. `notices` are lines for the task's Linear session.

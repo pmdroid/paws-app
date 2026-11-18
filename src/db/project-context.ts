@@ -599,6 +599,31 @@ export function contextRecordRow(row: RawContextRecord): ContextRecordRow {
   };
 }
 
+export async function currentSourceContextRecords(
+  store: Db,
+  namespace: ContextNamespace,
+  source: ContextSourceRef,
+  now: number,
+): Promise<ContextRecordRow[]> {
+  return store.run(function* (q) {
+    const { contextRecord } = q.t;
+    const rows = yield* q.all(
+      q.orm
+        .select(contextRecordColumns(q))
+        .from(contextRecord)
+        .where(
+          and(
+            recordSourceWhere(q, namespace, source),
+            eq(contextRecord.status, "current"),
+            gt(contextRecord.expiresAt, now),
+          ),
+        )
+        .orderBy(asc(contextRecord.observedAt), asc(contextRecord.id)),
+    );
+    return rows.map(contextRecordRow);
+  });
+}
+
 export type ContextCorrection = {
   readonly namespace: ContextNamespace;
   readonly recordId: string;

@@ -143,6 +143,7 @@ import {
   RUNNER_ARTIFACT_COUNT_LIMIT,
   RunnerArtifactSchema,
   RunnerEventSchema,
+  parseRememberOperations,
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
   AGENT_SIGNED_OUT,
@@ -153,6 +154,7 @@ import {
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
+  type RunnerRememberOperation,
 } from "../runner-protocol";
 
 import { AGENT_SESSION_MAX_BYTES } from "../agent-sessions";
@@ -413,6 +415,24 @@ export function remoteCiRerun(
   };
 }
 
+export function remoteRemember(
+  emit: (event: {
+    type: "remember";
+    requestId: string;
+    operations: readonly RunnerRememberOperation[];
+  }) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): (operations: unknown) => Promise<string> {
+  return async (value) => {
+    const parsed = parseRememberOperations(value);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const requestId = randomUUID();
+    emit({ type: "remember", requestId, operations: parsed.operations });
+    return decodeHostAnswer((await answer(requestId, signal)).answer, "remember");
+  };
+}
+
 function decodeHostAnswer(response: string, what: string): string {
   let decoded: { answer?: unknown; error?: unknown };
   try {
@@ -429,6 +449,7 @@ export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "ci_rerun"; requestId: string; reason: string }
+  | { type: "remember"; requestId: string; operations: readonly RunnerRememberOperation[] }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1488,6 +1509,15 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.ciRerun && options.answer
         ? {
             ciRerun: remoteCiRerun(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
+      ...(command.type === "run" && command.remember && options.answer
+        ? {
+            remember: remoteRemember(
               emit,
               options.answer,
               options.signal ?? new AbortController().signal,

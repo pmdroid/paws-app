@@ -16,6 +16,7 @@ import {
   RunnerPermissionSchema,
   RunnerCommandSchema,
   RunnerEventSchema,
+  RunnerRememberOperationsSchema,
   RunnerResultSchema,
   type RunnerResult,
   type RunnerCommand,
@@ -70,6 +71,12 @@ const ciRerunRequest = z.strictObject({
   reason: z.string().min(1).max(2000),
 });
 
+const rememberRequest = z.strictObject({
+  type: z.literal("remember"),
+  requestId: z.uuid(),
+  operations: RunnerRememberOperationsSchema,
+});
+
 function executionId(now: number): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
@@ -90,7 +97,7 @@ export type TerminalExecution = {
 const TERMINAL_PHASES = ["complete", "interrupted"];
 const payloadRunId = sql<string>`json_extract(${execution.payload},'$.runId')`;
 const payloadGeneration = sql<number>`json_extract(${execution.payload},'$.generation')`;
-const awaitsAnswer = sql`json_extract(${delivery.payload},'$.type') IN ('question','artifact','closeout_policy','ci_rerun')`;
+const awaitsAnswer = sql`json_extract(${delivery.payload},'$.type') IN ('question','artifact','closeout_policy','ci_rerun','remember')`;
 const one = { one: sql`1` };
 
 function rowid(table: SQLiteTable) {
@@ -578,7 +585,11 @@ export function openExecutionJournal(root: string) {
           const artifactRequest = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           const ciRerun = ciRerunRequest.safeParse(raw);
-          if (ciRerun.success) {
+          const remember = rememberRequest.safeParse(raw);
+          if (remember.success) {
+            event = { type: "remember", operations: remember.data.operations };
+            requestId = remember.data.requestId;
+          } else if (ciRerun.success) {
             event = { type: "ci_rerun", reason: ciRerun.data.reason };
             requestId = ciRerun.data.requestId;
           } else if (policy.success) {
@@ -708,7 +719,9 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
-              ["question", "artifact", "closeout_policy", "ci_rerun"].includes(String(raw.type))
+              ["question", "artifact", "closeout_policy", "ci_rerun", "remember"].includes(
+                String(raw.type),
+              )
             )
               throw new Error("Invalid runner question");
             const permission = z
@@ -898,7 +911,7 @@ export function openExecutionJournal(root: string) {
       if (
         !row ||
         row.sent !== 1 ||
-        !["question", "artifact", "closeout_policy", "ci_rerun"].includes(
+        !["question", "artifact", "closeout_policy", "ci_rerun", "remember"].includes(
           RunnerEventSchema.parse(JSON.parse(row.payload)).type,
         )
       )

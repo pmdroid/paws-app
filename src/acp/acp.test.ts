@@ -788,6 +788,39 @@ test("ask_team and publish_artifact share one MCP server", async () => {
   expect(trace.artifact?.ok).toBe(true);
 });
 
+test("remember is offered only when the run options ask for it", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  const run = (remember?: RunAgentOptions["remember"]) =>
+    runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: remember ? "run-remember" : "run-no-remember",
+      prompt: "Work.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      ...(remember ? { remember } : { askTeam: { ask: async () => ({ answer: "yes" }) } }),
+    });
+  const hostTools = async () =>
+    (
+      (await readResult(files.resultPath)).mcpServers[0] as {
+        env: { name: string; value: string }[];
+      }
+    ).env
+      .find((entry) => entry.name === "PAWS_HOST_TOOLS")!
+      .value.split(",");
+  await run();
+  expect(await hostTools()).toContain("ask_team");
+  expect(await hostTools()).not.toContain("remember");
+  await run(async () => "Saved.");
+  expect(await hostTools()).toContain("remember");
+});
+
 test("get_closeout lists the pending check and run_closeout runs it", async () => {
   const layout = await layoutRepo();
   await mkdir(join(layout.worktree, ".agents"), { recursive: true });

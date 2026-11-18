@@ -124,3 +124,9 @@ export {
   type ContextViewSummary,
 } from "./view";
 export { createProjectContextHttp } from "./http";
+export {
+  PROJECT_MEMORY_UNAVAILABLE,
+  REMEMBER_ENTRIES_PER_ITEM,
+  rememberWorkItemContext,
+  type RememberRequest,
+} from "./remember";

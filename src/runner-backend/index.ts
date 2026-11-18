@@ -1648,6 +1648,9 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.ciRerun && input.readOnly !== true
                         ? { ciRerun: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" && input.remember && input.readOnly !== true
+                        ? { remember: true as const }
+                        : {}),
                       ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),
@@ -2072,7 +2075,8 @@ export function createRemoteAgentRunner(options: {
               const answered =
                 (event.type === "artifact" ||
                   event.type === "closeout_policy" ||
-                  event.type === "ci_rerun") &&
+                  event.type === "ci_rerun" ||
+                  event.type === "remember") &&
                 (await results.answered(assigned.runId, assigned.generation, row.sequence)) !==
                   null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
@@ -2114,6 +2118,23 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(rerun),
+                });
+              }
+              if (event.type === "remember" && !answered) {
+                const remembered = input.remember
+                  ? await input.remember(event.operations).then(
+                      (answer) => ({ answer }),
+                      (error: unknown) => ({
+                        error: error instanceof Error ? error.message : String(error),
+                      }),
+                    )
+                  : { error: "remember is unavailable for this run" };
+                signal.throwIfAborted();
+                await results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify(remembered),
                 });
               }
               if (event.type === "artifact" && !answered && event.dropped !== undefined) {

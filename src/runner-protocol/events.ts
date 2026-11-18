@@ -21,6 +21,42 @@ export const RunnerPlanStepSchema = z.strictObject({
   status: z.enum(["pending", "inProgress", "completed", "canceled"]),
 });
 
+export const REMEMBER_LIMITS = { operations: 5, content: 400 } as const;
+
+export const RunnerRememberOperationSchema = z
+  .strictObject({
+    action: z.enum(["add", "patch", "remove"]),
+    kind: z.enum(["fact", "open_question"]),
+    content: z.string().min(1).max(REMEMBER_LIMITS.content).optional(),
+    old_text: z.string().min(1).max(4000).optional(),
+  })
+  .refine((operation) => operation.action === "remove" || operation.content !== undefined, {
+    message: "content is required for add and patch",
+    path: ["content"],
+  })
+  .refine((operation) => operation.action === "add" || operation.old_text !== undefined, {
+    message: "old_text is required for patch and remove",
+    path: ["old_text"],
+  });
+
+export const RunnerRememberOperationsSchema = z
+  .array(RunnerRememberOperationSchema)
+  .min(1)
+  .max(REMEMBER_LIMITS.operations);
+
+export type RunnerRememberOperation = z.infer<typeof RunnerRememberOperationSchema>;
+
+export function parseRememberOperations(
+  value: unknown,
+): { ok: true; operations: RunnerRememberOperation[] } | { ok: false; error: string } {
+  const parsed = RunnerRememberOperationsSchema.safeParse(value);
+  if (parsed.success) return { ok: true, operations: parsed.data };
+  const issues = parsed.error.issues.map(
+    (issue) => `${["operations", ...issue.path].join(".")}: ${issue.message}`,
+  );
+  return { ok: false, error: `Not saved: ${issues.join("; ")}` };
+}
+
 const closeoutText = z.string().max(256);
 const closeoutHead = z.string().regex(/^([a-f0-9]{40}|)$/);
 const closeoutAttempt = {
@@ -190,6 +226,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
       .optional(),
   }),
   z.strictObject({ type: z.literal("ci_rerun"), reason: z.string().min(1).max(2000) }),
+  z.strictObject({ type: z.literal("remember"), operations: RunnerRememberOperationsSchema }),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),
