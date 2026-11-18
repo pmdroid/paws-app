@@ -58,16 +58,22 @@ export function createOpencodeProvider(
       .parse(await get("/api/orgs", value.access_token))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const org = orgs.find((entry) => entry.id === value.org_id) ?? orgs[0];
-    return {
-      access: value.access_token,
-      refresh: value.refresh_token,
-      expiresAt: now() + value.expires_in * 1000,
-      metadata: {
+    return tokens(
+      { ...value, org_id: undefined },
+      {
         server,
         accountID: user.id,
         email: user.email,
         ...(org ? { orgID: org.id, orgName: org.name } : {}),
       },
+    );
+  }
+  function tokens(value: z.infer<typeof granted>, data: OpencodeTokens["metadata"]) {
+    return {
+      access: value.access_token,
+      refresh: value.refresh_token,
+      expiresAt: now() + value.expires_in * 1000,
+      metadata: value.org_id ? { ...data, orgID: value.org_id } : data,
     };
   }
   return {
@@ -124,13 +130,7 @@ export function createOpencodeProvider(
         client_id: CLIENT,
       });
       if (!response.ok) throw new Error("OpenCode token refresh failed");
-      const value = granted.parse(await response.json());
-      return {
-        access: value.access_token,
-        refresh: value.refresh_token,
-        expiresAt: now() + value.expires_in * 1000,
-        metadata: { ...previous.metadata, ...(value.org_id ? { orgID: value.org_id } : {}) },
-      };
+      return tokens(granted.parse(await response.json()), previous.metadata);
     },
     storedTokens(files) {
       const file = files.find((entry) => entry.path === PATH);

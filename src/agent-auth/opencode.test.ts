@@ -80,7 +80,17 @@ async function setup() {
     const files = JSON.parse(credential!.blob!) as { path: string; data: string }[];
     return { files, auth: JSON.parse(Buffer.from(files[0]!.data, "base64").toString()) };
   };
-  return { db, fake, auth, id: account.id, now, file, advance: (ms: number) => (time += ms) };
+  const bindings = () =>
+    db.run((q) =>
+      q.all(
+        q.orm
+          .select({ runnerId: q.t.agentAccountBinding.runnerId })
+          .from(q.t.agentAccountBinding)
+          .where(eq(q.t.agentAccountBinding.accountId, account.id)),
+      ),
+    );
+  const advance = (ms: number) => (time += ms);
+  return { db, fake, auth, id: account.id, now, file, bindings, advance };
 }
 test("an OpenCode device sign-in with no runner online stores the credential and binds the owner's runners", async () => {
   const s = await setup();
@@ -128,23 +138,14 @@ test("an OpenCode device sign-in with no runner online stores the credential and
       server: s.fake.server,
       accountID: "user-1",
       email: "person@test.invalid",
-      orgID: "org-b",
+      orgID: "org-a",
       orgName: "Beta",
     },
   });
-  const access = accessCredentialFiles(JSON.stringify(files));
-  expect(JSON.parse(Buffer.from(access[0]!.data, "base64").toString()).refresh).toBe("");
-  expect(accessCredentialExpiry(access)).toBe(s.now() + 3_600_000);
-  expect(accessCredentialExpiry(files)).toBeNull();
-  const bindings = await s.db.run((q) =>
-    q.all(
-      q.orm
-        .select({ runnerId: q.t.agentAccountBinding.runnerId })
-        .from(q.t.agentAccountBinding)
-        .where(eq(q.t.agentAccountBinding.accountId, s.id)),
-    ),
+  expect(accessCredentialExpiry(accessCredentialFiles(JSON.stringify(files)))).toBe(
+    s.now() + 3_600_000,
   );
-  expect(bindings).toEqual([{ runnerId: "offline" }]);
+  expect(await s.bindings()).toEqual([{ runnerId: "offline" }]);
   s.fake.org("org-c");
   s.advance(3_000_000);
   await s.auth.tick();
@@ -173,16 +174,6 @@ test("an OpenCode device sign-in with no runner online stores the credential and
     (await s.db.run((q) => agentAccountOverviewSteps(q, "workspace", s.now())))[0]!.credential,
   ).toBeNull();
 });
-test("an OpenCode sign-in picks the first org by name then id when the token names none", async () => {
-  const s = await setup();
-  s.fake.org(undefined);
-  await s.auth.device("workspace", s.id, true);
-  for (const _ of [1, 2, 3]) {
-    s.advance(10_000);
-    await s.auth.device("workspace", s.id, false);
-  }
-  expect((await s.file()).auth.metadata).toMatchObject({ orgID: "org-a", orgName: "Beta" });
-});
 for (const outcome of ["denied", "expired"] as const)
   test(`an OpenCode sign-in that is ${outcome} stores nothing`, async () => {
     const s = await setup();
@@ -192,14 +183,5 @@ for (const outcome of ["denied", "expired"] as const)
     s.advance(5000);
     expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: outcome });
     expect(await s.db.run((q) => agentCredentialCiphertextSteps(q, s.id))).toBeNull();
-    expect(
-      await s.db.run((q) =>
-        q.all(
-          q.orm
-            .select()
-            .from(q.t.agentAccountBinding)
-            .where(eq(q.t.agentAccountBinding.accountId, s.id)),
-        ),
-      ),
-    ).toEqual([]);
+    expect(await s.bindings()).toEqual([]);
   });

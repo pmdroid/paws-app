@@ -48,7 +48,7 @@ export function fakeOpencodeConsole() {
   let final = "approved";
   let generation = 0;
   let refreshToken = "";
-  let orgId: string | undefined = "org-b";
+  let orgId: string | undefined;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -66,19 +66,19 @@ export function fakeOpencodeConsole() {
           expires_in: 600,
           interval: 5,
         });
-      const bearer = authorization === "Bearer access-secret-" + generation;
+      if (
+        path.startsWith("/console/api/") &&
+        authorization !== "Bearer access-secret-" + generation
+      )
+        return new Response(null, { status: 401 });
       if (path === "/console/api/user")
-        return bearer
-          ? Response.json({ id: "user-1", email: "person@test.invalid" })
-          : new Response(null, { status: 401 });
+        return Response.json({ id: "user-1", email: "person@test.invalid" });
       if (path === "/console/api/orgs")
-        return bearer
-          ? Response.json([
-              { id: "org-c", name: "Zeta" },
-              { id: "org-b", name: "Beta" },
-              { id: "org-a", name: "Beta" },
-            ])
-          : new Response(null, { status: 401 });
+        return Response.json([
+          { id: "org-c", name: "Zeta" },
+          { id: "org-b", name: "Beta" },
+          { id: "org-a", name: "Beta" },
+        ]);
       if (body.grant_type === "refresh_token" && body.refresh_token !== refreshToken)
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       if (body.grant_type !== "refresh_token") {
