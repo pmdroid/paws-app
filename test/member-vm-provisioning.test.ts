@@ -13,10 +13,7 @@ import {
   PINNED_TAILSCALE,
 } from "../src/provisioning";
 
-const INSTALLER = readFileSync(
-  new URL("../deploy/linux/install.sh", import.meta.url),
-  "utf8",
-);
+const INSTALLER = readFileSync(new URL("../deploy/linux/install.sh", import.meta.url), "utf8");
 const VM = "ada-paws";
 
 function source(overrides: Partial<MemberVmProvisioningSource> = {}) {

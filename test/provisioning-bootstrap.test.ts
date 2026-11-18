@@ -627,9 +627,7 @@ test("the staged files land with the right modes and the commands are valid shel
   expect(readFileSync(join(vm.stage, "run.sh"), "utf8")).toBe(vm.local(RUN_SCRIPT));
   expect(readFileSync(join(vm.stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
   expect(vm.modes()).toBe(
-    ["0700 <stage>/install.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join(
-      "\n",
-    ),
+    ["0700 <stage>/install.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join("\n"),
   );
   for (const script of [
     RUN_SCRIPT,

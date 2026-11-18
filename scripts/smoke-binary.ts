@@ -1,10 +1,7 @@
 import { mkdtempSync, copyFileSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-const installer = readFileSync(
-  resolve(import.meta.dir, "../deploy/linux/install.sh"),
-  "utf8",
-);
+const installer = readFileSync(resolve(import.meta.dir, "../deploy/linux/install.sh"), "utf8");
 const dir = mkdtempSync(join(tmpdir(), "paws-binary-"));
 const binary = join(dir, "paws");
 copyFileSync(resolve(process.argv[2] ?? "dist/paws-x64"), binary);
