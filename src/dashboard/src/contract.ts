@@ -277,6 +277,15 @@ export interface StatusQueuePosition {
   totalSlots: number;
   /** Set while the task waits on its owner's cap of running tasks. */
   ownerCap?: number;
+  waitingFor?: StatusQueueWaitingFor;
+}
+
+const QUEUE_WAITING_KINDS = ["slots", "quota", "runner"] as const;
+
+export interface StatusQueueWaitingFor {
+  kind: (typeof QUEUE_WAITING_KINDS)[number];
+  text: string;
+  until?: number;
 }
 
 export const HELD_REASONS = [
@@ -1919,6 +1928,18 @@ function readQueue(input: unknown, path: string): StatusQueuePosition {
     busySlots: count(body, "busySlots", path),
     totalSlots: positiveInteger(body, "totalSlots", path),
     ...(body.ownerCap === undefined ? {} : { ownerCap: positiveInteger(body, "ownerCap", path) }),
+    ...(body.waitingFor === undefined
+      ? {}
+      : { waitingFor: readQueueWaitingFor(body.waitingFor, `${path}.waitingFor`) }),
+  };
+}
+
+function readQueueWaitingFor(input: unknown, path: string): StatusQueueWaitingFor {
+  const body = object(input, path);
+  return {
+    kind: oneOf(string(body, "kind", path), QUEUE_WAITING_KINDS, `${path}.kind`),
+    text: text(body, "text", path),
+    ...(body.until === undefined ? {} : { until: count(body, "until", path) }),
   };
 }
 

@@ -5,6 +5,13 @@ export type ItemRunnerVerdict = {
   name: string;
   rejection: string | null;
   hostConfig: "repository" | "sign-in" | null;
+  cooldown?: { account: string; until: number | null };
+};
+
+export type QueueWaitingFor = {
+  kind: "slots" | "quota" | "runner";
+  text: string;
+  until?: number;
 };
 
 export type ItemRunnerVerdicts = {

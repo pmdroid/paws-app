@@ -1,6 +1,8 @@
 import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PINNED_ELSEWHERE, PlacementUnavailableError } from "./placement";
 import {
+  bindingAccountHealthSteps,
+  getAgentAccountSteps,
   getRunnerSteps,
   runnerHostVersionSteps,
   getWorkItemRepositorySteps,
@@ -26,7 +28,13 @@ import {
 } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
-type AccountRefusal = { reason: string; until?: number; refusals?: AccountRefusal[] };
+type AccountRefusal = {
+  reason: string;
+  until?: number;
+  account?: string;
+  resetsAt?: number | null;
+  refusals?: AccountRefusal[];
+};
 type AccountFit = { account: PlacementAccount; low: boolean };
 type SignInRunner = Pick<EligibleRunner, "id">;
 type SignInInput = {
@@ -103,6 +111,15 @@ export function* signInFitSteps(
           ? "account at its concurrency limit"
           : BINDING_REASON_TEXT[readiness.reason],
       ...(readiness.until !== null ? { until: readiness.until } : {}),
+      ...(readiness.reason === "exhausted"
+        ? {
+            account: (yield* getAgentAccountSteps(q, workspaceId, binding.accountId)).label,
+            resetsAt:
+              (yield* bindingAccountHealthSteps(q, binding.id, input.model)).find(
+                (row) => row.state === "exhausted",
+              )?.resetsAt ?? null,
+          }
+        : {}),
     });
   }
   const first =
@@ -162,7 +179,24 @@ function* runnerVerdictsSteps(
       purpose: "work",
       at: input.now,
     });
-    runners.push(verdict("reason" in fit ? fit.reason : null, null));
+    if (!("reason" in fit)) {
+      runners.push(verdict(null, null));
+      continue;
+    }
+    const cooling = (fit.refusals ?? [fit])
+      .filter((refusal) => refusal.reason === BINDING_REASON_TEXT.exhausted)
+      .sort((a, b) => (a.resetsAt ?? Infinity) - (b.resetsAt ?? Infinity))[0];
+    runners.push({
+      ...verdict(fit.reason, null),
+      ...(fit.reason === BINDING_REASON_TEXT.exhausted && cooling
+        ? {
+            cooldown: {
+              account: cooling.account ?? "an agent account",
+              until: cooling.resetsAt ?? null,
+            },
+          }
+        : {}),
+    });
   }
   return { repository, runners };
 }

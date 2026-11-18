@@ -1,5 +1,6 @@
 import { and, asc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Q, Steps } from "./db";
+import type { QueueWaitingFor } from "./runner-verdicts";
 
 export function queueWaitSince(
   db: Db,
@@ -47,6 +48,7 @@ export type QueuePosition = {
   busySlots: number;
   totalSlots: number;
   ownerCap: number | null;
+  waitingFor: QueueWaitingFor | null;
 };
 
 /** Replace the waiting line. The scheduler writes it after every admission pass. */
@@ -56,8 +58,11 @@ export function saveQueuePositions(
   slots: { busy: number; total: number } | null,
   now: number,
   ownerCaps: ReadonlyMap<string, number> = new Map(),
+  waitingFor: ReadonlyMap<string, QueueWaitingFor> = new Map(),
 ): Promise<void> {
-  return db.transaction((q) => saveQueuePositionsSteps(q, waiting, slots, now, ownerCaps));
+  return db.transaction((q) =>
+    saveQueuePositionsSteps(q, waiting, slots, now, ownerCaps, waitingFor),
+  );
 }
 
 export function* saveQueuePositionsSteps(
@@ -66,6 +71,7 @@ export function* saveQueuePositionsSteps(
   slots: { busy: number; total: number } | null,
   now: number,
   ownerCaps: ReadonlyMap<string, number> = new Map(),
+  waitingFor: ReadonlyMap<string, QueueWaitingFor> = new Map(),
 ): Steps<void> {
   const rows =
     slots === null
@@ -76,6 +82,7 @@ export function* saveQueuePositionsSteps(
           busySlots: slots.busy,
           totalSlots: slots.total,
           ownerCap: ownerCaps.get(itemId) ?? null,
+          waitingFor: waitingFor.get(itemId) ?? null,
           updatedAt: now,
         }));
   yield* q.exec(
@@ -87,9 +94,9 @@ export function* saveQueuePositionsSteps(
   if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
 }
 
-function* listSteps(q: Q) {
+function* listSteps(q: Q): Steps<QueuePosition[]> {
   const { queuePosition } = q.t;
-  return yield* q.all(
+  const rows = yield* q.all(
     q.orm
       .select({
         itemId: queuePosition.itemId,
@@ -97,10 +104,12 @@ function* listSteps(q: Q) {
         busySlots: queuePosition.busySlots,
         totalSlots: queuePosition.totalSlots,
         ownerCap: queuePosition.ownerCap,
+        waitingFor: queuePosition.waitingFor,
       })
       .from(queuePosition)
       .orderBy(asc(queuePosition.position)),
   );
+  return rows.map((row) => ({ ...row, waitingFor: row.waitingFor as QueueWaitingFor | null }));
 }
 
 export function listQueuePositions(db: Db): Promise<QueuePosition[]> {

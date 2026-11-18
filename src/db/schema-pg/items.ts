@@ -184,6 +184,7 @@ export const queuePosition = pgTable(
     totalSlots: bigint("total_slots", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
     ownerCap: bigint("owner_cap", { mode: "number" }),
+    waitingFor: jsonb("waiting_for"),
   },
   () => [
     check("queue_position_check_1", sql`position >= 1`),

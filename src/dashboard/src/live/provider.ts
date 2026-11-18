@@ -1463,6 +1463,7 @@ export function queueOf(
       busySlots: waiting.busySlots,
       totalSlots: waiting.totalSlots,
       ...(waiting.ownerCap === null ? {} : { ownerCap: waiting.ownerCap }),
+      ...(waiting.waitingFor === null ? {} : { waitingFor: waiting.waitingFor }),
     },
   };
 }

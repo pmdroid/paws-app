@@ -27,6 +27,7 @@ import {
 } from "../src/project-context";
 import { tempHome } from "./helpers";
 import { sqlRun, tempStore } from "./pglite";
+import journal from "../src/db/drizzle-pg/meta/_journal.json";
 
 const T0 = Date.parse("2026-11-17T12:00:00Z");
 const MINUTE = 60_000;
@@ -339,10 +340,12 @@ test("a populated database from before entry forgetting migrates, and a forget s
     entries: ENTRIES,
     now: T0,
   });
+  const forgetting = journal.entries.find((entry) => entry.tag === "0008_context_forgotten_entry")!;
   await sqlRun(opened.store, "DROP TABLE context_forgotten_entry");
+  await sqlRun(opened.store, "ALTER TABLE queue_position DROP COLUMN waiting_for");
   await sqlRun(
     opened.store,
-    "DELETE FROM drizzle.__drizzle_migrations WHERE id = (SELECT max(id) FROM drizzle.__drizzle_migrations)",
+    `DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= ${forgetting.when}`,
   );
   await opened.close();
 

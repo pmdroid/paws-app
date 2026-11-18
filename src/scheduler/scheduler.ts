@@ -4,6 +4,7 @@ import {
   JOB_KIND,
   holdsExecution,
   isTerminalWorkItemState,
+  queueLine,
   type RepositoryBinding,
   type WorkBrief,
 } from "../core";
@@ -47,6 +48,7 @@ import {
   RUNNER_FULL,
   type ItemHold,
   type ItemRunnerVerdicts,
+  type QueueWaitingFor,
   type RunnerHostRefusal,
   type PinnedSlot,
   type JobLoop,
@@ -90,6 +92,11 @@ export type SchedulerOptions = {
   onRunnerSetup?: (itemIds: readonly string[]) => void | Promise<void>;
   onWaits?: (waits: readonly ItemWait[]) => unknown;
   itemRunners?: (q: Q, itemId: string) => Steps<ItemRunnerVerdicts | null>;
+  waitingFor?: (
+    verdicts: ItemRunnerVerdicts | null,
+    open: boolean,
+    slots: string,
+  ) => QueueWaitingFor;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
   /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
@@ -840,13 +847,33 @@ async function admit(
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
     ].map(({ item }) => item.id);
+    const busy = slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null;
+    const waitingFor = new Map<string, QueueWaitingFor>();
+    if (busy && options.itemRunners && options.waitingFor)
+      for (const [index, itemId] of line.entries()) {
+        if (waiting.find(({ item }) => item.id === itemId)?.capped) continue;
+        const slotText = queueLine({
+          position: index + 1,
+          busySlots: busy.busy,
+          totalSlots: busy.total,
+        });
+        waitingFor.set(
+          itemId,
+          options.waitingFor(
+            yield* verdictsFor(itemId),
+            (yield* openRunner(itemId)) !== null,
+            slotText,
+          ),
+        );
+      }
     yield* q.transaction((tx) =>
       saveQueuePositionsSteps(
         tx,
         line,
-        slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
+        busy,
         now,
         new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+        waitingFor,
       ),
     );
     const holds: ItemHold[] = [];

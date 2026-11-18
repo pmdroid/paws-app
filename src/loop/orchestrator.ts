@@ -7,6 +7,7 @@ import {
   readSessionDone,
   saveCandidateRiskSteps,
 } from "../db";
+import { queueWaitingFor } from "./queue-waiting-for";
 import {
   bindWorkItemRepositorySteps,
   listRepositoryCandidates,
@@ -8085,6 +8086,7 @@ export class Orchestrator {
         ? {
             itemRunners: (q: Q, itemId: string) =>
               this.itemRunnersSteps(q, itemId, itemRunners, config),
+            waitingFor: queueWaitingFor,
           }
         : {}),
       ...(ownerHasRunner && config
@@ -8363,16 +8365,19 @@ export class Orchestrator {
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
       const position = await getQueuePosition(this.store, item.id);
+      const reason = position?.waitingFor?.kind === "slots" ? null : (position?.waitingFor ?? null);
       await this.store.transaction((q) =>
         enqueueOutboxOnceSteps(q, {
           target: OUTBOX_ACTIVITY.target,
           op: OUTBOX_ACTIVITY.op,
           orderingKey: sessionId,
-          idempotencyKey: `queued:${item.id}:${item.version}`,
+          idempotencyKey: `queued:${item.id}:${item.version}${reason ? `:${reason.kind}:${reason.text}` : ""}`,
           payload: {
             sessionId,
             kind: "thought",
-            body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
+            body: reason
+              ? `Queued. ${reason.text}. Paws starts ${name} once a runner can take it.`
+              : `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
           },
           now,
         }),
