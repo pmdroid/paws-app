@@ -491,7 +491,7 @@ test("a rejected API key shows the server's message and keeps the field", async 
 });
 
 test("the API key placeholder names each agent's provider", () => {
-  for (const [agent, provider] of [
+  for (const [kind, provider] of [
     ["claude", "Anthropic"],
     ["codex", "OpenAI"],
     ["grok", "xAI"],
@@ -500,7 +500,7 @@ test("the API key placeholder names each agent's provider", () => {
     expect(
       renderAgentAccountSettings({
         canManage: true,
-        accounts: [{ ...account("A1", "Work"), agent }],
+        accounts: [{ ...account("A1", "Work"), agent: kind }],
         runners: {},
         busy: null,
         error: null,
