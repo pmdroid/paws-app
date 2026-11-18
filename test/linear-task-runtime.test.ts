@@ -27,6 +27,7 @@ import {
   type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import type { ProjectSessionContext } from "../src/project-context";
 import { elicitationBody, findOpenQuestion, getQuestion } from "../src/questions";
 import { answerPg as answerAsked } from "./questions";
 import { seed } from "./pglite-fixtures";
@@ -73,6 +74,7 @@ async function setup(
   hangResponse = false,
   toolUpdates: readonly SessionUpdate[] = [],
   responseSteps: readonly FakeStep[] = [],
+  projectContext?: ProjectSessionContext,
 ) {
   const opened = database === undefined ? await tempStore() : null;
   const db = database ?? opened!.db;
@@ -208,6 +210,7 @@ async function setup(
     tracker,
     launch,
     linearTaskModes: true,
+    ...(projectContext ? { projectContext } : {}),
     files,
     secretsDir: join(root, "secrets"),
   });
@@ -260,6 +263,54 @@ test("a parent discussion classifies before fanout and completes without Git, is
     expect(f.launches).toEqual(["classify", "answer"]);
     expect((await getWorkItem(f.db, item.id))?.state).toBe("completed");
     expect(await countRows(f.db, "workItem")).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an answer turn on a project item gets neither remember nor the project memory note", async () => {
+  const prepared: string[] = [];
+  const projectContext: ProjectSessionContext = {
+    async prepare(input) {
+      prepared.push(input.projectId);
+      return { status: "injected", text: "Project facts.", recent: "", version: 1, manifest: null };
+    },
+    recordDecision: async () => "outside_project",
+    remember: async () => "Saved.",
+  };
+  const f = await setup(
+    "answer",
+    undefined,
+    false,
+    "ok",
+    undefined,
+    undefined,
+    false,
+    false,
+    [],
+    [],
+    projectContext,
+  );
+  f.tracker.mergeContexts.set("parent", { projectId: "project-1", labels: [] });
+  try {
+    const created = event();
+    await f.orchestrator.onLinearEvent({
+      ...created,
+      payload: JSON.stringify({ ...JSON.parse(created.payload), organizationId: "org" }),
+    });
+    await f.jobs.tick();
+    expect(f.launches).toEqual(["classify", "answer"]);
+    expect(prepared).toContain("project-1");
+    const trace = JSON.parse(readFileSync(f.traces[1]!, "utf8")) as {
+      mcpServers: { env: { name: string; value: string }[] }[];
+      prompts: unknown[];
+    };
+    const prompt = JSON.stringify(trace.prompts);
+    expect(prompt).toContain("Project facts.");
+    expect(prompt).not.toContain("Project memory:");
+    const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
+    expect(tools.value.split(",")).toContain("ask_team");
+    expect(tools.value.split(",")).not.toContain("remember");
   } finally {
     await f.close();
   }

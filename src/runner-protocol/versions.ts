@@ -5,5 +5,5 @@
  */
 export type RunnerVersion = readonly [major: number, minor: number, patch: number];
 
-export const MINIMUM_RUNNER_VERSION: RunnerVersion = [0, 1, 84];
+export const MINIMUM_RUNNER_VERSION: RunnerVersion = [0, 1, 90];
 export const REVIEW_COMMAND_OAUTH_RUNNER_VERSION: RunnerVersion = [0, 1, 88];

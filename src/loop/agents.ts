@@ -64,6 +64,7 @@ export type AcpAgentDeps = {
   home?: string;
   launch: AgentLaunch;
   brief?: string;
+  fixBrief?: string;
   signal?: AbortSignal;
   onCleanupFailure?: () => void | Promise<void>;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
@@ -359,7 +360,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   return {
     async applyFix(request): Promise<FixResult> {
       const profiles = await deps.profiles?.();
-      const prompt = fixPrompt(request, deps.brief);
+      const prompt = fixPrompt(request, deps.fixBrief ?? deps.brief);
       const launch = deps.launch({
         role: "implementer",
         profile: profiles?.implementer,
