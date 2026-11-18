@@ -205,58 +205,31 @@ describe("config", () => {
   test("missing config.toml defaults the implementer to claude", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(loadConfigFile(paths.configFile).agents).toEqual({
-      implementer: "claude",
-      grok: { path: null, allowApiKey: false },
-    });
+    expect(loadConfigFile(paths.configFile).agents).toEqual({ implementer: "claude" });
   });
 
-  test("parses agents.implementer and grok settings", () => {
+  test("parses agents.implementer", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeFileSync(
       paths.configFile,
-      [
-        'repo = "pmdroid/paws-demo"',
-        "",
-        "[agents]",
-        'implementer = "grok"',
-        "",
-        "[agents.grok]",
-        'path = "/opt/grok"',
-        "allow_api_key = true",
-        "",
-      ].join("\n"),
+      ['repo = "pmdroid/paws-demo"', "", "[agents]", 'implementer = "grok"', ""].join("\n"),
     );
     const parsed = loadConfigFile(paths.configFile);
     expect(parsed.repo).toBe("pmdroid/paws-demo");
-    expect(parsed.agents).toEqual({
-      implementer: "grok",
-      grok: { path: "/opt/grok", allowApiKey: true },
-    });
+    expect(parsed.agents).toEqual({ implementer: "grok" });
     writeFileSync(paths.configFile, '[agents]\nimplementer = "gpt"\n');
     expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
   });
 
-  test("parses agents.opencode path", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    writeFileSync(
-      paths.configFile,
-      [
-        "[agents]",
-        'implementer = "opencode"',
-        "",
-        "[agents.opencode]",
-        'path = "/opt/opencode"',
-        "",
-      ].join("\n"),
+  test("agents.grok and agents.opencode are unknown sections", () => {
+    expect(() =>
+      parseConfigToml('[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = "/opt/grok"\n'),
+    ).toThrow("config.toml line 4 has an unknown section: agents.grok");
+    expect(() => parseConfigToml('[agents.opencode]\npath = "/opt/opencode"\n')).toThrow(
+      "config.toml line 1 has an unknown section: agents.opencode",
     );
-    const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.agents.implementer).toBe("opencode");
-    expect(parsed.agents.opencode).toEqual({ path: "/opt/opencode" });
   });
 
   test("old configs without github.auth or tracker load as the App and linear", () => {

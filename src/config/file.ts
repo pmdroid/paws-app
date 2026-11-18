@@ -33,27 +33,13 @@ export const IMPLEMENTERS = ["claude", "grok", "codex", "opencode"] as const;
 
 export type ImplementerName = (typeof IMPLEMENTERS)[number];
 
-export type GrokConfig = {
-  /** Set only to use a PATH or absolute `grok`. Otherwise Paws uses the pinned package. */
-  path: string | null;
-  allowApiKey: boolean;
-};
-
-export type OpencodeConfig = {
-  path: string | null;
-};
-
 export type AgentsConfig = {
   implementer: ImplementerName;
-  grok: GrokConfig;
-
-  opencode?: OpencodeConfig;
 };
 
 export function defaultAgents(): AgentsConfig {
   return {
     implementer: "claude",
-    grok: { path: null, allowApiKey: false },
   };
 }
 
@@ -157,7 +143,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
         !/^(linear|github|github_access|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments)$/.test(
           section,
         ) &&
-        !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
+        !/^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) &&
+        !/^agents\.(defaults|projects|presets)(\.|$)/.test(section) &&
         section !== "time_limits" &&
         section !== "skills"
       )
@@ -475,15 +462,6 @@ function assignConfig(
   }
   if (section === "agents") {
     if (key === "implementer") config.agents.implementer = implementerName(value, line);
-    return;
-  }
-  if (section === "agents.grok") {
-    if (key === "path") config.agents.grok.path = asString(value, line);
-    else if (key === "allow_api_key") config.agents.grok.allowApiKey = asBoolean(value, line);
-    return;
-  }
-  if (section === "agents.opencode") {
-    if (key === "path") (config.agents.opencode ??= { path: null }).path = asString(value, line);
     return;
   }
   if (section === "" || section === "server") {

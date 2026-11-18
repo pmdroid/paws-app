@@ -37,8 +37,6 @@ const settings: AgentSettings = {
   },
 };
 
-const NO_COMMANDS = { grok: { path: null, allowApiKey: false }, opencode: { path: null } };
-
 function request(
   path = "/api/settings/agents",
   method = "GET",
@@ -53,11 +51,11 @@ function request(
 }
 
 describe("local agent settings API", () => {
-  test("GET returns the global profiles and agent commands without projects", async () => {
+  test("GET returns the global profiles without projects", async () => {
     const { options } = fixture();
     writeFileSync(
       options.configPath,
-      '[github]\nrepo = "pmdroid/other"\nrepos = ["pmdroid/library", "pmdroid/other"]\n[agents.grok]\npath = "/secret/bin"\n',
+      '[github]\nrepo = "pmdroid/other"\nrepos = ["pmdroid/library", "pmdroid/other"]\n',
     );
     const response = await handleAgentSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
@@ -68,8 +66,6 @@ describe("local agent settings API", () => {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "codex", model: null },
       },
-      grok: { path: "/secret/bin", allowApiKey: false },
-      opencode: { path: null },
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -172,7 +168,6 @@ describe("local agent settings API", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       ...settings,
-      ...NO_COMMANDS,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -506,7 +501,6 @@ describe("reviewer profile validation", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       ...settings,
-      ...NO_COMMANDS,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),

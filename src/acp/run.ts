@@ -38,7 +38,6 @@ import {
   rejectAutoApprove,
   resolveAdapter,
   selectGrokAuthMethod,
-  xaiApiKeyPresent,
   type AgentRole,
 } from "./adapters";
 import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
@@ -69,8 +68,6 @@ export interface CheckOwnLoginOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Pass `XAI_API_KEY` through when config allows it. The value is not read here. */
-  allowXaiApiKey?: boolean;
 }
 
 /**
@@ -81,11 +78,7 @@ export async function checkOwnLogin(options: CheckOwnLoginOptions): Promise<Auth
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, options.env);
-  const child = spawnAgent(
-    adapter.command,
-    adapter.args,
-    minimalAgentEnv(options.env, { allowXaiApiKey: options.allowXaiApiKey }),
-  );
+  const child = spawnAgent(adapter.command, adapter.args, minimalAgentEnv(options.env));
   const stderr = captureStderr(child);
   try {
     return await withConnection(child, async (ctx) => {
@@ -233,7 +226,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     adapter.command,
     adapter.args,
     {
-      ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+      ...minimalAgentEnv(sourceEnv),
       ...(profile.agent === "claude" && sourceEnv.HOME ? claudeAgentEnv(sourceEnv.HOME) : {}),
       ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
       ...attributionEnv,
@@ -467,10 +460,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         await emit({ type: "auth_checked", role: options.role, auth });
         assertRunning();
         if (grok) {
-          const methodId = selectGrokAuthMethod(auth.authMethods, {
-            apiKeyPresent: xaiApiKeyPresent(sourceEnv),
-            allowApiKey: agents.grok.allowApiKey,
-          });
+          const methodId = selectGrokAuthMethod(auth.authMethods);
           if (methodId === null) {
             await emit({ type: "error", message: GROK_LOGIN_MESSAGE });
             return baseResult(options.role, child, {

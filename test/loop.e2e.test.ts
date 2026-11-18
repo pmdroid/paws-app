@@ -1632,10 +1632,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
   const layout = await repoLayout("paws-e2e-");
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");
-  await writeFile(
-    path.join(layout.pawsRoot, "config.toml"),
-    `[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = ${JSON.stringify(wrapper)}\nallow_api_key = false\n`,
-  );
+  await writeFile(path.join(layout.pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -1689,7 +1686,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     if (input.role === "reviewer") {
       return { command: process.execPath, args: [fakeAgent, resultPath, scriptPath], env };
     }
-    return { env };
+    return { command: wrapper, args: [...GROK_AGENT_ARGS], env };
   };
   const orchestrator = attachOrchestrator({
     store: db,

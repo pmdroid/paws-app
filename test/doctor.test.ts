@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
-import type { AgentsConfig } from "../src/config";
 import { emptyConfigFile } from "../src/config";
 import {
   appEventsFact,
@@ -387,12 +386,7 @@ test("doctor is green with no claude when the implementer is grok", async () => 
     scriptPath,
     JSON.stringify({ authMethods: [{ id: "cached_token", name: "Cached login" }], steps: [] }),
   );
-  const agents: AgentsConfig = {
-    implementer: "grok",
-    grok: { path: null, allowApiKey: false },
-  };
   const status = await grokLoginStatus({
-    agents,
     command: process.execPath,
     args: [fakeAgent, resultPath, scriptPath, ...GROK_AGENT_ARGS],
     env: {
@@ -417,7 +411,7 @@ test("doctor is green with no claude when the implementer is grok", async () => 
         claudeLogin: { ok: false, detail: "claude is not installed" },
       },
     },
-    { config: { agents }, grok: status },
+    { config: { agents: { implementer: "grok" } }, grok: status },
   );
   expect(checks.every((item) => item.ok)).toBe(true);
   const text = formatDoctor(checks);
@@ -568,12 +562,7 @@ test("doctor fails with one actionable line when grok has no auth method", async
   const scriptPath = join(root, "script.json");
   const resultPath = join(root, "result.json");
   writeFileSync(scriptPath, JSON.stringify({ authMethods: [], steps: [{ type: "hang" }] }));
-  const agents: AgentsConfig = {
-    implementer: "grok",
-    grok: { path: null, allowApiKey: false },
-  };
   const status = await grokLoginStatus({
-    agents,
     command: process.execPath,
     args: [fakeAgent, resultPath, scriptPath, ...GROK_AGENT_ARGS],
     env: {
@@ -584,7 +573,7 @@ test("doctor fails with one actionable line when grok has no auth method", async
   expect(status.loggedIn).toBe(false);
   expect(status.detail).toBe(GROK_LOGIN_MESSAGE);
   const checks = doctorChecks(probe(true), {
-    config: { agents },
+    config: { agents: { implementer: "grok" } },
     grok: status,
   });
   const missing = formatDoctor(checks)

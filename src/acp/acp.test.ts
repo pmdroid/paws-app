@@ -51,12 +51,6 @@ test("minimal env drops tokens and cloud keys and keeps HOME", () => {
   expect(env.OPENAI_API_KEY).toBeUndefined();
   expect(env.XAI_API_KEY).toBeUndefined();
   for (const name of Object.keys(env)) expect(name.startsWith("PAWS_S3_")).toBe(false);
-  const allowed = minimalAgentEnv(
-    { HOME: "/home/dev", XAI_API_KEY: "xai-secret", GH_TOKEN: "gh" },
-    { allowXaiApiKey: true },
-  );
-  expect(allowed.XAI_API_KEY).toBe("xai-secret");
-  expect(allowed.GH_TOKEN).toBeUndefined();
 });
 
 test("initialize reports auth methods and does not call authenticate", async () => {
@@ -1461,7 +1455,7 @@ test("follow-up interrupts initialization without waiting for an agent response"
 
 test("grok authenticates with cached_token, scrubs the key, and denies a path outside the worktree", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot, false);
+  await writeGrokConfig(layout.pawsRoot);
   const outside = join(layout.home, ".ssh", "id_rsa");
   const script: FakeScript = {
     authMethods: [{ id: "cached_token", name: "Cached login" }],
@@ -1526,9 +1520,9 @@ test("grok authenticates with cached_token, scrubs the key, and denies a path ou
   expect(trace.argv?.join(" ")).not.toContain("always-approve");
 });
 
-test("grok passes XAI_API_KEY only when allow_api_key is set and authenticates with that method", async () => {
+test("grok never receives XAI_API_KEY and signs in with its cached login when an API key method is offered", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot, true);
+  await writeGrokConfig(layout.pawsRoot);
   const script: FakeScript = {
     authMethods: [
       { id: "cached_token", name: "Cached login" },
@@ -1549,7 +1543,7 @@ test("grok passes XAI_API_KEY only when allow_api_key is set and authenticates w
     args: fakeAgentArgs(files),
     env: {
       ...agentEnv(),
-      XAI_API_KEY: "xai-allowed",
+      XAI_API_KEY: "xai-not-passed",
       GH_TOKEN: "gh-no",
     },
     checkpoint: false,
@@ -1557,16 +1551,16 @@ test("grok passes XAI_API_KEY only when allow_api_key is set and authenticates w
   });
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
-  expect(trace.authenticate).toEqual({ methodId: "xai.api_key" });
-  expect(trace.env?.xaiApiKey).toBe(true);
+  expect(trace.authenticate).toEqual({ methodId: "cached_token" });
+  expect(trace.env?.xaiApiKey).toBe(false);
   expect(trace.env?.ghToken).toBe(false);
-  expect(JSON.stringify(trace)).not.toContain("xai-allowed");
+  expect(JSON.stringify(trace)).not.toContain("xai-not-passed");
   expect(JSON.stringify(trace)).not.toContain("gh-no");
 });
 
 test("grok with no auth method posts the login line and does not hang", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot, false);
+  await writeGrokConfig(layout.pawsRoot);
   const events: AcpEvent[] = [];
   const script: FakeScript = { authMethods: [], steps: [{ type: "hang" }] };
   const files = await writeScript(layout.root, script);
@@ -1599,7 +1593,7 @@ test("grok with no auth method posts the login line and does not hang", async ()
 
 test("grok is not spawned with --yolo", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot, false);
+  await writeGrokConfig(layout.pawsRoot);
   await expect(
     runAgent({
       role: "implementer",
@@ -1618,7 +1612,7 @@ test("grok is not spawned with --yolo", async () => {
 
 test("cancel still stops a grok session", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot, false);
+  await writeGrokConfig(layout.pawsRoot);
   const script: FakeScript = {
     authMethods: [{ id: "cached_token", name: "Cached login" }],
     steps: [{ type: "hang" }],
@@ -2509,11 +2503,8 @@ test("a read-only session does not install a closeout stop hook", async () => {
   await expect(lstat(script)).rejects.toThrow();
 });
 
-async function writeGrokConfig(pawsRoot: string, allowApiKey: boolean): Promise<void> {
-  await writeFile(
-    join(pawsRoot, "config.toml"),
-    `[agents]\nimplementer = "grok"\n\n[agents.grok]\nallow_api_key = ${allowApiKey}\n`,
-  );
+async function writeGrokConfig(pawsRoot: string): Promise<void> {
+  await writeFile(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
 }
 
 async function writeScript(

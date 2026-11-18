@@ -18,7 +18,6 @@ export {
   resolveGrokCommand,
   resolveOpencodeCommand,
   selectGrokAuthMethod,
-  xaiApiKeyPresent,
   type AdapterCommand,
   type AdapterPin,
   type AdapterVersions,

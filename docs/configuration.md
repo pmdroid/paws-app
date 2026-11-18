@@ -13,7 +13,7 @@ Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
 
 Run it again to change a value: each prompt shows the current value as its default, and other env lines and `config.toml` keys stay as they are. Type `-` to clear an optional value. It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
-`bun run paws install secrets` asks for the GitHub App, the Linear OAuth client, the Linear and GitHub webhook secrets, the exe.dev token, the Tailscale auth key, Slack and, when Grok may use an API key ([Grok and OpenCode commands](#grok-and-opencode-commands)), `XAI_API_KEY`. Input is hidden. Each value is written envelope-encrypted to `PAWS_HOME/secrets`, except `XAI_API_KEY`, which goes into the env file `paws install` wrote. A webhook secret can be generated and is then shown once on the terminal. On a re-run each prompt says `set` or `not set`, and Enter keeps the value. It ends with the matching `paws doctor` checks.
+`bun run paws install secrets` asks for the GitHub App, the Linear OAuth client, the Linear and GitHub webhook secrets, the exe.dev token, the Tailscale auth key and Slack. Input is hidden. Each value is written envelope-encrypted to `PAWS_HOME/secrets`. A webhook secret can be generated and is then shown once on the terminal. On a re-run each prompt says `set` or `not set`, and Enter keeps the value. It ends with the matching `paws doctor` checks.
 
 For a scripted install, pass `--non-interactive` with flags such as `--paws-port 443`, or `--answers answers.toml` with the same keys in snake case (`paws_port = 443`, `github_repos = ["owner/repo"]`). Flags override the file, and a value left out keeps its current or default value.
 
@@ -214,15 +214,3 @@ a `presets` object keyed by name alongside `defaults`.
 
 Agent profiles are global: every repository uses the same implementer and
 reviewer.
-
-### Grok and OpenCode commands
-
-`/api/workspace/agents` also reads and writes which commands start Grok and OpenCode:
-
-```json
-{ "grok": { "path": "/opt/grok/bin/grok", "allowApiKey": false }, "opencode": { "path": null } }
-```
-
-A `path` is an absolute path, or `null` for the pinned package Paws installs. `allowApiKey` lets `XAI_API_KEY` reach the Grok adapter, which then signs in with the key instead of the cached login; the key itself stays a secret and is never part of this setting. A save can leave out either object or any field, which keeps its value; a value of the wrong kind or a new relative path is refused with 400. Only workspace admins can save. The next agent turn uses the saved values, without a restart.
-
-Settings stores them as `[agents.grok]` (`path`, `allow_api_key`) and `[agents.opencode]` (`path`). Until Settings saves them, Paws reads those tables from `config.toml`, where `path` can also be a command name looked up on `PATH`. The first save of any setting copies them into the database, an empty table when the file has none, and from then on the file's tables are ignored, as with every other Settings section; clearing a path keeps it cleared.

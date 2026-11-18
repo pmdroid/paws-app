@@ -14,7 +14,7 @@ import {
 } from "../src/config";
 import { readSecretFile } from "../src/credentials";
 import type { DoctorCheck } from "../src/doctor";
-import { defaultEnvFile, openEnvFile, runSecretsStep, terminalPrompter } from "../src/installer";
+import { defaultEnvFile, runSecretsStep, terminalPrompter } from "../src/installer";
 
 const PEM =
   "-----BEGIN RSA PRIVATE KEY-----\nMIIEfakeinstallerkey\n-----END RSA PRIVATE KEY-----\n";
@@ -31,18 +31,15 @@ const SECRETS = {
   slackClientId: "slack-client-id-ss6",
   slackClientSecret: "slack-client-secret-ss7",
   slackSigning: "slack-signing-secret-ss8",
-  xai: "xai-api-key-xx9",
 };
 
 let home: string;
 let pemPath: string;
-let envPath: string;
 
 beforeEach(() => {
   const root = mkdtempSync(join(tmpdir(), "paws-installer-"));
   home = join(root, ".paws");
   pemPath = join(root, "app.private-key.pem");
-  envPath = join(root, "config", "paws.env");
   writeFileSync(pemPath, PEM, { mode: 0o600 });
 });
 
@@ -62,12 +59,9 @@ async function run(lines: readonly string[]): Promise<Run> {
   process.stdout.write = ((chunk: string) => ((stdout += chunk), true)) as never;
   process.stderr.write = ((chunk: string) => ((stderr += chunk), true)) as never;
   try {
-    const config = emptyConfigFile();
-    config.agents.grok.allowApiKey = true;
     await runSecretsStep({
       home,
-      config,
-      env: openEnvFile(envPath),
+      config: emptyConfigFile(),
       prompter: terminalPrompter(input, process.stdout, { write: (text) => (terminal += text) }),
       publicUrl: "https://paws.example.ts.net",
       doctor: async (): Promise<DoctorCheck[]> => {
@@ -111,11 +105,10 @@ function firstRun(): string[] {
     SECRETS.slackClientId,
     SECRETS.slackClientSecret,
     SECRETS.slackSigning,
-    SECRETS.xai,
   ];
 }
 
-const KEEP_ALL = Array.from({ length: 15 }, () => "");
+const KEEP_ALL = Array.from({ length: 14 }, () => "");
 
 function secretFiles(): string[] {
   const dir = join(home, "secrets");
@@ -148,8 +141,6 @@ test("every secret is written as an envelope, not plaintext", async () => {
     clientSecret: SECRETS.slackClientSecret,
     signingSecret: SECRETS.slackSigning,
   });
-  expect(openEnvFile(envPath).get("XAI_API_KEY")).toBe(SECRETS.xai);
-  expect(statSync(envPath).mode & 0o777).toBe(0o600);
 });
 
 test("the GitHub App and Linear client files match what Paws reads", async () => {
@@ -174,14 +165,11 @@ test("the GitHub App and Linear client files match what Paws reads", async () =>
 test("a re-run with Enter keeps every secret", async () => {
   await run(firstRun());
   const before = secretFiles().map((path) => readFileSync(path, "utf8"));
-  const envBefore = readFileSync(envPath, "utf8");
   const second = await run(KEEP_ALL);
   expect(secretFiles().map((path) => readFileSync(path, "utf8"))).toEqual(before);
-  expect(readFileSync(envPath, "utf8")).toBe(envBefore);
   expect(second.stdout).toContain("App ID [set, Enter keeps it]: ");
   expect(second.stdout).toContain("Private key file path [set, Enter keeps it]: ");
   expect(second.stdout).toContain("Linear webhook secret [set] g to generate");
-  expect(second.stdout).toContain("XAI_API_KEY [set, Enter keeps it]: ");
   expect(second.stdout).not.toContain("not set");
 });
 
