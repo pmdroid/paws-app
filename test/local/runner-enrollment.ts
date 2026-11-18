@@ -231,11 +231,10 @@ export async function probeRunnerEnrollment(
     await recordRunnerRepositories(db, vmRunner.runnerId, ["owner/repo"], now);
     assert.equal(await runnerAllowsRepository(db, vmRunner.runnerId, "owner/repo"), true);
     assert.equal(await runnerAllowsRepository(db, vmRunner.runnerId, "owner/other"), false);
-    observe(
-      "a dashboard enrollment and a Create VM one both start with All repositories",
-      true,
-      { runnerId: identity.runnerId, vmRunnerId: vmRunner.runnerId },
-    );
+    observe("a dashboard enrollment and a Create VM one both start with All repositories", true, {
+      runnerId: identity.runnerId,
+      vmRunnerId: vmRunner.runnerId,
+    });
 
     const replay = await http.hostEnrollment(
       post("/api/runner-enrollments", { token: issued.token, name: "again", csr: host.csr }),
