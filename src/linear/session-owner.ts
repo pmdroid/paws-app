@@ -2,6 +2,7 @@ import {
   delegatedLinearUserIdSteps,
   getLinearSessionSteps,
   listWorkItemsSteps,
+  slackIssueOwnerSteps,
   type Db,
 } from "../db";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
@@ -15,8 +16,8 @@ export async function followUpSessionOwner(
   options?: TrackerRequestOptions,
 ): Promise<string | null> {
   const brief = await tracker.readBriefIssue?.(issueId, options);
-  if (brief?.issue.issueId !== issueId || !brief.parent || brief.creatorId !== appUserId)
-    return null;
+  if (brief?.issue.issueId !== issueId || brief.creatorId !== appUserId) return null;
+  if (!brief.parent) return store.run((q) => slackIssueOwnerSteps(q, issueId, organizationId));
   const parentId = brief.parent.issueId;
   return store.run(function* (q) {
     const items = yield* listWorkItemsSteps(q);

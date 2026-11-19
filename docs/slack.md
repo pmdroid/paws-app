@@ -25,7 +25,7 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 
 ## Answer in one channel
 
-Paws answers explicit `@Paws` mentions in one internal channel per Paws workspace, in the mention's thread. It needs no repository and no Linear issue, and it starts no work: a thread is a conversation only. Direct messages, other channels and messages that don't mention Paws get no answer.
+Paws answers explicit `@Paws` mentions in one internal channel per Paws workspace, in the mention's thread. It needs no repository and no Linear issue, and a conversation starts no work; only [`@Paws start`](#start-work-from-a-thread) files work. Direct messages, other channels and messages that don't mention Paws get no answer.
 
 1. Invite Paws to the channel. The invitation alone changes nothing.
 2. Someone mentions `@Paws` there. Paws replies with a message only they can see, with a link to `https://<paws>/oauth/slack/link` for them, in that channel.
@@ -74,6 +74,12 @@ On top of the [repository checks](#read-a-repository), Paws checks who can read 
 - `workspace` allows a channel inside this Slack workspace, public or private, whose members include no guest. Paws reads the channel's flags (`is_private`, `is_shared`, `is_ext_shared`, `is_org_shared`, `is_pending_ext_shared`) and every member's guest flags. A channel shared across an Enterprise organization, with Slack Connect, or with a pending external invitation is never allowed. A missing flag, a missing scope, an unreadable member or a channel of more than 100 members counts as unverified, and Paws doesn't post the answer.
 - An earlier answer that a later turn builds on brings its repository with it, as above, and gets the same checks. An earlier answer whose repository can't be shared in the channel any more is left out of later turns; the question stays.
 - When a check fails, Paws doesn't read the repository or post the answer. Instead it posts a message visible only to the person who asked, in the same thread, saying an answer was withheld without naming the repository or quoting anything from it. It opens no direct message and posts nowhere else.
+
+### Start work from a thread
+
+A linked member mentions `@Paws start <TEAM>`, with the key of a Linear team they belong to, such as `@Paws start ENG`. Paws drafts a title, scope and acceptance criteria from the thread on their conversation lane, without channel memory, earlier answers that used it, or an implementation slot, and shows the draft only to them with who can read issues in that team and **Create issue** and **Discard**. Mention `@Paws start <TEAM>` again with changes to replace the draft.
+
+**Create issue** checks the member, team membership, thread and team visibility again, then files one issue in that team, delegated to Paws, with only that title, scope and criteria. The member who started becomes the issue's owner, and the usual Linear intake runs it. A thread files at most one issue: a repeated click, a redelivery or a later `@Paws start` reuses it. Once Paws has tried to file, the approved draft stays bound to the thread: after Linear fails to confirm, `@Paws start` files that same draft again rather than a new one, and if the team's visibility changed in between, Paws shows that draft again with the new audience for the member to approve. Other members' clicks, discarded drafts and drafts older than an hour do nothing.
 
 ### Unlink and revoke
 

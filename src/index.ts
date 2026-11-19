@@ -254,6 +254,7 @@ import {
   parseLinearUserChange,
   cacheLinearMemberships,
   sessionCreatedKey,
+  slackIssueId,
   type AcceptedLinearEvent,
   type IntakeDecision,
   POLL_DUE_CURSOR,
@@ -1836,6 +1837,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return binding ? { ...binding, owner: repository.owner, repo: repository.repo } : null;
           },
         }),
+        work: () => {
+          const linearTracker = linear?.tracker;
+          if (!linearTracker?.slackIssueTeam || !linearTracker.fileSlackIssue) return null;
+          return {
+            team: (key, signal) => linearTracker.slackIssueTeam!(key, { signal }),
+            issueId: slackIssueId,
+            file: (request, signal) => linearTracker.fileSlackIssue!(request, { signal }),
+          };
+        },
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);
