@@ -1373,7 +1373,36 @@ export function createSlackThreads<Profile>(options: {
         store.run((q) => slackStreamingSteps(q, row, slackStreamId(next)));
       const chunks = slackStreamChunks(payload.text);
       const channel = payload.channelId;
+      const stillAllowed = async () =>
+        (await context.isCurrent()) &&
+        (await currentMemory(payload, payload.userId, refs)) &&
+        (await sourceCurrent()) &&
+        (await store.transaction(function* (q) {
+          if (!(yield* allowedSteps(q))) return false;
+          return yield* disclosedSteps(q, audience, readers);
+        }));
+      const cut = async (open: SlackStream) => {
+        await closeStream(payload, open, context.signal);
+        return settle({ kind: "withheld", note: "access changed while streaming" });
+      };
+      const write = async (method: string, body: Record<string, unknown>) => {
+        const current = state!;
+        await save({ ...current, writing: true });
+        try {
+          await call(method, { channel, ts: current.ts, ...body }, context.signal);
+        } catch (caught) {
+          if (caught instanceof SlackNotSentError) await save(current);
+          throw caught;
+        }
+      };
       try {
+        if (state?.writing) {
+          await closeStream(payload, state, context.signal);
+          return settle({
+            kind: "unknown",
+            note: "a stream write's outcome is unknown; not resent",
+          });
+        }
         if (!state) {
           const started = await call(
             "chat.startStream",
@@ -1398,19 +1427,16 @@ export function createSlackThreads<Profile>(options: {
               : { kind: "unknown", note: "Slack closed the stream at ten minutes, unfinished" },
           );
         while (state.sent < chunks.length - 1 && now() - state.startedAt < SLACK_STREAM_CLOSE_MS) {
-          const markdown_text = chunks[state.sent];
-          await call("chat.appendStream", { channel, ts: state.ts, markdown_text }, context.signal);
+          if (!(await stillAllowed())) return cut(state);
+          await write("chat.appendStream", { markdown_text: chunks[state.sent] });
           state = { ...state, sent: state.sent + 1 };
           await save(state);
         }
         const rest = chunks.slice(state.sent).join("");
-        const status = await store.run((q) => slackThreadStatusSteps(q, payload));
-        const close = { channel, ts: state.ts, blocks: [stopActions()], session_status: status };
-        await call(
-          "chat.stopStream",
-          { ...close, ...(rest ? { markdown_text: rest } : {}) },
-          context.signal,
-        );
+        if (rest && !(await stillAllowed())) return cut(state);
+        const session_status = await store.run((q) => slackThreadStatusSteps(q, payload));
+        const close = { blocks: [stopActions()], session_status };
+        await write("chat.stopStream", { ...close, ...(rest ? { markdown_text: rest } : {}) });
         return settle({ kind: "sent", ts: state.ts });
       } catch (caught) {
         if (caught instanceof SlackNotSentError) {

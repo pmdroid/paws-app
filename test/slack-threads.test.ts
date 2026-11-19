@@ -2463,8 +2463,9 @@ test("a filed task's status follows its work, never shows full capacity as execu
   expect(await tick(70 * 60_000)).toHaveLength(4);
   await stateOf(f, "awaiting_input");
   expect((await tick()).at(-1)).toBe("active");
-  await stateOf(f, "completed");
+  await stateOf(f, "failed");
   expect((await tick()).at(-1)).toBe("closed");
+  await stateOf(f, "completed");
   expect(await tick(70 * 60_000)).toHaveLength(6);
 });
 
@@ -2569,4 +2570,35 @@ test("queued progress coalesces to the latest update, while questions and result
   expect(texts).toHaveLength(2);
   expect(texts[0]).toContain("Opened the PR");
   expect(texts[1]).toContain("Tests pass");
+});
+
+test("a stream checks delivery again before each burst, and never repeats a burst whose outcome is unknown", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const long = "a".repeat(1_000) + "b".repeat(1_000) + "c".repeat(500);
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "rate";
+  await f.say("SMEMBER", "explain it all");
+  expect(f.posts("chat.startStream")).toHaveLength(1);
+  await f.revoke("um");
+  f.advance(8_000);
+  await f.flush();
+  expect(f.posts("chat.appendStream")).toEqual([]);
+  expect(f.posts("chat.stopStream").map((post) => post.body.markdown_text)).toEqual([undefined]);
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  f.posted.length = 0;
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "rate";
+  await f.say("SADMIN", "again");
+  const row = (await f.replies()).at(-1)!;
+  expect(row.externalId).toMatch(/^stream:.*:1$/);
+  await sqlRun(f.db, "UPDATE outbox SET external_id = ? WHERE id = ?", [
+    `${row.externalId}:w`,
+    row.id,
+  ]);
+  f.restart();
+  f.advance(8_000);
+  await f.flush();
+  expect(f.posts("chat.appendStream")).toEqual([]);
+  expect(f.posts("chat.stopStream").map((post) => post.body.markdown_text)).toEqual([undefined]);
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "unknown" });
 });

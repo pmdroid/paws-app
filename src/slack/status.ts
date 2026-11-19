@@ -43,7 +43,7 @@ const markKey = (t: Thread) =>
   `slack.status:${t.workspaceId}:${t.teamId}:${t.channelId}:${t.threadTs}`;
 
 const WORKING = new Set(["running", "verifying", "recovering"]);
-const TERMINAL = new Set(["completed", "merged", "cancelled"]);
+const TERMINAL = new Set(["completed", "merged", "cancelled", "failed"]);
 
 export function slackStatusFor(state: string): SlackStatus {
   if (WORKING.has(state)) return "processing";
@@ -132,14 +132,17 @@ export function* reconcileSlackStatusSteps(q: Q, now: number): Steps<number> {
   return queued;
 }
 
-export type SlackStream = { ts: string; startedAt: number; sent: number };
+export type SlackStream = { ts: string; startedAt: number; sent: number; writing?: true };
 
 export function slackStreamState(externalId: string | null): SlackStream | null {
-  const match = /^stream:([0-9.]+):(\d+):(\d+)$/.exec(externalId ?? "");
-  return match ? { ts: match[1]!, startedAt: Number(match[2]), sent: Number(match[3]) } : null;
+  const match = /^stream:([0-9.]+):(\d+):(\d+)(:w)?$/.exec(externalId ?? "");
+  if (!match) return null;
+  const stream = { ts: match[1]!, startedAt: Number(match[2]), sent: Number(match[3]) };
+  return match[4] ? { ...stream, writing: true } : stream;
 }
 
-export const slackStreamId = (s: SlackStream) => `stream:${s.ts}:${s.startedAt}:${s.sent}`;
+export const slackStreamId = (s: SlackStream) =>
+  `stream:${s.ts}:${s.startedAt}:${s.sent}${s.writing ? ":w" : ""}`;
 
 export function slackStreamChunks(text: string): string[] {
   const chunks: string[] = [];
