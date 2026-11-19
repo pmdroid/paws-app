@@ -29,6 +29,7 @@ import {
   slackTeamOwnerSteps,
   requestSlackToken,
   resolveSlackApp,
+  markSlackInstallationSteps,
   saveInstalledSlackTokenSteps,
   saveSlackApp,
   type SlackApp,
@@ -237,6 +238,7 @@ export function createSlackConnect(options: {
       if (team.owner?.value !== principal.workspaceId) return "team_taken";
       if (!(yield* saveInstalledSlackTokenSteps(q, home, principal.workspaceId, token, expected)))
         return "conflict";
+      yield* markSlackInstallationSteps(q, principal.workspaceId, now());
       yield* completeGithubOAuthSteps(q, claimed.state_hash);
       yield* auditSteps(q, principal, "slack.connected", `slack:${token.teamId}`);
       return "connected";
@@ -263,6 +265,7 @@ export function createSlackConnect(options: {
           !(yield* deleteCredentialCiphertextSteps(q, login.key, login.updatedAt))
         )
           throw new SlackAdoptRace();
+        yield* markSlackInstallationSteps(q, principal.workspaceId, now());
         yield* auditSteps(q, principal, "slack.adopted", `slack:${token.teamId}`);
         return "adopted";
       })

@@ -13,11 +13,11 @@ export function* takeSettingSteps(q: Q, key: string): Steps<string | null> {
 export function* slackThreadRepliesSteps(
   q: Q,
   thread: { teamId: string; channelId: string; threadTs: string },
-): Steps<unknown[]> {
+): Steps<{ payload: unknown; status: string }[]> {
   const { outbox } = q.t;
-  const rows = yield* q.all(
+  return yield* q.all(
     q.orm
-      .select({ payload: outbox.payload })
+      .select({ payload: outbox.payload, status: outbox.status })
       .from(outbox)
       .where(
         and(
@@ -30,7 +30,6 @@ export function* slackThreadRepliesSteps(
       )
       .orderBy(asc(outbox.id)),
   );
-  return rows.map((row) => row.payload);
 }
 
 export function* settingsWithPrefixSteps(

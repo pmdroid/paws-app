@@ -20,12 +20,19 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import { journal, journalCaught } from "../journal";
+import { journal } from "../journal";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
-import { SlackApiError, slackCaller, slackChannelAudience, type SlackCall } from "./api";
+import {
+  SlackApiError,
+  SlackRateLimitError,
+  slackCaller,
+  slackChannelAudience,
+  type SlackCall,
+} from "./api";
 import {
   createSlackAuth,
   installedSlackTokenSteps,
+  slackInstallationRevisionSteps,
   slackTeamOwnerSteps,
   type InstalledSlackToken,
   type SlackFetch,
@@ -40,7 +47,13 @@ const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const CONTEXT_REPLIES = 20;
 const REPLY_CHARS = 3_500;
 const PROMPT_BYTES = 30_000;
-const REPLY_EVENT = "paws_reply";
+const SLACK_ID = /^[A-Z0-9]{2,32}$/;
+const RETRYABLE = new Set([
+  "internal_error",
+  "service_unavailable",
+  "request_timeout",
+  "fatal_error",
+]);
 
 export type SlackReplyScope = {
   requestId: string;
@@ -67,12 +80,14 @@ type Place = {
 };
 type Reply = Place & {
   kind: "reply";
+  generation: number;
   userId: string;
   mentionTs: string;
   question: string;
   text: string;
 };
-type Notice = Place & { kind: "notice"; text: string };
+type Notice = Place & { kind: "notice"; generation: number; text: string };
+type Code = { hash: string; userId: string; expiresAt: number; slackUserId: string } & Bound;
 type Install = InstalledSlackToken & { generation: number };
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string };
@@ -97,7 +112,13 @@ function* installationSteps(q: Q, home: string, teamId: string): Steps<Install |
   const team = yield* slackTeamOwnerSteps(q, home, teamId);
   if (!team.owner) return null;
   const install = yield* installedSlackTokenSteps(q, home, team.owner.value);
-  return install?.teamId === teamId ? { ...install, generation: team.owner.updatedAt } : null;
+  if (install?.teamId !== teamId) return null;
+  const generation = yield* slackInstallationRevisionSteps(
+    q,
+    install.workspaceId,
+    team.owner.updatedAt,
+  );
+  return { ...install, generation };
 }
 
 function same(bound: Bound | null, place: { teamId: string; channelId: string }, install: Install) {
@@ -219,13 +240,13 @@ export function createSlackThreads(options: {
     return slackCaller(slackFetch, await auth.ensureFresh());
   }
 
-  function notice(place: Place, key: string, text: string) {
+  function notice(place: Place, generation: number, key: string, text: string) {
     return store.transaction((q) =>
       enqueueOutboxOnceSteps(q, {
         target: "slack",
         op: "chat.postEphemeral",
         idempotencyKey: `slack:notice:${key}`,
-        payload: { ...place, kind: "notice", text } satisfies Notice,
+        payload: { ...place, kind: "notice", generation, text } satisfies Notice,
         now: now(),
       }),
     );
@@ -235,12 +256,15 @@ export function createSlackThreads(options: {
     return store.transaction(function* (q): Steps<keyof typeof NOTICES> {
       const hash = workspaceTokenHash(code.toUpperCase());
       const rows = yield* settingsWithPrefixSteps(q, codePrefix(place.workspaceId));
-      const row = rows.find(
-        (candidate) => parsed<{ hash: string }>(candidate.value)?.hash === hash,
-      );
-      const issued =
-        row && parsed<{ userId: string; expiresAt: number }>(yield* takeSettingSteps(q, row.key));
-      if (!issued || issued.expiresAt <= now()) return "expired";
+      const row = rows.find((candidate) => parsed<Code>(candidate.value)?.hash === hash);
+      const issued = row && parsed<Code>(yield* takeSettingSteps(q, row.key));
+      if (
+        !issued ||
+        issued.expiresAt <= now() ||
+        issued.slackUserId !== place.slackUserId ||
+        !same(issued, place, install)
+      )
+        return "expired";
       const member = yield* workspaceMemberSteps(q, place.workspaceId, issued.userId);
       if (!workspaceMemberUsable(member)) return "expired";
       if ((yield* installationSteps(q, home, place.teamId))?.generation !== install.generation)
@@ -311,15 +335,32 @@ export function createSlackThreads(options: {
     const call = await slackFor(workspaceId);
     if ((await slackChannelAudience(call, place.channelId, context.signal)) !== "internal") return;
     const code = LINK_CODE.exec(mention.text)?.[1];
-    if (code)
-      return void (await notice(place, dedupeKey, NOTICES[await claim(place, gate.install, code)]));
-    if (gate.kind === "guide") {
-      const setup = gate.setup ? " The first person to link must be a Paws workspace admin." : "";
-      const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}, sign in, and mention @Paws in this thread with the code it shows.${setup}`;
-      return void (await notice(place, dedupeKey, text));
+    const generation = gate.install.generation;
+    if (code) {
+      const outcome = await claim(place, gate.install, code);
+      return void (await notice(place, generation, dedupeKey, NOTICES[outcome]));
     }
-    const earlier = (await store.run((q) => slackThreadRepliesSteps(q, place))) as Reply[];
-    if (earlier.some((reply) => reply.mentionTs === mention.ts)) return;
+    if (gate.kind === "guide") {
+      const query = new URLSearchParams({
+        team: place.teamId,
+        channel: place.channelId,
+        user: place.slackUserId,
+      });
+      const setup = gate.setup ? " The first person to link must be a Paws workspace admin." : "";
+      const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows.${setup}`;
+      return void (await notice(place, generation, dedupeKey, text));
+    }
+    const rows = await store.run((q) => slackThreadRepliesSteps(q, place));
+    if (rows.some((row) => (row.payload as Reply).mentionTs === mention.ts)) return;
+    const earlier = rows
+      .filter((row) => row.status === "sent")
+      .map((row) => row.payload as Reply)
+      .filter(
+        (reply) =>
+          reply.workspaceId === workspaceId &&
+          reply.userId === gate.userId &&
+          reply.generation === generation,
+      );
     const question = mention.text.replaceAll(`<@${gate.install.botUserId}>`, "").trim();
     const prompt = slackPrompt(
       earlier.filter((reply) => reply.mentionTs < mention.ts).slice(-CONTEXT_REPLIES),
@@ -337,7 +378,7 @@ export function createSlackThreads(options: {
           channelId: place.channelId,
           threadTs: place.threadTs,
           memberUserId: gate.userId,
-          installGeneration: gate.install.generation,
+          installGeneration: generation,
         },
         prompt,
         signal: AbortSignal.any([context.signal, AbortSignal.timeout(240_000)]),
@@ -354,6 +395,7 @@ export function createSlackThreads(options: {
       const reply: Reply = {
         ...place,
         kind: "reply",
+        generation,
         userId: gate.userId,
         mentionTs: mention.ts,
         question,
@@ -377,9 +419,9 @@ export function createSlackThreads(options: {
     const payload = row.payload as Reply | Notice;
     const gate = await store.run((q) => gateSteps(q, home, payload));
     const allowed =
-      payload.kind === "reply"
-        ? gate.kind === "member" && gate.userId === payload.userId
-        : gate.kind !== "ignore";
+      gate.kind !== "ignore" &&
+      gate.install.generation === payload.generation &&
+      (payload.kind === "notice" || (gate.kind === "member" && gate.userId === payload.userId));
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||
@@ -389,9 +431,6 @@ export function createSlackThreads(options: {
       return;
     }
     if (!(await context.isCurrent())) return;
-    const retried = row.attempts > 1 && !row.error?.startsWith("Slack rate-limited");
-    if (payload.kind === "reply" && retried && (await posted(call, payload, context.signal)))
-      return;
     try {
       if (payload.kind === "notice")
         await call(
@@ -413,59 +452,62 @@ export function createSlackThreads(options: {
             text: payload.text,
             unfurl_links: false,
             unfurl_media: false,
-            metadata: { event_type: REPLY_EVENT, event_payload: { id: row.idempotencyKey } },
           },
           context.signal,
         );
     } catch (caught) {
-      if (!(caught instanceof SlackApiError) || /^http_5|^invalid_response$/.test(caught.code))
+      if (
+        caught instanceof SlackRateLimitError ||
+        (caught instanceof SlackApiError && RETRYABLE.has(caught.code))
+      )
         throw caught;
-      journalCaught(caught, "slack.threads.deliver", null);
+      journal(`slack outbox ${row.id}: not resent; Slack refused it or may already have posted it`);
     }
-  }
-
-  async function posted(call: SlackCall, reply: Reply, signal: AbortSignal): Promise<boolean> {
-    const data = await call(
-      "conversations.replies",
-      { channel: reply.channelId, ts: reply.threadTs, include_all_metadata: true, limit: 200 },
-      signal,
-    );
-    const key = `slack:reply:${reply.teamId}:${reply.channelId}:${reply.mentionTs}`;
-    return (Array.isArray(data.messages) ? data.messages : []).some(
-      (message: { metadata?: { event_type?: unknown; event_payload?: { id?: unknown } } }) =>
-        message.metadata?.event_type === REPLY_EVENT && message.metadata.event_payload?.id === key,
-    );
   }
 
   return { handle, deliver };
 }
 
-export function createSlackLinkPage(options: { store: Db; now?: () => number }) {
+export function createSlackLinkPage(options: { store: Db; home: string; now?: () => number }) {
   const now = options.now ?? Date.now;
   return async (request: Request): Promise<Response | null> => {
-    if (new URL(request.url).pathname !== SLACK_LINK_PATH) return null;
+    const url = new URL(request.url);
+    if (url.pathname !== SLACK_LINK_PATH) return null;
     if (request.method !== "GET") return page("Method not allowed.", 405);
+    const [teamId, channelId, slackUserId] = ["team", "channel", "user"].map(
+      (name) => url.searchParams.get(name) ?? "",
+    );
+    if (![teamId, channelId, slackUserId].every((id) => SLACK_ID.test(id!)))
+      return page("Open this page from the link Paws posted in Slack.", 400);
     const at = now();
     const access = await options.store.run((q) => requestWorkspaceSessionSteps(q, request, at));
     if (!access)
       return page(
-        'Sign in to Paws first: <a href="/auth/linear">Sign in</a>, then open this page again.',
+        'Sign in to Paws first: <a href="/auth/linear">Sign in</a>, then open the link from Slack again.',
         401,
       );
     const { workspaceId, userId } = access.principal;
+    const install = await options.store.run((q) => installationSteps(q, options.home, teamId!));
+    if (install?.workspaceId !== workspaceId)
+      return page("That Slack workspace isn't connected to your Paws workspace.", 403);
     const bytes = randomBytes(8);
     const chars = [...bytes].map((byte) => CODE_ALPHABET[byte % 32]).join("");
     const code = `${chars.slice(0, 4)}-${chars.slice(4)}`;
-    const value = JSON.stringify({
+    const issued: Code = {
       hash: workspaceTokenHash(code),
       userId,
       expiresAt: at + LINK_TTL_MS,
-    });
+      slackUserId: slackUserId!,
+      teamId: teamId!,
+      channelId: channelId!,
+      generation: install.generation,
+    };
+    const value = JSON.stringify(issued);
     await options.store.run((q) =>
       updateSettingSteps(q, `${codePrefix(workspaceId)}${userId}`, () => value, at),
     );
     return page(
-      `<p>In the Slack thread, mention @Paws with:</p><p><code>link ${code}</code></p><p>It works once, for 10 minutes, and links the Slack account that posts it to your Paws account. Post it yourself; never give it to anyone.</p>`,
+      `<p>From Slack user <code>${slackUserId}</code>, in that thread of channel <code>${channelId}</code>, mention @Paws with:</p><p><code>link ${code}</code></p><p>It works once, for 10 minutes, only from that Slack account, and links it to your Paws account. Never give it to anyone.</p>`,
       200,
     );
   };
