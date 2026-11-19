@@ -76,6 +76,7 @@ async function fixture(
   setup: {
     memory?: Parameters<typeof createSlackThreads>[0]["memory"];
     source?: FakeSnapshotReader;
+    outcomes?: ({ status: string; text?: string } | null)[];
   } = {},
 ) {
   const home = tempHome();
@@ -276,7 +277,11 @@ async function fixture(
       origin: ORIGIN,
       fetch: slackFetch,
       now: () => now,
-      replies: async () => lane,
+      replies: async () => {
+        const scripted = setup.outcomes?.shift();
+        if (scripted === null) return null;
+        return scripted ? { reply: async () => scripted } : lane;
+      },
       profile: () => ({ agent: "codex" as const, model: null }),
       work,
       answer,
@@ -828,14 +833,109 @@ test("access, audience or installation changes before processing or delivery fen
   }
 });
 
-test("a runner too old for Slack replies, or none, answers nothing", async () => {
+const UNANSWERED = "I couldn't answer that just now. Ask again in a moment.";
+const unansweredPosts = (f: Fixture) =>
+  f.posted.filter((post) => post.body.text === UNANSWERED).map((post) => post.method);
+
+test("a runner too old for Slack replies, or none, gets one short note in the thread and no answer", async () => {
   const f = await linked();
   await f.addRunner("ua", MINIMUM_RUNNER_VERSION.join("."));
-  await f.say("SADMIN", "old runner");
+  const old = f.mention("SADMIN", "old runner");
+  await f.deliver(old);
+  await f.settle();
   await f.db.run((q) => q.exec(q.orm.update(q.t.runner).set({ status: "revoked" })));
-  await f.say("SADMIN", "no runner");
+  const none = f.mention("SADMIN", "no runner");
+  await f.deliver(none);
+  await f.settle();
   expect(f.prompts).toEqual([]);
-  expect(f.posted.filter((post) => post.method !== "agents.sessions.setStatus")).toEqual([]);
+  const sent = f.posted.filter((post) => post.method !== STATUS);
+  expect(sent.map((post) => [post.method, post.body])).toEqual(
+    [old, none].map((asked) => [
+      "chat.postMessage",
+      {
+        channel: "C0ONE",
+        thread_ts: asked.ts,
+        text: UNANSWERED,
+        unfurl_links: "false",
+        unfurl_media: "false",
+      },
+    ]),
+  );
+  for (const asked of [old, none]) {
+    const thread = f.posts(STATUS).filter((post) => post.body.thread_ts === asked.ts);
+    expect(thread.at(-1)!.body.status).toBe("active");
+  }
+  await f.addRunner("ua", SLACK_REPLY_RUNNER_VERSION.join("."));
+  await f.db.run((q) => q.exec(q.orm.update(q.t.runner).set({ status: "active" })));
+  await f.say("SADMIN", "and now?", { thread_ts: none.ts });
+  expect(lastPrompt(f)).not.toContain("couldn't answer");
+  expect(lastPrompt(f)).toContain("[<@SADMIN>]: and now?");
+  expect(f.posts("chat.postMessage").at(-1)!.body.text).toBe("answer 1");
+});
+
+test("timed out, failed, empty and missing-lane turns post the note; stopped and fenced turns stay silent", async () => {
+  const outcomes = [
+    { status: "timed_out" },
+    { status: "failed", reason: "secret runner detail" },
+    { status: "answered", text: "  " },
+    null,
+    { status: "stopped" },
+    { status: "fenced" },
+  ];
+  const f = await linkedWith({ outcomes: [...outcomes] });
+  for (const _ of outcomes) {
+    await f.say("SADMIN", "why?");
+    f.advance(1);
+  }
+  const notes = f.posts("chat.postMessage");
+  expect(notes.map((post) => post.body.text)).toEqual(Array(4).fill(UNANSWERED));
+  expect(JSON.stringify(f.posted)).not.toContain("secret runner detail");
+  expect(notes.every((post) => !("blocks" in post.body))).toBe(true);
+});
+
+test("failing turns in one thread post the note at most once per ten minutes", async () => {
+  const failed = { status: "failed", reason: "x" };
+  const f = await linkedWith({ outcomes: Array(4).fill(failed) });
+  const root = f.mention("SADMIN", "first");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SADMIN", "second", { thread_ts: root.ts });
+  await f.say("SADMIN", "third", { thread_ts: root.ts });
+  expect(unansweredPosts(f)).toEqual(["chat.postMessage"]);
+  f.advance(10 * 60_000);
+  await f.say("SADMIN", "fourth", { thread_ts: root.ts });
+  expect(unansweredPosts(f)).toEqual(["chat.postMessage", "chat.postMessage"]);
+});
+
+test("the note isn't posted once the thread was stopped or the member unlinked", async () => {
+  const failed = { status: "failed", reason: "x" };
+  const f = await linkedWith({ outcomes: [failed, failed] }, ["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "first");
+  await f.deliver(root);
+  await f.runJobs();
+  await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  await f.settle();
+  const other = f.mention("SADMIN", "second");
+  await f.deliver(other);
+  await f.runJobs();
+  expect((await f.api("ua", "DELETE", OWN)).status).toBe(200);
+  await f.settle();
+  expect(unansweredPosts(f)).toEqual([]);
+});
+
+test("a conversation lane that stays full until the job's last attempt posts the note", async () => {
+  const busy = { status: "busy" };
+  const f = await linkedWith({ outcomes: [busy, busy] });
+  const root = f.mention("SADMIN", "anyone?");
+  await f.deliver(root);
+  await f.settle();
+  expect(unansweredPosts(f)).toEqual([]);
+  await sqlRun(f.db, "UPDATE job SET attempts = max_attempts - 1, run_at = 0 WHERE queue = ?", [
+    SLACK_THREAD_JOB,
+  ]);
+  await f.settle();
+  expect(unansweredPosts(f)).toEqual(["chat.postMessage"]);
+  expect(statuses(f).at(-1)).toBe("active");
 });
 
 test("members in one thread share its turns, and each reply in a shared thread names its asker", async () => {

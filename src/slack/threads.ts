@@ -191,6 +191,8 @@ type Notice = Place & {
   safe?: boolean;
   blocks?: unknown[];
   dm?: boolean;
+  mentionTs?: string;
+  visible?: boolean;
 };
 type Payload = Reply | Notice | SlackTaskPost | SlackStatusPost;
 
@@ -256,7 +258,9 @@ const NOTICES = {
   not_waiting:
     "That question was already answered or is no longer waiting, so Paws didn't use this.",
   cannot_answer: "You can't answer this question, so Paws didn't use this.",
+  unanswered: "I couldn't answer that just now. Ask again in a moment.",
 };
+const UNANSWERED_WINDOW_MS = 10 * 60_000;
 const SOURCE_PROMPT_BYTES = 32_000;
 const HANDOFF_CHARS = 16_000;
 
@@ -671,6 +675,31 @@ export function createSlackThreads<Profile>(options: {
     );
   }
 
+  function unanswered(
+    place: Place,
+    member: { userId: string; linkId: string },
+    mentionTs: string,
+    context: { isCurrentSteps(q: Q): Steps<boolean> },
+  ) {
+    return store.transaction(function* (q) {
+      if (!(yield* context.isCurrentSteps(q))) return;
+      if (yield* stoppedSteps(q, place, mentionTs)) return;
+      const gate = yield* gateSteps(q, home, place);
+      if (gate.kind !== "member" || gate.linkId !== member.linkId) return;
+      const window = Math.floor(now() / UNANSWERED_WINDOW_MS);
+      const { teamId, channelId, threadTs } = place;
+      const text = NOTICES.unanswered;
+      const payload: Payload = { ...place, kind: "notice", text, member, mentionTs, visible: true };
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "slack",
+        op: "chat.postMessage",
+        idempotencyKey: `slack:unanswered:${teamId}:${channelId}:${threadTs}:${window}`,
+        payload,
+        now: now(),
+      });
+    });
+  }
+
   function turnStatus(
     place: Place,
     member: { userId: string; linkId: string },
@@ -840,14 +869,18 @@ export function createSlackThreads<Profile>(options: {
     const asker = { userId: gate.userId, linkId: gate.linkId };
     const turn = { ts: mention.ts, slackUserId, event: dedupeKey! };
     await turnStatus(place, asker, null, "active", { ...turn, open: true });
+    const last = job.attempts >= job.maxAttempts;
     let ended: "busy" | void = undefined;
     try {
       ended = await respond({ place, mention, gate, call, dedupeKey: dedupeKey!, context });
     } finally {
-      if (ended !== "busy")
+      if (ended !== "busy" || last)
         await turnStatus(place, asker, null, "active", { ...turn, open: false });
     }
-    if (ended === "busy") throw new Error("The member's runner conversation lane is busy.");
+    if (ended !== "busy") return;
+    if (!last) throw new Error("The member's runner conversation lane is busy.");
+    journal(`slack ${dedupeKey}: no answer (busy)`);
+    await unanswered(place, asker, mention.ts, context);
   }
 
   async function respond(input: {
@@ -965,7 +998,10 @@ export function createSlackThreads<Profile>(options: {
         member: asker,
       }));
     const lane = await options.replies();
-    if (!lane) return;
+    if (!lane) {
+      journal(`slack ${dedupeKey}: no answer (no reply lane)`);
+      return void (await unanswered(place, asker, mention.ts, context));
+    }
     const kept = new Map<string, MemoryRef>();
     const keptSources = new Map<string, SlackSourceRef>();
     const checked = new Map<string, boolean>();
@@ -1081,7 +1117,11 @@ export function createSlackThreads<Profile>(options: {
       );
     }
     const answer = outcome.status === "answered" ? outcome.text?.trim().slice(0, 2_900) : undefined;
-    if (!answer) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
+    if (!answer) {
+      journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
+      if (outcome.status === "stopped" || outcome.status === "fenced") return;
+      return void (await unanswered(place, asker, mention.ts, context));
+    }
     const used = source?.source;
     const addressed = shared ? `<@${slackUserId}> ` : "";
     const text = used
@@ -1499,8 +1539,9 @@ export function createSlackThreads<Profile>(options: {
     function* allowedSteps(q: Q): Steps<boolean> {
       if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload, row.id))) return false;
       if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
-      if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
-        return false;
+      const asked =
+        payload.kind === "reply" || payload.kind === "notice" ? payload.mentionTs : null;
+      if (asked && (yield* stoppedSteps(q, payload, asked))) return false;
       const gate = yield* gateSteps(q, home, payload);
       const bound = payload.kind === "reply" ? undefined : payload.member;
       if (payload.kind === "task" && !bound) return false;
@@ -1701,14 +1742,16 @@ export function createSlackThreads<Profile>(options: {
         return settle({ kind: "unknown", note: "a stream update was lost; Slack closes it" });
       }
     }
-    const body =
-      payload.kind === "notice"
+    const visible = payload.kind === "notice" && payload.visible;
+    const body = visible
+      ? { unfurl_links: false, unfurl_media: false }
+      : payload.kind === "notice"
         ? { user: payload.slackUserId, ...(payload.blocks ? { blocks: payload.blocks } : {}) }
         : payload.kind === "status"
           ? {}
           : { unfurl_links: false, unfurl_media: false, blocks: [section(text), stopActions()] };
     const method =
-      payload.kind === "notice"
+      payload.kind === "notice" && !visible
         ? "chat.postEphemeral"
         : payload.kind === "status"
           ? "agents.sessions.setStatus"
