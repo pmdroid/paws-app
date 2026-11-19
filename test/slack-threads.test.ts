@@ -342,14 +342,20 @@ async function fixture(
   let ts = 1_700_000_000;
   async function deliver(
     event: Record<string, unknown>,
-    options: { team?: string; eventId?: string; signature?: string; at?: number } = {},
+    options: {
+      team?: string;
+      eventId?: string;
+      signature?: string;
+      at?: number;
+      shared?: boolean;
+    } = {},
   ) {
     const raw = JSON.stringify({
       type: "event_callback",
       team_id: options.team ?? "T0ONE",
       api_app_id: "A1",
       event_id: options.eventId ?? `Ev${String(++events).padStart(6, "0")}`,
-      is_ext_shared_channel: false,
+      is_ext_shared_channel: options.shared ?? false,
       event,
     });
     const time = String(Math.floor((options.at ?? now) / 1000));
@@ -2923,4 +2929,122 @@ test("updates queued after a stop is accepted but before it runs still reach the
   await f.settle();
   expect(JSON.stringify(f.posts("chat.postMessage"))).toContain("Merged after stop");
   expect(f.notice()).toContain("had already finished");
+});
+
+const threadReply = (user: string, text: string, threadTs: string, extra = {}) => ({
+  type: "message",
+  channel: "C0ONE",
+  user,
+  text,
+  ts: `${1_750_000_000 + ++replies}.000300`,
+  thread_ts: threadTs,
+  ...extra,
+});
+let replies = 0;
+const stored = (f: Fixture) =>
+  f.db.run(function* (q) {
+    const events = yield* q.all(q.orm.select().from(q.t.inboxEvent));
+    const jobs = yield* q.all(q.orm.select().from(q.t.job));
+    const outbox = yield* q.all(q.orm.select().from(q.t.outbox));
+    return { events: events.length, jobs: jobs.length, outbox: outbox.length };
+  });
+
+test("a linked member's thread reply without a mention runs one turn and one reply, with status", async () => {
+  const f = await linked();
+  const root = f.mention("SADMIN", "what is a monad?");
+  await f.deliver(root);
+  await f.deliver({ ...root, type: "message" });
+  await f.settle();
+  expect(f.prompts).toHaveLength(1);
+  f.posted.length = 0;
+  f.advance(1_000);
+  const followUp = threadReply("SADMIN", "and a functor?", root.ts);
+  await f.deliver(followUp);
+  await f.deliver(followUp);
+  f.runner.hold = true;
+  const running = f.runJobs();
+  for (let i = 0; i < 500 && !f.posts(STATUS).length; i++) {
+    await Bun.sleep(5);
+    await f.flush();
+  }
+  expect(f.posts(STATUS).map((post) => post.body)).toEqual([
+    { channel_id: "C0ONE", thread_ts: root.ts, status: "processing" },
+  ]);
+  f.runner.hold = false;
+  await running;
+  await f.settle();
+  const tagged = f.mention("SADMIN", "and a monoid?", { thread_ts: root.ts });
+  await f.deliver({ ...tagged, type: "message" });
+  await f.deliver(tagged);
+  await f.settle();
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "ua", "ua"]);
+  expect(f.prompts[1]!.prompt).toContain("[<@SADMIN>]: and a functor?");
+  const sent = f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text]);
+  expect(sent).toEqual([
+    [root.ts, "answer 2"],
+    [root.ts, "answer 3"],
+  ]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("an unmentioned reply that isn't a linked member's reply in a known thread stores and posts nothing", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "plan the release");
+  await f.deliver(root);
+  await f.settle();
+  f.posted.length = 0;
+  await f.revoke("um");
+  const before = await stored(f);
+  const drops: [Record<string, unknown>, { shared?: boolean }?][] = [
+    [threadReply("SADMIN", "no thread", "1700009999.000100")],
+    [threadReply("SOTHER", "unlinked", root.ts)],
+    [threadReply("SMEMBER", "unusable", root.ts)],
+    [threadReply("SADMIN", "other channel", root.ts, { channel: "C0TWO" })],
+    [threadReply("SADMIN", "shared", root.ts), { shared: true }],
+    [threadReply("SADMIN", "edited", root.ts, { subtype: "message_changed" })],
+    [threadReply("SADMIN", "bot", root.ts, { bot_id: "B9" })],
+    [{ type: "message", channel: "C0ONE", user: "SADMIN", text: "root", ts: "1700008888.000100" }],
+  ];
+  for (const [event, options] of drops) expect((await f.deliver(event, options)).status).toBe(200);
+  const rooted = threadReply("SADMIN", "root", "");
+  await f.deliver({ ...rooted, thread_ts: rooted.ts });
+  await f.settle();
+  expect(await stored(f)).toEqual(before);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.posted).toEqual([]);
+  expect(f.dms()).toEqual([]);
+});
+
+test("an unmentioned stop stops the thread and fences an earlier unmentioned reply", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "write a long essay");
+  await f.deliver(root);
+  await f.settle();
+  await f.deliver(threadReply("SADMIN", "and another one", root.ts));
+  const stop = threadReply("SMEMBER", "stop", root.ts);
+  await f.deliver(stop);
+  await f.settle();
+  expect(await conversations(f, root.ts)).toEqual([
+    expect.objectContaining({ stoppedTs: stop.ts, stoppedBySlackUserId: "SMEMBER" }),
+  ]);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  expect(f.notice()).toContain("Stopped");
+});
+
+test("an unmentioned reply from a member whose link ends before the job runs gets no reply and no guide", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "plan the release");
+  await f.deliver(root);
+  await f.settle();
+  await f.deliver(threadReply("SMEMBER", "and the changelog?", root.ts));
+  await f.deliver(f.mention("SMEMBER", "unlink"));
+  await f.deliver(threadReply("SADMIN", "and the date?", root.ts));
+  await sqlRun(f.db, "DELETE FROM setting WHERE key = ?", ["slack.member:T0ONE:SADMIN"]);
+  f.posted.length = 0;
+  await f.settle();
+  expect(f.prompts).toHaveLength(1);
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.dms().map((post) => post.body.text)).toEqual([expect.stringContaining("Unlinked")]);
+  expect(f.posted.some((post) => String(post.body.text).includes(ORIGIN))).toBe(false);
 });
