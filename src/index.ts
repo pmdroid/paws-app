@@ -31,7 +31,13 @@ import {
   type ExeDev,
   type ExeDevBootstrap,
 } from "./provisioning";
-import { loginSlack, slackSigningSecret } from "./slack";
+import {
+  createSlackThreads,
+  loginSlack,
+  SLACK_THREAD_JOB,
+  slackReplyAllowedSteps,
+  slackSigningSecret,
+} from "./slack";
 import {
   collectProbes,
   keepCandidates,
@@ -408,6 +414,7 @@ import {
 import {
   createRemoteAgentRunner,
   createConversationTurns,
+  createSlackReplies,
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
@@ -1179,6 +1186,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           runnerUrl: runnerConfig.url,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
+          slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
         }).then(async (value) => {
           if (runnerStopping) {
             await value.stop();
@@ -1803,6 +1811,25 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             }),
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
+      const slackThreads = createSlackThreads({
+        store,
+        home: paths.home,
+        env: envSource,
+        origin: runtime.publicUrl ?? "http://127.0.0.1:8787",
+        replies: async () => {
+          const coordinator = await runnerReady;
+          if (!coordinator) return null;
+          const { helpers } = coordinator;
+          return createSlackReplies({
+            store,
+            helpers,
+            placement: createRunnerPlacement({ store }),
+          });
+        },
+        profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+      });
+      created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
+      created.outbox.setTargetHandler("slack", slackThreads.deliver);
       const attached = attachOrchestrator({
         store,
         instanceId: instance.id,

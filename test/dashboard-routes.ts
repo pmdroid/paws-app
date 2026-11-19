@@ -404,6 +404,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET", "/auth/github-app/callback", "delegated", "src/server"),
   api("GET", "/auth/github-attribution/callback", "delegated", "src/workspace"),
   api("GET", "/oauth/slack/callback", "delegated", "src/slack"),
+  api("GET POST", "/oauth/slack/link", "delegated", "src/slack"),
   api("GET DELETE", "/api/workspaces/slack", "delegated", "src/slack"),
   api("POST", "/api/workspaces/slack/connect", "delegated", "src/slack"),
   api("POST", "/api/workspaces/slack/adopt", "delegated", "src/slack"),

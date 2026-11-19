@@ -9,7 +9,7 @@ import {
   writeCredentialSteps,
   saveSecret,
 } from "../credentials";
-import { type Db, type Q, type Steps } from "../db";
+import { readSettingSteps, updateSettingSteps, type Db, type Q, type Steps } from "../db";
 import { authorizeSlack } from "./authorize";
 
 export const SLACK_BOT_SCOPES = "chat:write,im:write,users:read,users:read.email,channels:read";
@@ -97,6 +97,17 @@ export function* saveInstalledSlackTokenSteps(
   const key = { kind: "slack" as const, workspace: workspaceId };
   const dir = pawsPaths(home).secretsDir;
   return (yield* replaceScopedCredentialSteps(q, dir, key, value, expected)) !== null;
+}
+
+const revisionKey = (workspaceId: string) => `slack.installed:${workspaceId}`;
+
+export function* markSlackInstallationSteps(q: Q, workspaceId: string, at: number) {
+  const next = (stored: string | null) => String(Math.max(at, Number(stored ?? 0) + 1));
+  yield* updateSettingSteps(q, revisionKey(workspaceId), next, at);
+}
+
+export function* slackInstallationRevisionSteps(q: Q, workspaceId: string, fallback: number) {
+  return Number((yield* readSettingSteps(q, revisionKey(workspaceId))) ?? fallback);
 }
 
 function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {

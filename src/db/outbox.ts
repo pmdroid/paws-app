@@ -453,8 +453,9 @@ export function* retryOutboxSteps(
 ): Steps<{ reasked: boolean }> {
   const { outbox, setting } = q.t;
   const now = options.now ?? Date.now();
+  const limitedBy = row.target === "linear" ? "LinearRateLimitError" : "SlackNotSentError";
   const retryAfter =
-    row.target === "linear" && error instanceof Error && error.name === "LinearRateLimitError"
+    row.target !== "github" && error instanceof Error && error.name === limitedBy
       ? (error as Error & { retryAfterMs?: number }).retryAfterMs
       : undefined;
   const rateLimited =
@@ -469,7 +470,7 @@ export function* retryOutboxSteps(
         options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
         options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
       );
-  if (rateLimited) {
+  if (rateLimited && row.target === "linear") {
     yield* q.exec(
       q.orm
         .insert(setting)
