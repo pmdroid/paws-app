@@ -7,11 +7,18 @@ import {
   inboxEventByKeySteps,
   insertInboxEventSteps,
   markInboxEventHandledSteps,
+  slackTaskScopeSteps,
+  getWorkItemSteps,
+  linearSessionClientIdSteps,
+  workspaceSessionIdsSteps,
+  outboxFenceOpenSteps,
   readSettingSteps,
   recordSlackConversationSteps,
   settingsWithPrefixSteps,
   settleSlackOutboxSteps,
   slackConversationSteps,
+  slackSessionOriginSteps,
+  slackIssueTaskSteps,
   slackOutboxExistsSteps,
   slackSendingSteps,
   slackThreadContextSteps,
@@ -28,6 +35,14 @@ import {
   type Steps,
 } from "../db";
 import { journal } from "../journal";
+import { dashboardIssuePath } from "../dashboard-links";
+import {
+  canAnswer,
+  findOpenQuestionSteps,
+  getQuestionSteps,
+  isPawsAnswerKind,
+  type QuestionAnswer,
+} from "../questions";
 import type { GitHubSnapshotReader } from "../github";
 import type { ContextAccess } from "../project-context";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
@@ -49,6 +64,7 @@ import {
 } from "./memory";
 import {
   createSlackSource,
+  readsSteps,
   slackAttachmentSteps,
   slackSourceCommand,
   slackSourceCommandSteps,
@@ -74,7 +90,21 @@ const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const STOP = /^stop[.!]?$/i;
 const UNLINK = /^unlink[.!]?$/i;
 const STOP_POLL_MS = 1_000;
+
+function* taskScopeSteps(q: Q, message: SlackTaskPost): Steps<string[]> {
+  const current = message.itemId ? yield* slackTaskScopeSteps(q, message.itemId) : [];
+  const names = [...(message.repositories ?? []), ...current];
+  return [...new Map(names.map((name) => [name.toLowerCase(), name])).values()];
+}
 const SLACK_STOP_ACTION = "paws_stop";
+const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
+function* taskVisibleSteps(q: Q, workspaceId: string, userId: string, sessionKey: string) {
+  const clientId = yield* linearSessionClientIdSteps(q, sessionKey);
+  if (!clientId) return false;
+  return (yield* workspaceSessionIdsSteps(q, workspaceId, userId, clientId)).includes(sessionKey);
+}
+const threadLink = (place: Place) =>
+  `https://app.slack.com/client/${place.teamId}/${place.channelId}/thread/${place.channelId}-${place.threadTs}`;
 
 export type SlackReplyScope = {
   requestId: string;
@@ -179,6 +209,13 @@ const NOTICES = {
     "Paws couldn't read this thread's repository at its ref, so it didn't answer. Check the repository and ref, or mention `@Paws repo off` to ask without it.",
   source_changed:
     "Your access to this thread's repository changed while Paws was answering, so it didn't post that answer. Mention @Paws again to ask.",
+  choose_repository: "Choose the repository in Paws:",
+  answer_in_paws: "Answer this in Paws:",
+  see_in_paws: "Paws has an update on this work that it can't share here. See it in Paws:",
+  answered: "Thanks. Paws took your answer and continues the work.",
+  not_waiting:
+    "That question was already answered or is no longer waiting, so Paws didn't use this.",
+  cannot_answer: "You can't answer this question, so Paws didn't use this.",
 };
 const SOURCE_PROMPT_BYTES = 32_000;
 const HANDOFF_CHARS = 16_000;
@@ -517,6 +554,7 @@ export function createSlackThreads<Profile>(options: {
   memory?: SlackMemoryOptions;
   source?: GitHubSnapshotReader;
   work?: () => SlackWorkTracker | null;
+  answer?: QuestionAnswer;
 }) {
   const { store, home, env } = options;
   const memory = createSlackChannelMemory({
@@ -662,6 +700,8 @@ export function createSlackThreads<Profile>(options: {
       );
       return void (await notice(place, dedupeKey!, text, { member: asker }));
     }
+    const start = work.slackStartCommand(question);
+    if (!start && !command && (await answerTask(place, asker, question, mention.ts))) return;
     if (command?.kind === "memory")
       return void (await notice(place, dedupeKey!, "", { member: asker, listing: true }));
     if (command) {
@@ -680,7 +720,6 @@ export function createSlackThreads<Profile>(options: {
       });
       return void (await notice(place, dedupeKey!, text, { member: asker }));
     }
-    const start = work.slackStartCommand(question);
     let team: SlackIssueTeam | null = null;
     let revising: Draft | null = null;
     if (start) {
@@ -705,10 +744,9 @@ export function createSlackThreads<Profile>(options: {
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
     const earlier = await store.run(function* (q) {
       if (yield* slackOutboxExistsSteps(q, replyKey)) return null;
-      const turns = (yield* slackThreadContextSteps(q, {
-        ...place,
-        userId: gate.userId,
-      })) as Reply[];
+      const turns = (
+        (yield* slackThreadContextSteps(q, { ...place, userId: gate.userId })) as Payload[]
+      ).filter((turn): turn is Reply => turn.kind === "reply");
       const attached = yield* slackAttachmentSteps(q, place);
       return { attached, turns };
     });
@@ -897,6 +935,68 @@ export function createSlackThreads<Profile>(options: {
     });
   }
 
+  async function answerTask(
+    place: Place,
+    asker: { userId: string; linkId: string },
+    answer: string,
+    mentionTs: string,
+  ): Promise<boolean> {
+    const tracker = options.work?.() ?? null;
+    if (!tracker || !options.answer) return false;
+    const key = `answer:${place.teamId}:${place.channelId}:${mentionTs}`;
+    if (await store.run((q) => slackOutboxExistsSteps(q, `slack:notice:${key}`))) return true;
+    const issueId = tracker.issueId(work.slackThreadKey(place));
+    const open = await store.run(function* (q) {
+      const task = yield* slackIssueTaskSteps(q, issueId);
+      const filed = task ? yield* slackSessionOriginSteps(q, task.sessionKey) : null;
+      if (filed?.generation !== place.generation) return null;
+      const question = task ? yield* findOpenQuestionSteps(q, task.sessionKey) : null;
+      const sentAt = Number(mentionTs) * 1000;
+      if (!question || !(question.createdAt < sentAt)) return null;
+      const visible = yield* taskVisibleSteps(q, place.workspaceId, asker.userId, task!.sessionKey);
+      const member = yield* workspaceMemberSteps(q, place.workspaceId, asker.userId);
+      const identifier =
+        (yield* getWorkItemSteps(q, task!.itemId))?.linearIdentifier ?? task!.itemId;
+      return { question, member, identifier, visible };
+    });
+    if (!open) return false;
+    const { question, member } = open;
+    const kind = question.kind;
+    const say = (text: string) => notice(place, key, text, { member: asker });
+    if (!isPawsAnswerKind(kind) || CHOOSE_IN_PAWS.has(kind)) {
+      const lead = CHOOSE_IN_PAWS.has(kind) ? NOTICES.choose_repository : NOTICES.answer_in_paws;
+      await say(`${lead} ${origin}${dashboardIssuePath(open.identifier)}`);
+      return true;
+    }
+    if (
+      !open.visible ||
+      !workspaceMemberUsable(member) ||
+      !member.linearUserId ||
+      !canAnswer({ kind }, { id: member.linearUserId })
+    ) {
+      await store.run((q) =>
+        auditWorkspaceAccessSteps(q, {
+          workspaceId: place.workspaceId,
+          userId: asker.userId,
+          action: "question.refused",
+          subject: `slack:${place.teamId}:${place.channelId} ${question.kind}`,
+          now: now(),
+        }),
+      );
+      await say(NOTICES.cannot_answer);
+      return true;
+    }
+    const result = await options.answer({
+      questionId: question.id,
+      answer,
+      answeredBy: member.linearUserId,
+      answeredByName: member.name,
+      note: `Answered in Slack: ${threadLink(place)}`,
+    });
+    await say(result === "answered" ? NOTICES.answered : NOTICES.not_waiting);
+    return true;
+  }
+
   async function currentSources(
     scope: Bound & { workspaceId: string },
     userId: string,
@@ -1066,6 +1166,7 @@ export function createSlackThreads<Profile>(options: {
       return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
     };
     function* allowedSteps(q: Q): Steps<boolean> {
+      if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload))) return false;
       if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
         return false;
       const gate = yield* gateSteps(q, home, payload);
@@ -1085,7 +1186,7 @@ export function createSlackThreads<Profile>(options: {
     }
     const repositories =
       payload.kind === "task"
-        ? [payload.repository ?? ""]
+        ? await store.run((q) => taskScopeSteps(q, payload))
         : payload.kind === "reply"
           ? (payload.sources ?? []).map((ref) => ref.repository)
           : [];
@@ -1095,7 +1196,12 @@ export function createSlackThreads<Profile>(options: {
           target: "slack",
           op: "chat.postEphemeral",
           idempotencyKey: `slack:notice:${row.idempotencyKey}`,
-          payload: { ...payload, kind: "notice", text: taskWithheld(payload), safe: true },
+          payload: {
+            ...payload,
+            kind: "notice",
+            text: taskWithheld(pawsLink(payload)),
+            safe: true,
+          },
           now: now(),
         });
       if (payload.kind !== "reply") return;
@@ -1161,7 +1267,9 @@ export function createSlackThreads<Profile>(options: {
     const text =
       payload.kind === "notice" && payload.listing && payload.member
         ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
-        : payload.text;
+        : payload.kind === "task" && (payload.paws || repositories.length === 0)
+          ? pawsLink(payload)
+          : payload.text;
     const byPolicy = await store.run(function* (q) {
       for (const repository of repositories)
         if (!(yield* byPolicySteps(q, audience, repository))) return false;
@@ -1206,12 +1314,34 @@ export function createSlackThreads<Profile>(options: {
     return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
   }
 
+  function* taskAllowedSteps(q: Q, message: SlackTaskPost): Steps<boolean> {
+    const { workspaceId, fence } = message;
+    const { userId } = message.member;
+    if (!fence) return false;
+    const open = { target: "linear" as const, orderingKey: fence.sessionId, ...fence };
+    if (!(yield* outboxFenceOpenSteps(q, open))) return false;
+    if (!(yield* taskVisibleSteps(q, workspaceId, userId, fence.sessionId))) return false;
+    for (const repository of yield* taskScopeSteps(q, message))
+      if (!(yield* readsSteps(q, workspaceId, userId, repository))) return false;
+    if (!message.questionId) return true;
+    return (yield* getQuestionSteps(q, message.questionId))?.status === "open";
+  }
+
+  function pawsLink(message: SlackTaskPost) {
+    const lead =
+      message.paws === "repository"
+        ? NOTICES.choose_repository
+        : message.paws === "answer"
+          ? NOTICES.answer_in_paws
+          : NOTICES.see_in_paws;
+    return `${lead} ${origin}${dashboardIssuePath(message.identifier)}`;
+  }
+
   return { handle, deliver };
 }
 
-function taskWithheld(post: SlackTaskPost): string {
-  const link = post.url ? `<${post.url}|${post.identifier}>` : post.identifier;
-  return `Paws has news on ${link} but didn't post it in this thread: the work can draw on code, and Paws couldn't confirm that everyone who can read this channel may see it. Read it in Linear, or ask a Paws workspace admin where Paws may share answers from code.`;
+function taskWithheld(link: string): string {
+  return `Paws has news on this thread's work but didn't post it here: the work can draw on code, and Paws couldn't confirm that everyone who can read this channel may see it. Ask a Paws workspace admin where Paws may share answers from code. ${link}`;
 }
 
 function section(text: string) {

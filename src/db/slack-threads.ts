@@ -1,10 +1,13 @@
-import { and, asc, eq, isNull, like } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, like } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
 import { readSettingSteps } from "./settings";
 import { workspaceForOrganizationSteps } from "./workspace";
 import { ulid } from "./ulid";
+import { getWorkItemSteps } from "./items";
+import { getWorkItemRepositorySteps } from "./repositories";
+import { listRepositoryCandidatesSteps } from "./repository-catalog";
 
 export type SlackThreadIdentity = {
   workspaceId: string;
@@ -229,4 +232,29 @@ export function* slackSessionOriginSteps(q: Q, sessionId: string) {
   if (!issueId || !organizationId) return null;
   const origin = yield* slackIssueOriginSteps(q, issueId, organizationId);
   return origin ? { ...origin, issueId } : null;
+}
+
+export function* slackIssueTaskSteps(
+  q: Q,
+  issueId: string,
+): Steps<{ itemId: string; sessionKey: string } | null> {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ itemId: workItem.id, sessionKey: workItem.sessionKey })
+      .from(workItem)
+      .where(and(eq(workItem.linearIssueId, issueId), isNotNull(workItem.sessionKey)))
+      .orderBy(desc(workItem.createdAt), desc(workItem.id))
+      .limit(1),
+  );
+  return row?.sessionKey ? { itemId: row.itemId, sessionKey: row.sessionKey } : null;
+}
+
+export function* slackTaskScopeSteps(q: Q, itemId: string): Steps<string[]> {
+  const bound = yield* getWorkItemRepositorySteps(q, itemId);
+  if (bound) return [`${bound.owner}/${bound.repo}`];
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (!item?.sessionKey) return [];
+  const candidates = yield* listRepositoryCandidatesSteps(q, item.sessionKey, []);
+  return candidates.map((candidate) => `${candidate.owner}/${candidate.repo}`);
 }

@@ -39,6 +39,7 @@ import {
   canReportProgressSteps,
 } from "./activity-policy";
 import { planFiledResponse } from "./plan-proposal";
+import { slackRouted } from "./slack-route";
 import { parseRemainingParts, type FiledSubIssue } from "../core";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
@@ -151,9 +152,9 @@ export async function deliverLinearOutbox(
       (await store.run((q) =>
         sessionAwaitsFinishSteps(q, orderingKey ?? "", message.generation ?? 0, message.id),
       ));
-    await postActivity(message, held ? { ...payload, kind: "thought" } : payload, tracker, options);
-    if (store) await mirrorToSlack(store, message, payload);
-    return;
+    const shown = held ? { ...payload, kind: "thought" } : payload;
+    const mirrored = store ? await mirrorToSlack(store, message, payload) : false;
+    return postActivity(message, mirrored ? slackRouted(message, shown) : shown, tracker, options);
   }
   if (message.op === "linear.evidence") {
     if (!store) throw new Error("Evidence delivery needs the database");
@@ -173,9 +174,9 @@ export async function deliverLinearOutbox(
       ))
     )
       return;
-    await postElicitation(payload, tracker, options, store);
-    if (store) await mirrorToSlack(store, message, payload);
-    return;
+    if (store && (await mirrorToSlack(store, message, payload)))
+      return postActivity(message, slackRouted(message, payload), tracker, options);
+    return postElicitation(payload, tracker, options, store);
   }
   if (message.op === "status") {
     return postStatus(payload, tracker, options);
@@ -186,7 +187,11 @@ export async function deliverLinearOutbox(
   throw new Error(`unknown linear outbox op ${message.op}`);
 }
 
-async function mirrorToSlack(store: Db, message: OutboxRow, payload: Record<string, unknown>) {
+async function mirrorToSlack(
+  store: Db,
+  message: OutboxRow,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
   const key = message.idempotencyKey;
   const kind: SlackTaskUpdateKind | null =
     message.op === "elicitation"
@@ -198,13 +203,15 @@ async function mirrorToSlack(store: Db, message: OutboxRow, payload: Record<stri
           : null;
   const sessionId = readString(payload, "sessionId") ?? message.orderingKey;
   const text = readString(payload, "body") ?? readString(payload, "text");
-  if (!kind || !sessionId || !text) return;
+  if (!kind || !sessionId || !text || payload.answeredInSlack === true) return false;
   const questionId = readString(payload, "questionId");
-  await store.transaction(function* (q) {
-    const asked = questionId && !payload.itemId ? yield* getQuestionSteps(q, questionId) : null;
+  const fence = { generation: message.generation ?? 0, stop: message.delivery === "stop" };
+  return store.transaction(function* (q) {
+    const asked = questionId ? yield* getQuestionSteps(q, questionId) : null;
     const itemId = readString(payload, "itemId") ?? asked?.itemId;
     if (!itemId) return false;
-    return yield* slackTaskUpdateSteps(q, { sessionId, itemId, key, kind, text }, Date.now());
+    const update = { sessionId, itemId, key, kind, text, fence, asked };
+    return yield* slackTaskUpdateSteps(q, update, Date.now());
   });
 }
 

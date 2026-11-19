@@ -1106,6 +1106,14 @@ function deliveryPriority(kind: OutboxDelivery): number {
           : 5;
 }
 
+export function* outboxFenceOpenSteps(
+  q: Q,
+  fence: { target: OutboxTarget; orderingKey: string; generation: number; stop: boolean },
+): Steps<boolean> {
+  const current = yield* getFenceSteps(q, fence.target, fence.orderingKey);
+  return current.generation === fence.generation && (!current.stopped || fence.stop);
+}
+
 function* getFenceSteps(q: Q, target: OutboxTarget, orderingKey: string) {
   const { outboxSessionFence: fence } = q.t;
   const row = yield* q.one(

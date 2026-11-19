@@ -1,13 +1,14 @@
 import {
   enqueueOutboxOnceSteps,
-  getWorkItemRepositorySteps,
   getWorkItemSteps,
   slackSessionOriginSteps,
+  slackTaskScopeSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type Q,
   type Steps,
 } from "../db";
+import { isPawsAnswerKind, type StoredQuestion } from "../questions";
 import { filedTaskSteps } from "./work";
 
 export type SlackTaskUpdateKind = "question" | "update" | "response" | "error";
@@ -23,9 +24,15 @@ export type SlackTaskPost = {
   member: { userId: string; linkId: string };
   identifier: string;
   url: string | null;
-  repository: string | null;
+  repositories: string[];
   text: string;
+  itemId: string;
+  fence: { sessionId: string; generation: number; stop: boolean };
+  questionId?: string;
+  paws?: "repository" | "answer";
 };
+
+const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
 
 const TEXT_CHARS = 2_800;
 
@@ -37,6 +44,8 @@ export function* slackTaskUpdateSteps(
     key: string;
     kind: SlackTaskUpdateKind;
     text: string;
+    fence: { generation: number; stop: boolean };
+    asked: StoredQuestion | null;
   },
   now: number,
 ): Steps<boolean> {
@@ -48,12 +57,22 @@ export function* slackTaskUpdateSteps(
     origin;
   const thread = { workspaceId, teamId, channelId, threadTs, generation };
   const task = yield* filedTaskSteps(q, { ...thread, slackUserId });
-  const bound = yield* getWorkItemRepositorySteps(q, item.id);
+  const asked = update.kind === "question" ? update.asked : null;
+  const paws = !asked
+    ? undefined
+    : CHOOSE_IN_PAWS.has(asked.kind)
+      ? ("repository" as const)
+      : isPawsAnswerKind(asked.kind)
+        ? undefined
+        : ("answer" as const);
   const identifier = task?.identifier ?? item.linearIdentifier;
   const url = task?.url ?? null;
   const link = url ? `<${url}|${identifier}>` : identifier;
   const heading =
-    update.kind === "question" ? `*Paws asks on ${link}* (answer it in Linear)` : `*${link}*`;
+    update.kind === "question"
+      ? `*Paws asks on ${link}* (answer by mentioning @Paws in this thread)`
+      : `*${link}*`;
+  const body = text.replace(/<!--[\s\S]*?-->/g, "").trim();
   const payload: SlackTaskPost = {
     kind: "task",
     ...thread,
@@ -61,8 +80,14 @@ export function* slackTaskUpdateSteps(
     member: { userId, linkId },
     identifier,
     url,
-    repository: bound ? `${bound.owner}/${bound.repo}` : null,
-    text: `${heading}\n${text.length > TEXT_CHARS ? `${text.slice(0, TEXT_CHARS)}…` : text}`,
+    repositories: yield* slackTaskScopeSteps(q, item.id),
+    text: paws
+      ? ""
+      : `${heading}\n${body.length > TEXT_CHARS ? `${body.slice(0, TEXT_CHARS)}…` : body}`,
+    itemId: item.id,
+    fence: { sessionId: update.sessionId, ...update.fence },
+    ...(asked ? { questionId: asked.id } : {}),
+    ...(paws ? { paws } : {}),
   };
   yield* enqueueOutboxOnceSteps(q, {
     target: "slack",

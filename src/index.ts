@@ -1846,6 +1846,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             file: (request, signal) => linearTracker.fileSlackIssue!(request, { signal }),
           };
         },
+        answer: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

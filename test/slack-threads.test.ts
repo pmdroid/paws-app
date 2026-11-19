@@ -6,6 +6,7 @@ import {
   bindWorkItemRepositorySteps,
   consumeWorkspaceBootstrap,
   enqueueOutboxOnceSteps,
+  advanceOutboxSession,
   ensureLinearSessionSteps,
   listOutboxSteps,
   JobLoop,
@@ -38,7 +39,7 @@ import {
   slackTaskUpdateSteps,
 } from "../src/slack";
 import { createFakeTracker, followUpSessionOwner } from "../src/linear";
-import { deliverLinearOutbox } from "../src/loop";
+import { deliverLinearOutbox, SLACK_ASKED_NOTE, SLACK_ROUTED_NOTE } from "../src/loop";
 import { openQuestion } from "../src/questions";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import {
@@ -191,6 +192,16 @@ async function fixture(
   const placement = createRunnerPlacement({ store: db });
   const lane = createSlackReplies({ store: db, helpers, placement, pollIntervalMs: 1 });
   const runner = { hold: false, stopped: false };
+  const submitted: { questionId: string; answer: string; answeredBy: string; note?: string }[] = [];
+  const answer = async (input: (typeof submitted)[number]) => {
+    const rows = await sqlRows(
+      db,
+      "UPDATE question SET status = 'answered', answer = ?, answered_at = ? WHERE id = ? AND status = 'open' RETURNING id",
+      [input.answer, now, input.questionId],
+    );
+    if (rows.length) submitted.push(input);
+    return rows.length ? ("answered" as const) : ("rejected" as const);
+  };
   const answered = new Set<string>();
   const loop = (async () => {
     while (!runner.stopped) {
@@ -237,6 +248,7 @@ async function fixture(
       replies: async () => lane,
       profile: () => ({ agent: "codex" as const, model: null }),
       work,
+      answer,
       ...(setup.memory ? { memory: setup.memory } : {}),
       ...(setup.source ? { source: setup.source } : {}),
     });
@@ -441,6 +453,7 @@ async function fixture(
     prompts,
     answers,
     linear,
+    submitted,
     runner,
     helpers,
     deliver,
@@ -2104,6 +2117,11 @@ test("a filed thread hands its context only to its own run, and gets questions, 
       yield* q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id)));
     }
   });
+  await taskAccess(f, "S1");
+  await sqlRun(
+    f.db,
+    "INSERT INTO workspace_repository(workspace_id, repository, team_id) VALUES('W1', 'acme/secret', 'team-eng')",
+  );
   const handoff = await f.db.run((q) => slackHandoffSteps(q, "S1"));
   expect(handoff).toContain(CANARY);
   expect(handoff).toContain("private to Paws");
@@ -2121,8 +2139,10 @@ test("a filed thread hands its context only to its own run, and gets questions, 
   f.posted.length = 0;
   await send("elicitation", "question:q1", { sessionId: "S1", body: "Which bucket?" });
   expect(f.posts("chat.postMessage")).toHaveLength(0);
-  expect(f.notice()).toContain("didn't post it in this thread");
+  expect(f.notice()).toContain("didn't post it here");
   expect(f.notice()).not.toContain("Which bucket?");
+  expect(tracker.questions).toEqual([]);
+  expect(tracker.progress.at(-1)).toMatchObject({ kind: "thought", body: SLACK_ASKED_NOTE });
   await f.db.transaction((q) =>
     bindWorkItemRepositorySteps(q, "item-1", {
       owner: "acme",
@@ -2172,12 +2192,12 @@ test("a filed thread hands its context only to its own run, and gets questions, 
   expect(texts[1]).toContain("Tests pass");
   expect(texts[2]).toContain("pull/9");
   expect(JSON.stringify(f.posted)).not.toMatch(new RegExp(`${CANARY}|Secret sibling`));
+  expect(tracker.progress.some((p) => p.body.includes("pull/9"))).toBe(false);
+  expect(tracker.progress.some((p) => p.body === SLACK_ROUTED_NOTE)).toBe(true);
+  const queued = { sessionId: "S1", itemId: "item-1", key: "k", kind: "update" as const };
+  const fence = { generation: 0, stop: false };
   await f.db.transaction((q) =>
-    slackTaskUpdateSteps(
-      q,
-      { sessionId: "S1", itemId: "item-1", key: "k", kind: "update", text: "Queued" },
-      0,
-    ),
+    slackTaskUpdateSteps(q, { ...queued, text: "Queued", fence, asked: null }, 0),
   );
   await f.say("SMEMBER", "unlink", { thread_ts: root.ts });
   await send("activity", "reply:item-1:2", { sessionId: "S1", kind: "response", body: "Later" });
@@ -2186,4 +2206,149 @@ test("a filed thread hands its context only to its own run, and gets questions, 
   await f.reconnect();
   await send("activity", "merged:item-1:1", { sessionId: "S1", kind: "response", body: "Merged" });
   expect(f.posts("chat.postMessage")).toHaveLength(3);
+});
+
+async function taskAccess(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
+  const installation = { organizationId: "ORG1", oauthClientId: "app", appUserId: "app-user" };
+  const observedAtMs = Date.now();
+  await recordLinearInstallation(f.db, {
+    ...installation,
+    sessionId,
+    teamId: "team-eng",
+    observedAtMs,
+  });
+  await sqlRun(
+    f.db,
+    "INSERT INTO workspace_repository(workspace_id, repository, team_id) VALUES('W1', 'acme/app', 'team-eng') ON CONFLICT DO NOTHING",
+  );
+}
+
+async function filedTask() {
+  const f = await working();
+  const root = f.mention("SMEMBER", "uploads fail");
+  await f.deliver(root);
+  await f.settle();
+  f.answers.push(BRIEF);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  await f.click("SMEMBER", message, { action: "paws_file", value: draftOf(f).id });
+  await f.settle();
+  const [issueId] = [...f.linear.issues.keys()];
+  await f.db.run(function* (q) {
+    yield* ensureLinearSessionSteps(q, { sessionId: "S1", issueId, organizationId: "ORG1" });
+    yield* insertWorkItemSteps(q, "item-1");
+    const set = { linearIssueId: issueId!, linearIdentifier: "ENG-1", sessionKey: "S1" };
+    yield* q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, "item-1")));
+  });
+  await taskAccess(f, "S1");
+  const remoteUrl = "https://github.com/acme/app.git";
+  await f.db.transaction((q) =>
+    bindWorkItemRepositorySteps(q, "item-1", { owner: "acme", repo: "app", remoteUrl }),
+  );
+  expect((await disclose(f, "ua", "acme/app", "workspace")).status).toBe(200);
+  const tracker = createFakeTracker();
+  const send = async (op: string, key: string, payload: Record<string, unknown>) => {
+    const row = { target: "linear" as const, op, orderingKey: "S1", idempotencyKey: key };
+    const body = { sessionId: "S1", itemId: "item-1", ...payload };
+    await f.db.transaction((q) =>
+      enqueueOutboxOnceSteps(q, { ...row, payload: body, now: f.now() }),
+    );
+    const stored = (await f.db.run((q) => listOutboxSteps(q, "S1"))).at(-1)!;
+    await deliverLinearOutbox(stored, tracker, async () => {}, undefined, f.db);
+    await f.settle();
+  };
+  f.posted.length = 0;
+  return { f, root, tracker, send, link: `${ORIGIN}/dashboard/issues/ENG-1` };
+}
+
+test("a Slack answer needs the dashboard's task access, resumes once and leaves only a thread link in Linear", async () => {
+  const { f, root, tracker, send } = await filedTask();
+  const asked = await openQuestion(f.db, {
+    itemId: "item-1",
+    sessionId: "S1",
+    body: "Which?",
+    now: f.now(),
+  });
+  await send("elicitation", `question:${asked.id}`, {
+    questionId: asked.id,
+    body: "Which bucket?",
+  });
+  expect(String(f.posts("chat.postMessage")[0]!.body.text)).toContain("answer by mentioning @Paws");
+  f.advance(2_000);
+  const at = () => `${Math.ceil(f.now() / 1000) + 1}.000100`;
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await syncWorkspaceMember(f.db, { ...member, teamIds: [], now: f.now() });
+  await f.deliver(f.mention("SMEMBER", "uploads", { thread_ts: root.ts, ts: at() }));
+  await f.settle();
+  expect(f.notice()).toContain("You can't answer this question");
+  f.advance(2_000);
+  const reply = f.mention("SADMIN", "uploads", { thread_ts: root.ts, ts: at() });
+  await Promise.all([f.deliver(reply), f.deliver(reply)]);
+  await f.settle();
+  const note = `Answered in Slack: https://app.slack.com/client/T0ONE/C0ONE/thread/C0ONE-${root.ts}`;
+  expect(f.submitted).toEqual([
+    expect.objectContaining({ questionId: asked.id, answer: "uploads", answeredBy: "ua", note }),
+  ]);
+  f.posted.length = 0;
+  await send("activity", `paws-answer:${asked.id}`, {
+    kind: "response",
+    body: note,
+    answeredInSlack: true,
+  });
+  expect(tracker.progress.at(-1)).toMatchObject({ kind: "response", body: note });
+  expect(f.posts("chat.postMessage")).toEqual([]);
+});
+
+test("questions Slack can't answer post only a Paws link, and a task without a repository gets a Paws link", async () => {
+  const { f, tracker, send, link } = await filedTask();
+  const questions: [string, string][] = [
+    ["repository", "Which repository? https://github.com/acme/secret.git"],
+    ["link", "Approve the link?"],
+  ];
+  for (const [kind, body] of questions) {
+    const asked = await openQuestion(f.db, {
+      itemId: "item-1",
+      sessionId: "S1",
+      body,
+      now: f.now(),
+    });
+    await sqlRun(f.db, "UPDATE question SET kind = ? WHERE id = ?", [kind, asked.id]);
+    await send("elicitation", `question:${asked.id}`, { questionId: asked.id, body });
+    await sqlRun(f.db, "UPDATE question SET status = 'answered' WHERE id = ?", [asked.id]);
+  }
+  await sqlRun(f.db, "DELETE FROM work_item_repository");
+  await sqlRun(f.db, "DELETE FROM workspace_repository");
+  await send("activity", "fail:1", { kind: "error", body: "No configured GitHub repository." });
+  const texts = f.posts("chat.postMessage").map((p) => p.body.text);
+  expect(texts).toEqual([
+    `Choose the repository in Paws: ${link}`,
+    `Answer this in Paws: ${link}`,
+    `Paws has an update on this work that it can't share here. See it in Paws: ${link}`,
+  ]);
+  expect(JSON.stringify(f.posts("chat.postMessage")[0]!.body.blocks)).toContain(link);
+  expect(
+    JSON.stringify(await sqlRows(f.db, "SELECT payload FROM outbox WHERE target = 'slack'")),
+  ).not.toContain("secret");
+  expect(tracker.questions).toEqual([]);
+});
+
+test("a task's Slack posts keep the Linear payload, and wait on the session fence and the starter's task access", async () => {
+  const { f, tracker, send } = await filedTask();
+  const session = { sessionId: "S1", plan: [{ content: "Retry uploads", status: "inProgress" }] };
+  const id = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  await send("activity", "update:item-1:1", { kind: "thought", body: "Tests pass", id, session });
+  expect(tracker.progress.at(-1)).toMatchObject({ id, body: SLACK_ROUTED_NOTE, ephemeral: true });
+  expect(tracker.sessionUpdates.at(-1)).toMatchObject(session);
+  f.failNext["chat.postMessage"] = "rate";
+  await send("activity", "fail:1", { kind: "error", body: "Before Stop." });
+  await advanceOutboxSession(f.db, "linear", "S1", { stop: true, now: f.now() });
+  f.advance(60_000);
+  await f.settle();
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await advanceOutboxSession(f.db, "linear", "S1", { now: f.now() });
+  await syncWorkspaceMember(f.db, { ...member, teamIds: [], now: f.now() });
+  await send("activity", "fail:2", { kind: "error", body: "Without access." });
+  const texts = f.posts("chat.postMessage").map((p) => String(p.body.text));
+  expect(texts).toHaveLength(1);
+  expect(texts[0]).toContain("Tests pass");
 });
