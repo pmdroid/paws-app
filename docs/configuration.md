@@ -13,7 +13,7 @@ Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
 
 Run it again to change a value: each prompt shows the current value as its default, and other env lines and `config.toml` keys stay as they are. Type `-` to clear an optional value. It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
-`bun run paws install secrets` asks for the GitHub App, the Linear OAuth client, the Linear and GitHub webhook secrets, the exe.dev token, the Tailscale auth key and Slack ([Slack](slack.md)). Input is hidden. Each value is written envelope-encrypted to `PAWS_HOME/secrets`. A webhook secret can be generated and is then shown once on the terminal. On a re-run each prompt says `set` or `not set`, and Enter keeps the value. It ends with the matching `paws doctor` checks.
+`bun run paws install secrets` asks for nothing. It prints the public URL and the setup link, the same text as `paws setup-link`; before Paws has started once it says to start Paws and run `paws setup-link`. GitHub, Linear, [Slack](slack.md) and the runner VM keys are then set up in the browser ([workspace access](workspace-access.md)). Secrets already in `PAWS_HOME/secrets` or the environment keep working.
 
 For a scripted install, pass `--non-interactive` with flags such as `--paws-port 443`, or `--answers answers.toml` with the same keys in snake case (`paws_port = 443`, `github_repos = ["owner/repo"]`). Flags override the file, and a value left out keeps its current or default value.
 

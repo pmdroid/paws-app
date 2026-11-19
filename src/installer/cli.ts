@@ -2,7 +2,6 @@ import { closeSync, openSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureLayout, loadConfigFile, loadEnv, pawsPaths, type EnvSource } from "../config";
-import { doctorChecks, realProbe } from "../doctor";
 import { ENV_FILE, installedUnit, unitPaths } from "../install-host";
 import { openEnvFile } from "./env-file";
 import { terminalPrompter, type PromptOutput } from "./prompt";
@@ -34,14 +33,11 @@ export async function runInstallCli(
   const config = loadConfigFile(paths.configFile);
   const terminal = openTerminal();
   try {
-    await withSecrets(merged, () =>
+    await withSecrets(merged, async () =>
       runSecretsStep({
         home,
-        config,
         prompter: terminalPrompter(process.stdin, process.stdout, terminal),
         publicUrl: merged.PAWS_PUBLIC_URL || config.publicUrl,
-        doctor: async () =>
-          doctorChecks(await realProbe({ ...source, ...env.values(), PAWS_HOME: home })),
       }),
     );
     return 0;

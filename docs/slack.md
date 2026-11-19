@@ -6,7 +6,7 @@ A workspace admin connects one Slack workspace to a Paws workspace in **Workspac
 
 1. On [api.slack.com/apps](https://api.slack.com/apps), create an app. Under **OAuth & Permissions**, add the redirect URL `https://<paws>/oauth/slack/callback` and the bot scopes below. Turn on **Agents & AI Apps** and the **Messages Tab** in **App Home**.
 2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im`, `assistant_thread_started`, `app_uninstalled` and `tokens_revoked`. Turn on **Manage Distribution** to install it in more than one Slack workspace.
-3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or save them with `bun run paws install secrets`. Set `SLACK_APP_ID` so Paws refuses any other app. **Token Rotation** may be on or off; with it on, Paws refreshes a workspace's token when it is about to expire. Slack must reach Paws over HTTPS.
+3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or enter them in the dashboard. Set `SLACK_APP_ID` so Paws refuses any other app. **Token Rotation** may be on or off; with it on, Paws refreshes a workspace's token when it is about to expire. Slack must reach Paws over HTTPS.
 
 ## Scopes
 

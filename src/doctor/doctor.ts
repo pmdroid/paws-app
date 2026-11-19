@@ -59,7 +59,7 @@ const FIX = {
   closeout: "Fix .agents/closeout.yaml on origin/main.",
   repo: "Connect GitHub and choose repositories in workspace settings.",
   webhook:
-    "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret, or save it with paws install secrets.",
+    "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret, or enter it through the setup link.",
   publicUrl: "Set PAWS_PUBLIC_URL to the public https origin.",
   githubApp:
     "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
