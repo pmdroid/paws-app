@@ -2861,14 +2861,6 @@ export function createRemoteAgentRunner(options: {
 
 export { createRemoteSessionAgentRunner } from "./helpers";
 export type { ConversationTurns } from "./conversation";
-export {
-  createSlackReplies,
-  SLACK_REPLY_ATTEMPTS,
-  SLACK_REPLY_TEXT_LIMIT,
-  type SlackReplies,
-  type SlackReplyOutcome,
-  type SlackReplyRequest,
-} from "./slack-reply";
 
 export function createConversationTurns(options: {
   store: Db;

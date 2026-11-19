@@ -255,7 +255,9 @@ export const runnerHelper = pgTable(
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspace.id),
-    sessionId: text("session_id").references(() => linearSession.sessionId),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => linearSession.sessionId),
     sessionGeneration: bigint("session_generation", { mode: "number" }).notNull(),
     runnerFence: bigint("runner_fence", { mode: "number" }).notNull(),
     envelope: jsonb().notNull(),
@@ -267,7 +269,6 @@ export const runnerHelper = pgTable(
   },
   (table) => [
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
-    check("runner_helper_session", sql`(purpose = 'slack_reply') = (session_id IS NULL)`),
   ],
 );
 

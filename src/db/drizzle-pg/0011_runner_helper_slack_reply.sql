@@ -1,2 +1,0 @@
-ALTER TABLE "runner_helper" ALTER COLUMN "session_id" DROP NOT NULL;--> statement-breakpoint
-ALTER TABLE "runner_helper" ADD CONSTRAINT "runner_helper_session" CHECK ((purpose = 'slack_reply') = (session_id IS NULL));

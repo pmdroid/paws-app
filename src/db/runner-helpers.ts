@@ -37,7 +37,7 @@ type NewRunnerHelper = {
   id: string;
   runnerId: string;
   workspaceId: string;
-  sessionId: string | null;
+  sessionId: string;
   sessionGeneration: number;
   runnerFence: number;
   envelope: string;

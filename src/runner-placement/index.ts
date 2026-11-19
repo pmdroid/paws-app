@@ -167,7 +167,7 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
-export { itemRunnerVerdictsSteps, signInFitSteps } from "./fit";
+export { itemRunnerVerdictsSteps } from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
 export { sessionHolderSteps, runRunnerSteps } from "./session";

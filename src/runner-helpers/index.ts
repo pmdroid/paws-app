@@ -11,7 +11,6 @@ import {
   runnerHelperAvailabilitySteps,
   runnerHelperResultMatchesSteps,
   runnerHelperRowSteps,
-  runnerHostVersionSteps,
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
   usableRunnerSteps,
@@ -33,15 +32,12 @@ import {
   RUNNER_RESULT_BODY_LIMIT,
   runnerHelperLifetime,
   runnerAccountEchoed,
-  runnerReleaseAtLeast,
   signRunnerCommand,
-  SLACK_REPLY_RUNNER_VERSION,
   withRejectedFields,
   type RunnerCommand,
   type RunnerHelperResult,
   type RunnerAccount,
   type RunnerProfile,
-  type RunnerSlackReplyScope,
   type SignedRunnerCommand,
 } from "../runner-protocol";
 import { runnerRequestUnavailable } from "../runner-work";
@@ -55,17 +51,8 @@ type HelperDispatch = {
   prompt: string;
   account?: RunnerAccount;
   conversation?: HelperCommand["conversation"];
-  slack?: RunnerSlackReplyScope;
 };
-
-export type SlackReplyAuthority = (
-  q: Q,
-  input: { workspaceId: string; scope: RunnerSlackReplyScope },
-) => Steps<boolean>;
-
-export class HelperFencedError extends Error {
-  override readonly name = "HelperFencedError";
-}
+class HelperFencedError extends Error {}
 export class RunnerHelperBusyError extends Error {
   override readonly name = "RunnerHelperBusyError";
   constructor(readonly heldRunnerId?: string) {
@@ -82,7 +69,6 @@ export function createRunnerHelpers(options: {
     runnerId: string,
     envelopes: SignedRunnerCommand[],
   ) => Promise<SignedRunnerCommand[]>;
-  slack?: SlackReplyAuthority;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
@@ -95,25 +81,8 @@ export function createRunnerHelpers(options: {
     sessionId: string,
     generation: number,
     purpose?: HelperCommand["purpose"],
-    slack?: RunnerSlackReplyScope,
   ) {
     const runner = yield* identitySteps(q, runnerId);
-    if (purpose === "slack_reply") {
-      if (
-        !slack ||
-        !options.slack ||
-        sessionId !== slack.requestId ||
-        generation !== slack.installGeneration ||
-        runner.userId !== slack.memberUserId ||
-        !runnerReleaseAtLeast(
-          yield* runnerHostVersionSteps(q, runnerId),
-          SLACK_REPLY_RUNNER_VERSION,
-        ) ||
-        !(yield* options.slack(q, { workspaceId: runner.workspaceId, scope: slack }))
-      )
-        throw new HelperFencedError("Slack reply authority changed");
-      return runner;
-    }
     const session = yield* getLinearSessionSteps(q, sessionId);
     const clientId = yield* linearSessionClientIdSteps(q, sessionId);
     const grouping = purpose === "finding_groups";
@@ -137,7 +106,6 @@ export function createRunnerHelpers(options: {
       command.sessionId,
       command.sessionGeneration,
       command.purpose,
-      command.slack,
     );
     return { row: unchangedIdentity(runner, row), command, envelope };
   }
@@ -171,20 +139,17 @@ export function createRunnerHelpers(options: {
     }
   }
   function* dispatchSteps(q: Q, input: HelperDispatch) {
-    const slack = input.purpose === "slack_reply";
-    const session = slack ? null : yield* getLinearSessionSteps(q, input.sessionId);
-    if (!slack && !session) throw new HelperFencedError("Linear helper session is unavailable");
-    const generation = session ? session.generation : (input.slack?.installGeneration ?? -1);
+    const session = yield* getLinearSessionSteps(q, input.sessionId);
+    if (!session) throw new HelperFencedError("Linear helper session is unavailable");
     const runner = yield* scopeSteps(
       q,
       input.runnerId,
       input.sessionId,
-      generation,
+      session.generation,
       input.purpose,
-      input.slack,
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
-    const conversation = input.purpose === "conversation" || slack;
+    const conversation = input.purpose === "conversation";
     if (input.purpose === "classify" || input.purpose === "select_repository") {
       const open = yield* openSteps(q, input.sessionId);
       if (open) throw new RunnerHelperBusyError(open.runnerId);
@@ -204,7 +169,7 @@ export function createRunnerHelpers(options: {
       id: Bun.randomUUIDv7(),
       type: "helper",
       workspaceId: runner.workspaceId,
-      sessionGeneration: generation,
+      sessionGeneration: session.generation,
       issuedAt: at,
       expiresAt: at + runnerHelperLifetime(input.purpose),
     }) as HelperCommand;
@@ -221,7 +186,7 @@ export function createRunnerHelpers(options: {
       id: command.id,
       runnerId: command.runnerId,
       workspaceId: command.workspaceId,
-      sessionId: slack ? null : command.sessionId,
+      sessionId: command.sessionId,
       sessionGeneration: command.sessionGeneration,
       runnerFence: runner.fence,
       envelope: JSON.stringify(envelope),
