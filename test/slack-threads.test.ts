@@ -2962,7 +2962,7 @@ test("a linked member's thread reply without a mention runs one turn and one rep
   await f.deliver(followUp);
   await f.deliver(followUp);
   f.runner.hold = true;
-  const turn = f.runJobs();
+  const running = f.runJobs();
   for (let i = 0; i < 500 && !f.posts(STATUS).length; i++) {
     await Bun.sleep(5);
     await f.flush();
@@ -2971,7 +2971,7 @@ test("a linked member's thread reply without a mention runs one turn and one rep
     { channel_id: "C0ONE", thread_ts: root.ts, status: "processing" },
   ]);
   f.runner.hold = false;
-  await turn;
+  await running;
   await f.settle();
   const tagged = f.mention("SADMIN", "and a monoid?", { thread_ts: root.ts });
   await f.deliver({ ...tagged, type: "message" });
