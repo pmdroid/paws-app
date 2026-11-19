@@ -182,3 +182,10 @@ export {
   readGitHubCandidateRange,
   sameGitHubCandidatePatch,
 } from "./candidate-reads";
+export { createFakeSnapshotReader, createGitHubSnapshotReader } from "./snapshot";
+export type {
+  FakeSnapshotReader,
+  FakeSnapshotRepository,
+  GitHubSnapshotReader,
+  RepositorySnapshot,
+} from "./snapshot";
