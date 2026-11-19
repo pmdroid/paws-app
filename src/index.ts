@@ -222,6 +222,7 @@ import {
   revokeInstallationToken,
   githubHttpsUrl,
   createGitHubGitReader,
+  createGitHubSnapshotReader,
   branchContains,
   readRef,
   readCommit,
@@ -1827,6 +1828,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           });
         },
         profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+        source: createGitHubSnapshotReader({
+          locate: (name) => {
+            const repository = repositoryBinding(name);
+            const binding =
+              repository && githubBinding(authProvider(runtime, repository, "read", resolveApp));
+            return binding ? { ...binding, owner: repository.owner, repo: repository.repo } : null;
+          },
+        }),
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

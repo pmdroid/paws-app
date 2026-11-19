@@ -39,6 +39,7 @@ import {
   type ContextNamespace,
 } from "../src/project-context";
 import { createSlackReplies } from "../src/runner-backend";
+import { createFakeSnapshotReader, type FakeSnapshotReader } from "../src/github";
 import { createRunnerPlacement } from "../src/runner-placement";
 import { MINIMUM_RUNNER_VERSION, SLACK_REPLY_RUNNER_VERSION } from "../src/runner-protocol";
 import { replaceScopedCredentialSteps } from "../src/credentials";
@@ -57,7 +58,10 @@ afterEach(async () => {
 type Fail = "rate" | "down" | "refused" | "lost" | "scope";
 
 async function fixture(
-  setup: { memory?: Parameters<typeof createSlackThreads>[0]["memory"] } = {},
+  setup: {
+    memory?: Parameters<typeof createSlackThreads>[0]["memory"];
+    source?: FakeSnapshotReader;
+  } = {},
 ) {
   const home = tempHome();
   const { db, close } = await tempStore();
@@ -146,6 +150,7 @@ async function fixture(
       replies: async () => lane,
       profile: () => ({ agent: "codex" as const, model: null }),
       ...(setup.memory ? { memory: setup.memory } : {}),
+      ...(setup.source ? { source: setup.source } : {}),
     });
   let threads = start();
   const jobs = new JobLoop(db, clock, { backoffBaseMs: 10 });
@@ -976,7 +981,7 @@ async function plant(
   expect(outcome.status).toBe("stored");
 }
 
-const lastPrompt = (f: Awaited<ReturnType<typeof fixture>>) => f.prompts.at(-1)?.prompt ?? "";
+const lastPrompt = (f: { prompts: { prompt: string }[] }) => f.prompts.at(-1)?.prompt ?? "";
 
 test("a remembered channel decision reaches a new thread after restart, with no work, runner slot or extra post", async () => {
   const f = await linked(["um", "SMEMBER"]);
@@ -1235,4 +1240,176 @@ test("a long thread carries each memory dependency once", async () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.length).toBeLessThanOrEqual(rows.length);
   }
+});
+
+const MAIN = "a".repeat(40);
+const V1 = "b".repeat(40);
+const OSS = "c".repeat(40);
+const NEXT = "d".repeat(40);
+
+async function withSource() {
+  const reader = createFakeSnapshotReader({
+    "acme/app": {
+      visibility: "private",
+      defaultRef: "main",
+      refs: { main: MAIN, v1: V1 },
+      files: {
+        [MAIN]: {
+          "src/billing.ts":
+            'export const plan = "canary-main";\nconst key = "ghp_abcdefghijklmnopqrstuvwxyz";',
+          "src/other.ts": "canary-unrelated",
+          ".env": "SECRET=canary-env",
+          "README.md": "The app.",
+        },
+        [V1]: { "src/billing.ts": "canary-v1" },
+        [NEXT]: { "src/billing.ts": "canary-next" },
+      },
+    },
+    "acme/oss": {
+      visibility: "public",
+      defaultRef: "main",
+      refs: { main: OSS },
+      files: { [OSS]: { "lib/billing.js": "canary-oss" } },
+    },
+  });
+  const f = await linkedWith({ source: reader }, ["um", "SMEMBER"]);
+  for (const repository of ["acme/app", "acme/oss"])
+    await sqlRun(
+      f.db,
+      "INSERT INTO workspace_repository(workspace_id, repository, team_id) VALUES('W1', ?, 'tA')",
+      [repository],
+    );
+  const teams = (teamIds: string[]) =>
+    syncWorkspaceMember(f.db, {
+      workspaceId: "W1",
+      userId: "um",
+      role: "member",
+      active: true,
+      teamIds,
+      now: f.now(),
+    });
+  await teams(["tA"]);
+  const thread = async (slackUser: string, attach: string) => {
+    const root = f.mention(slackUser, attach);
+    await f.deliver(root);
+    await f.settle();
+    return root.ts;
+  };
+  return { ...f, reader, teams, thread };
+}
+
+const sourceOf = (row: { payload: unknown }) => (row.payload as { source?: unknown }).source;
+
+test("an attached repository answers from read-only source, records its commit, and needs no slot or issue", async () => {
+  const f = await withSource();
+  await f.say("SMEMBER", "channel repo acme/app");
+  expect(f.notice()).toContain("Only a Paws workspace admin");
+  await f.say("SADMIN", "channel repo acme/app");
+  expect(f.notice()).toContain("This channel's repository is now `acme/app`");
+  expect(await f.audit("slack.channel_repository")).toEqual([
+    { user_id: "ua", subject: "slack:T0ONE:C0ONE:acme/app" },
+  ]);
+  await f.say("SMEMBER", "how does billing work?");
+  const prompt = lastPrompt(f);
+  expect(prompt).toContain(`acme/app at commit ${MAIN} (main)`);
+  expect(prompt).toContain("canary-main");
+  expect(prompt).toContain("line withheld");
+  expect(prompt).not.toContain("ghp_");
+  expect(prompt).not.toContain("canary-env");
+  expect(prompt).not.toContain("canary-unrelated");
+  expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toBe(
+    "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._",
+  );
+  expect(sourceOf((await f.replies()).at(-1)!)).toEqual({
+    repository: "acme/app",
+    ref: "main",
+    commit: MAIN,
+  });
+  const pinned = await f.thread("SMEMBER", "repo acme/app v1");
+  expect(f.notice()).toContain("This thread now reads `acme/app` at `v1`");
+  await f.say("SMEMBER", "and billing here?", { thread_ts: pinned });
+  expect(lastPrompt(f)).toContain("canary-v1");
+  f.reader.repositories["acme/app"]!.refs.v1 = NEXT;
+  f.reader.repositories["acme/app"]!.refs.main = NEXT;
+  const sha = await f.thread("SMEMBER", `repo acme/app ${V1}`);
+  await f.say("SMEMBER", "billing again?", { thread_ts: sha });
+  expect(lastPrompt(f)).toContain("canary-v1");
+  await f.say("SMEMBER", "billing on main now?");
+  expect(lastPrompt(f)).toContain("canary-next");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["um", "um", "um", "um"]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("source needs the requester's current access and an approved audience, before reading and again before posting", async () => {
+  const f = await withSource();
+  await f.teams([]);
+  await f.say("SMEMBER", "repo acme/app");
+  expect(f.notice()).toContain("can't attach that repository");
+  await f.teams(["tA"]);
+  const own = await f.thread("SMEMBER", "repo acme/app");
+  await f.say("SMEMBER", "how does billing work?", { thread_ts: own });
+  expect(f.notice()).toContain("answers from a private repository only when");
+  expect(f.reader.calls.filter((call) => call.method !== "resolve")).toEqual([]);
+  expect(f.prompts).toEqual([]);
+  const open = await f.thread("SMEMBER", "repo acme/oss");
+  await f.say("SMEMBER", "how does billing work?", { thread_ts: open });
+  expect(lastPrompt(f)).toContain("canary-oss");
+  await f.teams([]);
+  await f.say("SMEMBER", "billing again?", { thread_ts: open });
+  expect(f.notice()).toContain("can't read this thread's repository for you");
+  await f.say("SMEMBER", "repo off", { thread_ts: open });
+  await f.say("SMEMBER", "what did you say before?", { thread_ts: open });
+  expect(lastPrompt(f)).not.toContain("answer 1");
+  expect(lastPrompt(f)).not.toContain("canary-oss");
+  expect(lastPrompt(f)).toContain("No repository");
+
+  for (const change of ["access", "private", "policy", "running"] as const) {
+    const g = await withSource();
+    await g.say("SADMIN", "channel repo acme/app");
+    const ts = await g.thread("SMEMBER", change === "private" ? "repo acme/oss" : "repo acme/app");
+    if (change === "running") {
+      g.runner.hold = true;
+      await g.deliver(g.mention("SMEMBER", "billing?", { thread_ts: ts }));
+      const pending = g.settle();
+      while (!(await g.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+        await Bun.sleep(2);
+      await g.teams([]);
+      g.runner.hold = false;
+      await pending;
+      expect(g.notice()).toContain("changed while Paws was answering");
+      expect(await g.replies()).toEqual([]);
+      continue;
+    }
+    await g.deliver(g.mention("SMEMBER", "billing?", { thread_ts: ts }));
+    await g.runJobs();
+    expect(await g.replies()).toHaveLength(1);
+    if (change === "access") await g.teams([]);
+    if (change === "private") g.reader.repositories["acme/oss"]!.visibility = "private";
+    if (change === "policy") await g.say("SADMIN", "channel repo off");
+    await g.settle();
+    expect(g.posts("chat.postMessage")).toEqual([]);
+    expect((await g.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+  }
+});
+
+test("source reads are bounded and cached per member, installation and commit", async () => {
+  const f = await withSource();
+  const files = f.reader.repositories["acme/app"]!.files[MAIN]!;
+  for (let index = 0; index < 40; index++) files[`src/billing-${index}.ts`] = "x\n".repeat(5_000);
+  files["src/billing-huge.ts"] = "y".repeat(100_000);
+  await f.say("SADMIN", "channel repo acme/app");
+  await f.say("SMEMBER", "billing?");
+  await f.say("SMEMBER", "billing again?");
+  const prompt = lastPrompt(f);
+  expect(Buffer.byteLength(prompt)).toBeLessThan(32_000);
+  expect(prompt.match(/^--- /gm)?.length).toBeLessThanOrEqual(4);
+  const reads = (who: string) => f.reader.calls.filter((call) => call.method === who);
+  expect(reads("read").map((call) => call.target)).not.toContain("src/billing-huge.ts");
+  expect(reads("files")).toHaveLength(1);
+  const blobs = reads("read").length;
+  await f.say("SADMIN", "billing?");
+  expect(reads("files")).toHaveLength(2);
+  expect(reads("read").length).toBeGreaterThan(blobs);
+  await f.reconnect();
+  expect(await f.sideEffects()).toEqual(NONE);
 });

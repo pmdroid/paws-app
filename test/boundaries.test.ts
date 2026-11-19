@@ -118,6 +118,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "dashboard-links",
     "project-context",
+    "github",
+    "improvements",
   ],
   core: [],
   "host-operation": [],
