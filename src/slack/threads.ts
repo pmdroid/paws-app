@@ -95,9 +95,16 @@ type Reply = Place & {
   mentionTs: string;
   question: string;
   text: string;
-  context?: { key: string; version: number };
+  contexts?: MemoryRef[];
 };
-type Payload = Reply | (Place & { kind: "notice"; text: string });
+type MemoryRef = { key: string; version: number };
+type Notice = Place & {
+  kind: "notice";
+  text: string;
+  member?: { userId: string; linkId: string };
+  listing?: boolean;
+};
+type Payload = Reply | Notice;
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string; id?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
@@ -441,8 +448,8 @@ export function createSlackThreads<Profile>(options: {
     return slackCaller(slackFetch, await auth.ensureFresh());
   }
 
-  function notice(place: Place, key: string, text: string) {
-    const payload: Payload = { ...place, kind: "notice", text };
+  function notice(place: Place, key: string, text: string, extra: Partial<Notice> = {}) {
+    const payload: Payload = { ...place, kind: "notice", text, ...extra };
     const row = { target: "slack" as const, op: "chat.postEphemeral", payload, now: now() };
     return store.transaction((q) =>
       enqueueOutboxOnceSteps(q, { ...row, idempotencyKey: `slack:notice:${key}` }),
@@ -558,6 +565,9 @@ export function createSlackThreads<Profile>(options: {
     const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
     const scope = { workspaceId, teamId, channelId, generation };
     const command = slackMemoryCommand(question);
+    const asker = { userId: gate.userId, linkId: gate.linkId };
+    if (command?.kind === "memory")
+      return void (await notice(place, dedupeKey!, "", { member: asker, listing: true }));
     if (command) {
       const text = await memory.command({
         scope,
@@ -572,7 +582,7 @@ export function createSlackThreads<Profile>(options: {
         revision: mention.ts,
         now: now(),
       });
-      return void (await notice(place, dedupeKey!, text));
+      return void (await notice(place, dedupeKey!, text, { member: asker }));
     }
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
     const earlier = await store.run(function* (q) {
@@ -581,12 +591,21 @@ export function createSlackThreads<Profile>(options: {
     });
     const lane = earlier && (await options.replies());
     if (!lane) return;
-    const thread = [...earlier!.slice(-10), { slackUserId, question, text: null }].flatMap(
-      (turn) => [
-        `[<@${turn.slackUserId}>]: ${turn.question}`,
-        ...(turn.text === null ? [] : [`[Paws]: ${turn.text}`]),
-      ],
-    );
+    const kept: MemoryRef[] = [];
+    const turns: { slackUserId: string; question: string; text: string | null }[] = [];
+    for (const turn of earlier!.slice(-10)) {
+      const refs = turn.contexts ?? [];
+      const checks = refs.map((ref) =>
+        memory.current({ scope, userId: gate.userId, ...ref, now: now() }),
+      );
+      const valid = (await Promise.all(checks)).every(Boolean);
+      if (valid) kept.push(...refs);
+      turns.push({ ...turn, text: valid ? turn.text : null });
+    }
+    const thread = [...turns, { slackUserId, question, text: null }].flatMap((turn) => [
+      `[<@${turn.slackUserId}>]: ${turn.question}`,
+      ...(turn.text === null ? [] : [`[Paws]: ${turn.text}`]),
+    ]);
     const instructions =
       "You are Paws, answering in a Slack channel thread. No repository, Linear issue or tools are attached; if the question needs code or changes, say this thread can't do that yet. Reply briefly in Slack mrkdwn.";
     const consumerKey = `slack:${workspaceId}:${teamId}:${channelId}:${mention.ts}`;
@@ -638,10 +657,11 @@ export function createSlackThreads<Profile>(options: {
       throw new Error("The member's runner conversation lane is busy.");
     const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_000) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
-    const contextRef = remembered.text ? { key: consumerKey, version: remembered.version } : null;
-    const memoryCurrent = () =>
-      !contextRef || memory.current({ scope, userId: gate.userId, ...contextRef, now: now() });
-    if (!(await memoryCurrent()))
+    const contexts = [
+      ...kept,
+      ...(remembered.text ? [{ key: consumerKey, version: remembered.version }] : []),
+    ];
+    if (!(await currentMemory(scope, gate.userId, contexts)))
       return void (await notice(place, replyKey, NOTICES.memory_changed));
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
@@ -656,7 +676,7 @@ export function createSlackThreads<Profile>(options: {
         mentionTs: mention.ts,
         question,
         text,
-        ...(contextRef ? { context: contextRef } : {}),
+        ...(contexts.length ? { contexts } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -666,6 +686,16 @@ export function createSlackThreads<Profile>(options: {
         now: now(),
       });
     });
+  }
+
+  async function currentMemory(
+    scope: Bound & { workspaceId: string },
+    userId: string,
+    refs: readonly MemoryRef[],
+  ) {
+    for (const ref of refs)
+      if (!(await memory.current({ scope, userId, ...ref, now: now() }))) return false;
+    return true;
   }
 
   async function deliver(
@@ -681,24 +711,23 @@ export function createSlackThreads<Profile>(options: {
       if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
         return false;
       const gate = yield* gateSteps(q, home, payload);
-      if (payload.kind === "notice") return gate.kind !== "ignore";
+      const bound = payload.kind === "notice" ? payload.member : undefined;
+      if (payload.kind === "notice" && !bound) return gate.kind !== "ignore";
+      if (bound)
+        return (
+          gate.kind === "member" && gate.userId === bound.userId && gate.linkId === bound.linkId
+        );
+      if (payload.kind !== "reply") return false;
       return (
         gate.kind === "member" &&
         gate.userId === payload.userId &&
         gate.linkId === (payload.linkId ?? "")
       );
     }
-    const remembered = payload.kind === "reply" ? payload.context : undefined;
+    const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
     const allowed =
       (await store.run(allowedSteps)) &&
-      (!remembered ||
-        (await memory.current({
-          scope: payload,
-          userId: (payload as Reply).userId,
-          key: remembered.key,
-          version: remembered.version,
-          now: now(),
-        })));
+      (payload.kind !== "reply" || (await currentMemory(payload, payload.userId, refs)));
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||
@@ -706,6 +735,10 @@ export function createSlackThreads<Profile>(options: {
     )
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
+    const text =
+      payload.kind === "notice" && payload.listing && payload.member
+        ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
+        : payload.text;
     const sending = await store.transaction(function* (q) {
       if (!(yield* allowedSteps(q))) return "stopped";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
@@ -722,7 +755,7 @@ export function createSlackThreads<Profile>(options: {
         ? { user: payload.slackUserId }
         : { unfurl_links: false, unfurl_media: false, blocks: replyBlocks(payload.text) };
     const method = payload.kind === "notice" ? "chat.postEphemeral" : "chat.postMessage";
-    const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text: payload.text };
+    const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text };
     let result: Record<string, unknown>;
     try {
       result = await call(method, { ...fields, ...body }, context.signal);

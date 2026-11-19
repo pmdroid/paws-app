@@ -56,7 +56,9 @@ afterEach(async () => {
 
 type Fail = "rate" | "down" | "refused" | "lost" | "scope";
 
-async function fixture() {
+async function fixture(
+  setup: { memory?: Parameters<typeof createSlackThreads>[0]["memory"] } = {},
+) {
   const home = tempHome();
   const { db, close } = await tempStore();
   cleanup.push(close, () => rmSync(home, { recursive: true, force: true }));
@@ -143,6 +145,7 @@ async function fixture() {
       now: () => now,
       replies: async () => lane,
       profile: () => ({ agent: "codex" as const, model: null }),
+      ...(setup.memory ? { memory: setup.memory } : {}),
     });
   let threads = start();
   const jobs = new JobLoop(db, clock, { backoffBaseMs: 10 });
@@ -365,7 +368,11 @@ async function fixture() {
 }
 
 async function linked(...who: ["ua" | "um", string][]) {
-  const f = await fixture();
+  return linkedWith({}, ...who);
+}
+
+async function linkedWith(options: Parameters<typeof fixture>[0], ...who: ["ua" | "um", string][]) {
+  const f = await fixture(options);
   for (const [user, slackUser] of [["ua", "SADMIN"], ...who] as const) {
     await f.say(slackUser, `link ${(await f.code(user, slackUser)).code}`);
     expect(f.notice()).toContain("Linked");
@@ -946,6 +953,7 @@ async function plant(
   f: Awaited<ReturnType<typeof fixture>>,
   namespace: ContextNamespace,
   body: string,
+  classification: "decision" | "reported_fact" = "decision",
 ) {
   const access = createFakeContextAccess();
   const requester = { workspaceId: namespace.workspaceId, userId: "planter" };
@@ -962,7 +970,7 @@ async function plant(
       actorId: "planter",
       restriction: { channelId: namespace.scopeId },
     },
-    claims: [{ key: "k", layer: "observation", classification: "decision", importance: 5, body }],
+    claims: [{ key: "k", layer: "observation", classification, importance: 5, body }],
     now: f.now(),
   });
   expect(outcome.status).toBe("stored");
@@ -1092,4 +1100,96 @@ test("memory invalidated while the runner answers is never posted, and the membe
   expect(f.posts("chat.postMessage")).toEqual([]);
   expect(await f.replies()).toEqual([]);
   expect(f.notice()).toContain("channel memory or your access changed");
+});
+
+test("a queued memory listing is bound to its member's link and lists only what is current when sent", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-list-kept: logs live in Loki");
+  await f.say("SMEMBER", "remember canary-list-gone: metrics live in Graphite");
+  const gone = RECORD.exec(f.notice())![1]!;
+  await f.deliver(f.mention("SMEMBER", "memory"));
+  await f.runJobs();
+  const [source] = await sqlRows<{ source_id: string }>(
+    f.db,
+    "SELECT source_id FROM context_record WHERE id = ?",
+    [gone],
+  );
+  await invalidateContext(f.db, {
+    namespace: { workspaceId: "W1", scopeKind: "slack_channel", scopeId: await channelScope(f) },
+    source: { kind: "slack_channel_message", id: source!.source_id },
+    reason: "deleted",
+    now: f.now(),
+  });
+  await f.settle();
+  expect(f.notice()).toContain("canary-list-kept");
+  expect(f.notice()).not.toContain("canary-list-gone");
+  const sent = f.posts("chat.postEphemeral").length;
+  await f.deliver(f.mention("SMEMBER", "memory"));
+  await f.runJobs();
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
+  f.advance(1);
+  await f.settle();
+  expect(f.posts("chat.postEphemeral")).toHaveLength(sent);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toContain("Linked");
+  expect(f.posted.map((post) => String(post.body.text)).join("\n")).not.toContain(
+    "canary-list-gone",
+  );
+});
+
+test("an earlier answer that used corrected memory leaves later prompts, also after restart", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-thread: builds run on Buildkite");
+  const id = RECORD.exec(f.notice())![1]!;
+  const root = f.mention("SMEMBER", "where do builds run?");
+  await f.deliver(root);
+  await f.settle();
+  const first = String(f.posts("chat.postMessage").at(-1)!.body.text);
+  await f.say("SMEMBER", "and how long do they take?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain(`[Paws]: ${first}`);
+  await f.say("SADMIN", `correct ${id} canary-fixed: builds run on GitHub Actions`);
+  expect(f.notice()).toContain("Corrected");
+  f.restart();
+  await f.say("SMEMBER", "anything else?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain(`[Paws]: ${first}`);
+  expect(lastPrompt(f)).toContain("where do builds run?");
+  expect(lastPrompt(f)).toContain("canary-fixed");
+  expect(lastPrompt(f)).not.toContain("canary-thread");
+});
+
+test("a channel memory past its soft threshold is compacted into a summary without a runner or a post", async () => {
+  const memory = {
+    settings: {
+      hardCapTokens: 4_000,
+      responseTokens: 1_000,
+      memoryTokens: 800,
+      recentTokens: 300,
+      softThresholdTokens: 500,
+      summaryOutputTokens: 200,
+      summaryInputTokens: 2_000,
+      summaryTimeoutMs: 1_000,
+    },
+  };
+  const f = await linkedWith({ memory }, ["um", "SMEMBER"]);
+  const scopeId = await channelScope(f);
+  const namespace: ContextNamespace = { workspaceId: "W1", scopeKind: "slack_channel", scopeId };
+  for (let index = 0; index < 40; index++)
+    await plant(
+      f,
+      namespace,
+      `fact ${index}: service-${index} is owned by team-${index % 5} and deploys from region-${index % 3}`,
+      "reported_fact",
+    );
+  const posted = f.posted.length;
+  await f.say("SMEMBER", "who owns service-7?");
+  const summaries = await sqlRows<{ body: string }>(
+    f.db,
+    "SELECT body FROM context_summary WHERE scope_id = ? AND body <> ''",
+    [scopeId],
+  );
+  expect(summaries.length).toBeGreaterThan(0);
+  expect(f.posted.length).toBe(posted + 1);
+  await f.say("SMEMBER", "who owns service-9?");
+  expect(Buffer.byteLength(lastPrompt(f))).toBeLessThan(4_000 * 2);
+  expect(await f.sideEffects()).toEqual(NONE);
 });

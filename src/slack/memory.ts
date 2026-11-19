@@ -140,11 +140,28 @@ export function createSlackChannelMemory(
     return checked.status === "current";
   }
 
+  async function list(input: { scope: SlackChannelScope; userId: string; now: number }) {
+    const found = await queryContext(store, access, {
+      namespace: namespace(input.scope),
+      requester: requester(input.scope, input.userId),
+      destination: destination(input.scope),
+      limit: LISTED,
+      maxBytes: 2_400,
+      now: input.now,
+    });
+    if (found.status !== "ok" || found.records.length === 0)
+      return "Paws remembers nothing for this channel yet. Mention `@Paws remember <text>` to add something.";
+    const lines = found.records.map(
+      (record) => `• \`${record.id}\` (${record.classification}) ${record.body.slice(0, 200)}`,
+    );
+    return `Paws remembers this for the channel:\n${lines.join("\n")}`;
+  }
+
   async function command(input: {
     scope: SlackChannelScope;
     userId: string;
     admin: () => Promise<boolean>;
-    command: SlackMemoryCommand;
+    command: Exclude<SlackMemoryCommand, { kind: "memory" }>;
     sourceId: string;
     revision: string;
     now: number;
@@ -152,21 +169,6 @@ export function createSlackChannelMemory(
     const { scope, userId, now } = input;
     const base = { namespace: namespace(scope), requester: requester(scope, userId) };
     const cmd = input.command;
-    if (cmd.kind === "memory") {
-      const found = await queryContext(store, access, {
-        ...base,
-        destination: destination(scope),
-        limit: LISTED,
-        maxBytes: 2_400,
-        now,
-      });
-      if (found.status !== "ok" || found.records.length === 0)
-        return "Paws remembers nothing for this channel yet. Mention `@Paws remember <decision>` to add something.";
-      const lines = found.records.map(
-        (record) => `• \`${record.id}\` (${record.classification}) ${record.body.slice(0, 200)}`,
-      );
-      return `Paws remembers this for the channel:\n${lines.join("\n")}`;
-    }
     if (cmd.kind === "remember") {
       const source = { kind: SOURCE_KIND, id: input.sourceId };
       const stored = await ingestContext(store, access, {
@@ -183,7 +185,7 @@ export function createSlackChannelMemory(
           {
             key: "remember",
             layer: "observation",
-            classification: "decision",
+            classification: "reported_fact",
             importance: 3,
             body: cmd.body,
           },
@@ -232,5 +234,5 @@ export function createSlackChannelMemory(
       : "Paws couldn't correct that entry.";
   }
 
-  return { prepare, current, command };
+  return { prepare, current, command, list };
 }

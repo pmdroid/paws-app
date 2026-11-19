@@ -45,11 +45,12 @@ Paws answers explicit `@Paws` mentions in one internal channel per Paws workspac
 
 Paws keeps a memory for the channel, so a new thread can build on what was decided in an earlier one. It holds only what linked members ask it to keep; Paws doesn't read or import channel history.
 
-- `@Paws remember <text>` stores the text as a decision of the member who posted it, with the thread, message and time it came from. Paws replies, visible only to them, with the entry's id.
-- `@Paws memory` lists up to ten current entries with their ids, visible only to the member who asked.
+- `@Paws remember <text>` stores the text as a fact reported by the member who posted it, not as a settled decision, with the thread, message and time it came from. Paws replies, visible only to them, with the entry's id.
+- `@Paws memory` lists up to ten current entries with their ids, visible only to the member who asked. Paws builds the list when it posts it, and posts nothing if that member's link changed in between.
 - `@Paws correct <id> <text>` replaces an entry; the old text is kept only as history and is no longer used. `@Paws forget <id>` removes an entry and every summary built from it, also after a restart. Only the entry's author or a Paws workspace admin can correct or forget it.
 - Before each answer, Paws adds the entries most relevant to the question to the turn, within a bounded token budget, and folds older entries into a summary when the memory grows past it. The entries are background only: they never approve an action, a tool call, a run or a new issue.
 - Memory belongs to the Paws workspace, the Slack installation and the channel's id, so renaming the channel keeps it, while another channel, another Paws workspace or a reconnected installation starts empty. Only linked, active members of the channel's current setup can add to it or have it used for their answers; unlinking, revoking or ending a membership stops that at once.
+- An earlier answer in the thread that used an entry since corrected or forgotten is left out of later turns; the question stays.
 - When an entry an answer used is corrected or forgotten, or the member's access ends, before Paws posts the answer, Paws withholds it. If that happens before the answer is queued, the member sees a message, visible only to them, asking them to mention Paws again.
 - Entries expire after 180 days. Memory needs no runner and starts no work: remembering, listing, correcting and forgetting work while every runner slot is busy, and post nothing beyond the reply to the member who asked.
 
