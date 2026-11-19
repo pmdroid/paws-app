@@ -32,7 +32,10 @@ afterAll(async () => {
   await close();
 });
 
-async function seeded(facts: number) {
+const REQUEST = "Add an export of invoices";
+const RESPONSE_TOKENS = 8_000;
+
+async function prepareIndex(facts: number, room?: number) {
   seq++;
   const workspaceId = `org-index-${seq}`;
   const projectId = `project-index-${seq}`;
@@ -70,16 +73,29 @@ async function seeded(facts: number) {
     });
     expect(outcome.status).toBe("stored");
   }
-  const service = createProjectSessionContext({ db, access, memoryIndex: true, now: () => T0 + 1 });
+  const service = createProjectSessionContext({
+    db,
+    access,
+    memoryIndex: true,
+    ...(room === undefined
+      ? {}
+      : { model: { contextTokens: RESPONSE_TOKENS + estimateContextTokens(REQUEST) + room } }),
+    now: () => T0 + 1,
+  });
   const prepared = await service.prepare({
     consumerKey: `work_item:index-${seq}`,
     organizationId: workspaceId,
     projectId,
     requesterId: alice.userId,
     instructions: "",
-    request: "Add an export of invoices",
+    request: REQUEST,
     appendix: NOTE,
   });
+  return { prepared, access, alice };
+}
+
+async function seeded(facts: number, room?: number) {
+  const { prepared, access, alice } = await prepareIndex(facts, room);
   if (prepared.status !== "injected" || !prepared.manifest)
     throw new Error(`not injected: ${JSON.stringify(prepared)}`);
   return { prepared: { ...prepared, manifest: prepared.manifest }, access, alice };
@@ -136,4 +152,40 @@ test("an index over the cap drops lines from the end and says how many more entr
   expect(manifest.sources.map((source) => source.recordId)).toEqual(
     listed.map((line) => line.match(/, id (\S+)\)$/)![1]!),
   );
+});
+
+test("a tight prompt budget clamps the index to the room actually left, counting the note", async () => {
+  const room = 400;
+  const { prepared } = await seeded(40, room);
+  const { text, manifest } = prepared;
+  const contextTokens = RESPONSE_TOKENS + estimateContextTokens(REQUEST) + room;
+  const note = estimateContextTokens(`\n\n${NOTE}`);
+  const prompt =
+    estimateContextTokens(REQUEST) + RESPONSE_TOKENS + estimateContextTokens(text) + note;
+  expect(prompt).toBeLessThanOrEqual(contextTokens);
+  expect(manifest.tokens.hardCap).toBe(contextTokens);
+  expect(manifest.tokens.memoryBudget).toBeLessThanOrEqual(room);
+  expect(manifest.tokens.memoryUsed).toBe(estimateContextTokens(text) + note);
+  expect(manifest.tokens.total).toBe(prompt);
+  const listed = lines(text);
+  expect(listed.length).toBeGreaterThan(0);
+  expect(listed.length).toBeLessThan(42);
+  expect(text.split("\n")[0]).toContain(`${42 - listed.length} more entries`);
+  expect(manifest.sources.map((source) => source.recordId)).toEqual(
+    listed.map((line) => line.match(/, id (\S+)\)$/)![1]!),
+  );
+  const stored = await getContextSession(db, `work_item:index-${seq}`);
+  expect(stored?.status).toBe("injected");
+  expect((stored!.manifest as ContextManifest).sources).toEqual(manifest.sources);
+});
+
+test("an index whose header, notice and note can't fit with one entry is withheld", async () => {
+  const { prepared } = await prepareIndex(3, 200);
+  expect(prepared.status).toBe("withheld");
+  expect(prepared.reason).toBe("over_budget");
+  expect(prepared.manifest).toBeNull();
+  expect(prepared.text).not.toContain(MEMORY_INDEX_HEADER);
+  const stored = await getContextSession(db, `work_item:index-${seq}`);
+  expect(stored?.status).toBe("withheld");
+  expect(stored?.manifest).toEqual({});
 });
