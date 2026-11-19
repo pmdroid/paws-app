@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   auditWorkspaceAccessSteps,
   emitJobReady,
@@ -43,7 +43,7 @@ import {
   slackTeamOwnerSteps,
   type SlackFetch,
 } from "./oauth";
-import type { SlackMention } from "./webhook";
+import type { SlackInteraction, SlackMention } from "./webhook";
 
 export const SLACK_THREAD_JOB = "slack.thread";
 export const SLACK_LINK_PATH = "/oauth/slack/link";
@@ -51,6 +51,7 @@ const LINK_CODE = /\blink\s+([A-Z2-7]{4}-[A-Z2-7]{4})\b/i;
 const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const STOP = /^stop[.!]?$/i;
 const STOP_POLL_MS = 1_000;
+const SLACK_STOP_ACTION = "paws_stop";
 
 export type SlackReplyScope = {
   requestId: string;
@@ -177,6 +178,73 @@ export function* slackReplyAllowedSteps(
   return linked && workspaceMemberUsable(member);
 }
 
+function* stopSteps(
+  q: Q,
+  home: string,
+  place: Place,
+  conversationId: string,
+  ts: string,
+  at: number,
+): Steps<boolean> {
+  const gate = yield* gateSteps(q, home, place);
+  if (gate.kind !== "member") return false;
+  const { slackUserId } = place;
+  yield* stopSlackConversationSteps(q, { id: conversationId, ts, slackUserId }, at);
+  const payload: Payload = { ...place, kind: "notice", text: NOTICES.stopped };
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "slack",
+    op: "chat.postEphemeral",
+    idempotencyKey: `slack:notice:stop:${conversationId}:${ts}`,
+    payload,
+    now: at,
+  });
+  return true;
+}
+
+export async function acceptSlackInteraction(
+  store: Db,
+  home: string,
+  interaction: SlackInteraction,
+  at = Date.now(),
+): Promise<void> {
+  const { teamId, channelId, threadTs, messageTs, actionId, value, slackUserId } = interaction;
+  const intent = [teamId, channelId, threadTs, messageTs, actionId, value];
+  await store.transaction(function* (q) {
+    const install = yield* installationSteps(q, home, teamId);
+    if (!install || (install.appId && install.appId !== interaction.appId)) return;
+    const { workspaceId, generation } = install;
+    const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
+    const conversation = yield* slackConversationSteps(q, threadOf(place));
+    const member = conversation && (yield* gateSteps(q, home, place)).kind === "member";
+    const key = JSON.stringify(member ? intent : [...intent, slackUserId]);
+    const dedupeKey = `slack:action:${createHash("sha256").update(key).digest("hex")}`;
+    const inserted = yield* insertInboxEventSteps(q, {
+      dedupeKey,
+      deliveryId: null,
+      source: "webhook",
+      action: "other",
+      sessionId: null,
+      issueId: null,
+      activityId: null,
+      body: null,
+      signal: null,
+      updatedAtMs: at,
+      payload: JSON.stringify({
+        type: "SlackInteraction",
+        workspaceId,
+        generation,
+        conversationId: conversation?.id ?? null,
+        interaction,
+      }),
+      receivedAt: at,
+    });
+    if (!inserted) return;
+    yield* markInboxEventHandledSteps(q, dedupeKey);
+    if (member && actionId === SLACK_STOP_ACTION)
+      yield* stopSteps(q, home, place, conversation.id, interaction.actionTs, at);
+  });
+}
+
 export async function acceptSlackMention(
   store: Db,
   home: string,
@@ -221,19 +289,8 @@ export async function acceptSlackMention(
     yield* markInboxEventHandledSteps(q, dedupeKey);
     if (yield* stoppedSteps(q, place, mention.ts)) return false;
     const stop = STOP.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim());
-    const gate = stop ? yield* gateSteps(q, home, place) : null;
-    if (gate?.kind === "member") {
-      yield* stopSlackConversationSteps(q, { ...conversation, ts: mention.ts, slackUserId }, at);
-      const payload: Payload = { ...place, kind: "notice", text: NOTICES.stopped };
-      yield* enqueueOutboxOnceSteps(q, {
-        target: "slack",
-        op: "chat.postEphemeral",
-        idempotencyKey: `slack:notice:${dedupeKey}`,
-        payload,
-        now: at,
-      });
-      return false;
-    }
+    const stopped = stop && (yield* stopSteps(q, home, place, conversation.id, mention.ts, at));
+    if (stopped) return false;
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
@@ -412,7 +469,7 @@ export function createSlackThreads<Profile>(options: {
       });
     if (outcome.status === "busy")
       throw new Error("The member's runner conversation lane is busy.");
-    const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_500) : undefined;
+    const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_000) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
@@ -475,7 +532,7 @@ export function createSlackThreads<Profile>(options: {
     const body =
       payload.kind === "notice"
         ? { user: payload.slackUserId }
-        : { unfurl_links: false, unfurl_media: false };
+        : { unfurl_links: false, unfurl_media: false, blocks: replyBlocks(payload.text) };
     const method = payload.kind === "notice" ? "chat.postEphemeral" : "chat.postMessage";
     const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text: payload.text };
     let result: Record<string, unknown>;
@@ -495,6 +552,19 @@ export function createSlackThreads<Profile>(options: {
   }
 
   return { handle, deliver };
+}
+
+function replyBlocks(text: string) {
+  const stop = {
+    type: "button",
+    action_id: SLACK_STOP_ACTION,
+    value: "stop",
+    text: { type: "plain_text", text: "Stop" },
+  };
+  return [
+    { type: "section", text: { type: "mrkdwn", text: text.slice(0, 3_000) } },
+    { type: "actions", elements: [stop] },
+  ];
 }
 
 export function createSlackLinkPage(options: { store: Db; home: string; now?: () => number }) {
