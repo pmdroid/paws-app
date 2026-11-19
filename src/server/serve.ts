@@ -15,6 +15,7 @@ import {
   acceptSlackMention,
   createSlackConnect,
   createSlackLinkPage,
+  createSlackLinks,
   createSlackRevocation,
   handleSlackWebhook,
 } from "../slack";
@@ -496,7 +497,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const slack =
         path === "/oauth/slack/link"
           ? await createSlackLinkPage(slackOptions)(request)
-          : await createSlackConnect(slackOptions)(request);
+          : ((await createSlackConnect(slackOptions)(request)) ??
+            (await createSlackLinks(slackOptions)(request)));
       if (slack) return slack;
     }
     if (path.startsWith("/api/")) {

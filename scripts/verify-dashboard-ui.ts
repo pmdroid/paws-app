@@ -727,6 +727,16 @@ try {
         },
       }),
     );
+    await admin.route("**/api/workspaces/slack/links*", (route) =>
+      route.fulfill({
+        json: {
+          links: [
+            { slackUserId: "U0ADA", channelId: "C0ONE", userId: "u1", name: "Ada", active: true },
+            { slackUserId: "U0BOB", channelId: "C0ONE", userId: "u2", name: "Bob", active: false },
+          ],
+        },
+      }),
+    );
     await visit(
       admin,
       width,
@@ -738,6 +748,33 @@ try {
       "Slack could not refresh its token. Reconnect Slack.",
     );
     await expect(slack.locator('[data-slack="reconnect"]')).toBeVisible();
+    await expect(slack.locator('[data-slack-link="U0BOB"]')).toContainText(
+      "Bob as U0BOB in C0ONE (Paws access revoked)",
+    );
+    await expect(slack.locator('[data-slack-revoke="U0ADA"]')).toBeVisible();
+    await admin.unroute("**/api/workspaces/slack/links*");
+    await page.route("**/api/workspaces/slack/link", (route) =>
+      route.fulfill({
+        json: {
+          connected: true,
+          link: { teamId: "T111111", channelId: "C0ONE", slackUserId: "U0ADA" },
+        },
+      }),
+    );
+    await visit(
+      page,
+      width,
+      "settings-account-slack",
+      "/dashboard/settings/account",
+      "Your account",
+    );
+    await expect(page.locator("#workspace-slack-link [data-slack-link]")).toContainText("U0ADA");
+    await expect(page.locator("#workspace-slack-link [data-slack-unlink]")).toBeVisible();
+    await page.locator("#workspace-slack-link").screenshot({
+      path: join(out, `settings-account-slack-section-${width}.png`),
+    });
+    await page.unroute("**/api/workspaces/slack/link");
+    await slack.screenshot({ path: join(out, `integrations-slack-links-${width}.png`) });
     await admin.unroute("**/api/workspaces/slack");
     let slackApp = false;
     await admin.route("**/api/settings/slack-app", (route) => {

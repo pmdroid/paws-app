@@ -14,6 +14,14 @@ type SlackStatus = {
   capabilities: (Record<keyof typeof LABELS, Capability> & { missing: string[] }) | null;
 };
 
+type SlackLink = {
+  slackUserId: string;
+  channelId: string;
+  name: string | null;
+  userId: string;
+  active: boolean;
+};
+
 const LABELS = {
   threads: "Channel threads",
   directMessages: "App messages",
@@ -66,6 +74,21 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
       login,
       reconnect,
     } = (await response.json()) as SlackStatus;
+    const linked = connection
+      ? await fetch("/api/workspaces/slack/links", { cache: "no-store" })
+          .then((reply) => (reply.ok ? (reply.json() as Promise<{ links: SlackLink[] }>) : null))
+          .catch(() => null)
+      : null;
+    const links = linked?.links?.length
+      ? `<h3>Linked members</h3><ul data-slack-links>${linked.links
+          .map(
+            (link) =>
+              `<li data-slack-link="${esc(link.slackUserId)}">${esc(link.name ?? link.userId)} as <code>${esc(link.slackUserId)}</code> in <code>${esc(link.channelId)}</code>${link.active ? "" : " (Paws access revoked)"} <button class="btn" data-slack-revoke="${esc(link.slackUserId)}">Revoke</button></li>`,
+          )
+          .join("")}</ul>`
+      : connection
+        ? '<p data-slack-links class="muted">No Slack members are linked.</p>'
+        : "";
     const rows = Object.entries(LABELS).map(([name, label]) => {
       const item = capabilities?.[name as keyof typeof LABELS];
       return item
@@ -99,12 +122,14 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
         capabilities?.missing.length
           ? `<p data-slack-missing>Missing scopes: ${capabilities.missing.map(esc).join(", ")}</p>`
           : ""
-      }<p class="muted">Redirect URL <code>${esc(redirectUrl ?? "")}</code>, events URL <code>${esc(eventsUrl ?? "")}</code></p>${configured || environment ? "" : FORM}<p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
+      }<p class="muted">Redirect URL <code>${esc(redirectUrl ?? "")}</code>, events URL <code>${esc(eventsUrl ?? "")}</code></p>${configured || environment ? "" : FORM}${links}<p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
         .map(([id, label]) => `<button class="btn" data-slack="${id}">${label}</button>`)
         .join("")}</div></div>`,
     );
     for (const button of section.querySelectorAll<HTMLButtonElement>("[data-slack]"))
       button.addEventListener("click", () => void act(button.dataset.slack!));
+    for (const button of section.querySelectorAll<HTMLButtonElement>("[data-slack-revoke]"))
+      button.addEventListener("click", () => void revoke(button.dataset.slackRevoke!));
     section
       .querySelector<HTMLFormElement>("[data-slack-app]")
       ?.addEventListener("submit", (event) => {
@@ -122,6 +147,19 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
     });
     const body = (await response.json().catch(() => ({}))) as { error?: string };
     notice = response.ok ? "Saved" : (body.error ?? "The Slack app could not be saved.");
+    await load();
+  }
+
+  async function revoke(slackUserId: string) {
+    const query = new URLSearchParams({ user: slackUserId });
+    const response = await fetch(`/api/workspaces/slack/links?${query}`, {
+      method: "DELETE",
+      headers: { "x-paws-csrf": csrfToken },
+    });
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    notice = response.ok
+      ? `Revoked the Slack link for ${slackUserId}.`
+      : (data.error ?? "The Slack link could not be revoked.");
     await load();
   }
 

@@ -24,6 +24,7 @@ import {
   acceptSlackInteraction,
   acceptSlackMention,
   createSlackLinkPage,
+  createSlackLinks,
   createSlackThreads,
   handleSlackWebhook,
   markSlackInstallationSteps,
@@ -142,6 +143,7 @@ async function fixture() {
   outbox.setTargetHandler("slack", threads.deliver);
   const linkPage = createSlackLinkPage({ store: db, home, now: () => now });
   const cookies: Record<string, string> = {};
+  const csrf: Record<string, string> = {};
 
   async function addRunner(owner: string, version: string) {
     const id = `runner-${owner}`;
@@ -181,7 +183,9 @@ async function fixture() {
   for (const [user, role] of Object.entries(users)) {
     const at = { workspaceId: "W1", userId: user, now };
     await syncWorkspaceMember(db, { ...at, role, active: true, teamIds: [] });
-    cookies[user] = `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, at)).token}`;
+    const issued = await issueWorkspaceSession(db, at);
+    cookies[user] = `${WORKSPACE_COOKIE}=${issued.token}`;
+    csrf[user] = issued.session.csrfToken;
     await addRunner(user, SLACK_REPLY_RUNNER_VERSION.join("."));
   }
   await install();
@@ -273,6 +277,18 @@ async function fixture() {
     await deliver(mention(slackUser, text, extra));
     await settle();
   }
+  async function api(user: string, method: string, path: string, token = csrf[user]!) {
+    const headers = { origin: ORIGIN, cookie: cookies[user]!, "x-paws-csrf": token };
+    const links = createSlackLinks({ store: db, home, origin: ORIGIN, now: () => now });
+    const response = (await links(new Request(`${ORIGIN}${path}`, { method, headers })))!;
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  }
+  const audit = (action: string) =>
+    sqlRows<{ user_id: string; subject: string }>(
+      db,
+      "SELECT user_id, subject FROM workspace_access_audit WHERE action = ? ORDER BY id",
+      [action],
+    );
   const posts = (method: string) => posted.filter((post) => post.method === method);
   const notice = () => String(posts("chat.postEphemeral").at(-1)?.body.text);
   const replies = () =>
@@ -301,6 +317,7 @@ async function fixture() {
     });
   return {
     db,
+    home,
     shared,
     posted,
     failNext,
@@ -310,6 +327,8 @@ async function fixture() {
     helpers,
     deliver,
     click,
+    api,
+    audit,
     mention,
     runJobs,
     settle,
@@ -746,4 +765,159 @@ test("a Stop click on Paws's reply stops the thread once while runners are full;
   await f.click("SADMIN", { ts: message.ts, threadTs: root.ts }, { value: "other" });
   expect((await conversations(f, root.ts))[0]!.stoppedTs).not.toBe(conversation!.stoppedTs);
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+const OWN = "/api/workspaces/slack/link";
+const ALL = "/api/workspaces/slack/links";
+
+test("a member sees and unlinks only their own link, once, and is asked to verify again", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await sqlRun(f.db, "INSERT INTO setting(key, value, updated_at) VALUES(?, ?, 0)", [
+    "slack.member:T0TWO:SFOREIGN",
+    JSON.stringify({
+      teamId: "T0TWO",
+      channelId: "C0X",
+      generation: 1,
+      workspaceId: "W2",
+      userId: "ux",
+    }),
+  ]);
+  expect((await f.api("um", "GET", OWN)).body).toEqual({
+    connected: true,
+    link: { teamId: "T0ONE", channelId: "C0ONE", slackUserId: "SMEMBER" },
+  });
+  expect((await f.api("um", "GET", ALL)).status).toBe(403);
+  expect((await f.api("um", "DELETE", `${ALL}?user=SADMIN`)).status).toBe(403);
+  expect((await f.api("um", "DELETE", OWN, "forged")).status).toBe(403);
+  expect((await f.api("ua", "DELETE", `${ALL}?user=SFOREIGN`)).body).toEqual({ removed: 0 });
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 0 });
+  expect((await f.api("um", "GET", OWN)).body.link).toBeNull();
+  f.advance(1);
+  expect(await f.audit("slack.member_unlinked")).toEqual([
+    { user_id: "um", subject: "slack:T0ONE:SMEMBER" },
+  ]);
+  expect(await f.audit("slack.member_revoked")).toEqual([]);
+  const foreign = await sqlRows(f.db, "SELECT key FROM setting WHERE key = ?", [
+    "slack.member:T0TWO:SFOREIGN",
+  ]);
+  expect(foreign).toHaveLength(1);
+  await f.say("SMEMBER", "still linked?");
+  expect(f.notice()).toContain(`${ORIGIN}/oauth/slack/link?team=T0ONE&channel=C0ONE&user=SMEMBER`);
+  await f.say("SADMIN", "and me?");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua"]);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toContain("answering the question you asked before linking");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "um"]);
+});
+
+test("@Paws unlink unlinks only its poster, and a redelivery or an outsider's unlink changes nothing", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const unlink = f.mention("SMEMBER", "unlink");
+  await f.deliver(unlink, { eventId: "EvUNLINK1" });
+  await f.settle();
+  expect(f.notice()).toContain("Unlinked");
+  f.advance(1);
+  await f.deliver(unlink, { eventId: "EvUNLINK1" });
+  await f.say("SOTHER", "unlink");
+  expect(f.notice()).toContain("user=SOTHER");
+  expect(await f.audit("slack.member_unlinked")).toEqual([
+    { user_id: "um", subject: "slack:T0ONE:SMEMBER" },
+  ]);
+  await f.say("SMEMBER", "hello?");
+  expect(f.notice()).toContain("user=SMEMBER");
+  await f.say("SADMIN", "hello");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua"]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("an admin revoke fences a pending reply and a running turn, and keeps the installation", async () => {
+  for (const change of ["pending", "running"] as const) {
+    const f = await linked(["um", "SMEMBER"]);
+    if (change === "pending") {
+      await f.deliver(f.mention("SMEMBER", "late"));
+      await f.runJobs();
+      expect((await f.api("ua", "DELETE", `${ALL}?user=SMEMBER`)).body).toEqual({ removed: 1 });
+    } else {
+      f.runner.hold = true;
+      await f.deliver(f.mention("SMEMBER", "in flight"));
+      const pending = f.settle();
+      while (!(await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+        await Bun.sleep(2);
+      expect((await f.api("ua", "DELETE", `${ALL}?user=SMEMBER`)).body).toEqual({ removed: 1 });
+      await pending;
+      f.runner.hold = false;
+    }
+    await f.settle();
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    expect((await f.api("ua", "DELETE", `${ALL}?user=SMEMBER`)).body).toEqual({ removed: 0 });
+    expect(await f.audit("slack.member_revoked")).toEqual([
+      { user_id: "ua", subject: "slack:T0ONE:SMEMBER" },
+    ]);
+    const { body } = await f.api("ua", "GET", ALL);
+    expect(body.links).toEqual([
+      expect.objectContaining({ slackUserId: "SADMIN", userId: "ua", active: true }),
+    ]);
+    await f.say("SADMIN", "still here?");
+    expect(f.posts("chat.postMessage")).toHaveLength(1);
+  }
+});
+
+test("work from before an unlink stays fenced after the same accounts link again", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.deliver(f.mention("SMEMBER", "reply before unlink"));
+  await f.runJobs();
+  f.runner.hold = true;
+  await f.deliver(f.mention("SMEMBER", "queued before unlink"));
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
+  f.advance(1);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  f.runner.hold = false;
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.prompts.map((turn) => turn.prompt)).not.toContainEqual(
+    expect.stringContaining("queued before unlink"),
+  );
+  await f.say("SMEMBER", "after relinking");
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+});
+
+test("a revoke that lands while Paws checks the channel before sending withholds the reply", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.deliver(f.mention("SMEMBER", "quick one"));
+  await f.runJobs();
+  f.hooks.onInfo = () => f.api("ua", "DELETE", `${ALL}?user=SMEMBER`);
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+});
+
+test("a runner helper issued before an unlink is refused after the same accounts link again", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const generation = Number(
+    (
+      await sqlRows<{ value: string }>(f.db, "SELECT value FROM setting WHERE key = ?", [
+        "slack.member:T0ONE:SMEMBER",
+      ]).then((rows) => JSON.parse(rows[0]!.value) as { generation: number })
+    ).generation,
+  );
+  const scope = {
+    teamId: "T0ONE",
+    channelId: "C0ONE",
+    memberUserId: "um",
+    installGeneration: generation,
+  };
+  const allowed = (issuedAt: number) =>
+    f.db.run((q) => slackReplyAllowedSteps(q, f.home, { workspaceId: "W1", scope, issuedAt }));
+  const before = f.advance(0);
+  expect(await allowed(before)).toBe(true);
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
+  f.advance(1);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toContain("Linked");
+  expect(await allowed(before)).toBe(false);
+  expect(await allowed(f.advance(1))).toBe(true);
 });
