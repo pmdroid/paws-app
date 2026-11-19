@@ -19,6 +19,8 @@ import {
   type Db,
   type Q,
 } from "../src/db";
+import { JOB_KIND } from "../src/core";
+import { createExecutionControls } from "../src/execution-controls";
 import { jsonValue, seed } from "./pglite-fixtures";
 import {
   createExecutionControlsFixturePg,
@@ -261,6 +263,83 @@ test("Asking which controls an item has is not a denial; a refused action still 
       { userId: "outside", subject: "execution-controls" },
       { userId: "outside", subject: "execution-controls" },
     ]);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A task stop from another surface needs the starter or an admin with task access, keeps the pull request and stops once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-task-stop-"));
+  const fixture = await createExecutionControlsFixturePg(root);
+  try {
+    const { db, controls, orchestrator } = fixture;
+    await enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "controlled" },
+      jobKey: "merge:controlled",
+      runAt: Date.now() + 3_600_000,
+    });
+    const hooks: string[] = [];
+    const stop = (userId: string, starterId = "member", allowed = true, itemId = "controlled") =>
+      controls.stopTask({
+        itemId,
+        workspaceId: "workspace",
+        userId,
+        starterId,
+        requestedAt: Date.now(),
+        subject: "slack:T1:C1",
+        *allowedSteps() {
+          yield* [];
+          return allowed;
+        },
+        *onAuthorizedSteps(_q, outcome) {
+          yield* [];
+          hooks.push(`${userId}:${outcome}`);
+        },
+      });
+    assert.equal(await stop("member", "member", false), "denied");
+    assert.equal(await stop("member", "someone-else"), "denied");
+    assert.equal(await stop("outside", "outside"), "denied");
+    assert.equal(await stop("inactive", "inactive"), "denied");
+    assert.equal(await stop("admin", "member", true, "foreign"), "denied");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "running");
+    assert.deepEqual(hooks, []);
+
+    assert.equal(await stop("member"), "stopped");
+    assert.equal((await getWorkItem(db, "controlled"))!.state, "cancelled");
+    assert.equal(await stop("admin"), "finished");
+    assert.deepEqual(hooks, ["member:stopped", "admin:finished"]);
+    const closing = await db.run((q) =>
+      q.all(q.orm.select().from(q.t.job).where(eq(q.t.job.queue, JOB_KIND.closeStoppedPull))),
+    );
+    assert.deepEqual(closing, []);
+    assert.deepEqual(
+      (await audit(db, (q) => eq(q.t.workspaceAccessAudit.action, "execution.stop"))).map(
+        ({ userId, subject }) => ({ userId, subject }),
+      ),
+      [{ userId: "member", subject: "controlled slack:T1:C1" }],
+    );
+
+    const unready = createExecutionControls({ db, bus: orchestrator.bus, getPort: () => null });
+    assert.equal(
+      await unready.stopTask({
+        itemId: "controlled",
+        workspaceId: "workspace",
+        userId: "admin",
+        starterId: "admin",
+        requestedAt: Date.now(),
+        subject: "slack:T1:C1",
+        *allowedSteps() {
+          yield* [];
+          return true;
+        },
+        *onAuthorizedSteps() {
+          yield* [];
+        },
+      }),
+      null,
+    );
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

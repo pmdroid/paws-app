@@ -34,12 +34,17 @@ import {
 import { mergeCallInFlightSteps, getConfirmedRemoteMergeSteps } from "./remote-merges";
 import { type Q, type Db, type Steps } from "./db";
 
-export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
+export function* enqueueCommandSteps(
+  q: Q,
+  command: LinearCommand,
+  now = command.requestedAt,
+  options?: CommandOptions,
+) {
   return yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.command,
     jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
     priority: 0,
-    payload: command,
+    payload: options ? { ...command, options } : command,
     now,
     runAt: now,
   });
@@ -419,9 +424,10 @@ export function* submitCommandSteps(
   delivered: (command: LinearCommand) => void,
   ready: () => void,
   self?: string,
+  options?: CommandOptions,
 ): Steps<{ applied: boolean }> {
   const before = (yield* getWorkItemSteps(q, command.itemId))?.state;
-  const enqueued = yield* enqueueCommandSteps(q, command);
+  const enqueued = yield* enqueueCommandSteps(q, command, command.requestedAt, options);
   if (enqueued.inserted) ready();
   yield* drainCommandsSteps(q, delivered, command.requestedAt, self, ready);
   const after = yield* getWorkItemSteps(q, command.itemId);

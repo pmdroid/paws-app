@@ -13,6 +13,7 @@ import {
 import {
   acceptSlackInteraction,
   acceptSlackMention,
+  acceptSlackSessionStop,
   createSlackConnect,
   createSlackLinkPage,
   createSlackLinks,
@@ -984,6 +985,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store ? createSlackRevocation({ store, home }) : undefined,
       store ? (mention) => acceptSlackMention(store, home, mention) : undefined,
       store ? (interaction) => acceptSlackInteraction(store, home, interaction) : undefined,
+      store ? (stop) => acceptSlackSessionStop(store, home, stop) : undefined,
     );
   }
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {

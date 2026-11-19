@@ -38,6 +38,19 @@ export type ExecutionControlPort = {
 export type CanAct = (q: Q) => Steps<boolean>;
 export type OnCommitted = (q: Q) => Steps<void>;
 
+export type TaskStopRequest = {
+  itemId: string;
+  workspaceId: string;
+  userId: string;
+  starterId: string;
+  requestedAt: number;
+  subject: string;
+  allowedSteps(q: Q): Steps<boolean>;
+  onAuthorizedSteps(q: Q, outcome: "stopped" | "finished"): Steps<void>;
+};
+
+export type TaskStopOutcome = "stopped" | "finished" | "denied";
+
 export function createExecutionControls(input: {
   db: Db;
   bus: CommandBus;
@@ -49,8 +62,8 @@ export function createExecutionControls(input: {
   function* authorizedSteps(
     q: Q,
     itemId: string,
-    principal: WorkspacePrincipal,
-    sessionIds: readonly string[],
+    principal: Pick<WorkspacePrincipal, "workspaceId" | "userId">,
+    sessionIds: readonly string[] | null,
     options: { stoppedSession?: boolean } = {},
   ): Steps<WorkItemRecord | null> {
     const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
@@ -66,7 +79,7 @@ export function createExecutionControls(input: {
       (session.stoppedAt === null || options.stoppedSession === true || item.state === "paused") &&
       session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
-      sessionIds.includes(session.sessionId) &&
+      (sessionIds === null || sessionIds.includes(session.sessionId)) &&
       (yield* workspaceSessionIdsSteps(q, workspace.id, member.userId, clientId)).includes(
         session.sessionId,
       )
@@ -75,7 +88,60 @@ export function createExecutionControls(input: {
   }
   const audit = (entry: Parameters<typeof auditWorkspaceAccessSteps>[1]) =>
     store.run((q) => auditWorkspaceAccessSteps(q, entry));
+  async function stopTask(request: TaskStopRequest): Promise<TaskStopOutcome | null> {
+    const port = input.getPort(request.workspaceId);
+    if (!port) return null;
+    const principal = { workspaceId: request.workspaceId, userId: request.userId };
+    let ready = false;
+    const outcome = await store.transaction(function* (q): Steps<TaskStopOutcome> {
+      if (!(yield* request.allowedSteps(q))) return "denied";
+      const member = yield* workspaceMemberSteps(q, request.workspaceId, request.userId);
+      if (member?.role !== "admin" && request.userId !== request.starterId) return "denied";
+      const item = yield* authorizedSteps(q, request.itemId, principal, null, {
+        stoppedSession: true,
+      });
+      if (!item) return "denied";
+      const finished = function* () {
+        yield* request.onAuthorizedSteps(q, "finished");
+        return "finished" as const;
+      };
+      if ((TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state))
+        return yield* finished();
+      const command = {
+        type: "stop" as const,
+        source: "dashboard" as const,
+        itemId: item.id,
+        requestedAt: request.requestedAt,
+      };
+      const result = yield* submitCommandSteps(
+        q,
+        command,
+        (applied) => input.bus.emit(applied),
+        () => (ready = true),
+        commandInstance(input.db),
+        { keepPullRequest: true },
+      );
+      if (!result.applied) {
+        const after = yield* getWorkItemSteps(q, item.id);
+        if (after && !(TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(after.state))
+          throw new Error("Item changed before Stop committed");
+        return yield* finished();
+      }
+      yield* auditWorkspaceAccessSteps(q, {
+        ...principal,
+        action: "execution.stop",
+        subject: `${item.id} ${request.subject}`,
+        now: now(),
+      });
+      yield* request.onAuthorizedSteps(q, "stopped");
+      return "stopped";
+    });
+    if (ready) emitJobReady(input.db);
+    if (outcome === "stopped") await port.interruptItem(request.itemId);
+    return outcome;
+  }
   return {
+    stopTask,
     async handle(
       request: Request,
       principal: WorkspacePrincipal,

@@ -1849,6 +1849,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           };
         },
         answer: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
+        stop: () => executionControls?.stopTask ?? null,
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

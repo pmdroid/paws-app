@@ -7,6 +7,7 @@ import {
   consumeWorkspaceBootstrap,
   enqueueOutboxOnceSteps,
   advanceOutboxSession,
+  bindLinearSessionTask,
   ensureLinearSessionSteps,
   listOutboxSteps,
   JobLoop,
@@ -28,6 +29,7 @@ import {
 import {
   acceptSlackInteraction,
   acceptSlackMention,
+  acceptSlackSessionStop,
   createSlackLinkPage,
   createSlackLinks,
   createSlackThreads,
@@ -54,6 +56,8 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import { MINIMUM_RUNNER_VERSION, SLACK_REPLY_RUNNER_VERSION } from "../src/runner-protocol";
 import { replaceScopedCredentialSteps } from "../src/credentials";
 import { pawsPaths } from "../src/config";
+import { CommandBus, JOB_KIND, type LinearCommand } from "../src/core";
+import { createExecutionControls } from "../src/execution-controls";
 import { tempHome } from "./helpers";
 import { sqlRows, sqlRun, tempStore } from "./pglite";
 import { insertWorkItemSteps, signInFixtureRunner } from "./pglite-fixtures";
@@ -239,6 +243,21 @@ async function fixture(
     runner.stopped = true;
     await loop;
   });
+  const bus = new CommandBus();
+  const commands: LinearCommand[] = [];
+  bus.subscribe((command) => commands.push(command));
+  const interrupted: string[] = [];
+  const controls = createExecutionControls({
+    db,
+    bus,
+    now: () => now,
+    getPort: () => ({
+      pauseItem: async () => false,
+      resumeItem: async () => false,
+      clearStuckAgent: async () => false,
+      interruptItem: async (itemId) => void interrupted.push(itemId),
+    }),
+  });
   const start = () =>
     createSlackThreads({
       store: db,
@@ -251,6 +270,7 @@ async function fixture(
       profile: () => ({ agent: "codex" as const, model: null }),
       work,
       answer,
+      stop: () => controls.stopTask,
       ...(setup.memory ? { memory: setup.memory } : {}),
       ...(setup.source ? { source: setup.source } : {}),
     });
@@ -328,8 +348,14 @@ async function fixture(
       `v0=${createHmac("sha256", "secret").update(`v0:${time}:${raw}`).digest("hex")}`;
     const headers = { "x-slack-signature": signature, "x-slack-request-timestamp": time };
     const request = new Request(`${ORIGIN}/webhooks/slack`, { method: "POST", headers, body: raw });
-    return handleSlackWebhook(request, "secret", now, undefined, (mention) =>
-      acceptSlackMention(db, home, mention, now),
+    return handleSlackWebhook(
+      request,
+      "secret",
+      now,
+      undefined,
+      (mention) => acceptSlackMention(db, home, mention, now),
+      undefined,
+      (stop) => acceptSlackSessionStop(db, home, stop, now),
     );
   }
   async function click(
@@ -473,6 +499,8 @@ async function fixture(
     answers,
     linear,
     submitted,
+    commands,
+    interrupted,
     runner,
     helpers,
     deliver,
@@ -2601,4 +2629,190 @@ test("a stream checks delivery again before each burst, and never repeats a burs
   expect(f.posts("chat.appendStream")).toEqual([]);
   expect(f.posts("chat.stopStream").map((post) => post.body.markdown_text)).toEqual([undefined]);
   expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "unknown" });
+});
+
+async function stoppableTask() {
+  const task = await filedTask();
+  await bindLinearSessionTask(task.f.db, "S1", "delegation-item-1");
+  return task;
+}
+
+const itemState = async (f: Awaited<ReturnType<typeof fixture>>, id: string) =>
+  (await sqlRows<{ state: string }>(f.db, "SELECT state FROM work_item WHERE id = ?", [id]))[0]
+    ?.state;
+
+test("the starter's stop and Stop button stop the thread's task once, keep its pull request and drop its unsent posts", async () => {
+  const { f, root, send } = await stoppableTask();
+  await f.db.run((q) => insertWorkItemSteps(q, "item-2"));
+  f.failNext["chat.postMessage"] = "rate";
+  await send("activity", "update:item-1:1", { kind: "thought", body: "Before stop" });
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  const role = (name: string) =>
+    sqlRun(f.db, "UPDATE workspace_member SET role = ? WHERE user_id = 'ua'", [name]);
+  const admin = { workspaceId: "W1", userId: "ua", active: true, now: f.now() };
+  await syncWorkspaceMember(f.db, { ...admin, role: "member", teamIds: ["team-eng"] });
+  await role("member");
+  await f.say("SADMIN", "stop", { thread_ts: root.ts });
+  expect(await itemState(f, "item-1")).toBe("queued");
+  expect(f.commands).toEqual([]);
+  await role("admin");
+  const stop = f.mention("SMEMBER", "stop", { thread_ts: root.ts });
+  await Promise.all([f.deliver(stop), f.deliver(stop)]);
+  f.restart();
+  await f.deliver(stop);
+  await f.click("SMEMBER", { ts: "1800000000.000500", threadTs: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  expect(await itemState(f, "item-1")).toBe("cancelled");
+  expect(await itemState(f, "item-2")).toBe("queued");
+  expect(f.commands).toEqual([expect.objectContaining({ type: "stop", itemId: "item-1" })]);
+  expect(f.interrupted).toEqual(["item-1"]);
+  const jobs = await sqlRows<{ queue: string; payload: unknown }>(
+    f.db,
+    "SELECT queue, payload FROM job",
+  );
+  expect(jobs.map((job) => job.queue)).not.toContain(JOB_KIND.closeStoppedPull);
+  const command = jobs.find((job) => job.queue === JOB_KIND.command)!;
+  expect(JSON.parse(JSON.stringify(command.payload))).toMatchObject({
+    options: { keepPullRequest: true },
+  });
+  expect(JSON.stringify(f.posted)).not.toContain("Before stop");
+  const notices = f.posts("chat.postEphemeral").map((post) => String(post.body.text));
+  expect(notices.filter((text) => text.startsWith("Stopped ENG-1."))).toHaveLength(1);
+  expect(notices.filter((text) => text.includes("had already finished"))).toHaveLength(1);
+  expect(await f.audit("execution.stop")).toEqual([
+    { user_id: "um", subject: "item-1 slack:T0ONE:C0ONE" },
+  ]);
+});
+
+test("an admin's native agent_session_stopped on finished work drops only the posts not yet sent", async () => {
+  const { f, root, send } = await stoppableTask();
+  await sqlRun(f.db, "UPDATE work_item SET state = 'completed' WHERE id = 'item-1'");
+  f.failNext["chat.postMessage"] = "rate";
+  await send("activity", "merged:item-1:1", { kind: "response", body: "Merged in main" });
+  const event = {
+    type: "agent_session_stopped",
+    channel: "C0ONE",
+    user: "SADMIN",
+    thread_ts: root.ts,
+    event_ts: "1790000000.000100",
+    streaming_message_ts: [],
+  };
+  expect((await f.deliver(event, { eventId: "EvSTOP01" })).status).toBe(200);
+  expect((await f.deliver(event, { eventId: "EvSTOP01" })).status).toBe(200);
+  f.advance(60_000);
+  await f.settle();
+  expect(JSON.stringify(f.posted)).not.toContain("Merged in main");
+  expect(f.notice()).toBe(
+    "ENG-1 had already finished or stopped. Paws dropped its updates that hadn't reached this thread yet.",
+  );
+  expect(f.commands).toEqual([]);
+  expect(await itemState(f, "item-1")).toBe("completed");
+  await send("activity", "reply:item-1:9", { kind: "response", body: "After stop" });
+  expect(JSON.stringify(f.posts("chat.postMessage"))).toContain("After stop");
+  const stopButton = f.posts("chat.postMessage").at(-1)!.body.blocks as { type: string }[];
+  expect(JSON.stringify(stopButton)).toContain("paws_stop");
+});
+
+test("a stop whose member unlinks or is revoked before it runs stops nothing", async () => {
+  for (const lose of ["unlink", "revoke"] as const) {
+    const { f, root, send } = await stoppableTask();
+    f.failNext["chat.postMessage"] = "rate";
+    await send("activity", "update:item-1:1", { kind: "thought", body: "Before stop" });
+    await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+    if (lose === "unlink") await f.deliver(f.mention("SMEMBER", "unlink", { thread_ts: root.ts }));
+    else await f.revoke("um");
+    await f.settle();
+    expect(await itemState(f, "item-1")).toBe("queued");
+    expect(f.commands).toEqual([]);
+    expect(await f.audit("execution.stop")).toEqual([]);
+  }
+});
+
+test("a stop while the thread's issue is being filed or awaits intake waits for the work item, then stops it once", async () => {
+  const { f, root } = await stoppableTask();
+  const issue = await sqlRows<{ id: string }>(
+    f.db,
+    "SELECT linear_issue_id AS id FROM work_item WHERE id = 'item-1'",
+  );
+  await sqlRun(f.db, "UPDATE work_item SET linear_issue_id = 'not-yet' WHERE id = 'item-1'");
+  const [task] = await sqlRows<{ key: string; value: string }>(
+    f.db,
+    "SELECT key, value FROM setting WHERE key LIKE 'slack.task:%'",
+  );
+  const draft = task!.key.replace("slack.task:", "slack.draft:");
+  await sqlRun(f.db, "DELETE FROM setting WHERE key = ?", [task!.key]);
+  await sqlRun(f.db, "INSERT INTO setting(key, value, updated_at) VALUES(?, ?, ?)", [
+    draft,
+    JSON.stringify({ approvedAt: f.now() }),
+    f.now(),
+  ]);
+  await f.say("SMEMBER", "stop", { thread_ts: root.ts });
+  f.advance(10_000);
+  await f.settle();
+  expect(f.commands).toEqual([]);
+  await sqlRun(f.db, "DELETE FROM setting WHERE key = ?", [draft]);
+  await sqlRun(f.db, "INSERT INTO setting(key, value, updated_at) VALUES(?, ?, ?)", [
+    task!.key,
+    task!.value,
+    f.now(),
+  ]);
+  const pending = await sqlRows<{ status: string }>(
+    f.db,
+    "SELECT status FROM job WHERE job_key LIKE 'slack:task-stop:%'",
+  );
+  expect(pending).toEqual([{ status: "pending" }]);
+  await sqlRun(f.db, "UPDATE work_item SET linear_issue_id = ? WHERE id = 'item-1'", [
+    issue[0]!.id,
+  ]);
+  f.advance(10_000);
+  await f.settle();
+  f.advance(10_000);
+  await f.settle();
+  expect(await itemState(f, "item-1")).toBe("cancelled");
+  expect(f.commands).toEqual([expect.objectContaining({ type: "stop", itemId: "item-1" })]);
+});
+
+test("a Linear update still waiting when the stop lands is never mirrored to the thread", async () => {
+  const { f, root } = await stoppableTask();
+  await sqlRun(f.db, "UPDATE work_item SET state = 'completed' WHERE id = 'item-1'");
+  const tracker = createFakeTracker();
+  const row = { target: "linear" as const, op: "activity", orderingKey: "S1" };
+  const enqueue = (key: string, body: string) =>
+    f.db.transaction((q) =>
+      enqueueOutboxOnceSteps(q, {
+        ...row,
+        idempotencyKey: key,
+        payload: { sessionId: "S1", itemId: "item-1", kind: "response", body },
+        now: f.now(),
+      }),
+    );
+  await enqueue("reply:item-1:1", "Pending before stop");
+  const before = (await f.db.run((q) => listOutboxSteps(q, "S1"))).at(-1)!;
+  await f.say("SMEMBER", "stop", { thread_ts: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  const pending = (await f.db.run((q) => listOutboxSteps(q, "S1"))).find(
+    (entry) => entry.id === before.id,
+  )!;
+  await deliverLinearOutbox(pending, tracker, async () => {}, undefined, f.db);
+  await f.settle();
+  await enqueue("reply:item-1:2", "After stop");
+  const after = (await f.db.run((q) => listOutboxSteps(q, "S1"))).at(-1)!;
+  await deliverLinearOutbox(after, tracker, async () => {}, undefined, f.db);
+  await f.settle();
+  const posted = JSON.stringify(f.posts("chat.postMessage"));
+  expect(posted).not.toContain("Pending before stop");
+  expect(posted).toContain("After stop");
+});
+
+test("updates queued after a stop is accepted but before it runs still reach the thread", async () => {
+  const { f, root, send } = await stoppableTask();
+  await sqlRun(f.db, "UPDATE work_item SET state = 'completed' WHERE id = 'item-1'");
+  await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  await send("activity", "reply:item-1:3", { kind: "response", body: "Merged after stop" });
+  f.advance(60_000);
+  await f.settle();
+  expect(JSON.stringify(f.posts("chat.postMessage"))).toContain("Merged after stop");
+  expect(f.notice()).toContain("had already finished");
 });

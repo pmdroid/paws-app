@@ -23,6 +23,16 @@ export type SlackMention = {
   externallyShared: boolean;
 };
 
+export type SlackSessionStop = {
+  teamId: string;
+  appId: string | null;
+  eventId: string;
+  channelId: string;
+  slackUserId: string;
+  threadTs: string;
+  eventTs: string;
+};
+
 export type SlackInteraction = {
   teamId: string;
   appId: string;
@@ -42,6 +52,7 @@ export async function handleSlackWebhook(
   onRevoked?: (revocation: SlackRevocation) => Promise<unknown>,
   onMention?: (mention: SlackMention) => Promise<unknown>,
   onInteraction?: (interaction: SlackInteraction) => Promise<unknown>,
+  onSessionStopped?: (stop: SlackSessionStop) => Promise<unknown>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed.", { status: 405 });
   const signature = request.headers.get("x-slack-signature");
@@ -97,6 +108,11 @@ export async function handleSlackWebhook(
     if (mention) await onMention!(mention);
     return new Response("ok", { status: 200 });
   }
+  const stop = onSessionStopped && slackSessionStop(payload);
+  if (stop !== undefined) {
+    if (stop) await onSessionStopped!(stop);
+    return new Response("ok", { status: 200 });
+  }
   return new Response("Unsupported Slack event.", { status: 400 });
 }
 
@@ -144,6 +160,26 @@ function slackMention(payload: unknown): SlackMention | null | undefined {
     ts: ts!,
     threadTs: threadTs!,
     externallyShared: payload.is_ext_shared_channel !== false,
+  };
+}
+
+function slackSessionStop(payload: unknown): SlackSessionStop | null | undefined {
+  if (!isRecord(payload) || payload.type !== "event_callback" || !isRecord(payload.event)) return;
+  const event = payload.event;
+  if (event.type !== "agent_session_stopped") return;
+  const { team_id: teamId, event_id: eventId, api_app_id: appId } = payload;
+  const { channel, user, thread_ts: threadTs, event_ts: eventTs } = event;
+  if (![teamId, channel, user].every((id) => typeof id === "string" && ID.test(id))) return null;
+  if (![threadTs, eventTs].every((ts) => typeof ts === "string" && TS.test(ts))) return null;
+  if (typeof eventId !== "string" || !/^Ev[A-Z0-9]{4,40}$/.test(eventId)) return null;
+  return {
+    teamId: teamId as string,
+    appId: typeof appId === "string" ? appId : null,
+    eventId,
+    channelId: channel as string,
+    slackUserId: user as string,
+    threadTs: threadTs as string,
+    eventTs: eventTs as string,
   };
 }
 
