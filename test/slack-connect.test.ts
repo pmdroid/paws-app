@@ -253,8 +253,9 @@ test("Slack events verify with a newly saved signing secret without a restart", 
     webhooks: false,
     slackSigningSecret: () => slackSigningSecret(f.home, {}),
   });
-  const raw = JSON.stringify({ type: "url_verification", challenge: "saved" });
-  const send = () => {
+  const challenge = JSON.stringify({ type: "url_verification", challenge: "saved" });
+  const event = JSON.stringify({ type: "event_callback", event: { type: "app_mention" } });
+  const send = (raw = challenge) => {
     const time = String(Math.floor(Date.now() / 1000));
     const hmac = createHmac("sha256", APP.signingSecret).update(`v0:${time}:${raw}`);
     return fetch(`http://127.0.0.1:${server.port}/webhooks/slack`, {
@@ -267,7 +268,7 @@ test("Slack events verify with a newly saved signing secret without a restart", 
     });
   };
   try {
-    expect((await send()).status).toBe(401);
+    expect((await send(event)).status).toBe(401);
     expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
     const response = await send();
     expect(response.status).toBe(200);

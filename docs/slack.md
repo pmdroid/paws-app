@@ -4,6 +4,8 @@ A workspace admin connects one Slack workspace to a Paws workspace in **Workspac
 
 ## Create the Slack app
 
+The quickest way is the manifest in [`deploy/slack/manifest.yaml`](../deploy/slack/manifest.yaml). On [api.slack.com/apps](https://api.slack.com/apps), choose **Create New App › From a manifest**, pick the Slack workspace, and paste the file after replacing `https://paws.example.com` with your Paws URL. It sets up everything in steps 1 and 2, so continue with step 3. Slack checks the events URL as soon as the app is created; Paws answers that check before you have saved the signing secret, and refuses every other request until you have. To set the app up by hand instead:
+
 1. On [api.slack.com/apps](https://api.slack.com/apps), create an app. Under **OAuth & Permissions**, add the redirect URL `https://<paws>/oauth/slack/callback` and the bot scopes below. Turn on **Agents & AI Apps** and the **Messages Tab** in **App Home**.
 2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im`, `assistant_thread_started`, `agent_session_stopped`, `app_uninstalled` and `tokens_revoked`. Under **Interactivity & Shortcuts**, turn on **Interactivity** and set the same request URL `https://<paws>/webhooks/slack`; Paws's **Stop** button needs it. Turn on **Manage Distribution** to install it in more than one Slack workspace.
 3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or enter them in the dashboard. Set `SLACK_APP_ID` so Paws refuses any other app. **Token Rotation** may be on or off; with it on, Paws refreshes a workspace's token when it is about to expire. Slack must reach Paws over HTTPS.

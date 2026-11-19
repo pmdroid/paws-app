@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { readWebhookBody } from "../webhook-body";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 
 export type SlackRevocation = {
   teamId: string;
@@ -45,6 +46,24 @@ export type SlackInteraction = {
   actionTs: string;
 };
 
+async function unconfiguredChallenge(request: Request): Promise<Response> {
+  const unauthorized = new Response("Unauthorized.", { status: 401 });
+  const raw = await readWebhookBody(request, 4096);
+  if (raw instanceof Response) return unauthorized;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw.toString("utf8"));
+  } catch {
+    return unauthorized;
+  }
+  const verification = z
+    .object({ type: z.literal("url_verification"), challenge: z.string().min(1).max(256) })
+    .safeParse(payload);
+  return verification.success
+    ? Response.json({ challenge: verification.data.challenge })
+    : unauthorized;
+}
+
 export async function handleSlackWebhook(
   request: Request,
   secret: string | null,
@@ -55,6 +74,7 @@ export async function handleSlackWebhook(
   onSessionStopped?: (stop: SlackSessionStop) => Promise<unknown>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed.", { status: 405 });
+  if (!secret) return unconfiguredChallenge(request);
   const signature = request.headers.get("x-slack-signature");
   const timestamp = request.headers.get("x-slack-request-timestamp");
   if (

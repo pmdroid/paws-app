@@ -1,0 +1,45 @@
+display_information:
+  name: Paws
+  description: Ask Paws about your code and start work from Slack.
+  background_color: "#211c25"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Paws
+    always_online: true
+  assistant_view:
+    assistant_description: Ask Paws about your code and start work.
+oauth_config:
+  redirect_urls:
+    - https://paws.example.com/oauth/slack/callback
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - channels:read
+      - chat:write
+      - im:history
+      - im:write
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    request_url: https://paws.example.com/webhooks/slack
+    bot_events:
+      - agent_session_stopped
+      - app_mention
+      - app_uninstalled
+      - assistant_thread_started
+      - message.channels
+      - message.im
+      - tokens_revoked
+  interactivity:
+    is_enabled: true
+    request_url: https://paws.example.com/webhooks/slack
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
