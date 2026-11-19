@@ -32,7 +32,7 @@ import {
   repositoryAtPath,
   type AgentLaunch,
 } from "../../src/loop";
-import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
+import type { FakeResult, FakeScript, FakeStep } from "../../src/acp/testing/script";
 import type { ProjectSessionContext } from "../../src/project-context";
 import { workspaceAdmission } from "../fake-workspace";
 
@@ -364,6 +364,16 @@ export const ACME = {
   sessionId: "session-acme-7",
 };
 
+export const ACME_B = {
+  issueId: "issue-acme-8",
+  identifier: "ACME-8",
+  sessionId: "session-acme-8",
+  title: "Report empty shelves",
+  description: "Write the empty shelf report to empty.txt.",
+};
+
+export type ProofIssue = { issueId: string; identifier: string; sessionId: string };
+
 export type Assertion = { name: string; passed: boolean; observed: unknown };
 
 export type ProofContext = {
@@ -371,7 +381,7 @@ export type ProofContext = {
   linear: FakeTracker;
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
-  itemState(): Promise<string | null>;
+  itemState(issue?: ProofIssue): Promise<string | null>;
   itemBranch(): Promise<string | null>;
   itemRunId(): Promise<string | null>;
   transitions(): Promise<{ from: string; to: string; event: string }[]>;
@@ -382,10 +392,12 @@ export type ProofContext = {
   storedReviewFindings(): Promise<number>;
   closeoutReports(): string[];
   hostTools(launch: LaunchInput): string[];
+  toolResults(launch: LaunchInput): { name: string; ok: boolean; text?: string; error?: string }[];
   heldWork(): Promise<{ activeRuns: number; reservations: number; runningJobs: number }>;
   ageCandidate(): Promise<boolean>;
-  delegate(): Promise<void>;
-  answerInLinear(answer: string): Promise<void>;
+  delegate(issue?: ProofIssue): Promise<void>;
+  answerInLinear(answer: string, issue?: ProofIssue): Promise<void>;
+  restart(): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
   waitFor(
@@ -413,6 +425,8 @@ export type Proof = {
   member?: { login: string; token: string; refused?: number };
   runnerSignIn?: { runner: string; signedIn: boolean };
   projectContext?: (store: Db) => ProjectSessionContext;
+  secondIssue?: boolean;
+  linearProject?: { id: string; name: string };
   delegatePayload?: Record<string, unknown>;
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
@@ -459,6 +473,9 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   await git("-C", seed, "add", ".");
   await git("-C", seed, "commit", "-m", "Seed acme widgets");
   await git("-C", seed, "push", "origin", "HEAD:main");
+  const project = proof.linearProject
+    ? { projectId: proof.linearProject.id, projectName: proof.linearProject.name }
+    : {};
   const linear = createFakeTracker([
     {
       linearIssueId: ACME.issueId,
@@ -466,7 +483,20 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       title: "Count widgets per shelf",
       description: "Write the shelf count to widgets.txt.",
       subIssues: [],
+      ...project,
     },
+    ...(proof.secondIssue
+      ? [
+          {
+            linearIssueId: ACME_B.issueId,
+            identifier: ACME_B.identifier,
+            title: ACME_B.title,
+            description: ACME_B.description,
+            subIssues: [],
+            ...project,
+          },
+        ]
+      : []),
   ]);
   const github = fixtureGitHub({
     pulls: createFakeGitHub(),
@@ -479,11 +509,13 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       ? { refusedToken: { token: proof.member.token, status: proof.member.refused } }
       : {}),
   });
-  const database = await openPawsStore({
-    url: process.env.PAWS_DATABASE_URL ?? null,
-    pgliteDir: pawsPaths(pawsRoot).pgliteDir,
-  });
-  const db = database.store;
+  const open = () =>
+    openPawsStore({
+      url: process.env.PAWS_DATABASE_URL ?? null,
+      pgliteDir: pawsPaths(pawsRoot).pgliteDir,
+    });
+  let database = await open();
+  let db = database.store;
   if (proof.forbidRepos)
     useGitReader(
       createGitHubGitReader({
@@ -499,35 +531,42 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         },
       }),
     );
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
   const { launch, launches } = scriptedAgent(dir, pawsRoot, proof.agent);
   const [owner, repo] = ACME.repository.split("/") as [string, string];
-  const orchestrator = attachOrchestrator({
-    ...(proof.reviewer
-      ? { closeoutGate: (options) => createCloseoutGate({ ...options, reviewer: proof.reviewer! }) }
-      : {}),
-    store: db,
-    admission: workspaceAdmission(db),
-    jobs,
-    outbox,
-    pawsRoot,
-    home: process.env.HOME,
-    tracker: linear,
-    repositories: [{ owner, repo, remoteUrl: bare }],
-    githubForRepository: () => ({
-      appId: "",
-      installationId: "",
-      privateKeyPem: "",
-      client: github.client,
-      tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
-    }),
-    launch,
-    githubMirrors: proof.forbidRepos ? false : undefined,
-    ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
-    ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
-    ...(proof.projectContext ? { projectContext: proof.projectContext(db) } : {}),
-  });
+  const attach = () => {
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const orchestrator = attachOrchestrator({
+      ...(proof.reviewer
+        ? {
+            closeoutGate: (options) =>
+              createCloseoutGate({ ...options, reviewer: proof.reviewer! }),
+          }
+        : {}),
+      store: db,
+      admission: workspaceAdmission(db),
+      jobs,
+      outbox,
+      pawsRoot,
+      home: process.env.HOME,
+      tracker: linear,
+      repositories: [{ owner, repo, remoteUrl: bare }],
+      githubForRepository: () => ({
+        appId: "",
+        installationId: "",
+        privateKeyPem: "",
+        client: github.client,
+        tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
+      }),
+      launch,
+      githubMirrors: proof.forbidRepos ? false : undefined,
+      ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
+      ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
+      ...(proof.projectContext ? { projectContext: proof.projectContext(db) } : {}),
+    });
+    return { jobs, outbox, orchestrator };
+  };
+  let { jobs, outbox, orchestrator } = attach();
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];
   const items = async () => await listWorkItemsByStates(db, WORK_ITEM_STATES);
@@ -541,14 +580,18 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const count = async (table: (q: Q) => PgTable, where?: (q: Q) => SQL) =>
     (await db.run((q) => q.one(q.orm.select({ n: countRows() }).from(table(q)).where(where?.(q)))))
       ?.n ?? 0;
-  const event = (action: "created" | "prompted", extra: Partial<AcceptedLinearEvent> = {}) =>
+  const event = (
+    action: "created" | "prompted",
+    extra: Partial<AcceptedLinearEvent> = {},
+    issue: ProofIssue = ACME,
+  ) =>
     orchestrator.onLinearEvent({
       dedupeKey: `proof-${action}-${actions.length}`,
       deliveryId: null,
       source: "webhook",
       action,
-      sessionId: ACME.sessionId,
-      issueId: ACME.issueId,
+      sessionId: issue.sessionId,
+      issueId: issue.issueId,
       activityId: null,
       body: null,
       signal: null,
@@ -565,7 +608,11 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     linear,
     github,
     launches,
-    itemState: async () => (await items())[0]?.state ?? null,
+    itemState: async (issue) =>
+      (issue
+        ? (await items()).find((item) => item.linearIssueId === issue.issueId)
+        : (await items())[0]
+      )?.state ?? null,
     itemBranch: async () => (await items())[0]?.branchName ?? null,
     itemRunId: async () => (await items())[0]?.currentRunId ?? null,
     transitions,
@@ -599,6 +646,11 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       const tools = mcpServers[0]?.env?.find((entry) => entry.name === "PAWS_HOST_TOOLS");
       return tools ? tools.value.split(",") : [];
     },
+    toolResults(input) {
+      const file = join(dir, `agent-${launches.indexOf(input) + 1}-result.json`);
+      if (!existsSync(file)) return [];
+      return (JSON.parse(readFileSync(file, "utf8")) as FakeResult).hostTools ?? [];
+    },
     heldWork: async () => ({
       activeRuns: await count(
         (q) => q.t.run,
@@ -620,20 +672,35 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       });
       return true;
     },
-    async delegate() {
-      act(`Delegate ${ACME.identifier} to Paws in Linear`);
+    async delegate(issue = ACME) {
+      act(`Delegate ${issue.identifier} to Paws in Linear`);
       await event(
         "created",
         proof.delegatePayload ? { payload: JSON.stringify(proof.delegatePayload) } : {},
+        issue,
       );
     },
-    async answerInLinear(answer) {
-      act(`Answer the question in the ${ACME.identifier} agent session: ${answer}`);
-      await event("prompted", {
-        activityId: `proof-answer-${actions.length}`,
-        actorId: "acme-user",
-        body: answer,
-      });
+    async answerInLinear(answer, issue = ACME) {
+      act(`Answer the question in the ${issue.identifier} agent session: ${answer}`);
+      await event(
+        "prompted",
+        {
+          activityId: `proof-answer-${actions.length}`,
+          actorId: "acme-user",
+          body: answer,
+        },
+        issue,
+      );
+    },
+    async restart() {
+      act("Restart Paws against the same database");
+      await orchestrator.shutdown();
+      await outbox.idle();
+      await database.close();
+      database = await open();
+      db = database.store;
+      context.store = db;
+      ({ jobs, outbox, orchestrator } = attach());
     },
     async stopInLinear() {
       act(`Press Stop in the ${ACME.identifier} agent session`);

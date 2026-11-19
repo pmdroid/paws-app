@@ -7542,7 +7542,7 @@ export class Orchestrator {
           );
           live.controller.abort(FOLLOW_UP_INTERRUPTION);
         }
-    if (outcome === "answered" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
+    if (outcome !== "rejected" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (item?.state === "completed")

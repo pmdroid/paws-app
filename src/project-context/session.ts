@@ -389,6 +389,7 @@ export async function recordWorkItemContext(
         classification: row.classification,
         importance: row.importance,
         body: row.body,
+        revision: { revision: row.sourceRevision, revisionAt: row.sourceRevisionAt },
       })),
       ...request.entries.map((entry) => {
         const body = entry.reason ? `${entry.body} Reason: ${entry.reason}` : entry.body;

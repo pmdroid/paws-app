@@ -5,7 +5,7 @@ import {
   type Db,
 } from "../db";
 import { canSee, requesterAccess, type ContextAccess } from "./policy";
-import { sanitizedContextText } from "./sanitize";
+import { contextKey, sanitizedContextText } from "./sanitize";
 import { recordWorkItemContext } from "./session";
 import { CONTEXT_CLAIM_LIMITS, correctContext } from "./store";
 
@@ -46,7 +46,8 @@ export async function recordAnsweredDecision(
   const current = project?.status === "active" ? await requesterAccess(access, requester) : null;
   if (!project || !current || !canSee(current, project.restriction))
     throw new Error(`project context refused the decision from ${input.answererId}`);
-  const question = input.question.trim().slice(0, DECISION_TEXT_CHARS);
+  const fullQuestion = input.question.trim();
+  const question = fullQuestion.slice(0, DECISION_TEXT_CHARS);
   const body = `${question} → ${input.answer.trim().slice(0, DECISION_TEXT_CHARS)}`;
   const reason = `Answered by ${input.answererName} on ${input.issueIdentifier}`;
   const bytes = CONTEXT_CLAIM_LIMITS.bytes.observation;
@@ -58,9 +59,17 @@ export async function recordAnsweredDecision(
     { kind: "paws_work_item", id: input.workItemId },
     input.now,
   );
-  const earlier = rows.find(
-    (row) => row.classification === "decision" && row.body.startsWith(`${asked} `),
-  );
+  const key = contextKey("decision", fullQuestion);
+  const earlier =
+    rows.find((row) => row.classification === "decision" && row.recordKey === key) ??
+    (fullQuestion.length < DECISION_TEXT_CHARS
+      ? rows.find(
+          (row) =>
+            row.classification === "decision" &&
+            !row.recordKey.startsWith("decision:") &&
+            row.body.startsWith(`${asked} `),
+        )
+      : undefined);
   if (earlier?.body === stored) return "unchanged";
   if (earlier) {
     const corrected = await correctContext(db, access, {
@@ -83,7 +92,7 @@ export async function recordAnsweredDecision(
     revisionAt: input.now,
     restriction: project.restriction,
     kept: rows,
-    entries: [{ classification: "decision", body, reason }],
+    entries: [{ classification: "decision", body, reason, key }],
     now: input.now,
   });
   if (outcome.status !== "stored")

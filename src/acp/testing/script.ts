@@ -39,6 +39,7 @@ export type FakeStep =
       remaining?: readonly { title: string; scope: string }[];
     }
   | { type: "post_update"; text: string }
+  | { type: "host_tool"; name: string; arguments: Record<string, unknown> }
   | { type: "reply"; text: string }
   | { type: "start_work"; plan: string }
   | {
@@ -135,6 +136,7 @@ export interface FakeResult {
   plan?: { ok: boolean; text?: string; error?: string };
   pullRequest?: { ok: boolean; text?: string; error?: string };
   updates?: Array<{ ok: boolean; text?: string; error?: string }>;
+  hostTools?: Array<{ name: string; ok: boolean; text?: string; error?: string }>;
   artifact?: { ok: boolean; text?: string; error?: string };
   tools?: string[];
 }
