@@ -28,6 +28,7 @@ import {
   type Steps,
 } from "../db";
 import { journal } from "../journal";
+import type { ContextAccess } from "../project-context";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
 import {
   SlackApiError,
@@ -36,6 +37,12 @@ import {
   slackChannelAudience,
   type SlackCall,
 } from "./api";
+import {
+  createSlackChannelMemory,
+  slackMemoryCommand,
+  slackMemoryScopeId,
+  type SlackMemoryOptions,
+} from "./memory";
 import {
   createSlackAuth,
   installedSlackTokenSteps,
@@ -88,8 +95,22 @@ type Reply = Place & {
   mentionTs: string;
   question: string;
   text: string;
+  contexts?: MemoryRef[];
 };
-type Payload = Reply | (Place & { kind: "notice"; text: string });
+type MemoryRef = { key: string; version: number };
+type Notice = Place & {
+  kind: "notice";
+  text: string;
+  member?: { userId: string; linkId: string };
+  listing?: boolean;
+};
+type Payload = Reply | Notice;
+
+const refId = (ref: MemoryRef) => `${ref.key}@${ref.version}`;
+
+function uniqueRefs(refs: readonly MemoryRef[]): MemoryRef[] {
+  return [...new Map(refs.map((ref) => [refId(ref), ref])).values()];
+}
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string; id?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
@@ -124,6 +145,8 @@ const NOTICES = {
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
+  memory_changed:
+    "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
   unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
 };
 
@@ -190,6 +213,22 @@ export function* currentSlackLinksSteps(
       link.generation === current.generation &&
       same(channel, link),
   );
+}
+
+export function slackContextAccess(store: Db, home: string): ContextAccess {
+  return {
+    currentAccess: (requester) =>
+      store.run(function* (q) {
+        const { workspaceId, userId } = requester;
+        const links = yield* currentSlackLinksSteps(q, home, workspaceId);
+        const link = links.find((candidate) => candidate.userId === userId);
+        if (!link) return null;
+        const member = yield* workspaceMemberSteps(q, workspaceId, userId);
+        if (!workspaceMemberUsable(member)) return null;
+        const channelIds = [slackMemoryScopeId(link)];
+        return { userId, teamIds: [], repositories: [], channelIds };
+      }),
+  };
 }
 
 export function* unlinkSlackMemberSteps(
@@ -398,8 +437,14 @@ export function createSlackThreads<Profile>(options: {
   profile: () => Profile;
   fetch?: SlackFetch;
   now?: () => number;
+  memory?: SlackMemoryOptions;
 }) {
   const { store, home, env } = options;
+  const memory = createSlackChannelMemory({
+    ...options.memory,
+    store,
+    access: slackContextAccess(store, home),
+  });
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
   const slackFetch = options.fetch ?? fetch;
@@ -409,8 +454,8 @@ export function createSlackThreads<Profile>(options: {
     return slackCaller(slackFetch, await auth.ensureFresh());
   }
 
-  function notice(place: Place, key: string, text: string) {
-    const payload: Payload = { ...place, kind: "notice", text };
+  function notice(place: Place, key: string, text: string, extra: Partial<Notice> = {}) {
+    const payload: Payload = { ...place, kind: "notice", text, ...extra };
     const row = { target: "slack" as const, op: "chat.postEphemeral", payload, now: now() };
     return store.transaction((q) =>
       enqueueOutboxOnceSteps(q, { ...row, idempotencyKey: `slack:notice:${key}` }),
@@ -523,6 +568,28 @@ export function createSlackThreads<Profile>(options: {
       const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows. Paws answers this question once you link within 10 minutes.${setup}`;
       return void (await notice(place, dedupeKey!, text));
     }
+    const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+    const scope = { workspaceId, teamId, channelId, generation };
+    const command = slackMemoryCommand(question);
+    const asker = { userId: gate.userId, linkId: gate.linkId };
+    if (command?.kind === "memory")
+      return void (await notice(place, dedupeKey!, "", { member: asker, listing: true }));
+    if (command) {
+      const text = await memory.command({
+        scope,
+        userId: gate.userId,
+        admin: () =>
+          store.run(function* (q) {
+            const member = yield* workspaceMemberSteps(q, workspaceId, gate.userId);
+            return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
+          }),
+        command,
+        sourceId: `${channelId}:${threadTs}:${mention.ts}`,
+        revision: mention.ts,
+        now: now(),
+      });
+      return void (await notice(place, dedupeKey!, text, { member: asker }));
+    }
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
     const earlier = await store.run(function* (q) {
       if (yield* slackOutboxExistsSteps(q, replyKey)) return null;
@@ -530,15 +597,40 @@ export function createSlackThreads<Profile>(options: {
     });
     const lane = earlier && (await options.replies());
     if (!lane) return;
-    const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
-    const thread = [...earlier!.slice(-10), { slackUserId, question, text: null }].flatMap(
-      (turn) => [
-        `[<@${turn.slackUserId}>]: ${turn.question}`,
-        ...(turn.text === null ? [] : [`[Paws]: ${turn.text}`]),
-      ],
-    );
-    const prompt = `You are Paws, answering in a Slack channel thread. No repository, Linear issue or tools are attached; if the question needs code or changes, say this thread can't do that yet. Reply briefly in Slack mrkdwn.\n\n${thread.join("\n").slice(-28_000)}`;
-    const scope = {
+    const kept = new Map<string, MemoryRef>();
+    const checked = new Map<string, boolean>();
+    const turns: { slackUserId: string; question: string; text: string | null }[] = [];
+    for (const turn of earlier!.slice(-10)) {
+      const refs = uniqueRefs(turn.contexts ?? []);
+      let valid = true;
+      for (const ref of refs) {
+        const id = refId(ref);
+        if (!checked.has(id))
+          checked.set(id, await memory.current({ scope, userId: gate.userId, ...ref, now: now() }));
+        if (!checked.get(id)) valid = false;
+      }
+      if (valid) for (const ref of refs) kept.set(refId(ref), ref);
+      turns.push({ ...turn, text: valid ? turn.text : null });
+    }
+    const thread = [...turns, { slackUserId, question, text: null }].flatMap((turn) => [
+      `[<@${turn.slackUserId}>]: ${turn.question}`,
+      ...(turn.text === null ? [] : [`[Paws]: ${turn.text}`]),
+    ]);
+    const instructions =
+      "You are Paws, answering in a Slack channel thread. No repository, Linear issue or tools are attached; if the question needs code or changes, say this thread can't do that yet. Reply briefly in Slack mrkdwn.";
+    const consumerKey = `slack:${workspaceId}:${teamId}:${channelId}:${mention.ts}`;
+    const remembered = await memory.prepare({
+      scope,
+      userId: gate.userId,
+      consumerKey,
+      instructions,
+      request: question,
+      now: now(),
+      signal: context.signal,
+    });
+    const background = remembered.text ? `${remembered.text}\n\n` : "";
+    const prompt = `${instructions}\n\n${background}${thread.join("\n").slice(-28_000)}`;
+    const replyScope = {
       requestId: `slack-${teamId}-${channelId}-${mention.ts.replace(".", "-")}`,
       teamId,
       channelId,
@@ -562,7 +654,7 @@ export function createSlackThreads<Profile>(options: {
     }, STOP_POLL_MS);
     const signal = AbortSignal.any([context.signal, stop.signal]);
     const outcome = await lane
-      .reply({ workspaceId, scope, profile: options.profile(), prompt, signal })
+      .reply({ workspaceId, scope: replyScope, profile: options.profile(), prompt, signal })
       .catch((error: unknown): { status: string; text?: string } => {
         if (stop.signal.aborted) return { status: "stopped" };
         throw error;
@@ -575,6 +667,12 @@ export function createSlackThreads<Profile>(options: {
       throw new Error("The member's runner conversation lane is busy.");
     const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_000) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
+    const contexts = uniqueRefs([
+      ...kept.values(),
+      ...(remembered.text ? [{ key: consumerKey, version: remembered.version }] : []),
+    ]);
+    if (!(await currentMemory(scope, gate.userId, contexts)))
+      return void (await notice(place, replyKey, NOTICES.memory_changed));
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
       if (yield* stoppedSteps(q, place, mention.ts)) return;
@@ -588,6 +686,7 @@ export function createSlackThreads<Profile>(options: {
         mentionTs: mention.ts,
         question,
         text,
+        ...(contexts.length ? { contexts } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -597,6 +696,16 @@ export function createSlackThreads<Profile>(options: {
         now: now(),
       });
     });
+  }
+
+  async function currentMemory(
+    scope: Bound & { workspaceId: string },
+    userId: string,
+    refs: readonly MemoryRef[],
+  ) {
+    for (const ref of uniqueRefs(refs))
+      if (!(await memory.current({ scope, userId, ...ref, now: now() }))) return false;
+    return true;
   }
 
   async function deliver(
@@ -612,14 +721,23 @@ export function createSlackThreads<Profile>(options: {
       if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
         return false;
       const gate = yield* gateSteps(q, home, payload);
-      if (payload.kind === "notice") return gate.kind !== "ignore";
+      const bound = payload.kind === "notice" ? payload.member : undefined;
+      if (payload.kind === "notice" && !bound) return gate.kind !== "ignore";
+      if (bound)
+        return (
+          gate.kind === "member" && gate.userId === bound.userId && gate.linkId === bound.linkId
+        );
+      if (payload.kind !== "reply") return false;
       return (
         gate.kind === "member" &&
         gate.userId === payload.userId &&
         gate.linkId === (payload.linkId ?? "")
       );
     }
-    const allowed = await store.run(allowedSteps);
+    const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
+    const allowed =
+      (await store.run(allowedSteps)) &&
+      (payload.kind !== "reply" || (await currentMemory(payload, payload.userId, refs)));
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||
@@ -627,6 +745,12 @@ export function createSlackThreads<Profile>(options: {
     )
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
+    if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
+      return settle({ kind: "withheld", note: "memory changed before delivery" });
+    const text =
+      payload.kind === "notice" && payload.listing && payload.member
+        ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
+        : payload.text;
     const sending = await store.transaction(function* (q) {
       if (!(yield* allowedSteps(q))) return "stopped";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
@@ -643,7 +767,7 @@ export function createSlackThreads<Profile>(options: {
         ? { user: payload.slackUserId }
         : { unfurl_links: false, unfurl_media: false, blocks: replyBlocks(payload.text) };
     const method = payload.kind === "notice" ? "chat.postEphemeral" : "chat.postMessage";
-    const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text: payload.text };
+    const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text };
     let result: Record<string, unknown>;
     try {
       result = await call(method, { ...fields, ...body }, context.signal);
