@@ -3,7 +3,7 @@ import { ensureRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
 import { useDatabaseSecrets } from "./credentials";
-import type { PawsStore } from "./db";
+import { workspaceOrganizationIds, type PawsStore } from "./db";
 import { publicTlsProxy, type PublicTls } from "./deployment";
 import { createBrowserOnboarding, setupToken as savedSetupToken } from "./onboarding";
 import { startServer } from "./server";
@@ -34,8 +34,9 @@ export async function startBrowserOnboarding(
     await setupSecrets?.close();
     await database.close();
   }
+  const environmentClient = runtime.linearClientId !== null && !setupPending;
   const setupToken =
-    runtime.linearClientId === null || setupPending
+    !environmentClient || (!reconnect && (await workspaceOrganizationIds(db, 1)).length === 0)
       ? await savedSetupToken(paths.secretsDir)
       : undefined;
   if (setupToken) {
@@ -53,6 +54,7 @@ export async function startBrowserOnboarding(
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
     clientSecretOverride: source.LINEAR_CLIENT_SECRET?.trim() || undefined,
+    environmentClient,
     expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,
     async prepare() {

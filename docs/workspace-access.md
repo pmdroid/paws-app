@@ -5,7 +5,7 @@ Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin
 - `/auth/linear/callback` for personal sign-in.
 - `/auth/linear/install/callback` for the workspace app authorization.
 
-Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Before the first installation, set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve. Paws accepts installation only for that organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace admins can connect repositories in Integrations.
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Until a workspace exists, Paws prints a setup link, and the Linear admin who signs in through it claims the instance for their organization. Optionally set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve; Paws then refuses installation for any other organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace admins can connect repositories in Integrations.
 
 Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 
@@ -16,17 +16,16 @@ PAWS_HOST=0.0.0.0 \
 PAWS_PORT=8787 \
 PAWS_TLS_KEY_PATH=/etc/paws/tls.key \
 PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
-LINEAR_ORGANIZATION_ID=your-linear-organization-id \
 bun run paws
 ```
 
-Without `LINEAR_CLIENT_ID`, Paws starts in setup mode and prints a setup link, `<PAWS_PUBLIC_URL>/setup?token=…`. Open it to enter the Linear app values in the browser. The link stays the same across restarts until Linear setup finishes; run `paws setup-link` on the server to print it again, or to see `Setup is complete.` Other pages say that setup is needed and point to `paws setup-link`.
+Until a workspace exists, Paws starts in setup mode and prints a setup link, `<PAWS_PUBLIC_URL>/setup?token=…`. Without `LINEAR_CLIENT_ID`, open it to enter the Linear app values in the browser; with the client set on the server, it goes straight to **Sign in with Linear**. The link stays the same across restarts until Linear setup finishes; run `paws setup-link` on the server to print it again, or to see `Setup is complete.` Other pages say that setup is needed and point to `paws setup-link`.
 
 ### Behind a proxy
 
 When a proxy in front of Paws terminates HTTPS, such as a Render web service, set `PAWS_PUBLIC_TLS=proxy` and leave out `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. `PAWS_PUBLIC_URL` stays the `https:` origin the browser sees. Paws loads no certificate and serves plain HTTP on `PAWS_HOST`:`PAWS_PORT`. It treats each request as arriving on that HTTPS origin and keys the sign-in limits on the last `X-Forwarded-For` entry, which the proxy appends, falling back to the socket peer when the header is missing. Proxy mode trusts that the proxy is the only route to `PAWS_PORT` and that the last `X-Forwarded-For` entry is the client; anything that reaches the port directly can choose its own address. `paws public-tls validate` has no certificate to check. Runner control (`PAWS_RUNNER_HOST`) needs its own certificate and is not available in proxy mode yet.
 
-Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the workspace with that person as its first Paws admin, and starts the connected service automatically. The admin continues to **Integrations** to connect GitHub and map repositories to Linear teams. Once the GitHub App is installed, a Paws admin connects GitHub and adds any repository the installation covers and their GitHub account can read; after that, a Paws admin changes repositories without signing in to GitHub ([GitHub App](github-app.md#integrations)). Installing the App on an organization is done on GitHub by an organization owner.
+Open the setup link, or the dashboard once a workspace exists, and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the workspace with that person as its first Paws admin, and starts the connected service automatically. The admin continues to **Integrations** to connect GitHub and map repositories to Linear teams. Once the GitHub App is installed, a Paws admin connects GitHub and adds any repository the installation covers and their GitHub account can read; after that, a Paws admin changes repositories without signing in to GitHub ([GitHub App](github-app.md#integrations)). Installing the App on an organization is done on GitHub by an organization owner.
 
 If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles. The stored workspace binds reconnection to its organization. If `LINEAR_ORGANIZATION_ID` is set, it must match that stored organization.
 

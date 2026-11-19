@@ -1,4 +1,4 @@
-import { migratedHome } from "./helpers";
+import { migratedHome, withHomeStore } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +13,25 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function freshInstance(expectedOrganizationId?: string, setup = false, accessToken?: string) {
+async function freshInstance(
+  expectedOrganizationId?: string,
+  setup = false,
+  accessToken?: string,
+  workspace?: string,
+) {
   const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-onboarding-")));
   roots.push(home);
+  if (workspace)
+    await withHomeStore(home, (db) =>
+      seed(db, (q) =>
+        q.orm.insert(q.t.workspace).values({
+          id: "existing",
+          linearOrganizationId: workspace,
+          name: "Workspace",
+          createdAt: 0,
+        }),
+      ),
+    );
   const cert = join(home, "server.crt");
   const key = join(home, "server.key");
   const generated = Bun.spawnSync(
@@ -61,8 +77,8 @@ async function freshInstance(expectedOrganizationId?: string, setup = false, acc
   return paws;
 }
 
-test("a fresh HTTPS instance serves browser onboarding for its configured organization", async () => {
-  const paws = await freshInstance("org");
+test("an HTTPS instance with a workspace serves browser onboarding without a setup link", async () => {
+  const paws = await freshInstance(undefined, false, undefined, "org");
   await paws.ready;
   const response = await paws.server.fetch(new Request("https://localhost:8787/api/auth/session"));
   expect(response.status).toBe(401);
@@ -99,16 +115,25 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
   );
 });
 
-test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {
+test("a fresh HTTPS instance with a Linear client from the environment requires the setup link", async () => {
+  const messages: string[] = [];
+  const restore = setJournalSink((message) => messages.push(message));
   const paws = await freshInstance();
+  restore();
   await paws.ready;
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
-  expect(login.status).toBe(503);
-  expect(await login.text()).toContain("LINEAR_ORGANIZATION_ID");
+  expect(login.status).toBe(403);
+  const start = await paws.server.fetch(new Request("https://localhost:8787/"));
+  expect(start.status).toBe(503);
+  expect(await start.text()).toContain("paws setup-link");
   expect(
     await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspaceOauthRequest))),
   ).toEqual([]);
   expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspace)))).toEqual([]);
+  const setupUrl = messages.find((message) => message.includes("/setup?token="))!;
+  const setup = await paws.server.fetch(new Request(setupUrl));
+  expect(setup.status).toBe(303);
+  expect(setup.headers.get("location")).toContain("client_id=fixture-client");
 });
 
 import { existsSync } from "node:fs";
@@ -143,7 +168,7 @@ const foreignWorkspace = (db: Db) =>
 import { readStoredToken, writeStoredToken } from "../src/linear";
 import { createWorkspaceAccess } from "../src/workspace";
 
-async function fixture(setup = false) {
+async function fixture(setup = false, token = setup) {
   const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-install-")));
   roots.push(home);
   const open = () => openPawsStore({ url: null, pgliteDir: pawsPaths(home).pgliteDir });
@@ -223,7 +248,8 @@ async function fixture(setup = false) {
       db,
       home,
       origin,
-      setupToken: setup ? "setup-token" : undefined,
+      setupToken: token ? "setup-token" : undefined,
+      environmentClient: token && !setup,
       clientId: setup ? null : "fixture-client",
       clientSecret: setup ? null : "fixture-client-secret",
       expectedOrganizationId: state.expectedOrganizationId,
@@ -327,17 +353,107 @@ test("browser sign-in creates an owner only in the operator's configured organiz
   }
 });
 
-test("fresh installation requires an operator-configured Linear organization", async () => {
+test("fresh installation without a setup link or a configured organization answers with the setup page", async () => {
   const scene = await fixture();
   try {
     scene.state.expectedOrganizationId = null;
     await scene.reopen();
     const response = await scene.request("/auth/linear");
     expect(response.status).toBe(503);
-    expect(await response.text()).toContain("LINEAR_ORGANIZATION_ID");
+    expect(await response.text()).toContain("paws setup-link");
     expect(await rows(scene.db, "workspaceOauthRequest")).toEqual([]);
     expect(await rows(scene.db, "workspace")).toEqual([]);
     expect(scene.state.exchanges).toBe(0);
+  } finally {
+    await scene.close();
+  }
+});
+
+async function setupSignIn(scene: Awaited<ReturnType<typeof fixture>>) {
+  const start = await scene.raw(new Request("https://paws.example/setup?token=setup-token"));
+  expect(start.status).toBe(303);
+  expect(start.headers.get("location")).toContain("client_id=fixture-client");
+  const install = await scene.installation();
+  return scene.request(
+    `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+    install.cookie,
+  );
+}
+
+test("the setup link claims a fresh instance for the admin's organization with an environment client", async () => {
+  const scene = await fixture(false, true);
+  try {
+    scene.state.expectedOrganizationId = null;
+    await scene.reopen();
+    const response = await setupSignIn(scene);
+    expect(response.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
+    const workspace = (await workspaceForOrganization(scene.db, "org"))!;
+    expect((await listWorkspaceMembers(scene.db, workspace.id))[0]?.role).toBe("admin");
+    expect(existsSync(join(scene.home, "secrets/linear-browser-client.json"))).toBe(false);
+    expect(scene.state.installed).toBe(1);
+  } finally {
+    await scene.close();
+  }
+});
+
+test("a fresh instance with an environment client refuses sign-in without the setup link", async () => {
+  const scene = await fixture(false, true);
+  try {
+    scene.state.expectedOrganizationId = null;
+    await scene.reopen();
+    expect((await scene.request("/setup")).status).toBe(403);
+    expect((await scene.request("/auth/linear")).status).toBe(403);
+    expect((await scene.request("/auth/linear/callback?code=attacker")).status).toBe(403);
+    const start = await scene.request("/");
+    expect(start.status).toBe(503);
+    expect(await start.text()).toContain("paws setup-link");
+    expect(await rows(scene.db, "workspaceOauthRequest")).toEqual([]);
+    expect(await rows(scene.db, "workspace")).toEqual([]);
+  } finally {
+    await scene.close();
+  }
+});
+
+test("a mismatching configured organization refuses the setup link sign-in", async () => {
+  const scene = await fixture(false, true);
+  try {
+    scene.state.expectedOrganizationId = "another-org";
+    await scene.reopen();
+    const start = await scene.raw(new Request("https://paws.example/setup?token=setup-token"));
+    expect(start.status).toBe(303);
+    const install = await scene.installation();
+    expect(install.response.headers.get("location")).toBe(
+      "/dashboard/?onboarding=workspace-mismatch",
+    );
+    expect(await rows(scene.db, "workspace")).toEqual([]);
+    expect(await readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
+    expect(scene.state.installed).toBe(0);
+  } finally {
+    await scene.close();
+  }
+});
+
+test("an existing workspace signs in without a configured organization", async () => {
+  const scene = await fixture();
+  try {
+    scene.state.expectedOrganizationId = null;
+    await scene.reopen();
+    await seed(scene.db, (q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: "existing",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 0,
+      }),
+    );
+    const install = await scene.installation();
+    const response = await scene.request(
+      `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+      install.cookie,
+    );
+    expect(response.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
+    expect((await workspaceForOrganization(scene.db, "org"))?.id).toBe("existing");
+    expect(scene.state.installed).toBe(1);
   } finally {
     await scene.close();
   }
@@ -667,7 +783,7 @@ test("a process without a Linear client starts in token-protected setup mode", a
       (await paws.server.fetch(new Request("https://localhost:8787/setup?token=wrong"))).status,
     ).toBe(403);
     expect((await paws.server.fetch(new Request("https://localhost:8787/health"))).status).toBe(
-      503,
+      200,
     );
 
     await paws.server.fetch(

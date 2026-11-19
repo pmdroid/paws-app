@@ -54,6 +54,7 @@ export function createBrowserOnboarding(options: {
   clientId: string | null;
   clientSecret: string | null;
   clientSecretOverride?: string;
+  environmentClient?: boolean;
   expectedOrganizationId?: string | null;
   installed: () => void;
   reconnect?: boolean;
@@ -80,9 +81,6 @@ export function createBrowserOnboarding(options: {
       return null;
     return workspaces[0]!;
   }
-  async function installationOrganization(): Promise<string | null> {
-    return organizationFor(await workspaceOrganizationIds(db, 2));
-  }
   async function organizationMatches(id: string): Promise<boolean> {
     const workspaces = await workspaceOrganizationIds(db, 2);
     return (
@@ -102,12 +100,22 @@ export function createBrowserOnboarding(options: {
       (request.headers.has("host") && request.headers.get("host") !== url.host)
     )
       return Response.json({ error: "Use the configured Paws origin." }, { status: 403 });
+    if (url.pathname === "/health" && request.method === "GET")
+      return Response.json({ ok: true, service: "paws" });
     if (options.setupToken && !setupConnected) {
       const authorized = url.searchParams.get("token") === options.setupToken;
       if (url.pathname === "/setup") {
         if (!authorized) return new Response("Forbidden", { status: 403 });
         if (request.method === "GET") {
-          const response = linearSetupPage(origin, options.setupToken);
+          const response =
+            options.environmentClient && options.clientId && options.clientSecret
+              ? await beginWorkspaceOAuth(db, {
+                  clientId: options.clientId,
+                  origin,
+                  now: now(),
+                  bootstrap: null,
+                })
+              : linearSetupPage(origin, options.setupToken);
           response.headers.append(
             "set-cookie",
             `${SETUP_COOKIE}=${setupBrowser}; Path=/; Secure; HttpOnly; SameSite=Lax`,
@@ -163,7 +171,6 @@ export function createBrowserOnboarding(options: {
     if (url.pathname === "/setup") return new Response("Forbidden", { status: 403 });
     if (request.method !== "GET" && !(request.method === "HEAD" && isDashboardPage(url.pathname)))
       return Response.json({ error: "Method not allowed." }, { status: 405 });
-    if (url.pathname === "/health") return Response.json({ ok: true, service: "paws" });
     const configured = !!options.clientId && !!options.clientSecret;
     if (url.pathname === "/api/auth/session")
       return Response.json(
@@ -190,12 +197,12 @@ export function createBrowserOnboarding(options: {
             },
           },
         );
-      if (
-        (await installationOrganization()) === null &&
-        (!options.setupToken || (await workspaceOrganizationIds(db, 2)).length > 0)
-      )
+      const workspaces = await workspaceOrganizationIds(db, 2);
+      if (workspaces.length === 0 && !options.setupToken && configuredOrganization === null)
+        return setupNeededPage();
+      if (workspaces.length > 0 && organizationFor(workspaces) === null)
         return Response.json(
-          { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
+          { error: "This Paws server belongs to a different Linear workspace." },
           { status: 503, headers: { "cache-control": "no-store" } },
         );
       return beginWorkspaceOAuth(db, {
