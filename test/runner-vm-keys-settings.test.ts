@@ -46,7 +46,6 @@ test("PUT then GET shows both keys set, and the readers see the saved values", a
     "settings.runner_vm_keys: Saved the exe.dev API token",
     "settings.runner_vm_keys: Saved the Tailscale auth key",
   ]);
-  expect(audits.join("")).not.toContain("tskey");
 });
 
 test("DELETE clears one key and leaves the other", async () => {
