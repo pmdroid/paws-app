@@ -60,7 +60,7 @@ type HelperDispatch = {
 
 export type SlackReplyAuthority = (
   q: Q,
-  input: { workspaceId: string; scope: RunnerSlackReplyScope },
+  input: { workspaceId: string; scope: RunnerSlackReplyScope; issuedAt?: number },
 ) => Steps<boolean>;
 
 export class HelperFencedError extends Error {
@@ -94,8 +94,9 @@ export function createRunnerHelpers(options: {
     runnerId: string,
     sessionId: string,
     generation: number,
-    purpose?: HelperCommand["purpose"],
-    slack?: RunnerSlackReplyScope,
+    purpose: HelperCommand["purpose"] | undefined,
+    slack: RunnerSlackReplyScope | undefined,
+    issuedAt: number,
   ) {
     const runner = yield* identitySteps(q, runnerId);
     if (purpose === "slack_reply") {
@@ -109,7 +110,7 @@ export function createRunnerHelpers(options: {
           yield* runnerHostVersionSteps(q, runnerId),
           SLACK_REPLY_RUNNER_VERSION,
         ) ||
-        !(yield* options.slack(q, { workspaceId: runner.workspaceId, scope: slack }))
+        !(yield* options.slack(q, { workspaceId: runner.workspaceId, scope: slack, issuedAt }))
       )
         throw new HelperFencedError("Slack reply authority changed");
       return runner;
@@ -138,6 +139,7 @@ export function createRunnerHelpers(options: {
       command.sessionGeneration,
       command.purpose,
       command.slack,
+      command.issuedAt,
     );
     return { row: unchangedIdentity(runner, row), command, envelope };
   }
@@ -182,6 +184,7 @@ export function createRunnerHelpers(options: {
       generation,
       input.purpose,
       input.slack,
+      now(),
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
     const conversation = input.purpose === "conversation" || slack;

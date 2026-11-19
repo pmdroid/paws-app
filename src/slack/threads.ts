@@ -50,6 +50,7 @@ export const SLACK_LINK_PATH = "/oauth/slack/link";
 const LINK_CODE = /\blink\s+([A-Z2-7]{4}-[A-Z2-7]{4})\b/i;
 const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const STOP = /^stop[.!]?$/i;
+const UNLINK = /^unlink[.!]?$/i;
 const STOP_POLL_MS = 1_000;
 const SLACK_STOP_ACTION = "paws_stop";
 
@@ -83,23 +84,28 @@ type Place = {
 type Reply = Place & {
   kind: "reply";
   userId: string;
+  linkId?: string;
   mentionTs: string;
   question: string;
   text: string;
 };
 type Payload = Reply | (Place & { kind: "notice"; text: string });
 type Bound = { teamId: string; channelId: string; generation: number };
-type Linked = Bound & { workspaceId: string; userId: string };
+type Linked = Bound & { workspaceId: string; userId: string; id?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
 type Held = Bound & { dedupeKey: string; expiresAt: number };
 type Gate =
   | { kind: "ignore" }
   | { kind: "guide"; setup: boolean }
-  | { kind: "member"; userId: string };
+  | { kind: "member"; userId: string; linkId: string };
 
 const channelKey = (workspaceId: string) => `slack.channel:${workspaceId}`;
 const memberKey = (teamId: string, slackUserId: string) => `slack.member:${teamId}:${slackUserId}`;
 const codePrefix = (workspaceId: string) => `slack.link:${workspaceId}:`;
+const unlinkedKey = (workspaceId: string, teamId: string, slackUserId: string) =>
+  `slack.unlinked:${workspaceId}:${teamId}:${slackUserId}`;
+const unlinkedUserKey = (workspaceId: string, userId: string) =>
+  `slack.unlinked-user:${workspaceId}:${userId}`;
 const heldKey = (place: Place) =>
   `slack.held:${place.workspaceId}:${place.teamId}:${place.slackUserId}`;
 const LINK_MS = 10 * 60_000;
@@ -118,6 +124,7 @@ const NOTICES = {
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
+  unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
 };
 
 const tsValue = (ts: string) => BigInt(ts.replace(".", ""));
@@ -152,16 +159,86 @@ function* gateSteps(q: Q, home: string, place: Place): Steps<Gate> {
     return { kind: "guide", setup: !admitted };
   const member = yield* workspaceMemberSteps(q, place.workspaceId, link.userId);
   return workspaceMemberUsable(member)
-    ? { kind: "member", userId: link.userId }
+    ? { kind: "member", userId: link.userId, linkId: link.id ?? "" }
     : { kind: "ignore" };
+}
+
+export type SlackLink = Linked & { slackUserId: string };
+
+export function* slackLinksSteps(q: Q, workspaceId: string): Steps<SlackLink[]> {
+  const rows = yield* settingsWithPrefixSteps(q, "slack.member:");
+  return rows.flatMap((row) => {
+    const link = parsed<Linked>(row.value);
+    const slackUserId = row.key.split(":")[2];
+    return link?.workspaceId === workspaceId && slackUserId ? [{ ...link, slackUserId }] : [];
+  });
+}
+
+export function* currentSlackLinksSteps(
+  q: Q,
+  home: string,
+  workspaceId: string,
+): Steps<SlackLink[]> {
+  const install = yield* installedSlackTokenSteps(q, home, workspaceId);
+  if (!install) return [];
+  const current = yield* installationSteps(q, home, install.teamId);
+  if (current?.workspaceId !== workspaceId) return [];
+  const channel = parsed<Bound>(yield* readSettingSteps(q, channelKey(workspaceId)));
+  return (yield* slackLinksSteps(q, workspaceId)).filter(
+    (link) =>
+      link.teamId === current.teamId &&
+      link.generation === current.generation &&
+      same(channel, link),
+  );
+}
+
+export function* unlinkSlackMemberSteps(
+  q: Q,
+  input: {
+    workspaceId: string;
+    userId?: string;
+    slackUserId?: string;
+    actorId: string;
+    action: "slack.member_unlinked" | "slack.member_revoked";
+    now: number;
+  },
+): Steps<number> {
+  const { workspaceId } = input;
+  let removed = 0;
+  for (const link of yield* slackLinksSteps(q, workspaceId)) {
+    if (input.userId !== undefined && link.userId !== input.userId) continue;
+    if (input.slackUserId !== undefined && link.slackUserId !== input.slackUserId) continue;
+    if ((yield* takeSettingSteps(q, memberKey(link.teamId, link.slackUserId))) === null) continue;
+    yield* takeSettingSteps(q, `slack.held:${workspaceId}:${link.teamId}:${link.slackUserId}`);
+    yield* takeSettingSteps(q, `${codePrefix(workspaceId)}${link.userId}`);
+    const fence = unlinkedKey(workspaceId, link.teamId, link.slackUserId);
+    yield* updateSettingSteps(q, fence, () => String(input.now), input.now);
+    const userFence = unlinkedUserKey(workspaceId, link.userId);
+    yield* updateSettingSteps(q, userFence, () => String(input.now), input.now);
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId,
+      userId: input.actorId,
+      action: input.action,
+      subject: `slack:${link.teamId}:${link.slackUserId}`,
+      now: input.now,
+    });
+    removed++;
+  }
+  return removed;
 }
 
 export function* slackReplyAllowedSteps(
   q: Q,
   home: string,
-  input: { workspaceId: string; scope: Omit<SlackReplyScope, "requestId" | "threadTs"> },
+  input: {
+    workspaceId: string;
+    scope: Omit<SlackReplyScope, "requestId" | "threadTs">;
+    issuedAt?: number;
+  },
 ): Steps<boolean> {
   const { workspaceId, scope } = input;
+  const unlinkedAt = yield* readSettingSteps(q, unlinkedUserKey(workspaceId, scope.memberUserId));
+  if (unlinkedAt !== null && (input.issuedAt ?? 0) <= Number(unlinkedAt)) return false;
   const place = { ...scope, generation: scope.installGeneration };
   const install = yield* installationSteps(q, home, scope.teamId);
   if (install?.workspaceId !== workspaceId || install.generation !== place.generation) return false;
@@ -288,9 +365,24 @@ export async function acceptSlackMention(
     if (!inserted) return false;
     yield* markInboxEventHandledSteps(q, dedupeKey);
     if (yield* stoppedSteps(q, place, mention.ts)) return false;
-    const stop = STOP.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim());
-    const stopped = stop && (yield* stopSteps(q, home, place, conversation.id, mention.ts, at));
-    if (stopped) return false;
+    const command = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+    if (STOP.test(command) && (yield* stopSteps(q, home, place, conversation.id, mention.ts, at)))
+      return false;
+    const gate = UNLINK.test(command) ? yield* gateSteps(q, home, place) : null;
+    if (gate?.kind === "member") {
+      const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
+      const action = "slack.member_unlinked" as const;
+      yield* unlinkSlackMemberSteps(q, { workspaceId, ...actor, action, now: at });
+      const payload: Payload = { ...place, kind: "notice", text: NOTICES.unlinked };
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "slack",
+        op: "chat.postEphemeral",
+        idempotencyKey: `slack:notice:${dedupeKey}`,
+        payload,
+        now: at,
+      });
+      return false;
+    }
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
@@ -356,7 +448,12 @@ export function createSlackThreads<Profile>(options: {
         yield* updateSettingSteps(q, channelKey(place.workspaceId), () => JSON.stringify(bound));
         yield* audit("slack.channel_admitted", `slack:${place.teamId}:${place.channelId}`);
       }
-      const linked: Linked = { ...bound, workspaceId: place.workspaceId, userId: issued.userId };
+      const linked: Linked = {
+        ...bound,
+        workspaceId: place.workspaceId,
+        userId: issued.userId,
+        id: randomBytes(12).toString("hex"),
+      };
       const key = memberKey(place.teamId, place.slackUserId);
       const links = yield* settingsWithPrefixSteps(q, `slack.member:${place.teamId}:`);
       const taken = links.some((entry) => {
@@ -396,6 +493,9 @@ export function createSlackThreads<Profile>(options: {
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const gate = await store.run(function* (q): Steps<Gate> {
       if (yield* stoppedSteps(q, place, mention.ts)) return { kind: "ignore" };
+      const unlinkedAt = yield* readSettingSteps(q, unlinkedKey(workspaceId, teamId, slackUserId));
+      if (unlinkedAt !== null && event.updated_at_ms <= Number(unlinkedAt))
+        return { kind: "ignore" };
       return yield* gateSteps(q, home, place);
     });
     if (gate.kind === "ignore") return;
@@ -450,7 +550,11 @@ export function createSlackThreads<Profile>(options: {
     const stop = new AbortController();
     const watch = setInterval(() => {
       void store
-        .run((q) => stoppedSteps(q, place, mention.ts))
+        .run(function* (q) {
+          if (yield* stoppedSteps(q, place, mention.ts)) return true;
+          const current = yield* gateSteps(q, home, place);
+          return current.kind !== "member" || current.linkId !== gate.linkId;
+        })
         .then(
           (stopped) => stopped && stop.abort(),
           () => undefined,
@@ -475,11 +579,12 @@ export function createSlackThreads<Profile>(options: {
       if (!(yield* context.isCurrentSteps(q))) return;
       if (yield* stoppedSteps(q, place, mention.ts)) return;
       const fence = yield* gateSteps(q, home, place);
-      if (fence.kind !== "member" || fence.userId !== gate.userId) return;
+      if (fence.kind !== "member" || fence.linkId !== gate.linkId) return;
       const payload: Payload = {
         ...place,
         kind: "reply",
         userId: gate.userId,
+        linkId: gate.linkId,
         mentionTs: mention.ts,
         question,
         text,
@@ -503,16 +608,18 @@ export function createSlackThreads<Profile>(options: {
       if ("note" in outcome) journal(`slack outbox ${row.id}: ${outcome.kind}; ${outcome.note}`);
       return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
     };
-    const { gate, stopped } = await store.run(function* (q) {
-      const fenced =
-        payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs));
-      return { gate: yield* gateSteps(q, home, payload), stopped: fenced };
-    });
-    const allowed =
-      !stopped &&
-      (payload.kind === "notice"
-        ? gate.kind !== "ignore"
-        : gate.kind === "member" && gate.userId === payload.userId);
+    function* allowedSteps(q: Q): Steps<boolean> {
+      if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
+        return false;
+      const gate = yield* gateSteps(q, home, payload);
+      if (payload.kind === "notice") return gate.kind !== "ignore";
+      return (
+        gate.kind === "member" &&
+        gate.userId === payload.userId &&
+        gate.linkId === (payload.linkId ?? "")
+      );
+    }
+    const allowed = await store.run(allowedSteps);
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||
@@ -521,12 +628,14 @@ export function createSlackThreads<Profile>(options: {
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
     const sending = await store.transaction(function* (q) {
-      if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
-        return "stopped";
+      if (!(yield* allowedSteps(q))) return "stopped";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
     });
     if (sending === "stopped")
-      return settle({ kind: "withheld", note: "the thread was stopped before delivery" });
+      return settle({
+        kind: "withheld",
+        note: "access changed or the thread stopped before delivery",
+      });
     if (sending === "taken")
       return settle({ kind: "unknown", note: "an earlier attempt may have posted it; not resent" });
     const body =

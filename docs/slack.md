@@ -41,6 +41,14 @@ Paws answers explicit `@Paws` mentions in one internal channel per Paws workspac
 - Paws answers on the asking member's own paired runner, in its conversation lane, with the workspace's implementer agent. That lane is separate from implementation slots, so answers come even while every slot is busy. The runner must be at version 0.1.94 or newer, online and signed in to that agent. Without such a runner, Paws doesn't answer. While the lane is full, Paws retries the mention later. The runner sees only the thread's context, with no repository, files or tools.
 - Paws answers only in public channels. In a private channel it posts nothing, not even setup messages.
 
+### Unlink and revoke
+
+- **Settings › Account** shows your own Slack link, with **Unlink**. Mentioning `@Paws unlink` in the channel unlinks the Slack account that posted it. Either way only your own link ends: the installation, the channel setup and other members' links stay as they are.
+- On the Slack card in **Workspace › Integrations**, an admin sees each linked member, marked when their Paws access is revoked, and can **Revoke** a link. Only links in this Paws workspace are listed or changed. Disconnecting the installation stays an admin action on the same card.
+- Unlinking or revoking ends the link at once. Paws drops that member's held question and unused link code, stops the turn it is running for them, and withholds replies to them it hadn't posted yet. Their next mention asks them to link again. Linking again starts fresh: mentions received before the unlink, and replies prepared for the earlier link, are never answered or posted. Paws checks the link once more just before it posts.
+- A member whose Paws access is revoked, or whose membership ends, gets no answers and can't stop a thread, even while still linked.
+- Unlinking again, or a Slack redelivery of `@Paws unlink`, changes nothing. Each change is in the workspace audit as `slack.member_unlinked` or `slack.member_revoked`, with who made it and which Slack account.
+
 ### Threads and Stop
 
 Each thread Paws is mentioned in is recorded once, when the first signed mention from the connected installation arrives: the Slack workspace, installation, channel, thread, who mentioned Paws first and with which event, and the thread Paws replies in. Every later mention in the thread is stored with the Slack user who posted it. The record grants nothing: each answer still needs the checks above. Slack redeliveries, including one after Paws stored a mention but before Slack saw the answer, are acknowledged and produce no second turn.

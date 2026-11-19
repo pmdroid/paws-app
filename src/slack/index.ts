@@ -13,6 +13,7 @@ export { createSlackConnect } from "./connect";
 export { SLACK_INSTALL_SCOPES, slackCapabilities, slackConnectionsSteps } from "./manifest";
 export type { SlackCapabilities } from "./manifest";
 export { createSlackRevocation } from "./revoke";
+export { createSlackLinks } from "./links";
 export {
   acceptSlackInteraction,
   acceptSlackMention,
