@@ -113,10 +113,10 @@ const NOTICES = {
 };
 
 const tsValue = (ts: string) => BigInt(ts.replace(".", ""));
-const thread = (place: Place) => ({ ...place, installGeneration: place.generation });
+const threadOf = (place: Place) => ({ ...place, installGeneration: place.generation });
 
 function* stoppedSteps(q: Q, place: Place, ts: string): Steps<boolean> {
-  const conversation = yield* slackConversationSteps(q, thread(place));
+  const conversation = yield* slackConversationSteps(q, threadOf(place));
   const stoppedTs = conversation?.stoppedTs;
   return !!stoppedTs && tsValue(ts) <= tsValue(stoppedTs);
 }
@@ -187,7 +187,7 @@ export async function acceptSlackMention(
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const conversation = yield* recordSlackConversationSteps(
       q,
-      { ...thread(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
+      { ...threadOf(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
       at,
     );
     const inserted = yield* insertInboxEventSteps(q, {
@@ -415,9 +415,9 @@ export function createSlackThreads<Profile>(options: {
       return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
     };
     const { gate, stopped } = await store.run(function* (q) {
-      const stopped =
+      const fenced =
         payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs));
-      return { gate: yield* gateSteps(q, home, payload), stopped };
+      return { gate: yield* gateSteps(q, home, payload), stopped: fenced };
     });
     const allowed =
       !stopped &&
