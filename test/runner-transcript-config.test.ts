@@ -2,21 +2,37 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { probeRunnerTranscriptStorage } from "./local/runner-transcript-config";
+import {
+  probeRunnerTranscriptAdapters,
+  probeRunnerTranscriptStartup,
+  probeRunnerTranscriptStorage,
+} from "./local/runner-transcript-config";
 
-test("protected transcript configuration feeds explicit storage and startup without a runner answers health", async () => {
+async function observe(probe: typeof probeRunnerTranscriptStorage, expected: number) {
   const root = mkdtempSync(join(tmpdir(), "paws-transcript-config-test-"));
   const observations: string[] = [];
   try {
-    await probeRunnerTranscriptStorage(root, (name, passed) => {
+    await probe(root, (name, passed) => {
       expect(passed).toBe(true);
       observations.push(name);
     });
-    expect(observations).toHaveLength(9);
+    expect(observations).toHaveLength(expected);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}
+
+test("protected transcript configuration feeds explicit storage", async () => {
+  await observe(probeRunnerTranscriptStorage, 4);
+});
+
+test("startup without a runner answers health and remote prerequisites fail first", async () => {
+  await observe(probeRunnerTranscriptStartup, 1);
+});
+
+test("configured transcript adapters preserve transcripts in S3 and on local disk", async () => {
+  await observe(probeRunnerTranscriptAdapters, 4);
+});
 
 test("transcript configuration stdin failures retain fixed guidance without credential contents", async () => {
   const secret = "StdinOnlyS3Credential";
