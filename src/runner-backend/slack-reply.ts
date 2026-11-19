@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  insertRunnerExecutionUsageSteps,
   listRunnersSteps,
   runnerConversationLaneSteps,
   runnerStandingSteps,
@@ -14,7 +15,12 @@ import {
   type RunnerHelperResult,
   type RunnerSlackReplyScope,
 } from "../runner-protocol";
-import { RUNNER_ONLINE_MS, signInFitSteps, type PlacementAccount } from "../runner-placement";
+import {
+  RUNNER_ONLINE_MS,
+  signInFitSteps,
+  type PlacementAccount,
+  type RunnerPlacement,
+} from "../runner-placement";
 import { HelperFencedError, RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
 
 export const SLACK_REPLY_ATTEMPTS = 2;
@@ -46,6 +52,7 @@ export type SlackReplyOutcome =
 export function createSlackReplies(options: {
   store: Db;
   helpers: RunnerHelpers;
+  placement: Pick<RunnerPlacement, "finishedSteps">;
   now?: () => number;
   pollIntervalMs?: number;
 }) {
@@ -87,21 +94,37 @@ export function createSlackReplies(options: {
     let busy = false;
     for (const candidate of candidates) {
       try {
-        const { command } = await helpers.dispatch({
-          runnerId: candidate.runnerId,
-          sessionId: request.scope.requestId,
-          purpose: "slack_reply",
-          profile: request.profile,
-          prompt: request.prompt,
-          slack: request.scope,
-          ...(candidate.account
-            ? {
-                account: {
-                  accountId: candidate.account.accountId,
-                  bindingId: candidate.account.bindingId,
-                },
-              }
-            : {}),
+        const command = await store.transaction(function* (q) {
+          const { command: dispatched } = yield* helpers.dispatchSteps(q, {
+            runnerId: candidate.runnerId,
+            sessionId: request.scope.requestId,
+            purpose: "slack_reply",
+            profile: request.profile,
+            prompt: request.prompt,
+            slack: request.scope,
+            ...(candidate.account
+              ? {
+                  account: {
+                    accountId: candidate.account.accountId,
+                    bindingId: candidate.account.bindingId,
+                  },
+                }
+              : {}),
+          });
+          yield* insertRunnerExecutionUsageSteps(q, {
+            commandId: dispatched.id,
+            runnerId: dispatched.runnerId,
+            ownerUserId: request.scope.memberUserId,
+            itemId: null,
+            runId: null,
+            agent: request.profile.agent,
+            model: request.profile.model,
+            role: "implementer",
+            purpose: "helper",
+            startedAt: now(),
+            placementReason: null,
+          });
+          return dispatched;
         });
         return { command };
       } catch (error) {
@@ -145,10 +168,16 @@ export function createSlackReplies(options: {
         if (!sent.command) return sent.busy && attempt === 0 ? { status: "busy" } : last;
         const { command } = sent;
         excluded.add(command.runnerId);
+        let settled: RunnerHelperResult | "timeout" | "error" = "error";
         try {
           const deadline = Math.min(command.expiresAt, now() + (request.timeoutMs ?? Infinity));
           const result = await wait(request, command.id, deadline);
-          if (result === "fenced" || result === "timed_out") return { status: result };
+          if (result === "fenced") return { status: result };
+          if (result === "timed_out") {
+            settled = "timeout";
+            return { status: result };
+          }
+          settled = result;
           if (
             result.commandId !== command.id ||
             command.slack?.requestId !== request.scope.requestId
@@ -184,6 +213,19 @@ export function createSlackReplies(options: {
           };
           if (result.cancelled || !result.agentExited) return last;
         } finally {
+          await store
+            .transaction((q) =>
+              options.placement.finishedSteps(q, {
+                commandId: command.id,
+                runnerId: command.runnerId,
+                profile: request.profile,
+                ...(typeof settled === "string" ? { failure: settled } : { result: settled }),
+                finishedAt: now(),
+              }),
+            )
+            .catch((error: unknown) => {
+              journalCaught(error, "runner-helpers.slack-reply.settle", null);
+            });
           await helpers.finish(command.id).catch((error: unknown) => {
             journalCaught(error, "runner-helpers.slack-reply.finish", null);
           });

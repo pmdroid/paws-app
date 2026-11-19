@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
+  accountSlotsInUse,
   consumeWorkspaceBootstrap,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -20,6 +21,7 @@ import {
 } from "../runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from "../runner-helpers";
+import { createRunnerPlacement } from "../runner-placement";
 import { createSlackReplies, SLACK_REPLY_ATTEMPTS } from "./slack-reply";
 import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
 import { signInFixtureRunner } from "../../test/pglite-fixtures";
@@ -100,7 +102,12 @@ async function fixture(
         );
       }),
   });
-  const replies = createSlackReplies({ store: db, helpers, pollIntervalMs: 1 });
+  const replies = createSlackReplies({
+    store: db,
+    helpers,
+    placement: createRunnerPlacement({ store: db }),
+    pollIntervalMs: 1,
+  });
   const scope = (overrides: Partial<RunnerSlackReplyScope> = {}): RunnerSlackReplyScope => ({
     requestId: `slack-${crypto.randomUUID()}`,
     teamId: "T0ACME",
@@ -203,7 +210,9 @@ test("a Slack reply answers through the helper lane with every work slot full", 
   expect(await runnerOccupancy(f.db, "runner", f.now)).toEqual({ capacity: 1, occupied: 1 });
   expect(await sqlRows(f.db, "SELECT id FROM work_item")).toEqual([]);
   expect(await sqlRows(f.db, "SELECT id FROM run")).toEqual([]);
-  expect(await sqlRows(f.db, "SELECT purpose FROM runner_execution_usage")).toEqual([]);
+  expect(
+    await sqlRows(f.db, "SELECT command_id, purpose, outcome FROM runner_execution_usage"),
+  ).toEqual([{ command_id: command.id, purpose: "helper", outcome: "success" }]);
   expect(
     await sqlRows(
       f.db,
@@ -380,14 +389,27 @@ test("a failed agent is retried once on another runner", async () => {
   const f = await fixture({ runners: ["runner", "runner-2"] });
   const reply = f.ask();
   const first = await f.sent();
+  expect(await accountSlotsInUse(f.db, first.account!.accountId, Date.now())).toBe(1);
   await f.helpers.submit(
     first.runnerId,
-    f.result(first, { stopReason: "error", errorMessage: "Agent crashed", text: "" }),
+    f.result(first, { stopReason: "error", authRequired: true, text: "" }),
   );
   const second = await f.answer(first.runnerId === "runner" ? "runner-2" : "runner");
   const outcome = await reply;
   expect(outcome.status).toBe("answered");
   expect(outcome.status === "answered" && outcome.commandId).toBe(second.id);
+  expect(
+    await sqlRows(
+      f.db,
+      "SELECT command_id, outcome FROM runner_execution_usage ORDER BY started_at, command_id",
+    ),
+  ).toEqual(
+    expect.arrayContaining([
+      { command_id: first.id, outcome: "auth_required" },
+      { command_id: second.id, outcome: "success" },
+    ]),
+  );
+  expect(await accountSlotsInUse(f.db, first.account!.accountId, Date.now())).toBe(0);
 });
 
 test("retries stop after the attempt budget", async () => {
@@ -420,7 +442,11 @@ test("retries stop after the attempt budget", async () => {
 
 test("a Slack reply's thread context is bounded", async () => {
   const f = await fixture();
-  const outcome = await createSlackReplies({ store: f.db, helpers: f.helpers }).reply({
+  const outcome = await createSlackReplies({
+    store: f.db,
+    helpers: f.helpers,
+    placement: createRunnerPlacement({ store: f.db }),
+  }).reply({
     workspaceId: f.workspace,
     scope: f.scope(),
     profile: { agent: "codex", model: null },
