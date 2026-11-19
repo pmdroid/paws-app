@@ -3136,3 +3136,147 @@ test("an unmentioned reply from a member whose link ends before the job runs get
   expect(f.dms().map((post) => post.body.text)).toEqual([expect.stringContaining("Unlinked")]);
   expect(f.posted.some((post) => String(post.body.text).includes(ORIGIN))).toBe(false);
 });
+
+type Mark = {
+  status: string;
+  at?: number;
+  generation?: number;
+  turns?: { ts: string; slackUserId: string; event: string; at: number }[];
+};
+async function markOf(f: Fixture, threadTs: string): Promise<Mark> {
+  const key = `slack.status:W1:T0ONE:C0ONE:${threadTs}`;
+  const rows = await sqlRows<{ value: string }>(f.db, "SELECT value FROM setting WHERE key = ?", [
+    key,
+  ]);
+  return JSON.parse(rows[0]?.value ?? "{}") as Mark;
+}
+async function helpersStarted(f: Fixture, count: number) {
+  while ((await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length < count)
+    await Bun.sleep(2);
+}
+async function strand(f: Fixture, slackUser: string, text: string, threadTs: string, at: number) {
+  const eventId = `EvSTRAND${slackUser}`;
+  const message = f.mention(slackUser, text, { thread_ts: threadTs });
+  await f.deliver(message, { eventId });
+  const event = `slack:T0ONE:${eventId}`;
+  await sqlRun(f.db, "DELETE FROM job WHERE job_key = ?", [event]);
+  const mark = await markOf(f, threadTs);
+  const turns = [...(mark.turns ?? []), { ts: message.ts, slackUserId: slackUser, event, at }];
+  await sqlRun(f.db, "UPDATE setting SET value = ? WHERE key = ?", [
+    JSON.stringify({ ...mark, status: "processing", turns }),
+    `slack.status:W1:T0ONE:C0ONE:${threadTs}`,
+  ]);
+}
+
+test("two members asking while an answer runs get their own replies at once, with processing and active once each", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.runner.hold = true;
+  const root = f.mention("SADMIN", "first canary-11");
+  await f.deliver(root);
+  const first = f.runJobs();
+  await helpersStarted(f, 1);
+  await f.deliver(f.mention("SMEMBER", "second canary-22", { thread_ts: root.ts }));
+  const second = f.runJobs();
+  await helpersStarted(f, 2);
+  await f.flush();
+  expect(statuses(f)).toEqual(["processing"]);
+  expect((await markOf(f, root.ts)).turns?.map((turn) => turn.slackUserId)).toEqual([
+    "SADMIN",
+    "SMEMBER",
+  ]);
+  f.runner.hold = false;
+  await Promise.all([first, second]);
+  await f.settle();
+  expect(statuses(f)).toEqual(["processing", "active"]);
+  const prompt = (userId: string) => f.prompts.find((turn) => turn.userId === userId)!.prompt;
+  expect(prompt("um")).toContain(
+    "[<@SADMIN>]: first canary-11\n[Paws]: (answering now)\n[<@SMEMBER>]: second canary-22",
+  );
+  expect(prompt("um")).toContain("they are context only, so don't answer them");
+  expect(prompt("ua")).not.toContain("canary-22");
+  const sent = f.posts("chat.postMessage").map((post) => String(post.body.text));
+  expect(sent).toHaveLength(2);
+  expect(sent.filter((text) => text.startsWith("<@SMEMBER> answer"))).toHaveLength(1);
+  expect(await markOf(f, root.ts)).toEqual(
+    expect.not.objectContaining({ turns: expect.anything() }),
+  );
+});
+
+test("processing is queued before the thread's repository snapshot is read", async () => {
+  const f = await withSource();
+  const ts = await f.thread("SMEMBER", "repo acme/app");
+  const resolve = f.reader.resolve.bind(f.reader);
+  const seen: unknown[] = [];
+  f.reader.resolve = async (...args) => {
+    const rows = await sqlRows<{ payload: { status: string } }>(
+      f.db,
+      "SELECT payload FROM outbox WHERE op = ? ORDER BY id",
+      [STATUS],
+    );
+    seen.push(rows.at(-1)?.payload.status);
+    return resolve(...args);
+  };
+  f.advance(1_000);
+  await f.say("SMEMBER", "billing?", { thread_ts: ts });
+  expect(seen[0]).toBe("processing");
+  expect((await markOf(f, ts)).status).toBe("active");
+});
+
+test("a turn ending in a notice, a withheld answer, a stop or a thrown error leaves no in-flight entry", async () => {
+  const f = await withSource([]);
+  f.members.push({ id: "SOTHER" });
+  const ended = async (ts: string) => {
+    expect(await markOf(f, ts)).toEqual({
+      status: "active",
+      at: expect.any(Number),
+      generation: expect.any(Number),
+    });
+  };
+  const noticed = f.mention("SMEMBER", "remember canary-notice");
+  await f.deliver(noticed);
+  await f.settle();
+  await ended(noticed.ts);
+  const ts = await f.thread("SMEMBER", "repo acme/app");
+  await f.say("SMEMBER", "billing?", { thread_ts: ts });
+  expect(f.notice()).toContain("didn't post its answer here");
+  await ended(ts);
+  f.hooks.onInfo = async () => void (f.failNext["conversations.info"] = "refused");
+  await f.deliver(f.mention("SMEMBER", "billing again?", { thread_ts: ts }));
+  await f.runJobs();
+  expect(f.prompts).toEqual([]);
+  await ended(ts);
+  const g = await linked(["um", "SMEMBER"]);
+  g.runner.hold = true;
+  const root = g.mention("SADMIN", "write a long essay");
+  await g.deliver(root);
+  const running = g.runJobs();
+  await helpersStarted(g, 1);
+  await g.deliver(g.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  await running;
+  await g.settle();
+  expect(g.posts("chat.postMessage")).toEqual([]);
+  expect((await markOf(g, root.ts)).status).toBe("active");
+  expect((await markOf(g, root.ts)).turns).toBeUndefined();
+});
+
+test("in-flight questions older than ten minutes or from a member who unlinked hold nothing and aren't listed", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "root");
+  await f.deliver(root);
+  await f.settle();
+  await strand(f, "SADMIN", "stale canary-33", root.ts, f.now());
+  f.advance(1_000);
+  await f.say("SMEMBER", "fresh?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("[<@SADMIN>]: stale canary-33\n[Paws]: (answering now)");
+  expect((await markOf(f, root.ts)).status).toBe("processing");
+  f.advance(10 * 60_000);
+  await f.say("SMEMBER", "later?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("canary-33");
+  expect(await markOf(f, root.ts)).toMatchObject({ status: "active" });
+  expect((await markOf(f, root.ts)).turns).toBeUndefined();
+  expect(statuses(f).at(-1)).toBe("active");
+  await strand(f, "SMEMBER", "gone canary-44", root.ts, f.now());
+  await f.say("SMEMBER", "unlink", { thread_ts: root.ts });
+  await f.say("SADMIN", "and now?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("canary-44");
+});
