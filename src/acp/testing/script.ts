@@ -39,7 +39,6 @@ export type FakeStep =
       remaining?: readonly { title: string; scope: string }[];
     }
   | { type: "post_update"; text: string }
-  /** Any other Paws host tool, like remember or recall; each result lands in `hostTools`. */
   | { type: "host_tool"; name: string; arguments: Record<string, unknown> }
   | { type: "reply"; text: string }
   | { type: "start_work"; plan: string }

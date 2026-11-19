@@ -70,7 +70,16 @@ async function fixture() {
     });
   const stored = () =>
     currentSourceContextRecords(db, namespace, { kind: "paws_work_item", id: workItemId }, at);
-  return { record, stored };
+  const remember = (operations: unknown) =>
+    service.remember!({
+      workItemId,
+      organizationId: workspaceId,
+      projectId,
+      requesterId: answerer.userId,
+      operations,
+      now: (at += 1000),
+    });
+  return { record, stored, remember };
 }
 
 test("the question and the answer are each cut to 300 characters", async () => {
@@ -141,4 +150,18 @@ test("a short question asked again corrects the decision and keeps its provenanc
   expect(rows[0]!.body).toBe(
     "Should exports include archived rows? → No. Reason: Answered by Alice Example on PAS-7",
   );
+});
+
+test("agent entries and answered decisions on one item keep their own source revision", async () => {
+  const { record, stored, remember } = await fixture();
+  await remember([{ action: "add", kind: "fact", content: "Exports run nightly." }]);
+  await record();
+  await remember([{ action: "add", kind: "open_question", content: "Who reads the export?" }]);
+  await record({ answer: "Yes, with a flag." });
+  const revisions = Object.fromEntries(
+    (await stored()).map((row) => [row.classification, row.sourceRevision]),
+  );
+  expect(revisions["reported_fact"]).toStartWith("remember-");
+  expect(revisions["unresolved_question"]).toStartWith("remember-");
+  expect(revisions["decision"]).toStartWith("answer-");
 });

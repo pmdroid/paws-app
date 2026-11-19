@@ -59,10 +59,6 @@ export async function recordAnsweredDecision(
     { kind: "paws_work_item", id: input.workItemId },
     input.now,
   );
-  // The stored text is cut for display, so it can't tell two long questions with the same
-  // opening apart. The record key hashes the whole question: asking it again corrects the
-  // decision, a different question gets its own. Decisions stored before the key existed carry
-  // the generic observation key; they still match by text when the question wasn't cut.
   const key = contextKey("decision", fullQuestion);
   const earlier =
     rows.find((row) => row.classification === "decision" && row.recordKey === key) ??

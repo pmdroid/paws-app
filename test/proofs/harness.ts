@@ -32,7 +32,7 @@ import {
   repositoryAtPath,
   type AgentLaunch,
 } from "../../src/loop";
-import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
+import type { FakeResult, FakeScript, FakeStep } from "../../src/acp/testing/script";
 import type { ProjectSessionContext } from "../../src/project-context";
 import { workspaceAdmission } from "../fake-workspace";
 
@@ -364,7 +364,6 @@ export const ACME = {
   sessionId: "session-acme-7",
 };
 
-/** A second issue in the same Linear team, for scenarios that set `secondIssue`. */
 export const ACME_B = {
   issueId: "issue-acme-8",
   identifier: "ACME-8",
@@ -373,7 +372,6 @@ export const ACME_B = {
   description: "Write the empty shelf report to empty.txt.",
 };
 
-/** The issue an action applies to: ACME-7 unless a scenario names `ACME_B`. */
 export type ProofIssue = { issueId: string; identifier: string; sessionId: string };
 
 export type Assertion = { name: string; passed: boolean; observed: unknown };
@@ -383,7 +381,6 @@ export type ProofContext = {
   linear: FakeTracker;
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
-  /** The state of ACME-7's item, or of the named issue's item. */
   itemState(issue?: ProofIssue): Promise<string | null>;
   itemBranch(): Promise<string | null>;
   itemRunId(): Promise<string | null>;
@@ -395,15 +392,11 @@ export type ProofContext = {
   storedReviewFindings(): Promise<number>;
   closeoutReports(): string[];
   hostTools(launch: LaunchInput): string[];
+  toolResults(launch: LaunchInput): { name: string; ok: boolean; text?: string; error?: string }[];
   heldWork(): Promise<{ activeRuns: number; reservations: number; runningJobs: number }>;
   ageCandidate(): Promise<boolean>;
   delegate(issue?: ProofIssue): Promise<void>;
   answerInLinear(answer: string, issue?: ProofIssue): Promise<void>;
-  /**
-   * Shut the orchestrator down, close the database, then open the same database and attach a new
-   * orchestrator (and a new `projectContext` service) to it, like a process restart. `store`
-   * points at the reopened database afterwards.
-   */
   restart(): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
@@ -432,8 +425,8 @@ export type Proof = {
   member?: { login: string; token: string; refused?: number };
   runnerSignIn?: { runner: string; signedIn: boolean };
   projectContext?: (store: Db) => ProjectSessionContext;
-  /** Adds ACME_B to fake Linear. */
   secondIssue?: boolean;
+  linearProject?: { id: string; name: string };
   delegatePayload?: Record<string, unknown>;
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
@@ -480,6 +473,9 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   await git("-C", seed, "add", ".");
   await git("-C", seed, "commit", "-m", "Seed acme widgets");
   await git("-C", seed, "push", "origin", "HEAD:main");
+  const project = proof.linearProject
+    ? { projectId: proof.linearProject.id, projectName: proof.linearProject.name }
+    : {};
   const linear = createFakeTracker([
     {
       linearIssueId: ACME.issueId,
@@ -487,6 +483,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       title: "Count widgets per shelf",
       description: "Write the shelf count to widgets.txt.",
       subIssues: [],
+      ...project,
     },
     ...(proof.secondIssue
       ? [
@@ -496,6 +493,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
             title: ACME_B.title,
             description: ACME_B.description,
             subIssues: [],
+            ...project,
           },
         ]
       : []),
@@ -647,6 +645,11 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       };
       const tools = mcpServers[0]?.env?.find((entry) => entry.name === "PAWS_HOST_TOOLS");
       return tools ? tools.value.split(",") : [];
+    },
+    toolResults(input) {
+      const file = join(dir, `agent-${launches.indexOf(input) + 1}-result.json`);
+      if (!existsSync(file)) return [];
+      return (JSON.parse(readFileSync(file, "utf8")) as FakeResult).hostTools ?? [];
     },
     heldWork: async () => ({
       activeRuns: await count(

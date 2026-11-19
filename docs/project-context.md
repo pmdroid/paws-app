@@ -98,6 +98,16 @@ An agent may save short facts and open questions that a later agent on the proje
 
 Saved entries are records of the issue as a Paws task source, with the project's access restriction. They follow the same access checks, forgetting, expiry and caps as every other record.
 
+## Decisions from people's answers
+
+With `decisions = true` under `[project_memory]` in `config.toml` (off by default), a person's answer to an agent's `ask_team` question on an issue in a Linear project is stored as a decision: the question, the answer, and who answered on which issue. This includes questions from answer, plan and artifact sessions. Question and answer are each cut to 300 characters. The person who answered is the record's actor, and their access to the project is checked when it's stored.
+
+When the agent asks the same question again on the same issue, the new answer corrects that decision and keeps the earlier version in its history. A different question gets its own decision, even when it starts with the same words. Paws's own questions, like repository, runner or time-limit questions, and answers Paws rejects record nothing.
+
+Recording is best effort. If the person's access can't be checked, they can't read the project, or storing fails, Paws writes one journal line and stores nothing. The answer still reaches the agent and the task carries on. Paws doesn't retry later, and if it stops between saving the answer and storing the decision, that decision is not stored.
+
+On the project's context page, entries an agent saved are labelled "Agent on" the issue, and answered decisions "Work item memory on" the issue. Each keeps its own label when the other kind is saved for the same issue later.
+
 Preparing a selection, compacting it, inspecting what a session received, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
 
 ## Using project context from another consumer

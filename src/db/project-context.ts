@@ -64,6 +64,7 @@ export type ContextClaim = {
   readonly classification: ContextClassification;
   readonly importance: number;
   readonly body: string;
+  readonly revision?: { readonly revision: string; readonly revisionAt: number };
 };
 
 export type ContextLimits = {
@@ -455,9 +456,16 @@ export function* ingestContextSourceSteps(q: Q, input: ContextIngest) {
     const hash = hashOf(claim.body);
     const rows = byKey.get(claim.key) ?? [];
     const current = rows.find((row) => row.status === "current");
+    const claimed = claim.revision
+      ? {
+          ...provenance,
+          sourceRevision: claim.revision.revision,
+          sourceRevisionAt: claim.revision.revisionAt,
+        }
+      : provenance;
     if (current?.contentHash === hash) {
       yield* q.exec(
-        q.orm.update(contextRecord).set(provenance).where(eq(contextRecord.id, current.id)),
+        q.orm.update(contextRecord).set(claimed).where(eq(contextRecord.id, current.id)),
       );
       refreshed++;
       continue;
@@ -504,7 +512,7 @@ export function* ingestContextSourceSteps(q: Q, input: ContextIngest) {
         status: "current",
         supersedes: current?.id ?? null,
         createdAt: now,
-        ...provenance,
+        ...claimed,
       }),
     );
     inserted++;
