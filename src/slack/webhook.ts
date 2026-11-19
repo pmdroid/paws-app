@@ -22,6 +22,7 @@ export type SlackMention = {
   ts: string;
   threadTs: string;
   externallyShared: boolean;
+  direct?: boolean;
 };
 
 export type SlackSessionStop = {
@@ -160,8 +161,9 @@ const TS = /^\d{9,12}\.\d{6}$/;
 function slackMention(payload: unknown): SlackMention | null | undefined {
   if (!isRecord(payload) || payload.type !== "event_callback" || !isRecord(payload.event)) return;
   const event = payload.event as Record<string, string | undefined>;
-  if (event.type === "message") return null;
-  if (event.type !== "app_mention") return;
+  const direct = event.channel_type === "im" || /^D/.test(event.channel ?? "");
+  if (event.type === "message" && !direct) return null;
+  if (event.type !== "app_mention" && event.type !== "message") return;
   const { team_id: teamId, event_id: eventId, api_app_id: appId } = payload;
   const { channel, user, text, ts, thread_ts: threadTs = ts } = event;
   const ids = [teamId, channel, user];
@@ -179,7 +181,8 @@ function slackMention(payload: unknown): SlackMention | null | undefined {
     text: text.slice(0, 8000),
     ts: ts!,
     threadTs: threadTs!,
-    externallyShared: payload.is_ext_shared_channel !== false,
+    externallyShared: direct ? false : payload.is_ext_shared_channel !== false,
+    ...(direct ? { direct } : {}),
   };
 }
 
