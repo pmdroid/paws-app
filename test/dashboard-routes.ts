@@ -44,6 +44,7 @@ const WORKSPACE_PAGE_IDS = [
   "storage",
   "limits",
   "member-vm",
+  "runner-vms",
   "brief",
   "integrations",
   "members",
@@ -279,6 +280,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       },
     ),
   ),
+  api("GET PUT DELETE", "/api/settings/runner-vm-keys", "preserved", "src/settings", {
+    sample: "/api/settings/runner-vm-keys",
+  }),
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),

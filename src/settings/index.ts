@@ -32,3 +32,5 @@ export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest
 export type { StorageSettingsOptions } from "./storage";
 export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
 export type { MemberVmSettingsOptions } from "./member-vm";
+export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
+export type { RunnerVmKeysSettingsOptions } from "./runner-vm-keys";
