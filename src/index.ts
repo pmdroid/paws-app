@@ -1,6 +1,6 @@
 import { assetPath, buildVersion, compiled } from "./assets";
 import { checkApiKey, checkClaudeToken, createAccountUsage, createAgentAuth } from "./agent-auth";
-import { browserSetupRuntime } from "./onboarding";
+import { browserSetupRuntime, setupLink } from "./onboarding";
 import {
   createFindingGrouping,
   registerFindingGrouping,
@@ -2858,6 +2858,7 @@ Commands:
   paws review-score [--since D] count review escapes, found after merge and after the PR
   paws evidence migrate         copy local Closeout evidence records to the object store
   paws login slack              connect Slack
+  paws setup-link               print the browser setup link
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
@@ -2865,6 +2866,26 @@ Commands:
                                 draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
+
+export async function setupLinkMain(
+  argv: string[],
+  source: EnvSource,
+  print: (text: string) => void = console.log,
+): Promise<number> {
+  if (argv.length !== 0) {
+    console.error("usage: paws setup-link");
+    return 1;
+  }
+  try {
+    const paths = pawsPaths(loadEnv(source).home);
+    const publicUrl = loadRuntime(source).publicUrl;
+    print(await withSecretStore(source, async () => setupLink(paths.secretsDir, publicUrl)));
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws setup-link failed.", null);
+    return 1;
+  }
+}
 
 async function doctorMain(): Promise<number> {
   const probe = await realProbe(process.env).catch((error: unknown) => {
@@ -3182,6 +3203,7 @@ if (import.meta.main || compiled()) {
   if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "review-score") process.exit(await reviewScoreMain(argv.slice(1)));
   if (command === "evidence") process.exit(await evidenceMain(argv.slice(1)));
+  if (command === "setup-link") process.exit(await setupLinkMain(argv.slice(1), process.env));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");

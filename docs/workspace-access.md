@@ -20,6 +20,8 @@ LINEAR_ORGANIZATION_ID=your-linear-organization-id \
 bun run paws
 ```
 
+Without `LINEAR_CLIENT_ID`, Paws starts in setup mode and prints a setup link, `<PAWS_PUBLIC_URL>/setup?token=…`. Open it to enter the Linear app values in the browser. The link stays the same across restarts until Linear setup finishes; run `paws setup-link` on the server to print it again, or to see `Setup is complete.` Other pages say that setup is needed and point to `paws setup-link`.
+
 ### Behind a proxy
 
 When a proxy in front of Paws terminates HTTPS, such as a Render web service, set `PAWS_PUBLIC_TLS=proxy` and leave out `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. `PAWS_PUBLIC_URL` stays the `https:` origin the browser sees. Paws loads no certificate and serves plain HTTP on `PAWS_HOST`:`PAWS_PORT`. It treats each request as arriving on that HTTPS origin and keys the sign-in limits on the last `X-Forwarded-For` entry, which the proxy appends, falling back to the socket peer when the header is missing. Proxy mode trusts that the proxy is the only route to `PAWS_PORT` and that the last `X-Forwarded-For` entry is the client; anything that reaches the port directly can choose its own address. `paws public-tls validate` has no certificate to check. Runner control (`PAWS_RUNNER_HOST`) needs its own certificate and is not available in proxy mode yet.
