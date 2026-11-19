@@ -1,0 +1,431 @@
+import { afterEach, expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  consumeWorkspaceBootstrap,
+  putWorkspaceUser,
+  recordLinearInstallation,
+  recordRunnerCapacity,
+  recordRunnerHostStatus,
+  runnerOccupancy,
+  syncSteps,
+} from "../db";
+import {
+  MINIMUM_RUNNER_VERSION,
+  RUNNER_SLACK_REPLY_MS,
+  RUNNER_SLACK_REPLY_PROMPT_BYTES,
+  SLACK_REPLY_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerHelperResult,
+  type RunnerSlackReplyScope,
+} from "../runner-protocol";
+import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
+import { createRunnerHelpers } from "../runner-helpers";
+import { createSlackReplies, SLACK_REPLY_ATTEMPTS } from "./slack-reply";
+import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
+import { signInFixtureRunner } from "../../test/pglite-fixtures";
+
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
+});
+
+type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
+
+const SLACK_VERSION = SLACK_REPLY_RUNNER_VERSION.join(".");
+
+async function fixture(
+  options: { conversations?: number; version?: string; runners?: string[] } = {},
+) {
+  const { db, close } = await tempStore();
+  cleanup.push(close);
+  const now = Date.now();
+  const userId = await putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "owner",
+    name: "Owner",
+    email: "owner@example.invalid",
+  });
+  const otherUserId = await putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "other",
+    name: "Other",
+    email: "other@example.invalid",
+  });
+  const workspace = await consumeWorkspaceBootstrap(db, {
+    id: workspaceId(),
+    organizationId: "org",
+    name: "Acme",
+    userId,
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    now,
+  });
+  await recordLinearInstallation(db, {
+    organizationId: "org",
+    oauthClientId: "app",
+    appUserId: "app-user",
+    sessionId: "session-1",
+    teamId: "team",
+    observedAtMs: now,
+  });
+  const runners = options.runners ?? ["runner"];
+  for (const runnerId of runners) {
+    await sqlRun(
+      db,
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+      [runnerId, workspace.id, userId, runnerId, now, now],
+    );
+    await recordRunnerCapacity(db, runnerId, 1, 1, options.conversations ?? 2);
+    await signInFixtureRunner(db, runnerId, "codex");
+    await recordRunnerHostStatus(
+      db,
+      runnerId,
+      { runnerVersion: options.version ?? SLACK_VERSION },
+      now,
+    );
+  }
+  const authority = { allowed: true, generation: 3, checks: 0 };
+  const helpers = createRunnerHelpers({
+    store: db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    slack: (_q, input) =>
+      syncSteps(() => {
+        authority.checks++;
+        return (
+          authority.allowed &&
+          input.workspaceId === workspace.id &&
+          input.scope.teamId === "T0ACME" &&
+          input.scope.channelId === "C0GENERAL" &&
+          input.scope.installGeneration === authority.generation
+        );
+      }),
+  });
+  const replies = createSlackReplies({ store: db, helpers, pollIntervalMs: 1 });
+  const scope = (overrides: Partial<RunnerSlackReplyScope> = {}): RunnerSlackReplyScope => ({
+    requestId: `slack-${crypto.randomUUID()}`,
+    teamId: "T0ACME",
+    channelId: "C0GENERAL",
+    threadTs: "1795053091.151000",
+    memberUserId: userId,
+    installGeneration: authority.generation,
+    ...overrides,
+  });
+  const ask = (overrides: Partial<RunnerSlackReplyScope> = {}, timeoutMs = 5_000) =>
+    replies.reply({
+      workspaceId: workspace.id,
+      scope: scope(overrides),
+      profile: { agent: "codex", model: null },
+      prompt: "Thread so far:\nAda: what does the release checklist cover?",
+      timeoutMs,
+    });
+  const result = (
+    command: Pick<HelperCommand, "id" | "account">,
+    overrides: Partial<RunnerHelperResult> = {},
+  ): RunnerHelperResult => ({
+    executionId: workspaceId(),
+    commandId: command.id,
+    ...(command.account ? { account: command.account } : {}),
+    role: "implementer",
+    stopReason: "end_turn",
+    cancelled: false,
+    timedOut: false,
+    authRequired: false,
+    agentExited: true,
+    text: "It covers the changelog, the tag and the upgrade order.",
+    ...overrides,
+  });
+  const helperCommand = async (id: string) => {
+    const { command } = await helpers.current(id);
+    return command as Extract<RunnerCommand, { type: "helper" }>;
+  };
+  async function sent(runnerId = "runner") {
+    for (let tick = 0; tick < 500; tick++) {
+      const rows = await sqlRows<{ id: string }>(
+        db,
+        "SELECT id FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND result IS NULL AND purpose='slack_reply'",
+        [runnerId],
+      );
+      if (rows[0]) return helperCommand(rows[0].id);
+      await Bun.sleep(1);
+    }
+    throw new Error("Expected a Slack reply helper");
+  }
+  async function answer(
+    runnerId = "runner",
+    overrides: (id: string) => Partial<RunnerHelperResult> = () => ({}),
+  ) {
+    const command = await sent(runnerId);
+    await helpers.acknowledge(runnerId, command.id);
+    await helpers.submit(runnerId, result(command, overrides(command.id)));
+    return command;
+  }
+  return {
+    db,
+    now,
+    userId,
+    otherUserId,
+    workspace: workspace.id,
+    authority,
+    helpers,
+    scope,
+    ask,
+    answer,
+    sent,
+    result,
+  };
+}
+
+test("a Slack reply answers through the helper lane with every work slot full", async () => {
+  const f = await fixture();
+  await f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session-1",
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: "Classify this request",
+  });
+  expect(await runnerOccupancy(f.db, "runner", f.now)).toEqual({ capacity: 1, occupied: 1 });
+
+  const reply = f.ask();
+  const command = await f.answer();
+  const outcome = await reply;
+
+  expect(outcome).toEqual({
+    status: "answered",
+    commandId: command.id,
+    runnerId: "runner",
+    scope: command.slack!,
+    text: "It covers the changelog, the tag and the upgrade order.",
+  });
+  expect(command.expiresAt - command.issuedAt).toBe(RUNNER_SLACK_REPLY_MS);
+  expect(command.conversation).toBeUndefined();
+  expect(command.account).toBeDefined();
+  expect(await runnerOccupancy(f.db, "runner", f.now)).toEqual({ capacity: 1, occupied: 1 });
+  expect(await sqlRows(f.db, "SELECT id FROM work_item")).toEqual([]);
+  expect(await sqlRows(f.db, "SELECT id FROM run")).toEqual([]);
+  expect(await sqlRows(f.db, "SELECT purpose FROM runner_execution_usage")).toEqual([]);
+  expect(
+    await sqlRows(
+      f.db,
+      "SELECT id FROM runner_helper WHERE purpose='slack_reply' AND ended_at IS NULL",
+    ),
+  ).toEqual([]);
+});
+
+test("Slack replies and Linear conversations share the conversation lane", async () => {
+  const f = await fixture({ conversations: 2 });
+  await f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session-1",
+    purpose: "conversation",
+    profile: { agent: "codex", model: null },
+    prompt: "What does the acme checkout do?",
+    conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "codex-session" },
+  });
+  const held = f.ask();
+  const first = await f.sent();
+  expect(await f.ask()).toEqual({ status: "busy" });
+  expect(await runnerOccupancy(f.db, "runner", f.now)).toEqual({ capacity: 1, occupied: 0 });
+  await f.helpers.submit("runner", f.result(first));
+  expect((await held).status).toBe("answered");
+});
+
+test("a runner with its conversation lane off refuses Slack replies", async () => {
+  const f = await fixture({ conversations: 0 });
+  expect((await f.ask()).status).toBe("refused");
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+});
+
+test("a Slack reply stops waiting at its timeout and ends its helper", async () => {
+  const f = await fixture();
+  expect(await f.ask({}, 30)).toEqual({ status: "timed_out" });
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper WHERE ended_at IS NULL")).toEqual([]);
+});
+
+test("a runner older than the Slack reply release gets no Slack reply", async () => {
+  const f = await fixture({ version: MINIMUM_RUNNER_VERSION.join(".") });
+  expect((await f.ask()).status).toBe("refused");
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+  expect(await f.helpers.commands("runner")).toEqual([]);
+});
+
+test("a downgraded runner cannot pick up or answer a Slack reply", async () => {
+  const f = await fixture();
+  const reply = f.ask();
+  const command = await f.sent();
+  await recordRunnerHostStatus(
+    f.db,
+    "runner",
+    { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
+    Date.now(),
+  );
+  expect(await f.helpers.commands("runner")).toEqual([]);
+  await expect(f.helpers.submit("runner", f.result(command))).rejects.toThrow(
+    "Slack reply authority changed",
+  );
+  expect(await reply).toEqual({ status: "fenced" });
+});
+
+for (const [name, overrides] of [
+  ["another member's thread", { memberUserId: "someone-else" }],
+  ["another Slack team", { teamId: "T0OTHER" }],
+  ["another channel", { channelId: "C0RANDOM" }],
+  ["an older installation generation", { installGeneration: 2 }],
+  ["a direct message", { channelId: "D0PRIVATE" }],
+] as const)
+  test(`a Slack reply for ${name} is refused before anything is sent`, async () => {
+    const f = await fixture();
+    expect((await f.ask(overrides)).status).toBe("refused");
+    expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+  });
+
+test("a member without a runner of their own gets no reply", async () => {
+  const f = await fixture();
+  expect((await f.ask({ memberUserId: f.otherUserId })).status).toBe("refused");
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+});
+
+test("Slack replies stay fenced until the Slack intake supplies its authority", async () => {
+  const f = await fixture();
+  const helpers = createRunnerHelpers({
+    store: f.db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+  });
+  await expect(
+    helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "slack-request",
+      purpose: "slack_reply",
+      profile: { agent: "codex", model: null },
+      prompt: "Hello",
+      slack: f.scope({ requestId: "slack-request" }),
+    }),
+  ).rejects.toThrow("Slack reply authority changed");
+});
+
+test("a revoked thread is refused before dispatch", async () => {
+  const f = await fixture();
+  f.authority.allowed = false;
+  expect((await f.ask()).status).toBe("refused");
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+});
+
+for (const [name, revoke] of [
+  ["a revoked thread", (f: Awaited<ReturnType<typeof fixture>>) => (f.authority.allowed = false)],
+  [
+    "a reinstalled workspace",
+    (f: Awaited<ReturnType<typeof fixture>>) => (f.authority.generation = 4),
+  ],
+] as const)
+  test(`${name} fences the answer the runner already has`, async () => {
+    const f = await fixture();
+    const reply = f.ask();
+    const command = await f.sent();
+    await f.helpers.acknowledge("runner", command.id);
+    revoke(f);
+    await expect(f.helpers.acknowledge("runner", command.id)).rejects.toThrow();
+    await expect(f.helpers.submit("runner", f.result(command))).rejects.toThrow(
+      "Slack reply authority changed",
+    );
+    expect(await reply).toEqual({ status: "fenced" });
+  });
+
+async function anySent(f: Awaited<ReturnType<typeof fixture>>) {
+  for (let tick = 0; tick < 500; tick++) {
+    const rows = await sqlRows<{ id: string }>(
+      f.db,
+      "SELECT id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL",
+    );
+    if (rows[0])
+      return (await f.helpers.current(rows[0].id)).command as Extract<
+        RunnerCommand,
+        { type: "helper" }
+      >;
+    await Bun.sleep(1);
+  }
+  throw new Error("Expected a Slack reply helper");
+}
+
+test("a result for another command or from another runner is refused", async () => {
+  const f = await fixture({ runners: ["runner", "runner-2"] });
+  const reply = f.ask();
+  const command = await anySent(f);
+  const other = command.runnerId === "runner" ? "runner-2" : "runner";
+  await expect(f.helpers.submit(other, f.result(command))).rejects.toThrow();
+  const response = await f.helpers.fetch(
+    new Request(`https://paws.invalid/v1/helper-commands/${command.id}/result`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(f.result({ ...command, id: "another-command" })),
+    }),
+    command.runnerId,
+  );
+  expect(response?.status).toBe(403);
+  await f.helpers.submit(command.runnerId, f.result(command));
+  await expect(
+    f.helpers.submit(command.runnerId, f.result(command, { text: "A different answer." })),
+  ).rejects.toThrow("immutable");
+  expect((await reply).status).toBe("answered");
+});
+
+test("an answer that uses the reply tool is not handed back", async () => {
+  const f = await fixture();
+  const reply = f.ask();
+  await f.answer("runner", () => ({ replies: ["Posted elsewhere"] }));
+  expect((await reply).status).toBe("failed");
+});
+
+test("a failed agent is retried once on another runner", async () => {
+  const f = await fixture({ runners: ["runner", "runner-2"] });
+  const reply = f.ask();
+  const first = await f.sent();
+  await f.helpers.submit(
+    first.runnerId,
+    f.result(first, { stopReason: "error", errorMessage: "Agent crashed", text: "" }),
+  );
+  const second = await f.answer(first.runnerId === "runner" ? "runner-2" : "runner");
+  const outcome = await reply;
+  expect(outcome.status).toBe("answered");
+  expect(outcome.status === "answered" && outcome.commandId).toBe(second.id);
+});
+
+test("retries stop after the attempt budget", async () => {
+  const f = await fixture({ runners: ["runner", "runner-2", "runner-3"] });
+  const reply = f.ask();
+  const ran = new Set<string>();
+  for (let attempt = 0; attempt < SLACK_REPLY_ATTEMPTS; attempt++) {
+    let command: Extract<RunnerCommand, { type: "helper" }> | undefined;
+    for (let tick = 0; !command && tick < 500; tick++) {
+      for (const runnerId of ["runner", "runner-2", "runner-3"])
+        if (!ran.has(runnerId)) {
+          const rows = await sqlRows<{ id: string }>(
+            f.db,
+            "SELECT id FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND result IS NULL",
+            [runnerId],
+          );
+          if (rows[0]) command = (await f.helpers.current(rows[0].id)).command as never;
+        }
+      if (!command) await Bun.sleep(1);
+    }
+    ran.add(command!.runnerId);
+    await f.helpers.submit(
+      command!.runnerId,
+      f.result(command!, { stopReason: "error", errorMessage: "Agent crashed", text: "" }),
+    );
+  }
+  expect(await reply).toEqual({ status: "failed", reason: "Agent crashed" });
+  expect((await sqlRows(f.db, "SELECT id FROM runner_helper")).length).toBe(SLACK_REPLY_ATTEMPTS);
+});
+
+test("a Slack reply's thread context is bounded", async () => {
+  const f = await fixture();
+  const outcome = await createSlackReplies({ store: f.db, helpers: f.helpers }).reply({
+    workspaceId: f.workspace,
+    scope: f.scope(),
+    profile: { agent: "codex", model: null },
+    prompt: "x".repeat(RUNNER_SLACK_REPLY_PROMPT_BYTES + 1),
+  });
+  expect(outcome.status).toBe("refused");
+  expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+});

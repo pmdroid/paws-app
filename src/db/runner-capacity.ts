@@ -33,8 +33,10 @@ export const ciWaitingSql = (q: Q, run: string): SQL =>
     AND (ci.payload->'awakeWait'->>'kind')='ci')`,
   );
 
-export const workHelperSql = (q: Q, helper: string): SQL =>
-  sql.raw(`${helper}.purpose IS DISTINCT FROM 'conversation'`);
+const workPurposeSql = (helper: string) =>
+  `(${helper}.purpose IS NULL OR ${helper}.purpose NOT IN ('conversation','slack_reply'))`;
+
+export const workHelperSql = (q: Q, helper: string): SQL => sql.raw(workPurposeSql(helper));
 
 const helperIssuedSql = (helper: string) =>
   `${helper}.expires_at - CASE WHEN ${helper}.purpose='finding_groups' THEN ${runnerHelperLifetime("finding_groups")} ELSE ${runnerHelperLifetime("classify")} END`;
@@ -42,7 +44,7 @@ const helperIssuedSql = (helper: string) =>
 /** Work helpers in the lane: acknowledged, or issued within the runner acknowledgement window. */
 export const laneHelperSql = (q: Q, helper: string, now: number): SQL =>
   sql.raw(
-    `(${helper}.purpose IS DISTINCT FROM 'conversation' AND (${helper}.acknowledged_at IS NOT NULL
+    `(${workPurposeSql(helper)} AND (${helper}.acknowledged_at IS NOT NULL
       OR ${helperIssuedSql(helper)}>${Math.trunc(now) - RUNNER_LIVE_GRACE_MS}))`,
   );
 
