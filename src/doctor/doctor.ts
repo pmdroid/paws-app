@@ -76,6 +76,8 @@ const FIX = {
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews, Pull request review comments, Issue comments and Merge groups events (docs/github-app.md).",
   githubEvents:
     "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment and Merge group, then accept the change on the installation (docs/github-app.md).",
+  slack:
+    "Reconnect Slack in Workspace > Integrations so Slack grants the missing scopes (docs/slack.md).",
 } as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
@@ -127,6 +129,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
   if (facts.tailscaleAuthKey !== undefined)
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
+  for (const slack of facts.slack ?? []) checks.push(...slackChecks(slack));
   if (facts.webhooks) {
     const linearSecret =
       env.linearWebhookSecret !== null ||
@@ -379,6 +382,32 @@ function tailscaleAuthKeyCheck(status: TailscaleAuthKeyStatus, tailnet: boolean)
 
 function overriddenSectionsNote(sections: readonly string[]): DoctorCheck {
   return note("settings-overrides", describeOverriddenSections(sections));
+}
+
+function slackChecks(slack: NonNullable<ProbeFacts["slack"]>[number]): DoctorCheck[] {
+  const { teamId, capabilities } = slack;
+  const { threads } = capabilities;
+  const optional = [
+    ["app messages", capabilities.directMessages],
+    ["agent status", capabilities.agent],
+  ] as const;
+  const later = optional
+    .filter(([, state]) => !state.ready)
+    .map(([name, state]) => `${name} would need ${state.missing.join(", ")}`);
+  return [
+    check(
+      `slack ${teamId}`,
+      threads.ready,
+      threads.ready
+        ? "channel threads ready"
+        : `channel threads need ${threads.missing.join(", ")}`,
+      FIX.slack,
+    ),
+    note(
+      `slack ${teamId} optional`,
+      [...later, "Slack Code is not available yet; channel threads work without it"].join("; "),
+    ),
+  ];
 }
 
 function note(name: string, detail: string): DoctorCheck {

@@ -39,6 +39,14 @@ Paws answers explicit `@Paws` mentions in one internal channel per Paws workspac
 - Paws answers on the asking member's own paired runner, in its conversation lane, with the workspace's implementer agent. That lane is separate from implementation slots, so answers come even while every slot is busy. The runner must be at version 0.1.94 or newer, online and signed in to that agent. Without such a runner, Paws doesn't answer. While the lane is full, Paws retries the mention later. The runner sees only the thread's context, with no repository, files or tools.
 - Paws answers only in public channels. In a private channel it posts nothing, not even setup messages.
 
+### Threads and Stop
+
+Each thread Paws is mentioned in is recorded once, when the first signed mention from the connected installation arrives: the Slack workspace, installation, channel, thread, who mentioned Paws first and with which event, and the thread Paws replies in. Every later mention in the thread is stored with the Slack user who posted it. The record grants nothing: each answer still needs the checks above. Slack redeliveries, including one after Paws stored a mention but before Slack saw the answer, are acknowledged and produce no second turn.
+
+A linked member mentions `@Paws stop` in the thread to stop it. Paws records the stop when the mention arrives, without waiting for a runner, so it works while every slot and the conversation lane are busy. It ends the turn that is running within about a second, never posts a reply to any mention made before the stop, and ignores a delayed delivery of one of those mentions. The member who stopped it sees a message only they can see. A mention after the stop starts a new turn. A stop from someone who isn't linked is treated as any other mention.
+
+`paws doctor` checks each connected Slack workspace: channel threads need the scopes above, and a missing one fails with a reconnect hint. App messages and agent status are shown as optional notes, and Slack Code is shown as not available; neither stops channel threads from working.
+
 ## Use a `paws login slack` connection
 
 `paws login slack` connects Slack to the server rather than to a Paws workspace. When such a connection exists and the Paws workspace has none, the Integrations card offers **Use the paws login slack connection**. It moves that token, with the scopes it already has, into the admin's Paws workspace and removes the server-wide copy, without opening Slack or asking for new permissions. Paws refuses when the workspace is already connected, the Slack workspace belongs to another Paws workspace, the token rotates, or it was issued to an app other than `SLACK_APP_ID`. The move is recorded in the workspace audit as `slack.adopted`.

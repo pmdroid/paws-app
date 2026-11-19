@@ -8,11 +8,14 @@ import {
   insertInboxEventSteps,
   markInboxEventHandledSteps,
   readSettingSteps,
+  recordSlackConversationSteps,
   settingsWithPrefixSteps,
   settleSlackOutboxSteps,
+  slackConversationSteps,
   slackOutboxExistsSteps,
   slackSendingSteps,
   slackThreadContextSteps,
+  stopSlackConversationSteps,
   takeSettingSteps,
   updateSettingSteps,
   workspaceMemberSteps,
@@ -46,6 +49,8 @@ export const SLACK_THREAD_JOB = "slack.thread";
 export const SLACK_LINK_PATH = "/oauth/slack/link";
 const LINK_CODE = /\blink\s+([A-Z2-7]{4}-[A-Z2-7]{4})\b/i;
 const SLACK_ID = /^[A-Z0-9]{2,32}$/;
+const STOP = /^stop[.!]?$/i;
+const STOP_POLL_MS = 1_000;
 
 export type SlackReplyScope = {
   requestId: string;
@@ -104,7 +109,17 @@ const NOTICES = {
   expired: "That code has expired, was already used, or isn't for you in this channel.",
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
+  stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
 };
+
+const tsValue = (ts: string) => BigInt(ts.replace(".", ""));
+const thread = (place: Place) => ({ ...place, installGeneration: place.generation });
+
+function* stoppedSteps(q: Q, place: Place, ts: string): Steps<boolean> {
+  const conversation = yield* slackConversationSteps(q, thread(place));
+  const stoppedTs = conversation?.stoppedTs;
+  return !!stoppedTs && tsValue(ts) <= tsValue(stoppedTs);
+}
 
 function* installationSteps(q: Q, home: string, teamId: string) {
   const team = yield* slackTeamOwnerSteps(q, home, teamId);
@@ -168,6 +183,13 @@ export async function acceptSlackMention(
     if (!install || !mention.text.includes(`<@${install.botUserId}>`)) return false;
     if (mention.appId && install.appId && mention.appId !== install.appId) return false;
     const { workspaceId, generation } = install;
+    const { teamId, channelId, threadTs, slackUserId, eventId } = mention;
+    const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
+    const conversation = yield* recordSlackConversationSteps(
+      q,
+      { ...thread(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
+      at,
+    );
     const inserted = yield* insertInboxEventSteps(q, {
       dedupeKey,
       deliveryId: null,
@@ -179,11 +201,32 @@ export async function acceptSlackMention(
       body: null,
       signal: null,
       updatedAtMs: at,
-      payload: JSON.stringify({ type: "SlackMention", workspaceId, generation, mention }),
+      payload: JSON.stringify({
+        type: "SlackMention",
+        workspaceId,
+        generation,
+        conversationId: conversation.id,
+        mention,
+      }),
       receivedAt: at,
     });
     if (!inserted) return false;
     yield* markInboxEventHandledSteps(q, dedupeKey);
+    if (yield* stoppedSteps(q, place, mention.ts)) return false;
+    const stop = STOP.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim());
+    const gate = stop ? yield* gateSteps(q, home, place) : null;
+    if (gate?.kind === "member") {
+      yield* stopSlackConversationSteps(q, { ...conversation, ts: mention.ts, slackUserId }, at);
+      const payload: Payload = { ...place, kind: "notice", text: NOTICES.stopped };
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "slack",
+        op: "chat.postEphemeral",
+        idempotencyKey: `slack:notice:${dedupeKey}`,
+        payload,
+        now: at,
+      });
+      return false;
+    }
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
@@ -276,7 +319,10 @@ export function createSlackThreads<Profile>(options: {
     };
     const { teamId, channelId, threadTs, slackUserId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
-    const gate = await store.run((q) => gateSteps(q, home, place));
+    const gate = await store.run(function* (q): Steps<Gate> {
+      if (yield* stoppedSteps(q, place, mention.ts)) return { kind: "ignore" };
+      return yield* gateSteps(q, home, place);
+    });
     if (gate.kind === "ignore") return;
     const call = await slackFor(workspaceId);
     if ((await slackChannelAudience(call, channelId, context.signal)) !== "internal") return;
@@ -312,15 +358,33 @@ export function createSlackThreads<Profile>(options: {
       installGeneration: generation,
     };
     const heartbeat = setInterval(() => void context.extendLease().catch(() => false), 10_000);
+    const stop = new AbortController();
+    const watch = setInterval(() => {
+      void store
+        .run((q) => stoppedSteps(q, place, mention.ts))
+        .then(
+          (stopped) => stopped && stop.abort(),
+          () => undefined,
+        );
+    }, STOP_POLL_MS);
+    const signal = AbortSignal.any([context.signal, stop.signal]);
     const outcome = await lane
-      .reply({ workspaceId, scope, profile: options.profile(), prompt, signal: context.signal })
-      .finally(() => clearInterval(heartbeat));
+      .reply({ workspaceId, scope, profile: options.profile(), prompt, signal })
+      .catch((error: unknown): { status: string; text?: string } => {
+        if (stop.signal.aborted) return { status: "stopped" };
+        throw error;
+      })
+      .finally(() => {
+        clearInterval(heartbeat);
+        clearInterval(watch);
+      });
     if (outcome.status === "busy")
       throw new Error("The member's runner conversation lane is busy.");
     const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_500) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
+      if (yield* stoppedSteps(q, place, mention.ts)) return;
       const fence = yield* gateSteps(q, home, place);
       if (fence.kind !== "member" || fence.userId !== gate.userId) return;
       const payload: Payload = {
@@ -350,11 +414,16 @@ export function createSlackThreads<Profile>(options: {
       if ("note" in outcome) journal(`slack outbox ${row.id}: ${outcome.kind}; ${outcome.note}`);
       return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
     };
-    const gate = await store.run((q) => gateSteps(q, home, payload));
+    const { gate, stopped } = await store.run(function* (q) {
+      const stopped =
+        payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs));
+      return { gate: yield* gateSteps(q, home, payload), stopped };
+    });
     const allowed =
-      payload.kind === "notice"
+      !stopped &&
+      (payload.kind === "notice"
         ? gate.kind !== "ignore"
-        : gate.kind === "member" && gate.userId === payload.userId;
+        : gate.kind === "member" && gate.userId === payload.userId);
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||

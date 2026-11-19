@@ -18,6 +18,7 @@ import {
 } from "../src/doctor";
 import { LINEAR_WEBHOOK_FIX, openPawsStore, type Db } from "../src/db";
 import { grokLoginStatus } from "../src/install";
+import { slackCapabilities } from "../src/slack";
 import { copyMigratedPglite, pgliteServer, sqlRun } from "./pglite";
 
 async function seedWorkspace(store: Db): Promise<void> {
@@ -110,6 +111,32 @@ test("doctor notes config.toml sections the database overrides, naming them", ()
     detail:
       "config.toml [merge], [queue] are ignored: the Settings page saved these sections to the database, which wins",
   });
+});
+
+test("doctor checks each Slack connection's thread scopes and treats the rest as optional", () => {
+  const ready = probe(true);
+  ready.facts.slack = [
+    {
+      teamId: "T0ONE",
+      capabilities: slackCapabilities(
+        "app_mentions:read,channels:history,channels:read,chat:write",
+      ),
+    },
+    { teamId: "T0TWO", capabilities: slackCapabilities("chat:write") },
+  ];
+  const slack = doctorChecks(ready).filter((item) => item.name.startsWith("slack"));
+  expect(slack.map((item) => [item.name, item.ok, item.note ?? false])).toEqual([
+    ["slack T0ONE", true, false],
+    ["slack T0ONE optional", true, true],
+    ["slack T0TWO", false, false],
+    ["slack T0TWO optional", true, true],
+  ]);
+  expect(slack[1]!.detail).toContain("app messages would need im:history, im:write");
+  expect(slack[1]!.detail).toContain("Slack Code is not available yet");
+  expect(slack[2]!.detail).toBe(
+    "channel threads need app_mentions:read, channels:history, channels:read",
+  );
+  expect(slack[2]!.fix).toContain("Reconnect Slack");
 });
 
 test("doctor reports whether the exe.dev token is present and readable", () => {
