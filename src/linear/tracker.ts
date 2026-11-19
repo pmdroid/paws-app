@@ -5,6 +5,7 @@ import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
 import { createLinearSubIssueMethods } from "./sub-issues";
 import { createLinearFindingIssueMethods } from "./finding-issues";
+import { createLinearSlackIssueMethods } from "./slack-issues";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -88,6 +89,7 @@ type LinearTracker = LinearSessionAdapter &
   LinearRepositoryAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
   ReturnType<typeof createLinearFindingIssueMethods> &
+  ReturnType<typeof createLinearSlackIssueMethods> &
   ReturnType<typeof createLinearMergeReads> &
   Required<Pick<import("./adapter").TrackerAdapter, "readIssueClosures" | "listBlockers">>;
 
@@ -115,6 +117,8 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   deleteIssueAttachment: "issue-attachment",
   createSubIssues: "sub-issues",
   fileFindingIssue: "finding-issue",
+  slackIssueTeam: "slack-issue",
+  fileSlackIssue: "slack-issue",
   listIssuePullRequests: "issue-pull-requests",
   readIssueClosures: "issue-closures",
   loadEpic: "issue-snapshot",
@@ -141,6 +145,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     ...repositories,
     ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),
     ...createLinearFindingIssueMethods(client),
+    ...createLinearSlackIssueMethods(client),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),

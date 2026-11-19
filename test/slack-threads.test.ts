@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { rmSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import {
@@ -31,6 +31,7 @@ import {
   SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
 } from "../src/slack";
+import { followUpSessionOwner } from "../src/linear";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import {
   createFakeContextAccess,
@@ -118,6 +119,34 @@ async function fixture(
     return Response.json({ ok: true, ts: `1800000000.${String(posted.length).padStart(6, "0")}` });
   };
   const prompts: { userId: string; prompt: string }[] = [];
+  const answers: string[] = [];
+  type Filed = { key: string; teamId: string; title: string; description: string };
+  const eng = { id: "team-eng", key: "ENG", name: "Engineering", private: false };
+  const linear = {
+    connected: true,
+    teams: new Map([["ENG", eng]]),
+    issues: new Map<string, unknown>(),
+    calls: [] as { id: string }[],
+    fail: undefined as "lost" | "refused" | undefined,
+  };
+  const hash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
+  const work = () =>
+    linear.connected
+      ? {
+          team: async (key: string) =>
+            linear.teams.has(key) ? { ...linear.teams.get(key)! } : null,
+          issueId: hash,
+          file: async ({ key, ...request }: Filed) => {
+            const [id, fail] = [hash(key), linear.fail];
+            linear.calls.push({ id, ...request });
+            linear.fail = undefined;
+            if (fail === "refused") throw new Error("Linear refused the request");
+            if (!linear.issues.has(id)) linear.issues.set(id, { id, ...request });
+            if (fail === "lost") throw new Error("socket hang up");
+            return { id, identifier: "ENG-1", url: "https://linear.app/acme/issue/ENG-1" };
+          },
+        }
+      : null;
   const helpers = createRunnerHelpers({
     store: db,
     keyId: "fixture",
@@ -152,7 +181,7 @@ async function fixture(
           timedOut: false,
           authRequired: false,
           agentExited: true,
-          text: `answer ${prompts.length}`,
+          text: answers.shift() ?? `answer ${prompts.length}`,
         };
         await helpers.submit(row.runner_id, result).catch(() => undefined);
       }
@@ -172,6 +201,7 @@ async function fixture(
       now: () => now,
       replies: async () => lane,
       profile: () => ({ agent: "codex" as const, model: null }),
+      work,
       ...(setup.memory ? { memory: setup.memory } : {}),
       ...(setup.source ? { source: setup.source } : {}),
     });
@@ -216,8 +246,8 @@ async function fixture(
   const users = { ua: "admin", um: "member" } as const;
   for (const user of Object.keys(users))
     await putWorkspaceUser(db, { id: user, linearUserId: user, name: user, email: "u@x.invalid" });
-  const tokenHash = workspaceTokenHash(await issueWorkspaceBootstrap(db, "W1", now));
-  const boot = { id: "W1", organizationId: "W1", name: "W1", userId: "ua", tokenHash, now };
+  const tokenHash = workspaceTokenHash(await issueWorkspaceBootstrap(db, "ORG1", now));
+  const boot = { id: "W1", organizationId: "ORG1", name: "W1", userId: "ua", tokenHash, now };
   await consumeWorkspaceBootstrap(db, boot);
   for (const [user, role] of Object.entries(users)) {
     const at = { workspaceId: "W1", userId: user, now };
@@ -256,18 +286,25 @@ async function fixture(
   async function click(
     slackUser: string,
     message: { ts: string; threadTs: string },
-    options: { team?: string; app?: string; signature?: string; at?: number; value?: string } = {},
+    options: { team?: string; app?: string; signature?: string; at?: number; value?: string } & {
+      action?: string;
+    } = {},
   ) {
+    const container = { type: "message", message_ts: message.ts, channel_id: "C0ONE" };
     const payload = {
       type: "block_actions",
       team: { id: options.team ?? "T0ONE" },
       api_app_id: options.app ?? "A1",
       user: { id: slackUser },
       channel: { id: "C0ONE" },
-      container: { type: "message", message_ts: message.ts, channel_id: "C0ONE" },
-      message: { ts: message.ts, thread_ts: message.threadTs },
+      container,
+      ...(options.action ? {} : { message: { ts: message.ts, thread_ts: message.threadTs } }),
       actions: [
-        { action_id: "paws_stop", value: options.value ?? "stop", action_ts: `${++ts}.000200` },
+        {
+          action_id: options.action ?? "paws_stop",
+          value: options.value ?? "stop",
+          action_ts: `${++ts}.000200`,
+        },
       ],
     };
     const raw = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
@@ -366,6 +403,8 @@ async function fixture(
     failNext,
     hooks,
     prompts,
+    answers,
+    linear,
     runner,
     helpers,
     deliver,
@@ -447,7 +486,7 @@ test("setup from Slack: only the admin's own Slack user can redeem a fresh code 
 test("a linked member's mentions get one reply each, in the thread, with full implementation slots", async () => {
   const f = await linked();
   await recordLinearInstallation(f.db, {
-    organizationId: "W1",
+    organizationId: "ORG1",
     oauthClientId: "app",
     appUserId: "app-user",
     sessionId: "session-1",
@@ -754,7 +793,7 @@ test("a Stop click on Paws's reply stops the thread once while runners are full;
   );
   const message = { ts: (await f.replies())[0]!.externalId!, threadTs: root.ts };
   await recordLinearInstallation(f.db, {
-    organizationId: "W1",
+    organizationId: "ORG1",
     oauthClientId: "app",
     appUserId: "app-user",
     sessionId: "session-1",
@@ -1652,4 +1691,158 @@ test("each repository's disclosure is its own record, so concurrent changes neve
   expect(f.posts("chat.postMessage")).toEqual([]);
   expect(f.prompts).toEqual([]);
   expect(leaked(f)).toEqual([]);
+});
+
+const BRIEF_TITLE = "Retry failed uploads";
+const BRIEF = JSON.stringify({
+  title: BRIEF_TITLE,
+  scope: "Retry an upload that fails with a server error.",
+  acceptance: ["A 503 upload is retried up to three times"],
+});
+const CANARY = "CANARY-7f3a-private";
+
+async function working() {
+  const f = await linked(["um", "SMEMBER"]);
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await syncWorkspaceMember(f.db, { ...member, teamIds: ["team-eng"], now: f.now() });
+  return f;
+}
+
+function draftOf(f: Awaited<ReturnType<typeof fixture>>) {
+  const post = f.posts("chat.postEphemeral").at(-1)!;
+  const blocks = post.body.blocks as { elements?: { action_id: string; value: string }[] }[];
+  return { post, id: blocks[1]!.elements![0]!.value };
+}
+
+test("a start drafts a minimal brief only its member sees, and Create files one delegated issue for the thread", async () => {
+  const f = await working();
+  const root = f.mention("SMEMBER", `uploads fail sometimes; my token is ${CANARY}`);
+  await f.deliver(root);
+  await f.settle();
+  f.answers.push(`Here it is: ${BRIEF}`);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).toContain(CANARY);
+  const { post, id } = draftOf(f);
+  expect(post.body).toMatchObject({ user: "SMEMBER", thread_ts: root.ts });
+  expect(String(post.body.text)).toContain("Retry failed uploads");
+  expect(String(post.body.text)).toContain("every member of your Linear workspace");
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  const create = { action: "paws_file", value: id };
+  await f.click("SADMIN", message, create);
+  await f.settle();
+  expect(f.linear.issues.size).toBe(0);
+  await Promise.all([f.click("SMEMBER", message, create), f.click("SMEMBER", message, create)]);
+  await f.settle();
+  const [issueId, issue] = [...f.linear.issues.entries()][0]!;
+  const description = `Retry an upload that fails with a server error.\n\n## Acceptance criteria\n\n- [ ] A 503 upload is retried up to three times`;
+  expect(issue).toEqual({ id: issueId, teamId: "team-eng", title: BRIEF_TITLE, description });
+  const outgoing = JSON.stringify(f.linear.calls);
+  for (const secret of [CANARY, "uploads fail", "C0ONE", "T0ONE", "SMEMBER", root.ts, "slack"])
+    expect(outgoing).not.toContain(secret);
+  expect(f.notice()).toContain("ENG-1");
+  await f.click("SMEMBER", message, create);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.notice()).toContain("This thread's work is <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  expect(f.linear.calls).toHaveLength(1);
+  const brief = (creatorId: string) => ({
+    readBriefIssue: async (key: string) => ({ issue: { issueId: key }, parent: null, creatorId }),
+  });
+  const owner = (tracker: object, target = issueId) =>
+    followUpSessionOwner(f.db, tracker as never, target, "ORG1", "app-user");
+  expect(await owner(brief("app-user"))).toBe("um");
+  expect(await owner(brief("app-user"), "other-issue")).toBeNull();
+  expect(await owner(brief("someone"))).toBeNull();
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("an unconfirmed or refused filing reconciles to the thread's one issue when the member starts again", async () => {
+  const f = await working();
+  const root = f.mention("SMEMBER", "uploads fail");
+  await f.deliver(root);
+  f.answers.push("ignored", BRIEF);
+  await f.settle();
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  const id = draftOf(f).id;
+  f.linear.fail = "lost";
+  await f.click("SMEMBER", message, { action: "paws_file", value: id });
+  await f.settle();
+  const turns = f.prompts.length;
+  f.linear.teams.get("ENG")!.private = true;
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(draftOf(f).id).toBe(id);
+  expect(f.notice()).toContain("private Linear team ENG");
+  await f.click("SMEMBER", message, { action: "paws_discard", value: id });
+  const later = { ...message, ts: "1800000000.000997" };
+  await f.click("SMEMBER", later, { action: "paws_file", value: id }).then(f.settle);
+  expect(f.linear.calls).toHaveLength(1);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  const renewed = draftOf(f).id;
+  f.linear.fail = "refused";
+  await f.click(
+    "SMEMBER",
+    { ...later, ts: "1800000000.000998" },
+    { action: "paws_file", value: renewed },
+  );
+  await f.settle();
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.prompts).toHaveLength(turns);
+  expect(f.posts("chat.postEphemeral").map((post) => String(post.body.text))).toContainEqual(
+    expect.stringContaining("Linear didn't confirm the issue (socket hang up)"),
+  );
+  expect(f.notice()).toContain("This thread's work is <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  const filings = f.linear.calls;
+  expect(new Set(filings.map((call) => JSON.stringify(call))).size).toBe(1);
+  expect(filings).toHaveLength(3);
+  expect(f.linear.issues.size).toBe(1);
+});
+
+test("a start without a team, Linear, membership or a usable draft files nothing, and stale, discarded or changed drafts do nothing", async () => {
+  const f = await working();
+  const root = f.mention("SMEMBER", "uploads fail");
+  await f.deliver(root);
+  await f.settle();
+  const turns = f.prompts.length;
+  const start = (who: string, text = "start ENG") => f.say(who, text, { thread_ts: root.ts });
+  await start("SMEMBER", "start");
+  expect(f.notice()).toContain("Name the Linear team");
+  await start("SMEMBER", "start NOPE");
+  expect(f.notice()).toContain("can't find that Linear team");
+  await start("SADMIN");
+  expect(f.notice()).toContain("aren't a member of that Linear team");
+  f.linear.connected = false;
+  await start("SMEMBER");
+  expect(f.notice()).toContain("isn't connected to Linear");
+  f.linear.connected = true;
+  expect(f.prompts).toHaveLength(turns);
+  const long = JSON.stringify({ title: "Long", scope: "x".repeat(3_000), acceptance: ["Done"] });
+  for (const answer of ["Sure, I'll get right on it.", long]) {
+    f.answers.push(answer);
+    await start("SMEMBER");
+    expect(f.notice()).toContain("couldn't draft a short enough issue");
+  }
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  const click = (action: string, value: string) =>
+    f.click("SMEMBER", message, { action, value }).then(f.settle);
+  f.answers.push(BRIEF);
+  await start("SMEMBER");
+  const second = draftOf(f).id;
+  await click("paws_discard", second);
+  expect(f.notice()).toContain("Discarded");
+  await click("paws_file", second);
+  f.answers.push(BRIEF);
+  await start("SMEMBER");
+  const fourth = draftOf(f);
+  f.advance(61 * 60_000);
+  await click("paws_file", fourth.id);
+  expect(f.notice()).toContain("no longer current");
+  f.answers.push(BRIEF);
+  await start("SMEMBER");
+  const fifth = draftOf(f).id;
+  await f.revoke("um");
+  await click("paws_file", fifth);
+  expect(f.linear.issues.size).toBe(0);
+  expect(f.linear.calls).toEqual([]);
+  expect(await f.sideEffects()).toEqual(NONE);
 });

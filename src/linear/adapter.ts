@@ -20,6 +20,7 @@ import type { SubIssueRequest } from "./sub-issues";
 import type { BriefIssueRead } from "./brief-issue";
 import type { LinearIssueClosed } from "./administration";
 import type { FiledFindingIssue, FindingIssueRequest } from "./finding-issues";
+import type { FiledSlackIssue, SlackIssueRequest, SlackIssueTeam } from "./slack-issues";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -72,6 +73,11 @@ export interface TrackerAdapter {
     request: FindingIssueRequest,
     options?: TrackerRequestOptions,
   ): Promise<FiledFindingIssue>;
+  slackIssueTeam?(key: string, options?: TrackerRequestOptions): Promise<SlackIssueTeam | null>;
+  fileSlackIssue?(
+    request: SlackIssueRequest,
+    options?: TrackerRequestOptions,
+  ): Promise<FiledSlackIssue>;
   /** The issue's project and labels, matched by Settings → Merging when a task starts. */
   issueMergeContext?(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
   supportsActivityReconciliation?: true;

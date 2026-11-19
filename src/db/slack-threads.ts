@@ -1,6 +1,8 @@
 import { and, asc, eq, isNull, like } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
+import { readSettingSteps } from "./settings";
+import { workspaceForOrganizationSteps } from "./workspace";
 import { ulid } from "./ulid";
 
 export type SlackThreadIdentity = {
@@ -188,4 +190,13 @@ export function* settleSlackOutboxSteps(
       })
       .where(held(q, row)),
   );
+}
+
+export const slackIssueKey = (issueId: string) => `slack.issue:${issueId}`;
+
+export function* slackIssueOwnerSteps(q: Q, issueId: string, organizationId: string) {
+  const value = yield* readSettingSteps(q, slackIssueKey(issueId));
+  const origin = value ? (JSON.parse(value) as { workspaceId?: string; ownerId?: string }) : null;
+  const workspace = origin ? yield* workspaceForOrganizationSteps(q, organizationId) : null;
+  return workspace && origin?.workspaceId === workspace.id ? (origin.ownerId ?? null) : null;
 }
