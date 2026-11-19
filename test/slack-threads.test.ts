@@ -63,6 +63,7 @@ import { sqlRows, sqlRun, tempStore } from "./pglite";
 import { insertWorkItemSteps, signInFixtureRunner } from "./pglite-fixtures";
 
 const ORIGIN = "https://paws.example";
+const JSON_FIELDS = new Set(["blocks", "chunks"]);
 const BOT = "UPAWS";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
@@ -122,7 +123,12 @@ async function fixture(
   };
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const body = Object.fromEntries(
+      [...new URLSearchParams(String(init?.body)).entries()].map(([key, value]) => [
+        key,
+        JSON_FIELDS.has(key) ? JSON.parse(value) : value,
+      ]),
+    ) as Record<string, unknown>;
     const alias = method === "chat.startStream" ? "chat.postMessage" : method;
     const fail = failNext[method] ?? failNext[alias];
     failNext[method] = failNext[alias] = undefined;
