@@ -23,3 +23,5 @@ export {
   slackReplyAllowedSteps,
 } from "./threads";
 export { markSlackInstallationSteps } from "./oauth";
+export { slackHandoffSteps, slackTaskUpdateSteps } from "./delivery";
+export type { SlackTaskUpdateKind } from "./delivery";

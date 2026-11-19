@@ -41,6 +41,7 @@ export type Draft = Thread &
     userId: string;
     linkId: string;
     mentionTs: string;
+    context?: string;
     team: SlackIssueTeam;
     createdAt: number;
     approvedAt?: number;
@@ -123,12 +124,30 @@ export function filedNotice(task: SlackTask): string {
   return `This thread's work is ${link}, delegated to Paws. It starts when a runner is free; you can keep talking here meanwhile.`;
 }
 
+export function* filedTaskSteps(q: Q, thread: Thread): Steps<SlackTask | null> {
+  return parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
+}
+
 export function* startStateSteps(q: Q, thread: Thread): Steps<string | Draft | null> {
   const task = parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
   if (task) return filedNotice(task);
   const draft = parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)));
   if (draft?.attemptedAt) return draft;
   return draft?.approvedAt ? WORK_NOTICES.pending : null;
+}
+
+export function* editableDraftSteps(q: Q, thread: Thread, linkId: string, at: number) {
+  const draft = parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)));
+  const mine =
+    draft?.slackUserId === thread.slackUserId &&
+    draft.linkId === linkId &&
+    draft.generation === thread.generation;
+  return mine && !draft.approvedAt && draft.createdAt + DRAFT_MS > at ? draft : null;
+}
+
+export function reviseInstructions(draft: Brief): string {
+  const { title, scope, acceptance } = draft;
+  return `${DRAFT_INSTRUCTIONS} The member already has this draft; revise it with what their latest message asks and keep the rest: ${JSON.stringify({ title, scope, acceptance })}`;
 }
 
 export function* draftThreadSteps(
@@ -155,7 +174,7 @@ export function* dropDraftSteps(q: Q, key: string): Steps<void> {
 
 export function* proposeDraftSteps(
   q: Q,
-  input: Thread & Brief & { userId: string; linkId: string; mentionTs: string },
+  input: Thread & Brief & { userId: string; linkId: string; mentionTs: string; context: string },
   team: SlackIssueTeam,
   at: number,
 ): Steps<Draft | null> {
@@ -221,7 +240,8 @@ export function* fileReadySteps(
   if (origin) {
     const { workspaceId, teamId, channelId, threadTs, generation } = draft;
     const thread = { workspaceId, teamId, channelId, threadTs, generation };
-    const owner = { ...thread, ownerId: user.linearUserId, userId: draft.userId };
+    const { userId, slackUserId, linkId, context } = draft;
+    const owner = { ...thread, ownerId: user.linearUserId, userId, slackUserId, linkId, context };
     const save = (k: string, v: unknown) =>
       updateSettingSteps(q, k, () => JSON.stringify(v), origin.at);
     yield* save(slackIssueKey(origin.issueId), owner);

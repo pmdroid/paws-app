@@ -3,7 +3,11 @@ import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { rmSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import {
+  bindWorkItemRepositorySteps,
   consumeWorkspaceBootstrap,
+  enqueueOutboxOnceSteps,
+  ensureLinearSessionSteps,
+  listOutboxSteps,
   JobLoop,
   OutboxDispatcher,
   putWorkspaceUser,
@@ -29,9 +33,13 @@ import {
   handleSlackWebhook,
   markSlackInstallationSteps,
   SLACK_THREAD_JOB,
+  slackHandoffSteps,
   slackReplyAllowedSteps,
+  slackTaskUpdateSteps,
 } from "../src/slack";
-import { followUpSessionOwner } from "../src/linear";
+import { createFakeTracker, followUpSessionOwner } from "../src/linear";
+import { deliverLinearOutbox } from "../src/loop";
+import { openQuestion } from "../src/questions";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import {
   createFakeContextAccess,
@@ -47,7 +55,7 @@ import { replaceScopedCredentialSteps } from "../src/credentials";
 import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
 import { sqlRows, sqlRun, tempStore } from "./pglite";
-import { signInFixtureRunner } from "./pglite-fixtures";
+import { insertWorkItemSteps, signInFixtureRunner } from "./pglite-fixtures";
 
 const ORIGIN = "https://paws.example";
 const BOT = "UPAWS";
@@ -2039,4 +2047,143 @@ test("verified readership is checked again at queueing, at delivery, on retry an
   expect(prompt).toContain("No repository");
   expect(prompt).not.toContain("[Paws]: answer");
   expect(prompt).not.toContain("acme/app");
+});
+
+test("a start with changes revises the member's current draft, not another member's", async () => {
+  const f = await working();
+  await syncWorkspaceMember(f.db, {
+    workspaceId: "W1",
+    userId: "ua",
+    role: "admin",
+    active: true,
+    teamIds: ["team-eng"],
+    now: f.now(),
+  });
+  const root = f.mention("SMEMBER", "uploads fail");
+  await f.deliver(root);
+  await f.settle();
+  const start = (who: string, text: string) => f.say(who, text, { thread_ts: root.ts });
+  f.answers.push(BRIEF);
+  await start("SMEMBER", "start ENG");
+  expect(f.prompts.at(-1)!.prompt).not.toContain("already has this draft");
+  const first = draftOf(f).id;
+  const revised = JSON.stringify({ ...JSON.parse(BRIEF), title: "Retry uploads twice" });
+  f.answers.push(revised);
+  await start("SMEMBER", "start ENG: only two retries");
+  const prompt = f.prompts.at(-1)!.prompt;
+  expect(prompt).toContain("already has this draft");
+  expect(prompt).toContain(BRIEF_TITLE);
+  expect(prompt).toContain("only two retries");
+  const second = draftOf(f);
+  expect(second.id).not.toBe(first);
+  expect(String(second.post.body.text)).toContain("Retry uploads twice");
+  f.answers.push(BRIEF);
+  await start("SADMIN", "start ENG: something else");
+  expect(f.prompts.at(-1)!.prompt).not.toContain("Retry uploads twice");
+});
+
+test("a filed thread hands its context only to its own run, and gets questions, progress and the PR in the thread", async () => {
+  const f = await working();
+  const root = f.mention("SMEMBER", `uploads fail; see ${CANARY}`);
+  await f.deliver(root);
+  await f.settle();
+  f.answers.push(BRIEF);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  await f.click("SMEMBER", message, { action: "paws_file", value: draftOf(f).id });
+  await f.settle();
+  const [issueId] = [...f.linear.issues.keys()];
+  expect(JSON.stringify(f.linear.calls)).not.toContain(CANARY);
+  await f.db.run(function* (q) {
+    yield* ensureLinearSessionSteps(q, { sessionId: "S1", issueId, organizationId: "ORG1" });
+    yield* ensureLinearSessionSteps(q, { sessionId: "S2", issueId, organizationId: "ORG2" });
+    for (const id of ["item-1", "item-2"]) {
+      yield* insertWorkItemSteps(q, id);
+      const issue = id === "item-1" ? issueId! : "sub-issue";
+      const set = { linearIssueId: issue, linearIdentifier: "ENG-1", sessionKey: "S1" };
+      yield* q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id)));
+    }
+  });
+  const handoff = await f.db.run((q) => slackHandoffSteps(q, "S1"));
+  expect(handoff).toContain(CANARY);
+  expect(handoff).toContain("private to Paws");
+  expect(await f.db.run((q) => slackHandoffSteps(q, "S2"))).toBe("");
+  const tracker = createFakeTracker();
+  const send = async (op: string, key: string, payload: Record<string, unknown>) => {
+    const row = { target: "linear" as const, op, orderingKey: "S1", idempotencyKey: key };
+    const body = payload.questionId ? payload : { itemId: "item-1", ...payload };
+    const now = f.now();
+    await f.db.transaction((q) => enqueueOutboxOnceSteps(q, { ...row, payload: body, now }));
+    const stored = (await f.db.run((q) => listOutboxSteps(q, "S1"))).at(-1)!;
+    await deliverLinearOutbox(stored, tracker, async () => {}, undefined, f.db);
+    await f.settle();
+  };
+  f.posted.length = 0;
+  await send("elicitation", "question:q1", { sessionId: "S1", body: "Which bucket?" });
+  expect(f.posts("chat.postMessage")).toHaveLength(0);
+  expect(f.notice()).toContain("didn't post it in this thread");
+  expect(f.notice()).not.toContain("Which bucket?");
+  await f.db.transaction((q) =>
+    bindWorkItemRepositorySteps(q, "item-1", {
+      owner: "acme",
+      repo: "app",
+      remoteUrl: "https://github.com/acme/app.git",
+    }),
+  );
+  expect((await disclose(f, "ua", "acme/app", "workspace")).status).toBe(200);
+  await f.db.transaction((q) =>
+    bindWorkItemRepositorySteps(q, "item-2", {
+      owner: "acme",
+      repo: "secret",
+      remoteUrl: "https://github.com/acme/secret.git",
+    }),
+  );
+  await send("activity", "update:item-2:1", {
+    sessionId: "S1",
+    itemId: "item-2",
+    kind: "thought",
+    body: "Secret sibling",
+  });
+  expect(f.posts("chat.postMessage")).toHaveLength(0);
+  const asked = await openQuestion(f.db, { itemId: "item-1", sessionId: "S1", body: "Which?" });
+  const question = { sessionId: "S1", questionId: asked.id, body: "Which region?" };
+  await send("elicitation", "question:q2", question);
+  await send("activity", "update:item-1:1", {
+    sessionId: "S1",
+    kind: "thought",
+    body: "Tests pass",
+  });
+  await send("activity", "tool:item-1:1", { sessionId: "S1", kind: "thought", body: "Reading" });
+  await send("activity", "pull-request-ready:item-1:1", {
+    sessionId: "S1",
+    kind: "response",
+    body: "Opened https://github.com/acme/app/pull/9",
+  });
+  await send("activity", "update:item-1:1", {
+    sessionId: "S1",
+    kind: "thought",
+    body: "Tests pass",
+  });
+  const posts = f.posts("chat.postMessage");
+  expect(posts.map((post) => post.body.thread_ts)).toEqual([root.ts, root.ts, root.ts]);
+  const texts = posts.map((post) => String(post.body.text));
+  expect(texts[0]).toContain("Paws asks on <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  expect(texts[0]).toContain("Which region?");
+  expect(texts[1]).toContain("Tests pass");
+  expect(texts[2]).toContain("pull/9");
+  expect(JSON.stringify(f.posted)).not.toMatch(new RegExp(`${CANARY}|Secret sibling`));
+  await f.db.transaction((q) =>
+    slackTaskUpdateSteps(
+      q,
+      { sessionId: "S1", itemId: "item-1", key: "k", kind: "update", text: "Queued" },
+      0,
+    ),
+  );
+  await f.say("SMEMBER", "unlink", { thread_ts: root.ts });
+  await send("activity", "reply:item-1:2", { sessionId: "S1", kind: "response", body: "Later" });
+  expect(f.posts("chat.postMessage")).toHaveLength(3);
+  expect(JSON.stringify(f.posted)).not.toMatch(/Queued|Later/);
+  await f.reconnect();
+  await send("activity", "merged:item-1:1", { sessionId: "S1", kind: "response", body: "Merged" });
+  expect(f.posts("chat.postMessage")).toHaveLength(3);
 });

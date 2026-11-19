@@ -218,6 +218,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runtimes",
     "dashboard-links",
     "evidence",
+    "slack",
   ],
   doctor: [
     "journal",

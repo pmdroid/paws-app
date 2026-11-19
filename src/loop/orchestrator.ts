@@ -540,6 +540,7 @@ import {
   type StoredQuestion,
   type StoredVisualReview,
 } from "../questions";
+import { slackHandoffSteps } from "../slack";
 import {
   askForVisualReviewSteps,
   cancelVisualReviewQuestionSteps,
@@ -10259,7 +10260,12 @@ export class Orchestrator {
       : overview;
     const userUpdates = (yield* listLinearTurnsForItemSteps(q, item.id)).map((turn) => turn.body);
     const sessionContext = item.sessionKey
-      ? yield* getLinearSessionContextSteps(q, item.sessionKey)
+      ? [
+          yield* getLinearSessionContextSteps(q, item.sessionKey),
+          yield* slackHandoffSteps(q, item.sessionKey),
+        ]
+          .filter(Boolean)
+          .join("\n\n")
       : "";
     const template = resolveBriefTemplate(
       loadConfigFile(join(this.options.pawsRoot, "config.toml")),

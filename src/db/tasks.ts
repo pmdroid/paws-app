@@ -209,7 +209,7 @@ function* completeResultTaskSteps(
     op: "activity",
     orderingKey: item.sessionKey,
     idempotencyKey: `${mode}-completed:${itemId}`,
-    payload: { sessionId: item.sessionKey, kind: "response", body: response },
+    payload: { sessionId: item.sessionKey, itemId, kind: "response", body: response },
     now,
   });
   // An answer does not finish the issue; a delivered artifact does.
