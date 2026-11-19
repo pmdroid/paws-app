@@ -133,7 +133,11 @@ test.skipIf(!ownedByAgent)(
       controller.signal,
     );
     const deadline = Date.now() + 20_000;
-    while (!existsSync(join(run.runTemp, name)) && Date.now() < deadline)
+    const scratch = join(run.runTemp, name);
+    while (
+      !(existsSync(scratch) && readFileSync(scratch, "utf8") === "scratch") &&
+      Date.now() < deadline
+    )
       await new Promise((resolve) => setTimeout(resolve, 25));
     expect(readFileSync(join(run.runTemp, name), "utf8")).toBe("scratch");
     controller.abort();
