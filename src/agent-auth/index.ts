@@ -87,6 +87,44 @@ export function createAgentAuth(options: {
       return state.state;
     });
   }
+  async function refresh(row: { id: string; agent: Agent; value: string }, force: boolean) {
+    const state = JSON.parse(row.value) as State;
+    const provider = providers[row.agent];
+    if (
+      state.state !== "signed-in" ||
+      (!force && (state.expiresAt ?? Infinity) > now() + 600_000) ||
+      state.retryAt > now()
+    )
+      return false;
+    const locked = await claim(row.id, row.value, state);
+    if (!locked) return false;
+    try {
+      const credential = await store.run((q) => readAgentCredentialSteps(q, secretsDir, row.id));
+      if (!credential?.blob)
+        return await save(provider, row.id, locked, { ...state, state: "expired" });
+      state.version = credential.version;
+      const tokens = await provider.refresh({
+        ...provider.storedTokens(JSON.parse(credential.blob)),
+        expiresAt: state.expiresAt!,
+      });
+      return await save(
+        provider,
+        row.id,
+        locked,
+        { ...state, expiresAt: tokens.expiresAt, failures: 0, retryAt: 0, health: "ok" },
+        tokens,
+      );
+    } catch {
+      const failures = state.failures + 1;
+      await save(provider, row.id, locked, {
+        ...state,
+        health: "auth-expired",
+        failures,
+        retryAt: now() + Math.min(60_000 * 2 ** Math.min(failures - 1, 10), 3_600_000),
+      });
+      return false;
+    }
+  }
   return {
     async device(workspaceId: string, id: string, start: boolean) {
       const provider = providers[await store.run((q) => deviceAccountSteps(q, workspaceId, id))];
@@ -150,48 +188,12 @@ export function createAgentAuth(options: {
         throw new Error("Device sign-in is unavailable");
       }
     },
+    async refresh(id: string) {
+      const row = (await store.run(listAgentAuthSteps)).find((entry) => entry.id === id);
+      return row ? (await refresh(row, true)) === "signed-in" : false;
+    },
     async tick() {
-      for (const row of await store.run(listAgentAuthSteps)) {
-        const state = JSON.parse(row.value) as State;
-        const provider = providers[row.agent];
-        if (
-          state.state !== "signed-in" ||
-          (state.expiresAt ?? Infinity) > now() + 600_000 ||
-          state.retryAt > now()
-        )
-          continue;
-        const locked = await claim(row.id, row.value, state);
-        if (!locked) continue;
-        try {
-          const credential = await store.run((q) =>
-            readAgentCredentialSteps(q, secretsDir, row.id),
-          );
-          if (!credential?.blob) {
-            await save(provider, row.id, locked, { ...state, state: "expired" });
-            continue;
-          }
-          state.version = credential.version;
-          const tokens = await provider.refresh({
-            ...provider.storedTokens(JSON.parse(credential.blob)),
-            expiresAt: state.expiresAt!,
-          });
-          await save(
-            provider,
-            row.id,
-            locked,
-            { ...state, expiresAt: tokens.expiresAt, failures: 0, retryAt: 0, health: "ok" },
-            tokens,
-          );
-        } catch {
-          const failures = state.failures + 1;
-          await save(provider, row.id, locked, {
-            ...state,
-            health: "auth-expired",
-            failures,
-            retryAt: now() + Math.min(60_000 * 2 ** Math.min(failures - 1, 10), 3_600_000),
-          });
-        }
-      }
+      for (const row of await store.run(listAgentAuthSteps)) await refresh(row, false);
     },
   };
 }
