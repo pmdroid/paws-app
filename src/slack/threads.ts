@@ -47,7 +47,6 @@ import {
 import {
   createSlackSource,
   slackAttachmentSteps,
-  slackReadableSteps,
   slackSourceCommand,
   slackSourceCommandSteps,
   type SlackSourceRef,
@@ -105,7 +104,7 @@ type Reply = Place & {
   question: string;
   text: string;
   contexts?: MemoryRef[];
-  source?: SlackSourceRef;
+  sources?: SlackSourceRef[];
 };
 type MemoryRef = { key: string; version: number };
 type Notice = Place & {
@@ -117,6 +116,11 @@ type Notice = Place & {
 type Payload = Reply | Notice;
 
 const refId = (ref: MemoryRef) => `${ref.key}@${ref.version}`;
+const sourceId = (ref: SlackSourceRef) => `${ref.repository.toLowerCase()}@${ref.commit}`;
+
+function uniqueSources(refs: readonly SlackSourceRef[]): SlackSourceRef[] {
+  return [...new Map(refs.map((ref) => [sourceId(ref), ref])).values()];
+}
 
 function uniqueRefs(refs: readonly MemoryRef[]): MemoryRef[] {
   return [...new Map(refs.map((ref) => [refId(ref), ref])).values()];
@@ -621,20 +625,12 @@ export function createSlackThreads<Profile>(options: {
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
     const earlier = await store.run(function* (q) {
       if (yield* slackOutboxExistsSteps(q, replyKey)) return null;
-      const readable = yield* slackReadableSteps(q, workspaceId, gate.userId);
       const turns = (yield* slackThreadContextSteps(q, {
         ...place,
         userId: gate.userId,
       })) as Reply[];
       const attached = yield* slackAttachmentSteps(q, place);
-      return {
-        attached,
-        turns: turns.map((turn) =>
-          !turn.source || readable.has(turn.source.repository.toLowerCase())
-            ? turn
-            : { ...turn, text: "" },
-        ),
-      };
+      return { attached, turns };
     });
     if (!earlier) return;
     const source = earlier.attached
@@ -652,7 +648,9 @@ export function createSlackThreads<Profile>(options: {
     const lane = await options.replies();
     if (!lane) return;
     const kept = new Map<string, MemoryRef>();
+    const keptSources = new Map<string, SlackSourceRef>();
     const checked = new Map<string, boolean>();
+    const sourceChecked = new Map<string, boolean>();
     const turns: { slackUserId: string; question: string; text: string | null }[] = [];
     for (const turn of earlier.turns.slice(-10)) {
       const refs = uniqueRefs(turn.contexts ?? []);
@@ -663,7 +661,23 @@ export function createSlackThreads<Profile>(options: {
           checked.set(id, await memory.current({ scope, userId: gate.userId, ...ref, now: now() }));
         if (!checked.get(id)) valid = false;
       }
+      const used = uniqueSources(turn.sources ?? []);
+      for (const ref of used) {
+        const id = sourceId(ref);
+        if (!sourceChecked.has(id))
+          sourceChecked.set(
+            id,
+            await sources.current({
+              scope,
+              userId: gate.userId,
+              source: ref,
+              signal: context.signal,
+            }),
+          );
+        if (!sourceChecked.get(id)) valid = false;
+      }
       if (valid) for (const ref of refs) kept.set(refId(ref), ref);
+      if (valid) for (const ref of used) keptSources.set(sourceId(ref), ref);
       turns.push({ ...turn, text: valid && turn.text ? turn.text : null });
     }
     const thread = [...turns, { slackUserId, question, text: null }].flatMap((turn) => [
@@ -738,8 +752,8 @@ export function createSlackThreads<Profile>(options: {
     ]);
     if (!(await currentMemory(scope, gate.userId, contexts)))
       return void (await notice(place, replyKey, NOTICES.memory_changed));
-    const sourceCheck = { scope, userId: gate.userId, signal: context.signal };
-    if (used && !(await sources.current({ ...sourceCheck, source: used })))
+    const dependencies = uniqueSources([...keptSources.values(), ...(used ? [used] : [])]);
+    if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return void (await notice(place, replyKey, NOTICES.source_changed));
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
@@ -755,7 +769,7 @@ export function createSlackThreads<Profile>(options: {
         question,
         text,
         ...(contexts.length ? { contexts } : {}),
-        ...(used ? { source: used } : {}),
+        ...(dependencies.length ? { sources: dependencies } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -765,6 +779,17 @@ export function createSlackThreads<Profile>(options: {
         now: now(),
       });
     });
+  }
+
+  async function currentSources(
+    scope: Bound & { workspaceId: string },
+    userId: string,
+    refs: readonly SlackSourceRef[],
+    signal: AbortSignal,
+  ) {
+    for (const source of uniqueSources(refs))
+      if (!(await sources.current({ scope, userId, source, signal }))) return false;
+    return true;
   }
 
   async function currentMemory(
@@ -804,15 +829,9 @@ export function createSlackThreads<Profile>(options: {
       );
     }
     const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
-    const sourced = payload.kind === "reply" ? payload.source : undefined;
     const sourceCurrent = () =>
-      !sourced ||
-      sources.current({
-        scope: payload,
-        userId: (payload as Reply).userId,
-        source: sourced,
-        signal: context.signal,
-      });
+      payload.kind !== "reply" ||
+      currentSources(payload, payload.userId, payload.sources ?? [], context.signal);
     const allowed =
       (await store.run(allowedSteps)) &&
       (payload.kind !== "reply" || (await currentMemory(payload, payload.userId, refs))) &&

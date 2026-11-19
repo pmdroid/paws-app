@@ -1298,7 +1298,7 @@ async function withSource() {
   return { ...f, reader, teams, thread };
 }
 
-const sourceOf = (row: { payload: unknown }) => (row.payload as { source?: unknown }).source;
+const sourcesOf = (row: { payload: unknown }) => (row.payload as { sources?: unknown }).sources;
 
 test("an attached repository answers from read-only source, records its commit, and needs no slot or issue", async () => {
   const f = await withSource();
@@ -1320,11 +1320,9 @@ test("an attached repository answers from read-only source, records its commit, 
   expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toBe(
     "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._",
   );
-  expect(sourceOf((await f.replies()).at(-1)!)).toEqual({
-    repository: "acme/app",
-    ref: "main",
-    commit: MAIN,
-  });
+  expect(sourcesOf((await f.replies()).at(-1)!)).toEqual([
+    { repository: "acme/app", ref: "main", commit: MAIN },
+  ]);
   const pinned = await f.thread("SMEMBER", "repo acme/app v1");
   expect(f.notice()).toContain("This thread now reads `acme/app` at `v1`");
   await f.say("SMEMBER", "and billing here?", { thread_ts: pinned });
@@ -1412,4 +1410,39 @@ test("source reads are bounded and cached per member, installation and commit", 
   expect(reads("read").length).toBeGreaterThan(blobs);
   await f.reconnect();
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("an earlier sourced answer carries its repository into follow-ups and leaves them once access or approval ends", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "channel repo acme/app");
+  const root = f.mention("SMEMBER", "how does billing work?");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SMEMBER", "repo off", { thread_ts: root.ts });
+  await f.say("SMEMBER", "summarise that", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("[Paws]: answer 1");
+  const follow = (await f.replies()).at(-1)!;
+  expect(sourcesOf(follow)).toEqual([{ repository: "acme/app", ref: "main", commit: MAIN }]);
+  await f.deliver(f.mention("SMEMBER", "and once more", { thread_ts: root.ts }));
+  await f.runJobs();
+  expect(sourcesOf((await f.replies()).at(-1)!)).toHaveLength(1);
+  await f.teams([]);
+  await f.settle();
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  await f.teams(["tA"]);
+  await f.say("SADMIN", "channel repo off");
+  await f.say("SMEMBER", "repeat the billing answer", { thread_ts: root.ts });
+  const prompt = lastPrompt(f);
+  expect(prompt).not.toContain("[Paws]: answer");
+  expect(prompt).not.toContain("acme/app");
+  expect(sourcesOf((await f.replies()).at(-1)!)).toBeUndefined();
+});
+
+test("binary files count against the four-file read limit", async () => {
+  const f = await withSource();
+  const files = f.reader.repositories["acme/app"]!.files[MAIN]!;
+  for (let index = 0; index < 200; index++) files[`assets/billing-${index}.bin`] = "\u0000bin";
+  await f.say("SADMIN", "channel repo acme/app");
+  await f.say("SMEMBER", "billing?");
+  expect(f.reader.calls.filter((call) => call.method === "read").length).toBeLessThanOrEqual(4);
 });

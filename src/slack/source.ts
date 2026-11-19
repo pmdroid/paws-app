@@ -100,10 +100,6 @@ export function* slackAttachmentSteps(q: Q, place: ThreadPlace): Steps<SlackAtta
   return { repository: chosen.repository, ref: chosen.ref, approved };
 }
 
-export function* slackReadableSteps(q: Q, workspaceId: string, userId: string) {
-  return new Set((yield* memberRepositoriesSteps(q, workspaceId, userId)).map(lower));
-}
-
 export function* slackSourceCommandSteps(
   q: Q,
   input: { place: ThreadPlace; userId: string; command: SlackSourceCommand; now: number },
@@ -210,6 +206,7 @@ export function createSlackSource(options: { store: Db; reader: GitHubSnapshotRe
     for (const { file } of candidates) {
       if (read >= SLACK_SOURCE_LIMITS.files || left <= 200) break;
       if (file.size > SLACK_SOURCE_LIMITS.readableBytes) continue;
+      read++;
       const bytes = await cached([...at, "blob", file.path], () =>
         reader!.read(snapshot, file, signal),
       );
@@ -219,7 +216,6 @@ export function createSlackSource(options: { store: Db; reader: GitHubSnapshotRe
       const part = `--- ${file.path} ---\n${text}`;
       parts.push(part);
       left -= Buffer.byteLength(part) + 1;
-      read++;
     }
     return parts.join("\n");
   }

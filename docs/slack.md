@@ -50,8 +50,8 @@ A thread needs no repository. When a question needs code, attach one; Paws then 
 - Before each answer, and again before posting it, Paws checks that the asking member's Paws teams can still read the repository, through their current membership. Without that access Paws doesn't read it and tells only them.
 - Everyone in the workspace can read a public channel, so Paws answers from a private repository only when it is the channel's repository an admin set. A public GitHub repository can be attached to any thread. Otherwise Paws reads nothing and tells only the member who asked.
 - Paws resolves the ref to a commit for each answer, so a branch follows new commits while a commit stays fixed. The reply names the repository, the commit and the ref it read, and Paws records them with the reply.
-- Paws reads at most four files of at most 4 KB each, 12 KB in total, chosen by the question's words in their paths, and lists up to 20 matching paths. It skips files over 64 KB, binary files and files named like secrets (`.env`, keys, credentials), and leaves out lines that look like a token or password. Reads are cached per Paws workspace, Slack installation, channel, member, repository and commit.
-- Earlier answers in the thread that read a repository the member can no longer read are left out of later turns.
+- Paws downloads at most four files per answer, binary ones included, and uses at most 4 KB of each, 12 KB in total, chosen by the question's words in their paths, and lists up to 20 matching paths. It skips files over 64 KB, binary files and files named like secrets (`.env`, keys, credentials), and leaves out lines that look like a token or password. Reads are cached per Paws workspace, Slack installation, channel, member, repository and commit.
+- An answer that builds on an earlier answer from a repository depends on that repository too, also after `@Paws repo off`. Paws checks every such repository like the attached one, before the turn and before posting, and leaves an earlier answer out of later turns once the member can no longer read its repository or a private one is no longer the channel's repository.
 
 ### Channel memory
 
