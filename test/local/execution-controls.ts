@@ -242,6 +242,7 @@ async function executionControlsFixture(
     });
   }
   return {
+    controls,
     orchestrator,
     origin,
     runId: run.id,

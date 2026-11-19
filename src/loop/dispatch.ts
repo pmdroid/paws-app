@@ -210,7 +210,7 @@ async function mirrorToSlack(
     const asked = questionId ? yield* getQuestionSteps(q, questionId) : null;
     const itemId = readString(payload, "itemId") ?? asked?.itemId;
     if (!itemId) return false;
-    const update = { sessionId, itemId, key, kind, text, fence, asked };
+    const update = { sessionId, itemId, key, kind, text, fence, asked, sourceId: message.id };
     return yield* slackTaskUpdateSteps(q, update, Date.now());
   });
 }

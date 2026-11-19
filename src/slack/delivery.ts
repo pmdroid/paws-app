@@ -31,6 +31,7 @@ export type SlackTaskPost = {
   questionId?: string;
   paws?: "repository" | "answer";
   progress?: true;
+  sourceId?: number;
 };
 
 const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
@@ -47,6 +48,7 @@ export function* slackTaskUpdateSteps(
     text: string;
     fence: { generation: number; stop: boolean };
     asked: StoredQuestion | null;
+    sourceId?: number;
   },
   now: number,
 ): Steps<boolean> {
@@ -90,6 +92,7 @@ export function* slackTaskUpdateSteps(
     ...(asked ? { questionId: asked.id } : {}),
     ...(update.kind === "update" ? { progress: true as const } : {}),
     ...(paws ? { paws } : {}),
+    ...(update.sourceId === undefined ? {} : { sourceId: update.sourceId }),
   };
   yield* enqueueOutboxOnceSteps(q, {
     target: "slack",

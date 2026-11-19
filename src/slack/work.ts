@@ -128,6 +128,11 @@ export function* filedTaskSteps(q: Q, thread: Thread): Steps<SlackTask | null> {
   return parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
 }
 
+export function* filingStartedSteps(q: Q, thread: Thread): Steps<boolean> {
+  if (yield* readSettingSteps(q, taskKey(thread))) return true;
+  return !!parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)))?.approvedAt;
+}
+
 export function* startStateSteps(q: Q, thread: Thread): Steps<string | Draft | null> {
   const task = parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
   if (task) return filedNotice(task);

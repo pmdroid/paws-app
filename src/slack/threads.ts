@@ -12,6 +12,7 @@ import {
   linearSessionClientIdSteps,
   workspaceSessionIdsSteps,
   outboxFenceOpenSteps,
+  parkLeasedJobSteps,
   readSettingSteps,
   recordSlackConversationSteps,
   settingsWithPrefixSteps,
@@ -20,6 +21,7 @@ import {
   slackSessionOriginSteps,
   slackIssueTaskSteps,
   slackOutboxExistsSteps,
+  slackOutboxMarkSteps,
   slackSendingSteps,
   slackStreamingSteps,
   slackLaterProgressSteps,
@@ -81,7 +83,7 @@ import {
   slackTeamOwnerSteps,
   type SlackFetch,
 } from "./oauth";
-import type { SlackInteraction, SlackMention } from "./webhook";
+import type { SlackInteraction, SlackMention, SlackSessionStop } from "./webhook";
 import type { SlackTaskPost } from "./delivery";
 import {
   reconcileSlackStatusSteps,
@@ -108,6 +110,8 @@ const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const STOP = /^stop[.!]?$/i;
 const UNLINK = /^unlink[.!]?$/i;
 const STOP_POLL_MS = 1_000;
+const TASK_STOP_POLL_MS = 5_000;
+const TASK_STOP_WAIT_MS = 24 * 60 * 60_000;
 
 function* taskScopeSteps(q: Q, message: SlackTaskPost): Steps<string[]> {
   const current = message.itemId ? yield* slackTaskScopeSteps(q, message.itemId) : [];
@@ -115,6 +119,20 @@ function* taskScopeSteps(q: Q, message: SlackTaskPost): Steps<string[]> {
   return [...new Map(names.map((name) => [name.toLowerCase(), name])).values()];
 }
 const SLACK_STOP_ACTION = "paws_stop";
+const taskStopKey = (itemId: string) => `slack.task-stop:${itemId}`;
+
+export type SlackTaskStop = (request: {
+  itemId: string;
+  workspaceId: string;
+  userId: string;
+  starterId: string;
+  requestedAt: number;
+  subject: string;
+  allowedSteps(q: Q): Steps<boolean>;
+  onAuthorizedSteps(q: Q, outcome: "stopped" | "finished"): Steps<void>;
+}) => Promise<"stopped" | "finished" | "denied" | null>;
+
+type TaskStopJob = { place: Place; userId: string; linkId: string; ts: string; mark?: number };
 const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
 function* taskVisibleSteps(q: Q, workspaceId: string, userId: string, sessionKey: string) {
   const clientId = yield* linearSessionClientIdSteps(q, sessionKey);
@@ -406,11 +424,17 @@ function* stopSteps(
   conversationId: string,
   ts: string,
   at: number,
-): Steps<boolean> {
+): Steps<false | "chat" | "task"> {
   const gate = yield* gateSteps(q, home, place);
   if (gate.kind !== "member") return false;
   const { slackUserId } = place;
   yield* stopSlackConversationSteps(q, { id: conversationId, ts, slackUserId }, at);
+  const filed = yield* work.filingStartedSteps(q, place);
+  const mark = yield* slackOutboxMarkSteps(q);
+  const stop: TaskStopJob = { place, userId: gate.userId, linkId: gate.linkId, ts, mark };
+  const job = { queue: SLACK_THREAD_JOB, payload: { stop }, now: at };
+  const jobKey = `slack:task-stop:${conversationId}:${ts}`;
+  const queued = filed && (yield* enqueueJobOnceSteps(q, { ...job, jobKey })).inserted;
   const payload: Payload = { ...place, kind: "notice", text: NOTICES.stopped };
   yield* enqueueOutboxOnceSteps(q, {
     target: "slack",
@@ -419,7 +443,47 @@ function* stopSteps(
     payload,
     now: at,
   });
-  return true;
+  return queued ? "task" : "chat";
+}
+
+function* recordEventSteps(q: Q, dedupeKey: string, payload: unknown, at: number) {
+  const inserted = yield* insertInboxEventSteps(q, {
+    dedupeKey,
+    deliveryId: null,
+    source: "webhook",
+    action: "other",
+    sessionId: null,
+    issueId: null,
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs: at,
+    payload: JSON.stringify(payload),
+    receivedAt: at,
+  });
+  if (inserted) yield* markInboxEventHandledSteps(q, dedupeKey);
+  return inserted;
+}
+
+export async function acceptSlackSessionStop(
+  store: Db,
+  home: string,
+  stop: SlackSessionStop,
+  at = Date.now(),
+): Promise<void> {
+  const queued = await store.transaction(function* (q) {
+    const install = yield* installationSteps(q, home, stop.teamId);
+    if (!install || (stop.appId && install.appId && stop.appId !== install.appId)) return false;
+    const { workspaceId, generation } = install;
+    const { teamId, channelId, threadTs, slackUserId } = stop;
+    const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
+    const conversation = yield* slackConversationSteps(q, threadOf(place));
+    if (!conversation) return false;
+    const event = { type: "SlackSessionStop", workspaceId, generation, stop };
+    if (!(yield* recordEventSteps(q, `slack:${teamId}:${stop.eventId}`, event, at))) return false;
+    return (yield* stopSteps(q, home, place, conversation.id, stop.eventTs, at)) === "task";
+  });
+  if (queued) emitJobReady(store);
 }
 
 export async function acceptSlackInteraction(
@@ -445,31 +509,19 @@ export async function acceptSlackInteraction(
     const member = conversation && gate?.kind === "member";
     const key = JSON.stringify(member && !decision ? intent : [...intent, slackUserId]);
     const dedupeKey = `slack:action:${createHash("sha256").update(key).digest("hex")}`;
-    const inserted = yield* insertInboxEventSteps(q, {
-      dedupeKey,
-      deliveryId: null,
-      source: "webhook",
-      action: "other",
-      sessionId: null,
-      issueId: null,
-      activityId: null,
-      body: null,
-      signal: null,
-      updatedAtMs: at,
-      payload: JSON.stringify({
-        type: "SlackInteraction",
-        workspaceId,
-        generation,
-        conversationId: conversation?.id ?? null,
-        interaction,
-      }),
-      receivedAt: at,
-    });
-    if (!inserted) return false;
-    yield* markInboxEventHandledSteps(q, dedupeKey);
-    if (member && actionId === SLACK_STOP_ACTION)
-      yield* stopSteps(q, home, place, conversation.id, interaction.actionTs, at);
-    if (gate?.kind !== "member" || !decision) return false;
+    const event = {
+      type: "SlackInteraction",
+      workspaceId,
+      generation,
+      conversationId: conversation?.id ?? null,
+      interaction,
+    };
+    if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
+    const stopped =
+      member && actionId === SLACK_STOP_ACTION
+        ? yield* stopSteps(q, home, place, conversation.id, interaction.actionTs, at)
+        : false;
+    if (gate?.kind !== "member" || !decision) return stopped === "task";
     const click = {
       draftId: value,
       linkId: gate.linkId,
@@ -513,32 +565,20 @@ export async function acceptSlackMention(
       { ...threadOf(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
       at,
     );
-    const inserted = yield* insertInboxEventSteps(q, {
-      dedupeKey,
-      deliveryId: null,
-      source: "webhook",
-      action: "other",
-      sessionId: null,
-      issueId: null,
-      activityId: null,
-      body: null,
-      signal: null,
-      updatedAtMs: at,
-      payload: JSON.stringify({
-        type: "SlackMention",
-        workspaceId,
-        generation,
-        conversationId: conversation.id,
-        mention,
-      }),
-      receivedAt: at,
-    });
-    if (!inserted) return false;
-    yield* markInboxEventHandledSteps(q, dedupeKey);
+    const event = {
+      type: "SlackMention",
+      workspaceId,
+      generation,
+      conversationId: conversation.id,
+      mention,
+    };
+    if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
     if (yield* stoppedSteps(q, place, mention.ts)) return false;
     const command = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
-    if (STOP.test(command) && (yield* stopSteps(q, home, place, conversation.id, mention.ts, at)))
-      return false;
+    const stopped = STOP.test(command)
+      ? yield* stopSteps(q, home, place, conversation.id, mention.ts, at)
+      : false;
+    if (stopped) return stopped === "task";
     const gate = UNLINK.test(command) ? yield* gateSteps(q, home, place) : null;
     if (gate?.kind === "member") {
       const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
@@ -573,6 +613,7 @@ export function createSlackThreads<Profile>(options: {
   source?: GitHubSnapshotReader;
   work?: () => SlackWorkTracker | null;
   answer?: QuestionAnswer;
+  stop?: () => SlackTaskStop | null;
 }) {
   const { store, home, env } = options;
   const memory = createSlackChannelMemory({
@@ -688,6 +729,8 @@ export function createSlackThreads<Profile>(options: {
   ): Promise<void> {
     const fileKey = (job.payload as { file?: unknown } | null)?.file;
     if (typeof fileKey === "string") return file(job, fileKey, context);
+    const stopping = (job.payload as { stop?: TaskStopJob } | null)?.stop;
+    if (stopping) return stopTask(job, stopping, context);
     const dedupeKey = (job.payload as { dedupeKey?: unknown } | null)?.dedupeKey;
     const event =
       typeof dedupeKey === "string" && (await store.run((q) => inboxEventByKeySteps(q, dedupeKey)));
@@ -1048,6 +1091,68 @@ export function createSlackThreads<Profile>(options: {
     return true;
   }
 
+  async function stopTask(
+    job: Job,
+    request: TaskStopJob,
+    context: { isCurrentSteps(q: Q): Steps<boolean> },
+  ) {
+    const { place, userId, linkId, ts } = request;
+    function* linkedSteps(q: Q) {
+      const gate = yield* gateSteps(q, home, place);
+      return gate.kind === "member" && gate.userId === userId && gate.linkId === linkId;
+    }
+    const tracker = options.work?.() ?? null;
+    const stop = options.stop?.() ?? null;
+    if (!tracker || !stop) throw new Error("Paws can't stop this thread's work yet; retrying.");
+    const issueId = tracker.issueId(work.slackThreadKey(place));
+    const task = await store.run(function* (q) {
+      const found = yield* slackIssueTaskSteps(q, issueId);
+      const filed = found ? yield* slackSessionOriginSteps(q, found.sessionKey) : null;
+      const current = filed?.workspaceId === place.workspaceId;
+      return current && filed.generation === place.generation
+        ? { itemId: found!.itemId, starterId: filed.userId }
+        : null;
+    });
+    if (!task) {
+      const waiting = await store.run(function* (q) {
+        if (job.createdAt + TASK_STOP_WAIT_MS <= now()) return false;
+        return (yield* work.filingStartedSteps(q, place)) && (yield* linkedSteps(q));
+      });
+      if (!waiting) return;
+      const park = { runAt: now() + TASK_STOP_POLL_MS, payload: job.payload, now: now() };
+      await store.run((q) => parkLeasedJobSteps(q, job, { ...park, attempts: 0 }));
+      return;
+    }
+    let mark = request.mark ?? 0;
+    const outcome = await stop({
+      ...task,
+      workspaceId: place.workspaceId,
+      userId,
+      requestedAt: now(),
+      subject: `slack:${place.teamId}:${place.channelId}`,
+      allowedSteps: function* (q) {
+        if (!(yield* context.isCurrentSteps(q))) return false;
+        if (request.mark === undefined) mark = yield* slackOutboxMarkSteps(q);
+        return yield* linkedSteps(q);
+      },
+      onAuthorizedSteps: function* (q, result) {
+        const raise = (stored: string | null) => String(Math.max(mark, Number(stored ?? 0)));
+        yield* updateSettingSteps(q, taskStopKey(task.itemId), raise, now());
+        const item = yield* getWorkItemSteps(q, task.itemId);
+        const name = item?.linearIdentifier ?? task.itemId;
+        const text = result === "stopped" ? taskStopped(name) : taskFinished(name);
+        yield* enqueueOutboxOnceSteps(q, {
+          target: "slack",
+          op: "chat.postEphemeral",
+          idempotencyKey: `slack:notice:task-stop:${place.channelId}:${place.threadTs}:${ts}`,
+          payload: { ...place, kind: "notice", text, member: { userId, linkId } } as Payload,
+          now: now(),
+        });
+      },
+    });
+    if (outcome === null) throw new Error("Paws can't stop this thread's work yet; retrying.");
+  }
+
   async function currentSources(
     scope: Bound & { workspaceId: string },
     userId: string,
@@ -1239,7 +1344,7 @@ export function createSlackThreads<Profile>(options: {
     if (payload.kind === "status" && !(await store.run((q) => slackStatusCurrentSteps(q, payload))))
       return settle({ kind: "withheld", note: "a later status replaced it" });
     function* allowedSteps(q: Q): Steps<boolean> {
-      if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload))) return false;
+      if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload, row.id))) return false;
       if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
       if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
         return false;
@@ -1452,7 +1557,7 @@ export function createSlackThreads<Profile>(options: {
         ? { user: payload.slackUserId, ...(payload.blocks ? { blocks: payload.blocks } : {}) }
         : payload.kind === "status"
           ? {}
-          : { unfurl_links: false, unfurl_media: false, blocks: [section(text)] };
+          : { unfurl_links: false, unfurl_media: false, blocks: [section(text), stopActions()] };
     const method =
       payload.kind === "notice"
         ? "chat.postEphemeral"
@@ -1477,10 +1582,13 @@ export function createSlackThreads<Profile>(options: {
     return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
   }
 
-  function* taskAllowedSteps(q: Q, message: SlackTaskPost): Steps<boolean> {
+  function* taskAllowedSteps(q: Q, message: SlackTaskPost, rowId: number): Steps<boolean> {
     const { workspaceId, fence } = message;
     const { userId } = message.member;
     if (!fence) return false;
+    const stoppedThrough = yield* readSettingSteps(q, taskStopKey(message.itemId));
+    const queuedAs = message.sourceId ?? rowId;
+    if (stoppedThrough !== null && queuedAs <= Number(stoppedThrough)) return false;
     const open = { target: "linear" as const, orderingKey: fence.sessionId, ...fence };
     if (!(yield* outboxFenceOpenSteps(q, open))) return false;
     if (!(yield* taskVisibleSteps(q, workspaceId, userId, fence.sessionId))) return false;
@@ -1522,6 +1630,14 @@ export function createSlackThreads<Profile>(options: {
   }
 
   return { handle, deliver, reconcile };
+}
+
+function taskStopped(identifier: string): string {
+  return `Stopped ${identifier}. Paws dropped its updates that hadn't reached this thread yet; its pull request, if it has one, stays open.`;
+}
+
+function taskFinished(identifier: string): string {
+  return `${identifier} had already finished or stopped. Paws dropped its updates that hadn't reached this thread yet.`;
 }
 
 function taskWithheld(link: string): string {

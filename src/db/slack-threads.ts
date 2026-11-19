@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, like, max, or } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
@@ -296,4 +296,10 @@ export function* slackTaskScopeSteps(q: Q, itemId: string): Steps<string[]> {
   if (!item?.sessionKey) return [];
   const candidates = yield* listRepositoryCandidatesSteps(q, item.sessionKey, []);
   return candidates.map((candidate) => `${candidate.owner}/${candidate.repo}`);
+}
+
+export function* slackOutboxMarkSteps(q: Q): Steps<number> {
+  const { outbox } = q.t;
+  const row = yield* q.one(q.orm.select({ id: max(outbox.id) }).from(outbox));
+  return row?.id ?? 0;
 }

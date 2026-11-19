@@ -17,6 +17,7 @@ export { createSlackLinks } from "./links";
 export {
   acceptSlackInteraction,
   acceptSlackMention,
+  acceptSlackSessionStop,
   createSlackLinkPage,
   createSlackThreads,
   SLACK_THREAD_JOB,
