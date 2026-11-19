@@ -3,6 +3,8 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import {
   RunnerCommandSchema,
   RunnerRepositorySchema,
+  RUNNER_SLACK_REPLY_MS,
+  RUNNER_SLACK_REPLY_PROMPT_BYTES,
   signRunnerCommand,
   verifyRunnerCommand,
   type RunnerCommand,
@@ -326,6 +328,51 @@ test("a conversation helper names the item, its run's checkout and the session t
     { ...helper, expiresAt: common.issuedAt + 900_001 },
   ])
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
+test("a Slack reply helper carries one channel thread and nothing of a work item", () => {
+  const slack = {
+    requestId: "slack-request",
+    teamId: "T0ACME",
+    channelId: "C0GENERAL",
+    threadTs: "1795053091.151000",
+    memberUserId: "member-ada",
+    installGeneration: 3,
+  };
+  const helper = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_MS,
+    sessionId: "slack-request",
+    sessionGeneration: 3,
+    purpose: "slack_reply",
+    profile,
+    prompt: "Ada: what does the release checklist cover?",
+    slack,
+  };
+  expect(RunnerCommandSchema.safeParse(helper).success).toBe(true);
+  for (const refused of [
+    { ...helper, slack: undefined },
+    { ...helper, purpose: "classify", expiresAt: common.issuedAt + 60_000 },
+    {
+      ...helper,
+      conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" },
+    },
+    { ...helper, slack: { ...slack, channelId: "D0PRIVATE" } },
+    { ...helper, slack: { ...slack, threadTs: "../thread" } },
+    { ...helper, slack: { ...slack, token: "xoxb-secret" } },
+    { ...helper, prompt: "x".repeat(RUNNER_SLACK_REPLY_PROMPT_BYTES + 1) },
+    { ...helper, expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_MS + 1 },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+  expect(
+    RunnerCommandSchema.safeParse({
+      ...helper,
+      purpose: "conversation",
+      expiresAt: common.issuedAt + 900_000,
+      conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" },
+    }).success,
+  ).toBe(false);
 });
 
 test("a review command names a Claude or Codex model and a base other than the checkout head", () => {

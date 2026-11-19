@@ -269,6 +269,9 @@ export const CONVERSATION_RESULT_MARGIN_MS = 30_000;
 const CONVERSATION_PREAMBLE =
   "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused. Call start_work only when the person asked for a change or agreed to one; it ends this turn, and a work turn resumes this session with edits allowed. Its plan holds at most 4,000 characters: summarize what you will change and point at the person's messages instead of quoting them. Never claim to have changed code in this turn.";
 
+const SLACK_REPLY_PREAMBLE =
+  "A person mentioned you in a Slack channel thread. Answer them in your final message from the thread context below only. There is no repository or checkout, and this turn has no tools that change anything or post anywhere: Paws sends your final message to the thread itself. Do not claim to have read code, changed anything or started work.";
+
 /** Time for start_work's answer to reach the agent before its conversation turn stops. */
 const START_WORK_GRACE_MS = 500;
 
@@ -1344,7 +1347,11 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     const prompt = readDelivered ? given : withoutGitHubReadPrompt(given);
-    const conversationPrompt = talk ? `${CONVERSATION_PREAMBLE}\n\n${prompt}` : undefined;
+    const conversationPrompt = talk
+      ? `${CONVERSATION_PREAMBLE}\n\n${prompt}`
+      : command.type === "helper" && command.purpose === "slack_reply"
+        ? `${SLACK_REPLY_PREAMBLE}\n\n${prompt}`
+        : undefined;
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     // A moved run unpacks its saved session at the same paths before the agent starts. Paws
     // learns once whether the agent loaded it; otherwise the run starts a new session.
@@ -1425,7 +1432,7 @@ export async function executeRunnerCommand(
         : talk?.resumeSessionId;
     const agent: RunAgentOptions = {
       ...options.launch,
-      hostAccess: true,
+      hostAccess: !(command.type === "helper" && command.purpose === "slack_reply"),
       skillsRoot,
       ...(options.skills && (repository || task)
         ? {

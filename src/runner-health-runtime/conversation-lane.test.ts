@@ -16,7 +16,8 @@ function helper(now: number, purpose: Helper["purpose"], sessionId: string): Hel
     runnerId: "runner",
     workspaceId: "workspace",
     issuedAt: now,
-    expiresAt: now + (purpose === "conversation" ? 900_000 : 60_000),
+    expiresAt:
+      now + (purpose === "conversation" ? 900_000 : purpose === "slack_reply" ? 180_000 : 60_000),
     sessionId,
     sessionGeneration: 1,
     purpose,
@@ -24,6 +25,18 @@ function helper(now: number, purpose: Helper["purpose"], sessionId: string): Hel
     prompt: "What does the acme checkout do?",
     ...(purpose === "conversation"
       ? { conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: sessionId } }
+      : {}),
+    ...(purpose === "slack_reply"
+      ? {
+          slack: {
+            requestId: sessionId,
+            teamId: "T0ACME",
+            channelId: "C0GENERAL",
+            threadTs: "1795053091.151000",
+            memberUserId: "member",
+            installGeneration: 1,
+          },
+        }
       : {}),
   };
 }
@@ -128,6 +141,78 @@ test.skipIf(process.getuid!() === 0)(
       await runtime.tick();
       expect(running().lane).toEqual([talks[1]!.id]);
       expect(started).toHaveLength(3);
+    } finally {
+      await runtime.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.getuid!() === 0)(
+  "a Slack reply runs in the conversation lane while the helper slot is taken",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-slack-reply-lane-"));
+    mkdirSync(join(root, "spool"), { mode: 0o750 });
+    chmodSync(join(root, "spool"), 0o750);
+    const now = Date.now();
+    const classify = helper(now, "classify", "session-0");
+    const slack = helper(now, "slack_reply", "slack-1");
+    const second = helper(now, "slack_reply", "slack-2");
+    const pending = [classify, slack, second];
+    const runtime = await openRunnerHealthRuntime({
+      root,
+      now: () => now,
+      conversations: () => 1,
+      daemon: {
+        status: () => ({
+          phase: "paired",
+          runnerId: "runner",
+          workspaceId: "workspace",
+          fingerprint: "fixture",
+          expiresAt: now + 3_600_000,
+        }),
+        pendingCommands: () => pending,
+        async pollCommands() {
+          return { commands: [], rejected: [], deniedRepositories: [] };
+        },
+        async pollHelperCommands() {
+          return { commands: pending, rejected: [], deniedRepositories: [] };
+        },
+        async helperLease(id) {
+          return { expiresAt: pending.find((command) => command.id === id)!.expiresAt };
+        },
+        async acknowledgeCommand() {},
+        async postHelperResult() {
+          return { duplicate: false };
+        },
+        async postHealth() {
+          throw new Error("Helpers do not post health");
+        },
+        async heartbeat() {
+          throw new Error("Helpers do not use run heartbeats");
+        },
+      },
+      spool: {
+        root: join(root, "spool"),
+        runnerUid: process.getuid!(),
+        agentGid: process.getgid!(),
+      },
+      results: {
+        root: join(root, "results"),
+        agentUid: process.getuid!(),
+        resultsGid: process.getgid!(),
+      },
+      broker: {
+        async start() {
+          return { alreadyAdmitted: false };
+        },
+        async stop() {},
+      },
+    });
+    try {
+      for (let tick = 0; tick < 4; tick++) await runtime.tick();
+      expect(runtime.status().active?.commandId).toBe(classify.id);
+      expect(runtime.status().conversations.map((entry) => entry.commandId)).toEqual([slack.id]);
     } finally {
       await runtime.stop();
       rmSync(root, { recursive: true, force: true });
