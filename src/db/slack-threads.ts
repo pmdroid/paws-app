@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, max, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, like, max, or, sql } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
@@ -309,4 +309,19 @@ export function* slackOutboxMarkSteps(q: Q): Steps<number> {
   const { outbox } = q.t;
   const row = yield* q.one(q.orm.select({ id: max(outbox.id) }).from(outbox));
   return row?.id ?? 0;
+}
+
+export function* slackMentionTextSteps(q: Q, dedupeKey: string): Steps<string | null> {
+  const { inboxEvent } = q.t;
+  const text = jsonField(q, inboxEvent.payload, "mention", "text");
+  const query = q.orm.select({ text }).from(inboxEvent);
+  return (yield* q.one(query.where(eq(inboxEvent.dedupeKey, dedupeKey))))?.text ?? null;
+}
+
+export function* lockSlackStatusSteps(q: Q, key: string): Steps<void> {
+  yield* q.exec(
+    q.orm
+      .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${key}, 0))` })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
 }

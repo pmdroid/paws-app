@@ -1,6 +1,7 @@
 import {
   enqueueOutboxOnceSteps,
   getWorkItemSteps,
+  lockSlackStatusSteps,
   readSettingSteps,
   settingsWithPrefixSteps,
   slackIssueTaskSteps,
@@ -37,7 +38,18 @@ export type SlackStatusPost = Thread & {
   itemId?: string;
 };
 
-type Mark = { status: SlackStatus; at: number; generation: number; turnAt?: number };
+export type SlackTurn = { ts: string; slackUserId: string; event: string; at: number };
+
+type Mark = {
+  status: SlackStatus;
+  at: number;
+  generation: number;
+  turnAt?: number;
+  turns?: SlackTurn[];
+};
+
+const liveTurns = (mark: Mark | null, now: number) =>
+  (mark?.turns ?? []).filter((turn) => now - turn.at < TURN_MS);
 
 const markKey = (t: Thread) =>
   `slack.status:${t.workspaceId}:${t.teamId}:${t.channelId}:${t.threadTs}`;
@@ -65,17 +77,36 @@ export function* slackStatusSteps(
     status: SlackStatus;
     itemId?: string;
     turn?: boolean;
+    change?: Omit<SlackTurn, "at"> & { open: boolean };
   },
   now: number,
 ): Steps<boolean> {
-  const { thread, status } = input;
+  const { thread, change } = input;
+  yield* lockSlackStatusSteps(q, markKey(thread));
   const prior = yield* markSteps(q, thread);
+  const live = liveTurns(prior, now);
+  const held = live.find((turn) => turn.ts === change?.ts);
+  const kept = live.filter((turn) => turn.ts !== change?.ts);
+  const turns = change?.open
+    ? [
+        ...kept,
+        held ?? { ts: change.ts, slackUserId: change.slackUserId, event: change.event, at: now },
+      ]
+    : kept;
+  const status = turns.length ? "processing" : input.status;
   const stale = status === "processing" && now - (prior?.at ?? 0) >= SLACK_STATUS_REFRESH_MS;
   const same = prior?.status === status && !stale;
-  const turnAt = input.turn ? now : undefined;
-  if (same && !input.turn && prior.turnAt === undefined) return false;
-  const mark: Mark = { status, at: same ? prior.at : now, generation: thread.generation };
-  const stored = JSON.stringify(turnAt === undefined ? mark : { ...mark, turnAt });
+  const turnAt = input.turn ? now : change ? prior?.turnAt : undefined;
+  const unchanged = JSON.stringify(turns) === JSON.stringify(prior?.turns ?? []);
+  if (same && turnAt === prior.turnAt && unchanged) return false;
+  const mark: Mark = {
+    status,
+    at: same ? prior.at : now,
+    generation: thread.generation,
+    ...(turnAt === undefined ? {} : { turnAt }),
+    ...(turns.length ? { turns } : {}),
+  };
+  const stored = JSON.stringify(mark);
   yield* updateSettingSteps(q, markKey(thread), () => stored, now);
   if (same) return false;
   const payload: SlackStatusPost = {
@@ -99,6 +130,10 @@ export function* slackStatusSteps(
 export function* slackStatusCurrentSteps(q: Q, post: SlackStatusPost): Steps<boolean> {
   const mark = yield* markSteps(q, post);
   return mark?.at === post.at && mark.status === post.status;
+}
+
+export function* slackTurnsSteps(q: Q, thread: Thread, now: number): Steps<SlackTurn[]> {
+  return liveTurns(yield* markSteps(q, thread), now);
 }
 
 export function* slackThreadStatusSteps(q: Q, thread: Thread): Steps<SlackStatus> {
@@ -125,6 +160,7 @@ export function* reconcileSlackStatusSteps(q: Q, now: number): Steps<number> {
     const thread: Thread = { ...origin, slackUserId: origin.slackUserId };
     const prior = yield* markSteps(q, thread);
     if (prior?.turnAt !== undefined && now - prior.turnAt < TURN_MS) continue;
+    if (liveTurns(prior, now).length) continue;
     const member = { userId: origin.userId, linkId: origin.linkId };
     const status = slackStatusFor(item.state);
     if (yield* slackStatusSteps(q, { thread, member, status, itemId: item.id }, now)) queued++;
