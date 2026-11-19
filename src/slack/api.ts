@@ -28,13 +28,21 @@ export type SlackCall = (
 
 const REFUSED = new Set(["ECONNREFUSED", "ConnectionRefused", "ENOTFOUND", "EAI_AGAIN"]);
 
+function slackForm(body: Record<string, unknown>): string {
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(body))
+    if (value !== undefined)
+      form.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+  return form.toString();
+}
+
 export function slackCaller(fetchImpl: SlackFetch, token: string): SlackCall {
   return async (method, body, signal) => {
     const headers = {
       authorization: `Bearer ${token}`,
-      "content-type": "application/json; charset=utf-8",
+      "content-type": "application/x-www-form-urlencoded; charset=utf-8",
     };
-    const request = { method: "POST", signal, headers, body: JSON.stringify(body) };
+    const request = { method: "POST", signal, headers, body: slackForm(body) };
     const response = await fetchImpl(`https://slack.com/api/${method}`, request).catch(
       (caught: unknown) => {
         const code = (caught as { code?: unknown } | null)?.code;

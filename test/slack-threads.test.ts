@@ -63,6 +63,7 @@ import { sqlRows, sqlRun, tempStore } from "./pglite";
 import { insertWorkItemSteps, signInFixtureRunner } from "./pglite-fixtures";
 
 const ORIGIN = "https://paws.example";
+const JSON_FIELDS = new Set(["blocks", "chunks"]);
 const BOT = "UPAWS";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
@@ -122,7 +123,12 @@ async function fixture(
   };
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const body = Object.fromEntries(
+      [...new URLSearchParams(String(init?.body)).entries()].map(([key, value]) => [
+        key,
+        JSON_FIELDS.has(key) ? JSON.parse(value) : value,
+      ]),
+    ) as Record<string, unknown>;
     const alias = method === "chat.startStream" ? "chat.postMessage" : method;
     const fail = failNext[method] ?? failNext[alias];
     failNext[method] = failNext[alias] = undefined;
@@ -1702,17 +1708,27 @@ test("guests, an incomplete member list or a missing scope withhold a source ans
   }
 });
 
-test("a channel that turns private, Enterprise-shared or Slack Connect before delivery gets no source canary", async () => {
-  const kinds = {
-    private: { is_private: true },
-    enterprise: { is_shared: true, is_org_shared: true },
-    connect: { is_shared: true, is_ext_shared: true },
-    pending: { is_pending_ext_shared: true },
-    unknown: { is_org_shared: undefined },
-    "pending unknown": { is_pending_ext_shared: undefined },
-    ...SHARED_METADATA,
-  } as const;
-  for (const [kind, flags] of Object.entries(kinds)) {
+const SHARED_METADATA = {
+  "a pending external invitation": { pending_connected_team_ids: ["T0EXT"] },
+  "a pending share": { pending_shared: ["T0EXT"] },
+  "another connected team": { connected_team_ids: ["T0EXT"] },
+  "another workspace in the share list": { shared_team_ids: ["T0ONE", "T0TWO"] },
+  "another workspace's channel": { context_team_id: "T0TWO" },
+} as const;
+
+const TURNED_CHANNELS = Object.entries({
+  private: { is_private: true },
+  enterprise: { is_shared: true, is_org_shared: true },
+  connect: { is_shared: true, is_ext_shared: true },
+  pending: { is_pending_ext_shared: true },
+  unknown: { is_org_shared: undefined },
+  "pending unknown": { is_pending_ext_shared: undefined },
+  ...SHARED_METADATA,
+} as const);
+
+test.each(TURNED_CHANNELS)(
+  "a channel that turns %s before delivery gets no source canary",
+  async (kind, flags) => {
     const f = await sourceFixture();
     await f.deliver(f.mention("SMEMBER", `billing question in ${kind}`));
     await f.runJobs();
@@ -1725,8 +1741,8 @@ test("a channel that turns private, Enterprise-shared or Slack Connect before de
     expect(f.notice()).toMatch(SOURCE_WITHHELD);
     expect(leaked(f)).toEqual([]);
     expect(f.posts("conversations.open")).toEqual([]);
-  }
-});
+  },
+);
 
 test("each delivery retry checks the audience and the policy again", async () => {
   const f = await sourceFixture();
@@ -1957,14 +1973,6 @@ test("a start without a team, Linear, membership or a usable draft files nothing
   expect(f.linear.calls).toEqual([]);
   expect(await f.sideEffects()).toEqual(NONE);
 });
-
-const SHARED_METADATA = {
-  "a pending external invitation": { pending_connected_team_ids: ["T0EXT"] },
-  "a pending share": { pending_shared: ["T0EXT"] },
-  "another connected team": { connected_team_ids: ["T0EXT"] },
-  "another workspace in the share list": { shared_team_ids: ["T0ONE", "T0TWO"] },
-  "another workspace's channel": { context_team_id: "T0TWO" },
-} as const;
 
 test("sharing metadata beyond the boolean flags stops a policy-allowed source answer before any read", async () => {
   for (const [name, fields] of Object.entries(SHARED_METADATA)) {
