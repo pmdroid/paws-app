@@ -5,7 +5,7 @@ A workspace admin connects one Slack workspace to a Paws workspace in **Workspac
 ## Create the Slack app
 
 1. On [api.slack.com/apps](https://api.slack.com/apps), create an app. Under **OAuth & Permissions**, add the redirect URL `https://<paws>/oauth/slack/callback` and the bot scopes below. Turn on **Agents & AI Apps** and the **Messages Tab** in **App Home**.
-2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im`, `assistant_thread_started`, `app_uninstalled` and `tokens_revoked`. Turn on **Manage Distribution** to install it in more than one Slack workspace.
+2. Under **Event Subscriptions**, set the request URL `https://<paws>/webhooks/slack` and subscribe to the bot events `app_mention`, `message.channels`, `message.im`, `assistant_thread_started`, `app_uninstalled` and `tokens_revoked`. Under **Interactivity & Shortcuts**, turn on **Interactivity** and set the same request URL `https://<paws>/webhooks/slack`; Paws's **Stop** button needs it. Turn on **Manage Distribution** to install it in more than one Slack workspace.
 3. Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` on the server, or enter them in the dashboard. Set `SLACK_APP_ID` so Paws refuses any other app. **Token Rotation** may be on or off; with it on, Paws refreshes a workspace's token when it is about to expire. Slack must reach Paws over HTTPS.
 
 ## Scopes
@@ -46,6 +46,8 @@ Paws answers explicit `@Paws` mentions in one internal channel per Paws workspac
 Each thread Paws is mentioned in is recorded once, when the first signed mention from the connected installation arrives: the Slack workspace, installation, channel, thread, who mentioned Paws first and with which event, and the thread Paws replies in. Every later mention in the thread is stored with the Slack user who posted it. The record grants nothing: each answer still needs the checks above. Slack redeliveries, including one after Paws stored a mention but before Slack saw the answer, are acknowledged and produce no second turn.
 
 A linked member mentions `@Paws stop` in the thread to stop it. Paws records the stop when the mention arrives, without waiting for a runner, so it works while every slot and the conversation lane are busy. It ends the turn that is running within about a second, never posts a reply to any mention made before the stop, and ignores a delayed delivery of one of those mentions. The member who stopped it sees a message only they can see. A mention after the stop starts a new turn. A stop from someone who isn't linked is treated as any other mention.
+
+Each reply Paws posts has a **Stop** button. A click from a linked member stops the thread the same way, from the moment of the click, also while every slot and the conversation lane are busy. Paws checks each click's Slack signature, its age (at most five minutes) and that it comes from the connected Slack workspace and app; anything else is refused or ignored. Each click is stored, and one click per button counts: clicking the same button again, or Slack delivering it twice, has no further effect. A click from someone who isn't linked does nothing and doesn't use up the button.
 
 `paws doctor` checks each connected Slack workspace: channel threads need the scopes above, and a missing one fails with a reconnect hint. App messages and agent status are shown as optional notes, and Slack Code is shown as not available; neither stops channel threads from working.
 

@@ -21,6 +21,7 @@ import {
   WORKSPACE_COOKIE,
 } from "../src/workspace";
 import {
+  acceptSlackInteraction,
   acceptSlackMention,
   createSlackLinkPage,
   createSlackThreads,
@@ -209,6 +210,38 @@ async function fixture() {
       acceptSlackMention(db, home, mention, now),
     );
   }
+  async function click(
+    slackUser: string,
+    message: { ts: string; threadTs: string },
+    options: { team?: string; app?: string; signature?: string; at?: number; value?: string } = {},
+  ) {
+    const payload = {
+      type: "block_actions",
+      team: { id: options.team ?? "T0ONE" },
+      api_app_id: options.app ?? "A1",
+      user: { id: slackUser },
+      channel: { id: "C0ONE" },
+      container: { type: "message", message_ts: message.ts, channel_id: "C0ONE" },
+      message: { ts: message.ts, thread_ts: message.threadTs },
+      actions: [
+        { action_id: "paws_stop", value: options.value ?? "stop", action_ts: `${++ts}.000200` },
+      ],
+    };
+    const raw = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const time = String(Math.floor((options.at ?? now) / 1000));
+    const signature =
+      options.signature ??
+      `v0=${createHmac("sha256", "secret").update(`v0:${time}:${raw}`).digest("hex")}`;
+    const headers = {
+      "content-type": "application/x-www-form-urlencoded",
+      "x-slack-signature": signature,
+      "x-slack-request-timestamp": time,
+    };
+    const request = new Request(`${ORIGIN}/webhooks/slack`, { method: "POST", headers, body: raw });
+    return handleSlackWebhook(request, "secret", now, undefined, undefined, (interaction) =>
+      acceptSlackInteraction(db, home, interaction, now),
+    );
+  }
   const mention = (user: string, text: string, extra: Record<string, unknown> = {}) => ({
     type: "app_mention",
     channel: "C0ONE",
@@ -276,6 +309,7 @@ async function fixture() {
     runner,
     helpers,
     deliver,
+    click,
     mention,
     runJobs,
     settle,
@@ -635,5 +669,81 @@ test("a link never moves a Slack account or a Paws account to another, and no on
   await f.say("SADMIN", "who am I?");
   await f.say("SMEMBER", "and me?");
   expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "um"]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a Stop click on Paws's reply stops the thread once while runners are full; forged, stale and foreign clicks do nothing", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "first question");
+  await f.deliver(root);
+  await f.settle();
+  const reply = f.posts("chat.postMessage")[0]!.body;
+  expect(reply.blocks).toContainEqual(
+    expect.objectContaining({
+      type: "actions",
+      elements: [expect.objectContaining({ action_id: "paws_stop", value: "stop" })],
+    }),
+  );
+  const message = { ts: (await f.replies())[0]!.externalId!, threadTs: root.ts };
+  await recordLinearInstallation(f.db, {
+    organizationId: "W1",
+    oauthClientId: "app",
+    appUserId: "app-user",
+    sessionId: "session-1",
+    teamId: "team",
+    observedAtMs: Date.now(),
+  });
+  const profile = { agent: "codex" as const, model: null };
+  await f.helpers.dispatch({
+    runnerId: "runner-ua",
+    sessionId: "session-1",
+    purpose: "classify",
+    profile,
+    prompt: "Classify this",
+  });
+  expect(await runnerOccupancy(f.db, "runner-ua", Date.now())).toEqual({
+    capacity: 1,
+    occupied: 1,
+  });
+  f.runner.hold = true;
+  await f.deliver(f.mention("SADMIN", "second, long", { thread_ts: root.ts }));
+  const running = f.settle();
+  const slackTurns = () =>
+    f.db.run((q) =>
+      q.all(
+        q.orm.select().from(q.t.runnerHelper).where(eq(q.t.runnerHelper.purpose, "slack_reply")),
+      ),
+    );
+  while ((await slackTurns()).length < 2) await Bun.sleep(2);
+  const stored = async () =>
+    (await f.db.run((q) => q.all(q.orm.select().from(q.t.inboxEvent)))).filter(
+      (event) => (event.payload as unknown as { type: string }).type === "SlackInteraction",
+    );
+  const forged = await f.click("SMEMBER", message, { signature: `v0=${"0".repeat(64)}` });
+  const stale = await f.click("SMEMBER", message, { at: Date.now() - 600_000 });
+  expect([forged.status, stale.status]).toEqual([401, 401]);
+  expect((await f.click("SMEMBER", message, { team: "T0NINE" })).status).toBe(200);
+  expect((await f.click("SMEMBER", message, { app: "A9" })).status).toBe(200);
+  expect(await stored()).toEqual([]);
+  await f.click("SOTHER", message);
+  expect(await stored()).toHaveLength(1);
+  expect((await conversations(f, root.ts))[0]!.stoppedTs).toBeNull();
+  const clicks = await Promise.all([f.click("SMEMBER", message), f.click("SMEMBER", message)]);
+  await f.click("SADMIN", message);
+  expect(clicks.map((response) => response.status)).toEqual([200, 200]);
+  expect(await stored()).toHaveLength(2);
+  const [conversation] = await conversations(f, root.ts);
+  expect(conversation).toMatchObject({ stoppedBySlackUserId: "SMEMBER" });
+  await running;
+  f.runner.hold = false;
+  await f.settle();
+  expect(f.prompts.some((turn) => turn.prompt.includes("second, long"))).toBe(false);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  const notices = f.posts("chat.postEphemeral").map((post) => [post.body.user, post.body.text]);
+  expect(notices).toEqual([["SMEMBER", expect.stringContaining("Stopped")]]);
+  await f.say("SADMIN", "and now a short one", { thread_ts: root.ts });
+  expect(f.posts("chat.postMessage")).toHaveLength(2);
+  await f.click("SADMIN", { ts: message.ts, threadTs: root.ts }, { value: "other" });
+  expect((await conversations(f, root.ts))[0]!.stoppedTs).not.toBe(conversation!.stoppedTs);
   expect(await f.sideEffects()).toEqual(NONE);
 });

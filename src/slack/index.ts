@@ -14,6 +14,7 @@ export { SLACK_INSTALL_SCOPES, slackCapabilities, slackConnectionsSteps } from "
 export type { SlackCapabilities } from "./manifest";
 export { createSlackRevocation } from "./revoke";
 export {
+  acceptSlackInteraction,
   acceptSlackMention,
   createSlackLinkPage,
   createSlackThreads,
