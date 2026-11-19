@@ -21,6 +21,9 @@ import {
   slackIssueTaskSteps,
   slackOutboxExistsSteps,
   slackSendingSteps,
+  slackStreamingSteps,
+  slackLaterProgressSteps,
+  slackOutboxExternalIdSteps,
   slackThreadContextSteps,
   stopSlackConversationSteps,
   takeSettingSteps,
@@ -80,6 +83,21 @@ import {
 } from "./oauth";
 import type { SlackInteraction, SlackMention } from "./webhook";
 import type { SlackTaskPost } from "./delivery";
+import {
+  reconcileSlackStatusSteps,
+  SLACK_STREAM_CLOSE_MS,
+  SLACK_STREAM_LIFETIME_MS,
+  slackStatusCurrentSteps,
+  slackStatusSteps,
+  slackStreamChunks,
+  slackStreamId,
+  slackStreamState,
+  slackTaskStatusSteps,
+  slackThreadStatusSteps,
+  type SlackStatus,
+  type SlackStatusPost,
+  type SlackStream,
+} from "./status";
 import * as work from "./work";
 import type { Draft, SlackIssueTeam, SlackWorkTracker } from "./work";
 
@@ -152,7 +170,7 @@ type Notice = Place & {
   safe?: boolean;
   blocks?: unknown[];
 };
-type Payload = Reply | Notice | SlackTaskPost;
+type Payload = Reply | Notice | SlackTaskPost | SlackStatusPost;
 
 const refId = (ref: MemoryRef) => `${ref.key}@${ref.version}`;
 const sourceId = (ref: SlackSourceRef) => `${ref.repository.toLowerCase()}@${ref.commit}`;
@@ -580,6 +598,31 @@ export function createSlackThreads<Profile>(options: {
     );
   }
 
+  function turnStatus(
+    place: Place,
+    member: { userId: string; linkId: string },
+    status: SlackStatus | null,
+    fallback: SlackStatus = "active",
+  ) {
+    const tracker = options.work?.() ?? null;
+    const issueId = tracker?.issueId(work.slackThreadKey(place));
+    return store
+      .transaction(function* (q) {
+        const task = issueId ? yield* slackTaskStatusSteps(q, issueId) : null;
+        const next = { status: status ?? task?.status ?? fallback, turn: status !== null };
+        const input = { thread: place, member, ...next, ...(task ? { itemId: task.itemId } : {}) };
+        return yield* slackStatusSteps(q, input, now());
+      })
+      .catch((caught: unknown) => {
+        journal(`slack status: ${caught instanceof Error ? caught.message : String(caught)}`);
+        return false;
+      });
+  }
+
+  async function reconcile(): Promise<void> {
+    await store.transaction((q) => reconcileSlackStatusSteps(q, now()));
+  }
+
   function claim(place: Place, code: string) {
     return store.transaction(function* (q): Steps<keyof typeof NOTICES> {
       const hash = workspaceTokenHash(code.toUpperCase());
@@ -863,6 +906,7 @@ export function createSlackThreads<Profile>(options: {
         );
     }, STOP_POLL_MS);
     const signal = AbortSignal.any([context.signal, stop.signal]);
+    await turnStatus(place, asker, "processing");
     const outcome = await lane
       .reply({ workspaceId, scope: replyScope, profile: options.profile(), prompt, signal })
       .catch((error: unknown): Awaited<ReturnType<typeof lane.reply>> => {
@@ -872,7 +916,14 @@ export function createSlackThreads<Profile>(options: {
       .finally(() => {
         clearInterval(heartbeat);
         clearInterval(watch);
-      });
+      })
+      .then(
+        async (done) => (await turnStatus(place, asker, null), done),
+        async (error: unknown) => {
+          await turnStatus(place, asker, null);
+          throw error;
+        },
+      );
     if (outcome.status === "busy")
       throw new Error("The member's runner conversation lane is busy.");
     if (team) {
@@ -1096,41 +1147,50 @@ export function createSlackThreads<Profile>(options: {
     const member = { userId: draft.userId, linkId: draft.linkId };
     const say = (text: string, suffix: string) =>
       notice(place, `file:${draft.id}:${suffix}`, text, { member });
-    const drop = () => store.transaction((q) => work.dropDraftSteps(q, key));
-    const tracker = options.work?.() ?? null;
-    if (!tracker) return void (await drop());
-    const call = await slackFor(workspaceId);
-    if ((await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public")
-      return void (await drop());
-    const team = await tracker.team(draft.team.key, context.signal);
-    if (team?.id !== draft.team.id || team.private !== draft.team.private) {
-      await drop();
-      if (team?.id === draft.team.id && draft.attemptedAt)
-        return void (await review(draft, team, `file:${draft.id}:review:${job.id}`));
-      return void (await say(work.WORK_NOTICES.changed, "changed"));
-    }
-    const issueKey = work.slackThreadKey(draft);
-    if (!(await check({ issueId: tracker.issueId(issueKey), at: now() }))) return;
-    const request = {
-      key: issueKey,
-      teamId: team.id,
-      title: draft.title,
-      description: work.slackIssueDescription(draft),
-    };
-    let filed: { id: string; identifier: string; url: string | null };
+    await turnStatus(place, member, "processing");
+    let done = false;
     try {
-      filed = await tracker.file(request, context.signal);
-    } catch (error) {
-      if (context.signal.aborted) throw error;
-      await drop();
-      const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200);
-      journal(`slack draft ${draft.id}: Linear filing failed: ${reason}`);
-      const text = `Linear didn't confirm the issue (${reason}). Nothing is running. Mention \`@Paws start\` in this thread to try again; Paws reuses the issue if Linear filed it.`;
-      return void (await say(text, `failed:${job.id}`));
+      const drop = () => store.transaction((q) => work.dropDraftSteps(q, key));
+      const tracker = options.work?.() ?? null;
+      if (!tracker) return void (await drop());
+      const call = await slackFor(workspaceId);
+      if (
+        (await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public"
+      )
+        return void (await drop());
+      const team = await tracker.team(draft.team.key, context.signal);
+      if (team?.id !== draft.team.id || team.private !== draft.team.private) {
+        await drop();
+        if (team?.id === draft.team.id && draft.attemptedAt)
+          return void (await review(draft, team, `file:${draft.id}:review:${job.id}`));
+        return void (await say(work.WORK_NOTICES.changed, "changed"));
+      }
+      const issueKey = work.slackThreadKey(draft);
+      if (!(await check({ issueId: tracker.issueId(issueKey), at: now() }))) return;
+      const request = {
+        key: issueKey,
+        teamId: team.id,
+        title: draft.title,
+        description: work.slackIssueDescription(draft),
+      };
+      let filed: { id: string; identifier: string; url: string | null };
+      try {
+        filed = await tracker.file(request, context.signal);
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        await drop();
+        const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+        journal(`slack draft ${draft.id}: Linear filing failed: ${reason}`);
+        const text = `Linear didn't confirm the issue (${reason}). Nothing is running. Mention \`@Paws start\` in this thread to try again; Paws reuses the issue if Linear filed it.`;
+        return void (await say(text, `failed:${job.id}`));
+      }
+      const task = { identifier: filed.identifier, url: filed.url };
+      await store.transaction((q) => work.recordFiledSteps(q, draft, task, now()));
+      await say(work.filedNotice(task), "filed");
+      done = true;
+    } finally {
+      await turnStatus(place, member, null, done ? "processing" : "active");
     }
-    const task = { identifier: filed.identifier, url: filed.url };
-    await store.transaction((q) => work.recordFiledSteps(q, draft, task, now()));
-    await say(work.filedNotice(task), "filed");
   }
 
   /** Slack IDs of everyone who can read the channel, or null unless Slack proves them all. */
@@ -1165,8 +1225,22 @@ export function createSlackThreads<Profile>(options: {
       if ("note" in outcome) journal(`slack outbox ${row.id}: ${outcome.kind}; ${outcome.note}`);
       return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
     };
+    const resume =
+      payload.kind === "reply"
+        ? slackStreamState(await store.run((q) => slackOutboxExternalIdSteps(q, row.id)))
+        : null;
+    const withhold = async (note: string) => {
+      if (resume) await closeStream(payload, resume, context.signal);
+      return settle({ kind: "withheld", note });
+    };
+    const later = (itemId: string) => store.run((q) => slackLaterProgressSteps(q, row.id, itemId));
+    if (payload.kind === "task" && payload.progress && (await later(payload.itemId)))
+      return settle({ kind: "withheld", note: "a later progress update replaces it" });
+    if (payload.kind === "status" && !(await store.run((q) => slackStatusCurrentSteps(q, payload))))
+      return settle({ kind: "withheld", note: "a later status replaced it" });
     function* allowedSteps(q: Q): Steps<boolean> {
       if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload))) return false;
+      if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
       if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
         return false;
       const gate = yield* gateSteps(q, home, payload);
@@ -1187,9 +1261,11 @@ export function createSlackThreads<Profile>(options: {
     const repositories =
       payload.kind === "task"
         ? await store.run((q) => taskScopeSteps(q, payload))
-        : payload.kind === "reply"
-          ? (payload.sources ?? []).map((ref) => ref.repository)
-          : [];
+        : payload.kind === "status" && payload.itemId
+          ? await store.run((q) => slackTaskScopeSteps(q, payload.itemId!))
+          : payload.kind === "reply"
+            ? (payload.sources ?? []).map((ref) => ref.repository)
+            : [];
     function* withholdSourceSteps(q: Q): Steps<void> {
       if (payload.kind === "task")
         yield* enqueueOutboxOnceSteps(q, {
@@ -1257,19 +1333,20 @@ export function createSlackThreads<Profile>(options: {
     if (!call || !audience || !reachable) {
       if (repositories.length && audience && audience.kind !== "unavailable")
         await store.transaction(withholdSourceSteps);
-      return settle({ kind: "withheld", note: "access or channel changed before delivery" });
+      return withhold("access or channel changed before delivery");
     }
     if (!(await context.isCurrent())) return;
     if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
-      return settle({ kind: "withheld", note: "memory changed before delivery" });
-    if (!(await sourceCurrent()))
-      return settle({ kind: "withheld", note: "repository access changed before delivery" });
+      return withhold("memory changed before delivery");
+    if (!(await sourceCurrent())) return withhold("repository access changed before delivery");
     const text =
       payload.kind === "notice" && payload.listing && payload.member
         ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
         : payload.kind === "task" && (payload.paws || repositories.length === 0)
           ? pawsLink(payload)
-          : payload.text;
+          : payload.kind === "status"
+            ? ""
+            : payload.text;
     const byPolicy = await store.run(function* (q) {
       for (const repository of repositories)
         if (!(yield* byPolicySteps(q, audience, repository))) return false;
@@ -1279,25 +1356,113 @@ export function createSlackThreads<Profile>(options: {
     const sending = await store.transaction(function* (q) {
       if (!(yield* allowedSteps(q))) return "stopped";
       if (!(yield* disclosedSteps(q, audience, readers))) return "stopped";
+      if (resume) return "claimed";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
     });
     if (sending === "stopped")
-      return settle({
-        kind: "withheld",
-        note: "access changed or the thread stopped before delivery",
-      });
+      return withhold("access changed or the thread stopped before delivery");
     if (sending === "taken")
       return settle({ kind: "unknown", note: "an earlier attempt may have posted it; not resent" });
+    const failed = (caught: unknown) =>
+      caught instanceof SlackApiError && caught.code !== "fatal_error"
+        ? settle({ kind: "refused", note: `Slack refused it (${caught.code}); not resent` })
+        : settle({ kind: "unknown", note: "Slack's response was lost; not resent" });
+    if (payload.kind === "reply") {
+      let state = resume;
+      const save = (next: SlackStream) =>
+        store.run((q) => slackStreamingSteps(q, row, slackStreamId(next)));
+      const chunks = slackStreamChunks(payload.text);
+      const channel = payload.channelId;
+      const stillAllowed = async () =>
+        (await context.isCurrent()) &&
+        (await currentMemory(payload, payload.userId, refs)) &&
+        (await sourceCurrent()) &&
+        (await store.transaction(function* (q) {
+          if (!(yield* allowedSteps(q))) return false;
+          return yield* disclosedSteps(q, audience, readers);
+        }));
+      const cut = async (open: SlackStream) => {
+        await closeStream(payload, open, context.signal);
+        return settle({ kind: "withheld", note: "access changed while streaming" });
+      };
+      const write = async (method: string, body: Record<string, unknown>) => {
+        const current = state!;
+        await save({ ...current, writing: true });
+        try {
+          await call(method, { channel, ts: current.ts, ...body }, context.signal);
+        } catch (caught) {
+          if (caught instanceof SlackNotSentError) await save(current);
+          throw caught;
+        }
+      };
+      try {
+        if (state?.writing) {
+          await closeStream(payload, state, context.signal);
+          return settle({
+            kind: "unknown",
+            note: "a stream write's outcome is unknown; not resent",
+          });
+        }
+        if (!state) {
+          const started = await call(
+            "chat.startStream",
+            {
+              channel,
+              thread_ts: payload.threadTs,
+              recipient_user_id: payload.slackUserId,
+              recipient_team_id: payload.teamId,
+              markdown_text: chunks[0],
+            },
+            context.signal,
+          );
+          if (typeof started.ts !== "string" || !started.ts)
+            return settle({ kind: "unknown", note: "Slack started a stream without its ts" });
+          state = { ts: started.ts, startedAt: now(), sent: 1 };
+          await save(state);
+        }
+        if (now() - state.startedAt >= SLACK_STREAM_LIFETIME_MS)
+          return settle(
+            state.sent >= chunks.length
+              ? { kind: "sent", ts: state.ts }
+              : { kind: "unknown", note: "Slack closed the stream at ten minutes, unfinished" },
+          );
+        while (state.sent < chunks.length - 1 && now() - state.startedAt < SLACK_STREAM_CLOSE_MS) {
+          if (!(await stillAllowed())) return cut(state);
+          await write("chat.appendStream", { markdown_text: chunks[state.sent] });
+          state = { ...state, sent: state.sent + 1 };
+          await save(state);
+        }
+        const rest = chunks.slice(state.sent).join("");
+        if (rest && !(await stillAllowed())) return cut(state);
+        const session_status = await store.run((q) => slackThreadStatusSteps(q, payload));
+        const close = { blocks: [stopActions()], session_status };
+        await write("chat.stopStream", { ...close, ...(rest ? { markdown_text: rest } : {}) });
+        return settle({ kind: "sent", ts: state.ts });
+      } catch (caught) {
+        if (caught instanceof SlackNotSentError) {
+          if (!state) await store.run((q) => slackSendingSteps(q, row, false));
+          throw caught;
+        }
+        if (!state) return failed(caught);
+        return settle({ kind: "unknown", note: "a stream update was lost; Slack closes it" });
+      }
+    }
     const body =
       payload.kind === "notice"
         ? { user: payload.slackUserId, ...(payload.blocks ? { blocks: payload.blocks } : {}) }
-        : {
-            unfurl_links: false,
-            unfurl_media: false,
-            blocks: payload.kind === "task" ? [section(text)] : replyBlocks(payload.text),
-          };
-    const method = payload.kind === "notice" ? "chat.postEphemeral" : "chat.postMessage";
-    const fields = { channel: payload.channelId, thread_ts: payload.threadTs, text };
+        : payload.kind === "status"
+          ? {}
+          : { unfurl_links: false, unfurl_media: false, blocks: [section(text)] };
+    const method =
+      payload.kind === "notice"
+        ? "chat.postEphemeral"
+        : payload.kind === "status"
+          ? "agents.sessions.setStatus"
+          : "chat.postMessage";
+    const fields =
+      payload.kind === "status"
+        ? { channel_id: payload.channelId, thread_ts: payload.threadTs, status: payload.status }
+        : { channel: payload.channelId, thread_ts: payload.threadTs, text };
     let result: Record<string, unknown>;
     try {
       result = await call(method, { ...fields, ...body }, context.signal);
@@ -1306,9 +1471,7 @@ export function createSlackThreads<Profile>(options: {
         await store.run((q) => slackSendingSteps(q, row, false));
         throw caught;
       }
-      return caught instanceof SlackApiError && caught.code !== "fatal_error"
-        ? settle({ kind: "refused", note: `Slack refused it (${caught.code}); not resent` })
-        : settle({ kind: "unknown", note: "Slack's response was lost; not resent" });
+      return failed(caught);
     }
     const ts = result.ts ?? result.message_ts;
     return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
@@ -1327,6 +1490,27 @@ export function createSlackThreads<Profile>(options: {
     return (yield* getQuestionSteps(q, message.questionId))?.status === "open";
   }
 
+  function* statusAllowedSteps(q: Q, post: SlackStatusPost): Steps<boolean> {
+    if (!(yield* slackStatusCurrentSteps(q, post))) return false;
+    if (!post.itemId) return true;
+    const { workspaceId, member } = post;
+    const item = yield* getWorkItemSteps(q, post.itemId);
+    if (!item?.sessionKey) return false;
+    if (!(yield* taskVisibleSteps(q, workspaceId, member.userId, item.sessionKey))) return false;
+    for (const repository of yield* slackTaskScopeSteps(q, item.id))
+      if (!(yield* readsSteps(q, workspaceId, member.userId, repository))) return false;
+    return true;
+  }
+
+  async function closeStream(payload: Payload, stream: SlackStream, signal: AbortSignal) {
+    if (now() - stream.startedAt >= SLACK_STREAM_LIFETIME_MS) return;
+    const session_status = await store.run((q) => slackThreadStatusSteps(q, payload));
+    const close = { channel: payload.channelId, ts: stream.ts, session_status };
+    await slackFor(payload.workspaceId)
+      .then((call) => call("chat.stopStream", close, signal))
+      .catch(() => undefined);
+  }
+
   function pawsLink(message: SlackTaskPost) {
     const lead =
       message.paws === "repository"
@@ -1337,7 +1521,7 @@ export function createSlackThreads<Profile>(options: {
     return `${lead} ${origin}${dashboardIssuePath(message.identifier)}`;
   }
 
-  return { handle, deliver };
+  return { handle, deliver, reconcile };
 }
 
 function taskWithheld(link: string): string {
@@ -1348,14 +1532,14 @@ function section(text: string) {
   return { type: "section", text: { type: "mrkdwn", text: text.slice(0, 3_000) } };
 }
 
-function replyBlocks(text: string) {
+function stopActions() {
   const stop = {
     type: "button",
     action_id: SLACK_STOP_ACTION,
     value: "stop",
     text: { type: "plain_text", text: "Stop" },
   };
-  return [section(text), { type: "actions", elements: [stop] }];
+  return { type: "actions", elements: [stop] };
 }
 
 export function createSlackLinkPage(options: { store: Db; home: string; now?: () => number }) {

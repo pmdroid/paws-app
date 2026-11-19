@@ -34,6 +34,8 @@ import {
 import {
   createSlackThreads,
   loginSlack,
+  SLACK_STATUS_EVERY_MS,
+  SLACK_STATUS_JOB,
   SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
   slackSigningSecret,
@@ -1850,6 +1852,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);
+      created.jobs.register(SLACK_STATUS_JOB, () => slackThreads.reconcile());
+      await enqueueJobOnce(store, {
+        queue: SLACK_STATUS_JOB,
+        jobKey: SLACK_STATUS_JOB,
+        recurringEveryMs: SLACK_STATUS_EVERY_MS,
+        now: Date.now(),
+      });
       const attached = attachOrchestrator({
         store,
         instanceId: instance.id,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, isNull, like } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, like, or } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
@@ -164,6 +164,45 @@ export function* slackSendingSteps(q: Q, row: Held, sending: boolean): Steps<boo
     q.orm
       .update(outbox)
       .set({ externalId: sending ? "sending" : null })
+      .where(and(held(q, row), from))
+      .returning({ id: outbox.id }),
+  );
+  return updated.length === 1;
+}
+
+export function* slackOutboxExternalIdSteps(q: Q, id: number): Steps<string | null> {
+  const { outbox } = q.t;
+  const query = q.orm.select({ externalId: outbox.externalId }).from(outbox);
+  return (yield* q.one(query.where(eq(outbox.id, id))))?.externalId ?? null;
+}
+
+export function* slackLaterProgressSteps(q: Q, id: number, itemId: string): Steps<boolean> {
+  const { outbox } = q.t;
+  const later = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "slack"),
+          eq(outbox.status, "pending"),
+          gt(outbox.id, id),
+          eq(jsonField(q, outbox.payload, "itemId"), itemId),
+          eq(jsonField(q, outbox.payload, "progress"), "true"),
+        ),
+      )
+      .limit(1),
+  );
+  return later !== undefined;
+}
+
+export function* slackStreamingSteps(q: Q, row: Held, state: string): Steps<boolean> {
+  const { outbox } = q.t;
+  const from = or(eq(outbox.externalId, "sending"), like(outbox.externalId, "stream:%"));
+  const updated = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({ externalId: state })
       .where(and(held(q, row), from))
       .returning({ id: outbox.id }),
   );
