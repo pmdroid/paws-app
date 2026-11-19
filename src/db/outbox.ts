@@ -453,7 +453,7 @@ export function* retryOutboxSteps(
 ): Steps<{ reasked: boolean }> {
   const { outbox, setting } = q.t;
   const now = options.now ?? Date.now();
-  const limitedBy = row.target === "linear" ? "LinearRateLimitError" : "SlackRateLimitError";
+  const limitedBy = row.target === "linear" ? "LinearRateLimitError" : "SlackNotSentError";
   const retryAfter =
     row.target !== "github" && error instanceof Error && error.name === limitedBy
       ? (error as Error & { retryAfterMs?: number }).retryAfterMs

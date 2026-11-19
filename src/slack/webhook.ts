@@ -68,9 +68,9 @@ export async function handleSlackWebhook(
     await onRevoked(revocation);
     return new Response("ok", { status: 200 });
   }
-  if (onMention && isMessageEvent(payload)) {
-    const mention = slackMention(payload);
-    if (mention) await onMention(mention);
+  const mention = onMention && slackMention(payload);
+  if (mention !== undefined) {
+    if (mention) await onMention!(mention);
     return new Response("ok", { status: 200 });
   }
   return new Response("Unsupported Slack event.", { status: 400 });
@@ -94,54 +94,31 @@ function slackRevocation(payload: unknown): SlackRevocation | null {
   return botUserIds.length > 0 ? { teamId, appId, botUserIds, eventTimeMs } : null;
 }
 
-function isMessageEvent(payload: unknown): payload is Record<string, unknown> & {
-  event: Record<string, unknown>;
-} {
-  return (
-    isRecord(payload) &&
-    payload.type === "event_callback" &&
-    isRecord(payload.event) &&
-    (payload.event.type === "app_mention" || payload.event.type === "message")
-  );
-}
+const ID = /^[A-Z0-9]{2,32}$/;
+const TS = /^\d{9,12}\.\d{6}$/;
 
-const SLACK_ID = /^[A-Z0-9]{2,32}$/;
-const SLACK_TS = /^\d{9,12}\.\d{6}$/;
-
-function slackMention(
-  payload: Record<string, unknown> & { event: Record<string, unknown> },
-): SlackMention | null {
-  const event = payload.event;
-  if (event.type !== "app_mention" || event.subtype !== undefined || event.bot_id !== undefined)
+function slackMention(payload: unknown): SlackMention | null | undefined {
+  if (!isRecord(payload) || payload.type !== "event_callback" || !isRecord(payload.event)) return;
+  const event = payload.event as Record<string, string | undefined>;
+  if (event.type === "message") return null;
+  if (event.type !== "app_mention") return;
+  const { team_id: teamId, event_id: eventId, api_app_id: appId } = payload;
+  const { channel, user, text, ts, thread_ts: threadTs = ts } = event;
+  const ids = [teamId, channel, user];
+  if (event.subtype !== undefined || event.bot_id !== undefined || typeof text !== "string")
     return null;
-  const { team_id: teamId, event_id: eventId } = payload;
-  const { channel, user, text, ts } = event;
-  const threadTs = event.thread_ts ?? ts;
-  if (
-    typeof teamId !== "string" ||
-    !SLACK_ID.test(teamId) ||
-    typeof eventId !== "string" ||
-    !/^Ev[A-Z0-9]{4,40}$/.test(eventId) ||
-    typeof channel !== "string" ||
-    !SLACK_ID.test(channel) ||
-    typeof user !== "string" ||
-    !SLACK_ID.test(user) ||
-    typeof text !== "string" ||
-    typeof ts !== "string" ||
-    !SLACK_TS.test(ts) ||
-    typeof threadTs !== "string" ||
-    !SLACK_TS.test(threadTs)
-  )
-    return null;
+  if (!ids.every((id) => typeof id === "string" && ID.test(id))) return null;
+  if (!TS.test(ts ?? "") || !TS.test(threadTs ?? "")) return null;
+  if (typeof eventId !== "string" || !/^Ev[A-Z0-9]{4,40}$/.test(eventId)) return null;
   return {
-    teamId,
-    appId: typeof payload.api_app_id === "string" ? payload.api_app_id : null,
+    teamId: teamId as string,
+    appId: typeof appId === "string" ? appId : null,
     eventId,
-    channelId: channel,
-    slackUserId: user,
+    channelId: channel!,
+    slackUserId: user!,
     text: text.slice(0, 8000),
-    ts,
-    threadTs,
+    ts: ts!,
+    threadTs: threadTs!,
     externallyShared: payload.is_ext_shared_channel !== false,
   };
 }

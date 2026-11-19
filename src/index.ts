@@ -36,7 +36,6 @@ import {
   loginSlack,
   SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
-  slackRunnerModel,
   slackSigningSecret,
 } from "./slack";
 import {
@@ -1817,19 +1816,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         home: paths.home,
         env: envSource,
         origin: runtime.publicUrl ?? "http://127.0.0.1:8787",
-        model: slackRunnerModel(
-          async () => {
-            const coordinator = await runnerReady;
-            return coordinator
-              ? createSlackReplies({
-                  store,
-                  helpers: coordinator.helpers,
-                  placement: createRunnerPlacement({ store }),
-                })
-              : null;
-          },
-          () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
-        ),
+        replies: async () => {
+          const coordinator = await runnerReady;
+          if (!coordinator) return null;
+          const { helpers } = coordinator;
+          return createSlackReplies({
+            store,
+            helpers,
+            placement: createRunnerPlacement({ store }),
+          });
+        },
+        profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

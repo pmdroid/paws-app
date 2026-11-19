@@ -68,7 +68,8 @@ export class OutboxDispatcher {
   }
 
   private async claim(): Promise<OutboxRow[]> {
-    if (this.handler === null || this.options.claims === false) return [];
+    if ((this.handler === null && this.targets.size === 0) || this.options.claims === false)
+      return [];
     for (const { row, controller } of [...this.active.values()]) {
       if (!(await this.store.run((q) => isOutboxCurrentSteps(q, row))))
         controller.abort(new Error("Delivery superseded by a session fence."));

@@ -19,6 +19,4 @@ export {
   SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
 } from "./threads";
-export { slackRunnerModel } from "./replies";
 export { markSlackInstallationSteps } from "./oauth";
-export type { SlackThreadModel } from "./threads";

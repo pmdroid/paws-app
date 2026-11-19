@@ -25,10 +25,9 @@ import {
   createSlackLinkPage,
   createSlackThreads,
   handleSlackWebhook,
-  SLACK_THREAD_JOB,
   markSlackInstallationSteps,
+  SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
-  slackRunnerModel,
 } from "../src/slack";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { createSlackReplies } from "../src/runner-backend";
@@ -41,14 +40,13 @@ import { sqlRows, sqlRun, tempStore } from "./pglite";
 import { signInFixtureRunner } from "./pglite-fixtures";
 
 const ORIGIN = "https://paws.example";
-const SECRET = "signing-secret";
 const BOT = "UPAWS";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-type Posted = { method: string; body: Record<string, unknown> };
+type Fail = "rate" | "down" | "refused" | "lost" | "scope";
 
 async function fixture() {
   const home = tempHome();
@@ -57,24 +55,17 @@ async function fixture() {
   let now = Date.now();
   const clock = { now: () => now, mono: () => now };
   const shared: Record<string, boolean> = { C0ONE: false, C0TWO: false };
-  const posted: Posted[] = [];
-  const calls: string[] = [];
-  const failNext: Record<
-    string,
-    "rate" | "lost" | "internal" | "down" | "refused" | "scope" | undefined
-  > = {};
+  const posted: { method: string; body: Record<string, unknown> }[] = [];
+  const failNext: Record<string, Fail | undefined> = {};
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
-    calls.push(method);
-    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     const fail = failNext[method];
     failNext[method] = undefined;
     if (fail === "rate") return new Response("", { status: 429, headers: { "retry-after": "7" } });
     if (fail === "down") return new Response("", { status: 503 });
-    if (fail === "internal") return Response.json({ ok: false, error: "internal_error" });
+    if (fail === "refused") throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
     if (fail === "scope") return Response.json({ ok: false, error: "missing_scope" });
-    if (fail === "refused")
-      throw Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
     if (method === "conversations.info") {
       const external = shared[body.channel as string];
       if (external === undefined) return Response.json({ ok: false, error: "channel_not_found" });
@@ -92,12 +83,8 @@ async function fixture() {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     slack: (q, input) => slackReplyAllowedSteps(q, home, input),
   });
-  const lane = createSlackReplies({
-    store: db,
-    helpers,
-    placement: createRunnerPlacement({ store: db }),
-    pollIntervalMs: 1,
-  });
+  const placement = createRunnerPlacement({ store: db });
+  const lane = createSlackReplies({ store: db, helpers, placement, pollIntervalMs: 1 });
   const runner = { hold: false, stopped: false };
   const answered = new Set<string>();
   const loop = (async () => {
@@ -106,29 +93,27 @@ async function fixture() {
       if (runner.hold) continue;
       const open = await sqlRows<{ id: string; runner_id: string }>(
         db,
-        "SELECT id, runner_id FROM runner_helper WHERE purpose='slack_reply' AND ended_at IS NULL AND result IS NULL",
+        "SELECT id, runner_id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL",
       ).catch(() => []);
-      for (const row of open) {
-        if (answered.has(row.id)) continue;
+      for (const row of open.filter((item) => !answered.has(item.id))) {
         answered.add(row.id);
         const { command } = await helpers.current(row.id).catch(() => ({ command: null }));
         if (command?.type !== "helper" || !command.slack) continue;
         prompts.push({ userId: command.slack.memberUserId, prompt: command.prompt });
         await helpers.acknowledge(row.runner_id, command.id).catch(() => undefined);
-        await helpers
-          .submit(row.runner_id, {
-            executionId: workspaceId(),
-            commandId: command.id,
-            ...(command.account ? { account: command.account } : {}),
-            role: "implementer",
-            stopReason: "end_turn",
-            cancelled: false,
-            timedOut: false,
-            authRequired: false,
-            agentExited: true,
-            text: `answer ${prompts.length}`,
-          })
-          .catch(() => undefined);
+        const result = {
+          executionId: workspaceId(),
+          commandId: command.id,
+          ...(command.account ? { account: command.account } : {}),
+          role: "implementer" as const,
+          stopReason: "end_turn" as const,
+          cancelled: false,
+          timedOut: false,
+          authRequired: false,
+          agentExited: true,
+          text: `answer ${prompts.length}`,
+        };
+        await helpers.submit(row.runner_id, result).catch(() => undefined);
       }
     }
   })();
@@ -143,83 +128,58 @@ async function fixture() {
     origin: ORIGIN,
     fetch: slackFetch,
     now: () => now,
-    model: slackRunnerModel(
-      async () => lane,
-      () => ({ agent: "codex" as const, model: null }),
-    ),
+    replies: async () => lane,
+    profile: () => ({ agent: "codex" as const, model: null }),
   });
   const jobs = new JobLoop(db, clock, { backoffBaseMs: 10 });
   jobs.register(SLACK_THREAD_JOB, (job, context) => threads.handle(job, context));
   const outbox = new OutboxDispatcher(db, clock, { backoffBaseMs: 10 });
-  outbox.setHandler((row, context) => threads.deliver(row, context));
+  outbox.setTargetHandler("slack", threads.deliver);
   const linkPage = createSlackLinkPage({ store: db, home, now: () => now });
   const cookies: Record<string, string> = {};
 
-  async function workspace(id: string, team: string, users: Record<string, "admin" | "member">) {
-    for (const user of Object.keys(users))
-      await putWorkspaceUser(db, {
-        id: user,
-        linearUserId: user,
-        name: user,
-        email: "u@x.invalid",
-      });
-    const tokenHash = workspaceTokenHash(await issueWorkspaceBootstrap(db, id, now));
-    const userId = Object.keys(users)[0]!;
-    await consumeWorkspaceBootstrap(db, {
-      id,
-      organizationId: id,
-      name: id,
-      userId,
-      tokenHash,
-      now,
-    });
-    for (const [user, role] of Object.entries(users)) {
-      const at = { workspaceId: id, userId: user, now };
-      await syncWorkspaceMember(db, { ...at, role, active: true, teamIds: [] });
-      cookies[user] = `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, at)).token}`;
-      await addRunner(id, user, SLACK_REPLY_RUNNER_VERSION.join("."));
-    }
-    await install(id, team);
-  }
-  async function addRunner(inWorkspace: string, owner: string, version: string) {
-    const runnerId = `runner-${owner}`;
+  async function addRunner(owner: string, version: string) {
+    const id = `runner-${owner}`;
     const at = Date.now();
     await sqlRun(
       db,
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?) ON CONFLICT (id) DO NOTHING",
-      [runnerId, inWorkspace, owner, runnerId, at, at],
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'W1',?,?,'active',?,?) ON CONFLICT (id) DO NOTHING",
+      [id, owner, id, at, at],
     );
-    await recordRunnerCapacity(db, runnerId, 1, 1, 2);
-    await signInFixtureRunner(db, runnerId, "codex");
-    await recordRunnerHostStatus(db, runnerId, { runnerVersion: version }, at);
-    return runnerId;
+    await recordRunnerCapacity(db, id, 1, 1, 2);
+    await signInFixtureRunner(db, id, "codex");
+    await recordRunnerHostStatus(db, id, { runnerVersion: version }, at);
   }
-  async function install(id: string, team: string) {
+  async function install() {
     const dir = pawsPaths(home).secretsDir;
     const token = JSON.stringify({
-      accessToken: `xoxb-${team}`,
+      accessToken: "xoxb-T0ONE",
       refreshToken: null,
       expiresAtMs: null,
-      scope: "app_mentions:read,channels:history,channels:read,chat:write",
-      teamId: team,
+      scope: "app_mentions:read,channels:read,chat:write",
+      teamId: "T0ONE",
       botUserId: BOT,
       appId: "A1",
     });
-    await db.run((q) =>
-      q.exec(q.orm.delete(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
-    );
-    await Bun.sleep(2);
     await db.transaction(function* (q) {
-      yield* replaceScopedCredentialSteps(
-        q,
-        dir,
-        { kind: "slack", workspace: `team:${team}` },
-        id,
-        0,
-      );
-      yield* replaceScopedCredentialSteps(q, dir, { kind: "slack", workspace: id }, token, 0);
+      const team = { kind: "slack" as const, workspace: "team:T0ONE" };
+      yield* replaceScopedCredentialSteps(q, dir, team, "W1", 0);
+      yield* replaceScopedCredentialSteps(q, dir, { kind: "slack", workspace: "W1" }, token, 0);
     });
   }
+  const users = { ua: "admin", um: "member" } as const;
+  for (const user of Object.keys(users))
+    await putWorkspaceUser(db, { id: user, linearUserId: user, name: user, email: "u@x.invalid" });
+  const tokenHash = workspaceTokenHash(await issueWorkspaceBootstrap(db, "W1", now));
+  const boot = { id: "W1", organizationId: "W1", name: "W1", userId: "ua", tokenHash, now };
+  await consumeWorkspaceBootstrap(db, boot);
+  for (const [user, role] of Object.entries(users)) {
+    const at = { workspaceId: "W1", userId: user, now };
+    await syncWorkspaceMember(db, { ...at, role, active: true, teamIds: [] });
+    cookies[user] = `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, at)).token}`;
+    await addRunner(user, SLACK_REPLY_RUNNER_VERSION.join("."));
+  }
+  await install();
 
   let events = 0;
   let ts = 1_700_000_000;
@@ -238,13 +198,10 @@ async function fixture() {
     const time = String(Math.floor((options.at ?? now) / 1000));
     const signature =
       options.signature ??
-      `v0=${createHmac("sha256", SECRET).update(`v0:${time}:${raw}`).digest("hex")}`;
-    const request = new Request(`${ORIGIN}/webhooks/slack`, {
-      method: "POST",
-      headers: { "x-slack-signature": signature, "x-slack-request-timestamp": time },
-      body: raw,
-    });
-    return handleSlackWebhook(request, SECRET, now, undefined, (mention) =>
+      `v0=${createHmac("sha256", "secret").update(`v0:${time}:${raw}`).digest("hex")}`;
+    const headers = { "x-slack-signature": signature, "x-slack-request-timestamp": time };
+    const request = new Request(`${ORIGIN}/webhooks/slack`, { method: "POST", headers, body: raw });
+    return handleSlackWebhook(request, "secret", now, undefined, (mention) =>
       acceptSlackMention(db, home, mention, now),
     );
   }
@@ -266,24 +223,21 @@ async function fixture() {
       await outbox.idle();
     }
   }
-  async function code(user: string | null, slackUser: string, channel = "C0ONE") {
+  async function code(user: string | null, slackUser: string) {
+    const query = new URLSearchParams({ team: "T0ONE", channel: "C0ONE", user: slackUser });
     const headers: Record<string, string> = user ? { cookie: cookies[user]! } : {};
-    const query = new URLSearchParams({ team: "T0ONE", channel, user: slackUser });
-    const url = `${ORIGIN}/oauth/slack/link?${query}`;
-    const response = (await linkPage(new Request(url, { headers })))!;
-    return {
-      status: response.status,
-      code: /link ([A-Z2-7]{4}-[A-Z2-7]{4})/.exec(await response.text())?.[1],
-    };
+    const response = (await linkPage(
+      new Request(`${ORIGIN}/oauth/slack/link?${query}`, { headers }),
+    ))!;
+    const found = /link ([A-Z2-7]{4}-[A-Z2-7]{4})/.exec(await response.text())?.[1];
+    return { status: response.status, code: found };
   }
-  async function link(user: string, slackUser: string, channel = "C0ONE") {
-    const issued = (await code(user, slackUser, channel)).code!;
-    await deliver(mention(slackUser, `link ${issued}`, { channel }));
+  async function say(slackUser: string, text: string, extra: Record<string, unknown> = {}) {
+    await deliver(mention(slackUser, text, extra));
     await settle();
-    return issued;
   }
   const posts = (method: string) => posted.filter((post) => post.method === method);
-  const lastNotice = () => String(posts("chat.postEphemeral").at(-1)?.body.text);
+  const notice = () => String(posts("chat.postEphemeral").at(-1)?.body.text);
   const replies = () =>
     db.run((q) =>
       q.all(
@@ -296,31 +250,24 @@ async function fixture() {
     );
   const sideEffects = () =>
     db.run(function* (q) {
+      const jobsLeft = (yield* q.all(q.orm.select().from(q.t.job))).map((row) => row.queue);
       return {
         workItems: (yield* q.all(q.orm.select().from(q.t.workItem))).length,
         reservations: (yield* q.all(q.orm.select().from(q.t.runnerReservation))).length,
-        helpers: (yield* q.all(q.orm.select().from(q.t.runnerHelper))).filter(
-          (row) => row.purpose !== "slack_reply",
-        ).length,
         linear: (yield* q.all(
           q.orm.select().from(q.t.outbox).where(eq(q.t.outbox.target, "linear")),
         )).length,
-        otherJobs: (yield* q.all(q.orm.select().from(q.t.job)))
-          .map((row) => row.queue)
-          .filter((queue) => queue !== SLACK_THREAD_JOB && queue !== "agent.usage.after-run"),
+        jobs: jobsLeft.filter(
+          (queue) => queue !== SLACK_THREAD_JOB && queue !== "agent.usage.after-run",
+        ),
       };
     });
   return {
     db,
     shared,
     posted,
-    calls,
     failNext,
     prompts,
-    workspace,
-    install,
-    reconnect: () => db.transaction((q) => markSlackInstallationSteps(q, "W1", Date.now())),
-    addRunner,
     runner,
     helpers,
     deliver,
@@ -328,12 +275,15 @@ async function fixture() {
     runJobs,
     settle,
     code,
-    link,
+    say,
     posts,
-    lastNotice,
+    notice,
     replies,
     sideEffects,
+    addRunner,
+    install,
     advance: (ms: number) => (now += ms),
+    reconnect: () => db.transaction((q) => markSlackInstallationSteps(q, "W1", Date.now())),
     revoke: (userId: string) =>
       syncWorkspaceMember(db, {
         workspaceId: "W1",
@@ -346,232 +296,48 @@ async function fixture() {
   };
 }
 
-async function linked() {
+async function linked(...who: ["ua" | "um", string][]) {
   const f = await fixture();
-  await f.workspace("W1", "T0ONE", { ua: "admin", um: "member" });
-  await f.link("ua", "SADMIN");
-  expect(f.lastNotice()).toContain("Linked");
+  for (const [user, slackUser] of [["ua", "SADMIN"], ...who] as const) {
+    await f.say(slackUser, `link ${(await f.code(user, slackUser)).code}`);
+    expect(f.notice()).toContain("Linked");
+  }
   f.posted.length = 0;
   return f;
 }
 
-const NONE = { workItems: 0, reservations: 0, helpers: 0, linear: 0, otherJobs: [] };
+const NONE = { workItems: 0, reservations: 0, linear: 0, jobs: [] };
 
-test("an admin sets up the channel from Slack with a code only they can post", async () => {
+test("setup from Slack: only the admin's own Slack user can redeem a fresh code from this installation", async () => {
   const f = await fixture();
-  await f.workspace("W1", "T0ONE", { ua: "admin", um: "member" });
-  await f.deliver(f.mention("SADMIN", "hello"));
-  await f.settle();
+  await f.say("SADMIN", "hello");
   expect(f.posts("chat.postEphemeral")[0]!.body).toMatchObject({
     channel: "C0ONE",
     user: "SADMIN",
   });
-  expect(f.lastNotice()).toContain(`${ORIGIN}/oauth/slack/link`);
-  expect(f.lastNotice()).toContain("must be a Paws workspace admin");
+  expect(f.notice()).toContain(`${ORIGIN}/oauth/slack/link?team=T0ONE&channel=C0ONE&user=SADMIN`);
   expect(await f.code(null, "SADMIN")).toEqual({ status: 401, code: undefined });
-  const stolen = (await f.code("ua", "SADMIN")).code!;
-  await f.deliver(f.mention("SOTHER", `link ${stolen}`));
-  await f.settle();
-  expect(f.lastNotice()).toContain("expired");
-
-  await f.link("um", "SMEMBER");
-  expect(f.lastNotice()).toContain("must be a Paws workspace admin");
-  const issued = await f.link("ua", "SADMIN");
-  expect(f.lastNotice()).toContain("Linked");
-  await f.deliver(f.mention("SOTHER", `link ${issued}`));
-  await f.settle();
-  expect(f.lastNotice()).toContain("expired");
-  const notices = f.posts("chat.postEphemeral").length;
-  await f.link("um", "SMEMBER", "C0TWO");
-  expect(f.posts("chat.postEphemeral")).toHaveLength(notices);
-  const late = (await f.code("um", "SMEMBER")).code!;
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toContain("must be a Paws workspace admin");
+  const stolen = (await f.code("ua", "SADMIN")).code;
+  await f.say("SOTHER", `link ${stolen}`);
+  expect(f.notice()).toContain("expired");
+  const late = (await f.code("ua", "SADMIN")).code;
   f.advance(11 * 60_000);
-  await f.deliver(f.mention("SMEMBER", `link ${late}`));
-  await f.settle();
-  expect(f.lastNotice()).toContain("expired");
-
+  await f.say("SADMIN", `link ${late}`);
+  expect(f.notice()).toContain("expired");
+  const old = (await f.code("ua", "SADMIN")).code;
+  await f.reconnect();
+  await f.say("SADMIN", `link ${old}`);
+  expect(f.notice()).not.toContain("Linked");
+  await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+  expect(f.notice()).toContain("Linked");
   expect(f.prompts).toEqual([]);
   expect(f.posts("chat.postMessage")).toEqual([]);
   expect(await f.sideEffects()).toEqual(NONE);
 });
 
-test("a linked member's mentions get one reply each in the thread, with its context", async () => {
-  const f = await linked();
-  const first = f.mention("SADMIN", "what is a monad?");
-  await f.deliver(first);
-  await f.settle();
-  await f.deliver(f.mention("SADMIN", "and a functor?", { thread_ts: first.ts }));
-  await f.settle();
-  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "ua"]);
-  expect(f.prompts[1]!.prompt).toContain("what is a monad?");
-  expect(f.prompts[1]!.prompt).toContain("[Paws]: answer 1");
-  expect(f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text])).toEqual([
-    [first.ts, "answer 1"],
-    [first.ts, "answer 2"],
-  ]);
-  expect(await f.sideEffects()).toEqual(NONE);
-});
-
-test("only an explicit mention from a linked member in the channel starts a turn", async () => {
-  const f = await linked();
-  const root = f.mention("SADMIN", "start");
-  await f.deliver(root);
-  await f.settle();
-  f.posted.length = 0;
-  const unmentioned = { type: "message", channel: "C0ONE", user: "SADMIN", text: "thanks" };
-  await f.deliver({ ...unmentioned, ts: "1800000000.000001", thread_ts: root.ts });
-  await f.deliver(f.mention("SADMIN", "bot", { bot_id: "B9" }));
-  await f.deliver(f.mention("SADMIN", "elsewhere", { channel: "C0TWO" }));
-  await f.deliver(f.mention("SADMIN", "other team"), { team: "T0NINE" });
-  await f.deliver({ ...f.mention("SADMIN", "x"), text: "<@UOTHER> hi" });
-  const forged = await f.deliver(f.mention("SADMIN", "f"), { signature: `v0=${"0".repeat(64)}` });
-  const stale = await f.deliver(f.mention("SADMIN", "s"), { at: Date.now() - 600_000 });
-  expect([forged.status, stale.status]).toEqual([401, 401]);
-  await f.deliver(f.mention("SMEMBER", "unlinked"));
-  await f.settle();
-  expect(f.prompts).toHaveLength(1);
-  expect(f.posts("chat.postMessage")).toEqual([]);
-  expect(f.posts("chat.postEphemeral").map((post) => post.body.user)).toEqual(["SMEMBER"]);
-});
-
-test("duplicate and concurrent deliveries and a rerun turn keep one reply", async () => {
-  const f = await linked();
-  const event = f.mention("SADMIN", "once");
-  await Promise.all([
-    f.deliver(event, { eventId: "EvDUP001" }),
-    f.deliver(event, { eventId: "EvDUP001" }),
-  ]);
-  await f.settle();
-  await f.deliver(event, { eventId: "EvDUP002" });
-  await f.settle();
-  expect(f.prompts).toHaveLength(1);
-  expect(f.posts("chat.postMessage")).toHaveLength(1);
-  expect(await f.replies()).toHaveLength(1);
-});
-
-test("a send with an unknown outcome is never retried and never counts as sent", async () => {
-  const f = await linked();
-  f.failNext["chat.postMessage"] = "lost";
-  await f.deliver(f.mention("SADMIN", "careful canary-5"));
-  await f.settle();
-  f.advance(60_000);
-  await f.settle();
-  expect(f.posts("chat.postMessage")).toHaveLength(1);
-  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "unknown" });
-  await f.deliver(f.mention("SADMIN", "next"));
-  await f.settle();
-  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-5");
-});
-
-test("a 429, a 5xx or a refused connection retries until Slack accepts, storing its ts", async () => {
-  const f = await linked();
-  for (const fail of ["rate", "down", "refused", "internal"] as const) {
-    f.failNext["chat.postMessage"] = fail;
-    await f.deliver(f.mention("SADMIN", fail));
-    await f.settle();
-    if (fail === "rate")
-      expect((await f.replies()).at(-1)!.notBefore).toBeGreaterThanOrEqual(Date.now() + 6_000);
-    f.advance(60_000);
-    await f.settle();
-  }
-  const rows = await f.replies();
-  expect(rows.map((row) => row.status)).toEqual(["sent", "sent", "sent", "sent"]);
-  expect(rows.every((row) => /^1800000000\.\d{6}$/.test(row.externalId ?? ""))).toBe(true);
-  expect(f.posts("chat.postMessage")).toHaveLength(4);
-});
-
-test("a Slack error never marks a reply sent or puts it in the next turn's context", async () => {
-  const f = await linked();
-  f.failNext["chat.postMessage"] = "scope";
-  await f.deliver(f.mention("SADMIN", "refused canary-6"));
-  await f.settle();
-  f.advance(60_000);
-  await f.settle();
-  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "refused" });
-  expect(f.calls.filter((method) => method === "chat.postMessage")).toHaveLength(1);
-  await f.deliver(f.mention("SADMIN", "next"));
-  await f.settle();
-  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-6");
-});
-
-test("a withheld reply is never sent and stays out of later context", async () => {
-  const f = await linked();
-  const root = f.mention("SADMIN", "withheld canary-8");
-  await f.deliver(root);
-  await f.runJobs();
-  f.shared.C0ONE = true;
-  await f.settle();
-  f.shared.C0ONE = false;
-  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
-  await f.deliver(f.mention("SADMIN", "again", { thread_ts: root.ts }));
-  await f.settle();
-  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-8");
-  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual(["answer 2"]);
-});
-
-test("a transient channel lookup failure retries instead of dropping the mention", async () => {
-  const f = await linked();
-  f.failNext["conversations.info"] = "down";
-  await f.deliver(f.mention("SADMIN", "retry me"));
-  await f.settle();
-  expect(f.prompts).toHaveLength(0);
-  f.advance(60_000);
-  await f.settle();
-  expect(f.posts("chat.postMessage")).toHaveLength(1);
-});
-
-test("revocation, a shared channel or a reinstall before delivery withholds the reply", async () => {
-  for (const change of ["member", "channel", "reinstall", "reconnect"] as const) {
-    const f = await linked();
-    await f.deliver(f.mention("SADMIN", "late canary-7"));
-    await f.runJobs();
-    expect(await f.replies()).toHaveLength(1);
-    if (change === "member") await f.revoke("ua");
-    if (change === "channel") f.shared.C0ONE = true;
-    if (change === "reinstall") await f.install("W1", "T0ONE");
-    if (change === "reconnect") await f.reconnect();
-    await f.settle();
-    expect(f.posts("chat.postMessage")).toEqual([]);
-  }
-});
-
-test("a reinstall invalidates old links, and a revoked member gets no turn", async () => {
-  const f = await linked();
-  const early = (await f.code("um", "SMEMBER")).code!;
-  await f.reconnect();
-  await f.deliver(f.mention("SMEMBER", `link ${early}`));
-  await f.settle();
-  expect(f.lastNotice()).toContain("expired");
-  await f.deliver(f.mention("SADMIN", "after reconnect"));
-  await f.settle();
-  expect(f.prompts).toHaveLength(0);
-  expect(f.lastNotice()).toContain("open");
-
-  const g = await linked();
-  await g.revoke("ua");
-  await g.deliver(g.mention("SADMIN", "revoked"));
-  await g.settle();
-  expect(g.prompts).toHaveLength(0);
-  expect(g.posted).toEqual([]);
-});
-
-test("another member in the same thread, or another thread, never sees a member's turns", async () => {
-  const f = await linked();
-  await f.link("um", "SMEMBER");
-  const root = f.mention("SADMIN", "private canary-42");
-  await f.deliver(root);
-  await f.settle();
-  await f.deliver(f.mention("SMEMBER", "what was said?", { thread_ts: root.ts }));
-  await f.settle();
-  expect(f.prompts.at(-1)!.userId).toBe("um");
-  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-42");
-  await f.deliver(f.mention("SADMIN", "and elsewhere?"));
-  await f.settle();
-  expect(f.prompts.at(-1)!.userId).toBe("ua");
-  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-42");
-});
-
-test("a reply runs in the conversation lane while every implementation slot is taken", async () => {
+test("a linked member's mentions get one reply each, in the thread, with full implementation slots", async () => {
   const f = await linked();
   await recordLinearInstallation(f.db, {
     organizationId: "W1",
@@ -581,47 +347,141 @@ test("a reply runs in the conversation lane while every implementation slot is t
     teamId: "team",
     observedAtMs: Date.now(),
   });
-  await f.helpers.dispatch({
-    runnerId: "runner-ua",
-    sessionId: "session-1",
-    purpose: "classify",
-    profile: { agent: "codex", model: null },
-    prompt: "Classify this request",
+  const profile = { agent: "codex" as const, model: null };
+  const classify = { runnerId: "runner-ua", sessionId: "session-1", purpose: "classify" as const };
+  await f.helpers.dispatch({ ...classify, profile, prompt: "Classify this" });
+  expect(await runnerOccupancy(f.db, "runner-ua", Date.now())).toEqual({
+    capacity: 1,
+    occupied: 1,
   });
-  const full = { capacity: 1, occupied: 1 };
-  expect(await runnerOccupancy(f.db, "runner-ua", Date.now())).toEqual(full);
-  await f.deliver(f.mention("SADMIN", "busy runner?"));
+  const first = f.mention("SADMIN", "what is a monad?");
+  await Promise.all([
+    f.deliver(first, { eventId: "EvDUP001" }),
+    f.deliver(first, { eventId: "EvDUP001" }),
+  ]);
   await f.settle();
-  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual(["answer 1"]);
-  expect(await runnerOccupancy(f.db, "runner-ua", Date.now())).toEqual(full);
-  expect(await f.sideEffects()).toEqual({ ...NONE, helpers: 1 });
+  await f.deliver(first, { eventId: "EvDUP002" });
+  await f.say("SADMIN", "and a functor?", { thread_ts: first.ts });
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "ua"]);
+  expect(f.prompts[1]!.prompt).toContain("what is a monad?\n[Paws]: answer 1");
+  const sent = f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text]);
+  expect(sent).toEqual([
+    [first.ts, "answer 1"],
+    [first.ts, "answer 2"],
+  ]);
+  expect(await runnerOccupancy(f.db, "runner-ua", Date.now())).toEqual({
+    capacity: 1,
+    occupied: 1,
+  });
+  expect(await f.sideEffects()).toEqual(NONE);
 });
 
-test("a runner too old for Slack replies, or none at all, answers nothing", async () => {
+test("only an explicit, signed, fresh mention from a linked member in the channel starts a turn", async () => {
   const f = await linked();
-  await f.addRunner("W1", "ua", MINIMUM_RUNNER_VERSION.join("."));
-  await f.deliver(f.mention("SADMIN", "old runner"));
+  const unmentioned = { type: "message", channel: "C0ONE", user: "SADMIN", text: "thanks" };
+  await f.deliver({ ...unmentioned, ts: "1800000000.000001" });
+  await f.deliver(f.mention("SADMIN", "bot", { bot_id: "B9" }));
+  await f.deliver(f.mention("SADMIN", "elsewhere", { channel: "C0TWO" }));
+  await f.deliver(f.mention("SADMIN", "other team"), { team: "T0NINE" });
+  await f.deliver({ ...f.mention("SADMIN", "x"), text: "<@UOTHER> hi" });
+  const forged = await f.deliver(f.mention("SADMIN", "f"), { signature: `v0=${"0".repeat(64)}` });
+  const stale = await f.deliver(f.mention("SADMIN", "s"), { at: Date.now() - 600_000 });
+  expect([forged.status, stale.status]).toEqual([401, 401]);
+  await f.say("SMEMBER", "unlinked");
+  expect(f.prompts).toEqual([]);
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.posts("chat.postEphemeral").map((post) => post.body.user)).toEqual(["SMEMBER"]);
+});
+
+test("Slack sends are at most once: clear refusals retry, unknown and refused outcomes never post again", async () => {
+  const f = await linked();
+  for (const fail of ["rate", "down", "refused"] as const) {
+    f.failNext["chat.postMessage"] = fail;
+    await f.say("SADMIN", fail);
+    f.advance(60_000);
+    await f.settle();
+  }
+  f.failNext["chat.postMessage"] = "lost";
+  await f.say("SADMIN", "lost canary-5");
+  f.failNext["chat.postMessage"] = "scope";
+  await f.say("SADMIN", "refused canary-6");
+  await f.deliver(f.mention("SADMIN", "crashed canary-7"));
+  await f.runJobs();
+  const pending = (await f.replies()).at(-1)!;
+  await f.db.run((q) =>
+    q.exec(
+      q.orm.update(q.t.outbox).set({ externalId: "sending" }).where(eq(q.t.outbox.id, pending.id)),
+    ),
+  );
+  f.advance(60_000);
   await f.settle();
+  const rows = await f.replies();
+  expect(
+    rows.map((row) => [row.status, /^1800000000\./.test(row.externalId!) ? "ts" : row.externalId]),
+  ).toEqual([
+    ["sent", "ts"],
+    ["sent", "ts"],
+    ["sent", "ts"],
+    ["dropped", "unknown"],
+    ["dropped", "refused"],
+    ["dropped", "unknown"],
+  ]);
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
+    "answer 1",
+    "answer 2",
+    "answer 3",
+    "answer 4",
+  ]);
+  await f.say("SADMIN", "next");
+  expect(f.prompts.at(-1)!.prompt).not.toMatch(/canary-[567]/);
+});
+
+test("access, audience or installation changes before processing or delivery fence the reply", async () => {
+  for (const change of ["member", "channel", "reconnect", "queued", "running"] as const) {
+    const f = await linked();
+    if (change === "queued") {
+      await f.deliver(f.mention("SADMIN", "queued"));
+      await f.reconnect();
+      await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+    } else if (change === "running") {
+      f.runner.hold = true;
+      await f.deliver(f.mention("SADMIN", "in flight"));
+      const pending = f.settle();
+      while (!(await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+        await Bun.sleep(2);
+      await f.revoke("ua");
+      f.runner.hold = false;
+      await pending;
+    } else {
+      await f.deliver(f.mention("SADMIN", "late"));
+      await f.runJobs();
+      if (change === "member") await f.revoke("ua");
+      if (change === "channel") f.shared.C0ONE = true;
+      if (change === "reconnect") await f.reconnect();
+    }
+    await f.settle();
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    if (change !== "queued" && change !== "running")
+      expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+  }
+});
+
+test("a runner too old for Slack replies, or none, answers nothing", async () => {
+  const f = await linked();
+  await f.addRunner("ua", MINIMUM_RUNNER_VERSION.join("."));
+  await f.say("SADMIN", "old runner");
   await f.db.run((q) => q.exec(q.orm.update(q.t.runner).set({ status: "revoked" })));
-  await f.deliver(f.mention("SADMIN", "no runner"));
-  await f.settle();
+  await f.say("SADMIN", "no runner");
   expect(f.prompts).toEqual([]);
   expect(f.posted).toEqual([]);
 });
 
-test("revoking the member while the runner answers fences the reply", async () => {
-  const f = await linked();
-  f.runner.hold = true;
-  await f.deliver(f.mention("SADMIN", "in flight canary-9"));
-  const pending = f.settle();
-  for (let tick = 0; tick < 500; tick++) {
-    const open = await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)));
-    if (open.length > 0) break;
-    await Bun.sleep(2);
-  }
-  await f.revoke("ua");
-  f.runner.hold = false;
-  await pending;
-  expect(f.posted).toEqual([]);
-  expect(await f.replies()).toEqual([]);
+test("another member in the same thread never sees a member's turns", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "private canary-42");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SMEMBER", "what was said?", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.userId).toBe("um");
+  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-42");
 });
