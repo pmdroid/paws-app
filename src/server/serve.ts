@@ -11,6 +11,7 @@ import {
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
 import {
+  acceptSlackInteraction,
   acceptSlackMention,
   createSlackConnect,
   createSlackLinkPage,
@@ -980,6 +981,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       Date.now(),
       store ? createSlackRevocation({ store, home }) : undefined,
       store ? (mention) => acceptSlackMention(store, home, mention) : undefined,
+      store ? (interaction) => acceptSlackInteraction(store, home, interaction) : undefined,
     );
   }
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
