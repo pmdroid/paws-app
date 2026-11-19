@@ -724,6 +724,43 @@ try {
     );
     await expect(slack.locator('[data-slack="reconnect"]')).toBeVisible();
     await admin.unroute("**/api/workspaces/slack");
+    let slackApp = false;
+    await admin.route("**/api/settings/slack-app", (route) => {
+      slackApp = true;
+      return route.fulfill({ json: { ok: true } });
+    });
+    await admin.route("**/api/workspaces/slack", (route) =>
+      route.fulfill({
+        json: {
+          configured: slackApp,
+          environment: false,
+          redirectUrl: "https://paws.example/oauth/slack/callback",
+          eventsUrl: "https://paws.example/webhooks/slack",
+          connection: null,
+          capabilities: null,
+        },
+      }),
+    );
+    await visit(
+      admin,
+      width,
+      "integrations-slack-app",
+      "/dashboard/workspace/integrations",
+      "Integrations",
+    );
+    await slack.getByLabel("Client ID").fill("123.456");
+    await expect(slack.getByLabel("Client secret")).toHaveAttribute("type", "password");
+    await slack.getByLabel("Client secret").fill("synthetic-client-secret");
+    await slack.getByLabel("Signing secret").fill("synthetic-signing-secret");
+    await slack.getByRole("button", { name: "Save" }).click();
+    await expect(slack.locator("[data-slack-notice]")).toHaveText("Saved");
+    await expect(slack.getByRole("button", { name: "Add to Slack" })).toBeVisible();
+    await admin.screenshot({
+      path: join(out, `integrations-slack-app-saved-${width}.png`),
+      fullPage: true,
+    });
+    await admin.unroute("**/api/settings/slack-app");
+    await admin.unroute("**/api/workspaces/slack");
     await admin.unroute("**/api/workspaces/github-connect");
     await admin.unroute("**/api/workspaces/github-setup*");
     for (const [reader, name, canManage] of [

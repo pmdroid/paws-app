@@ -31,6 +31,14 @@ export function readSlackApp(home: string): SlackApp | null {
   return readJson<SlackApp>(home, "slack-app.json");
 }
 
+export async function saveSlackApp(home: string, app: SlackApp): Promise<void> {
+  await saveSecret(join(pawsPaths(home).secretsDir, "slack-app.json"), JSON.stringify(app));
+}
+
+export function slackSigningSecret(home: string, env: Record<string, string | undefined>) {
+  return env.SLACK_SIGNING_SECRET ?? readSlackApp(home)?.signingSecret ?? null;
+}
+
 export function resolveSlackApp(
   home: string,
   env: Record<string, string | undefined>,

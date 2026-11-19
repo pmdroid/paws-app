@@ -18,8 +18,11 @@ import {
   createSlackConnect,
   createSlackRevocation,
   handleSlackWebhook,
+  readSlackApp,
   SLACK_INSTALL_SCOPES,
+  slackSigningSecret,
 } from "../src/slack";
+import { startServer } from "../src/server";
 import { writeCredential } from "../src/credentials";
 import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
@@ -42,7 +45,7 @@ type View = {
 };
 type Grant = { team: string; scope?: string; app?: string; rotate?: boolean; expiresIn?: number };
 
-async function fixture() {
+async function fixture(appEnv: Record<string, string | undefined> = env) {
   const home = tempHome();
   const { db, close } = await tempStore();
   cleanup.push(close, () => rmSync(home, { recursive: true, force: true }));
@@ -54,7 +57,7 @@ async function fixture() {
   const handle = createSlackConnect({
     store: db,
     home,
-    env,
+    env: appEnv,
     origin: ORIGIN,
     now: () => now,
     fetch: async (url, init) => {
@@ -208,6 +211,71 @@ async function fixture() {
     tick: (ms: number) => (now += ms),
   };
 }
+
+const APP = { clientId: "c-saved", clientSecret: "cs-saved", signingSecret: "ss-saved" };
+
+test("an admin saves the Slack app and reads back only whether it is configured", async () => {
+  const f = await fixture({});
+  await f.workspace("ws1", { alice: "admin", bob: "member" });
+  const read = async (user: string) => (await f.call(user, "/api/settings/slack-app")).json();
+  expect(await read("alice")).toEqual({ configured: false, clientId: null });
+  expect((await f.call("alice", "/api/settings/slack-app", "PUT", { clientId: "c" })).status).toBe(
+    400,
+  );
+  expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
+  const body = await read("alice");
+  expect(body).toEqual({ configured: true, clientId: "c-saved" });
+  expect(JSON.stringify([body, await f.status("alice")])).not.toMatch(/cs-saved|ss-saved/);
+  expect(readSlackApp(f.home)).toEqual(APP);
+  expect((await f.call("bob", "/api/settings/slack-app")).status).toBe(403);
+  expect((await f.call("bob", "/api/settings/slack-app", "PUT", APP)).status).toBe(403);
+  expect((await f.call(null, "/api/settings/slack-app", "PUT", APP)).status).toBe(401);
+});
+
+test("server environment values override the saved Slack app", async () => {
+  const f = await fixture(env);
+  await f.workspace("ws1", { alice: "admin" });
+  expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
+  expect(await (await f.call("alice", "/api/settings/slack-app")).json()).toEqual({
+    configured: true,
+    clientId: "c",
+  });
+  expect(await f.status("alice")).toMatchObject({ environment: true });
+  expect(slackSigningSecret(f.home, env)).toBe("s");
+});
+
+test("Slack events verify with a newly saved signing secret without a restart", async () => {
+  const f = await fixture({});
+  await f.workspace("ws1", { alice: "admin" });
+  const server = startServer({
+    hostname: "127.0.0.1",
+    port: 0,
+    webhooks: false,
+    slackSigningSecret: () => slackSigningSecret(f.home, {}),
+  });
+  const raw = JSON.stringify({ type: "url_verification", challenge: "saved" });
+  const send = () => {
+    const time = String(Math.floor(Date.now() / 1000));
+    const hmac = createHmac("sha256", APP.signingSecret).update(`v0:${time}:${raw}`);
+    return fetch(`http://127.0.0.1:${server.port}/webhooks/slack`, {
+      method: "POST",
+      body: raw,
+      headers: {
+        "x-slack-request-timestamp": time,
+        "x-slack-signature": `v0=${hmac.digest("hex")}`,
+      },
+    });
+  };
+  try {
+    expect((await send()).status).toBe(401);
+    expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
+    const response = await send();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ challenge: "saved" });
+  } finally {
+    await server.stop(true);
+  }
+});
 
 test("an admin installs Slack, returns to Integrations and sees its capabilities", async () => {
   const f = await fixture();

@@ -5,6 +5,7 @@ import { renderMarkup } from "./theme";
 type Capability = { ready: boolean; message?: string };
 type SlackStatus = {
   configured: boolean;
+  environment?: boolean;
   reconnect?: string | null;
   redirectUrl?: string;
   eventsUrl?: string;
@@ -31,6 +32,16 @@ const RESULTS: Record<string, string> = {
   failed: "Slack could not be connected. Try again.",
 };
 
+const FIELDS: [string, string, string][] = [
+  ["clientId", "Client ID", "text"],
+  ["clientSecret", "Client secret", "password"],
+  ["signingSecret", "Signing secret", "password"],
+];
+const FORM = `<form class="col" data-slack-app>${FIELDS.map(
+  ([name, label, type]) =>
+    `<label class="field"><span>${label}</span><input name="${name}" type="${type}" required maxlength="512" autocomplete="off" spellcheck="false"></label>`,
+).join("")}<button class="btn primary" type="submit">Save</button></form>`;
+
 export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): void {
   const section = document.createElement("section");
   section.id = "workspace-slack-integration";
@@ -45,8 +56,16 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
     const response = await fetch("/api/workspaces/slack", { cache: "no-store" });
     if (!response.ok)
       return renderMarkup(section, '<p role="alert">Slack could not be checked.</p>');
-    const { configured, connection, capabilities, redirectUrl, eventsUrl, login, reconnect } =
-      (await response.json()) as SlackStatus;
+    const {
+      configured,
+      environment,
+      connection,
+      capabilities,
+      redirectUrl,
+      eventsUrl,
+      login,
+      reconnect,
+    } = (await response.json()) as SlackStatus;
     const rows = Object.entries(LABELS).map(([name, label]) => {
       const item = capabilities?.[name as keyof typeof LABELS];
       return item
@@ -73,17 +92,37 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
             ? login
               ? `Not connected. <code>paws login slack</code> connected ${esc(login.teamName ?? login.teamId)} (${esc(login.teamId)}) on this server; you can use it here.`
               : "Not connected."
-            : "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET on the server."
-      }</p>${reconnect ? `<p data-slack-reconnect role="alert">${esc(reconnect)}</p>` : ""}<ul>${rows.join("")}</ul>${
+            : environment
+              ? "The Slack app credentials in the server environment are incomplete."
+              : "Enter the Slack app credentials. Create the app in Slack with the redirect and events URLs below."
+      }${environment ? " The Slack app comes from the server environment." : ""}</p>${reconnect ? `<p data-slack-reconnect role="alert">${esc(reconnect)}</p>` : ""}<ul>${rows.join("")}</ul>${
         capabilities?.missing.length
           ? `<p data-slack-missing>Missing scopes: ${capabilities.missing.map(esc).join(", ")}</p>`
           : ""
-      }<p class="muted">Redirect URL <code>${esc(redirectUrl ?? "")}</code>, events URL <code>${esc(eventsUrl ?? "")}</code></p><p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
+      }<p class="muted">Redirect URL <code>${esc(redirectUrl ?? "")}</code>, events URL <code>${esc(eventsUrl ?? "")}</code></p>${configured || environment ? "" : FORM}<p data-slack-notice role="alert">${esc(notice)}</p><div class="row">${actions
         .map(([id, label]) => `<button class="btn" data-slack="${id}">${label}</button>`)
         .join("")}</div></div>`,
     );
     for (const button of section.querySelectorAll<HTMLButtonElement>("[data-slack]"))
       button.addEventListener("click", () => void act(button.dataset.slack!));
+    section
+      .querySelector<HTMLFormElement>("[data-slack-app]")
+      ?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void save(event.currentTarget as HTMLFormElement);
+      });
+  }
+
+  async function save(form: HTMLFormElement) {
+    const data = new FormData(form);
+    const response = await fetch("/api/settings/slack-app", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
+      body: JSON.stringify(Object.fromEntries(FIELDS.map(([name]) => [name, data.get(name)]))),
+    });
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    notice = response.ok ? "Saved" : (body.error ?? "The Slack app could not be saved.");
+    await load();
   }
 
   async function act(action: string) {
