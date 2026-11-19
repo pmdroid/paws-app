@@ -1,7 +1,23 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { getContextSession, type ContextNamespace, type Db } from "../src/db";
+import { and, eq } from "drizzle-orm";
+import {
+  currentSourceContextRecords,
+  getContextSession,
+  pgSchema,
+  type ContextNamespace,
+  type Db,
+} from "../src/db";
 import {
   CONTEXT_SESSION_NOTICE,
+  compactContext,
+  createContextCapacity,
+  createFakeContextSummarizer,
+  createFakeProjectContextReads,
+  ingestLinearProjectContext,
+  recallProjectContext,
+  selectContext,
+  type ContextBudgetSettings,
+  type RecallEntry,
   MEMORY_INDEX_HEADER,
   MEMORY_INDEX_LIMITS,
   checkContextDelivery,
@@ -188,4 +204,183 @@ test("an index whose header, notice and note can't fit with one entry is withhel
   const stored = await getContextSession(db, `work_item:index-${seq}`);
   expect(stored?.status).toBe("withheld");
   expect(stored?.manifest).toEqual({});
+});
+
+const SMALL: Partial<ContextBudgetSettings> = {
+  hardCapTokens: 4_000,
+  responseTokens: 1_000,
+  memoryTokens: 800,
+  recentTokens: 300,
+  softThresholdTokens: 500,
+  summaryOutputTokens: 200,
+  summaryInputTokens: 2_000,
+  candidates: 120,
+  references: 6,
+  summaryTimeoutMs: 1_000,
+  compactionRetryMs: 60_000,
+};
+
+test("a record an extractive summary covers stays in the index and recall, and the index reads or schedules no compaction", async () => {
+  seq++;
+  const workspaceId = `org-index-${seq}`;
+  const projectId = `project-index-${seq}`;
+  const namespace: ContextNamespace = {
+    workspaceId,
+    scopeKind: "linear_project",
+    scopeId: projectId,
+  };
+  const alice: ContextRequester = { workspaceId, userId: `alice-${seq}` };
+  const access = createFakeContextAccess();
+  access.grant(alice, { teamIds: ["team-a"], repositories: [], channelIds: [] });
+  const reads = createFakeProjectContextReads();
+  reads.projects.set(projectId, {
+    id: projectId,
+    name: "Exports",
+    url: `https://linear.app/p/${projectId}`,
+    revision: "p1",
+    revisionAt: T0,
+    teamIds: ["team-a"],
+    content: "Exports ship as CSV.",
+  });
+  await ingestLinearProjectContext(db, access, reads, {
+    workspaceId,
+    projectId,
+    requester: alice,
+    now: T0,
+  });
+  const target = "Invoices round half to even when exporting totals.";
+  const store = async (workItemId: string, entries: WorkItemContextEntry[], importance = 1) => {
+    const outcome = await recordWorkItemContext(db, access, {
+      namespace,
+      requester: alice,
+      workItemId,
+      revision: "r1",
+      revisionAt: T0,
+      restriction: { teamIds: ["team-a"] },
+      entries: entries.map((entry) => ({ ...entry, importance })),
+      now: T0,
+    });
+    expect(outcome.status).toBe("stored");
+  };
+  await store(`item-${seq}-target`, [{ classification: "reported_fact", body: target }], 2);
+  for (let batch = 0; batch < 4; batch++)
+    await store(
+      `item-${seq}-notes-${batch}`,
+      Array.from({ length: 8 }, (_, index) => ({
+        classification: "reported_fact" as const,
+        body: `Exports note ${batch}-${index}: batches retry in region eu-${index}.`,
+      })),
+    );
+  const [row] = await currentSourceContextRecords(
+    db,
+    namespace,
+    { kind: "paws_work_item", id: `item-${seq}-target` },
+    T0 + 1,
+  );
+  const prompt = {
+    namespace,
+    requester: alice,
+    destination: { audience: "project_members" } as const,
+    instructions: "",
+    request: "Fix the export retry behaviour",
+    toolsTokens: 0,
+    model: { contextTokens: 100_000 },
+    settings: SMALL,
+  };
+  // The legacy pack requests compaction; the extractive summarizer then covers the target.
+  const before = await selectContext(db, access, { ...prompt, now: T0 + 1000 });
+  expect(before.status === "ok" && before.manifest.compaction).toBe("requested");
+  const run = await compactContext(
+    db,
+    access,
+    createFakeContextSummarizer(),
+    createContextCapacity(),
+    { ...prompt, now: T0 + 2000 },
+  );
+  expect(run.status).not.toBe("refused");
+  const covered = await db.orm
+    .select({ recordId: pgSchema.contextSummarySource.recordId })
+    .from(pgSchema.contextSummarySource)
+    .innerJoin(
+      pgSchema.contextSummary,
+      eq(pgSchema.contextSummary.id, pgSchema.contextSummarySource.summaryId),
+    )
+    .where(
+      and(
+        eq(pgSchema.contextSummary.workspaceId, workspaceId),
+        eq(pgSchema.contextSummarySource.recordId, row!.id),
+      ),
+    );
+  expect(covered).toHaveLength(1);
+  const pack = await selectContext(db, access, { ...prompt, request: target, now: T0 + 3000 });
+  if (pack.status !== "ok") throw new Error(`selection ${pack.status}`);
+  expect(pack.manifest.sources.map((source) => source.recordId)).not.toContain(row!.id);
+
+  // Enough facts past the soft threshold that a legacy pack would request compaction again.
+  for (let batch = 4; batch < 8; batch++)
+    await store(
+      `item-${seq}-notes-${batch}`,
+      Array.from({ length: 8 }, (_, index) => ({
+        classification: "reported_fact" as const,
+        body: `Exports note ${batch}-${index}: batches retry in region us-${index}.`,
+      })),
+    );
+  const summaries = () =>
+    db.orm
+      .select()
+      .from(pgSchema.contextSummary)
+      .where(eq(pgSchema.contextSummary.workspaceId, workspaceId));
+  const summariesBefore = await summaries();
+  const summarizer = createFakeContextSummarizer();
+  const service = createProjectSessionContext({
+    db,
+    access,
+    memoryIndex: true,
+    summarizer,
+    settings: SMALL,
+    model: { contextTokens: 100_000 },
+    now: () => T0 + 4000,
+  });
+  const prepared = await service.prepare({
+    consumerKey: `work_item:index-${seq}`,
+    organizationId: workspaceId,
+    projectId,
+    requesterId: alice.userId,
+    instructions: "",
+    request: target,
+  });
+  if (prepared.status !== "injected" || !prepared.manifest)
+    throw new Error(`not injected: ${JSON.stringify(prepared)}`);
+  expect(prepared.text).toContain(`id ${row!.id})`);
+  expect(prepared.manifest.sources.map((source) => source.recordId)).toContain(row!.id);
+  expect(prepared.manifest.summary).toBeNull();
+  expect(prepared.manifest.compaction).toBe("not_needed");
+  expect(prepared.manifest.work.summariesRead).toBe(0);
+  expect(prepared.manifest.tokens.total).toBeLessThanOrEqual(prepared.manifest.tokens.hardCap);
+  expect(summarizer.calls).toHaveLength(0);
+  expect(await summaries()).toEqual(summariesBefore);
+  expect(
+    await checkContextDelivery(db, access, {
+      consumerKey: `work_item:index-${seq}`,
+      requester: alice,
+      destination: { audience: "project_members" },
+      version: prepared.version,
+      now: T0 + 4000,
+    }),
+  ).toEqual({ status: "current" });
+
+  const recall = (request: unknown) =>
+    recallProjectContext(db, access, {
+      organizationId: workspaceId,
+      projectId,
+      requesterId: alice.userId,
+      request,
+      now: T0 + 4000,
+    });
+  const byId = JSON.parse(await recall({ id: row!.id })) as RecallEntry;
+  expect(byId.body).toBe(target);
+  expect(byId.source.revision).toBe("r1");
+  const byQuery = JSON.parse(await recall({ query: "invoices round half even" })) as RecallEntry[];
+  expect(byQuery[0]!.id).toBe(row!.id);
+  expect(await summaries()).toEqual(summariesBefore);
 });

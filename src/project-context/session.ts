@@ -43,6 +43,7 @@ import { rememberWorkItemContext, type RememberRequest } from "./remember";
 import { contextKey } from "./sanitize";
 import { recordWorkSummary, type WorkSummary } from "./work-summary";
 import {
+  rankContextRecords,
   selectContext,
   type ContextManifest,
   type ContextRecentEntry,
@@ -116,34 +117,10 @@ async function selectAndSave(
   access: ContextAccess,
   request: ContextConsumerRequest,
 ): Promise<SessionContext> {
+  if (request.index) return indexAndSave(db, access, request, request.index);
   const selection = await selectContext(db, access, request);
   if (selection.status === "invalid_budget") return withhold(db, request, "invalid_budget");
   if (selection.status === "unavailable") return withhold(db, request, selection.reason);
-  if (request.index) {
-    if (selection.ranked.length === 0) return withhold(db, request, "empty");
-    const current = await requesterAccess(access, request.requester);
-    const topics = current
-      ? await visibleContextTopics(db, current, {
-          namespace: request.namespace,
-          audience: request.destination.audience as ContextAudience,
-          ...(request.repository ? { repository: request.repository } : {}),
-          ...(request.ref ? { ref: request.ref } : {}),
-          now: request.now,
-        })
-      : [];
-    const index = renderMemoryIndex(
-      selection,
-      {
-        tokens: request.index.tokens,
-        trailer: CONTEXT_SESSION_NOTICE,
-        topics,
-        ...(request.index.appendix ? { appendix: request.index.appendix } : {}),
-      },
-      tokenCounter(request.model),
-    );
-    if (!index) return withhold(db, request, "over_budget");
-    return saveInjected(db, request, selection.recent, index.text, index.manifest);
-  }
   if (selection.pack === "") return withhold(db, request, "empty");
   return saveInjected(
     db,
@@ -152,6 +129,43 @@ async function selectAndSave(
     `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`,
     selection.manifest,
   );
+}
+
+/**
+ * Builds the startup memory index straight from the requester's authorized records. It reads no
+ * rolling summary, leaves out nothing a summary covers, and requests no compaction.
+ */
+async function indexAndSave(
+  db: Db,
+  access: ContextAccess,
+  request: ContextConsumerRequest,
+  options: NonNullable<ContextConsumerRequest["index"]>,
+): Promise<SessionContext> {
+  const ranking = await rankContextRecords(db, access, request);
+  if (ranking.status === "invalid_budget") return withhold(db, request, "invalid_budget");
+  if (ranking.status === "unavailable") return withhold(db, request, ranking.reason);
+  if (ranking.ranked.length === 0) return withhold(db, request, "empty");
+  const current = await requesterAccess(access, request.requester);
+  if (!current) return withhold(db, request, "refused");
+  const topics = await visibleContextTopics(db, current, {
+    namespace: request.namespace,
+    audience: request.destination.audience as ContextAudience,
+    ...(request.repository ? { repository: request.repository } : {}),
+    ...(request.ref ? { ref: request.ref } : {}),
+    now: request.now,
+  });
+  const index = renderMemoryIndex(
+    ranking,
+    {
+      tokens: options.tokens,
+      trailer: CONTEXT_SESSION_NOTICE,
+      topics,
+      ...(options.appendix ? { appendix: options.appendix } : {}),
+    },
+    tokenCounter(request.model),
+  );
+  if (!index) return withhold(db, request, "over_budget");
+  return saveInjected(db, request, ranking.recent, index.text, index.manifest);
 }
 
 async function saveInjected(
