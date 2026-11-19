@@ -72,6 +72,15 @@ export function* stopSlackConversationSteps(
   now: number,
 ): Steps<void> {
   const table = q.t.slackConversation;
+  const current = yield* q.one(
+    q.orm
+      .select({ stoppedTs: table.stoppedTs })
+      .from(table)
+      .where(eq(table.id, input.id))
+      .for("update"),
+  );
+  const order = (ts: string) => BigInt(ts.replace(".", ""));
+  if (current?.stoppedTs && order(current.stoppedTs) >= order(input.ts)) return;
   yield* q.exec(
     q.orm
       .update(table)

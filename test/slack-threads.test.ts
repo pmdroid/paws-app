@@ -57,6 +57,7 @@ async function fixture() {
   const shared: Record<string, boolean> = { C0ONE: false, C0TWO: false };
   const posted: { method: string; body: Record<string, unknown> }[] = [];
   const failNext: Record<string, Fail | undefined> = {};
+  const hooks: { onInfo?: () => Promise<unknown> } = {};
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -67,6 +68,9 @@ async function fixture() {
     if (fail === "refused") throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
     if (fail === "scope") return Response.json({ ok: false, error: "missing_scope" });
     if (method === "conversations.info") {
+      const hook = hooks.onInfo;
+      hooks.onInfo = undefined;
+      await hook?.();
       const external = shared[body.channel as string];
       if (external === undefined) return Response.json({ ok: false, error: "channel_not_found" });
       const flags = { is_shared: external, is_ext_shared: external, is_org_shared: false };
@@ -267,6 +271,7 @@ async function fixture() {
     shared,
     posted,
     failNext,
+    hooks,
     prompts,
     runner,
     helpers,
@@ -565,4 +570,20 @@ test("a linked member's stop ends the running turn while runners are full, and f
   await f.say("SADMIN", "and now a short one", { thread_ts: root.ts });
   expect(f.posts("chat.postMessage").map((post) => post.body.thread_ts)).toEqual([root.ts]);
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a stop that lands while a reply is being prepared for delivery withholds it, and stops never move back", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "quick one");
+  await f.deliver(root);
+  await f.runJobs();
+  const stop = f.mention("SMEMBER", "stop", { thread_ts: root.ts });
+  const earlier = f.mention("SADMIN", "stop", { thread_ts: root.ts, ts: "1690000000.000100" });
+  expect(await f.replies()).toEqual([expect.objectContaining({ status: "pending" })]);
+  f.hooks.onInfo = () => f.deliver(stop);
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  await f.deliver(earlier);
+  expect((await conversations(f, root.ts))[0]!.stoppedTs).toBe(stop.ts);
 });

@@ -431,7 +431,14 @@ export function createSlackThreads<Profile>(options: {
     )
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
-    if (!(await store.run((q) => slackSendingSteps(q, row, true))))
+    const sending = await store.transaction(function* (q) {
+      if (payload.kind === "reply" && (yield* stoppedSteps(q, payload, payload.mentionTs)))
+        return "stopped";
+      return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
+    });
+    if (sending === "stopped")
+      return settle({ kind: "withheld", note: "the thread was stopped before delivery" });
+    if (sending === "taken")
       return settle({ kind: "unknown", note: "an earlier attempt may have posted it; not resent" });
     const body =
       payload.kind === "notice"
