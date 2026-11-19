@@ -526,7 +526,7 @@ test.skipIf(!linux)("Paws refusing a chunk skips the snapshot and the run contin
       { runnerId: "runner", runId: "run", token: "token" },
       { generation: 3, offset: 0, sha256: sha(Buffer.from("x")), data: "eA==" },
     );
-    await context.drive(runtime, () => context.posted.length > 0);
+    await context.drive(runtime, () => context.posted.length > 0 && context.chunks.length > 0);
     expect(context.chunks).toHaveLength(1);
     expect(context.finishes).toEqual([]);
     expect(context.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
