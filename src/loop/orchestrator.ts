@@ -7542,7 +7542,9 @@ export class Orchestrator {
           );
           live.controller.abort(FOLLOW_UP_INTERRUPTION);
         }
-    if (outcome === "answered" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
+    // A response-mode answer redirects the agent instead of resuming it; it is still a person's
+    // answer to the agent's ask_team question, so it records the same decision.
+    if (outcome !== "rejected" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (item?.state === "completed")

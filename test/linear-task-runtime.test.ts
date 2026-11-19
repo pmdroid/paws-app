@@ -318,6 +318,77 @@ test("an answer turn on a project item gets neither remember, recall nor the pro
   }
 });
 
+test("a person's answer to an answer turn's ask_team question records a decision on the redirect path", async () => {
+  const decisions: { question: string; answer: string; answererId: string }[] = [];
+  const projectContext: ProjectSessionContext = {
+    prepare: async () => ({
+      status: "injected",
+      text: "Project facts.",
+      recent: "",
+      version: 1,
+      manifest: null,
+    }),
+    recordDecision: async (input) => {
+      decisions.push({
+        question: input.question,
+        answer: input.answer,
+        answererId: input.answererId,
+      });
+      return "stored";
+    },
+    remember: async () => "Saved.",
+    recall: async () => "[]",
+  };
+  const f = await setup(
+    "answer",
+    undefined,
+    false,
+    "ok",
+    undefined,
+    undefined,
+    false,
+    false,
+    [],
+    [{ type: "ask_team", question: "Which screenshot?" }],
+    projectContext,
+  );
+  writeFileSync(join(f.root, "config.toml"), "[project_memory]\ndecisions = true\n");
+  f.tracker.mergeContexts.set("parent", { projectId: "project-1", labels: [] });
+  try {
+    const created = event();
+    await f.orchestrator.onLinearEvent({
+      ...created,
+      payload: JSON.stringify({ ...JSON.parse(created.payload), organizationId: "org" }),
+    });
+    await f.jobs.tick();
+    const question = (await findOpenQuestion(f.db, "session"))!;
+    expect(question.body).toBe("Which screenshot?");
+    const itemId = question.itemId;
+    expect((await getWorkItem(f.db, itemId))?.state).toBe("awaiting_input");
+    await f.orchestrator.onLinearEvent({
+      ...event(),
+      action: "prompted",
+      dedupeKey: "activity:human-answer",
+      activityId: "human-answer",
+      body: "The login page.",
+      updatedAtMs: question.createdAt + 1,
+      payload: JSON.stringify({ activityCreatedAtMs: question.createdAt + 1 }),
+    });
+    expect((await getQuestion(f.db, question.id))?.answer).toBe("The login page.");
+    expect(decisions).toEqual([
+      { question: "Which screenshot?", answer: "The login page.", answererId: "human" },
+    ]);
+    const trace = JSON.parse(readFileSync(f.traces[1]!, "utf8")) as {
+      mcpServers: { env: { name: string; value: string }[] }[];
+    };
+    const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
+    expect(tools.value.split(",")).not.toContain("remember");
+  } finally {
+    await f.orchestrator.shutdown();
+    await f.close();
+  }
+});
+
 test("code classification persists before child work is dispatched", async () => {
   const f = await setup("code");
   try {

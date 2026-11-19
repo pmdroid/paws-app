@@ -99,3 +99,46 @@ test("only questions the agent asked through ask_team are decisions", () => {
   expect(askedThroughAskTeam({ kind: "time-limit", reason: "time-limit" })).toBe(false);
   expect(askedThroughAskTeam({ kind: "link", reason: "link" })).toBe(false);
 });
+
+test("two questions that share their first 300 characters stay two decisions", async () => {
+  const { record, stored } = await fixture();
+  const opening = "Which export format should the nightly job use ".repeat(8);
+  expect(opening.length).toBeGreaterThan(300);
+  expect(await record({ question: `${opening}for invoices?`, answer: "CSV." })).toBe("stored");
+  expect(await record({ question: `${opening}for refunds?`, answer: "JSON." })).toBe("stored");
+  const rows = await stored();
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.supersedes)).toEqual([null, null]);
+  expect(rows.map((row) => row.body.slice(300 + 3, 300 + 8)).sort()).toEqual(["CSV. ", "JSON."]);
+});
+
+test("asking a long question again corrects its own decision, not its look-alike", async () => {
+  const { record, stored } = await fixture();
+  const opening = "Which export format should the nightly job use ".repeat(8);
+  await record({ question: `${opening}for invoices?`, answer: "CSV." });
+  await record({ question: `${opening}for refunds?`, answer: "JSON." });
+  const before = await stored();
+  expect(await record({ question: `${opening}for refunds?`, answer: "XML." })).toBe("corrected");
+  const rows = await stored();
+  expect(rows).toHaveLength(2);
+  const corrected = rows.find((row) => row.body.includes("XML."))!;
+  const kept = rows.find((row) => row.body.includes("CSV."))!;
+  expect(corrected.supersedes).toBe(before.find((row) => row.body.includes("JSON."))!.id);
+  expect(kept.id).toBe(before.find((row) => row.body.includes("CSV."))!.id);
+  expect(corrected.actorId).toBe(kept.actorId);
+});
+
+test("a short question asked again corrects the decision and keeps its provenance", async () => {
+  const { record, stored } = await fixture();
+  expect(await record({ answer: "Yes." })).toBe("stored");
+  const [first] = await stored();
+  expect(await record({ answer: "Yes." })).toBe("unchanged");
+  expect(await record({ answer: "No." })).toBe("corrected");
+  const rows = await stored();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.supersedes).toBe(first!.id);
+  expect(rows[0]!.recordKey).toBe(first!.recordKey);
+  expect(rows[0]!.body).toBe(
+    "Should exports include archived rows? → No. Reason: Answered by Alice Example on PAS-7",
+  );
+});
