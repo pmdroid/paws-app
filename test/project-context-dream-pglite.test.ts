@@ -295,3 +295,41 @@ test("a helper failure leaves selection unchanged and retries after 24 hours", a
   expect(await f.dream(helper, T0 + HOUR + DAY)).toBe(1);
   expect(helper.calls).toHaveLength(2);
 });
+
+test("an existing topic reaches the index and recall only while its requester can see it and its lineage is current", async () => {
+  const f = await fixture();
+  await f.remember(FACTS, T0);
+  let covered: string[] = [];
+  const helper = createFakeContextDreamHelper((entries) => {
+    covered = taxIds(entries);
+    return taxTopic(entries);
+  });
+  expect(await f.dream(helper, T0 + HOUR)).toBe(1);
+  const [topic] = await f.topics(T0 + HOUR);
+  const at = T0 + 2 * HOUR;
+  const recall = async () =>
+    (await f.index(at)).service.recall!({
+      organizationId: f.workspaceId,
+      projectId: f.projectId,
+      requesterId: f.alice.userId,
+      request: { id: topic!.id },
+      now: at,
+    });
+  expect((await f.index(at)).text).toContain(`- Topic: Tax columns (id ${topic!.id})`);
+  expect(await recall()).toContain("Tax columns");
+
+  f.access.grant(f.alice, { teamIds: ["team-b"], repositories: [], channelIds: [] });
+  expect((await f.index(at)).text).not.toContain("Tax columns");
+  expect(await recall()).not.toContain("Tax columns");
+  f.access.grant(f.alice, { teamIds: ["team-a"], repositories: [], channelIds: [] });
+
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.contextRecord)
+      .set({ restriction: { teamIds: ["team-a"], userId: "someone-else" } })
+      .where(eq(q.t.contextRecord.id, covered[0]!)),
+  );
+  expect((await f.topics(at)).map((row) => [row.status, row.valid])).toEqual([["current", false]]);
+  expect((await f.index(at)).text).not.toContain("Tax columns");
+  expect(await recall()).not.toContain("Tax columns");
+});

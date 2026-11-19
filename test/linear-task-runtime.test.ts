@@ -268,7 +268,7 @@ test("a parent discussion classifies before fanout and completes without Git, is
   }
 });
 
-test("an answer turn on a project item gets neither remember nor the project memory note", async () => {
+test("an answer turn on a project item gets neither remember, recall nor the project memory note", async () => {
   const prepared: string[] = [];
   const projectContext: ProjectSessionContext = {
     async prepare(input) {
@@ -277,6 +277,7 @@ test("an answer turn on a project item gets neither remember nor the project mem
     },
     recordDecision: async () => "outside_project",
     remember: async () => "Saved.",
+    recall: async () => "[]",
   };
   const f = await setup(
     "answer",
@@ -311,6 +312,7 @@ test("an answer turn on a project item gets neither remember nor the project mem
     const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
     expect(tools.value.split(",")).toContain("ask_team");
     expect(tools.value.split(",")).not.toContain("remember");
+    expect(tools.value.split(",")).not.toContain("recall");
   } finally {
     await f.close();
   }

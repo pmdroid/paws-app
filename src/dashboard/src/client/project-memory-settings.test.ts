@@ -83,8 +83,7 @@ test("the switches show the stored values, and toggling and saving sends the PUT
   const checked = () =>
     ["decisions", "workSummary", "dream"].map((name) => switchFor(root, name).checked);
   expect(checked()).toEqual([true, true, false]);
-  expect(root.textContent).toContain(PROJECT_MEMORY_ROLES.before);
-  expect(root.textContent).not.toContain("recall");
+  expect(root.textContent).toContain(PROJECT_MEMORY_ROLES.after);
   for (const name of ["dream", "decisions"]) {
     const field = switchFor(root, name);
     field.checked = !field.checked;
@@ -111,10 +110,10 @@ test("the switches show the stored values, and toggling and saving sends the PUT
 test("the copy promises the index and recall only once they're switched on, and names who can't use them", () => {
   const memory = { workSummary: false, dream: false, decisions: false };
   const view = { memory, busy: false, error: null, saved: false };
-  const before = renderProjectMemorySettings(view);
+  const before = renderProjectMemorySettings({ ...view, recall: false });
   expect(before).toContain(esc(PROJECT_MEMORY_ROLES.before));
   expect(before).not.toMatch(/recall|index|titles/);
-  const after = renderProjectMemorySettings({ ...view, recall: true });
+  const after = renderProjectMemorySettings(view);
   expect(after).toContain(esc(PROJECT_MEMORY_ROLES.after));
   expect(after).toContain("read an entry&#39;s details with recall");
   expect(after).toContain("Reviewers, read-only sessions and Closeout checks can&#39;t use recall");

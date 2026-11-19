@@ -14,7 +14,7 @@ type View = {
   recall?: boolean;
 };
 
-const RECALL_ENABLED = false;
+const RECALL_ENABLED = true;
 
 export const PROJECT_MEMORY_ROLES = {
   before:

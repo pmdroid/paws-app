@@ -217,14 +217,16 @@ export default {
       prompt.slice(prompt.indexOf("Project memory:"), prompt.indexOf("Project memory:") + 200),
     );
     proof.expect(
-      "the work turn lists remember in PAWS_HOST_TOOLS, and no reviewer gets the tool or the note",
+      "the work turn lists remember and recall in PAWS_HOST_TOOLS, and no reviewer gets either tool or the note",
       first !== undefined &&
         proof.hostTools(first).includes("remember") &&
+        proof.hostTools(first).includes("recall") &&
         proof.launches
           .filter((launch) => launch.role === "reviewer")
           .every(
             (launch) =>
               !proof.hostTools(launch).includes("remember") &&
+              !proof.hostTools(launch).includes("recall") &&
               !launch.prompt.includes("Project memory:"),
           ),
       proof.launches.map((launch) => [launch.purpose, proof.hostTools(launch)]),
