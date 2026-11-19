@@ -17,6 +17,8 @@ export {
   type RunnerHandoverFailure,
   RunnerCommandSchema,
   RUNNER_CONVERSATION_MS,
+  RUNNER_SLACK_REPLY_MS,
+  RUNNER_SLACK_REPLY_PROMPT_BYTES,
   runnerHelperLifetime,
   REVIEW_BRIEF_LIMIT,
   REVIEW_EXPLANATION_LIMIT,
@@ -37,6 +39,7 @@ export {
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
   type RunnerCommand,
+  type RunnerSlackReplyScope,
   type RunnerHook,
   type RunnerRuntime,
   type RunnerInstalledRuntime,
@@ -157,6 +160,7 @@ export {
 export {
   MINIMUM_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
+  SLACK_REPLY_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
 export {

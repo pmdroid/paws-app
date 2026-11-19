@@ -198,6 +198,15 @@ export const REVIEW_BRIEF_LIMIT = 65_536;
 export const REVIEW_LOCATION_LIMIT = 1_024;
 export const REVIEW_EXPLANATION_LIMIT = 1_024;
 
+const RunnerSlackReplyScopeSchema = z.strictObject({
+  requestId: id,
+  teamId: z.string().regex(/^T[A-Z0-9]{2,31}$/),
+  channelId: z.string().regex(/^C[A-Z0-9]{2,31}$/),
+  threadTs: z.string().regex(/^\d{1,12}\.\d{1,8}$/),
+  memberUserId: id,
+  installGeneration: generation,
+});
+
 const work = {
   runId: id,
   itemId: id,
@@ -333,11 +342,18 @@ export const RunnerCommandSchema = z
       type: z.literal("helper"),
       sessionId: id,
       sessionGeneration: generation,
-      purpose: z.enum(["classify", "select_repository", "finding_groups", "conversation"]),
+      purpose: z.enum([
+        "classify",
+        "select_repository",
+        "finding_groups",
+        "conversation",
+        "slack_reply",
+      ]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
       account: work.account,
       conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
+      slack: RunnerSlackReplyScopeSchema.optional(),
     }),
     z.strictObject({
       ...common,
@@ -425,16 +441,26 @@ export const RunnerCommandSchema = z
     (command) =>
       command.type !== "helper" ||
       (command.purpose === "conversation") === (command.conversation !== undefined),
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      ((command.purpose === "slack_reply") === (command.slack !== undefined) &&
+        (command.purpose !== "slack_reply" ||
+          Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_PROMPT_BYTES)),
   );
 
 export function runnerHelperLifetime(
-  purpose: "classify" | "select_repository" | "finding_groups" | "conversation",
+  purpose: "classify" | "select_repository" | "finding_groups" | "conversation" | "slack_reply",
 ): number {
   if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
+  if (purpose === "slack_reply") return RUNNER_SLACK_REPLY_MS;
   return purpose === "finding_groups" ? 600_000 : 60_000;
 }
 
 export const RUNNER_CONVERSATION_MS = 900_000;
+export const RUNNER_SLACK_REPLY_MS = 180_000;
+export const RUNNER_SLACK_REPLY_PROMPT_BYTES = 32_768;
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,
@@ -449,6 +475,7 @@ export const SignedRunnerCommandSchema = z.strictObject({
 export type RunnerCommand = z.infer<typeof RunnerCommandSchema>;
 export type RunnerRepository = z.infer<typeof RunnerRepositorySchema>;
 export type RunnerProfile = z.infer<typeof RunnerProfileSchema>;
+export type RunnerSlackReplyScope = z.infer<typeof RunnerSlackReplyScopeSchema>;
 export type RunnerHook = z.infer<typeof RunnerHookSchema>;
 export type RunnerRuntime = z.infer<typeof RunnerRuntimeSchema>;
 export type RunnerInstalledRuntime = z.infer<typeof RunnerInstalledRuntimeSchema>;

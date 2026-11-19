@@ -40,7 +40,8 @@ type Entry = {
   pulsing?: Promise<void>;
 };
 const conversation = (command: Pick<RunnerCommand, "type"> & { purpose?: string }) =>
-  command.type === "helper" && command.purpose === "conversation";
+  command.type === "helper" &&
+  (command.purpose === "conversation" || command.purpose === "slack_reply");
 const worker = z.object({
   executionId: z.string(),
   commandId: z.string(),
