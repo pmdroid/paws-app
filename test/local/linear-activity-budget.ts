@@ -22,6 +22,7 @@ export async function probeLinearActivityBudget(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
   eventCount = 3_000,
+  cases: readonly ("history" | "backoff")[] = ["history", "backoff"],
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const postgres = await pgliteServer();
@@ -37,10 +38,8 @@ export async function probeLinearActivityBudget(
   let limited = false;
   let requests = 0;
   const activities = new Map<string, Record<string, unknown>>();
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
+  const linear = {
+    async fetch(request: Request) {
       requests++;
       const { query, variables } = (await request.json()) as {
         query: string;
@@ -79,7 +78,7 @@ export async function probeLinearActivityBudget(
         data: { agentActivityCreate: { success: true, agentActivity: { id } } },
       });
     },
-  });
+  };
   const tracker = createLinearTracker(
     createLinearClient({
       auth: {
@@ -87,7 +86,8 @@ export async function probeLinearActivityBudget(
         ensureFresh: async () => "fixture",
         forceRefresh: async () => "fixture",
       },
-      fetch: (_input, init) => fetch(`http://127.0.0.1:${server.port}/graphql`, init),
+      fetch: async (_input, init) =>
+        await linear.fetch(new Request("http://linear.test/graphql", init)),
       ledger: createLinearLedger({ now: () => clock.now(), random: () => 0, log: () => {} }),
     }),
   );
@@ -112,7 +112,7 @@ export async function probeLinearActivityBudget(
       payload: { sessionId, kind, itemId, body: `Useful update ${sequence}` },
     });
   }
-  try {
+  async function history() {
     const item = await insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
     const original = await beginImplementRun(db, item.id, clock.now());
     const reported: Record<string, unknown>[] = [];
@@ -213,6 +213,8 @@ export async function probeLinearActivityBudget(
         responseSent: true,
       },
     );
+  }
+  async function backoff() {
     limited = true;
     const critical = await activity("rate-limited", "thought");
     for (let n = 0; n < 7; n++) {
@@ -282,10 +284,13 @@ export async function probeLinearActivityBudget(
     } finally {
       await second.close();
     }
+  }
+  try {
+    if (cases.includes("history")) await history();
+    if (cases.includes("backoff")) await backoff();
   } finally {
     await open.close();
     await postgres.close();
-    await server.stop(true);
   }
 }
 
