@@ -106,6 +106,7 @@ import type { Draft, SlackIssueTeam, SlackWorkTracker } from "./work";
 export const SLACK_THREAD_JOB = "slack.thread";
 export const SLACK_LINK_PATH = "/oauth/slack/link";
 const LINK_CODE = /\blink\s+([A-Z2-7]{4}-[A-Z2-7]{4})\b/i;
+const DIRECT_LINK = /^link\s+([A-Z2-7]{4}-[A-Z2-7]{4})[.!]?$/i;
 const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const STOP = /^stop[.!]?$/i;
 const UNLINK = /^unlink[.!]?$/i;
@@ -187,6 +188,7 @@ type Notice = Place & {
   listing?: boolean;
   safe?: boolean;
   blocks?: unknown[];
+  dm?: boolean;
 };
 type Payload = Reply | Notice | SlackTaskPost | SlackStatusPost;
 
@@ -226,7 +228,7 @@ const same = (bound: Bound | null, place: Bound) =>
   bound.generation === place.generation;
 
 const NOTICES = {
-  linked: "Linked. Mention @Paws in this thread to ask it something.",
+  linked: "Linked. Mention @Paws in the channel to ask it something.",
   released: "Linked. Paws is answering the question you asked before linking, in its thread.",
   already_linked:
     "That Slack account or Paws account is already linked to another account here. Paws doesn't move links.",
@@ -274,10 +276,13 @@ function* installationSteps(q: Q, home: string, teamId: string) {
   return { ...install, generation };
 }
 
-function* gateSteps(q: Q, home: string, place: Place): Steps<Gate> {
+function* installedSteps(q: Q, home: string, place: Place): Steps<boolean> {
   const install = yield* installationSteps(q, home, place.teamId);
-  if (install?.workspaceId !== place.workspaceId || install.generation !== place.generation)
-    return { kind: "ignore" };
+  return install?.workspaceId === place.workspaceId && install.generation === place.generation;
+}
+
+function* gateSteps(q: Q, home: string, place: Place): Steps<Gate> {
+  if (!(yield* installedSteps(q, home, place))) return { kind: "ignore" };
   const channel = parsed<Bound>(yield* readSettingSteps(q, channelKey(place.workspaceId)));
   const admitted = channel?.generation === place.generation;
   if (admitted && !same(channel, place)) return { kind: "ignore" };
@@ -552,6 +557,7 @@ export async function acceptSlackMention(
   at = Date.now(),
 ): Promise<void> {
   if (mention.externallyShared) return;
+  if (mention.direct) return acceptSlackDirect(store, home, mention, at);
   const dedupeKey = `slack:${mention.teamId}:${mention.eventId}`;
   const queued = await store.transaction(function* (q) {
     const install = yield* installationSteps(q, home, mention.teamId);
@@ -584,7 +590,7 @@ export async function acceptSlackMention(
       const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
       const action = "slack.member_unlinked" as const;
       yield* unlinkSlackMemberSteps(q, { workspaceId, ...actor, action, now: at });
-      const payload: Payload = { ...place, kind: "notice", text: NOTICES.unlinked };
+      const payload: Payload = { ...place, kind: "notice", text: NOTICES.unlinked, dm: true };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
         op: "chat.postEphemeral",
@@ -594,6 +600,23 @@ export async function acceptSlackMention(
       });
       return false;
     }
+    const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
+    return (yield* enqueueJobOnceSteps(q, job)).inserted;
+  });
+  if (queued) emitJobReady(store);
+}
+
+async function acceptSlackDirect(store: Db, home: string, mention: SlackMention, at: number) {
+  const command = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+  if (!DIRECT_LINK.test(command)) return;
+  const dedupeKey = `slack:${mention.teamId}:dm:${mention.channelId}:${mention.ts}`;
+  const queued = await store.transaction(function* (q) {
+    const install = yield* installationSteps(q, home, mention.teamId);
+    if (!install || (mention.appId && install.appId && mention.appId !== install.appId))
+      return false;
+    const { workspaceId, generation } = install;
+    const event = { type: "SlackDirectMessage", workspaceId, generation, mention };
+    if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
@@ -664,14 +687,15 @@ export function createSlackThreads<Profile>(options: {
     await store.transaction((q) => reconcileSlackStatusSteps(q, now()));
   }
 
-  function claim(place: Place, code: string) {
+  function claim(direct: Place, code: string) {
     return store.transaction(function* (q): Steps<keyof typeof NOTICES> {
       const hash = workspaceTokenHash(code.toUpperCase());
-      const rows = yield* settingsWithPrefixSteps(q, codePrefix(place.workspaceId));
+      const rows = yield* settingsWithPrefixSteps(q, codePrefix(direct.workspaceId));
       const row = rows.find((candidate) => parsed<Code>(candidate.value)?.hash === hash);
       const issued = row && parsed<Code>(yield* takeSettingSteps(q, row.key));
-      if (!issued || issued.expiresAt <= now() || issued.slackUserId !== place.slackUserId)
+      if (!issued || issued.expiresAt <= now() || issued.slackUserId !== direct.slackUserId)
         return "expired";
+      const place: Place = { ...direct, channelId: issued.channelId };
       const member = yield* workspaceMemberSteps(q, place.workspaceId, issued.userId);
       if (!same(issued, place) || !workspaceMemberUsable(member)) return "expired";
       const bound = {
@@ -719,6 +743,28 @@ export function createSlackThreads<Profile>(options: {
     });
   }
 
+  async function pair(
+    direct: Place,
+    mention: SlackMention,
+    dedupeKey: string,
+    context: { signal: AbortSignal },
+  ): Promise<void> {
+    const current = await store.run((q) => installedSteps(q, home, direct));
+    const code = DIRECT_LINK.exec(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim())?.[1];
+    if (!current || !code) return;
+    const call = await slackFor(direct.workspaceId);
+    const opened = await call("conversations.open", { users: direct.slackUserId }, context.signal)
+      .then((result) => (result.channel as { id?: unknown } | undefined)?.id)
+      .catch((caught: unknown) => {
+        if (caught instanceof SlackApiError) return null;
+        throw caught;
+      });
+    if (opened !== direct.channelId) return;
+    const outcome = await claim(direct, code);
+    if (outcome === "released") emitJobReady(store);
+    await notice(direct, dedupeKey, NOTICES[outcome], { dm: true });
+  }
+
   async function handle(
     job: Job,
     context: {
@@ -742,6 +788,7 @@ export function createSlackThreads<Profile>(options: {
     };
     const { teamId, channelId, threadTs, slackUserId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
+    if (mention.direct) return pair({ ...place, threadTs: "" }, mention, dedupeKey!, context);
     const gate = await store.run(function* (q): Steps<Gate> {
       if (yield* stoppedSteps(q, place, mention.ts)) return { kind: "ignore" };
       const unlinkedAt = yield* readSettingSteps(q, unlinkedKey(workspaceId, teamId, slackUserId));
@@ -755,9 +802,8 @@ export function createSlackThreads<Profile>(options: {
       return;
     const code = LINK_CODE.exec(mention.text)?.[1];
     if (code) {
-      const outcome = await claim(place, code);
-      if (outcome === "released") emitJobReady(store);
-      return void (await notice(place, dedupeKey!, NOTICES[outcome]));
+      const text = `Send your code to me here instead: link ${code.toUpperCase()}.`;
+      return void (await notice(place, dedupeKey!, text, { dm: true }));
     }
     if (gate.kind === "guide") {
       const held: Held = {
@@ -772,8 +818,8 @@ export function createSlackThreads<Profile>(options: {
       );
       const query = new URLSearchParams({ team: teamId, channel: channelId, user: slackUserId });
       const setup = gate.setup ? " The first person to link must be a Paws workspace admin." : "";
-      const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows. Paws answers this question once you link within 10 minutes.${setup}`;
-      return void (await notice(place, dedupeKey!, text));
+      const text = `To talk to Paws in <#${channelId}>, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and send the code it shows to Paws in this direct message. Paws answers your question once you link within 10 minutes.${setup}`;
+      return void (await notice(place, dedupeKey!, text, { dm: true }));
     }
     const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
     const scope = { workspaceId, teamId, channelId, generation };
@@ -1343,6 +1389,57 @@ export function createSlackThreads<Profile>(options: {
       return settle({ kind: "withheld", note: "a later progress update replaces it" });
     if (payload.kind === "status" && !(await store.run((q) => slackStatusCurrentSteps(q, payload))))
       return settle({ kind: "withheld", note: "a later status replaced it" });
+    const refused = (caught: unknown) =>
+      caught instanceof SlackApiError && caught.code !== "fatal_error";
+    const failed = (caught: unknown) =>
+      refused(caught)
+        ? settle({
+            kind: "refused",
+            note: `Slack refused it (${(caught as SlackApiError).code}); not resent`,
+          })
+        : settle({ kind: "unknown", note: "Slack's response was lost; not resent" });
+    if (payload.kind === "notice" && payload.dm) {
+      if (!(await store.run((q) => installedSteps(q, home, payload))))
+        return withhold("the installation changed before delivery");
+      const call = await slackFor(payload.workspaceId);
+      if (!(await context.isCurrent())) return;
+      if (!(await store.transaction((q) => slackSendingSteps(q, row, true))))
+        return settle({
+          kind: "unknown",
+          note: "an earlier attempt may have posted it; not resent",
+        });
+      const send = (method: string, body: Record<string, unknown>) =>
+        call(method, body, context.signal).catch(async (caught: unknown) => {
+          if (caught instanceof SlackNotSentError)
+            await store.run((q) => slackSendingSteps(q, row, false));
+          throw caught;
+        });
+      const { slackUserId: user, text } = payload;
+      const sent = await send("conversations.open", { users: user })
+        .then((opened) => {
+          const channel = (opened.channel as { id?: unknown } | undefined)?.id;
+          if (typeof channel !== "string")
+            throw new SlackApiError("conversations.open", "no_channel");
+          return send("chat.postMessage", {
+            channel,
+            text,
+            unfurl_links: false,
+            unfurl_media: false,
+          });
+        })
+        .catch((caught: unknown) => {
+          if (!refused(caught) || !payload.threadTs) throw caught;
+          const thread = { channel: payload.channelId, thread_ts: payload.threadTs };
+          return send("chat.postEphemeral", { ...thread, user, text });
+        })
+        .catch((caught: unknown) => {
+          if (caught instanceof SlackNotSentError) throw caught;
+          return failed(caught).then(() => null);
+        });
+      if (!sent) return;
+      const ts = sent.ts ?? sent.message_ts;
+      return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
+    }
     function* allowedSteps(q: Q): Steps<boolean> {
       if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload, row.id))) return false;
       if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
@@ -1468,10 +1565,6 @@ export function createSlackThreads<Profile>(options: {
       return withhold("access changed or the thread stopped before delivery");
     if (sending === "taken")
       return settle({ kind: "unknown", note: "an earlier attempt may have posted it; not resent" });
-    const failed = (caught: unknown) =>
-      caught instanceof SlackApiError && caught.code !== "fatal_error"
-        ? settle({ kind: "refused", note: `Slack refused it (${caught.code}); not resent` })
-        : settle({ kind: "unknown", note: "Slack's response was lost; not resent" });
     if (payload.kind === "reply") {
       let state = resume;
       const save = (next: SlackStream) =>
@@ -1699,8 +1792,10 @@ export function createSlackLinkPage(options: { store: Db; home: string; now?: ()
         at,
       ),
     );
+    const redirect = `https://slack.com/app_redirect?app=${encodeURIComponent(install.appId ?? "")}&amp;team=${teamId}`;
+    const app = install.appId ? `<a href="${redirect}">Paws app</a>` : "Paws app";
     return page(
-      `<p>From Slack user <code>${slackUserId}</code>, in that thread of channel <code>${channelId}</code>, mention @Paws with:</p><p><code>link ${code}</code></p><p>It works once, for 10 minutes, only from that Slack account, and links it to your Paws account. Never give it to anyone.</p>`,
+      `<p>From Slack user <code>${slackUserId}</code>, send this to the ${app} in a direct message:</p><p><code>link ${code}</code></p><p>It works once, for 10 minutes, only from that Slack account, and links it to your Paws account for channel <code>${channelId}</code>. Never give it to anyone, and don't post it in a channel.</p>`,
       200,
     );
   };

@@ -156,6 +156,10 @@ async function fixture(
       const list = method === "users.list" ? directory.users : members.map((member) => member.id);
       return Response.json(paged(list, body));
     }
+    if (method === "conversations.open") {
+      posted.push({ method, body });
+      return Response.json({ ok: true, channel: { id: `D${body.users}` } });
+    }
     if (method === "users.info") {
       const user = members.find((member) => member.id === body.user);
       const flags = { is_restricted: false, is_ultra_restricted: false };
@@ -427,8 +431,22 @@ async function fixture(
     const response = (await linkPage(
       new Request(`${ORIGIN}/oauth/slack/link?${query}`, { headers }),
     ))!;
-    const found = /link ([A-Z2-7]{4}-[A-Z2-7]{4})/.exec(await response.text())?.[1];
-    return { status: response.status, code: found };
+    const html = await response.text();
+    const found = /link ([A-Z2-7]{4}-[A-Z2-7]{4})/.exec(html)?.[1];
+    return { status: response.status, code: found, html };
+  }
+  const dm = (user: string, text: string, extra: Record<string, unknown> = {}) => ({
+    type: "message",
+    channel_type: "im",
+    channel: `D${user}`,
+    user,
+    text,
+    ts: `${++ts}.000100`,
+    ...extra,
+  });
+  async function pair(slackUser: string, text: string, extra: Record<string, unknown> = {}) {
+    await deliver(dm(slackUser, text, extra));
+    await settle();
   }
   async function say(slackUser: string, text: string, extra: Record<string, unknown> = {}) {
     await deliver(mention(slackUser, text, extra));
@@ -454,17 +472,24 @@ async function fixture(
     const { channel: to, thread_ts } = opened.body;
     return { method: "chat.postMessage", body: { channel: to, thread_ts, text, blocks } };
   };
+  const direct = (post: (typeof posted)[number]) =>
+    post.method === "chat.postMessage" && String(post.body.channel).startsWith("D");
+  const dms = () => posted.filter(direct);
   const posts = (method: string) =>
     method === "chat.postMessage"
       ? posted.flatMap((post) =>
-          post.method === method
+          post.method === method && !direct(post)
             ? [post]
             : post.method === "chat.startStream"
               ? [streamed(post)]
               : [],
         )
       : posted.filter((post) => post.method === method);
-  const notice = () => String(posts("chat.postEphemeral").at(-1)?.body.text);
+  const notice = () =>
+    String(
+      posted.filter((post) => post.method === "chat.postEphemeral" || direct(post)).at(-1)?.body
+        .text,
+    );
   const replies = () =>
     db.run((q) =>
       q.all(
@@ -518,6 +543,9 @@ async function fixture(
     settle,
     code,
     say,
+    dm,
+    pair,
+    dms,
     posts,
     notice,
     replies,
@@ -554,7 +582,7 @@ async function linked(...who: ["ua" | "um", string][]) {
 async function linkedWith(options: Parameters<typeof fixture>[0], ...who: ["ua" | "um", string][]) {
   const f = await fixture(options);
   for (const [user, slackUser] of [["ua", "SADMIN"], ...who] as const) {
-    await f.say(slackUser, `link ${(await f.code(user, slackUser)).code}`);
+    await f.pair(slackUser, `link ${(await f.code(user, slackUser)).code}`);
     expect(f.notice()).toContain("Linked");
   }
   f.posted.length = 0;
@@ -566,30 +594,102 @@ const NONE = { workItems: 0, reservations: 0, linear: 0, jobs: [] };
 test("setup from Slack: only the admin's own Slack user can redeem a fresh code from this installation", async () => {
   const f = await fixture();
   await f.say("SADMIN", "hello");
-  expect(f.posts("chat.postEphemeral")[0]!.body).toMatchObject({
-    channel: "C0ONE",
-    user: "SADMIN",
-  });
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+  expect(f.posts("conversations.open").map((post) => post.body)).toEqual([{ users: "SADMIN" }]);
+  expect(f.dms()[0]!.body).toMatchObject({ channel: "DSADMIN" });
   expect(f.notice()).toContain(`${ORIGIN}/oauth/slack/link?team=T0ONE&channel=C0ONE&user=SADMIN`);
-  expect(await f.code(null, "SADMIN")).toEqual({ status: 401, code: undefined });
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(await f.code(null, "SADMIN")).toMatchObject({ status: 401, code: undefined });
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.notice()).toContain("must be a Paws workspace admin");
   const stolen = (await f.code("ua", "SADMIN")).code;
-  await f.say("SOTHER", `link ${stolen}`);
+  await f.pair("SOTHER", `link ${stolen}`);
   expect(f.notice()).toContain("expired");
   const late = (await f.code("ua", "SADMIN")).code;
   f.advance(11 * 60_000);
-  await f.say("SADMIN", `link ${late}`);
+  await f.pair("SADMIN", `link ${late}`);
   expect(f.notice()).toContain("expired");
   const old = (await f.code("ua", "SADMIN")).code;
   await f.reconnect();
-  await f.say("SADMIN", `link ${old}`);
+  await f.pair("SADMIN", `link ${old}`);
   expect(f.notice()).not.toContain("Linked");
-  await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+  await f.pair("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
   expect(f.notice()).toContain("Linked");
   expect(f.prompts).toEqual([]);
   expect(f.posts("chat.postMessage")).toEqual([]);
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("the sign-in link and the pairing happen in a direct message, and the held question is answered in its thread", async () => {
+  const f = await fixture();
+  const question = f.mention("SADMIN", "what is a monad?");
+  await f.deliver(question);
+  await f.settle();
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+  expect(f.posts("conversations.open").map((post) => post.body)).toEqual([{ users: "SADMIN" }]);
+  expect(f.dms().map((post) => post.body.channel)).toEqual(["DSADMIN"]);
+  expect(String(f.dms()[0]!.body.text)).toContain(
+    `${ORIGIN}/oauth/slack/link?team=T0ONE&channel=C0ONE&user=SADMIN`,
+  );
+  const page = await f.code("ua", "SADMIN");
+  expect(page.status).toBe(200);
+  expect(page.html).toContain('href="https://slack.com/app_redirect?app=A1&amp;team=T0ONE"');
+  await f.pair("SADMIN", `<@${BOT}> link ${page.code}`);
+  expect(String(f.dms().at(-1)!.body.text)).toContain("answering the question you asked");
+  expect(await f.audit("slack.channel_admitted")).toEqual([
+    { user_id: "ua", subject: "slack:T0ONE:C0ONE" },
+  ]);
+  expect(await f.audit("slack.member_linked")).toHaveLength(1);
+  const sent = f.posts("chat.postMessage").map((post) => [post.body.channel, post.body.thread_ts]);
+  expect(sent).toEqual([["C0ONE", question.ts]]);
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.dms().at(-1)!.body).toMatchObject({
+    channel: "DSMEMBER",
+    text: "Linked. Mention @Paws in the channel to ask it something.",
+  });
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+});
+
+test("a code from another user, expired, from another installation or typed in a thread links nothing", async () => {
+  const f = await fixture();
+  const stolen = (await f.code("ua", "SADMIN")).code;
+  await f.pair("SOTHER", `link ${stolen}`);
+  expect(f.dms().at(-1)!.body).toMatchObject({
+    channel: "DSOTHER",
+    text: expect.stringContaining("expired"),
+  });
+  const late = (await f.code("ua", "SADMIN")).code;
+  f.advance(11 * 60_000);
+  await f.pair("SADMIN", `link ${late}`);
+  expect(String(f.dms().at(-1)!.body.text)).toContain("expired");
+  const old = (await f.code("ua", "SADMIN")).code;
+  await f.reconnect();
+  await f.pair("SADMIN", `link ${old}`);
+  expect(String(f.dms().at(-1)!.body.text)).toContain("expired");
+  const kept = (await f.code("ua", "SADMIN")).code;
+  await f.say("SADMIN", `link ${kept}`);
+  expect(f.dms().at(-1)!.body.text).toBe(`Send your code to me here instead: link ${kept}.`);
+  expect(await f.audit("slack.member_linked")).toEqual([]);
+  await f.pair("SADMIN", `link ${kept}`);
+  expect(String(f.dms().at(-1)!.body.text)).toContain("Linked");
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+  expect(f.posts("chat.postMessage")).toEqual([]);
+});
+
+test("a direct message Slack refuses falls back to the ephemeral notice, and other direct messages get no answer", async () => {
+  const f = await fixture();
+  f.failNext["conversations.open"] = "scope";
+  await f.say("SADMIN", "hello");
+  expect(f.dms()).toEqual([]);
+  expect(f.posts("chat.postEphemeral").map((post) => post.body)).toEqual([
+    expect.objectContaining({ channel: "C0ONE", user: "SADMIN" }),
+  ]);
+  expect(f.notice()).toContain("/oauth/slack/link?team=T0ONE&channel=C0ONE&user=SADMIN");
+  f.posted.length = 0;
+  await f.pair("SADMIN", "hello there");
+  await f.pair("SADMIN", "link me please");
+  await f.pair("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`, { channel: "DELSEWHERE" });
+  expect(f.posted.map((post) => post.method)).toEqual(["conversations.open"]);
+  expect(await f.audit("slack.member_linked")).toEqual([]);
 });
 
 test("a linked member's mentions get one reply each, in the thread, with full implementation slots", async () => {
@@ -645,7 +745,8 @@ test("only an explicit, signed, fresh mention from a linked member in the channe
   await f.say("SMEMBER", "unlinked");
   expect(f.prompts).toEqual([]);
   expect(f.posts("chat.postMessage")).toEqual([]);
-  expect(f.posts("chat.postEphemeral").map((post) => post.body.user)).toEqual(["SMEMBER"]);
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+  expect(f.dms().map((post) => post.body.channel)).toEqual(["DSMEMBER"]);
 });
 
 test("Slack sends are at most once: clear refusals retry, unknown and refused outcomes never post again", async () => {
@@ -697,7 +798,7 @@ test("access, audience or installation changes before processing or delivery fen
     if (change === "queued") {
       await f.deliver(f.mention("SADMIN", "queued"));
       await f.reconnect();
-      await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+      await f.pair("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
     } else if (change === "running") {
       f.runner.hold = true;
       await f.deliver(f.mention("SADMIN", "in flight"));
@@ -848,13 +949,11 @@ test("an unlinked member's question is held and answered once, in its thread, af
   expect(f.prompts).toEqual([]);
   expect(await f.sideEffects()).toEqual(NONE);
   await f.say("SOTHER", "me too");
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`, {
-    thread_ts: "1700000999.000100",
-  });
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.notice()).toContain("answering the question you asked before linking");
   await f.deliver(question);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
   expect(f.prompts.map((turn) => turn.userId)).toEqual(["um"]);
   expect(f.prompts[0]!.prompt).toContain("what is a monad?");
   const sent = f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text]);
@@ -866,8 +965,8 @@ test("a held question lapses with its link, and a revoked member's code links an
   const f = await linked();
   await f.say("SMEMBER", "first");
   f.advance(11 * 60_000);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
   await f.revoke("um");
   await f.say("SMEMBER", "second");
   expect(f.prompts).toEqual([]);
@@ -878,9 +977,9 @@ test("a held question lapses with its link, and a revoked member's code links an
 test("a link never moves a Slack account or a Paws account to another, and no one inherits the installer's role", async () => {
   const f = await linked(["um", "SMEMBER"]);
   await f.say("SALT", "hi");
-  await f.say("SALT", `link ${(await f.code("ua", "SALT")).code}`);
+  await f.pair("SALT", `link ${(await f.code("ua", "SALT")).code}`);
   expect(f.notice()).toContain("already linked");
-  await f.say("SADMIN", `link ${(await f.code("um", "SADMIN")).code}`);
+  await f.pair("SADMIN", `link ${(await f.code("um", "SADMIN")).code}`);
   expect(f.notice()).toContain("already linked");
   await f.say("SALT", "still there?");
   await f.say("SADMIN", "who am I?");
@@ -1005,7 +1104,7 @@ test("a member sees and unlinks only their own link, once, and is asked to verif
   await f.say("SADMIN", "and me?");
   expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua"]);
   expect(f.posts("chat.postMessage")).toHaveLength(1);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.notice()).toContain("answering the question you asked before linking");
   expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "um"]);
 });
@@ -1070,8 +1169,8 @@ test("work from before an unlink stays fenced after the same accounts link again
   await f.deliver(f.mention("SMEMBER", "queued before unlink"));
   expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
   f.advance(1);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
   f.runner.hold = false;
   await f.settle();
   expect(f.posts("chat.postMessage")).toEqual([]);
@@ -1115,7 +1214,7 @@ test("a runner helper issued before an unlink is refused after the same accounts
   expect(await allowed(before)).toBe(true);
   expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
   f.advance(1);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.notice()).toContain("Linked");
   expect(await allowed(before)).toBe(false);
   expect(await allowed(f.advance(1))).toBe(true);
@@ -1207,7 +1306,7 @@ test("other channels, workspaces and installations never share the channel's mem
   expect(lastPrompt(f)).not.toContain("canary-other");
   await f.reconnect();
   f.advance(1);
-  await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+  await f.pair("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
   expect(f.notice()).toContain("Linked");
   await f.say("SADMIN", "what is our release branch?");
   expect(lastPrompt(f)).toContain("what is our release branch?");
@@ -1317,7 +1416,7 @@ test("a queued memory listing is bound to its member's link and lists only what 
   f.advance(1);
   await f.settle();
   expect(f.posts("chat.postEphemeral")).toHaveLength(sent);
-  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.notice()).toContain("Linked");
   expect(f.posted.map((post) => String(post.body.text)).join("\n")).not.toContain(
     "canary-list-gone",
