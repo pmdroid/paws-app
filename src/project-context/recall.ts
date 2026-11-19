@@ -4,7 +4,7 @@ import { tokenCounter, type ContextModelBudget } from "./budget";
 import { visibleContextTopics } from "./dream";
 import { canSee, requesterAccess, type ContextAccess } from "./policy";
 import { PROJECT_MEMORY_UNAVAILABLE } from "./remember";
-import { retrieveContextDetail, selectContext, type ContextDetail } from "./select";
+import { rankContextRecords, retrieveContextDetail, type ContextDetail } from "./select";
 
 export const RECALL_LIMITS = { tokens: 2_000, entries: 6 } as const;
 
@@ -108,7 +108,7 @@ export async function recallProjectContext(
       ? JSON.stringify({ id: topic.id, topic: topic.title, body: topic.body })
       : RECALL_NO_ENTRY;
   }
-  const selection = await selectContext(db, access, {
+  const ranking = await rankContextRecords(db, access, {
     namespace,
     requester,
     destination,
@@ -116,22 +116,17 @@ export async function recallProjectContext(
     request: parsed.data.query!,
     toolsTokens: 0,
     model,
-    settings: {
-      memoryTokens: RECALL_LIMITS.tokens,
-      softThresholdTokens: RECALL_LIMITS.tokens - 100,
-      recentTokens: 0,
-    },
+    settings: { recentTokens: 0 },
     now: request.now,
-    recordsOnly: true,
     ...scope,
   });
-  if (selection.status !== "ok") return PROJECT_MEMORY_UNAVAILABLE;
+  if (ranking.status !== "ok") return PROJECT_MEMORY_UNAVAILABLE;
   const count = tokenCounter(model);
   const entries: RecallEntry[] = [];
   let used = 0;
-  for (const source of selection.manifest.sources) {
+  for (const row of ranking.ranked) {
     if (entries.length >= RECALL_LIMITS.entries) break;
-    const found = await detail(source.recordId, RECALL_LIMITS.tokens - used);
+    const found = await detail(row.id, RECALL_LIMITS.tokens - used);
     if (!found) continue;
     const cost = count(found.body);
     if (used + cost > RECALL_LIMITS.tokens) break;

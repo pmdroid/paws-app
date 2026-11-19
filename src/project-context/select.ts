@@ -56,11 +56,6 @@ export type ContextSelectionRequest = {
   readonly model: ContextModelBudget;
   readonly settings?: Partial<ContextBudgetSettings>;
   readonly now: number;
-  /**
-   * Rank individual records only, for a search. A derived summary suppresses the records it
-   * covers from a prompt pack, but a search still finds them; no compaction is requested.
-   */
-  readonly recordsOnly?: boolean;
 };
 
 export type ContextManifestSource = {
@@ -119,7 +114,6 @@ export type ContextSelection =
       pack: string;
       recent: string;
       manifest: ContextManifest;
-      ranked: ContextRecordRow[];
     }
   | { status: "invalid_budget"; errors: string[] }
   | { status: "unavailable"; reason: "refused" | "over_budget" | "request_too_large" };
@@ -415,11 +409,19 @@ function usableSummary(
   );
 }
 
-export async function selectContext(
-  db: Db,
+type ContextPlan = {
+  readonly settings: ContextBudgetSettings;
+  readonly current: ContextRequesterAccess;
+  readonly audience: ContextAudience;
+  readonly count: (text: string) => number;
+  readonly recent: string;
+  readonly tokens: ContextManifest["tokens"];
+};
+
+async function planContext(
   access: ContextAccess,
   request: ContextSelectionRequest,
-): Promise<ContextSelection> {
+): Promise<ContextPlan | Exclude<ContextSelection, { status: "ok" }>> {
   const validation = validateContextBudget(request.settings);
   if (!validation.ok) return { status: "invalid_budget", errors: validation.errors };
   const errors: string[] = [];
@@ -458,9 +460,29 @@ export async function selectContext(
   );
   const recentUsed = count(recent);
   const memoryBudget = Math.max(0, Math.min(settings.memoryTokens, free - recentUsed));
+  return {
+    settings,
+    current,
+    audience: destination.audience,
+    count,
+    recent,
+    tokens: {
+      hardCap,
+      instructions,
+      request: requestTokens,
+      tools: request.toolsTokens,
+      response,
+      recentBudget,
+      recentUsed,
+      memoryBudget,
+      memoryUsed: 0,
+      total: reserved + recentUsed,
+    },
+  };
+}
 
-  const audience = destination.audience;
-  const visibility = {
+function visibilityOf(current: ContextRequesterAccess, audience: ContextAudience) {
+  return {
     userId: current.userId,
     teamIds: current.teamIds,
     repositories: current.repositories,
@@ -468,15 +490,21 @@ export async function selectContext(
     audience,
     audienceLineage: audienceLineage(audience),
   };
-  const summaries = request.recordsOnly
-    ? []
-    : await listContextSummaries(db, {
-        namespace,
-        visibility,
-        now: request.now,
-        limit: CONTEXT_SELECTION_LIMITS.partitions,
-      });
-  const usable = summaries.filter((summary) => usableSummary(summary, current, audience, request));
+}
+
+/**
+ * Reads the requester's current, disclosable records in the request's repository and ref.
+ * Decisions, open questions, inferences and corrections take up to half the candidates.
+ */
+async function readAuthorized(
+  db: Db,
+  plan: ContextPlan,
+  request: ContextSelectionRequest,
+  excludeCoveredBy: readonly string[] = [],
+) {
+  const { namespace } = request;
+  const { settings, current, audience } = plan;
+  const visibility = visibilityOf(current, audience);
   const preserved = await listContextCandidates(db, {
     namespace,
     visibility,
@@ -489,21 +517,23 @@ export async function selectContext(
     visibility,
     now: request.now,
     candidates: settings.candidates - preserved.records.length,
-    excludeCoveredBy: usable.map((summary) => summary.id),
+    ...(excludeCoveredBy.length ? { excludeCoveredBy } : {}),
   });
   const seen = new Set(preserved.records.map((row) => row.id));
-  const candidates = {
+  const records = [...preserved.records, ...general.records.filter((row) => !seen.has(row.id))];
+  return {
     generation: Math.max(preserved.generation, general.generation),
-    records: [...preserved.records, ...general.records.filter((row) => !seen.has(row.id))],
+    read: preserved.records.length + general.records.length,
+    rows: records.filter(
+      (row) =>
+        disclosable(row, current, audience) &&
+        inRequestScope(row.restriction, request.repository, request.ref),
+    ),
   };
-  const rows = candidates.records.filter(
-    (row) =>
-      disclosable(row, current, audience) &&
-      inRequestScope(row.restriction, request.repository, request.ref),
-  );
-  const partitions = partitionsOf(rows);
+}
 
-  const query = contextTerms(
+function queryOf(request: ContextSelectionRequest, settings: ContextBudgetSettings) {
+  return contextTerms(
     [
       request.request,
       request.repository ?? "",
@@ -513,15 +543,105 @@ export async function selectContext(
       .slice(0, settings.requestBytes),
     CONTEXT_SELECTION_LIMITS.queryTerms,
   );
-  const individual = rows;
+}
+
+function recordItems(
+  rows: readonly ContextRecordRow[],
+  request: ContextSelectionRequest,
+  settings: ContextBudgetSettings,
+): Item[] {
+  const query = queryOf(request, settings);
+  return rows.map((row): Item => ({
+    kind: "record",
+    section: sectionOf(row),
+    row,
+    line: itemLine(row),
+    score: score(row, query, request.repository, request.now),
+  }));
+}
+
+export type ContextRanking =
+  | {
+      status: "ok";
+      recent: string;
+      ranked: ContextRecordRow[];
+      manifest: ContextManifest;
+    }
+  | Exclude<ContextSelection, { status: "ok" }>;
+
+/**
+ * Ranks the requester's authorized records for a memory index or a search, with the same budget
+ * and access checks as a prompt pack. It reads no derived summaries, excludes nothing a summary
+ * covers, and writes nothing: no compaction is requested. The manifest lists no sources yet.
+ */
+export async function rankContextRecords(
+  db: Db,
+  access: ContextAccess,
+  request: ContextSelectionRequest,
+): Promise<ContextRanking> {
+  const plan = await planContext(access, request);
+  if (!("settings" in plan)) return plan;
+  const read = await readAuthorized(db, plan, request);
+  const ranked = recordItems(read.rows, request, plan.settings)
+    .sort((a, b) => b.score - a.score)
+    .flatMap((item) => (item.kind === "record" ? [item.row] : []));
+  return {
+    status: "ok",
+    recent: plan.recent,
+    ranked,
+    manifest: {
+      scope: { ...request.namespace },
+      audience: audienceLineage(plan.audience),
+      generation: read.generation,
+      sources: [],
+      references: [],
+      counts: {
+        candidates: read.rows.length,
+        selected: 0,
+        referenced: 0,
+        suppressed: read.rows.length,
+        summaryCovered: 0,
+        summariesWithheld: 0,
+      },
+      tokens: plan.tokens,
+      summary: null,
+      compaction: "not_needed",
+      work: { candidatesRead: read.read, summariesRead: 0 },
+    },
+  };
+}
+
+/**
+ * Builds a full prompt pack: records, the valid derived summaries in place of the records they
+ * cover, and omitted record references. It may request compaction when the projected pack
+ * passes the soft threshold. A memory index and a search use rankContextRecords instead.
+ */
+export async function selectContext(
+  db: Db,
+  access: ContextAccess,
+  request: ContextSelectionRequest,
+): Promise<ContextSelection> {
+  const plan = await planContext(access, request);
+  if (!("settings" in plan)) return plan;
+  const { settings, current, count, audience } = plan;
+  const { namespace } = request;
+  const summaries = await listContextSummaries(db, {
+    namespace,
+    visibility: visibilityOf(current, audience),
+    now: request.now,
+    limit: CONTEXT_SELECTION_LIMITS.partitions,
+  });
+  const usable = summaries.filter((summary) => usableSummary(summary, current, audience, request));
+  const read = await readAuthorized(
+    db,
+    plan,
+    request,
+    usable.map((summary) => summary.id),
+  );
+  const rows = read.rows;
+  const partitions = partitionsOf(rows);
   const ranked: Item[] = [
-    ...individual.map((row): Item => ({
-      kind: "record",
-      section: sectionOf(row),
-      row,
-      line: itemLine(row),
-      score: score(row, query, request.repository, request.now),
-    })),
+    ...recordItems(rows, request, settings),
     ...usable.map((summary): Item => ({
       kind: "summary",
       section: "summary",
@@ -530,14 +650,14 @@ export async function selectContext(
       score: SECTION_BOOST.decisions + 2,
     })),
   ].sort((a, b) => b.score - a.score);
-  const selected = allocate(ranked, memoryBudget, settings.references, count);
+  const selected = allocate(ranked, plan.tokens.memoryBudget, settings.references, count);
   const memoryUsed = count(selected.memoryText);
 
   const summaryTokens = usable.reduce((sum, summary) => sum + count(summary.body), 0);
-  const uncovered = individual.filter(summarizable);
+  const uncovered = rows.filter(summarizable);
   const projected = summaryTokens + uncovered.reduce((sum, row) => sum + count(itemLine(row)), 0);
   let compaction: ContextManifest["compaction"] = "not_needed";
-  if (!request.recordsOnly && projected > settings.softThresholdTokens) {
+  if (projected > settings.softThresholdTokens) {
     const pending = new Set(
       uncovered.map((row) => contextPartition(row.audienceLineage, row.restriction)),
     );
@@ -563,17 +683,16 @@ export async function selectContext(
   const records = selected.items.flatMap((item) => (item.kind === "record" ? [item.row] : []));
   const usedSummary = selected.items.find((item) => item.kind === "summary");
   const summaryCovered = usedSummary ? usedSummary.summary.covered : 0;
-  const total = reserved + recentUsed + memoryUsed;
-  if (total > hardCap) return { status: "unavailable", reason: "over_budget" };
+  const total = plan.tokens.total + memoryUsed;
+  if (total > plan.tokens.hardCap) return { status: "unavailable", reason: "over_budget" };
   return {
     status: "ok",
     pack: selected.memoryText,
-    recent,
-    ranked: ranked.flatMap((item) => (item.kind === "record" ? [item.row] : [])),
+    recent: plan.recent,
     manifest: {
       scope: { ...namespace },
       audience: audienceLineage(audience),
-      generation: candidates.generation,
+      generation: read.generation,
       sources: records.map(manifestSource),
       references: selected.referenced.map(reference),
       counts: {
@@ -584,18 +703,7 @@ export async function selectContext(
         summaryCovered,
         summariesWithheld: summaries.length - usable.length,
       },
-      tokens: {
-        hardCap,
-        instructions,
-        request: requestTokens,
-        tools: request.toolsTokens,
-        response,
-        recentBudget,
-        recentUsed,
-        memoryBudget,
-        memoryUsed,
-        total,
-      },
+      tokens: { ...plan.tokens, memoryUsed, total },
       summary: usedSummary
         ? {
             id: usedSummary.summary.id,
@@ -607,7 +715,7 @@ export async function selectContext(
         : null,
       compaction,
       work: {
-        candidatesRead: preserved.records.length + general.records.length,
+        candidatesRead: read.read,
         summariesRead: summaries.length,
       },
     },

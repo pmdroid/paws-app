@@ -6,7 +6,7 @@ import {
   oneLine,
   sourceLabel,
   type ContextManifest,
-  type ContextSelection,
+  type ContextRanking,
 } from "./select";
 
 export const MEMORY_INDEX_LIMITS = {
@@ -44,7 +44,7 @@ function render(lines: readonly string[], more: number, trailer: string): string
 }
 
 export function renderMemoryIndex(
-  selection: Extract<ContextSelection, { status: "ok" }>,
+  selection: Extract<ContextRanking, { status: "ok" }>,
   options: MemoryIndexOptions,
   count: (text: string) => number,
 ): { text: string; manifest: ContextManifest } | null {
