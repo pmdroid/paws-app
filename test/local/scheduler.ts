@@ -45,6 +45,7 @@ if (process.argv[2] === "--contender") {
     const url = readFileSync(join(root, "database-url"), "utf8");
     const pg = openPostgres(url);
     const db = postgresDb(pg);
+    await db.orm.execute(sql`select 1`);
     writeFileSync(join(root, `ready-${contender}`), "");
     const deadline = Date.now() + 15_000;
     while (!existsSync(join(root, "go"))) {
