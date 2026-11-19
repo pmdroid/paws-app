@@ -671,3 +671,83 @@ test("an exhausted Grok window marks the account exhausted until it resets", asy
     { window: "Weekly", usedPercent: 100, resetsAt: end },
   ]);
 });
+
+async function grokUsage(s: Awaited<ReturnType<typeof setup>>, refresh: boolean) {
+  const keys: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => {
+      const key = request.headers.get("authorization") ?? "";
+      keys.push(key);
+      return key === "Bearer xai-access-2"
+        ? Response.json({ config: { credit_usage_percent: 40, current_period: null } })
+        : new Response(null, { status: 401 });
+    },
+  });
+  cleanup.push(() => server.stop(true));
+  const usage = createAccountUsage({
+    store: s.db,
+    secretsDir: s.dir,
+    now: s.now,
+    readUsage: createUsageReader(
+      { codex: server.url.origin, claude: server.url.origin, grok: server.url.origin },
+      s.now,
+    ),
+    ...(refresh ? { refresh: (id: string) => s.auth.refresh(id) } : {}),
+  });
+  await usage.tick();
+  const row = await s.db.run((q) => providerUsageSteps(q, s.id));
+  const overview = await s.db.run((q) => agentAccountOverviewSteps(q, "workspace", s.now()));
+  return { keys, stored: JSON.parse(row!.limitsJson!), usage: overview[0]!.usage };
+}
+test("an expired Grok key with no earlier usage stores a stale sign-in reason the dashboard shows", async () => {
+  const s = await setup(true, "grok");
+  s.advance(3_700_000);
+  const result = await grokUsage(s, false);
+  expect(result.keys).toEqual([]);
+  const expected = {
+    limits: [],
+    observedAt: s.now(),
+    stale: true,
+    unavailable: "Sign in again to see usage",
+  };
+  expect(result.stored).toEqual(expected);
+  expect(result.usage).toEqual(expected);
+});
+test("an expired Grok key is refreshed with its refresh token and usage is stored", async () => {
+  const s = await setup(true, "grok");
+  s.advance(3_700_000);
+  const result = await grokUsage(s, true);
+  expect(result.keys).toEqual(["Bearer xai-access-2"]);
+  expect(s.xai.calls.at(-1)!.form.grant_type).toBe("refresh_token");
+  expect((await grokFile(s))[SCOPE].key).toBe("xai-access-2");
+  expect(result.stored).toEqual({
+    limits: [{ window: "Monthly", usedPercent: 40, resetsAt: null }],
+    observedAt: s.now(),
+    stale: false,
+  });
+});
+test("a 401 from Grok billing refreshes like expiry and shows the sign-in reason when refresh fails", async () => {
+  const s = await setup(true, "grok");
+  const stored = (await s.db.run((q) => readAgentCredentialSteps(q, s.dir, s.id)))!;
+  const files = JSON.parse(stored.blob!) as { path: string; data: string }[];
+  const auth = JSON.parse(Buffer.from(files[0]!.data, "base64").toString());
+  auth[SCOPE].refresh_token = null;
+  await s.db.transaction((q) =>
+    writeAgentCredentialSteps(q, s.dir, {
+      accountId: s.id,
+      runnerId: null,
+      version: 2,
+      blob: JSON.stringify([
+        { path: ".grok/auth.json", data: Buffer.from(JSON.stringify(auth)).toString("base64") },
+      ]),
+      now: s.now(),
+    }),
+  );
+  const calls = s.xai.calls.length;
+  const result = await grokUsage(s, true);
+  expect(result.keys).toEqual(["Bearer xai-access-1"]);
+  expect(s.xai.calls).toHaveLength(calls);
+  expect(result.stored).toMatchObject({ stale: true, unavailable: "Sign in again to see usage" });
+});

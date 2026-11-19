@@ -1284,7 +1284,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     atStartup: true,
     run: () => agentAuth.tick(),
   });
-  const accountUsage = createAccountUsage({ store, secretsDir: paths.secretsDir });
+  const accountUsage = createAccountUsage({
+    store,
+    secretsDir: paths.secretsDir,
+    refresh: (id) => agentAuth.refresh(id),
+  });
   periodic.push({
     queue: "agent.usage.poll",
     everyMs: 300_000,

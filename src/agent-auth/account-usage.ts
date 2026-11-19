@@ -18,11 +18,12 @@ export function createAccountUsage(options: {
   secretsDir: string;
   now?: () => number;
   readUsage?: ReturnType<typeof createUsageReader>;
+  refresh?: (accountId: string) => Promise<boolean>;
 }) {
   const now = options.now ?? Date.now;
   const readUsage = options.readUsage ?? createUsageReader(undefined, now);
   const active = new Map<string, Promise<void>>();
-  async function read(account: Awaited<ReturnType<typeof accounts>>[number]) {
+  async function read(account: Awaited<ReturnType<typeof accounts>>[number], refreshed = false) {
     const startedAt = now();
     const credential = await options.store.run((q) =>
       readAgentCredentialSteps(q, options.secretsDir, account.id),
@@ -38,6 +39,15 @@ export function createAccountUsage(options: {
         yield* saveProviderUsageSteps(q, account, limits, startedAt);
       });
     } catch (error) {
+      const expired = error instanceof UsageAuthExpired || error instanceof UsageCredentialExpired;
+      if (
+        expired &&
+        !refreshed &&
+        account.agent === "grok" &&
+        options.refresh &&
+        (await options.refresh(account.id))
+      )
+        return read(account, true);
       await options.store.transaction(function* (q) {
         const current = yield* readAgentCredentialSteps(q, options.secretsDir, account.id);
         if (current?.version !== credential.version) return;
@@ -46,8 +56,8 @@ export function createAccountUsage(options: {
           account,
           error instanceof UsageUnavailable
             ? error.message
-            : error instanceof UsageAuthExpired || error instanceof UsageCredentialExpired
-              ? null
+            : expired
+              ? "Sign in again to see usage"
               : "Usage unavailable",
           now(),
         );
