@@ -66,6 +66,15 @@ Paws keeps a memory for the channel, so a new thread can build on what was decid
 - When an entry an answer used is corrected or forgotten, or the member's access ends, before Paws posts the answer, Paws withholds it. If that happens before the answer is queued, the member sees a message, visible only to them, asking them to mention Paws again.
 - Entries expire after 180 days. Memory needs no runner and starts no work: remembering, listing, correcting and forgetting work while every runner slot is busy, and post nothing beyond the reply to the member who asked.
 
+### Answers drawn from code
+
+On top of the [repository checks](#read-a-repository), Paws checks who can read the channel before it reads a thread's repository, again before it queues an answer drawn from code, and again on every delivery attempt, including a retry after Slack refused it:
+
+- A workspace admin sets, per repository, whether answers drawn from its code may be shared in Slack: `PUT /api/workspaces/slack/disclosure` with `{"repository": "owner/name", "level": "workspace"}`, or `"none"` to stop. `GET` on the same path lists the repositories allowed. Only admins can read or change it, and each change is in the workspace audit as `slack.disclosure_changed`. A repository that isn't listed is never shared, public GitHub repositories included, so set each attached or channel repository here too.
+- `workspace` allows a channel inside this Slack workspace, public or private, whose members include no guest. Paws reads the channel's flags (`is_private`, `is_shared`, `is_ext_shared`, `is_org_shared`, `is_pending_ext_shared`) and every member's guest flags. A channel shared across an Enterprise organization, with Slack Connect, or with a pending external invitation is never allowed. A missing flag, a missing scope, an unreadable member or a channel of more than 100 members counts as unverified, and Paws doesn't post the answer.
+- An earlier answer that a later turn builds on brings its repository with it, as above, and gets the same checks. An earlier answer whose repository can't be shared in the channel any more is left out of later turns; the question stays.
+- When a check fails, Paws doesn't read the repository or post the answer. Instead it posts a message visible only to the person who asked, in the same thread, saying an answer was withheld without naming the repository or quoting anything from it. It opens no direct message and posts nowhere else.
+
 ### Unlink and revoke
 
 - **Settings › Account** shows your own Slack link, with **Unlink**. Mentioning `@Paws unlink` in the channel unlinks the Slack account that posted it. Either way only your own link ends: the installation, the channel setup and other members' links stay as they are.

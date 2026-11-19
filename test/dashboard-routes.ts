@@ -410,6 +410,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/workspaces/slack/adopt", "delegated", "src/slack"),
   api("GET DELETE", "/api/workspaces/slack/link", "delegated", "src/slack"),
   api("GET DELETE", "/api/workspaces/slack/links", "delegated", "src/slack"),
+  api("GET PUT", "/api/workspaces/slack/disclosure", "delegated", "src/slack"),
   api("GET PUT", "/api/settings/slack-app", "delegated", "src/slack"),
   api("GET POST", "/onboard/:id", "delegated", "src/onboarding"),
   api("GET POST", "/onboard/:id/github", "delegated", "src/onboarding", { via: "/onboard/:id" }),

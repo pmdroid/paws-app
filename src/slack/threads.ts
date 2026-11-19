@@ -36,8 +36,10 @@ import {
   SlackNotSentError,
   slackCaller,
   slackChannelAudience,
+  type SlackAudience,
   type SlackCall,
 } from "./api";
+import { slackSourceDisclosableSteps } from "./disclosure";
 import {
   createSlackChannelMemory,
   slackMemoryCommand,
@@ -112,6 +114,7 @@ type Notice = Place & {
   text: string;
   member?: { userId: string; linkId: string };
   listing?: boolean;
+  safe?: boolean;
 };
 type Payload = Reply | Notice;
 
@@ -161,6 +164,8 @@ const NOTICES = {
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
   memory_changed:
     "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
+  source_withheld:
+    "Paws didn't post its answer here because it drew on code, and Paws couldn't confirm that everyone who can read this channel may see that code. Ask a Paws workspace admin where Paws may share answers from code.",
   unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
   denied:
     "Paws can't read this thread's repository for you, so it didn't answer. Mention `@Paws repo off` to ask without it.",
@@ -570,7 +575,7 @@ export function createSlackThreads<Profile>(options: {
     });
     if (gate.kind === "ignore") return;
     const call = await slackFor(workspaceId);
-    if ((await slackChannelAudience(call, channelId, context.signal)) !== "internal") return;
+    if ((await slackChannelAudience(call, channelId, context.signal)).kind !== "public") return;
     const code = LINK_CODE.exec(mention.text)?.[1];
     if (code) {
       const outcome = await claim(place, code);
@@ -633,6 +638,19 @@ export function createSlackThreads<Profile>(options: {
       return { attached, turns };
     });
     if (!earlier) return;
+    const recentTurns = earlier.turns.slice(-10);
+    const named = [
+      ...recentTurns.flatMap((turn) => (turn.sources ?? []).map((ref) => ref.repository)),
+      ...(earlier.attached ? [earlier.attached.repository] : []),
+    ];
+    const shareable = named.length
+      ? await disclosableSources(call, place, named, context.signal)
+      : new Set<string>();
+    if (earlier.attached && !shareable.has(earlier.attached.repository.toLowerCase()))
+      return void (await notice(place, `${dedupeKey}:source`, NOTICES.source_withheld, {
+        member: asker,
+        safe: true,
+      }));
     const source = earlier.attached
       ? await sources.prepare({
           scope: { ...scope, userId: gate.userId },
@@ -652,9 +670,9 @@ export function createSlackThreads<Profile>(options: {
     const checked = new Map<string, boolean>();
     const sourceChecked = new Map<string, boolean>();
     const turns: { slackUserId: string; question: string; text: string | null }[] = [];
-    for (const turn of earlier.turns.slice(-10)) {
+    for (const turn of recentTurns) {
       const refs = uniqueRefs(turn.contexts ?? []);
-      let valid = true;
+      let valid = (turn.sources ?? []).every((ref) => shareable.has(ref.repository.toLowerCase()));
       for (const ref of refs) {
         const id = refId(ref);
         if (!checked.has(id))
@@ -730,7 +748,7 @@ export function createSlackThreads<Profile>(options: {
     const signal = AbortSignal.any([context.signal, stop.signal]);
     const outcome = await lane
       .reply({ workspaceId, scope: replyScope, profile: options.profile(), prompt, signal })
-      .catch((error: unknown): { status: string; text?: string } => {
+      .catch((error: unknown): Awaited<ReturnType<typeof lane.reply>> => {
         if (stop.signal.aborted) return { status: "stopped" };
         throw error;
       })
@@ -755,6 +773,15 @@ export function createSlackThreads<Profile>(options: {
     const dependencies = uniqueSources([...keptSources.values(), ...(used ? [used] : [])]);
     if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return void (await notice(place, replyKey, NOTICES.source_changed));
+    if (dependencies.length) {
+      const needed = dependencies.map((ref) => ref.repository);
+      const allowed = await disclosableSources(call, place, needed, context.signal);
+      if (!needed.every((name) => allowed.has(name.toLowerCase())))
+        return void (await notice(place, replyKey, NOTICES.source_withheld, {
+          member: asker,
+          safe: true,
+        }));
+    }
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
       if (yield* stoppedSteps(q, place, mention.ts)) return;
@@ -790,6 +817,22 @@ export function createSlackThreads<Profile>(options: {
     for (const source of uniqueSources(refs))
       if (!(await sources.current({ scope, userId, source, signal }))) return false;
     return true;
+  }
+
+  async function disclosableSources(
+    call: SlackCall,
+    place: Place,
+    repositories: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>> {
+    const audience = await slackChannelAudience(call, place.channelId, signal, { guests: true });
+    return store.run(function* (q) {
+      const allowed = new Set<string>();
+      for (const repository of repositories)
+        if (yield* slackSourceDisclosableSteps(q, place.workspaceId, repository, audience))
+          allowed.add(repository.toLowerCase());
+      return allowed;
+    });
   }
 
   async function currentMemory(
@@ -828,6 +871,33 @@ export function createSlackThreads<Profile>(options: {
         gate.linkId === (payload.linkId ?? "")
       );
     }
+    const repositories =
+      payload.kind === "reply" ? (payload.sources ?? []).map((ref) => ref.repository) : [];
+    function* withholdSourceSteps(q: Q): Steps<void> {
+      if (payload.kind !== "reply") return;
+      const withheld: Payload = {
+        ...payload,
+        kind: "notice",
+        text: NOTICES.source_withheld,
+        member: { userId: payload.userId, linkId: payload.linkId ?? "" },
+        safe: true,
+      };
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "slack",
+        op: "chat.postEphemeral",
+        idempotencyKey: `slack:notice:${row.idempotencyKey}`,
+        payload: withheld,
+        now: now(),
+      });
+    }
+    function* disclosedSteps(q: Q, audience: SlackAudience): Steps<boolean> {
+      for (const repository of repositories)
+        if (!(yield* slackSourceDisclosableSteps(q, payload.workspaceId, repository, audience))) {
+          if (audience.kind !== "unavailable") yield* withholdSourceSteps(q);
+          return false;
+        }
+      return true;
+    }
     const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
     const sourceCurrent = () =>
       payload.kind !== "reply" ||
@@ -837,11 +907,20 @@ export function createSlackThreads<Profile>(options: {
       (payload.kind !== "reply" || (await currentMemory(payload, payload.userId, refs))) &&
       (await sourceCurrent());
     const call = allowed ? await slackFor(payload.workspaceId) : null;
-    if (
-      !call ||
-      (await slackChannelAudience(call, payload.channelId, context.signal)) !== "internal"
-    )
+    const audience = call
+      ? await slackChannelAudience(call, payload.channelId, context.signal, {
+          guests: repositories.length > 0,
+        })
+      : null;
+    const reachable =
+      payload.kind === "notice" && payload.safe
+        ? audience?.kind !== "unavailable"
+        : audience?.kind === "public";
+    if (!call || !audience || !reachable) {
+      if (repositories.length && audience && audience.kind !== "unavailable")
+        await store.transaction(withholdSourceSteps);
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
+    }
     if (!(await context.isCurrent())) return;
     if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
       return settle({ kind: "withheld", note: "memory changed before delivery" });
@@ -853,6 +932,7 @@ export function createSlackThreads<Profile>(options: {
         : payload.text;
     const sending = await store.transaction(function* (q) {
       if (!(yield* allowedSteps(q))) return "stopped";
+      if (!(yield* disclosedSteps(q, audience))) return "stopped";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
     });
     if (sending === "stopped")
