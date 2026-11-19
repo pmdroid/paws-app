@@ -1,3 +1,6 @@
+import type { Q, Steps } from "../db";
+import { installedSlackTokensSteps } from "./oauth";
+
 export const SLACK_CALLBACK_PATH = "/oauth/slack/callback";
 
 const CAPABILITIES = {
@@ -25,4 +28,17 @@ export function slackCapabilities(scope: string) {
     ) as Record<keyof typeof CAPABILITIES, ReturnType<typeof state>>),
     code: { ready: false, message: "Slack Code is not available on this connection yet." },
   };
+}
+
+export type SlackCapabilities = ReturnType<typeof slackCapabilities>;
+
+export function* slackConnectionsSteps(
+  q: Q,
+  home: string,
+): Steps<{ teamId: string; capabilities: SlackCapabilities }[]> {
+  const tokens = yield* installedSlackTokensSteps(q, home);
+  return tokens.map((token) => ({
+    teamId: token.teamId,
+    capabilities: slackCapabilities(token.scope),
+  }));
 }

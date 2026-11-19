@@ -32,6 +32,7 @@ import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../i
 import { createLinearClient, readStoredToken } from "../linear";
 import { doctorAgentProfiles } from "./agents";
 import type { SavedStore } from "./store";
+import { slackConnectionsSteps, type SlackCapabilities } from "../slack";
 
 /** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
@@ -80,6 +81,7 @@ export type ProbeFacts = {
   githubDelivery?: { event: string; receivedAt: number } | null;
   exeDevToken?: ExeDevTokenStatus;
   tailscaleAuthKey?: TailscaleAuthKeyStatus;
+  slack?: { teamId: string; capabilities: SlackCapabilities }[] | null;
   publicUrl: string | null;
   /** `owner/repo` names the workspace chose, plus any named in `config.toml`. */
   repos: string[];
@@ -140,6 +142,9 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
     ),
     githubDelivery: await readPawsDb(store, (db) => db.run(latestGitHubDeliverySteps)),
     workspace: await readPawsDb(store, (db) => db.run(oldestWorkspaceNameSteps)),
+    slack: await readPawsDb(store, (db) =>
+      db.run((q) => slackConnectionsSteps(q, runtime.env.home)),
+    ),
     publicUrl: runtime.publicUrl,
     repos,
     team: runtime.linearTeam,

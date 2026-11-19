@@ -57,6 +57,7 @@ async function fixture() {
   const shared: Record<string, boolean> = { C0ONE: false, C0TWO: false };
   const posted: { method: string; body: Record<string, unknown> }[] = [];
   const failNext: Record<string, Fail | undefined> = {};
+  const hooks: { onInfo?: () => Promise<unknown> } = {};
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -67,6 +68,9 @@ async function fixture() {
     if (fail === "refused") throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
     if (fail === "scope") return Response.json({ ok: false, error: "missing_scope" });
     if (method === "conversations.info") {
+      const hook = hooks.onInfo;
+      hooks.onInfo = undefined;
+      await hook?.();
       const external = shared[body.channel as string];
       if (external === undefined) return Response.json({ ok: false, error: "channel_not_found" });
       const flags = { is_shared: external, is_ext_shared: external, is_org_shared: false };
@@ -267,6 +271,7 @@ async function fixture() {
     shared,
     posted,
     failNext,
+    hooks,
     prompts,
     runner,
     helpers,
@@ -484,4 +489,101 @@ test("another member in the same thread never sees a member's turns", async () =
   await f.say("SMEMBER", "what was said?", { thread_ts: root.ts });
   expect(f.prompts.at(-1)!.userId).toBe("um");
   expect(f.prompts.at(-1)!.prompt).not.toContain("canary-42");
+});
+
+const conversations = async (f: Awaited<ReturnType<typeof fixture>>, threadTs?: string) =>
+  (await f.db.run((q) => q.all(q.orm.select().from(q.t.slackConversation)))).filter(
+    (row) => threadTs === undefined || row.threadTs === threadTs,
+  );
+
+test("a thread's conversation is recorded once with its installation, channel, thread and first actor", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const before = (await conversations(f)).length;
+  const root = f.mention("SADMIN", "plan the release");
+  await f.deliver(f.mention("SADMIN", "forged"), { signature: `v0=${"0".repeat(64)}` });
+  await f.deliver(f.mention("SADMIN", "stale"), { at: Date.now() - 600_000 });
+  await f.deliver(f.mention("SADMIN", "other team"), { team: "T0NINE" });
+  expect((await conversations(f)).length).toBe(before);
+  await f.deliver(root, { eventId: "EvROOT01" });
+  await f.settle();
+  await f.deliver(root, { eventId: "EvROOT01" });
+  await f.say("SMEMBER", "and the changelog?", { thread_ts: root.ts });
+  await f.deliver(root, { eventId: "EvROOT01" });
+  await f.settle();
+  const rows = await conversations(f, root.ts);
+  expect(rows).toEqual([
+    expect.objectContaining({
+      workspaceId: "W1",
+      teamId: "T0ONE",
+      appId: "A1",
+      channelId: "C0ONE",
+      threadTs: root.ts,
+      startedBySlackUserId: "SADMIN",
+      startedEventId: "EvROOT01",
+      replyChannelId: "C0ONE",
+      replyThreadTs: root.ts,
+      workItemId: null,
+      issueId: null,
+      stoppedTs: null,
+    }),
+  ]);
+  const events = await f.db.run((q) => q.all(q.orm.select().from(q.t.inboxEvent)));
+  const ofThread = events
+    .map((event) => event.payload as unknown as { conversationId: string; mention: SlackEvent })
+    .filter((event) => event.mention.threadTs === root.ts);
+  expect(ofThread.map((event) => [event.conversationId, event.mention.slackUserId])).toEqual([
+    [rows[0]!.id, "SADMIN"],
+    [rows[0]!.id, "SMEMBER"],
+  ]);
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "um"]);
+  expect(f.posts("chat.postMessage")).toHaveLength(2);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+type SlackEvent = { threadTs: string; slackUserId: string };
+
+test("a linked member's stop ends the running turn while runners are full, and fences delayed mentions", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.runner.hold = true;
+  const root = f.mention("SADMIN", "write a long essay");
+  await f.deliver(root);
+  const running = f.settle();
+  while (!(await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+    await Bun.sleep(2);
+  const outsider = f.mention("SOTHER", "stop", { thread_ts: root.ts });
+  await f.deliver(outsider);
+  expect((await conversations(f, root.ts))[0]!.stoppedTs).toBeNull();
+  const stop = f.mention("SMEMBER", "stop", { thread_ts: root.ts });
+  await f.deliver(stop);
+  await f.deliver(stop);
+  expect(await conversations(f, root.ts)).toEqual([
+    expect.objectContaining({ stoppedTs: stop.ts, stoppedBySlackUserId: "SMEMBER" }),
+  ]);
+  await running;
+  f.runner.hold = false;
+  await f.deliver(root, { eventId: "EvLATE001" });
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  const notices = f.posts("chat.postEphemeral").map((post) => [post.body.user, post.body.text]);
+  expect(notices).toContainEqual(["SMEMBER", expect.stringContaining("Stopped")]);
+  expect(notices).toHaveLength(1);
+  await f.say("SADMIN", "and now a short one", { thread_ts: root.ts });
+  expect(f.posts("chat.postMessage").map((post) => post.body.thread_ts)).toEqual([root.ts]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a stop that lands while a reply is being prepared for delivery withholds it, and stops never move back", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.mention("SADMIN", "quick one");
+  await f.deliver(root);
+  await f.runJobs();
+  const stop = f.mention("SMEMBER", "stop", { thread_ts: root.ts });
+  const earlier = f.mention("SADMIN", "stop", { thread_ts: root.ts, ts: "1690000000.000100" });
+  expect(await f.replies()).toEqual([expect.objectContaining({ status: "pending" })]);
+  f.hooks.onInfo = () => f.deliver(stop);
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  await f.deliver(earlier);
+  expect((await conversations(f, root.ts))[0]!.stoppedTs).toBe(stop.ts);
 });

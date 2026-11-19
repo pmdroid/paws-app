@@ -219,6 +219,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "install",
     "auth",
     "closeout-spec",
+    "slack",
   ],
   install: ["journal", "acp", "config"],
   "install-host": ["config", "deployment"],

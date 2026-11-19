@@ -10,7 +10,8 @@ export {
 export type { SlackApp, SlackToken } from "./oauth";
 export { handleSlackWebhook } from "./webhook";
 export { createSlackConnect } from "./connect";
-export { SLACK_INSTALL_SCOPES } from "./manifest";
+export { SLACK_INSTALL_SCOPES, slackCapabilities, slackConnectionsSteps } from "./manifest";
+export type { SlackCapabilities } from "./manifest";
 export { createSlackRevocation } from "./revoke";
 export {
   acceptSlackMention,
