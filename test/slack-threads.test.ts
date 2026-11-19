@@ -72,6 +72,12 @@ async function fixture(
   const posted: { method: string; body: Record<string, unknown> }[] = [];
   const failNext: Record<string, Fail | undefined> = {};
   const hooks: { onInfo?: () => Promise<unknown> } = {};
+  const channel: Record<string, unknown> = {};
+  const members: { id: string; is_restricted?: boolean; is_ultra_restricted?: boolean }[] = [
+    { id: "SADMIN" },
+    { id: "SMEMBER" },
+    { id: BOT },
+  ];
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -87,8 +93,25 @@ async function fixture(
       await hook?.();
       const external = shared[body.channel as string];
       if (external === undefined) return Response.json({ ok: false, error: "channel_not_found" });
-      const flags = { is_shared: external, is_ext_shared: external, is_org_shared: false };
-      return Response.json({ ok: true, channel: { id: body.channel, is_channel: true, ...flags } });
+      const flags = {
+        is_shared: external,
+        is_ext_shared: external,
+        is_org_shared: false,
+        is_pending_ext_shared: false,
+      };
+      const info = { id: body.channel, is_channel: true, is_private: false, ...flags, ...channel };
+      return Response.json({ ok: true, channel: info });
+    }
+    if (method === "conversations.members") {
+      const start = Number(body.cursor ?? 0);
+      const page = members.slice(start, start + Number(body.limit)).map((member) => member.id);
+      const next = start + page.length < members.length ? String(start + page.length) : "";
+      return Response.json({ ok: true, members: page, response_metadata: { next_cursor: next } });
+    }
+    if (method === "users.info") {
+      const user = members.find((member) => member.id === body.user);
+      const flags = { is_restricted: false, is_ultra_restricted: false };
+      return Response.json({ ok: true, user: { ...flags, ...user } });
     }
     posted.push({ method, body });
     if (fail === "lost") throw new Error("socket hang up");
@@ -335,6 +358,10 @@ async function fixture(
     db,
     home,
     shared,
+    channel,
+    members,
+    cookies,
+    csrf,
     posted,
     failNext,
     hooks,
@@ -1247,7 +1274,7 @@ const V1 = "b".repeat(40);
 const OSS = "c".repeat(40);
 const NEXT = "d".repeat(40);
 
-async function withSource() {
+async function withSource(disclosed: string[] = ["acme/app", "acme/oss"]) {
   const reader = createFakeSnapshotReader({
     "acme/app": {
       visibility: "private",
@@ -1289,6 +1316,8 @@ async function withSource() {
       now: f.now(),
     });
   await teams(["tA"]);
+  for (const repository of disclosed)
+    expect((await disclose(f, "ua", repository, "workspace")).status).toBe(200);
   const thread = async (slackUser: string, attach: string) => {
     const root = f.mention(slackUser, attach);
     await f.deliver(root);
@@ -1445,4 +1474,182 @@ test("binary files count against the four-file read limit", async () => {
   await f.say("SADMIN", "channel repo acme/app");
   await f.say("SMEMBER", "billing?");
   expect(f.reader.calls.filter((call) => call.method === "read").length).toBeLessThanOrEqual(4);
+});
+
+const SOURCE_WITHHELD = /couldn't confirm that everyone who can read this channel/;
+
+async function sourceFixture(policy: "none" | "workspace" = "workspace") {
+  const f = await withSource(policy === "workspace" ? ["Acme/App"] : []);
+  await f.say("SADMIN", "channel repo acme/app");
+  f.posted.length = 0;
+  return f;
+}
+
+async function disclose(
+  f: Awaited<ReturnType<typeof fixture>>,
+  user: "ua" | "um",
+  repository: string,
+  level: string,
+) {
+  const links = createSlackLinks({ store: f.db, home: f.home, origin: ORIGIN });
+  const response = (await links(
+    new Request(`${ORIGIN}/api/workspaces/slack/disclosure`, {
+      method: "PUT",
+      headers: { origin: ORIGIN, cookie: f.cookies[user]!, "x-paws-csrf": f.csrf[user]! },
+      body: JSON.stringify({ repository, level }),
+    }),
+  ))!;
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+function leaked(f: Awaited<ReturnType<typeof fixture>>) {
+  return f.posted.filter((post) => /canary-main|acme\/app/i.test(JSON.stringify(post.body)));
+}
+
+test("a source answer reaches a public internal channel only when its repository's policy allows it", async () => {
+  const f = await sourceFixture("none");
+  await f.say("SMEMBER", "how does billing work?");
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(f.posts("chat.postEphemeral").at(-1)!.body).toMatchObject({
+    user: "SMEMBER",
+    thread_ts: expect.any(String),
+  });
+  expect(f.prompts).toEqual([]);
+  expect(f.reader.calls).toEqual([]);
+  expect(leaked(f)).toEqual([]);
+  expect(f.posts("conversations.open")).toEqual([]);
+  expect(await f.sideEffects()).toEqual(NONE);
+
+  expect((await disclose(f, "um", "acme/app", "workspace")).status).toBe(403);
+  expect((await disclose(f, "ua", "not a repo", "workspace")).status).toBe(400);
+  expect((await disclose(f, "ua", "acme/app", "everyone")).status).toBe(400);
+  expect((await disclose(f, "ua", "acme/app", "workspace")).body).toEqual({
+    repositories: { "acme/app": "workspace" },
+  });
+  expect(await f.audit("slack.disclosure_changed")).toEqual([
+    { user_id: "ua", subject: "acme/app:workspace" },
+  ]);
+  f.posted.length = 0;
+  await f.say("SMEMBER", "and billing now?");
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
+    expect.stringContaining("acme/app"),
+  ]);
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+});
+
+test("guests, an incomplete member list or a missing scope withhold a source answer", async () => {
+  for (const change of ["guest", "single-channel guest", "large", "scope"] as const) {
+    const f = await sourceFixture();
+    if (change === "guest") f.members.push({ id: "SGUEST", is_restricted: true });
+    if (change === "single-channel guest")
+      f.members.push({ id: "SGUEST", is_ultra_restricted: true });
+    if (change === "large") for (let i = 0; i < 120; i++) f.members.push({ id: `SPEOPLE${i}` });
+    if (change === "scope") f.failNext["conversations.members"] = "scope";
+    await f.say("SMEMBER", `billing question with ${change}`);
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    expect(f.notice()).toMatch(SOURCE_WITHHELD);
+    expect(f.prompts).toEqual([]);
+    expect(leaked(f)).toEqual([]);
+  }
+});
+
+test("a channel that turns private, Enterprise-shared or Slack Connect before delivery gets no source canary", async () => {
+  const kinds = {
+    private: { is_private: true },
+    enterprise: { is_shared: true, is_org_shared: true },
+    connect: { is_shared: true, is_ext_shared: true },
+    pending: { is_pending_ext_shared: true },
+    unknown: { is_org_shared: undefined },
+    "pending unknown": { is_pending_ext_shared: undefined },
+  } as const;
+  for (const [kind, flags] of Object.entries(kinds)) {
+    const f = await sourceFixture();
+    await f.deliver(f.mention("SMEMBER", `billing question in ${kind}`));
+    await f.runJobs();
+    expect(await f.replies()).toHaveLength(1);
+    expect(lastPrompt(f)).toContain("canary-main");
+    Object.assign(f.channel, flags);
+    await f.settle();
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+    expect(f.notice()).toMatch(SOURCE_WITHHELD);
+    expect(leaked(f)).toEqual([]);
+    expect(f.posts("conversations.open")).toEqual([]);
+  }
+});
+
+test("each delivery retry checks the audience and the policy again", async () => {
+  const f = await sourceFixture();
+  f.failNext["chat.postMessage"] = "rate";
+  await f.say("SMEMBER", "billing question, first try rate limited");
+  expect((await f.replies())[0]).toMatchObject({ status: "pending" });
+  f.members.push({ id: "SGUEST", is_restricted: true });
+  f.advance(60_000);
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+
+  const g = await sourceFixture();
+  await g.deliver(g.mention("SMEMBER", "billing question while the policy changes"));
+  await g.runJobs();
+  g.hooks.onInfo = () => disclose(g, "ua", "acme/app", "none");
+  await g.settle();
+  expect(g.posts("chat.postMessage")).toEqual([]);
+  expect(leaked(g)).toEqual([]);
+  expect(g.notice()).toMatch(SOURCE_WITHHELD);
+});
+
+test("a follow-up that reuses an earlier source answer is gated by its repository's disclosure", async () => {
+  const f = await sourceFixture();
+  const root = f.mention("SMEMBER", "how does billing work?");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
+    expect.stringContaining("acme/app"),
+  ]);
+  await f.say("SMEMBER", "repo off", { thread_ts: root.ts });
+
+  await f.deliver(f.mention("SMEMBER", "summarize that again", { thread_ts: root.ts }));
+  await f.runJobs();
+  expect(lastPrompt(f)).toContain("acme/app");
+  expect(sourcesOf((await f.replies()).at(-1)!)).toEqual([
+    { repository: "acme/app", ref: "main", commit: MAIN },
+  ]);
+  await disclose(f, "ua", "acme/app", "none");
+  f.posted.length = 0;
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(leaked(f)).toEqual([]);
+
+  f.posted.length = 0;
+  await f.say("SMEMBER", "repeat the billing answer", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("acme/app");
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  expect(leaked(f)).toEqual([]);
+  expect(sourcesOf((await f.replies()).at(-1)!)).toBeUndefined();
+
+  await disclose(f, "ua", "acme/app", "workspace");
+  f.members.push({ id: "SGUEST", is_restricted: true });
+  f.posted.length = 0;
+  await f.say("SMEMBER", "one last time", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("acme/app");
+  expect(leaked(f)).toEqual([]);
+});
+
+test("each repository's disclosure is its own record, so concurrent changes never undo each other", async () => {
+  const f = await sourceFixture();
+  await Promise.all([
+    disclose(f, "ua", "acme/app", "none"),
+    disclose(f, "ua", "acme/other", "workspace"),
+  ]);
+  expect((await disclose(f, "ua", "acme/third", "workspace")).body).toEqual({
+    repositories: { "acme/other": "workspace", "acme/third": "workspace" },
+  });
+  await f.say("SMEMBER", "billing after the revoke");
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.prompts).toEqual([]);
+  expect(leaked(f)).toEqual([]);
 });

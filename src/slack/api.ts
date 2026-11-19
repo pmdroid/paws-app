@@ -57,21 +57,80 @@ export function slackCaller(fetchImpl: SlackFetch, token: string): SlackCall {
 }
 
 const GONE = new Set(["channel_not_found", "not_in_channel", "is_archived"]);
+const MEMBER_LIMIT = 100;
+
+export type SlackAudience =
+  | { kind: "unavailable" }
+  | {
+      kind: "public" | "private" | "org_shared" | "ext_shared" | "pending_ext_shared";
+      guests: "none" | "present" | "unknown";
+    };
 
 export async function slackChannelAudience(
   call: SlackCall,
   channelId: string,
   signal: AbortSignal,
-): Promise<"internal" | "external" | "unavailable"> {
-  const data = await call("conversations.info", { channel: channelId }, signal).catch(
-    (caught: unknown) => {
-      if (caught instanceof SlackApiError && GONE.has(caught.code)) return null;
-      throw caught;
-    },
-  );
+  options: { guests?: boolean } = {},
+): Promise<SlackAudience> {
+  const data = await call("conversations.info", { channel: channelId }, signal).catch(gone);
   const c = (data?.channel ?? null) as Record<string, unknown> | null;
-  if (c?.id !== channelId || c.is_archived === true || c.is_channel !== true) return "unavailable";
-  if (c.is_private === true || c.is_im === true || c.is_mpim === true) return "unavailable";
-  const shared = [c.is_shared, c.is_ext_shared, c.is_org_shared].some((flag) => flag !== false);
-  return shared || c.is_pending_ext_shared === true ? "external" : "internal";
+  if (c?.id !== channelId || c.is_archived === true || c.is_channel !== true)
+    return { kind: "unavailable" };
+  if (c.is_im === true || c.is_mpim === true) return { kind: "unavailable" };
+  const kind =
+    c.is_ext_shared !== false
+      ? "ext_shared"
+      : c.is_pending_ext_shared !== false
+        ? "pending_ext_shared"
+        : c.is_org_shared !== false
+          ? "org_shared"
+          : c.is_shared !== false
+            ? "ext_shared"
+            : c.is_private !== false
+              ? "private"
+              : "public";
+  const guests = options.guests ? await channelGuests(call, channelId, signal) : "unknown";
+  return { kind, guests };
+}
+
+async function channelGuests(
+  call: SlackCall,
+  channelId: string,
+  signal: AbortSignal,
+): Promise<"none" | "present" | "unknown"> {
+  const members: string[] = [];
+  let cursor = "";
+  do {
+    const page = await call(
+      "conversations.members",
+      { channel: channelId, limit: MEMBER_LIMIT, ...(cursor ? { cursor } : {}) },
+      signal,
+    ).catch(unknown);
+    if (!page || !Array.isArray(page.members)) return "unknown";
+    members.push(...page.members.filter((id): id is string => typeof id === "string"));
+    if (members.length > MEMBER_LIMIT) return "unknown";
+    const next = (page.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+    cursor = typeof next === "string" ? next : "";
+  } while (cursor);
+  if (!members.length) return "unknown";
+  for (const user of members) {
+    const data = await call("users.info", { user }, signal).catch(unknown);
+    const u = (data?.user ?? null) as Record<string, unknown> | null;
+    if (u?.id !== user) return "unknown";
+    if (u.is_restricted !== false || u.is_ultra_restricted !== false) {
+      if (u.is_restricted === true || u.is_ultra_restricted === true) return "present";
+      if (u.is_bot !== true && u.deleted !== true) return "unknown";
+    }
+  }
+  return "none";
+}
+
+function gone(caught: unknown): null {
+  if (caught instanceof SlackApiError && GONE.has(caught.code)) return null;
+  throw caught;
+}
+
+function unknown(caught: unknown): null {
+  if (caught instanceof SlackApiError) return null;
+  throw caught;
 }
