@@ -32,6 +32,12 @@ import {
   slackReplyAllowedSteps,
 } from "../src/slack";
 import { createRunnerHelpers } from "../src/runner-helpers";
+import {
+  createFakeContextAccess,
+  ingestContext,
+  invalidateContext,
+  type ContextNamespace,
+} from "../src/project-context";
 import { createSlackReplies } from "../src/runner-backend";
 import { createRunnerPlacement } from "../src/runner-placement";
 import { MINIMUM_RUNNER_VERSION, SLACK_REPLY_RUNNER_VERSION } from "../src/runner-protocol";
@@ -127,20 +133,22 @@ async function fixture() {
     runner.stopped = true;
     await loop;
   });
-  const threads = createSlackThreads({
-    store: db,
-    home,
-    env: {},
-    origin: ORIGIN,
-    fetch: slackFetch,
-    now: () => now,
-    replies: async () => lane,
-    profile: () => ({ agent: "codex" as const, model: null }),
-  });
+  const start = () =>
+    createSlackThreads({
+      store: db,
+      home,
+      env: {},
+      origin: ORIGIN,
+      fetch: slackFetch,
+      now: () => now,
+      replies: async () => lane,
+      profile: () => ({ agent: "codex" as const, model: null }),
+    });
+  let threads = start();
   const jobs = new JobLoop(db, clock, { backoffBaseMs: 10 });
   jobs.register(SLACK_THREAD_JOB, (job, context) => threads.handle(job, context));
   const outbox = new OutboxDispatcher(db, clock, { backoffBaseMs: 10 });
-  outbox.setTargetHandler("slack", threads.deliver);
+  outbox.setTargetHandler("slack", (row, context) => threads.deliver(row, context));
   const linkPage = createSlackLinkPage({ store: db, home, now: () => now });
   const cookies: Record<string, string> = {};
   const csrf: Record<string, string> = {};
@@ -341,6 +349,8 @@ async function fixture() {
     addRunner,
     install,
     advance: (ms: number) => (now += ms),
+    now: () => now,
+    restart: () => void (threads = start()),
     reconnect: () => db.transaction((q) => markSlackInstallationSteps(q, "W1", Date.now())),
     revoke: (userId: string) =>
       syncWorkspaceMember(db, {
@@ -920,4 +930,166 @@ test("a runner helper issued before an unlink is refused after the same accounts
   expect(f.notice()).toContain("Linked");
   expect(await allowed(before)).toBe(false);
   expect(await allowed(f.advance(1))).toBe(true);
+});
+
+const RECORD = /`([0-9A-HJKMNP-TV-Z]{26})`/;
+
+async function channelScope(f: Awaited<ReturnType<typeof fixture>>, channel = "C0ONE") {
+  const [row] = await sqlRows<{ value: string }>(f.db, "SELECT value FROM setting WHERE key = ?", [
+    "slack.channel:W1",
+  ]);
+  const { generation } = JSON.parse(row!.value) as { generation: number };
+  return `T0ONE:${channel}:${generation}`;
+}
+
+async function plant(
+  f: Awaited<ReturnType<typeof fixture>>,
+  namespace: ContextNamespace,
+  body: string,
+) {
+  const access = createFakeContextAccess();
+  const requester = { workspaceId: namespace.workspaceId, userId: "planter" };
+  access.grant(requester, { teamIds: [], repositories: [], channelIds: [namespace.scopeId] });
+  const outcome = await ingestContext(f.db, access, {
+    namespace,
+    requester,
+    source: {
+      kind: "slack_channel_message",
+      id: `${namespace.scopeId}:${body}`,
+      url: null,
+      revision: "1",
+      revisionAt: f.now(),
+      actorId: "planter",
+      restriction: { channelId: namespace.scopeId },
+    },
+    claims: [{ key: "k", layer: "observation", classification: "decision", importance: 5, body }],
+    now: f.now(),
+  });
+  expect(outcome.status).toBe("stored");
+}
+
+const lastPrompt = (f: Awaited<ReturnType<typeof fixture>>) => f.prompts.at(-1)?.prompt ?? "";
+
+test("a remembered channel decision reaches a new thread after restart, with no work, runner slot or extra post", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember We deploy on Tuesdays (canary-tuesday).");
+  expect(f.notice()).toContain("Paws will remember this for this channel");
+  const id = RECORD.exec(f.notice())?.[1];
+  expect(id).toBeDefined();
+  expect(f.prompts).toEqual([]);
+  f.restart();
+  await f.say("SADMIN", "when do we deploy?");
+  expect(lastPrompt(f)).toContain("canary-tuesday");
+  expect(lastPrompt(f)).toContain("never approves an action");
+  expect(lastPrompt(f).indexOf("canary-tuesday")).toBeLessThan(
+    lastPrompt(f).indexOf("when do we deploy?"),
+  );
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  await f.say("SADMIN", "memory");
+  expect(f.notice()).toContain(id!);
+  expect(new Set(f.posted.map((post) => post.method))).toEqual(
+    new Set(["chat.postEphemeral", "chat.postMessage"]),
+  );
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("other channels, workspaces and installations never share the channel's memory", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const here = await channelScope(f);
+  await plant(
+    f,
+    { workspaceId: "W1", scopeKind: "slack_channel", scopeId: await channelScope(f, "C0TWO") },
+    "canary-other-channel",
+  );
+  await plant(
+    f,
+    { workspaceId: "W2", scopeKind: "slack_channel", scopeId: here },
+    "canary-other-workspace",
+  );
+  await f.say("SMEMBER", "remember canary-here is our release branch");
+  await f.say("SMEMBER", "what is our release branch?");
+  expect(lastPrompt(f)).toContain("canary-here");
+  expect(lastPrompt(f)).not.toContain("canary-other");
+  await f.reconnect();
+  f.advance(1);
+  await f.say("SADMIN", `link ${(await f.code("ua", "SADMIN")).code}`);
+  expect(f.notice()).toContain("Linked");
+  await f.say("SADMIN", "what is our release branch?");
+  expect(lastPrompt(f)).toContain("what is our release branch?");
+  expect(lastPrompt(f)).not.toContain("canary-here");
+  expect(lastPrompt(f)).not.toContain("canary-other");
+});
+
+test("only the author or an admin can correct or forget, and old text never returns after restart", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-old: the API lives in Frankfurt");
+  const mine = RECORD.exec(f.notice())![1]!;
+  await f.say("SADMIN", "remember canary-admin: staging resets nightly");
+  const admins = RECORD.exec(f.notice())![1]!;
+  await f.say("SMEMBER", `forget ${admins}`);
+  expect(f.notice()).toContain("Only its author or a Paws workspace admin");
+  await f.say("SMEMBER", `correct ${mine} canary-new: the API lives in Dublin`);
+  expect(f.notice()).toContain("Corrected");
+  const corrected = RECORD.exec(f.notice())![1]!;
+  await f.say("SMEMBER", "where does the API live?");
+  expect(lastPrompt(f)).toContain("canary-new");
+  expect(lastPrompt(f)).not.toContain("canary-old");
+  expect(lastPrompt(f)).toContain("canary-admin");
+  await f.say("SADMIN", `forget ${corrected}`);
+  expect(f.notice()).toContain("Forgotten");
+  f.restart();
+  await f.say("SMEMBER", "where does the API live, again?");
+  expect(lastPrompt(f)).not.toContain("canary-new");
+  expect(lastPrompt(f)).not.toContain("canary-old");
+  expect(lastPrompt(f)).toContain("canary-admin");
+  await f.say("SMEMBER", "memory");
+  expect(f.notice()).not.toContain("canary-new");
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("forgetting what an answer used, before it is posted, withholds that answer", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-fence: deploys need two approvals");
+  const id = RECORD.exec(f.notice())![1]!;
+  await f.deliver(f.mention("SMEMBER", "how many approvals do deploys need?"));
+  await f.runJobs();
+  expect(lastPrompt(f)).toContain("canary-fence");
+  await f.deliver(f.mention("SADMIN", `forget ${id}`));
+  await f.runJobs();
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.notice()).toContain("Forgotten");
+});
+
+test("memory invalidated while the runner answers is never posted, and the member is told", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-race: the cache is Redis");
+  const scopeId = await channelScope(f);
+  f.runner.hold = true;
+  await f.deliver(f.mention("SMEMBER", "what cache do we use?"));
+  const running = f.runJobs();
+  while (
+    (await sqlRows(f.db, "SELECT id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL"))
+      .length === 0
+  )
+    await Bun.sleep(2);
+  const [source] = await sqlRows<{ source_id: string }>(
+    f.db,
+    "SELECT source_id FROM context_record WHERE scope_id = ?",
+    [scopeId],
+  );
+  await invalidateContext(f.db, {
+    namespace: { workspaceId: "W1", scopeKind: "slack_channel", scopeId },
+    source: { kind: "slack_channel_message", id: source!.source_id },
+    reason: "deleted",
+    now: f.now(),
+  });
+  f.runner.hold = false;
+  await running;
+  await f.settle();
+  expect(lastPrompt(f)).toContain("canary-race");
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(await f.replies()).toEqual([]);
+  expect(f.notice()).toContain("channel memory or your access changed");
 });

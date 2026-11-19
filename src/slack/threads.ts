@@ -28,6 +28,7 @@ import {
   type Steps,
 } from "../db";
 import { journal } from "../journal";
+import type { ContextAccess } from "../project-context";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
 import {
   SlackApiError,
@@ -36,6 +37,12 @@ import {
   slackChannelAudience,
   type SlackCall,
 } from "./api";
+import {
+  createSlackChannelMemory,
+  slackMemoryCommand,
+  slackMemoryScopeId,
+  type SlackMemoryOptions,
+} from "./memory";
 import {
   createSlackAuth,
   installedSlackTokenSteps,
@@ -88,6 +95,7 @@ type Reply = Place & {
   mentionTs: string;
   question: string;
   text: string;
+  context?: { key: string; version: number };
 };
 type Payload = Reply | (Place & { kind: "notice"; text: string });
 type Bound = { teamId: string; channelId: string; generation: number };
@@ -124,6 +132,8 @@ const NOTICES = {
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
+  memory_changed:
+    "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
   unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
 };
 
@@ -190,6 +200,22 @@ export function* currentSlackLinksSteps(
       link.generation === current.generation &&
       same(channel, link),
   );
+}
+
+export function slackContextAccess(store: Db, home: string): ContextAccess {
+  return {
+    currentAccess: (requester) =>
+      store.run(function* (q) {
+        const { workspaceId, userId } = requester;
+        const links = yield* currentSlackLinksSteps(q, home, workspaceId);
+        const link = links.find((candidate) => candidate.userId === userId);
+        if (!link) return null;
+        const member = yield* workspaceMemberSteps(q, workspaceId, userId);
+        if (!workspaceMemberUsable(member)) return null;
+        const channelIds = [slackMemoryScopeId(link)];
+        return { userId, teamIds: [], repositories: [], channelIds };
+      }),
+  };
 }
 
 export function* unlinkSlackMemberSteps(
@@ -398,8 +424,14 @@ export function createSlackThreads<Profile>(options: {
   profile: () => Profile;
   fetch?: SlackFetch;
   now?: () => number;
+  memory?: SlackMemoryOptions;
 }) {
   const { store, home, env } = options;
+  const memory = createSlackChannelMemory({
+    ...options.memory,
+    store,
+    access: slackContextAccess(store, home),
+  });
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
   const slackFetch = options.fetch ?? fetch;
@@ -523,6 +555,25 @@ export function createSlackThreads<Profile>(options: {
       const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows. Paws answers this question once you link within 10 minutes.${setup}`;
       return void (await notice(place, dedupeKey!, text));
     }
+    const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+    const scope = { workspaceId, teamId, channelId, generation };
+    const command = slackMemoryCommand(question);
+    if (command) {
+      const text = await memory.command({
+        scope,
+        userId: gate.userId,
+        admin: () =>
+          store.run(function* (q) {
+            const member = yield* workspaceMemberSteps(q, workspaceId, gate.userId);
+            return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
+          }),
+        command,
+        sourceId: `${channelId}:${threadTs}:${mention.ts}`,
+        revision: mention.ts,
+        now: now(),
+      });
+      return void (await notice(place, dedupeKey!, text));
+    }
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
     const earlier = await store.run(function* (q) {
       if (yield* slackOutboxExistsSteps(q, replyKey)) return null;
@@ -530,15 +581,27 @@ export function createSlackThreads<Profile>(options: {
     });
     const lane = earlier && (await options.replies());
     if (!lane) return;
-    const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
     const thread = [...earlier!.slice(-10), { slackUserId, question, text: null }].flatMap(
       (turn) => [
         `[<@${turn.slackUserId}>]: ${turn.question}`,
         ...(turn.text === null ? [] : [`[Paws]: ${turn.text}`]),
       ],
     );
-    const prompt = `You are Paws, answering in a Slack channel thread. No repository, Linear issue or tools are attached; if the question needs code or changes, say this thread can't do that yet. Reply briefly in Slack mrkdwn.\n\n${thread.join("\n").slice(-28_000)}`;
-    const scope = {
+    const instructions =
+      "You are Paws, answering in a Slack channel thread. No repository, Linear issue or tools are attached; if the question needs code or changes, say this thread can't do that yet. Reply briefly in Slack mrkdwn.";
+    const consumerKey = `slack:${workspaceId}:${teamId}:${channelId}:${mention.ts}`;
+    const remembered = await memory.prepare({
+      scope,
+      userId: gate.userId,
+      consumerKey,
+      instructions,
+      request: question,
+      now: now(),
+      signal: context.signal,
+    });
+    const background = remembered.text ? `${remembered.text}\n\n` : "";
+    const prompt = `${instructions}\n\n${background}${thread.join("\n").slice(-28_000)}`;
+    const replyScope = {
       requestId: `slack-${teamId}-${channelId}-${mention.ts.replace(".", "-")}`,
       teamId,
       channelId,
@@ -562,7 +625,7 @@ export function createSlackThreads<Profile>(options: {
     }, STOP_POLL_MS);
     const signal = AbortSignal.any([context.signal, stop.signal]);
     const outcome = await lane
-      .reply({ workspaceId, scope, profile: options.profile(), prompt, signal })
+      .reply({ workspaceId, scope: replyScope, profile: options.profile(), prompt, signal })
       .catch((error: unknown): { status: string; text?: string } => {
         if (stop.signal.aborted) return { status: "stopped" };
         throw error;
@@ -575,6 +638,11 @@ export function createSlackThreads<Profile>(options: {
       throw new Error("The member's runner conversation lane is busy.");
     const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_000) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
+    const contextRef = remembered.text ? { key: consumerKey, version: remembered.version } : null;
+    const memoryCurrent = () =>
+      !contextRef || memory.current({ scope, userId: gate.userId, ...contextRef, now: now() });
+    if (!(await memoryCurrent()))
+      return void (await notice(place, replyKey, NOTICES.memory_changed));
     await store.transaction(function* (q) {
       if (!(yield* context.isCurrentSteps(q))) return;
       if (yield* stoppedSteps(q, place, mention.ts)) return;
@@ -588,6 +656,7 @@ export function createSlackThreads<Profile>(options: {
         mentionTs: mention.ts,
         question,
         text,
+        ...(contextRef ? { context: contextRef } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -619,7 +688,17 @@ export function createSlackThreads<Profile>(options: {
         gate.linkId === (payload.linkId ?? "")
       );
     }
-    const allowed = await store.run(allowedSteps);
+    const remembered = payload.kind === "reply" ? payload.context : undefined;
+    const allowed =
+      (await store.run(allowedSteps)) &&
+      (!remembered ||
+        (await memory.current({
+          scope: payload,
+          userId: (payload as Reply).userId,
+          key: remembered.key,
+          version: remembered.version,
+          now: now(),
+        })));
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||

@@ -36,10 +36,22 @@ Paws answers explicit `@Paws` mentions in one internal channel per Paws workspac
 - A Slack account links to one Paws account, and a Paws account to one Slack account, per Slack installation. A code that would move either link is used up and links nothing.
 - Connecting Slack again (**Reconnect**, **Add to Slack** after a disconnect, or adopting a `paws login slack` connection) ends the channel setup, every link and every unused code, and Paws drops replies it hadn't posted yet; set up again as above.
 - Before each answer and again before posting it, Paws checks that the person is still an active member, the installation is the same and the channel is still internal. A channel shared with another organization, archived or unreachable gets no answer. Setups and links are in the workspace audit as `slack.channel_admitted` and `slack.member_linked`.
-- A turn sees only the asking member's own earlier questions in that thread and the replies Paws posted to them, at most 20. Other members' turns in the same thread, other threads and replies Paws never posted are left out.
+- A turn sees only the asking member's own earlier questions in that thread and the replies Paws posted to them, at most 20. Other members' turns in the same thread, other threads and replies Paws never posted are left out; what carries across threads is the [channel memory](#channel-memory).
 - Slack redeliveries of the same mention produce one reply, and Paws posts each reply at most once. Before posting it records the attempt; it retries only when Slack clearly didn't take the message (a rate limit, waiting as long as Slack asks; a Slack server error; or a refused connection). When the outcome is unknown (the connection dropped or timed out after sending, the response was unreadable, Slack answered `fatal_error`, or Paws stopped mid-send), Paws never posts it again: it records the reply as unknown in its outbox and journal, and that reply may be missing. Any other Slack error drops the reply. A model turn interrupted before its reply was recorded runs again, but still produces one reply. Only replies Paws posted, with their Slack timestamp, count as context for later turns.
 - Paws answers on the asking member's own paired runner, in its conversation lane, with the workspace's implementer agent. That lane is separate from implementation slots, so answers come even while every slot is busy. The runner must be at version 0.1.94 or newer, online and signed in to that agent. Without such a runner, Paws doesn't answer. While the lane is full, Paws retries the mention later. The runner sees only the thread's context, with no repository, files or tools.
 - Paws answers only in public channels. In a private channel it posts nothing, not even setup messages.
+
+### Channel memory
+
+Paws keeps a memory for the channel, so a new thread can build on what was decided in an earlier one. It holds only what linked members ask it to keep; Paws doesn't read or import channel history.
+
+- `@Paws remember <text>` stores the text as a decision of the member who posted it, with the thread, message and time it came from. Paws replies, visible only to them, with the entry's id.
+- `@Paws memory` lists up to ten current entries with their ids, visible only to the member who asked.
+- `@Paws correct <id> <text>` replaces an entry; the old text is kept only as history and is no longer used. `@Paws forget <id>` removes an entry and every summary built from it, also after a restart. Only the entry's author or a Paws workspace admin can correct or forget it.
+- Before each answer, Paws adds the entries most relevant to the question to the turn, within a bounded token budget, and folds older entries into a summary when the memory grows past it. The entries are background only: they never approve an action, a tool call, a run or a new issue.
+- Memory belongs to the Paws workspace, the Slack installation and the channel's id, so renaming the channel keeps it, while another channel, another Paws workspace or a reconnected installation starts empty. Only linked, active members of the channel's current setup can add to it or have it used for their answers; unlinking, revoking or ending a membership stops that at once.
+- When an entry an answer used is corrected or forgotten, or the member's access ends, before Paws posts the answer, Paws withholds it. If that happens before the answer is queued, the member sees a message, visible only to them, asking them to mention Paws again.
+- Entries expire after 180 days. Memory needs no runner and starts no work: remembering, listing, correcting and forgetting work while every runner slot is busy, and post nothing beyond the reply to the member who asked.
 
 ### Unlink and revoke
 
