@@ -90,6 +90,7 @@ type Payload = Reply | (Place & { kind: "notice"; text: string });
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
+type Held = Bound & { dedupeKey: string; expiresAt: number };
 type Gate =
   | { kind: "ignore" }
   | { kind: "guide"; setup: boolean }
@@ -98,6 +99,9 @@ type Gate =
 const channelKey = (workspaceId: string) => `slack.channel:${workspaceId}`;
 const memberKey = (teamId: string, slackUserId: string) => `slack.member:${teamId}:${slackUserId}`;
 const codePrefix = (workspaceId: string) => `slack.link:${workspaceId}:`;
+const heldKey = (place: Place) =>
+  `slack.held:${place.workspaceId}:${place.teamId}:${place.slackUserId}`;
+const LINK_MS = 10 * 60_000;
 const parsed = <T>(value: string | null) => (value === null ? null : (JSON.parse(value) as T));
 const same = (bound: Bound | null, place: Bound) =>
   bound?.teamId === place.teamId &&
@@ -106,6 +110,9 @@ const same = (bound: Bound | null, place: Bound) =>
 
 const NOTICES = {
   linked: "Linked. Mention @Paws in this thread to ask it something.",
+  released: "Linked. Paws is answering the question you asked before linking, in its thread.",
+  already_linked:
+    "That Slack account or Paws account is already linked to another account here. Paws doesn't move links.",
   expired: "That code has expired, was already used, or isn't for you in this channel.",
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
@@ -294,9 +301,20 @@ export function createSlackThreads<Profile>(options: {
       }
       const linked: Linked = { ...bound, workspaceId: place.workspaceId, userId: issued.userId };
       const key = memberKey(place.teamId, place.slackUserId);
+      const links = yield* settingsWithPrefixSteps(q, `slack.member:${place.teamId}:`);
+      const taken = links.some((entry) => {
+        const link = parsed<Linked>(entry.value);
+        if (link?.workspaceId !== place.workspaceId || !same(link, place)) return false;
+        return entry.key === key ? link.userId !== issued.userId : link.userId === issued.userId;
+      });
+      if (taken) return "already_linked";
       yield* updateSettingSteps(q, key, () => JSON.stringify(linked));
       yield* audit("slack.member_linked", `slack:${place.teamId}:${place.slackUserId}`);
-      return "linked";
+      const held = parsed<Held>(yield* takeSettingSteps(q, heldKey(place)));
+      if (!held || !same(held, place) || held.expiresAt <= now()) return "linked";
+      const job = { queue: SLACK_THREAD_JOB, payload: { dedupeKey: held.dedupeKey }, now: now() };
+      yield* enqueueJobOnceSteps(q, { ...job, jobKey: `${held.dedupeKey}:released` });
+      return "released";
     });
   }
 
@@ -327,11 +345,25 @@ export function createSlackThreads<Profile>(options: {
     const call = await slackFor(workspaceId);
     if ((await slackChannelAudience(call, channelId, context.signal)) !== "internal") return;
     const code = LINK_CODE.exec(mention.text)?.[1];
-    if (code) return void (await notice(place, dedupeKey!, NOTICES[await claim(place, code)]));
+    if (code) {
+      const outcome = await claim(place, code);
+      if (outcome === "released") emitJobReady(store);
+      return void (await notice(place, dedupeKey!, NOTICES[outcome]));
+    }
     if (gate.kind === "guide") {
+      const held: Held = {
+        teamId,
+        channelId,
+        generation,
+        dedupeKey: dedupeKey!,
+        expiresAt: now() + LINK_MS,
+      };
+      await store.run((q) =>
+        updateSettingSteps(q, heldKey(place), () => JSON.stringify(held), now()),
+      );
       const query = new URLSearchParams({ team: teamId, channel: channelId, user: slackUserId });
       const setup = gate.setup ? " The first person to link must be a Paws workspace admin." : "";
-      const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows.${setup}`;
+      const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows. Paws answers this question once you link within 10 minutes.${setup}`;
       return void (await notice(place, dedupeKey!, text));
     }
     const replyKey = `slack:reply:${teamId}:${channelId}:${mention.ts}`;
@@ -496,7 +528,7 @@ export function createSlackLinkPage(options: { store: Db; home: string; now?: ()
       teamId,
       channelId,
       generation: install.generation,
-      expiresAt: at + 10 * 60_000,
+      expiresAt: at + LINK_MS,
     };
     await options.store.run((q) =>
       updateSettingSteps(

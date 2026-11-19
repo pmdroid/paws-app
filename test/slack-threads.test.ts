@@ -587,3 +587,53 @@ test("a stop that lands while a reply is being prepared for delivery withholds i
   await f.deliver(earlier);
   expect((await conversations(f, root.ts))[0]!.stoppedTs).toBe(stop.ts);
 });
+
+test("an unlinked member's question is held and answered once, in its thread, after they link", async () => {
+  const f = await linked();
+  const question = f.mention("SMEMBER", "what is a monad?");
+  await f.deliver(question);
+  await f.settle();
+  expect(f.notice()).toContain("within 10 minutes");
+  expect(f.prompts).toEqual([]);
+  expect(await f.sideEffects()).toEqual(NONE);
+  await f.say("SOTHER", "me too");
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`, {
+    thread_ts: "1700000999.000100",
+  });
+  expect(f.notice()).toContain("answering the question you asked before linking");
+  await f.deliver(question);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["um"]);
+  expect(f.prompts[0]!.prompt).toContain("what is a monad?");
+  const sent = f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text]);
+  expect(sent).toEqual([[question.ts, "answer 1"]]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a held question lapses with its link, and a revoked member's code links and releases nothing", async () => {
+  const f = await linked();
+  await f.say("SMEMBER", "first");
+  f.advance(11 * 60_000);
+  await f.say("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
+  expect(f.notice()).toBe("Linked. Mention @Paws in this thread to ask it something.");
+  await f.revoke("um");
+  await f.say("SMEMBER", "second");
+  expect(f.prompts).toEqual([]);
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a link never moves a Slack account or a Paws account to another, and no one inherits the installer's role", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SALT", "hi");
+  await f.say("SALT", `link ${(await f.code("ua", "SALT")).code}`);
+  expect(f.notice()).toContain("already linked");
+  await f.say("SADMIN", `link ${(await f.code("um", "SADMIN")).code}`);
+  expect(f.notice()).toContain("already linked");
+  await f.say("SALT", "still there?");
+  await f.say("SADMIN", "who am I?");
+  await f.say("SMEMBER", "and me?");
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["ua", "um"]);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
