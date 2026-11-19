@@ -105,6 +105,12 @@ type Notice = Place & {
   listing?: boolean;
 };
 type Payload = Reply | Notice;
+
+const refId = (ref: MemoryRef) => `${ref.key}@${ref.version}`;
+
+function uniqueRefs(refs: readonly MemoryRef[]): MemoryRef[] {
+  return [...new Map(refs.map((ref) => [refId(ref), ref])).values()];
+}
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string; id?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
@@ -591,15 +597,19 @@ export function createSlackThreads<Profile>(options: {
     });
     const lane = earlier && (await options.replies());
     if (!lane) return;
-    const kept: MemoryRef[] = [];
+    const kept = new Map<string, MemoryRef>();
+    const checked = new Map<string, boolean>();
     const turns: { slackUserId: string; question: string; text: string | null }[] = [];
     for (const turn of earlier!.slice(-10)) {
-      const refs = turn.contexts ?? [];
-      const checks = refs.map((ref) =>
-        memory.current({ scope, userId: gate.userId, ...ref, now: now() }),
-      );
-      const valid = (await Promise.all(checks)).every(Boolean);
-      if (valid) kept.push(...refs);
+      const refs = uniqueRefs(turn.contexts ?? []);
+      let valid = true;
+      for (const ref of refs) {
+        const id = refId(ref);
+        if (!checked.has(id))
+          checked.set(id, await memory.current({ scope, userId: gate.userId, ...ref, now: now() }));
+        if (!checked.get(id)) valid = false;
+      }
+      if (valid) for (const ref of refs) kept.set(refId(ref), ref);
       turns.push({ ...turn, text: valid ? turn.text : null });
     }
     const thread = [...turns, { slackUserId, question, text: null }].flatMap((turn) => [
@@ -657,10 +667,10 @@ export function createSlackThreads<Profile>(options: {
       throw new Error("The member's runner conversation lane is busy.");
     const text = outcome.status === "answered" ? outcome.text?.trim().slice(0, 3_000) : undefined;
     if (!text) return journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
-    const contexts = [
-      ...kept,
+    const contexts = uniqueRefs([
+      ...kept.values(),
       ...(remembered.text ? [{ key: consumerKey, version: remembered.version }] : []),
-    ];
+    ]);
     if (!(await currentMemory(scope, gate.userId, contexts)))
       return void (await notice(place, replyKey, NOTICES.memory_changed));
     await store.transaction(function* (q) {
@@ -693,7 +703,7 @@ export function createSlackThreads<Profile>(options: {
     userId: string,
     refs: readonly MemoryRef[],
   ) {
-    for (const ref of refs)
+    for (const ref of uniqueRefs(refs))
       if (!(await memory.current({ scope, userId, ...ref, now: now() }))) return false;
     return true;
   }
@@ -735,6 +745,8 @@ export function createSlackThreads<Profile>(options: {
     )
       return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
+    if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
+      return settle({ kind: "withheld", note: "memory changed before delivery" });
     const text =
       payload.kind === "notice" && payload.listing && payload.member
         ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })

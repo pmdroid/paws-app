@@ -1189,7 +1189,50 @@ test("a channel memory past its soft threshold is compacted into a summary witho
   );
   expect(summaries.length).toBeGreaterThan(0);
   expect(f.posted.length).toBe(posted + 1);
+  for (let index = 40; index < 60; index++)
+    await plant(
+      f,
+      namespace,
+      `fact ${index}: service-${index} is owned by team-${index % 5}`,
+      "reported_fact",
+    );
   await f.say("SMEMBER", "who owns service-9?");
   expect(Buffer.byteLength(lastPrompt(f))).toBeLessThan(4_000 * 2);
+  expect(f.posted.length).toBe(posted + 2);
+  expect((await f.replies()).map((row) => row.status)).not.toContain("dropped");
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a memory change while Paws checks the channel before sending withholds the reply", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-late: queues run on SQS");
+  const id = RECORD.exec(f.notice())![1]!;
+  await f.deliver(f.mention("SMEMBER", "what runs our queues?"));
+  await f.runJobs();
+  expect(lastPrompt(f)).toContain("canary-late");
+  f.hooks.onInfo = async () => {
+    await f.deliver(f.mention("SADMIN", `forget ${id}`));
+    await f.runJobs();
+  };
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+});
+
+test("a long thread carries each memory dependency once", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await f.say("SMEMBER", "remember canary-chain: the API is in Go");
+  const root = f.mention("SMEMBER", "what is the API written in?");
+  await f.deliver(root);
+  await f.settle();
+  for (let turn = 0; turn < 8; turn++)
+    await f.say("SMEMBER", `follow-up ${turn} about the API`, { thread_ts: root.ts });
+  const rows = await f.replies();
+  expect(rows).toHaveLength(9);
+  for (const row of rows) {
+    const refs = (row.payload as { contexts?: { key: string; version: number }[] }).contexts ?? [];
+    const ids = refs.map((ref) => `${ref.key}@${ref.version}`);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBeLessThanOrEqual(rows.length);
+  }
 });

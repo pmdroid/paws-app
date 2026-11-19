@@ -103,22 +103,29 @@ export function createSlackChannelMemory(
       destination: destination(scope),
       ...settings,
     };
-    const prepared = await prepareSessionContext(store, access, {
-      ...base,
-      consumerKey: input.consumerKey,
-      instructions: input.instructions,
-      request: input.request,
-      toolsTokens: 0,
-      model,
-      now: input.now,
-    });
+    const session = () =>
+      prepareSessionContext(store, access, {
+        ...base,
+        consumerKey: input.consumerKey,
+        instructions: input.instructions,
+        request: input.request,
+        toolsTokens: 0,
+        model,
+        now: input.now,
+      });
+    let prepared = await session();
     const compaction = prepared.manifest?.compaction;
-    if (compaction === "requested" || compaction === "coalesced")
-      await compactContext(store, access, summarizer, capacity, {
+    if (compaction === "requested" || compaction === "coalesced") {
+      const compacted = await compactContext(store, access, summarizer, capacity, {
         ...base,
         now: input.now,
         ...(input.signal ? { signal: input.signal } : {}),
-      }).catch(() => undefined);
+      }).then(
+        () => true,
+        () => false,
+      );
+      if (compacted) prepared = await session();
+    }
     const text = prepared.status === "injected" ? `${prepared.text}\n\n${SLACK_MEMORY_NOTICE}` : "";
     return { text, version: prepared.version };
   }
