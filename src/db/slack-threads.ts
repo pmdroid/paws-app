@@ -122,12 +122,19 @@ export function* slackOutboxExistsSteps(q: Q, idempotencyKey: string): Steps<boo
 
 export function* slackThreadContextSteps(
   q: Q,
-  scope: Record<"workspaceId" | "teamId" | "channelId" | "threadTs" | "userId", string> & {
+  scope: Record<"workspaceId" | "teamId" | "channelId" | "threadTs", string> & {
     generation: number;
   },
 ): Steps<unknown[]> {
   const { outbox } = q.t;
-  const fields = Object.entries({ ...scope, generation: String(scope.generation) });
+  const { workspaceId, teamId, channelId, threadTs, generation } = scope;
+  const fields = Object.entries({
+    workspaceId,
+    teamId,
+    channelId,
+    threadTs,
+    generation: String(generation),
+  });
   const rows = yield* q.all(
     q.orm
       .select({ payload: outbox.payload })
