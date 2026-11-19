@@ -1743,6 +1743,7 @@ test("each delivery retry checks the audience and the policy again", async () =>
   const g = await sourceFixture();
   await g.deliver(g.mention("SMEMBER", "billing question while the policy changes"));
   await g.runJobs();
+  await g.dropStatus();
   g.hooks.onInfo = () => disclose(g, "ua", "acme/app", "none");
   await g.settle();
   expect(g.posts("chat.postMessage")).toEqual([]);
