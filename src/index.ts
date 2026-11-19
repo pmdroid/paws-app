@@ -1815,6 +1815,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 db: store,
                 access: createLinearContextAccess(members),
                 reads: linear.projectContext,
+                memoryIndex: true,
               })
             : null,
         linearTaskModes: true,

@@ -10109,15 +10109,22 @@ export class Orchestrator {
     return { organizationId: session.organizationId, projectId, requesterId: session.creatorId };
   }
 
-  private async rememberFor(item: WorkItemRecord): Promise<RunAgentOptions["remember"]> {
+  private async rememberFor(
+    item: WorkItemRecord,
+  ): Promise<Pick<RunAgentOptions, "remember" | "recall"> | undefined> {
     const service = this.options.projectContext;
     if (!service?.remember) return undefined;
     const mode = await this.store.run((q) => getTaskModeSteps(q, item.id));
     if (mode !== null && mode !== "code") return undefined;
     const scope = await this.projectScope(item);
     if (typeof scope === "string") return undefined;
-    return (operations) =>
-      service.remember!({ workItemId: item.id, ...scope, operations, now: this.now() });
+    return {
+      remember: (operations) =>
+        service.remember!({ workItemId: item.id, ...scope, operations, now: this.now() }),
+      ...(service.recall
+        ? { recall: (request) => service.recall!({ ...scope, request, now: this.now() }) }
+        : {}),
+    };
   }
 
   /**
@@ -11321,6 +11328,7 @@ export class Orchestrator {
       | "githubRead"
       | "ciRerun"
       | "remember"
+      | "recall"
       | "suggestedFindings"
       | "reviewFindings"
     >
@@ -11333,7 +11341,7 @@ export class Orchestrator {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
     };
     if (input.role !== "implementer") return runtimes;
-    const remember =
+    const memory =
       input.readOnly || input.runId.startsWith("checks-")
         ? undefined
         : await this.rememberFor(item);
@@ -11344,7 +11352,7 @@ export class Orchestrator {
     const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,
-      ...(remember ? { remember } : {}),
+      ...memory,
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item)
