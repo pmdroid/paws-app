@@ -39,6 +39,7 @@ import {
 } from "../workspace";
 import { linearSetupPage, handleStatusRequest } from "../dashboard";
 import { createLinearReconnect, type LinearReconnectSnapshot } from "./reconnect";
+import { forgetSetupToken, setupNeededPage } from "./setup-token";
 import { dashboardPath, isDashboardPage } from "../dashboard-links";
 
 const SETUP_COOKIE = "__Host-paws-setup";
@@ -157,11 +158,7 @@ export function createBrowserOnboarding(options: {
       const oauth = ["/auth/linear", "/auth/linear/callback", CALLBACK].includes(url.pathname);
       if (oauth && cookieValue(request, SETUP_COOKIE) !== setupBrowser)
         return new Response("Forbidden", { status: 403 });
-      if (!oauth || !options.clientId || !options.clientSecret)
-        return new Response('Paws needs setup. <a href="/setup">Open setup</a>.', {
-          status: 503,
-          headers: { "content-type": "text/html", "cache-control": "no-store" },
-        });
+      if (!oauth || !options.clientId || !options.clientSecret) return setupNeededPage();
     }
     if (url.pathname === "/setup") return new Response("Forbidden", { status: 403 });
     if (request.method !== "GET" && !(request.method === "HEAD" && isDashboardPage(url.pathname)))
@@ -379,7 +376,10 @@ export function createBrowserOnboarding(options: {
         "set-cookie",
         `${INSTALL_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
       );
-      if (options.setupToken) await removeSecret(join(secretsDir, "linear-setup-pending"));
+      if (options.setupToken) {
+        await removeSecret(join(secretsDir, "linear-setup-pending"));
+        await forgetSetupToken(secretsDir);
+      }
       setupConnected = true;
       options.installed();
       return new Response(null, { status: 303, headers });

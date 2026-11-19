@@ -5,7 +5,7 @@ import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "
 import { useDatabaseSecrets } from "./credentials";
 import type { PawsStore } from "./db";
 import { publicTlsProxy, type PublicTls } from "./deployment";
-import { createBrowserOnboarding } from "./onboarding";
+import { createBrowserOnboarding, setupToken as savedSetupToken } from "./onboarding";
 import { startServer } from "./server";
 import { isDashboardPage } from "./dashboard-links";
 
@@ -36,7 +36,7 @@ export async function startBrowserOnboarding(
   }
   const setupToken =
     runtime.linearClientId === null || setupPending
-      ? crypto.randomUUID() + crypto.randomUUID()
+      ? await savedSetupToken(paths.secretsDir)
       : undefined;
   if (setupToken) {
     if (runtime.databaseUrl === null)

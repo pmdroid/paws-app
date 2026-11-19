@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startPaws, type PawsProcess } from "../src/index";
+import { setupLinkMain, startPaws, type PawsProcess } from "../src/index";
 
 const roots: string[] = [];
 const processes: PawsProcess[] = [];
@@ -566,7 +566,7 @@ for (const admin of [false, true]) {
   });
 }
 
-import { useDatabaseSecrets, readSecretFile } from "../src/credentials";
+import { useDatabaseSecrets, readSecretFile, saveSecret } from "../src/credentials";
 
 for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outside-client.json"]) {
   test(
@@ -585,6 +585,11 @@ for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outs
         expect((await scene.request("/setup")).status).toBe(403);
         expect((await scene.request("/setup?token=wrong")).status).toBe(403);
         expect((await scene.request("/api/issues")).status).toBe(503);
+        const start = await scene.request("/");
+        expect(start.status).toBe(503);
+        const page = await start.text();
+        expect(page).toContain("paws setup-link");
+        expect(page).not.toContain("setup-token");
         expect((await scene.request("/setup?token=setup-token")).status).toBe(200);
         const response = await scene.raw(
           new Request("https://paws.example/setup?token=setup-token", {
@@ -625,6 +630,7 @@ for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outs
               .linearClientId,
           ).toBe("fixture-client");
         }
+        await saveSecret(join(dir, "setup-token"), "setup-token");
         const install = await scene.installation();
         const connected = await scene.request(
           `/auth/linear/install/callback?state=${install.state}&code=app-code`,
@@ -635,6 +641,8 @@ for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outs
         );
         expect(scene.state.installed).toBe(1);
         expect(readSecretFile(join(dir, "linear-setup-pending"))).toBeNull();
+        expect(readSecretFile(join(dir, "setup-token"))).toBeNull();
+        expect(existsSync(join(dir, "setup-token"))).toBe(false);
         expect((await scene.request("/setup?token=setup-token")).status).toBe(403);
       } finally {
         await scene.close();
@@ -687,15 +695,36 @@ test("a process without a Linear client starts in token-protected setup mode", a
     });
     processes.push(restarted);
     const resumedUrl = messages.filter((message) => message.includes("/setup?token=")).at(-1)!;
-    expect(resumedUrl).not.toBe(setupUrl);
-    expect((await restarted.server.fetch(new Request(setupUrl))).status).toBe(403);
-    expect((await restarted.server.fetch(new Request(resumedUrl))).status).toBe(200);
+    expect(resumedUrl).toBe(setupUrl);
+    expect((await restarted.server.fetch(new Request(setupUrl))).status).toBe(200);
+    expect((await restarted.server.fetch(new Request("https://localhost:8787/setup"))).status).toBe(
+      403,
+    );
     expect(
       (await restarted.server.fetch(new Request("https://localhost:8787/auth/linear"))).status,
     ).toBe(403);
+    await restarted.stop();
+    processes.splice(processes.indexOf(restarted), 1);
+    const printed: string[] = [];
+    expect(
+      await setupLinkMain(
+        [],
+        { PAWS_HOME: paws.paths.home, PAWS_PUBLIC_URL: "https://localhost:8787" },
+        (text) => printed.push(text),
+      ),
+    ).toBe(0);
+    expect(printed).toEqual([setupUrl]);
   } finally {
     restore();
   }
+});
+
+test("paws setup-link reports a finished setup", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-setup-link-"));
+  roots.push(home);
+  const printed: string[] = [];
+  expect(await setupLinkMain([], { PAWS_HOME: home }, (text) => printed.push(text))).toBe(0);
+  expect(printed).toEqual(["Setup is complete."]);
 });
 
 test("setup rejects oversized and stalled bodies and releases its save lock", async () => {
@@ -743,7 +772,6 @@ test("an existing Linear access token still enters setup when the client is miss
 
 test("browser credentials survive runtime reloads and webhook precedence is env then database then file", async () => {
   const scene = await fixture(true);
-  const { saveSecret } = await import("../src/credentials");
   try {
     const dir = join(scene.home, "secrets");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
