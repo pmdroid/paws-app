@@ -11,6 +11,7 @@ export {
   shouldPostFirstActivity,
 } from "./activity";
 export { deliverLinearOutbox, type EvidenceUploads } from "./dispatch";
+export { SLACK_ASKED_NOTE, SLACK_ROUTED_NOTE } from "./slack-route";
 export { hintedRepository, repositoryAnswer, rankRepositories } from "./repository-selection";
 export {
   GitHubInstallationCheck,

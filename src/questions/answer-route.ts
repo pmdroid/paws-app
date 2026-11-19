@@ -42,6 +42,7 @@ export type QuestionAnswer = (input: {
   answer: string;
   answeredBy: string;
   answeredByName: string;
+  note?: string;
 }) => Promise<"answered" | "rejected">;
 
 export type QuestionAnswerOptions = {

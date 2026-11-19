@@ -120,6 +120,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "project-context",
     "github",
     "improvements",
+    "questions",
   ],
   core: [],
   "host-operation": [],

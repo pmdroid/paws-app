@@ -10569,6 +10569,7 @@ export class Orchestrator {
     answer: string;
     answeredBy: string;
     answeredByName: string;
+    note?: string;
   }): Promise<"answered" | "rejected"> {
     const waiting = async () => {
       if (this.shuttingDown) return null;
@@ -10626,7 +10627,8 @@ export class Orchestrator {
               itemId: item.id,
               issueId: item.linearIssueId,
               kind: "response",
-              body: pawsAnswerNote(input.answeredByName, input.answer),
+              body: input.note ?? pawsAnswerNote(input.answeredByName, input.answer),
+              ...(input.note === undefined ? {} : { answeredInSlack: true }),
             },
             now: this.now(),
           }),

@@ -77,7 +77,7 @@ export function slackSourceCommand(text: string): SlackSourceCommand | null {
   return { kind: "attach", channel: !!match[1], repository, ref };
 }
 
-function* readsSteps(q: Q, workspaceId: string, userId: string, repository: string) {
+export function* readsSteps(q: Q, workspaceId: string, userId: string, repository: string) {
   const names = yield* memberRepositoriesSteps(q, workspaceId, userId);
   return names.some((name) => lower(name) === lower(repository));
 }
