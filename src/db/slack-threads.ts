@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, like } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
+import { getLinearSessionSteps } from "./linear-sessions";
 import { readSettingSteps } from "./settings";
 import { workspaceForOrganizationSteps } from "./workspace";
 import { ulid } from "./ulid";
@@ -194,9 +195,38 @@ export function* settleSlackOutboxSteps(
 
 export const slackIssueKey = (issueId: string) => `slack.issue:${issueId}`;
 
-export function* slackIssueOwnerSteps(q: Q, issueId: string, organizationId: string) {
+export type SlackIssueOrigin = {
+  workspaceId: string;
+  teamId: string;
+  channelId: string;
+  threadTs: string;
+  generation: number;
+  ownerId?: string;
+  userId: string;
+  slackUserId?: string;
+  linkId?: string;
+  context?: string;
+};
+
+export function* slackIssueOriginSteps(
+  q: Q,
+  issueId: string,
+  organizationId: string,
+): Steps<SlackIssueOrigin | null> {
   const value = yield* readSettingSteps(q, slackIssueKey(issueId));
-  const origin = value ? (JSON.parse(value) as { workspaceId?: string; ownerId?: string }) : null;
+  const origin = value ? (JSON.parse(value) as SlackIssueOrigin) : null;
   const workspace = origin ? yield* workspaceForOrganizationSteps(q, organizationId) : null;
-  return workspace && origin?.workspaceId === workspace.id ? (origin.ownerId ?? null) : null;
+  return workspace && origin?.workspaceId === workspace.id ? origin : null;
+}
+
+export function* slackIssueOwnerSteps(q: Q, issueId: string, organizationId: string) {
+  return (yield* slackIssueOriginSteps(q, issueId, organizationId))?.ownerId ?? null;
+}
+
+export function* slackSessionOriginSteps(q: Q, sessionId: string) {
+  const session = yield* getLinearSessionSteps(q, sessionId);
+  const { issueId, organizationId } = session ?? {};
+  if (!issueId || !organizationId) return null;
+  const origin = yield* slackIssueOriginSteps(q, issueId, organizationId);
+  return origin ? { ...origin, issueId } : null;
 }

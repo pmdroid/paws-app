@@ -78,9 +78,13 @@ On top of the [repository checks](#read-a-repository), Paws checks who can read 
 
 ### Start work from a thread
 
-A linked member mentions `@Paws start <TEAM>`, with the key of a Linear team they belong to, such as `@Paws start ENG`. Paws drafts a title, scope and acceptance criteria from the thread on their conversation lane, without channel memory, earlier answers that used it, or an implementation slot, and shows the draft only to them with who can read issues in that team and **Create issue** and **Discard**. Mention `@Paws start <TEAM>` again with changes to replace the draft.
+A linked member mentions `@Paws start <TEAM>`, with the key of a Linear team they belong to, such as `@Paws start ENG`. Paws drafts a title, scope and acceptance criteria from the thread on their conversation lane, without channel memory, earlier answers that used it, or an implementation slot, and shows the draft only to them with who can read issues in that team and **Create issue** and **Discard**. Mention `@Paws start <TEAM>` again with what to change, such as `@Paws start ENG: only two retries`, and Paws revises your current draft, if it is less than an hour old, into a new one that replaces it.
 
 **Create issue** checks the member, team membership, thread and team visibility again, then files one issue in that team, delegated to Paws, with only that title, scope and criteria. The member who started becomes the issue's owner, and the usual Linear intake runs it. A thread files at most one issue: a repeated click, a redelivery or a later `@Paws start` reuses it. Once Paws has tried to file, the approved draft stays bound to the thread: after Linear fails to confirm, `@Paws start` files that same draft again rather than a new one, and if the team's visibility changed in between, Paws shows that draft again with the new audience for the member to approve. Other members' clicks, discarded drafts and drafts older than an hour do nothing.
+
+The run gets the thread, up to the `@Paws start` mention and without answers that used channel memory or a repository, as private context. Paws tells the agent not to copy it into Linear, the pull request or commits, and stops giving it once the member who started is no longer an active member of the Paws workspace. Answers to questions still go in Linear.
+
+Paws also posts the run's questions, its progress updates, its replies and the pull request result in the thread, with a link to the issue. Each of those posts only when Slack's channel check would let Paws answer there, and only when a Paws workspace admin allows answers from the task's repository in the channel ([Answers drawn from code](#answers-drawn-from-code)). Otherwise the member who started gets a note, visible only to them, pointing to the issue. Once Slack is reconnected, the channel changes, or the member who started unlinks, is revoked or links again, the thread gets nothing more.
 
 ### Unlink and revoke
 

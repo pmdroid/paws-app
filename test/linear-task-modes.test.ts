@@ -124,6 +124,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
     expect((await createLiveStatusProvider(restored).issue(item.id))?.runs[0]?.state).toBe("done");
     expect((await listOutbox(restored, "session"))[0]?.payload).toEqual({
       sessionId: "session",
+      itemId: item.id,
       kind: "response",
       body: response,
     });

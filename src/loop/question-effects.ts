@@ -344,7 +344,12 @@ export function questionEffects(
         op: "activity",
         orderingKey: question.sessionId,
         idempotencyKey: `plan-discarded:${question.id}`,
-        payload: { sessionId: question.sessionId, kind: "response", body: PLAN_DISCARDED },
+        payload: {
+          sessionId: question.sessionId,
+          itemId: item.id,
+          kind: "response",
+          body: PLAN_DISCARDED,
+        },
         now: input.now,
       });
     else

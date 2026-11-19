@@ -31,7 +31,8 @@ import {
 } from "../db";
 import { createHash } from "node:crypto";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
-import { visualReviewBody } from "../questions";
+import { getQuestionSteps, visualReviewBody } from "../questions";
+import { slackTaskUpdateSteps, type SlackTaskUpdateKind } from "../slack";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   AFTER_PULL_REQUEST_THOUGHT,
@@ -150,12 +151,9 @@ export async function deliverLinearOutbox(
       (await store.run((q) =>
         sessionAwaitsFinishSteps(q, orderingKey ?? "", message.generation ?? 0, message.id),
       ));
-    return postActivity(
-      message,
-      held ? { ...payload, kind: "thought" } : payload,
-      tracker,
-      options,
-    );
+    await postActivity(message, held ? { ...payload, kind: "thought" } : payload, tracker, options);
+    if (store) await mirrorToSlack(store, message, payload);
+    return;
   }
   if (message.op === "linear.evidence") {
     if (!store) throw new Error("Evidence delivery needs the database");
@@ -175,7 +173,9 @@ export async function deliverLinearOutbox(
       ))
     )
       return;
-    return postElicitation(payload, tracker, options, store);
+    await postElicitation(payload, tracker, options, store);
+    if (store) await mirrorToSlack(store, message, payload);
+    return;
   }
   if (message.op === "status") {
     return postStatus(payload, tracker, options);
@@ -184,6 +184,28 @@ export async function deliverLinearOutbox(
     return catchUp();
   }
   throw new Error(`unknown linear outbox op ${message.op}`);
+}
+
+async function mirrorToSlack(store: Db, message: OutboxRow, payload: Record<string, unknown>) {
+  const key = message.idempotencyKey;
+  const kind: SlackTaskUpdateKind | null =
+    message.op === "elicitation"
+      ? "question"
+      : payload.kind === "response" || payload.kind === "error"
+        ? payload.kind
+        : payload.kind === "thought" && key.startsWith("update:")
+          ? "update"
+          : null;
+  const sessionId = readString(payload, "sessionId") ?? message.orderingKey;
+  const text = readString(payload, "body") ?? readString(payload, "text");
+  if (!kind || !sessionId || !text) return;
+  const questionId = readString(payload, "questionId");
+  await store.transaction(function* (q) {
+    const asked = questionId && !payload.itemId ? yield* getQuestionSteps(q, questionId) : null;
+    const itemId = readString(payload, "itemId") ?? asked?.itemId;
+    if (!itemId) return false;
+    return yield* slackTaskUpdateSteps(q, { sessionId, itemId, key, kind, text }, Date.now());
+  });
 }
 
 const FINAL_RESPONSE = /^(pull-request-ready:|merged:|closed:|command:stop:)/;
@@ -246,6 +268,7 @@ async function fileSubIssues(
       idempotencyKey: `plan-filed:${questionId}`,
       payload: {
         sessionId,
+        questionId,
         kind: "response",
         body: planFiledResponse(
           readString(payload, "identifier") ?? "the issue",
