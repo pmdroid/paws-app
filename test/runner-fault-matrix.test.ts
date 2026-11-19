@@ -372,7 +372,7 @@ async function runRemoteFault(fault: Fault) {
       yield* q.exec(q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent }));
   });
   const hung = fault.startsWith("silent-hung");
-  const clock = { held: hung ? Date.now() : null };
+  const clock = { held: hung || fault === "silent-live" ? Date.now() : null };
   const clockNow = () => clock.held ?? Date.now();
   await boundPlacementAccounts(db);
   const work = createRunnerWork({
@@ -417,6 +417,7 @@ async function runRemoteFault(fault: Fault) {
       events?: number;
       confirmed?: boolean;
       advanced?: boolean;
+      checked?: boolean;
     }
   >();
   const terminated: { runId: string; generation: number; commandId: string }[] = [];
@@ -446,9 +447,10 @@ async function runRemoteFault(fault: Fault) {
       ...results,
       async read(runId, generation, commandId) {
         const entry = live.get(commandId);
+        if (entry?.advanced) entry.checked = true;
         if (entry?.confirmed && !entry.advanced) {
           entry.advanced = true;
-          clock.held = clockNow() + HUNG_RUN_MS;
+          clock.held = clockNow() + (entry.hung ? HUNG_RUN_MS : SILENT_RUN_MS);
         }
         return results.read(runId, generation, commandId);
       },
@@ -694,7 +696,7 @@ async function runRemoteFault(fault: Fault) {
         if (command.type === "run") await deliver(command);
       }
       for (const [key, entry] of live)
-        if (!entry.hung && Date.now() - entry.at > SILENT_RUN_MS * 2) {
+        if (!entry.hung && entry.checked) {
           live.delete(key);
           await deliver(entry.command);
         }
@@ -710,7 +712,7 @@ async function runRemoteFault(fault: Fault) {
                 ),
               )
             : null;
-        const confirming = [...live.values()].filter((entry) => entry.hung && !entry.confirmed);
+        const confirming = [...live.values()].filter((entry) => !entry.confirmed);
         const reply = await heartbeat();
         if (lostBefore && reply.fenced.length)
           runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
