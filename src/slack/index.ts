@@ -4,6 +4,7 @@ export {
   loginSlack,
   readSlackApp,
   readSlackToken,
+  slackSigningSecret,
   SLACK_BOT_SCOPES,
 } from "./oauth";
 export type { SlackApp, SlackToken } from "./oauth";

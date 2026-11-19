@@ -89,3 +89,78 @@ test("the Slack card offers the paws login slack connection and adopts it", asyn
     await window.happyDOM.close();
   }
 });
+
+async function withSlackCard(
+  reply: (method: string, url: string, body: string) => object,
+  run: (root: HTMLElement, window: Window) => Promise<void>,
+) {
+  const window = new Window({ url: "https://paws.example/dashboard/workspace" });
+  const globals = globalThis as Record<string, unknown>;
+  const names = ["window", "document", "location", "history", "HTMLElement", "FormData"];
+  const saved = names.map((name) => globals[name]);
+  for (const name of names)
+    globals[name] =
+      name === "window" ? window : (window as unknown as Record<string, unknown>)[name];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) =>
+    Response.json(reply(init?.method ?? "GET", url, String(init?.body ?? "")))) as typeof fetch;
+  try {
+    const root = window.document.createElement("div") as unknown as HTMLElement;
+    initializeWorkspaceSlack(root, "csrf");
+    settingsPageShown("integrations");
+    await Bun.sleep(20);
+    await run(root, window);
+  } finally {
+    globalThis.fetch = realFetch;
+    names.forEach((name, index) => (globals[name] = saved[index]));
+    await window.happyDOM.close();
+  }
+}
+
+test("an unconfigured Slack card saves the app credentials and then offers Add to Slack", async () => {
+  const puts: string[] = [];
+  let configured = false;
+  await withSlackCard(
+    (method, url, body) => {
+      if (method === "PUT") {
+        puts.push(`${url} ${body}`);
+        configured = true;
+        return { ok: true };
+      }
+      return { configured, environment: false, connection: null, capabilities: null };
+    },
+    async (root, window) => {
+      expect(root.textContent).not.toContain("on the server");
+      const form = root.querySelector<HTMLFormElement>("[data-slack-app]")!;
+      const input = (name: string) => form.querySelector<HTMLInputElement>(`[name="${name}"]`)!;
+      expect(input("clientId").type).toBe("text");
+      expect(input("clientSecret").type).toBe("password");
+      expect(input("signingSecret").type).toBe("password");
+      expect(root.querySelector('[data-slack="connect"]')).toBeNull();
+      input("clientId").value = "c1";
+      input("clientSecret").value = "cs1";
+      input("signingSecret").value = "ss1";
+      form.dispatchEvent(new window.Event("submit", { cancelable: true }) as never);
+      await Bun.sleep(20);
+      expect(puts).toEqual([
+        '/api/settings/slack-app {"clientId":"c1","clientSecret":"cs1","signingSecret":"ss1"}',
+      ]);
+      expect(root.querySelector("[data-slack-notice]")?.textContent).toBe("Saved");
+      expect(root.querySelector("[data-slack-app]")).toBeNull();
+      expect(root.querySelector('[data-slack="connect"]')?.textContent).toBe("Add to Slack");
+    },
+  );
+});
+
+test("a Slack app from the server environment hides the credentials form", async () => {
+  await withSlackCard(
+    () => ({ configured: true, environment: true, connection: null, capabilities: null }),
+    async (root) => {
+      expect(root.querySelector("[data-slack-status]")?.textContent).toBe(
+        "Not connected. The Slack app comes from the server environment.",
+      );
+      expect(root.querySelector("[data-slack-app]")).toBeNull();
+      expect(root.querySelector('[data-slack="connect"]')).not.toBeNull();
+    },
+  );
+});

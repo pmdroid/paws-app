@@ -31,7 +31,7 @@ import {
   type ExeDev,
   type ExeDevBootstrap,
 } from "./provisioning";
-import { loginSlack, readSlackApp } from "./slack";
+import { loginSlack, slackSigningSecret } from "./slack";
 import {
   collectProbes,
   keepCandidates,
@@ -1567,8 +1567,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       githubWebhook: {
         accept: (delivery) => acceptGitHubDelivery(store, delivery, Date.now(), commentFilter),
       },
-      slackSigningSecret:
-        envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
+      slackSigningSecret: () => slackSigningSecret(paths.home, envSource),
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db: store,

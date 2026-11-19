@@ -30,6 +30,8 @@ import {
   requestSlackToken,
   resolveSlackApp,
   saveInstalledSlackTokenSteps,
+  saveSlackApp,
+  type SlackApp,
   type SlackFetch,
   type SlackToken,
 } from "./oauth";
@@ -38,6 +40,8 @@ import { SLACK_CALLBACK_PATH, SLACK_INSTALL_SCOPES, slackCapabilities } from "./
 const STATUS = "/api/workspaces/slack";
 const CONNECT = "/api/workspaces/slack/connect";
 const ADOPT = "/api/workspaces/slack/adopt";
+const APP = "/api/settings/slack-app";
+const APP_FIELDS = ["clientId", "clientSecret", "signingSecret"] as const;
 const IDENTITY = ["teamId", "teamName", "appId", "botUserId"];
 const TEAM_ID = /^T[A-Z0-9]{2,20}$/;
 const CHANNEL_ID = /^[CGD][A-Z0-9]{2,20}$/;
@@ -95,7 +99,7 @@ export function createSlackConnect(options: {
 
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
-    if (![STATUS, CONNECT, ADOPT, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
+    if (![STATUS, CONNECT, ADOPT, APP, SLACK_CALLBACK_PATH].includes(url.pathname)) return null;
     const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
     const principal = access?.principal;
     if (url.pathname === SLACK_CALLBACK_PATH) {
@@ -121,6 +125,11 @@ export function createSlackConnect(options: {
       return connect(principal, access!.session.tokenHash, from);
     }
     if (url.pathname === ADOPT && request.method === "POST") return adopt(principal);
+    if (url.pathname === APP && request.method === "GET") {
+      const app = resolveSlackApp(home, env);
+      return json({ configured: app !== null, clientId: app?.clientId ?? null });
+    }
+    if (url.pathname === APP && request.method === "PUT") return saveApp(principal, request);
     return json({ error: "Method not allowed." }, 405);
   };
 
@@ -146,6 +155,9 @@ export function createSlackConnect(options: {
     return {
       reconnect,
       configured: resolveSlackApp(home, env) !== null,
+      environment: Boolean(
+        env.SLACK_CLIENT_ID || env.SLACK_CLIENT_SECRET || env.SLACK_SIGNING_SECRET,
+      ),
       redirectUrl: redirectUri,
       eventsUrl: `${origin}/webhooks/slack`,
       connection: token ? JSON.parse(JSON.stringify(token, IDENTITY)) : null,
@@ -260,6 +272,18 @@ export function createSlackConnect(options: {
       });
     if (result === "adopted") return json({ ok: true });
     return json({ error: ADOPT_ERRORS[result], code: result }, result === "missing" ? 404 : 409);
+  }
+
+  async function saveApp(principal: WorkspacePrincipal, request: Request) {
+    const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+    const app = Object.fromEntries(
+      APP_FIELDS.map((name) => [name, typeof body?.[name] === "string" ? body[name].trim() : ""]),
+    ) as SlackApp;
+    if (!APP_FIELDS.every((name) => /^\S{1,512}$/.test(app[name])))
+      return json({ error: "Enter the client ID, client secret and signing secret." }, 400);
+    await saveSlackApp(home, app);
+    await store.run((q) => auditSteps(q, principal, "slack.app_saved"));
+    return json({ ok: true });
   }
 
   async function disconnect(principal: WorkspacePrincipal) {

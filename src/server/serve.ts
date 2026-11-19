@@ -171,7 +171,7 @@ export type ServerOptions = {
   linearWebhookSecret?: string | null;
   githubWebhookSecret?: string | null;
   githubWebhook?: GitHubWebhook;
-  slackSigningSecret?: string | null;
+  slackSigningSecret?: string | null | (() => string | null);
   linearWebhook?: LinearWebhookDeps;
   linearUsage?: () => Promise<LinearUsage>;
   riskApproval?: (itemId: string) => Promise<{ head: string; detail: string } | null>;
@@ -369,7 +369,7 @@ type Secrets = {
   linkAsks?: ServerOptions["linkAsks"];
   questionAnswers?: ServerOptions["questionAnswers"];
   findingIssues?: ServerOptions["findingIssues"];
-  slackSigningSecret: string | null;
+  slackSigningSecret: string | null | (() => string | null);
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
   githubWebhook: GitHubWebhook | undefined;
@@ -465,7 +465,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })(request))!;
     }
     if (
-      (path === "/oauth/slack/callback" || path.startsWith("/api/workspaces/slack")) &&
+      (path === "/oauth/slack/callback" ||
+        path === "/api/settings/slack-app" ||
+        path.startsWith("/api/workspaces/slack")) &&
       secrets.store
     ) {
       try {
@@ -940,7 +942,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === "/webhooks/slack")
     return handleSlackWebhook(
       request,
-      secrets.slackSigningSecret,
+      typeof secrets.slackSigningSecret === "function"
+        ? secrets.slackSigningSecret()
+        : secrets.slackSigningSecret,
       Date.now(),
       secrets.store
         ? createSlackRevocation({
