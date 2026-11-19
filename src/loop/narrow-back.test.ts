@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -86,4 +86,36 @@ test("the handoff lists the files and commits added since the last smaller head"
   expect(handoff).toContain(`- ${grown.slice(0, 7)} Add an admission layer`);
   expect(handoff).not.toContain("Fix the token refresh");
   expect(handoff).toEndWith("- review P1 at admission.ts:3: unchecked grant");
+});
+
+test("generated drizzle snapshots leave the size, other snapshot files count", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "paws-narrow-"));
+  roots.push(repo);
+  const run = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" })
+      .toString()
+      .trim();
+  const commit = () => {
+    run("add", "-A");
+    run("-c", "user.name=Acme", "-c", "user.email=acme@example.com", "commit", "-qm", "change");
+    return run("rev-parse", "HEAD");
+  };
+  const lines = (count: number) =>
+    `${Array.from({ length: count }, (_, i) => `${i}`).join("\n")}\n`;
+  run("init", "-q", "-b", "main");
+  writeFileSync(join(repo, "README.md"), "acme\n");
+  const base = commit();
+  mkdirSync(join(repo, "src/db/drizzle-pg/meta"), { recursive: true });
+  writeFileSync(join(repo, "src/db/drizzle-pg/meta/0099_snapshot.json"), lines(20_000));
+  writeFileSync(join(repo, "src/db/drizzle-pg/0099_change.sql"), lines(10));
+  writeFileSync(join(repo, "src/db/drizzle-pg/meta/_journal.json"), lines(10));
+  writeFileSync(join(repo, "feature.ts"), lines(280));
+  const migration = commit();
+  mkdirSync(join(repo, "fixtures"));
+  writeFileSync(join(repo, "fixtures/_snapshot.json"), lines(25));
+  const other = commit();
+  const git = async (args: string[]) => execFileSync("git", args, { stdio: "pipe" }).toString();
+
+  expect(await candidateSize(git, repo, base, migration)).toEqual(size(migration, 300, 3));
+  expect(await candidateSize(git, repo, base, other)).toEqual(size(other, 325, 4));
 });

@@ -25,7 +25,16 @@ export async function candidateSize(
   head: string,
 ): Promise<CandidateSize> {
   const files = numstat(
-    await git(["-C", repo, "diff", "--numstat", "--no-renames", `${base}...${head}`, "--"]),
+    await git([
+      "-C",
+      repo,
+      "diff",
+      "--numstat",
+      "--no-renames",
+      `${base}...${head}`,
+      "--",
+      ":(exclude,glob)**/drizzle*/meta/*_snapshot.json",
+    ]),
   );
   return {
     head,
