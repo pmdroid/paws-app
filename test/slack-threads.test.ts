@@ -79,6 +79,34 @@ async function fixture(
     { id: "SMEMBER" },
     { id: BOT },
   ];
+  const full = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    team_id: "T0ONE",
+    is_bot: false,
+    is_restricted: false,
+    is_ultra_restricted: false,
+    ...extra,
+  });
+  const directory = {
+    users: [
+      full("SADMIN"),
+      full("SMEMBER"),
+      full("SOTHER"),
+      full("SGONE", { deleted: true }),
+      full(BOT, { is_bot: true }),
+      full("USLACKBOT"),
+    ] as Record<string, unknown>[],
+    page: 200,
+    endless: false,
+    lookups: [] as string[],
+    full,
+  };
+  const paged = (items: unknown[], body: Record<string, unknown>) => {
+    const from = Number(body.cursor ?? 0);
+    const to = from + Math.min(directory.page, Number(body.limit));
+    const next = directory.endless || to < items.length ? String(to) : "";
+    return { ok: true, members: items.slice(from, to), response_metadata: { next_cursor: next } };
+  };
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -103,11 +131,10 @@ async function fixture(
       const info = { id: body.channel, is_channel: true, is_private: false, ...flags, ...channel };
       return Response.json({ ok: true, channel: info });
     }
-    if (method === "conversations.members") {
-      const start = Number(body.cursor ?? 0);
-      const page = members.slice(start, start + Number(body.limit)).map((member) => member.id);
-      const next = start + page.length < members.length ? String(start + page.length) : "";
-      return Response.json({ ok: true, members: page, response_metadata: { next_cursor: next } });
+    if (method === "conversations.members" || method === "users.list") {
+      directory.lookups.push(method);
+      const list = method === "users.list" ? directory.users : members.map((member) => member.id);
+      return Response.json(paged(list, body));
     }
     if (method === "users.info") {
       const user = members.find((member) => member.id === body.user);
@@ -397,6 +424,7 @@ async function fixture(
     shared,
     channel,
     members,
+    directory,
     cookies,
     csrf,
     posted,
@@ -1406,15 +1434,15 @@ test("an attached repository answers from read-only source, records its commit, 
   expect(await f.sideEffects()).toEqual(NONE);
 });
 
-test("source needs the requester's current access and an approved audience, before reading and again before posting", async () => {
-  const f = await withSource();
+test("source needs the requester's current access and a covered audience, before reading and again before posting", async () => {
+  const f = await withSource(["acme/oss"]);
   await f.teams([]);
   await f.say("SMEMBER", "repo acme/app");
   expect(f.notice()).toContain("can't attach that repository");
   await f.teams(["tA"]);
   const own = await f.thread("SMEMBER", "repo acme/app");
   await f.say("SMEMBER", "how does billing work?", { thread_ts: own });
-  expect(f.notice()).toContain("answers from a private repository only when");
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
   expect(f.reader.calls.filter((call) => call.method !== "resolve")).toEqual([]);
   expect(f.prompts).toEqual([]);
   const open = await f.thread("SMEMBER", "repo acme/oss");
@@ -1429,10 +1457,9 @@ test("source needs the requester's current access and an approved audience, befo
   expect(lastPrompt(f)).not.toContain("canary-oss");
   expect(lastPrompt(f)).toContain("No repository");
 
-  for (const change of ["access", "private", "policy", "running"] as const) {
+  for (const change of ["access", "disclosure", "running"] as const) {
     const g = await withSource();
-    await g.say("SADMIN", "channel repo acme/app");
-    const ts = await g.thread("SMEMBER", change === "private" ? "repo acme/oss" : "repo acme/app");
+    const ts = await g.thread("SMEMBER", "repo acme/app");
     if (change === "running") {
       g.runner.hold = true;
       await g.deliver(g.mention("SMEMBER", "billing?", { thread_ts: ts }));
@@ -1450,8 +1477,7 @@ test("source needs the requester's current access and an approved audience, befo
     await g.runJobs();
     expect(await g.replies()).toHaveLength(1);
     if (change === "access") await g.teams([]);
-    if (change === "private") g.reader.repositories["acme/oss"]!.visibility = "private";
-    if (change === "policy") await g.say("SADMIN", "channel repo off");
+    if (change === "disclosure") await disclose(g, "ua", "acme/app", "none");
     await g.settle();
     expect(g.posts("chat.postMessage")).toEqual([]);
     expect((await g.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
@@ -1480,7 +1506,7 @@ test("source reads are bounded and cached per member, installation and commit", 
   expect(await f.sideEffects()).toEqual(NONE);
 });
 
-test("an earlier sourced answer carries its repository into follow-ups and leaves them once access or approval ends", async () => {
+test("an earlier sourced answer carries its repository into follow-ups and leaves them once access or disclosure ends", async () => {
   const f = await withSource();
   await f.say("SADMIN", "channel repo acme/app");
   const root = f.mention("SMEMBER", "how does billing work?");
@@ -1498,7 +1524,7 @@ test("an earlier sourced answer carries its repository into follow-ups and leave
   await f.settle();
   expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
   await f.teams(["tA"]);
-  await f.say("SADMIN", "channel repo off");
+  await disclose(f, "ua", "acme/app", "none");
   await f.say("SMEMBER", "repeat the billing answer", { thread_ts: root.ts });
   const prompt = lastPrompt(f);
   expect(prompt).not.toContain("[Paws]: answer");
@@ -1601,6 +1627,7 @@ test("a channel that turns private, Enterprise-shared or Slack Connect before de
     pending: { is_pending_ext_shared: true },
     unknown: { is_org_shared: undefined },
     "pending unknown": { is_pending_ext_shared: undefined },
+    ...SHARED_METADATA,
   } as const;
   for (const [kind, flags] of Object.entries(kinds)) {
     const f = await sourceFixture();
@@ -1845,4 +1872,171 @@ test("a start without a team, Linear, membership or a usable draft files nothing
   expect(f.linear.issues.size).toBe(0);
   expect(f.linear.calls).toEqual([]);
   expect(await f.sideEffects()).toEqual(NONE);
+});
+
+const SHARED_METADATA = {
+  "a pending external invitation": { pending_connected_team_ids: ["T0EXT"] },
+  "a pending share": { pending_shared: ["T0EXT"] },
+  "another connected team": { connected_team_ids: ["T0EXT"] },
+  "another workspace in the share list": { shared_team_ids: ["T0ONE", "T0TWO"] },
+  "another workspace's channel": { context_team_id: "T0TWO" },
+} as const;
+
+test("sharing metadata beyond the boolean flags stops a policy-allowed source answer before any read", async () => {
+  for (const [name, fields] of Object.entries(SHARED_METADATA)) {
+    const f = await sourceFixture();
+    Object.assign(f.channel, fields);
+    await f.say("SMEMBER", `billing question with ${name}`);
+    expect([name, f.prompts.length]).toEqual([name, 0]);
+    expect(f.reader.calls.filter((call) => call.method !== "resolve")).toEqual([]);
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    expect(leaked(f)).toEqual([]);
+  }
+});
+
+async function withAudience() {
+  const f = await withSource([]);
+  f.directory.users = f.directory.users.filter((user) => user.id !== "SOTHER");
+  const base = { users: [...f.directory.users], members: [...f.members] };
+  const reset = async () => {
+    f.directory.users = [...base.users];
+    f.members.splice(0, f.members.length, ...base.members);
+    for (const key of Object.keys(f.channel)) delete f.channel[key];
+    f.directory.page = 200;
+    f.directory.endless = false;
+    f.advance(1);
+    await syncWorkspaceMember(f.db, {
+      workspaceId: "W1",
+      userId: "ua",
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now: f.now(),
+    });
+  };
+  const outsider = () => f.directory.users.push(f.directory.full("SOTHER"));
+  const ts = await f.thread("SMEMBER", "repo acme/app");
+  const fileReads = () => f.reader.calls.filter((call) => call.method !== "resolve").length;
+  const ask = async (text: string) => {
+    const before = { prompts: f.prompts.length, reads: fileReads() };
+    await f.say("SMEMBER", text, { thread_ts: ts });
+    const answered = f.prompts.length > before.prompts;
+    if (!answered) expect(fileReads()).toBe(before.reads);
+    return answered;
+  };
+  return { ...f, reset, outsider, ts, ask };
+}
+
+test("without a disclosure policy, source answers only when every verified reader of the channel is linked and can read it", async () => {
+  const f = await withAudience();
+  expect(await f.ask("billing first?")).toBe(true);
+  expect(lastPrompt(f)).toContain("canary-main");
+  expect(f.directory.lookups).toContain("conversations.members");
+  expect(f.directory.lookups).toContain("users.list");
+  f.outsider();
+  expect((await disclose(f, "ua", "acme/app", "workspace")).status).toBe(200);
+  expect(await f.ask("billing under the disclosure policy?")).toBe(true);
+  expect((await disclose(f, "ua", "acme/app", "none")).status).toBe(200);
+  await f.reset();
+  const { full } = f.directory;
+  const guest = (id: string, flags: Record<string, unknown>) => {
+    f.directory.users.push(full(id, flags));
+    f.members.push({ id, ...flags });
+  };
+  const unverified: Record<string, () => unknown> = {
+    "an unlinked full member outside the channel": () => f.outsider(),
+    "a guest in the channel": () => guest("SGUEST", { is_restricted: true }),
+    "a single-channel guest in the channel": () => guest("SGUEST", { is_ultra_restricted: true }),
+    "a user whose guest status Slack doesn't say": () =>
+      f.directory.users.push({ id: "SNEW", team_id: "T0ONE", is_bot: false }),
+    "a Slack Connect member": () => guest("SEXT", { team_id: "T0EXT" }),
+    "a channel member missing from the directory": () => f.members.push({ id: "SGHOST" }),
+    "an Enterprise share with another workspace": () =>
+      Object.assign(f.channel, { shared_team_ids: ["T0ONE", "T0TWO"] }),
+    "a pending external invitation": () =>
+      Object.assign(f.channel, { pending_connected_team_ids: ["T0EXT"] }),
+    "another app's bot in the channel": () => guest("SBOT", { is_bot: true }),
+    "an unlinked member on a later page": () => {
+      f.directory.page = 1;
+      f.outsider();
+    },
+    "membership that never ends": () => (f.directory.endless = true),
+    "a directory Paws may not read": () => (f.failNext["users.list"] = "scope"),
+    "a linked reader whose Paws membership ended": () => f.revoke("ua"),
+  };
+  for (const [name, change] of Object.entries(unverified)) {
+    await change();
+    const answered = await f.ask(`billing with ${name}?`);
+    expect([name, answered]).toEqual([name, false]);
+    expect(f.notice()).toMatch(SOURCE_WITHHELD);
+    expect(
+      f.posts("chat.postMessage").filter((post) => /canary/.test(JSON.stringify(post))),
+    ).toEqual([]);
+    await f.reset();
+  }
+  const verified: Record<string, () => void> = {
+    "a guest outside the channel": () =>
+      void f.directory.users.push(full("SGUEST", { is_restricted: true })),
+    "a deactivated account": () => void f.directory.users.push(full("SOLD", { deleted: true })),
+    "linked readers across many pages": () => void (f.directory.page = 1),
+  };
+  for (const [name, change] of Object.entries(verified)) {
+    change();
+    expect([name, await f.ask(`billing with ${name}?`)]).toEqual([name, true]);
+    expect(lastPrompt(f)).toContain("canary-main");
+    await f.reset();
+  }
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("verified readership is checked again at queueing, at delivery, on retry and for earlier answers", async () => {
+  const f = await withAudience();
+  f.runner.hold = true;
+  await f.deliver(f.mention("SMEMBER", "billing in flight?", { thread_ts: f.ts }));
+  const pending = f.settle();
+  while (!(await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+    await Bun.sleep(2);
+  f.outsider();
+  f.runner.hold = false;
+  await pending;
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(await f.replies()).toEqual([]);
+  await f.reset();
+
+  await f.deliver(f.mention("SMEMBER", "billing queued?", { thread_ts: f.ts }));
+  await f.runJobs();
+  expect(await f.replies()).toHaveLength(1);
+  f.outsider();
+  await f.settle();
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  await f.reset();
+
+  f.failNext["chat.postMessage"] = "rate";
+  await f.say("SMEMBER", "billing retried?", { thread_ts: f.ts });
+  expect((await f.replies()).at(-1)!.status).toBe("pending");
+  f.outsider();
+  f.advance(60_000);
+  await f.settle();
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  await f.reset();
+
+  await f.deliver(f.mention("SMEMBER", "billing mid-check?", { thread_ts: f.ts }));
+  await f.runJobs();
+  f.hooks.onInfo = async () => void f.outsider();
+  await f.settle();
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  await f.reset();
+
+  expect(await f.ask("billing, sent this time?")).toBe(true);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  f.outsider();
+  await f.say("SMEMBER", "repo off", { thread_ts: f.ts });
+  await f.say("SMEMBER", "summarise that", { thread_ts: f.ts });
+  const prompt = lastPrompt(f);
+  expect(prompt).toContain("No repository");
+  expect(prompt).not.toContain("[Paws]: answer");
+  expect(prompt).not.toContain("acme/app");
 });

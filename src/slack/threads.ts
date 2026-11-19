@@ -36,6 +36,7 @@ import {
   SlackNotSentError,
   slackCaller,
   slackChannelAudience,
+  slackChannelReaders,
   type SlackAudience,
   type SlackCall,
 } from "./api";
@@ -51,6 +52,7 @@ import {
   slackAttachmentSteps,
   slackSourceCommand,
   slackSourceCommandSteps,
+  slackMembersReadSteps,
   type SlackSourceRef,
 } from "./source";
 import {
@@ -168,16 +170,14 @@ const NOTICES = {
   memory_changed:
     "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
   source_withheld:
-    "Paws didn't post its answer here because it drew on code, and Paws couldn't confirm that everyone who can read this channel may see that code. Ask a Paws workspace admin where Paws may share answers from code.",
+    "Paws didn't post its answer here because it drew on code, and Paws couldn't confirm that everyone who can read this channel may see that code. A Paws workspace admin can allow answers from that code in Slack, or Paws answers once everyone who can read this channel is linked to Paws and can read the code.",
   unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
   denied:
     "Paws can't read this thread's repository for you, so it didn't answer. Mention `@Paws repo off` to ask without it.",
   unavailable:
     "Paws couldn't read this thread's repository at its ref, so it didn't answer. Check the repository and ref, or mention `@Paws repo off` to ask without it.",
-  withheld:
-    "In this channel Paws answers from a private repository only when a Paws workspace admin set it as the channel's repository, so it didn't answer. Mention `@Paws repo off` to ask without it.",
   source_changed:
-    "Your access to this thread's repository, or the channel's repository policy, changed while Paws was answering, so it didn't post that answer. Mention @Paws again to ask.",
+    "Your access to this thread's repository changed while Paws was answering, so it didn't post that answer. Mention @Paws again to ask.",
 };
 const SOURCE_PROMPT_BYTES = 32_000;
 
@@ -215,6 +215,23 @@ function* gateSteps(q: Q, home: string, place: Place): Steps<Gate> {
   return workspaceMemberUsable(member)
     ? { kind: "member", userId: link.userId, linkId: link.id ?? "" }
     : { kind: "ignore" };
+}
+
+/** Every verified reader is linked in this channel to a Paws member who can read the repository. */
+function* readersReadSteps(
+  q: Q,
+  place: Bound & { workspaceId: string },
+  readers: readonly string[] | null,
+  repository: string,
+): Steps<boolean> {
+  if (!readers?.length) return false;
+  const userIds: string[] = [];
+  for (const slackUserId of readers) {
+    const link = parsed<Linked>(yield* readSettingSteps(q, memberKey(place.teamId, slackUserId)));
+    if (link?.workspaceId !== place.workspaceId || !same(link, place)) return false;
+    userIds.push(link.userId);
+  }
+  return yield* slackMembersReadSteps(q, place.workspaceId, userIds, repository);
 }
 
 export type SlackLink = Linked & { slackUserId: string };
@@ -608,7 +625,8 @@ export function createSlackThreads<Profile>(options: {
     });
     if (gate.kind === "ignore") return;
     const call = await slackFor(workspaceId);
-    if ((await slackChannelAudience(call, channelId, context.signal)).kind !== "public") return;
+    if ((await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public")
+      return;
     const code = LINK_CODE.exec(mention.text)?.[1];
     if (code) {
       const outcome = await claim(place, code);
@@ -877,17 +895,30 @@ export function createSlackThreads<Profile>(options: {
     return true;
   }
 
+  /**
+   * The repositories whose code may reach this channel's readers: those an admin's disclosure
+   * policy covers for the channel's audience, and those every verified reader may read.
+   */
   async function disclosableSources(
     call: SlackCall,
     place: Place,
     repositories: readonly string[],
     signal: AbortSignal,
   ): Promise<Set<string>> {
-    const audience = await slackChannelAudience(call, place.channelId, signal, { guests: true });
-    return store.run(function* (q) {
-      const allowed = new Set<string>();
+    const audience = await slackChannelAudience(call, place, signal, { guests: true });
+    const allowed = await store.run(function* (q) {
+      const byPolicy = new Set<string>();
       for (const repository of repositories)
         if (yield* slackSourceDisclosableSteps(q, place.workspaceId, repository, audience))
+          byPolicy.add(repository.toLowerCase());
+      return byPolicy;
+    });
+    const rest = repositories.filter((repository) => !allowed.has(repository.toLowerCase()));
+    if (!rest.length || audience.kind !== "public") return allowed;
+    const readers = await channelReaders(call, place, signal);
+    return store.run(function* (q) {
+      for (const repository of rest)
+        if (yield* readersReadSteps(q, place, readers, repository))
           allowed.add(repository.toLowerCase());
       return allowed;
     });
@@ -956,7 +987,7 @@ export function createSlackThreads<Profile>(options: {
     const tracker = options.work?.() ?? null;
     if (!tracker) return void (await drop());
     const call = await slackFor(workspaceId);
-    if ((await slackChannelAudience(call, channelId, context.signal)).kind !== "public")
+    if ((await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public")
       return void (await drop());
     const team = await tracker.team(draft.team.key, context.signal);
     if (team?.id !== draft.team.id || team.private !== draft.team.private) {
@@ -987,6 +1018,19 @@ export function createSlackThreads<Profile>(options: {
     const task = { identifier: filed.identifier, url: filed.url };
     await store.transaction((q) => work.recordFiledSteps(q, draft, task, now()));
     await say(work.filedNotice(task), "filed");
+  }
+
+  /** Slack IDs of everyone who can read the channel, or null unless Slack proves them all. */
+  async function channelReaders(
+    call: SlackCall,
+    place: Bound & { workspaceId: string },
+    signal: AbortSignal,
+  ): Promise<string[] | null> {
+    const install = await store.run((q) => installationSteps(q, home, place.teamId));
+    if (install?.workspaceId !== place.workspaceId || install.generation !== place.generation)
+      return null;
+    const { teamId, channelId } = place;
+    return slackChannelReaders(call, { teamId, channelId, botUserId: install.botUserId }, signal);
   }
 
   async function currentMemory(
@@ -1044,12 +1088,20 @@ export function createSlackThreads<Profile>(options: {
         now: now(),
       });
     }
-    function* disclosedSteps(q: Q, audience: SlackAudience): Steps<boolean> {
-      for (const repository of repositories)
-        if (!(yield* slackSourceDisclosableSteps(q, payload.workspaceId, repository, audience))) {
-          if (audience.kind !== "unavailable") yield* withholdSourceSteps(q);
-          return false;
-        }
+    function* byPolicySteps(q: Q, audience: SlackAudience, repository: string): Steps<boolean> {
+      return yield* slackSourceDisclosableSteps(q, payload.workspaceId, repository, audience);
+    }
+    function* disclosedSteps(
+      q: Q,
+      audience: SlackAudience,
+      readers: readonly string[] | null,
+    ): Steps<boolean> {
+      for (const repository of repositories) {
+        if (yield* byPolicySteps(q, audience, repository)) continue;
+        if (yield* readersReadSteps(q, payload, readers, repository)) continue;
+        if (audience.kind !== "unavailable") yield* withholdSourceSteps(q);
+        return false;
+      }
       return true;
     }
     const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
@@ -1062,7 +1114,7 @@ export function createSlackThreads<Profile>(options: {
       (await sourceCurrent());
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     const audience = call
-      ? await slackChannelAudience(call, payload.channelId, context.signal, {
+      ? await slackChannelAudience(call, payload, context.signal, {
           guests: repositories.length > 0,
         })
       : null;
@@ -1084,9 +1136,15 @@ export function createSlackThreads<Profile>(options: {
       payload.kind === "notice" && payload.listing && payload.member
         ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
         : payload.text;
+    const byPolicy = await store.run(function* (q) {
+      for (const repository of repositories)
+        if (!(yield* byPolicySteps(q, audience, repository))) return false;
+      return true;
+    });
+    const readers = byPolicy ? null : await channelReaders(call, payload, context.signal);
     const sending = await store.transaction(function* (q) {
       if (!(yield* allowedSteps(q))) return "stopped";
-      if (!(yield* disclosedSteps(q, audience))) return "stopped";
+      if (!(yield* disclosedSteps(q, audience, readers))) return "stopped";
       return (yield* slackSendingSteps(q, row, true)) ? "claimed" : "taken";
     });
     if (sending === "stopped")

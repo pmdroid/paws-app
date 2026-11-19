@@ -19,7 +19,7 @@ type Scope = { workspaceId: string; teamId: string; channelId: string; generatio
 type ThreadPlace = Scope & { threadTs: string };
 type ChannelSource = Scope & { repository: string | null; ref: string | null; setBy: string };
 type ThreadSource = { generation: number; repository: string | null; ref: string | null };
-export type SlackAttachment = { repository: string; ref: string | null; approved: boolean };
+export type SlackAttachment = { repository: string; ref: string | null };
 
 export type SlackSourceCommand = {
   kind: "attach";
@@ -29,7 +29,7 @@ export type SlackSourceCommand = {
 };
 
 export type SlackSourceOutcome =
-  | { kind: "denied" | "unavailable" | "withheld" }
+  | { kind: "denied" | "unavailable" }
   | { kind: "ready"; source: SlackSourceRef; text: string };
 
 export const SLACK_SOURCE_LIMITS = {
@@ -82,6 +82,21 @@ function* readsSteps(q: Q, workspaceId: string, userId: string, repository: stri
   return names.some((name) => lower(name) === lower(repository));
 }
 
+/** Every one of these Paws users is an active member whose Paws teams can read the repository. */
+export function* slackMembersReadSteps(
+  q: Q,
+  workspaceId: string,
+  userIds: readonly string[],
+  repository: string,
+): Steps<boolean> {
+  if (!userIds.length) return false;
+  for (const userId of new Set(userIds)) {
+    if (!workspaceMemberUsable(yield* workspaceMemberSteps(q, workspaceId, userId))) return false;
+    if (!(yield* readsSteps(q, workspaceId, userId, repository))) return false;
+  }
+  return true;
+}
+
 function* channelSourceSteps(q: Q, scope: Scope): Steps<ChannelSource | null> {
   const stored = parsed<ChannelSource>(yield* readSettingSteps(q, channelKey(scope.workspaceId)));
   if (!stored?.repository || stored.teamId !== scope.teamId) return null;
@@ -96,8 +111,7 @@ export function* slackAttachmentSteps(q: Q, place: ThreadPlace): Steps<SlackAtta
   const thread = parsed<ThreadSource>(yield* readSettingSteps(q, threadKey(place)));
   const chosen = thread?.generation === place.generation ? thread : channel;
   if (!chosen?.repository) return null;
-  const approved = !!channel?.repository && lower(channel.repository) === lower(chosen.repository);
-  return { repository: chosen.repository, ref: chosen.ref, approved };
+  return { repository: chosen.repository, ref: chosen.ref };
 }
 
 export function* slackSourceCommandSteps(
@@ -235,7 +249,6 @@ export function createSlackSource(options: { store: Db; reader: GitHubSnapshotRe
       reader &&
       (await reader.resolve(attached.repository, attached.ref, input.signal).catch(() => null));
     if (!snapshot) return { kind: "unavailable" };
-    if (!attached.approved && snapshot.visibility !== "public") return { kind: "withheld" };
     const text = await excerpts(scope, snapshot, input.question, input.signal).catch(() => null);
     if (text === null) return { kind: "unavailable" };
     const { repository, ref, commit } = snapshot;
@@ -249,20 +262,14 @@ export function createSlackSource(options: { store: Db; reader: GitHubSnapshotRe
     signal: AbortSignal;
   }): Promise<boolean> {
     const { scope, userId, source } = input;
-    const policy = await store.run(function* (q) {
-      if (!(yield* readsSteps(q, scope.workspaceId, userId, source.repository))) return null;
-      const channel = yield* channelSourceSteps(q, scope);
-      return {
-        approved: !!channel?.repository && lower(channel.repository) === lower(source.repository),
-      };
-    });
-    if (!policy || !reader) return false;
+    const allowed = await store.run((q) =>
+      readsSteps(q, scope.workspaceId, userId, source.repository),
+    );
+    if (!allowed || !reader) return false;
     const snapshot = await reader
       .resolve(source.repository, source.commit, input.signal)
       .catch(() => null);
-    return (
-      snapshot?.commit === source.commit && (policy.approved || snapshot.visibility === "public")
-    );
+    return snapshot?.commit === source.commit;
   }
 
   return { prepare, current };
