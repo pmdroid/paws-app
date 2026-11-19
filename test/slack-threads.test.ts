@@ -181,13 +181,13 @@ async function fixture() {
     }
     await install(id, team);
   }
-  async function addRunner(workspaceId: string, owner: string, version: string) {
+  async function addRunner(inWorkspace: string, owner: string, version: string) {
     const runnerId = `runner-${owner}`;
     const at = Date.now();
     await sqlRun(
       db,
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?) ON CONFLICT (id) DO NOTHING",
-      [runnerId, workspaceId, owner, runnerId, at, at],
+      [runnerId, inWorkspace, owner, runnerId, at, at],
     );
     await recordRunnerCapacity(db, runnerId, 1, 1, 2);
     await signInFixtureRunner(db, runnerId, "codex");
