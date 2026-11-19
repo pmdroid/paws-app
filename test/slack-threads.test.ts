@@ -59,7 +59,10 @@ async function fixture() {
   const shared: Record<string, boolean> = { C0ONE: false, C0TWO: false };
   const posted: Posted[] = [];
   const calls: string[] = [];
-  const failNext: Record<string, "rate" | "lost" | "internal" | "down" | undefined> = {};
+  const failNext: Record<
+    string,
+    "rate" | "lost" | "internal" | "down" | "refused" | "scope" | undefined
+  > = {};
   const slackFetch = async (url: string, init?: RequestInit) => {
     const method = url.replace("https://slack.com/api/", "");
     calls.push(method);
@@ -69,6 +72,9 @@ async function fixture() {
     if (fail === "rate") return new Response("", { status: 429, headers: { "retry-after": "7" } });
     if (fail === "down") return new Response("", { status: 503 });
     if (fail === "internal") return Response.json({ ok: false, error: "internal_error" });
+    if (fail === "scope") return Response.json({ ok: false, error: "missing_scope" });
+    if (fail === "refused")
+      throw Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
     if (method === "conversations.info") {
       const external = shared[body.channel as string];
       if (external === undefined) return Response.json({ ok: false, error: "channel_not_found" });
@@ -77,7 +83,7 @@ async function fixture() {
     }
     posted.push({ method, body });
     if (fail === "lost") throw new Error("socket hang up");
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, ts: `1800000000.${String(posted.length).padStart(6, "0")}` });
   };
   const prompts: { userId: string; prompt: string }[] = [];
   const helpers = createRunnerHelpers({
@@ -443,35 +449,64 @@ test("duplicate and concurrent deliveries and a rerun turn keep one reply", asyn
   expect(await f.replies()).toHaveLength(1);
 });
 
-test("an uncertain send is never resent, while a rate limit or Slack outage retries", async () => {
+test("a send with an unknown outcome is never retried and never counts as sent", async () => {
   const f = await linked();
   f.failNext["chat.postMessage"] = "lost";
-  await f.deliver(f.mention("SADMIN", "careful"));
+  await f.deliver(f.mention("SADMIN", "careful canary-5"));
   await f.settle();
   f.advance(60_000);
   await f.settle();
   expect(f.posts("chat.postMessage")).toHaveLength(1);
-  expect((await f.replies())[0]).toMatchObject({ status: "sent" });
-
-  f.failNext["chat.postMessage"] = "rate";
-  await f.deliver(f.mention("SADMIN", "busy"));
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "unknown" });
+  await f.deliver(f.mention("SADMIN", "next"));
   await f.settle();
-  expect((await f.replies())[1]).toMatchObject({ status: "pending" });
-  expect((await f.replies())[1]!.notBefore).toBeGreaterThanOrEqual(Date.now() + 6_000);
-  f.advance(8_000);
-  await f.settle();
-  expect(f.posts("chat.postMessage")).toHaveLength(2);
+  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-5");
+});
 
-  f.failNext["chat.postMessage"] = "internal";
-  await f.deliver(f.mention("SADMIN", "outage"));
+test("a 429, a 5xx or a refused connection retries until Slack accepts, storing its ts", async () => {
+  const f = await linked();
+  for (const fail of ["rate", "down", "refused", "internal"] as const) {
+    f.failNext["chat.postMessage"] = fail;
+    await f.deliver(f.mention("SADMIN", fail));
+    await f.settle();
+    if (fail === "rate")
+      expect((await f.replies()).at(-1)!.notBefore).toBeGreaterThanOrEqual(Date.now() + 6_000);
+    f.advance(60_000);
+    await f.settle();
+  }
+  const rows = await f.replies();
+  expect(rows.map((row) => row.status)).toEqual(["sent", "sent", "sent", "sent"]);
+  expect(rows.every((row) => /^1800000000\.\d{6}$/.test(row.externalId ?? ""))).toBe(true);
+  expect(f.posts("chat.postMessage")).toHaveLength(4);
+});
+
+test("a Slack error never marks a reply sent or puts it in the next turn's context", async () => {
+  const f = await linked();
+  f.failNext["chat.postMessage"] = "scope";
+  await f.deliver(f.mention("SADMIN", "refused canary-6"));
   await f.settle();
   f.advance(60_000);
   await f.settle();
-  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
-    "answer 1",
-    "answer 2",
-    "answer 3",
-  ]);
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "refused" });
+  expect(f.calls.filter((method) => method === "chat.postMessage")).toHaveLength(1);
+  await f.deliver(f.mention("SADMIN", "next"));
+  await f.settle();
+  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-6");
+});
+
+test("a withheld reply is never sent and stays out of later context", async () => {
+  const f = await linked();
+  const root = f.mention("SADMIN", "withheld canary-8");
+  await f.deliver(root);
+  await f.runJobs();
+  f.shared.C0ONE = true;
+  await f.settle();
+  f.shared.C0ONE = false;
+  expect((await f.replies())[0]).toMatchObject({ status: "dropped", externalId: "withheld" });
+  await f.deliver(f.mention("SADMIN", "again", { thread_ts: root.ts }));
+  await f.settle();
+  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-8");
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual(["answer 2"]);
 });
 
 test("a transient channel lookup failure retries instead of dropping the mention", async () => {

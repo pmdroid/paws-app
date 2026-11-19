@@ -20,6 +20,22 @@ export class SlackApiError extends Error {
   }
 }
 
+export class SlackNotSentError extends Error {
+  override readonly name = "SlackNotSentError";
+  constructor(readonly method: string) {
+    super(`Slack ${method} was not accepted; retrying.`);
+  }
+}
+
+export class SlackUnknownOutcomeError extends Error {
+  override readonly name = "SlackUnknownOutcomeError";
+  constructor(readonly method: string) {
+    super(`Slack ${method} may or may not have run; its response was lost.`);
+  }
+}
+
+const REFUSED = new Set(["ECONNREFUSED", "ConnectionRefused", "ENOTFOUND", "EAI_AGAIN"]);
+
 export type SlackCall = (
   method: string,
   body: Record<string, unknown>,
@@ -30,24 +46,32 @@ const SLACK_ERROR_CODE = /^[a-z_]{1,64}$/;
 
 export function slackCaller(fetchImpl: SlackFetch, token: string): SlackCall {
   return async (method, body, signal) => {
-    const response = await fetchImpl(`https://slack.com/api/${method}`, {
-      method: "POST",
-      signal,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(`https://slack.com/api/${method}`, {
+        method: "POST",
+        signal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (caught) {
+      const code = (caught as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && REFUSED.has(code)) throw new SlackNotSentError(method);
+      throw new SlackUnknownOutcomeError(method);
+    }
     if (response.status === 429) {
       const seconds = Number(response.headers.get("retry-after"));
       const retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 3600) : 30;
       throw new SlackRateLimitError(method, retryAfterMs * 1000);
     }
+    if (response.status >= 500) throw new SlackNotSentError(method);
     if (!response.ok) throw new SlackApiError(method, `http_${response.status}`);
     const data: unknown = await response.json().catch(() => null);
     if (data === null || typeof data !== "object" || Array.isArray(data))
-      throw new SlackApiError(method, "invalid_response");
+      throw new SlackUnknownOutcomeError(method);
     const record = data as Record<string, unknown>;
     if (record.ok !== true) {
       const code = typeof record.error === "string" ? record.error : "";

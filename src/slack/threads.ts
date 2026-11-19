@@ -9,7 +9,9 @@ import {
   markInboxEventHandledSteps,
   readSettingSteps,
   settingsWithPrefixSteps,
-  slackThreadRepliesSteps,
+  settleSlackOutboxSteps,
+  slackOutboxExistsSteps,
+  slackThreadContextSteps,
   takeSettingSteps,
   updateSettingSteps,
   workspaceMemberSteps,
@@ -18,13 +20,16 @@ import {
   type Job,
   type OutboxRow,
   type Q,
+  type SlackSendOutcome,
   type Steps,
 } from "../db";
 import { journal } from "../journal";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
 import {
   SlackApiError,
+  SlackNotSentError,
   SlackRateLimitError,
+  SlackUnknownOutcomeError,
   slackCaller,
   slackChannelAudience,
   type SlackCall,
@@ -49,6 +54,7 @@ const REPLY_CHARS = 3_500;
 const PROMPT_BYTES = 30_000;
 const SLACK_ID = /^[A-Z0-9]{2,32}$/;
 const RETRYABLE = new Set([
+  "ratelimited",
   "internal_error",
   "service_unavailable",
   "request_timeout",
@@ -350,17 +356,13 @@ export function createSlackThreads(options: {
       const text = `To talk to Paws here, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and mention @Paws in this thread with the code it shows.${setup}`;
       return void (await notice(place, generation, dedupeKey, text));
     }
-    const rows = await store.run((q) => slackThreadRepliesSteps(q, place));
-    if (rows.some((row) => (row.payload as Reply).mentionTs === mention.ts)) return;
-    const earlier = rows
-      .filter((row) => row.status === "sent")
-      .map((row) => row.payload as Reply)
-      .filter(
-        (reply) =>
-          reply.workspaceId === workspaceId &&
-          reply.userId === gate.userId &&
-          reply.generation === generation,
-      );
+    const replyKey = `slack:reply:${place.teamId}:${place.channelId}:${mention.ts}`;
+    const earlier = await store.run(function* (q) {
+      if (yield* slackOutboxExistsSteps(q, replyKey)) return null;
+      const scope = { ...place, userId: gate.userId, generation };
+      return (yield* slackThreadContextSteps(q, scope)) as Reply[];
+    });
+    if (!earlier) return;
     const question = mention.text.replaceAll(`<@${gate.install.botUserId}>`, "").trim();
     const prompt = slackPrompt(
       earlier.filter((reply) => reply.mentionTs < mention.ts).slice(-CONTEXT_REPLIES),
@@ -404,7 +406,7 @@ export function createSlackThreads(options: {
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
         op: "chat.postMessage",
-        idempotencyKey: `slack:reply:${place.teamId}:${place.channelId}:${mention.ts}`,
+        idempotencyKey: replyKey,
         payload: reply,
         now: now(),
       });
@@ -422,47 +424,41 @@ export function createSlackThreads(options: {
       gate.kind !== "ignore" &&
       gate.install.generation === payload.generation &&
       (payload.kind === "notice" || (gate.kind === "member" && gate.userId === payload.userId));
+    const settle = (outcome: SlackSendOutcome) => {
+      if ("note" in outcome) journal(`slack outbox ${row.id}: ${outcome.kind}; ${outcome.note}`);
+      return store.run((q) => settleSlackOutboxSteps(q, row, outcome, now()));
+    };
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     if (
       !call ||
       (await slackChannelAudience(call, payload.channelId, context.signal)) !== "internal"
-    ) {
-      journal(`slack outbox ${row.id}: withheld; access or channel changed before delivery`);
-      return;
-    }
+    )
+      return settle({ kind: "withheld", note: "access or channel changed before delivery" });
     if (!(await context.isCurrent())) return;
+    const [method, body] =
+      payload.kind === "notice"
+        ? ["chat.postEphemeral", { user: payload.slackUserId, text: payload.text }]
+        : ["chat.postMessage", { text: payload.text, unfurl_links: false, unfurl_media: false }];
+    let result: Record<string, unknown>;
     try {
-      if (payload.kind === "notice")
-        await call(
-          "chat.postEphemeral",
-          {
-            channel: payload.channelId,
-            user: payload.slackUserId,
-            thread_ts: payload.threadTs,
-            text: payload.text,
-          },
-          context.signal,
-        );
-      else
-        await call(
-          "chat.postMessage",
-          {
-            channel: payload.channelId,
-            thread_ts: payload.threadTs,
-            text: payload.text,
-            unfurl_links: false,
-            unfurl_media: false,
-          },
-          context.signal,
-        );
+      result = await call(
+        method,
+        { channel: payload.channelId, thread_ts: payload.threadTs, ...body },
+        context.signal,
+      );
     } catch (caught) {
       if (
         caught instanceof SlackRateLimitError ||
+        caught instanceof SlackNotSentError ||
         (caught instanceof SlackApiError && RETRYABLE.has(caught.code))
       )
         throw caught;
-      journal(`slack outbox ${row.id}: not resent; Slack refused it or may already have posted it`);
+      return caught instanceof SlackUnknownOutcomeError
+        ? settle({ kind: "unknown", note: "Slack's response was lost; not resent" })
+        : settle({ kind: "refused", note: "Slack refused the message; not resent" });
     }
+    const ts = result.ts ?? result.message_ts;
+    return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
   }
 
   return { handle, deliver };
