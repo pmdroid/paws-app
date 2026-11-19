@@ -29,7 +29,12 @@ test("the snapshot reader resolves a ref to a commit and reads its tree and blob
   const reader = createGitHubSnapshotReader({
     locate: (name) =>
       name === "acme/app"
-        ? { client, owner: "acme", repo: "app", tokenProvider: { tokenFor: async () => "t" } }
+        ? {
+            client,
+            owner: "acme",
+            repo: "app",
+            tokenProvider: { mode: "token" as const, tokenFor: async () => "t" },
+          }
         : null,
   });
   const signal = new AbortController().signal;
