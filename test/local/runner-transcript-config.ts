@@ -34,32 +34,33 @@ const config = {
   secretAccessKey: "explicit-fixture-secret",
 };
 
+async function cli(root: string, text: string, target = join(root, "home"), args = ["configure"]) {
+  const child = Bun.spawn(
+    [process.execPath, "--no-env-file", "src/index.ts", "runner-storage", ...args],
+    {
+      cwd: new URL("../..", import.meta.url).pathname,
+      env: { PATH: process.env.PATH, HOME: root, PAWS_HOME: target },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  child.stdin.write(text);
+  child.stdin.end();
+  const [code, output, error] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  for (const value of [config.accessKeyId, config.secretAccessKey])
+    assert(!`${output}${error}`.includes(value));
+  return { code, output, error };
+}
+
 export async function probeRunnerTranscriptStorage(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const home = join(root, "home");
-  async function cli(text: string, target = home, args = ["configure"]) {
-    const child = Bun.spawn(
-      [process.execPath, "--no-env-file", "src/index.ts", "runner-storage", ...args],
-      {
-        cwd: new URL("../..", import.meta.url).pathname,
-        env: { PATH: process.env.PATH, HOME: root, PAWS_HOME: target },
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    child.stdin.write(text);
-    child.stdin.end();
-    const [code, output, error] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    for (const value of [config.accessKeyId, config.secretAccessKey])
-      assert(!`${output}${error}`.includes(value));
-    return { code, output, error };
-  }
-  const created = await cli(JSON.stringify(config));
+  const created = await cli(root, JSON.stringify(config));
   assert.equal(created.code, 0, created.error);
   assert.equal(created.output.trim(), "Runner transcript storage configured.");
   const path = join(home, "secrets", "runner-transcript-storage.json");
@@ -73,7 +74,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   // Agent session snapshots use the same bucket.
   assert.equal(loadRunnerTranscriptS3(home)?.bucket, "fixture-transcripts");
   assert.equal(loadRunnerTranscriptS3(join(root, "unconfigured")), null);
-  assert.equal((await cli(JSON.stringify(config))).code, 0);
+  assert.equal((await cli(root, JSON.stringify(config))).code, 0);
   assert.equal(readFileSync(path, "utf8"), bytes);
   observe(
     "normal CLI saves idempotent encrypted transcript configuration without credential output",
@@ -105,9 +106,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     );
     assert.equal(readFileSync(path, "utf8"), bytes);
   }
-  for (const text of ["{", "x".repeat(65_537)]) assert.equal((await cli(text)).code, 1);
+  for (const text of ["{", "x".repeat(65_537)]) assert.equal((await cli(root, text)).code, 1);
   assert.equal(
-    (await cli(JSON.stringify(config), home, ["configure", config.secretAccessKey])).code,
+    (await cli(root, JSON.stringify(config), home, ["configure", config.secretAccessKey])).code,
     1,
   );
   observe(
@@ -258,7 +259,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     explicitSessionTokenUsed: true,
     networkRequests: 0,
   });
+}
 
+export async function probeRunnerTranscriptStartup(root: string, observe: Observe) {
   const missing = join(root, "startup-missing");
   await assert.rejects(
     () => startPaws({ PAWS_HOME: missing, PAWS_PORT: "0", PAWS_EXECUTION: "remote" }),
@@ -293,6 +296,12 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     true,
     { missingHomeUnchanged: true, health: 200, injectedRemotePrerequisitesRejected: true },
   );
+}
+
+export async function probeRunnerTranscriptAdapters(root: string, observe: Observe) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const home = join(root, "home");
+  configureRunnerTranscriptStorage(home, JSON.stringify(config));
   const objects = new Map<string, Uint8Array>();
   const nativeFile = S3Client.prototype.file;
   let requests = 0;
@@ -352,7 +361,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     assert(!existsSync(join(target, "secrets", "runner-transcript-storage.json")));
   }
   const localHome = join(root, "local-home");
-  assert.equal((await cli('{"kind":"local"}', localHome)).code, 0);
+  assert.equal((await cli(root, '{"kind":"local"}', localHome)).code, 0);
   const local = loadRunnerTranscriptObjects(localHome);
   await local.write("restart", Buffer.from("persistent transcript"));
   assert.equal(
@@ -551,9 +560,12 @@ if (import.meta.main && process.argv[2] === "s3-client") {
 } else if (import.meta.main) {
   const root = mkdtempSync(join(tmpdir(), "paws-transcript-config-"));
   const observations: unknown[] = [];
-  await probeRunnerTranscriptStorage(root, (name, passed, observed) =>
-    observations.push({ name, passed, observed }),
-  );
+  for (const probe of [
+    probeRunnerTranscriptStorage,
+    probeRunnerTranscriptStartup,
+    probeRunnerTranscriptAdapters,
+  ])
+    await probe(root, (name, passed, observed) => observations.push({ name, passed, observed }));
   writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2) + "\n");
   console.log(JSON.stringify({ root, observations: observations.length }));
 }
