@@ -161,6 +161,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: [
     "journal",
     "config",
+    "credentials",
     "core",
     "db",
     "skills",

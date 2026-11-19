@@ -59,6 +59,8 @@ import {
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   handleMemberVmSettingsRequest,
+  handleRunnerVmKeysSettingsRequest,
+  RUNNER_VM_KEYS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
@@ -748,6 +750,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (path === RUNNER_VM_KEYS_SETTINGS_PATH && secrets.store) {
+    const store = secrets.store;
+    return (await handleRunnerVmKeysSettingsRequest(request, {
+      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
   }
   if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;

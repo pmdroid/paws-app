@@ -214,6 +214,21 @@ try {
     await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
     await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
     await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
+    let runnerVmKeys = { exeDev: true, tailscale: false };
+    await admin.route("**/api/settings/runner-vm-keys*", async (route) => {
+      const method = route.request().method();
+      if (method === "PUT") runnerVmKeys = { ...runnerVmKeys, tailscale: true };
+      if (method === "DELETE") runnerVmKeys = { ...runnerVmKeys, exeDev: false };
+      await route.fulfill({ json: runnerVmKeys });
+    });
+    await visit(admin, width, "runner-vms", "/dashboard/workspace/runner-vms", "Runner VMs");
+    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Not set"]);
+    await admin.locator("#runner-vm-tailscale").fill("tskey-synthetic");
+    await admin.locator('[data-runner-vm-key="tailscale"] button[type="submit"]').click();
+    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Set"]);
+    await admin.locator('[data-clear="exeDev"]').click();
+    await expect(admin.locator("[data-key-state]")).toHaveText(["Not set", "Set"]);
+    await admin.screenshot({ path: join(out, `runner-vms-changed-${width}.png`), fullPage: true });
 
     let merging = {
       default: { order: "queue", mainMoved: "overlap" },
@@ -388,7 +403,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(13);
+    await expect(submenu).toHaveCount(14);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),

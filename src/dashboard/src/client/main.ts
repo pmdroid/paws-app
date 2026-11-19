@@ -1,6 +1,7 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
 import { createMemberVmSettings } from "./member-vm-settings";
+import { createRunnerVmKeys } from "./runner-vm-keys";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
@@ -87,6 +88,7 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
 const memberVmSettings = createMemberVmSettings();
+const runnerVmKeys = createRunnerVmKeys();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
 const projectMemorySettings = createProjectMemorySettings(() => settings.stale());
@@ -485,6 +487,8 @@ function paint(): void {
   if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
   const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
   if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
+  const runnerVmKeysRoot = document.querySelector<HTMLElement>("#runner-vm-keys");
+  if (runnerVmKeysRoot) runnerVmKeys.mount(runnerVmKeysRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
