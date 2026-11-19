@@ -2857,7 +2857,7 @@ Commands:
   paws doctor                   check prerequisites, including the GitHub App
   paws db check                 connect to the database, apply migrations and report
   paws install                  set up the env file, config.toml and the user service
-  paws install secrets          set the GitHub App, Linear, webhook and other secrets
+  paws install secrets          print the public URL and the browser setup link
   paws review-score [--since D] count review escapes, found after merge and after the PR
   paws evidence migrate         copy local Closeout evidence records to the object store
   paws login slack              connect Slack
