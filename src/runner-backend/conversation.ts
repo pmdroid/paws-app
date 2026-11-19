@@ -76,7 +76,7 @@ export function conversationTurns(options: {
             "base64url",
           ).toString("utf8"),
         ) as { conversation?: { itemId?: string } };
-        if (command.conversation?.itemId !== itemId) return [];
+        if (command.conversation?.itemId !== itemId || row.sessionId === null) return [];
         return [
           {
             commandId: row.id,
