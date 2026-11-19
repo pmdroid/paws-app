@@ -508,6 +508,26 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "host_tool") {
+      const server = state.mcpServers[0];
+      state.hostTools ??= [];
+      try {
+        if (!server?.command) throw new Error("no mcp server");
+        state.hostTools.push({
+          name: step.name,
+          ok: true,
+          text: await callHostTool(server, step.name, step.arguments),
+        });
+      } catch (error) {
+        state.hostTools.push({
+          name: step.name,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      persist();
+      continue;
+    }
     if (step.type === "ask_team") {
       const server = state.mcpServers[0];
       if (!server?.command) {
