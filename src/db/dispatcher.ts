@@ -23,6 +23,7 @@ export type OutboxHandler = (
  */
 export class OutboxDispatcher {
   private handler: OutboxHandler | null = null;
+  private readonly targets = new Map<string, OutboxHandler>();
   private readonly pending = new Map<Promise<void>, OutboxRow>();
   /** Ticks still claiming. `idle()` waits for them so it covers what they claim. */
   private readonly claiming = new Set<Promise<unknown>>();
@@ -52,6 +53,10 @@ export class OutboxDispatcher {
 
   setHandler(handler: OutboxHandler): void {
     this.handler = handler;
+  }
+
+  setTargetHandler(target: string, handler: OutboxHandler): void {
+    this.targets.set(target, handler);
   }
 
   tick(): Promise<OutboxRow[]> {
@@ -117,7 +122,7 @@ export class OutboxDispatcher {
   }
 
   private async deliver(message: OutboxRow, controller: AbortController): Promise<void> {
-    const handler = this.handler;
+    const handler = this.targets.get(message.target) ?? this.handler;
     if (handler === null) return;
     try {
       const claimed = message;

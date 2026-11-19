@@ -10,7 +10,13 @@ import {
   refreshingInstallations,
   type InstallationRepositoryCache,
 } from "./github-installation-cache";
-import { createSlackConnect, createSlackRevocation, handleSlackWebhook } from "../slack";
+import {
+  acceptSlackMention,
+  createSlackConnect,
+  createSlackLinkPage,
+  createSlackRevocation,
+  handleSlackWebhook,
+} from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
@@ -469,6 +475,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (
       (path === "/oauth/slack/callback" ||
         path === "/api/settings/slack-app" ||
+        path === "/oauth/slack/link" ||
         path.startsWith("/api/workspaces/slack")) &&
       secrets.store
     ) {
@@ -479,12 +486,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
       }
       const env = secrets.statusEnv ?? process.env;
-      const slack = await createSlackConnect({
+      const slackOptions = {
         store: secrets.store,
         home: loadRuntime(env).env.home,
         env,
         origin: workspace.origin,
-      })(request);
+      };
+      const slack =
+        path === "/oauth/slack/link"
+          ? await createSlackLinkPage(slackOptions)(request)
+          : await createSlackConnect(slackOptions)(request);
       if (slack) return slack;
     }
     if (path.startsWith("/api/")) {
@@ -958,20 +969,19 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
     return new Response(status.body, { status: status.status, headers });
   }
-  if (path === "/webhooks/slack")
+  if (path === "/webhooks/slack") {
+    const store = secrets.store;
+    const home = loadRuntime(secrets.statusEnv ?? process.env).env.home;
     return handleSlackWebhook(
       request,
       typeof secrets.slackSigningSecret === "function"
         ? secrets.slackSigningSecret()
         : secrets.slackSigningSecret,
       Date.now(),
-      secrets.store
-        ? createSlackRevocation({
-            store: secrets.store,
-            home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-          })
-        : undefined,
+      store ? createSlackRevocation({ store, home }) : undefined,
+      store ? (mention) => acceptSlackMention(store, home, mention) : undefined,
     );
+  }
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (request.method === "POST" && path === "/webhooks/github") {
       const saved = loadGitHubAppCredentials(

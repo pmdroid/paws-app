@@ -14,7 +14,7 @@ import {
   type RunnerListener,
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
-import { createRunnerHelpers } from "../runner-helpers";
+import { createRunnerHelpers, type SlackReplyAuthority } from "../runner-helpers";
 import {
   signRunnerRetroCommand,
   takeRejectedFields,
@@ -121,6 +121,7 @@ export async function openRunnerCoordinator(options: {
   runnerUrl?: string | null;
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
   hostWarnings?: (runnerId: string) => readonly string[];
+  slackReplyAuthority?: SlackReplyAuthority;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -160,6 +161,7 @@ export async function openRunnerCoordinator(options: {
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     now: options.now,
+    ...(options.slackReplyAuthority ? { slack: options.slackReplyAuthority } : {}),
   });
   const results = createRunnerResults({ store: options.db, work, now: options.now });
   const health = createRunnerHealth({ store: options.db, work, now: options.now });

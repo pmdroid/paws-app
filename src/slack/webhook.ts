@@ -11,11 +11,24 @@ export type SlackRevocation = {
   eventTimeMs: number;
 };
 
+export type SlackMention = {
+  teamId: string;
+  appId: string | null;
+  eventId: string;
+  channelId: string;
+  slackUserId: string;
+  text: string;
+  ts: string;
+  threadTs: string;
+  externallyShared: boolean;
+};
+
 export async function handleSlackWebhook(
   request: Request,
   secret: string | null,
   now = Date.now(),
   onRevoked?: (revocation: SlackRevocation) => Promise<unknown>,
+  onMention?: (mention: SlackMention) => Promise<unknown>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed.", { status: 405 });
   const signature = request.headers.get("x-slack-signature");
@@ -55,6 +68,11 @@ export async function handleSlackWebhook(
     await onRevoked(revocation);
     return new Response("ok", { status: 200 });
   }
+  if (onMention && isMessageEvent(payload)) {
+    const mention = slackMention(payload);
+    if (mention) await onMention(mention);
+    return new Response("ok", { status: 200 });
+  }
   return new Response("Unsupported Slack event.", { status: 400 });
 }
 
@@ -74,6 +92,58 @@ function slackRevocation(payload: unknown): SlackRevocation | null {
   if (!Array.isArray(bot)) return null;
   const botUserIds = bot.filter((id): id is string => typeof id === "string");
   return botUserIds.length > 0 ? { teamId, appId, botUserIds, eventTimeMs } : null;
+}
+
+function isMessageEvent(payload: unknown): payload is Record<string, unknown> & {
+  event: Record<string, unknown>;
+} {
+  return (
+    isRecord(payload) &&
+    payload.type === "event_callback" &&
+    isRecord(payload.event) &&
+    (payload.event.type === "app_mention" || payload.event.type === "message")
+  );
+}
+
+const SLACK_ID = /^[A-Z0-9]{2,32}$/;
+const SLACK_TS = /^\d{9,12}\.\d{6}$/;
+
+function slackMention(
+  payload: Record<string, unknown> & { event: Record<string, unknown> },
+): SlackMention | null {
+  const event = payload.event;
+  if (event.type !== "app_mention" || event.subtype !== undefined || event.bot_id !== undefined)
+    return null;
+  const { team_id: teamId, event_id: eventId } = payload;
+  const { channel, user, text, ts } = event;
+  const threadTs = event.thread_ts ?? ts;
+  if (
+    typeof teamId !== "string" ||
+    !SLACK_ID.test(teamId) ||
+    typeof eventId !== "string" ||
+    !/^Ev[A-Z0-9]{4,40}$/.test(eventId) ||
+    typeof channel !== "string" ||
+    !SLACK_ID.test(channel) ||
+    typeof user !== "string" ||
+    !SLACK_ID.test(user) ||
+    typeof text !== "string" ||
+    typeof ts !== "string" ||
+    !SLACK_TS.test(ts) ||
+    typeof threadTs !== "string" ||
+    !SLACK_TS.test(threadTs)
+  )
+    return null;
+  return {
+    teamId,
+    appId: typeof payload.api_app_id === "string" ? payload.api_app_id : null,
+    eventId,
+    channelId: channel,
+    slackUserId: user,
+    text: text.slice(0, 8000),
+    ts,
+    threadTs,
+    externallyShared: payload.is_ext_shared_channel !== false,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

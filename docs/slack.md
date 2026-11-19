@@ -1,6 +1,6 @@
 # Slack
 
-A workspace admin connects one Slack workspace to a Paws workspace in **Workspace › Integrations**. This installs the Paws app in Slack. It gives Slack users no Paws membership, repository access or permission to start work, and Paws reads no private messages except those sent to the app. Paws does not answer in Slack yet.
+A workspace admin connects one Slack workspace to a Paws workspace in **Workspace › Integrations**. This installs the Paws app in Slack. It gives Slack users no Paws membership, repository access or permission to start work, and Paws reads no private messages except those sent to the app. Paws reads only the channel messages that mention it, in the one channel set up below.
 
 ## Create the Slack app
 
@@ -22,6 +22,22 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 - **Disconnect** deletes the token and revokes it with Slack. Each change is in the workspace audit.
 - When the app is uninstalled from Slack, or Slack revokes its bot token, Paws deletes that workspace's token and records `slack.revoked` in the audit. Other connected workspaces are unaffected, and an event from before the current installation is ignored. Add to Slack connects it again.
 - If a rotating token can't be refreshed, the card asks the admin to reconnect.
+
+## Answer in one channel
+
+Paws answers explicit `@Paws` mentions in one internal channel per Paws workspace, in the mention's thread. It needs no repository and no Linear issue, and it starts no work: a thread is a conversation only. Direct messages, other channels and messages that don't mention Paws get no answer.
+
+1. Invite Paws to the channel. The invitation alone changes nothing.
+2. Someone mentions `@Paws` there. Paws replies with a message only they can see, pointing to `https://<paws>/oauth/slack/link`.
+3. They open that page, sign in to Paws, and get a code. They mention `@Paws link <code>` in the thread themselves. That links the Slack account that posted it to their Paws account. The first person to link must be a Paws workspace admin; their link also sets Paws up in that channel.
+
+- A code works once, for ten minutes, only in the Paws workspace that issued it. Posting it from Slack is what proves the Slack account; Paws links no one from a display name, an email address or who installed the app. Never give a code to someone else: whoever posts it is linked to your Paws account.
+- Disconnecting and connecting Slack again ends the channel setup and every link; set up again as above.
+- Before each answer and again before posting it, Paws checks that the person is still an active member, the installation is the same and the channel is still internal. A channel shared with another organization, archived or unreachable gets no answer. Setups and links are in the workspace audit as `slack.channel_admitted` and `slack.member_linked`.
+- Paws gives a turn only that thread's earlier questions to Paws and its replies, at most 20. Nothing is shared across threads.
+- Slack redeliveries of the same mention produce one reply. If Paws can't tell whether a reply was posted, it looks for it among the thread's last 200 replies before posting again; a reply further back than that could be posted twice, and if Slack won't return the thread, Paws retries the check and posts nothing until it can. When Slack rate-limits Paws, it waits as long as Slack asks.
+- Paws answers on the asking member's own paired runner, in its conversation lane, with the workspace's implementer agent. That lane is separate from implementation slots, so answers come even while every slot is busy. The runner must be at version 0.1.94 or newer, online and signed in to that agent. Without such a runner, Paws doesn't answer. While the lane is full, Paws retries the mention later. The runner sees only the thread's context, with no repository, files or tools.
+- Paws answers only in public channels. In a private channel it posts nothing, not even setup messages.
 
 ## Use a `paws login slack` connection
 
