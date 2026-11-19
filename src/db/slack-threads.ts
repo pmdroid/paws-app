@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, isNull, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, like, or } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
@@ -174,6 +174,26 @@ export function* slackOutboxExternalIdSteps(q: Q, id: number): Steps<string | nu
   const { outbox } = q.t;
   const query = q.orm.select({ externalId: outbox.externalId }).from(outbox);
   return (yield* q.one(query.where(eq(outbox.id, id))))?.externalId ?? null;
+}
+
+export function* slackLaterProgressSteps(q: Q, id: number, itemId: string): Steps<boolean> {
+  const { outbox } = q.t;
+  const later = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "slack"),
+          eq(outbox.status, "pending"),
+          gt(outbox.id, id),
+          eq(jsonField(q, outbox.payload, "itemId"), itemId),
+          eq(jsonField(q, outbox.payload, "progress"), "true"),
+        ),
+      )
+      .limit(1),
+  );
+  return later !== undefined;
 }
 
 export function* slackStreamingSteps(q: Q, row: Held, state: string): Steps<boolean> {

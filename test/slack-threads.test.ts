@@ -414,18 +414,22 @@ async function fixture(
       "SELECT user_id, subject FROM workspace_access_audit WHERE action = ? ORDER BY id",
       [action],
     );
-  const streamed = (start: (typeof posted)[number]) => {
-    const parts = posted.filter((post) => post.body.ts === start.ts);
-    const text = [start, ...parts].map((post) => post.body.markdown_text ?? "").join("");
+  const streamed = (opened: (typeof posted)[number]) => {
+    const parts = posted.filter((post) => post.body.ts === opened.ts);
+    const text = [opened, ...parts].map((post) => post.body.markdown_text ?? "").join("");
     const stop = parts.find((post) => post.method === "chat.stopStream")?.body.blocks;
     const blocks = [{ type: "section", text: { type: "mrkdwn", text } }, ...((stop as []) ?? [])];
-    const { channel, thread_ts } = start.body;
-    return { method: "chat.postMessage", body: { channel, thread_ts, text, blocks } };
+    const { channel: to, thread_ts } = opened.body;
+    return { method: "chat.postMessage", body: { channel: to, thread_ts, text, blocks } };
   };
   const posts = (method: string) =>
     method === "chat.postMessage"
       ? posted.flatMap((post) =>
-          post.method === method ? [post] : post.method === "chat.startStream" ? [streamed(post)] : [],
+          post.method === method
+            ? [post]
+            : post.method === "chat.startStream"
+              ? [streamed(post)]
+              : [],
         )
       : posted.filter((post) => post.method === method);
   const notice = () => String(posts("chat.postEphemeral").at(-1)?.body.text);
@@ -486,6 +490,11 @@ async function fixture(
     sideEffects,
     addRunner,
     install,
+    reconcile: () => threads.reconcile(),
+    flush: async () => {
+      await outbox.tick();
+      await outbox.idle();
+    },
     dropStatus: () =>
       sqlRun(db, "UPDATE outbox SET status = 'dropped' WHERE op = 'agents.sessions.setStatus'"),
     advance: (ms: number) => (now += ms),
@@ -1135,7 +1144,12 @@ test("a remembered channel decision reaches a new thread after restart, with no 
   await f.say("SADMIN", "memory");
   expect(f.notice()).toContain(id!);
   expect(new Set(f.posted.map((post) => post.method))).toEqual(
-    new Set(["chat.postEphemeral", "agents.sessions.setStatus", "chat.startStream", "chat.stopStream"]),
+    new Set([
+      "chat.postEphemeral",
+      "agents.sessions.setStatus",
+      "chat.startStream",
+      "chat.stopStream",
+    ]),
   );
   expect(await f.sideEffects()).toEqual(NONE);
 });
@@ -2371,4 +2385,188 @@ test("a task's Slack posts keep the Linear payload, and wait on the session fenc
   const texts = f.posts("chat.postMessage").map((p) => String(p.body.text));
   expect(texts).toHaveLength(1);
   expect(texts[0]).toContain("Tests pass");
+});
+
+const STATUS = "agents.sessions.setStatus";
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+const statuses = (f: Fixture) => f.posts(STATUS).map((post) => post.body.status);
+const stateOf = (f: Fixture, state: string) =>
+  sqlRun(f.db, "UPDATE work_item SET state = ? WHERE id = 'item-1'", [state]);
+async function occupy(f: Fixture, runner: string) {
+  const installation = { organizationId: "ORG1", oauthClientId: "app", appUserId: "app-user" };
+  const observedAtMs = Date.now();
+  await recordLinearInstallation(f.db, {
+    ...installation,
+    sessionId: "busy",
+    teamId: "team",
+    observedAtMs,
+  });
+  const profile = { agent: "codex" as const, model: null };
+  const purpose = "classify" as const;
+  await f.helpers.dispatch({
+    runnerId: runner,
+    sessionId: "busy",
+    purpose,
+    profile,
+    prompt: "Busy",
+  });
+  expect(await runnerOccupancy(f.db, runner, Date.now())).toEqual({ capacity: 1, occupied: 1 });
+}
+
+test("a chat turn shows processing promptly and active when ready, with no loading text, while every slot is full", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await occupy(f, "runner-ua");
+  f.runner.hold = true;
+  const root = f.mention("SADMIN", "what is a monad?");
+  await f.deliver(root);
+  const turn = f.runJobs();
+  for (let i = 0; i < 500 && !f.posts(STATUS).length; i++) {
+    await Bun.sleep(5);
+    await f.flush();
+  }
+  expect(f.posts(STATUS).map((post) => post.body)).toEqual([
+    { channel_id: "C0ONE", thread_ts: root.ts, status: "processing" },
+  ]);
+  expect(f.posts("chat.startStream")).toEqual([]);
+  f.runner.hold = false;
+  await turn;
+  await f.settle();
+  expect(f.posts("chat.startStream")[0]!.body).toMatchObject({
+    channel: "C0ONE",
+    thread_ts: root.ts,
+    recipient_user_id: "SADMIN",
+    recipient_team_id: "T0ONE",
+    markdown_text: "answer 1",
+  });
+  expect(f.posts("chat.stopStream")[0]!.body).toMatchObject({ session_status: "active" });
+  expect(statuses(f)).toEqual(["processing", "active"]);
+  expect(f.posts(STATUS).every((post) => Object.keys(post.body).length === 3)).toBe(true);
+});
+
+test("a filed task's status follows its work, never shows full capacity as execution, and refreshes only while it runs", async () => {
+  const { f } = await filedTask();
+  await occupy(f, "runner-ua");
+  f.advance(11 * 60_000);
+  const tick = async (ms = 0) => {
+    f.advance(ms);
+    await f.reconcile();
+    await f.flush();
+    return statuses(f);
+  };
+  expect(await tick()).toEqual(["active"]);
+  await stateOf(f, "running");
+  expect(await tick()).toEqual(["active", "processing"]);
+  expect(await tick(30 * 60_000)).toEqual(["active", "processing"]);
+  expect(await tick(21 * 60_000)).toEqual(["active", "processing", "processing"]);
+  await stateOf(f, "paused");
+  expect((await tick()).at(-1)).toBe("suspended");
+  expect(await tick(70 * 60_000)).toHaveLength(4);
+  await stateOf(f, "awaiting_input");
+  expect((await tick()).at(-1)).toBe("active");
+  await stateOf(f, "completed");
+  expect((await tick()).at(-1)).toBe("closed");
+  expect(await tick(70 * 60_000)).toHaveLength(6);
+});
+
+test("status coalesces to the latest, honors Retry-After, never resends an uncertain write, and stops at a stale generation", async () => {
+  const { f } = await filedTask();
+  f.advance(11 * 60_000);
+  await stateOf(f, "running");
+  await f.reconcile();
+  await stateOf(f, "paused");
+  await f.reconcile();
+  f.failNext[STATUS] = "rate";
+  await f.flush();
+  expect(statuses(f)).toEqual([]);
+  f.advance(6_000);
+  await f.flush();
+  expect(statuses(f)).toEqual([]);
+  f.advance(2_000);
+  await f.flush();
+  expect(statuses(f)).toEqual(["suspended"]);
+  await stateOf(f, "running");
+  await f.reconcile();
+  f.failNext[STATUS] = "lost";
+  await f.flush();
+  f.advance(60_000);
+  await f.flush();
+  expect(statuses(f)).toEqual(["suspended", "processing"]);
+  const rows = await sqlRows<{ external_id: string }>(
+    f.db,
+    "SELECT external_id FROM outbox WHERE op = ? ORDER BY id",
+    [STATUS],
+  );
+  expect(rows.map((row) => row.external_id)).toContain("unknown");
+  await stateOf(f, "completed");
+  await f.reconcile();
+  await f.reconnect();
+  await f.flush();
+  expect(statuses(f)).toEqual(["suspended", "processing"]);
+});
+
+test("a long reply streams in bounded bursts, resumes its one stream after a rate limit and a restart, and closes within ten minutes", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const long = "a".repeat(1_000) + "b".repeat(1_000) + "c".repeat(500);
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "rate";
+  await f.say("SMEMBER", "explain it all");
+  expect(f.posts("chat.startStream")).toHaveLength(1);
+  expect(f.posts("chat.stopStream")).toEqual([]);
+  f.restart();
+  f.advance(8_000);
+  await f.flush();
+  expect(f.posts("chat.startStream")).toHaveLength(1);
+  expect(f.posts("chat.appendStream").map((post) => post.body.markdown_text)).toEqual([
+    "b".repeat(1_000),
+  ]);
+  expect(f.posts("chat.stopStream")[0]!.body.markdown_text).toBe("c".repeat(500));
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([long]);
+  const ts = f.posts("chat.startStream")[0]!.ts;
+  expect(f.posts("chat.stopStream")[0]!.body.ts).toBe(ts);
+  f.posted.length = 0;
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "rate";
+  await f.say("SMEMBER", "and again");
+  f.advance(9.5 * 60_000);
+  await f.flush();
+  expect(f.posts("chat.appendStream")).toEqual([]);
+  expect(f.posts("chat.stopStream")[0]!.body.markdown_text).toBe(long.slice(1_000));
+  f.posted.length = 0;
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "rate";
+  await f.say("SMEMBER", "once more");
+  f.advance(11 * 60_000);
+  await f.flush();
+  expect(f.posts("chat.appendStream")).toEqual([]);
+  expect(f.posts("chat.stopStream")).toEqual([]);
+  f.posted.length = 0;
+  f.answers.push(long);
+  f.failNext["chat.appendStream"] = "lost";
+  await f.say("SMEMBER", "lost one");
+  f.advance(60_000);
+  await f.flush();
+  expect(f.posts("chat.startStream")).toHaveLength(1);
+  expect(f.posts("chat.stopStream")).toEqual([]);
+  const settled = (await f.replies()).slice(-3).map((row) => row.externalId);
+  expect(settled).toEqual([expect.stringMatching(/^1800/), "unknown", "unknown"]);
+});
+
+test("queued progress coalesces to the latest update, while questions and results are kept", async () => {
+  const { f } = await filedTask();
+  const fence = { generation: 0, stop: false };
+  const base = { sessionId: "S1", itemId: "item-1", fence, asked: null };
+  await f.db.transaction(function* (q) {
+    for (const [key, kind, text] of [
+      ["p1", "update", "Reading the code"],
+      ["p2", "update", "Running tests"],
+      ["r1", "response", "Opened the PR"],
+      ["p3", "update", "Tests pass"],
+    ] as const)
+      yield* slackTaskUpdateSteps(q, { ...base, key, kind, text }, f.now());
+  });
+  await f.flush();
+  const texts = f.posts("chat.postMessage").map((post) => String(post.body.text));
+  expect(texts).toHaveLength(2);
+  expect(texts[0]).toContain("Opened the PR");
+  expect(texts[1]).toContain("Tests pass");
 });

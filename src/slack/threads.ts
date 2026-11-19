@@ -22,6 +22,7 @@ import {
   slackOutboxExistsSteps,
   slackSendingSteps,
   slackStreamingSteps,
+  slackLaterProgressSteps,
   slackOutboxExternalIdSteps,
   slackThreadContextSteps,
   stopSlackConversationSteps,
@@ -915,8 +916,14 @@ export function createSlackThreads<Profile>(options: {
       .finally(() => {
         clearInterval(heartbeat);
         clearInterval(watch);
-        return turnStatus(place, asker, null);
-      });
+      })
+      .then(
+        async (done) => (await turnStatus(place, asker, null), done),
+        async (error: unknown) => {
+          await turnStatus(place, asker, null);
+          throw error;
+        },
+      );
     if (outcome.status === "busy")
       throw new Error("The member's runner conversation lane is busy.");
     if (team) {
@@ -1147,7 +1154,9 @@ export function createSlackThreads<Profile>(options: {
       const tracker = options.work?.() ?? null;
       if (!tracker) return void (await drop());
       const call = await slackFor(workspaceId);
-      if ((await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public")
+      if (
+        (await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public"
+      )
         return void (await drop());
       const team = await tracker.team(draft.team.key, context.signal);
       if (team?.id !== draft.team.id || team.private !== draft.team.private) {
@@ -1224,6 +1233,9 @@ export function createSlackThreads<Profile>(options: {
       if (resume) await closeStream(payload, resume, context.signal);
       return settle({ kind: "withheld", note });
     };
+    const later = (itemId: string) => store.run((q) => slackLaterProgressSteps(q, row.id, itemId));
+    if (payload.kind === "task" && payload.progress && (await later(payload.itemId)))
+      return settle({ kind: "withheld", note: "a later progress update replaces it" });
     if (payload.kind === "status" && !(await store.run((q) => slackStatusCurrentSteps(q, payload))))
       return settle({ kind: "withheld", note: "a later status replaced it" });
     function* allowedSteps(q: Q): Steps<boolean> {
@@ -1251,9 +1263,9 @@ export function createSlackThreads<Profile>(options: {
         ? await store.run((q) => taskScopeSteps(q, payload))
         : payload.kind === "status" && payload.itemId
           ? await store.run((q) => slackTaskScopeSteps(q, payload.itemId!))
-        : payload.kind === "reply"
-          ? (payload.sources ?? []).map((ref) => ref.repository)
-          : [];
+          : payload.kind === "reply"
+            ? (payload.sources ?? []).map((ref) => ref.repository)
+            : [];
     function* withholdSourceSteps(q: Q): Steps<void> {
       if (payload.kind === "task")
         yield* enqueueOutboxOnceSteps(q, {
@@ -1326,8 +1338,7 @@ export function createSlackThreads<Profile>(options: {
     if (!(await context.isCurrent())) return;
     if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
       return withhold("memory changed before delivery");
-    if (!(await sourceCurrent()))
-      return withhold("repository access changed before delivery");
+    if (!(await sourceCurrent())) return withhold("repository access changed before delivery");
     const text =
       payload.kind === "notice" && payload.listing && payload.member
         ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })

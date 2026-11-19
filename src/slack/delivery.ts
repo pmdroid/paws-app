@@ -30,6 +30,7 @@ export type SlackTaskPost = {
   fence: { sessionId: string; generation: number; stop: boolean };
   questionId?: string;
   paws?: "repository" | "answer";
+  progress?: true;
 };
 
 const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
@@ -87,6 +88,7 @@ export function* slackTaskUpdateSteps(
     itemId: item.id,
     fence: { sessionId: update.sessionId, ...update.fence },
     ...(asked ? { questionId: asked.id } : {}),
+    ...(update.kind === "update" ? { progress: true as const } : {}),
     ...(paws ? { paws } : {}),
   };
   yield* enqueueOutboxOnceSteps(q, {
