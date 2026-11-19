@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SLACK_INSTALL_SCOPES } from "../src/slack";
+import { SLACK_INSTALL_SCOPES, handleSlackWebhook } from "../src/slack";
 
 const manifest = Bun.YAML.parse(
   await Bun.file(new URL("../deploy/slack/manifest.yaml", import.meta.url)).text(),
@@ -27,4 +27,22 @@ test("the Slack app manifest points Slack at the Paws callback and webhook", () 
     request_url: "https://paws.example.com/webhooks/slack",
   });
   expect(manifest.settings.event_subscriptions.bot_events).toContain("app_mention");
+});
+
+test("before the signing secret is saved, Slack's URL check gets its challenge and nothing else is accepted", async () => {
+  const post = (body: string) =>
+    handleSlackWebhook(
+      new Request("https://paws.example.com/webhooks/slack", { method: "POST", body }),
+      null,
+    );
+  const verification = await post(JSON.stringify({ type: "url_verification", challenge: "c-1" }));
+  expect(verification.status).toBe(200);
+  expect(await verification.json()).toEqual({ challenge: "c-1" });
+  for (const body of [
+    JSON.stringify({ type: "event_callback", event: { type: "app_mention" } }),
+    JSON.stringify({ type: "url_verification" }),
+    JSON.stringify({ type: "url_verification", challenge: "x".repeat(257) }),
+    "not json",
+  ])
+    expect((await post(body)).status).toBe(401);
 });
