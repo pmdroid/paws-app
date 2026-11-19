@@ -561,16 +561,23 @@ export async function acceptSlackMention(
   const dedupeKey = `slack:${mention.teamId}:${mention.eventId}`;
   const queued = await store.transaction(function* (q) {
     const install = yield* installationSteps(q, home, mention.teamId);
-    if (!install || !mention.text.includes(`<@${install.botUserId}>`)) return false;
+    if (!install) return false;
+    const unmentioned = mention.mentioned === false;
+    if (mention.text.includes(`<@${install.botUserId}>`) === unmentioned) return false;
     if (mention.appId && install.appId && mention.appId !== install.appId) return false;
     const { workspaceId, generation } = install;
     const { teamId, channelId, threadTs, slackUserId, eventId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
-    const conversation = yield* recordSlackConversationSteps(
-      q,
-      { ...threadOf(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
-      at,
-    );
+    const known = unmentioned ? yield* slackConversationSteps(q, threadOf(place)) : null;
+    const author = known ? yield* gateSteps(q, home, place) : null;
+    if (unmentioned && author?.kind !== "member") return false;
+    const conversation =
+      known ??
+      (yield* recordSlackConversationSteps(
+        q,
+        { ...threadOf(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
+        at,
+      ));
     const event = {
       type: "SlackMention",
       workspaceId,
@@ -585,7 +592,7 @@ export async function acceptSlackMention(
       ? yield* stopSteps(q, home, place, conversation.id, mention.ts, at)
       : false;
     if (stopped) return stopped === "task";
-    const gate = UNLINK.test(command) ? yield* gateSteps(q, home, place) : null;
+    const gate = UNLINK.test(command) ? (author ?? (yield* gateSteps(q, home, place))) : null;
     if (gate?.kind === "member") {
       const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
       const action = "slack.member_unlinked" as const;
@@ -796,7 +803,7 @@ export function createSlackThreads<Profile>(options: {
         return { kind: "ignore" };
       return yield* gateSteps(q, home, place);
     });
-    if (gate.kind === "ignore") return;
+    if (gate.kind === "ignore" || (gate.kind !== "member" && mention.mentioned === false)) return;
     const call = await slackFor(workspaceId);
     if ((await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public")
       return;
