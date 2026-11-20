@@ -2025,6 +2025,29 @@ test("notes reach a later run only while its asker may read their sources and th
   expect(await storedNotes(f)).toHaveLength(1);
 });
 
+test("notes given to a run carry their sources into its reply and its own notes", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "remember canary-memory: billing is monthly");
+  const id = RECORD.exec(f.notice())![1]!;
+  await f.say("SADMIN", "channel repo acme/app");
+  f.answers.push(`Billing.\n${notesBlock([{ kind: "observation", text: "canary-note" }])}`);
+  const root = f.mention("SMEMBER", "how is billing monthly?");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SMEMBER", "repo off", { thread_ts: root.ts });
+  await f.say("SADMIN", `forget ${id}`);
+  f.answers.push(`Again.\n${notesBlock([{ kind: "decision", text: "canary-second" }])}`);
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("[Paws]: Billing.");
+  expect(lastPrompt(f)).toContain("canary-note");
+  const source = [{ repository: "acme/app", ref: "main", commit: MAIN }];
+  expect(sourcesOf((await f.replies()).at(-1)!)).toEqual(source);
+  expect((await storedNotes(f)).map((note) => [note.text, note.sources])).toEqual([
+    ["canary-note", source],
+    ["canary-second", source],
+  ]);
+});
+
 const SOURCE_WITHHELD = /couldn't confirm that everyone who can read this channel/;
 
 async function sourceFixture(policy: "none" | "workspace" = "workspace") {

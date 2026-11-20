@@ -1087,7 +1087,7 @@ export function createSlackThreads<Profile>(options: {
       if (usable) for (const ref of used) keptSources.set(sourceId(ref), ref);
       turns.push({ ...turn, text: usable && turn.text ? turn.text : null });
     }
-    const noted = await store.run((q) =>
+    const readable = await store.run((q) =>
       readableSlackNotesSteps(q, {
         workspaceId,
         userId: gate.userId,
@@ -1095,6 +1095,25 @@ export function createSlackThreads<Profile>(options: {
         shareable,
       }),
     );
+    const noted: typeof readable = [];
+    for (const note of readable) {
+      let current = true;
+      for (const ref of uniqueSources(note.sources)) {
+        const id = sourceId(ref);
+        if (!sourceChecked.has(id))
+          sourceChecked.set(
+            id,
+            await sources.current({
+              scope,
+              userId: gate.userId,
+              source: ref,
+              signal: context.signal,
+            }),
+          );
+        if (!sourceChecked.get(id)) current = false;
+      }
+      if (current) noted.push(note);
+    }
     const commits = new Map(
       [...keptSources.values(), ...(source ? [source.source] : [])].map((ref) => [
         ref.repository.toLowerCase(),
@@ -1138,7 +1157,7 @@ export function createSlackThreads<Profile>(options: {
     const background = remembered.text ? `${remembered.text}\n\n` : "";
     const excerpts = source ? `Repository excerpts:\n${source.text}\n\n` : "";
     const notes = slackNotesText(noted, question, commits);
-    const head = `${instructions}\n\n${background}${excerpts}${notes}`;
+    const head = `${instructions}\n\n${background}${excerpts}${notes.text}`;
     const room = Math.min(28_000, SOURCE_PROMPT_BYTES - Buffer.byteLength(head));
     let recent = thread.join("\n").slice(-Math.max(room, 0));
     while (recent && Buffer.byteLength(recent) > room)
@@ -1206,7 +1225,11 @@ export function createSlackThreads<Profile>(options: {
     ]);
     if (!(await currentMemory(scope, gate.userId, contexts)))
       return void (await notice(place, replyKey, NOTICES.memory_changed));
-    const dependencies = uniqueSources([...keptSources.values(), ...(used ? [used] : [])]);
+    const dependencies = uniqueSources([
+      ...keptSources.values(),
+      ...(used ? [used] : []),
+      ...notes.included.flatMap((note) => note.sources),
+    ]);
     if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return void (await notice(place, replyKey, NOTICES.source_changed));
     if (dependencies.length) {
