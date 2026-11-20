@@ -179,6 +179,7 @@ export * from "./visual-review-rows";
 export * from "./github-oauth";
 export * from "./slack-threads";
 export * from "./slack-notes";
+export * from "./slack-follow-ups";
 export * from "./runner-health-reads";
 export * from "./member-vm-delete";
 export * from "./fix-records";

@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import {
   bindWorkItemRepositorySteps,
   consumeWorkspaceBootstrap,
+  createSlackFollowUpSteps,
   enqueueOutboxOnceSteps,
   advanceOutboxSession,
   bindLinearSessionTask,
@@ -1056,12 +1057,32 @@ test("a linked member's stop ends the running turn while runners are full, and f
   const outsider = f.mention("SOTHER", "stop", { thread_ts: root.ts });
   await f.deliver(outsider);
   expect((await conversations(f, root.ts))[0]!.stoppedTs).toBeNull();
+  const [conversation] = await conversations(f, root.ts);
+  const followUp = await f.db.run((q) =>
+    createSlackFollowUpSteps(
+      q,
+      {
+        ...conversation!,
+        generation: conversation!.installGeneration,
+        slackUserId: "SMEMBER",
+        userId: "um",
+        linkId: "link",
+        mentionTs: root.ts,
+        purpose: "check back",
+        trigger: { type: "timer", at: f.now() + 20 * 60_000 },
+      },
+      f.now(),
+    ),
+  );
+  expect(followUp.ok).toBe(true);
   const stop = f.mention("SMEMBER", "stop", { thread_ts: root.ts });
   await f.deliver(stop);
   await f.deliver(stop);
   expect(await conversations(f, root.ts)).toEqual([
     expect.objectContaining({ stoppedTs: stop.ts, stoppedBySlackUserId: "SMEMBER" }),
   ]);
+  const followUps = await f.db.run((q) => q.all(q.orm.select().from(q.t.slackFollowUp)));
+  expect(followUps.map((row) => row.status)).toEqual(["cancelled"]);
   await running;
   f.runner.hold = false;
   await f.deliver(root, { eventId: "EvLATE001" });

@@ -31,6 +31,7 @@ import {
   slackMentionTextSteps,
   slackThreadContextSteps,
   stopSlackConversationSteps,
+  cancelThreadFollowUpsSteps,
   takeSettingSteps,
   updateSettingSteps,
   workspaceMemberSteps,
@@ -460,6 +461,7 @@ function* stopSteps(
   if (gate.kind !== "member") return false;
   const { slackUserId } = place;
   yield* stopSlackConversationSteps(q, { id: conversationId, ts, slackUserId }, at);
+  yield* cancelThreadFollowUpsSteps(q, place, at);
   const filed = yield* work.filingStartedSteps(q, place);
   const mark = yield* slackOutboxMarkSteps(q);
   const stop: TaskStopJob = { place, userId: gate.userId, linkId: gate.linkId, ts, mark };
