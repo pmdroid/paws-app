@@ -4413,4 +4413,16 @@ test("a run that read a Linear team stores its notes and reply with that team, a
   await f.say("SMEMBER", "and now?", { thread_ts: root.ts });
   expect(lastPrompt(f)).not.toContain("canary-derived");
   expect(lastPrompt(f)).not.toContain("canary-answer");
+  tracker.agentTeams.push({ id: "tA", key: "ENG", name: "Engineering", private: false });
+  f.answers.push("canary-late");
+  await f.deliver(f.mention("SADMIN", "late?"));
+  await f.runJobs();
+  await f.dropStatus();
+  f.advance(1);
+  await syncWorkspaceMember(f.db, {
+    ...{ workspaceId: "W1", userId: "ua", role: "admin", active: true, teamIds: [], now: f.now() },
+  });
+  await f.settle();
+  expect(JSON.stringify(f.posts("chat.postMessage"))).not.toContain("canary-late");
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
 });

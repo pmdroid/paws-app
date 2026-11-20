@@ -2023,6 +2023,10 @@ export function createSlackThreads<Profile>(options: {
         for (const repository of payload.repositories ?? [])
           if (!(yield* readsSteps(q, payload.workspaceId, payload.userId, repository)))
             return false;
+      if (payload.kind === "reply" && payload.linearTeamIds?.length) {
+        const member = yield* workspaceMemberSteps(q, payload.workspaceId, payload.userId);
+        if (!payload.linearTeamIds.every((id) => member?.teamIds.includes(id))) return false;
+      }
       const asked =
         payload.kind === "reply" || payload.kind === "notice" ? payload.mentionTs : null;
       if (asked && (yield* stoppedSteps(q, payload, asked))) return false;
