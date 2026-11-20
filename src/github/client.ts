@@ -11,7 +11,7 @@ export function createFetchGitHubClient(
   return {
     async request({ method, path, token, body, signal, accept }): Promise<GitHubResponse> {
       signal?.throwIfAborted();
-      if (accept === "text") return requestText(fetchImpl, `${baseUrl}${path}`, token, signal);
+      if (accept) return requestText(fetchImpl, `${baseUrl}${path}`, token, signal, accept);
       const response = await fetchImpl(`${baseUrl}${path}`, {
         method,
         headers: {
@@ -60,10 +60,12 @@ async function requestText(
   url: string,
   token: string,
   signal: AbortSignal | undefined,
+  accept: "text" | "diff",
 ): Promise<GitHubResponse> {
   const response = await fetchImpl(url, {
     method: "GET",
     headers: {
+      ...(accept === "diff" ? { Accept: "application/vnd.github.diff" } : {}),
       Authorization: `Bearer ${token}`,
       "User-Agent": "paws",
       "X-GitHub-Api-Version": "2022-11-28",

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import {
+  gitHubCommitPatchIds,
   readGitHubCandidateRange,
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
@@ -12,12 +13,13 @@ const before = "b".repeat(40);
 const after = "c".repeat(40);
 const bot = { appId: "1", id: 123, login: "paws[bot]" };
 const identity = { name: "paws[bot]", email: "123+paws[bot]@users.noreply.github.com" };
+const policy = { bot, credit: null };
 
 function fixture(bodies: unknown[]) {
   const calls: string[] = [];
   const client: GitHubClient = {
     async request(input) {
-      calls.push(input.path);
+      calls.push(input.accept ? `${input.path} ${input.accept}` : input.path);
       return { status: 200, body: bodies.shift() };
     },
   };
@@ -44,6 +46,49 @@ test("API attribution validates every candidate commit and rejects foreign autho
   await expect(
     validateGitHubCandidateAttribution(bad.repository, base, before, { bot, credit: null }),
   ).rejects.toThrow("attribution rejected");
+});
+
+test("API attribution skips adopted commits by patch-id, even after a rebase moved their hunks", async () => {
+  const person = { name: "Rita", email: "rita@example.com" };
+  const diff = (line: number, mode = "") =>
+    `diff --git a/notes b/notes\n${mode}index 1111111..2222222 100644\n--- a/notes\n+++ b/notes\n@@ -${line},2 +${line},2 @@\n shelf\n-a\n+b\n`;
+  const commit = (body: string, parents = [base]) => [
+    { parents: parents.map((sha) => ({ sha })) },
+    body,
+  ];
+  const adopted = fixture(commit(diff(1)));
+  const ids = await gitHubCommitPatchIds(adopted.repository, [before]);
+  expect(ids).toHaveLength(1);
+  expect(adopted.calls).toEqual([
+    `/repos/acme/widgets/commits/${before}?per_page=1`,
+    `/repos/acme/widgets/commits/${before} diff`,
+  ]);
+  const range = (...authors: (typeof identity)[]) => ({
+    status: "ahead",
+    total_commits: authors.length,
+    commits: authors.map((author, index) => ({
+      sha: [after, before][index],
+      commit: { author, committer: author, message: "Work" },
+    })),
+  });
+  const rebased = fixture([range(person, identity), ...commit(diff(9)), ...commit(diff(1), [])]);
+  await validateGitHubCandidateAttribution(rebased.repository, base, after, policy, undefined, ids);
+  const rejected = async (bodies: unknown[], skip = ids) =>
+    expect(
+      validateGitHubCandidateAttribution(
+        fixture(bodies).repository,
+        base,
+        after,
+        policy,
+        undefined,
+        skip,
+      ),
+    ).rejects.toThrow("attribution rejected");
+  await rejected([range(person), ...commit(diff(1).replace("+b", "+c"))]);
+  await rejected([range(person), ...commit(diff(1, "old mode 100644\nnew mode 100755\n"))]);
+  await rejected([range(person), ...commit(diff(1), [base, before])]);
+  await rejected([range(person), { parents: [{ sha: base }] }, ""]);
+  await rejected([range(identity, person)], []);
 });
 
 test("API attribution fails closed on incomplete commit pagination", async () => {

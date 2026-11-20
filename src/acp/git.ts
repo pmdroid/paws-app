@@ -22,6 +22,7 @@ export async function git(
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
     onCleanupFailure?: () => void | Promise<void>;
+    input?: string;
   },
 ): Promise<string> {
   options?.signal?.throwIfAborted();
@@ -42,10 +43,10 @@ export async function git(
     : spawn("git", args, {
         cwd: options?.cwd,
         env: options?.env ?? process.env,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [options?.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });
   const child = ownedChild ?? nativeChild!;
-  ownedChild?.stdin?.end();
+  child.stdin?.on("error", () => {}).end(options?.input);
   const cleanup = () => (ownedChild ? stopChild(ownedChild, 500) : Promise.resolve(true));
   let stopping: Promise<boolean> | undefined;
   const abort = () => {

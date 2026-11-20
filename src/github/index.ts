@@ -189,6 +189,7 @@ export {
 
 export {
   validateGitHubCandidateAttribution,
+  gitHubCommitPatchIds,
   readGitHubCandidateRange,
   sameGitHubCandidatePatch,
 } from "./candidate-reads";

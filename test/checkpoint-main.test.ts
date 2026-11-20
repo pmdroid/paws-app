@@ -34,3 +34,17 @@ test("a runner checkpoint records the main its run was given, and only for that 
   expect(checkpoint?.checkpointMain).toBeUndefined();
   await close();
 });
+
+test("a saved checkpoint keeps the item's adopted patch-ids", async () => {
+  const { db, close } = await tempStore();
+  const item = await insertQueuedItem(db, { id: "item", now: 1, branchName: "paws/item" });
+  await saveCheckpoint(db, item.id, { phase: "running", adoptedPatchIds: [MAIN] });
+  await saveCheckpoint(db, item.id, { phase: "verifying", baseSha: BASE, wipCommit: FIRST });
+  expect((await getWorkItem(db, item.id))?.checkpoint).toEqual({
+    phase: "verifying",
+    baseSha: BASE,
+    wipCommit: FIRST,
+    adoptedPatchIds: [MAIN],
+  });
+  await close();
+});

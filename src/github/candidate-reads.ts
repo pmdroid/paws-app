@@ -4,8 +4,12 @@ import {
   validateCommitAttribution,
   type GitCommitPolicy,
 } from "../core";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { acquireOperationToken } from "./auth/provider";
+import { repoApiPath } from "./client";
 import { readTree, repositoryGet } from "./compare";
+import { gitEnv } from "./git";
 import type { GitHubGitRepository } from "./git-reader";
 
 export async function validateGitHubCandidateAttribution(
@@ -14,15 +18,17 @@ export async function validateGitHubCandidateAttribution(
   head: string,
   policy: GitCommitPolicy,
   signal?: AbortSignal,
+  adoptedPatchIds: readonly string[] = [],
 ): Promise<void> {
   policyCoauthors(policy);
+  const adopted = new Set(adoptedPatchIds);
   if (![base, head].every((sha) => /^[a-f0-9]{40}$/.test(sha)))
     throw new Error("Invalid attribution candidate range");
-  const get = repositoryGet({
-    ...repository,
-    token: await acquireOperationToken(repository, "pr"),
+  const { get, patchId } = commitPatchIds(
+    repository,
+    await acquireOperationToken(repository, "pr"),
     signal,
-  });
+  );
   const comparison = await get(`/compare/${base}...${head}?per_page=100&page=1`);
   if (comparison.status !== "ahead" && comparison.status !== "identical")
     throw new Error("Candidate does not descend from its base");
@@ -36,6 +42,13 @@ export async function validateGitHubCandidateAttribution(
     if (!Array.isArray(page.commits) || page.commits.length === 0)
       throw new Error("GitHub returned an incomplete candidate range");
     for (const entry of page.commits) {
+      validated++;
+      if (
+        adopted.size > 0 &&
+        typeof entry.sha === "string" &&
+        adopted.has((await patchId(entry.sha)) ?? "")
+      )
+        continue;
       const commit = entry.commit;
       if (!commit || typeof commit.message !== "string")
         throw new Error("GitHub returned incomplete commit attribution");
@@ -49,10 +62,53 @@ export async function validateGitHubCandidateAttribution(
         ],
         commitCoauthorTrailers(commit.message),
       );
-      validated++;
     }
   }
   if (validated !== total) throw new Error("GitHub returned an inconsistent candidate range");
+}
+
+export async function gitHubCommitPatchIds(
+  repository: GitHubGitRepository,
+  shas: readonly string[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const { patchId } = commitPatchIds(
+    repository,
+    await acquireOperationToken(repository, "pr"),
+    signal,
+  );
+  const ids: string[] = [];
+  for (const sha of shas) {
+    const id = await patchId(sha);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+function commitPatchIds(repository: GitHubGitRepository, token: string, signal?: AbortSignal) {
+  const get = repositoryGet({ ...repository, token, signal });
+  const patchId = async (sha: string): Promise<string | null> => {
+    if (!/^[a-f0-9]{40}$/.test(sha)) return null;
+    const { parents } = await get(`/commits/${sha}?per_page=1`);
+    if (!Array.isArray(parents) || parents.length !== 1) return null;
+    const diff = await repository.client.request({
+      method: "GET",
+      path: repoApiPath(repository.owner, repository.repo, `/commits/${sha}`),
+      token,
+      signal,
+      accept: "diff",
+    });
+    if (diff.status !== 200 || typeof diff.body !== "string" || diff.body.trim() === "")
+      return null;
+    const running = promisify(execFile)("git", ["patch-id", "--stable"], {
+      env: gitEnv(),
+      encoding: "utf8",
+    });
+    running.child.stdin?.on("error", () => {}).end(diff.body);
+    const id = (await running).stdout.split(" ")[0] ?? "";
+    return /^[a-f0-9]{40}$/.test(id) ? id : null;
+  };
+  return { get, patchId };
 }
 
 export async function sameGitHubCandidatePatch(

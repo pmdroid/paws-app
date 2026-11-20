@@ -16,6 +16,7 @@ export async function validateCandidateAttribution(
   policy: GitCommitPolicy,
   env?: NodeJS.ProcessEnv,
   signal?: AbortSignal,
+  adoptedPatchIds: readonly string[] = [],
 ): Promise<void> {
   policyCoauthors(policy);
   const bases = typeof base === "string" ? [base] : base;
@@ -37,11 +38,51 @@ export async function validateCandidateAttribution(
     .trim()
     .split("\n")
     .filter(Boolean);
+  const adopted = new Set(adoptedPatchIds);
   for (const sha of commits) {
+    if (adopted.size > 0 && adopted.has((await commitPatchId(tree, sha, env, signal)) ?? ""))
+      continue;
     const metadata = (await invoke(["show", "-s", "--format=%an%n%ae%n%cn%n%ce", sha]))
       .trimEnd()
       .split("\n");
     const message = await invoke(["show", "-s", "--format=%B", sha]);
     validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message));
   }
+}
+
+export async function commitPatchIds(
+  tree: string,
+  shas: readonly string[],
+  env?: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const sha of shas) {
+    const id = await commitPatchId(tree, sha, env, signal);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+async function commitPatchId(
+  tree: string,
+  sha: string,
+  env?: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const invoke = (args: string[], input?: string) =>
+    git(["-C", tree, "--no-replace-objects", ...args], { env, signal, input });
+  const diff = await invoke([
+    "diff-tree",
+    "-p",
+    "--no-commit-id",
+    "--no-renames",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--binary",
+    sha,
+  ]);
+  if (diff.trim() === "") return null;
+  const id = (await invoke(["patch-id", "--stable"], diff)).split(" ")[0] ?? "";
+  return /^[a-f0-9]{40}$/.test(id) ? id : null;
 }
