@@ -494,6 +494,7 @@ async function setup() {
       | "waiting"
       | ((request: { question: string }, signal: AbortSignal) => Promise<{ answer: string }>),
     hostTools?: RunAgentOptions["hostTools"],
+    addRepositories?: true,
   ) {
     const stop = new AbortController();
     const running = backend
@@ -508,6 +509,7 @@ async function setup() {
         networkGit: async () => "",
         signal: stop.signal,
         ...(hostTools ? { hostTools } : {}),
+        ...(addRepositories ? { addRepositories } : {}),
         ...(question
           ? {
               askTeam: {
@@ -1262,16 +1264,23 @@ test("a redelivered tool event is answered once, and a tool without a handler is
   const calls: string[] = [];
   const record = await context.item();
   await setRunner(context.db, runners.b, { status: "paused" });
-  const turn = context.turn(record, [], undefined, {
-    definitions: [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }],
-    call(name, args) {
-      calls.push(name);
-      if (args.id === "PAS-0") throw new Error("Linear is down");
-      if (args.id === "NUL") return Promise.resolve({ text: "\u0000".repeat(16_384) });
-      return Promise.resolve({ text: `${String(args.id)}: ${"x".repeat(20_000)}` });
+  const turn = context.turn(
+    record,
+    [],
+    undefined,
+    {
+      definitions: [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }],
+      call(name, args) {
+        calls.push(name);
+        if (args.id === "PAS-0") throw new Error("Linear is down");
+        if (args.id === "NUL") return Promise.resolve({ text: "\u0000".repeat(16_384) });
+        return Promise.resolve({ text: `${String(args.id)}: ${"x".repeat(20_000)}` });
+      },
     },
-  });
+    true,
+  );
   const command = (await context.next(runners.a)) as RunCommand;
+  expect(command.addRepositories).toBe(true);
   expect(command.tools).toEqual([
     { name: "linear_issue", description: "Read an issue.", inputSchema: {} },
   ]);
@@ -1319,6 +1328,7 @@ test("a tool event on a run without a handler is answered as not available", asy
   const plain = context.turn(bare, []);
   const onA = (await context.next(runners.a)) as RunCommand;
   expect(onA.tools).toBeUndefined();
+  expect(onA.addRepositories).toBeUndefined();
   await context.events(onA, runners.a, [event]);
   await until(() => results.answered(onA.runId, onA.generation, 1));
   expect(JSON.parse((await results.answered(onA.runId, onA.generation, 1))!)).toEqual({

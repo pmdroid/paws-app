@@ -1662,6 +1662,11 @@ export function createRemoteAgentRunner(options: {
                             tools: [...input.hostTools.definitions] as HostToolDefinitions,
                           }
                         : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.addRepositories &&
+                      input.readOnly !== true
+                        ? { addRepositories: true }
+                        : {}),
                       ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),

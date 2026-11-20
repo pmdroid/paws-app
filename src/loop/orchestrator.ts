@@ -125,6 +125,7 @@ import {
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
 import { LINEAR_TOOLS_NOTE, linearToolScope, linearToolsFor } from "./linear-tools";
+import { joinHostTools, repositoryNote, repositoryTools } from "./repositories";
 import { confirmDecisionSteps, suggestDecisionsSteps } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -10200,7 +10201,9 @@ export class Orchestrator {
       ? await this.store.run((q) => this.workContextSteps(q, item, projectContext, true))
       : brief;
     const linear = !!(await linearToolScope(this.store, this.tracker, item));
-    return { brief, work: linear ? `${work}\n\n${LINEAR_TOOLS_NOTE}` : work };
+    const repositories = await repositoryNote(this.store, item);
+    const notes = [work, linear ? LINEAR_TOOLS_NOTE : null, repositories];
+    return { brief, work: notes.filter(Boolean).join("\n\n") };
   }
 
   private async projectScope(
@@ -11442,6 +11445,7 @@ export class Orchestrator {
       | "remember"
       | "recall"
       | "hostTools"
+      | "addRepositories"
       | "suggestedFindings"
       | "reviewFindings"
     >
@@ -11458,16 +11462,20 @@ export class Orchestrator {
       input.readOnly || input.runId.startsWith("checks-")
         ? undefined
         : await this.rememberFor(item);
-    const hostTools =
-      input.readOnly || input.runId.startsWith("checks-")
-        ? undefined
-        : await linearToolsFor({
+    const working = !input.readOnly && !input.runId.startsWith("checks-");
+    const repositories = working ? await repositoryTools(this.store, item) : undefined;
+    const hostTools = joinHostTools(
+      working
+        ? await linearToolsFor({
             store: this.store,
             tracker: this.tracker,
             item,
             runId: input.runId,
             filed: this.linearFiled,
-          });
+          })
+        : undefined,
+      repositories,
+    );
     const { home, policyRoot } = await this.closeoutHome(item);
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     const github = pull ? this.githubForRepository(repository) : null;
@@ -11477,6 +11485,7 @@ export class Orchestrator {
       ...runtimes,
       ...memory,
       ...(hostTools ? { hostTools } : {}),
+      ...(repositories ? { addRepositories: true as const } : {}),
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item)

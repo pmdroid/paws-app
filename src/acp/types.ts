@@ -157,6 +157,7 @@ export interface RunAgentOptions {
   recall?: (request: unknown) => Promise<string>;
   hostTools?: HostTools;
   addRepository?: (repository: unknown) => Promise<HostToolResult>;
+  addRepositories?: true;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner
    * installs these before the agent starts. `notices` are lines for the task's Linear session.

@@ -50,6 +50,7 @@ export type RunnerRepositoryAccessOptions = {
   installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
   revokeToken?: (token: string) => Promise<void>;
+  granted?: (runId: string, repository: string) => Promise<{ commit: string } | null>;
 };
 
 const SIGNING_FILE = "runner-command-key.pem";

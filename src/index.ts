@@ -299,6 +299,7 @@ import {
   highRiskPathsFileAt,
   POLICY_BLOCK_CHECK_JOB,
   POLICY_BLOCK_CHECK_MS,
+  repositoryGrant,
 } from "./loop";
 import {
   formatReviewScore,
@@ -664,7 +665,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     : null;
   const appActivation = createWorkspaceGitHubActivation(store, runtime.env.home, envSource);
   const resolveApp = (repository: string) => appActivation.resolve(repository);
+  const snapshotReader = createGitHubSnapshotReader({
+    locate: (name) => {
+      const repository = repositoryBinding(name);
+      const binding =
+        repository && githubBinding(authProvider(runtime, repository, "read", resolveApp));
+      return binding ? { ...binding, owner: repository.owner, repo: repository.repo } : null;
+    },
+  });
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
+  repositoryAccess &&= {
+    ...repositoryAccess,
+    granted: repositoryGrant({ store, reader: snapshotReader }),
+  };
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
   const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
   useActiveGitHubMirrors(startupMirrors);
@@ -721,14 +734,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }[] = [];
   const repositorySummaries = createRepositorySummaries({
     store,
-    reader: createGitHubSnapshotReader({
-      locate: (name) => {
-        const repository = repositoryBinding(name);
-        const binding =
-          repository && githubBinding(authProvider(runtime, repository, "read", resolveApp));
-        return binding ? { ...binding, owner: repository.owner, repo: repository.repo } : null;
-      },
-    }),
+    reader: snapshotReader,
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
     profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
