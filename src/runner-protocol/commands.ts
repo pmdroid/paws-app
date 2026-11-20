@@ -511,8 +511,8 @@ export function runnerHelperAcceptedLifetime(purpose: HelperPurpose): number {
 }
 
 export const RUNNER_CONVERSATION_MS = 900_000;
-export const RUNNER_SLACK_REPLY_MS = 180_000;
-export const RUNNER_SLACK_REPLY_PROMPT_BYTES = 32_768;
+export const RUNNER_SLACK_REPLY_MS = 600_000;
+export const RUNNER_SLACK_REPLY_PROMPT_BYTES = 393_216;
 export const RUNNER_SLACK_REPLY_ACCEPTED_MS = 600_000;
 export const RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES = 393_216;
 

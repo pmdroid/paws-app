@@ -6,9 +6,13 @@ import {
   type SlackNoteKind,
   type Steps,
 } from "../db";
+import { estimateContextTokens } from "../project-context";
+import { SLACK_CONTEXT_TOKENS } from "./memory";
 import { readsSteps, type SlackSourceRef } from "./source";
 
-const SLACK_NOTES_PROMPT_BYTES = 8_000;
+const SLACK_NOTES_PROMPT_TOKENS = SLACK_CONTEXT_TOKENS * 0.4;
+const THREAD_PROMPT_BYTES = 28_000;
+const PROMPT_BYTES = 393_216;
 const FENCE = "```paws-notes";
 const BLOCK = /^```paws-notes[ \t]*\n([\s\S]*?)\n?```\s*$/;
 const KINDS = new Set<string>(["observation", "guess", "decision"]);
@@ -143,14 +147,36 @@ export function slackNotesText(
   );
   const lines: string[] = [];
   const included: SlackNote[] = [];
-  let used = Buffer.byteLength(head) + 2;
+  let used = estimateContextTokens(`${head}\n\n`);
   for (const note of ordered) {
     const text = line(note, commits);
-    const size = Buffer.byteLength(text) + 1;
-    if (used + size > SLACK_NOTES_PROMPT_BYTES) continue;
+    const size = estimateContextTokens(`${text}\n`);
+    if (used + size > SLACK_NOTES_PROMPT_TOKENS) continue;
     lines.push(text);
     included.push(note);
     used += size;
   }
   return { text: lines.length ? `${head}${lines.join("\n")}\n\n` : "", included };
+}
+
+const promptFits = (prompt: string) =>
+  estimateContextTokens(prompt) < SLACK_CONTEXT_TOKENS / 2 &&
+  Buffer.byteLength(prompt) <= PROMPT_BYTES;
+
+const shorten = (text: string) => text.slice(Math.ceil(text.length / 8));
+
+export function slackPrompt(input: {
+  head: string;
+  notes: readonly SlackNote[];
+  question: string;
+  commits: ReadonlyMap<string, string>;
+  thread: string;
+}): { prompt: string; notes: SlackNote[] } {
+  let notes = slackNotesText(input.notes, input.question, input.commits);
+  let recent = input.thread.slice(-THREAD_PROMPT_BYTES);
+  while (Buffer.byteLength(recent) > THREAD_PROMPT_BYTES) recent = shorten(recent);
+  while (notes.included.length && !promptFits(`${input.head}${notes.text}${recent}`))
+    notes = slackNotesText(notes.included.slice(0, -1), input.question, input.commits);
+  while (recent && !promptFits(`${input.head}${notes.text}${recent}`)) recent = shorten(recent);
+  return { prompt: `${input.head}${notes.text}${recent}`, notes: notes.included };
 }
