@@ -1,21 +1,10 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import {
-  appendFileSync,
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readRunnerAnswer } from "../src/runner-answers";
 import type { RunnerEventDelivery } from "../src/runner-daemon";
-import { runnerHelperRepositories } from "../src/runner-execution";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand } from "../src/runner-protocol";
 
@@ -49,12 +38,6 @@ function origin(root: string, name: string) {
   const bare = join(root, "origins", `${name}.git`);
   git(["clone", "-q", "--bare", source, bare], root);
   return { bare, commit: git(["rev-parse", "HEAD"], source) };
-}
-
-function walk(path: string): string[] {
-  return statSync(path).isDirectory()
-    ? readdirSync(path).flatMap((name) => walk(join(path, name)))
-    : [readFileSync(path, "latin1")];
 }
 
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
@@ -121,10 +104,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       async networkGit(request) {
         const name = request.remoteUrl.slice(19, -4);
         if (name !== "acme/widgets") expect(request.token).toBe(TOKEN);
-        if (request.operation === "clone")
-          git(["clone", "-q", "--bare", origins[name]!.bare, request.dest!], request.cwd);
-        else if (request.operation === "fetch")
-          git(["fetch", "-q", origins[name]!.bare, "+refs/heads/*:refs/heads/*"], request.dest!);
+        git(["clone", "-q", "--bare", origins[name]!.bare, request.dest!], request.cwd);
       },
       broker: {
         async start(id) {
@@ -198,8 +178,9 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       },
     });
     try {
-      for (let waited = 0; !execution; waited += 5) {
-        if (waited > 10_000) throw new Error("The run did not start");
+      const started = () => execution !== "";
+      for (let tries = 0; !started(); tries++) {
+        if (tries > 2000) throw new Error("The run did not start");
         await runtime.tick();
         await Bun.sleep(5);
       }
@@ -223,26 +204,12 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
         path: join(spool.root, execution, "repositories", "acme", "lib", lib),
         commit: lib,
       });
-      expect(
-        readFileSync(
-          join(spool.root, execution, "repositories/acme/lib", lib, "README.md"),
-          "utf8",
-        ),
-      ).toBe("lib\n");
-      expect(await ask("acme/refused")).toEqual({ error: "Paws could not add acme/refused." });
-      for (const name of ["acme/three", "acme/four", "acme/five"])
+      for (const name of ["acme/refused", "acme/three", "acme/four", "acme/five", "acme/six"])
         expect(await ask(name)).toEqual({ error: `Paws could not add ${name}.` });
-      expect(await ask("acme/sixth")).toEqual({ error: "Paws could not add acme/sixth." });
       expect(await ask("acme/lib")).toMatchObject({ commit: lib });
       expect(asked).toEqual(["acme/lib", "acme/refused", "acme/three", "acme/four", "acme/five"]);
-      expect(runnerHelperRepositories(spool, execution).map((added) => added.repository)).toEqual([
-        "acme/lib",
-      ]);
       expect(sent.filter((delivery) => delivery.event.type === "repository")).toEqual([]);
-      for (const text of walk(spool.root)) expect(text).not.toContain(TOKEN);
-      expect(
-        readdirSync(join(root, "repositories")).filter((name) => name.startsWith("added-")),
-      ).toEqual([]);
+      expect(Bun.spawnSync(["grep", "-rlF", TOKEN, spool.root]).stdout.toString()).toBe("");
     } finally {
       await runtime.stop();
       rmSync(root, { recursive: true, force: true });

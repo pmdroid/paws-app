@@ -94,6 +94,13 @@ export {
 class RemoteFailure extends Error {}
 class GitHubFailure extends RemoteFailure {}
 const GITHUB_UNAVAILABLE = "GitHub git operation failed";
+const snapshotEnv = (home: string) => ({
+  PATH: "/usr/bin:/bin",
+  HOME: home,
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+});
 
 const CANDIDATE_PUSH_RETRY_MS = [0, 60_000, 120_000, 240_000, 480_000];
 const PERMANENT_PUSH_REJECTION =
@@ -177,7 +184,6 @@ type Active = {
   repositories?: {
     offset: number;
     requested: Set<string>;
-    answered: Set<string>;
     adding?: Promise<void>;
   };
   /** Set once the worker's runtime install report is in the inventory. */
@@ -680,18 +686,12 @@ export async function openRunnerRuntime(options: {
         repository,
       ),
     );
-    const commit = "commit" in credential ? credential.commit : undefined;
-    if (typeof commit !== "string") throw new Error("Paws granted no added repository commit");
+    const commit = credential.commit;
+    if (!commit) throw new Error("Paws granted no added repository commit");
     check(entry);
     const [owner, repo] = repository.split("/") as [string, string];
     const workspace = join(options.repositoryRoot, `added-${entry.execution.id}`, owner, repo);
-    const env = {
-      PATH: "/usr/bin:/bin",
-      HOME: options.home,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_TERMINAL_PROMPT: "0",
-    };
+    const env = snapshotEnv(options.home);
     try {
       const prepared = await prepareRepositorySnapshot({
         owner,
@@ -741,8 +741,7 @@ export async function openRunnerRuntime(options: {
     const read = readRunnerToolRequests(raw, repositories.offset);
     repositories.offset = read.offset;
     for (const request of read.repositories) {
-      if (repositories.answered.has(request.requestId) || entry.abort.signal.aborted) continue;
-      repositories.answered.add(request.requestId);
+      if (entry.abort.signal.aborted) return;
       let answer: { path: string; commit: string } | { error: string };
       try {
         answer = await addRepository(entry, request.repository);
@@ -1482,13 +1481,7 @@ export async function openRunnerRuntime(options: {
       if (command.type === "task") {
         if (command.repository) {
           const repository = command.repository;
-          const env = {
-            PATH: "/usr/bin:/bin",
-            HOME: options.home,
-            GIT_CONFIG_NOSYSTEM: "1",
-            GIT_CONFIG_GLOBAL: "/dev/null",
-            GIT_TERMINAL_PROMPT: "0",
-          };
+          const env = snapshotEnv(options.home);
           const token = await grant(entry);
           const credential = await remote(() =>
             options.daemon.repositoryCredential(command.runId, command.generation, "read", token),
@@ -2251,11 +2244,7 @@ export async function openRunnerRuntime(options: {
         command.type === "run" &&
         command.addRepositories
       ) {
-        const added = (entry.repositories ??= {
-          offset: 0,
-          requested: new Set(),
-          answered: new Set(),
-        });
+        const added = (entry.repositories ??= { offset: 0, requested: new Set() });
         added.adding ??= answerRepositories(entry)
           .catch(journalRejection("runner-runtime.answerRepositories", report, null))
           .finally(() => {

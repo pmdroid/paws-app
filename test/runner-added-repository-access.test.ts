@@ -53,7 +53,7 @@ function fixture(
   return { minted, request };
 }
 
-test("an added repository gets a read token for exactly that repository when granted", async () => {
+test("an added repository gets a read token only when granted, at most five per run", async () => {
   const asked: string[] = [];
   const { minted, request } = fixture(async (runId, repository) => {
     asked.push(`${runId} ${repository}`);
@@ -68,29 +68,21 @@ test("an added repository gets a read token for exactly that repository when gra
   });
   expect(asked).toEqual(["run acme/lib"]);
   expect(minted).toEqual([{ access: "read", repository: "acme/lib", installationId: "1" }]);
-});
-
-test("an added repository is refused without a grant or with a null answer", async () => {
+  for (const name of ["two", "three", "four", "five", "two"])
+    expect((await request({ repository: `acme/${name}` }))!.status).toBe(200);
+  expect((await request({ repository: "acme/six" }))!.status).toBe(403);
   for (const granted of [undefined, async () => null]) {
-    const { minted, request } = fixture(granted);
-    expect((await request({ repository: "acme/lib" }))!.status).toBe(403);
-    expect(minted).toEqual([]);
+    const refused = fixture(granted);
+    expect((await refused.request({ repository: "acme/lib" }))!.status).toBe(403);
+    expect(refused.minted).toEqual([]);
   }
 });
 
 test("a request without repository is served for the run's own repository", async () => {
-  const { request } = fixture();
-  const response = (await request({}))!;
+  const response = (await fixture().request({}))!;
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     remoteUrl: "https://github.com/fixture/repository.git",
     branch: null,
   });
-});
-
-test("the sixth added repository of a run is refused", async () => {
-  const { request } = fixture(async () => ({ commit }));
-  for (const name of ["one", "two", "three", "four", "five", "one"])
-    expect((await request({ repository: `acme/${name}` }))!.status).toBe(200);
-  expect((await request({ repository: "acme/six" }))!.status).toBe(403);
 });

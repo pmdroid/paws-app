@@ -196,3 +196,93 @@ test("add_repository copies Paws' snapshot into the folder and refuses a sixth r
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a run with addRepositories copies read-only repositories beside its checkout", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } =
+    await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "paws-run-add-repository-"));
+  try {
+    const commit = "d".repeat(40);
+    const snapshot = (name: string) => {
+      const path = join(root, "spool", name, commit);
+      mkdirSync(join(path, "src"), { recursive: true });
+      writeFileSync(join(path, "src", "index.ts"), `${name}\n`);
+      return { repository: name, commit, path };
+    };
+    const names = ["acme/one", "acme/two", "acme/three", "acme/four", "acme/five", "acme/six"];
+    const published = names.map(snapshot);
+    const checkout = join(root, "work", "run");
+    mkdirSync(checkout, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", checkout, ...args], {
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      });
+    git("init", "-q");
+    const before = git("status", "--porcelain");
+    const runRoot = join(root, "work", ".paws", "runs", "execution");
+    const emitted: { requestId: string; repository: string }[] = [];
+    const command = {
+      id: "01K00000000000000000000000",
+      type: "run" as const,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      runId: "run",
+      itemId: "item",
+      generation: 1,
+      issuedAt: 0,
+      expiresAt: 1,
+      repository: {
+        owner: "acme",
+        repo: "app",
+        remoteUrl: "https://github.com/acme/app.git",
+        baseSha: "a".repeat(40),
+      },
+      profile: { agent: "claude" as const, model: null },
+      prompt: "Implement the issue",
+      addRepositories: true,
+    };
+    const tool = commandRepositories(
+      command,
+      (event) => emitted.push(event),
+      async (requestId) => {
+        const name = emitted.find((event) => event.requestId === requestId)!.repository;
+        const added = published.find((entry) => entry.repository === name)!;
+        return { answer: JSON.stringify({ path: added.path, commit }) };
+      },
+      undefined,
+      runRoot,
+      () => published,
+    );
+    tool.preload();
+    const add = tool.addRepository!;
+    for (const name of names.slice(0, 5))
+      expect(await add(name)).toEqual({
+        text: `Added at ${join(runRoot, "repositories", name)} (commit ${commit}).`,
+      });
+    expect(await add("acme/six")).toEqual({ text: "Paws could not add acme/six.", isError: true });
+    const copy = join(runRoot, "repositories", "acme", "one");
+    expect(readFileSync(join(copy, "src", "index.ts"), "utf8")).toBe("acme/one\n");
+    for (const path of [copy, join(copy, "src"), join(copy, "src", "index.ts")])
+      expect(statSync(path).mode & 0o222).toBe(0);
+    expect(readdirSync(copy)).toEqual(["src"]);
+    expect(git("status", "--porcelain")).toBe(before);
+    const { addRepositories: _addRepositories, ...plain } = command;
+    expect(
+      commandRepositories(
+        plain,
+        () => {},
+        async () => ({ answer: "{}" }),
+        undefined,
+        runRoot,
+        () => published,
+      ).addRepository,
+    ).toBeUndefined();
+  } finally {
+    execFileSync("chmod", ["-R", "u+w", root]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
