@@ -60,3 +60,42 @@ export const slackThreadNote = pgTable(
     index("slack_thread_note_conversation").on(table.conversationId, table.createdAt),
   ],
 );
+
+export const slackFollowUp = pgTable(
+  "slack_follow_up",
+  {
+    id: text().primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    teamId: text("team_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    threadTs: text("thread_ts").notNull(),
+    generation: bigint({ mode: "number" }).notNull(),
+    slackUserId: text("slack_user_id").notNull(),
+    userId: text("user_id").notNull(),
+    linkId: text("link_id").notNull(),
+    mentionTs: text("mention_ts").notNull(),
+    purpose: text().notNull(),
+    trigger: jsonb().notNull(),
+    status: text().notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    dueAt: bigint("due_at", { mode: "number" }),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+    claimedAt: bigint("claimed_at", { mode: "number" }),
+    finishedAt: bigint("finished_at", { mode: "number" }),
+  },
+  (table) => [
+    check(
+      "slack_follow_up_status",
+      sql`status IN ('pending', 'claimed', 'done', 'cancelled', 'expired')`,
+    ),
+    check("slack_follow_up_purpose", sql`char_length(purpose) BETWEEN 1 AND 500`),
+    index("slack_follow_up_thread").on(
+      table.workspaceId,
+      table.teamId,
+      table.channelId,
+      table.threadTs,
+      table.generation,
+    ),
+    index("slack_follow_up_user").on(table.userId, table.status),
+  ],
+);
