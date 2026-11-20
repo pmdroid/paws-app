@@ -34,6 +34,19 @@ sudo systemctl restart paws.service
 
 The package enables and starts the service. Configure the public URL and TLS paths in the environment file before using it, then complete workspace access and GitHub App setup above. The service runs as `paws` with `PAWS_HOME=/var/lib/paws`. Upgrades preserve the environment file and stop the service before backing up local PGlite data, retaining the newest three copies in `/var/lib/paws/backups`. A configured `PAWS_DATABASE_URL` skips that copy.
 
+On Fedora, RHEL, Rocky Linux or AlmaLinux, download `paws-control-plane-<version>-1.x86_64.rpm` and its `.rpm.sha256` instead. Use `aarch64` on an ARM host. In the download directory, run:
+
+```sh
+sha256sum -c paws-control-plane-<version>-1.x86_64.rpm.sha256
+sudo dnf install ./paws-control-plane-<version>-1.x86_64.rpm
+sudoedit /etc/paws/control-plane.env
+sudo systemctl restart paws.service
+```
+
+The RPM installs the same files and service as the `.deb`, and upgrades the same way: `sudo dnf upgrade ./paws-control-plane-<version>-1.x86_64.rpm` keeps your environment file and backs up local PGlite data first. Removing the package keeps your edited environment file as `/etc/paws/control-plane.env.rpmsave`.
+
+Each release package has a build provenance attestation. Check one with `gh attestation verify <package> --repo pmdroid/paws-app`.
+
 The source installation above remains available.
 
 ## Delegate work
