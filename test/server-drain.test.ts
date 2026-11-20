@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
 import { databaseProbeSteps } from "../src/db";
 import { startPaws } from "../src/index";
 import { migratedHome } from "./helpers";

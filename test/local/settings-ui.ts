@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { INSTALLATION_PERMISSIONS } from "../../src/github";
+import { useMemorySettings } from "../../src/config";
 import { startServer } from "../../src/server";
 import {
   createWorkspaceAccess,
@@ -11,6 +12,7 @@ import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
+useMemorySettings(join(root, "config.toml"));
 const { db, close } = await tempStore();
 const home = join(root, "home");
 mkdirSync(home, { recursive: true, mode: 0o700 });

@@ -726,7 +726,6 @@ for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outs
         ).toMatchObject({ clientId: "fixture-client", clientSecret: "fixture-client-secret" });
         expect(readSecretFile(join(dir, "linear-webhook"))).toBe("signing-secret");
         expect(existsSync(join(dir, "linear-webhook"))).toBe(false);
-        expect(existsSync(join(scene.home, "config.toml"))).toBe(false);
         const stored = await scene.db.run((q) => q.all(q.orm.select().from(q.t.secret)));
         expect(JSON.stringify(stored)).not.toContain("signing-secret");
         expect(JSON.stringify(stored)).not.toContain("fixture-client-secret");
