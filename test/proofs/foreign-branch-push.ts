@@ -9,18 +9,11 @@ const FAILURE = "widgets.txt is missing the line: shelf b: 7";
 const MOVED = "while you worked. Start from their commits";
 const ARRIVED = "commits that Paws didn't push arrived on";
 
-const RITA = {
-  GIT_AUTHOR_NAME: "rita",
-  GIT_AUTHOR_EMAIL: "rita@acme.test",
-  GIT_COMMITTER_NAME: "rita",
-  GIT_COMMITTER_EMAIL: "rita@acme.test",
-};
-
 function personPushes(worktree: string): void {
   const git = (cwd: string, ...args: string[]) => {
     const run = Bun.spawnSync(["git", ...args], {
       cwd,
-      env: { ...process.env, ...RITA },
+      env: { ...process.env, GIT_AUTHOR_NAME: "rita", GIT_COMMITTER_NAME: "rita" },
     });
     if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
     return run.stdout.toString().trim();

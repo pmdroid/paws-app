@@ -164,7 +164,6 @@ export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
 export {
   branchContains,
   hasOpenPullOnPrefix,
-  readBranchArrivals,
   type BranchArrival,
   readBranchTip,
   readBranchWork,

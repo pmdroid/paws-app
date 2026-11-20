@@ -37,7 +37,6 @@ export type SerialMergeInput = {
    * so its S is its candidate ref in the bare mirror.
    */
   ref?: string;
-  /** The head the rebase push expects on the branch; the head the lane read when unset. */
   expectedHead?: string;
   publishedAt?: (head: string) => number | null | Promise<number | null>;
   issue: string;

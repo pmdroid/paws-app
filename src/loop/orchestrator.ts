@@ -456,7 +456,6 @@ import {
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
   readBranchTip,
-  readBranchArrivals,
   readCommit,
   readBranchWork,
   type BranchArrival,
@@ -11772,12 +11771,14 @@ export class Orchestrator {
           ),
         ];
     let commits: BranchArrival[] | null = null;
-    for (const base of bases)
-      if (base && commits === null) commits = await readBranchArrivals({ ...read, sha: base });
+    for (const base of bases) {
+      if (!base || commits !== null) continue;
+      const compared = await branchContains({ ...read, sha: base });
+      if (compared.head !== null) commits = compared.commits;
+    }
     commits ??= [
       { sha: tip, author: "unknown", subject: (await readCommit({ ...read, sha: tip })).subject },
     ];
-    this.runStartHeads.set(item.id, tip);
     if (!remote) await git(["-C", checkout, "reset", "--hard", tip]);
     else
       await this.store.run((q) =>
