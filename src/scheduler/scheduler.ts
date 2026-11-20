@@ -46,6 +46,7 @@ import {
   savePinnedSlotsSteps,
   type Db,
   RUNNER_FULL,
+  type ConflictProneRule,
   type ItemHold,
   type ItemRunnerVerdicts,
   type QueueWaitingFor,
@@ -102,6 +103,8 @@ export type SchedulerOptions = {
   /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
   parallelFiles?: (repository: string) => readonly string[];
   overlapHold?: boolean;
+  /** How many merge-queue conflicts in how many days make a file hot. Without it nothing is hot. */
+  conflictProne?: ConflictProneRule;
   log?: (line: string) => void;
 };
 
@@ -129,7 +132,7 @@ type Overlap = { blocker: string; files: string[]; start?: true };
 
 /**
  * Holds work that would conflict again in the merge queue. A queued item whose latest candidate
- * changes a hot file, one that caused a merge-queue conflict in the last week, waits while a
+ * changes a hot file, one that caused enough merge-queue conflicts within the rule's days, waits while a
  * running or merge-queue item in the same repository changes that file too, until that one
  * merges. An item without a candidate is never held: Paws cannot know its files. An item that
  * depends on the candidate, directly or through other issues, never holds it: it cannot merge
@@ -141,10 +144,11 @@ function* overlapGate(
   q: Q,
   now: number,
   waiters: readonly Item[],
+  conflictProne: ConflictProneRule,
   parallelFiles?: SchedulerOptions["parallelFiles"],
 ) {
   const hot = new Map<string, Set<string>>();
-  for (const file of yield* hotFilesSteps(q, now)) {
+  for (const file of yield* hotFilesSteps(q, now, conflictProne)) {
     if (parallelFiles?.(file.repository).includes(file.path)) continue;
     const key = file.repository.toLowerCase();
     hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
@@ -767,9 +771,9 @@ async function admit(
         waiters.push(item);
     }
     const overlapping =
-      options.overlapHold === false
+      options.overlapHold === false || !options.conflictProne
         ? () => null
-        : yield* overlapGate(q, now, waiters, options.parallelFiles);
+        : yield* overlapGate(q, now, waiters, options.conflictProne, options.parallelFiles);
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||

@@ -153,7 +153,7 @@ describePglite((connect) => {
     await returned(db, "ENG-3", "github_queue", "c1", ["src/a.ts"]);
     await returned(db, "ENG-3", "merge", "c1", ["src/old.ts"], NOW - 8 * DAY);
 
-    expect(await db.run((q) => hotFilesSteps(q, NOW))).toEqual([
+    expect(await db.run((q) => hotFilesSteps(q, NOW, { conflicts: 1, days: 7 }))).toEqual([
       { repository: "Acme/Paws", path: "src/a.ts", conflicts: 2, items: ["ENG-2", "ENG-3"] },
       { repository: "Acme/Paws", path: "src/b.ts", conflicts: 1, items: ["ENG-2"] },
     ]);
@@ -190,9 +190,29 @@ describePglite((connect) => {
     for (const candidate of [null, "missing", "nopaths", "nobase"])
       await returned(db, "N", "merge", candidate, null);
 
-    expect(await db.run((q) => hotFilesSteps(q, NOW))).toEqual([
+    expect(await db.run((q) => hotFilesSteps(q, NOW, { conflicts: 1, days: 7 }))).toEqual([
       { repository: "Acme/Paws", path: "src/mid.ts", conflicts: 2, items: ["R", "Q"] },
       { repository: "Acme/Paws", path: "src/early.ts", conflicts: 1, items: ["R"] },
+    ]);
+  });
+
+  test("a file is hot only with the rule's conflicts inside the rule's days", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await items(db, ["ENG-1", "ENG-2"]);
+    await returned(db, "ENG-1", "merge", "a1", ["src/once.ts", "src/twice.ts"]);
+    await returned(db, "ENG-2", "merge", "b1", ["src/twice.ts"]);
+    await returned(db, "ENG-1", "merge", "a1", ["src/old.ts"], NOW - 2 * DAY);
+    await returned(db, "ENG-2", "merge", "b1", ["src/recent.ts"], NOW - 23 * 60 * 60 * 1000);
+
+    const paths = async (rule: { conflicts: number; days: number }) =>
+      (await db.run((q) => hotFilesSteps(q, NOW, rule))).map((file) => file.path);
+    expect(await paths({ conflicts: 2, days: 7 })).toEqual(["src/twice.ts"]);
+    expect(await paths({ conflicts: 1, days: 1 })).toEqual([
+      "src/twice.ts",
+      "src/once.ts",
+      "src/recent.ts",
     ]);
   });
 });

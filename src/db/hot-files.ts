@@ -14,10 +14,12 @@ import {
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText } from "./json-text";
 
-/** Conflict restarts this recent make their files hot. */
-export const HOT_FILE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** How many conflict restarts within how many days make a file hot. */
+export type ConflictProneRule = { conflicts: number; days: number };
 
-/** A file that sent work back for a merge-queue conflict within {@link HOT_FILE_WINDOW_MS}. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A file that sent work back for merge-queue conflicts often enough within the rule's window. */
 export type HotFile = {
   /** `owner/repo` as the item is bound to it. */
   repository: string;
@@ -111,9 +113,9 @@ export function repositoryKey(owner: string, repo: string): string {
   return `${owner}/${repo}`.toLowerCase();
 }
 
-export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
+export function* hotFilesSteps(q: Q, now: number, rule: ConflictProneRule): Steps<HotFile[]> {
   const { candidateRisk, rebaseReturn, remoteMergeFact, workItem, workItemRepository } = q.t;
-  const since = now - HOT_FILE_WINDOW_MS;
+  const since = now - rule.days * DAY_MS;
   const returns = yield* q.all(
     q.orm
       .select({
@@ -222,21 +224,27 @@ export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
       found.set(id, hot);
     }
   }
-  return [...found.values()].sort(
-    (left, right) =>
-      right.conflicts - left.conflicts ||
-      left.repository.localeCompare(right.repository) ||
-      left.path.localeCompare(right.path),
-  );
+  return [...found.values()]
+    .filter((file) => file.conflicts >= rule.conflicts)
+    .sort(
+      (left, right) =>
+        right.conflicts - left.conflicts ||
+        left.repository.localeCompare(right.repository) ||
+        left.path.localeCompare(right.path),
+    );
 }
 
 /**
- * Files that caused conflicts with main in the window before `now`, from merge and GitHub
+ * Files that caused at least `rule.conflicts` conflicts with main in the `rule.days` before `now`, from merge and GitHub
  * merge queue restarts, most conflicts first. A restart records its conflicting files when the
  * lane's rebase named them. A restart without them counts the files the candidate it returned
  * shares with other pull requests that merged into the same repository after the candidate's
  * base merged and no later than the restart.
  */
-export async function hotFiles(store: Db, now: number): Promise<HotFile[]> {
-  return await store.run((q) => hotFilesSteps(q, now));
+export async function hotFiles(
+  store: Db,
+  now: number,
+  rule: ConflictProneRule,
+): Promise<HotFile[]> {
+  return await store.run((q) => hotFilesSteps(q, now, rule));
 }
