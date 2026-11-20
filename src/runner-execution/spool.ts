@@ -493,9 +493,11 @@ export function runnerTaskRepositoryPath(spool: RunnerSpool, executionId: string
 function helperRepositoryJob(spool: RunnerSpool, executionId: string, repository?: string) {
   const job = readRunnerJob(spool, executionId);
   if (
-    job.command.type !== "helper" ||
-    job.command.purpose !== "slack_reply" ||
-    !job.command.repositories ||
+    (job.command.type === "run"
+      ? !job.command.addRepositories
+      : job.command.type !== "helper" ||
+        job.command.purpose !== "slack_reply" ||
+        !job.command.repositories) ||
     (repository !== undefined && !RunnerRepositoryNameSchema.safeParse(repository).success)
   )
     throw new Error("Job takes no helper repositories");

@@ -285,6 +285,7 @@ export const RunnerCommandSchema = z
       remember: z.literal(true).optional(),
       recall: z.literal(true).optional(),
       tools: HostToolDefinitionsSchema.optional(),
+      addRepositories: z.boolean().optional(),
       questionEndsTurn: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),

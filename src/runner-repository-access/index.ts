@@ -8,10 +8,12 @@ import {
 } from "../github";
 import { authorizeRepositoryCommand } from "../runner-repository-commands";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { RUNNER_HELPER_REPOSITORIES, RunnerRepositoryNameSchema } from "../runner-protocol";
 
 const inputSchema = z.strictObject({
   generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   access: z.enum(["read", "write"]),
+  repository: RunnerRepositoryNameSchema.optional(),
 });
 const idSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 
@@ -125,9 +127,53 @@ export function createRunnerRepositoryAccess(options: {
   github: GitHubApp;
   installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
+  granted?: (runId: string, repository: string) => Promise<{ commit: string } | null>;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
+  const added = new Map<string, Set<string>>();
+  async function addedCredential(
+    access: Parameters<RunnerWork["authorizeAsync"]>[0],
+    repository: string,
+  ) {
+    const granted = options.granted;
+    if (!granted) return denied();
+    const runRepositories = added.get(access.runId) ?? new Set<string>();
+    const repeated = runRepositories.has(repository);
+    if (!repeated && runRepositories.size >= RUNNER_HELPER_REPOSITORIES) return denied();
+    runRepositories.add(repository);
+    added.set(access.runId, runRepositories);
+    const grant = await granted(access.runId, repository).catch((error: unknown) => {
+      journalCaught(error, "runner-repository-access.granted", null);
+      return null;
+    });
+    const commit = grant?.commit;
+    if (typeof commit !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) {
+      if (!repeated) runRepositories.delete(repository);
+      return denied();
+    }
+    const installationId = await options.installationForRepository(repository);
+    if (!installationId) return denied();
+    await options.work.authorizeAsync(access);
+    const credential = await github(() =>
+      options.github.mintInstallationToken({ access: "read", repository, installationId }),
+    );
+    const current = await options.work.authorizeAsync(access);
+    const checkedAt = now();
+    if (current.command.type !== "run" || !usableCredential(credential, repository, checkedAt))
+      return denied();
+    journal(`run repository-credential run=${access.runId} repository=${repository}`);
+    return Response.json(
+      {
+        token: credential.token,
+        expiresAt: Math.min(credential.expiresAt, checkedAt + MAX_TOKEN_TTL_MS),
+        remoteUrl: `https://github.com/${repository}.git`,
+        branch: null,
+        commit,
+      },
+      { headers: { "cache-control": "no-store" } },
+    );
+  }
   return async (request: Request, runnerId: string): Promise<Response | null> => {
     const path = /^\/v1\/runs\/([^/]+)\/repository-credential$/.exec(new URL(request.url).pathname);
     if (!path) return null;
@@ -146,6 +192,10 @@ export function createRunnerRepositoryAccess(options: {
       if (input.access === "write" && (initial.command.type !== "run" || !initial.branch))
         return denied();
       const repository = `${initial.command.repository.owner}/${initial.command.repository.repo}`;
+      if (input.repository !== undefined && input.repository !== repository) {
+        if (input.access !== "read" || initial.command.type !== "run") return denied();
+        return await addedCredential(access, input.repository);
+      }
       const installationId = await options.installationForRepository(repository);
       if (!installationId) return denied();
       const expectedBot =

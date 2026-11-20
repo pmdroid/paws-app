@@ -5,6 +5,7 @@ import {
   RunnerAgentTargetsSchema,
   RunnerEventSchema,
   RunnerRepositoryBranchSchema,
+  RunnerRepositoryNameSchema,
   RunnerResultSchema,
   RunnerSkillManifestSchema,
   RunnerTokenSchema,
@@ -63,6 +64,7 @@ export const RunnerFollowUpsSchema = z.strictObject({
 export const RunnerRepositoryAccessSchema = z.strictObject({
   generation,
   access: z.enum(["read", "write"]),
+  repository: RunnerRepositoryNameSchema.optional(),
 });
 export const RunnerRepositoryCredentialSchema = z.strictObject({
   token: RunnerTokenSchema,

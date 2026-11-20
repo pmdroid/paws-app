@@ -1256,10 +1256,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       generation: number,
       access: "read" | "write",
       grantToken: string,
+      repository?: string,
     ) {
       ensureOpen();
       identifier.parse(runId);
-      const body = RunnerRepositoryAccessSchema.parse({ generation, access });
+      const body = RunnerRepositoryAccessSchema.parse({
+        generation,
+        access,
+        ...(repository === undefined ? {} : { repository }),
+      });
       RunnerGrantTokenSchema.parse(grantToken);
       const field = (path: string) => sql`json_extract(${pendingCommand.payload},${path})`;
       const stored = q
@@ -1284,7 +1289,18 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner work command is invalid.");
       if (access === "write" && command.type !== "run")
         throw new Error("Review commands cannot request repository write access.");
-      const credential = RunnerRepositoryCredentialSchema.parse(
+      if (
+        repository !== undefined &&
+        (command.type !== "run" || !command.addRepositories || access !== "read")
+      )
+        throw new Error("Runner work takes no added repositories.");
+      const credential = (
+        repository === undefined
+          ? RunnerRepositoryCredentialSchema
+          : RunnerRepositoryCredentialSchema.extend({
+              commit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+            })
+      ).parse(
         await authenticated(
           `/v1/runs/${encodeURIComponent(runId)}/repository-credential`,
           "POST",
@@ -1296,11 +1312,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (
         credential.expiresAt <= current ||
         credential.expiresAt > current + 60 * 60_000 ||
-        credential.remoteUrl !== command.repository.remoteUrl ||
+        credential.remoteUrl !==
+          (repository === undefined
+            ? command.repository.remoteUrl
+            : `https://github.com/${repository}.git`) ||
         (access === "read" ? credential.branch !== null : credential.branch === null)
       )
         throw new Error("Runner repository credential does not match the admitted work.");
-      return credential;
+      return credential as z.infer<typeof RunnerRepositoryCredentialSchema> & { commit?: string };
     },
     async githubReadCredential(runId: string, generation: number, grantToken: string) {
       ensureOpen();
