@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { useMemorySettings } from "../../src/config";
 import { insertQueuedItem, recordLinearInstallation } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
@@ -8,6 +9,7 @@ import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
+useMemorySettings(join(root, "config.toml"));
 const { db, close } = await tempStore();
 await insertQueuedItem(db, {
   id: "fixture-item",

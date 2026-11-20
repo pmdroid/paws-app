@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { readConfigText, useMemorySettings } from "../../src/config";
 import { join } from "node:path";
 import { setJournalSink } from "../../src/journal";
 import {
@@ -108,9 +108,10 @@ export default {
         lines.filter((line) => line.includes("recordDecision")),
       );
 
-      appendFileSync(
-        join(process.env.PAWS_HOME!, "config.toml"),
-        "\n[project_memory]\ndecisions = true\n",
+      const configPath = join(process.env.PAWS_HOME!, "config.toml");
+      useMemorySettings(
+        configPath,
+        `${readConfigText(configPath)}\n[project_memory]\ndecisions = true\n`,
       );
       access.grants.set(
         `${ORG}\0${ANSWERER}`,

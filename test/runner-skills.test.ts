@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useMemorySettings } from "../src/config";
 import { git, snapshotImplementationSkills } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
@@ -47,7 +48,7 @@ test("paired runner consumes snapshotted external skills without committing the 
     const repositoryBundle = join(root, "source.bundle");
     await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
     chmodSync(repositoryBundle, 0o600);
-    writeFileSync(
+    useMemorySettings(
       join(pawsRoot, "config.toml"),
       '[skills.projects."acme/repo"]\nroot = "skills"\n',
     );

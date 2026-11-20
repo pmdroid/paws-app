@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { asc, count, eq, sql } from "drizzle-orm";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { useMemorySettings } from "../src/config";
 import { parentTaskKeySql, systemClock } from "../src/core";
 import type { FakeStep } from "../src/acp/testing/script";
 import {
@@ -352,7 +353,7 @@ test("a person's answer to an answer turn's ask_team question records a decision
     [{ type: "ask_team", question: "Which screenshot?" }],
     projectContext,
   );
-  writeFileSync(join(f.root, "config.toml"), "[project_memory]\ndecisions = true\n");
+  useMemorySettings(join(f.root, "config.toml"), "[project_memory]\ndecisions = true\n");
   f.tracker.mergeContexts.set("parent", { projectId: "project-1", labels: [] });
   try {
     const created = event();

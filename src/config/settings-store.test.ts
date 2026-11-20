@@ -1,10 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, parseConfigToml } from "./file";
 import { readProjectMemorySettings, setProjectMemorySettingsText } from "./project-memory";
-import { retiredConfigSections, updateConfigText, useSettingsStore } from "./settings-store";
+import {
+  readConfigText,
+  retiredConfigSections,
+  updateConfigText,
+  useMemorySettings,
+  useSettingsStore,
+} from "./settings-store";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -119,4 +125,32 @@ test("a save drops a retired section the stored settings still hold", async () =
   expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
   await updateConfigText(configPath, (current) => current);
   expect(stored()).toBe('[agents]\nimplementer = "codex"\n\n[member_vm]\n');
+});
+
+test("memory settings seed loadConfigFile with no file on disk and keep a save", async () => {
+  const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
+  const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
+  cleanups.push(() => settings.release());
+  expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
+  await updateConfigText(configPath, (current) =>
+    setProjectMemorySettingsText(current, { workSummary: true, dream: false, decisions: true }),
+  );
+  expect(readConfigText(configPath)).toContain("[project_memory]\nwork_summary = true");
+  expect(readConfigText(configPath)).toContain('implementer = "codex"');
+  expect(existsSync(configPath)).toBe(false);
+});
+
+test("releasing memory settings removes the registration", () => {
+  const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
+  const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
+  settings.release();
+  expect(readConfigText(configPath)).toBe("");
+  expect(loadConfigFile(configPath).agents.implementer).not.toBe("codex");
+});
+
+test("memory settings without text start empty", () => {
+  const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
+  const settings = useMemorySettings(configPath);
+  cleanups.push(() => settings.release());
+  expect(readConfigText(configPath)).toBe("");
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,13 +20,13 @@ let configPath: string;
 let audits: string[];
 let stored: string | null;
 let release: () => void;
+const SEEDED = "[github]\nmirrors = true\n";
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "paws-github-access-"));
   configPath = join(dir, "config.toml");
-  writeFileSync(configPath, '[github]\nrepo = "o/r"\nmirrors = true\n');
   audits = [];
-  stored = null;
+  stored = SEEDED;
   const snapshot = await useSettingsStore(configPath, {
     read: async () => stored,
     update: async (change) => {
@@ -72,7 +72,7 @@ test("without a saved section the settings come from the [github] keys", async (
   expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
 });
 
-test("a save goes to the database, wins over the file and applies without a restart", async () => {
+test("a save goes to the database, wins over [github] mirrors and applies without a restart", async () => {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -91,13 +91,8 @@ test("a save goes to the database, wins over the file and applies without a rest
     restore();
   }
   expect(stored).toBe("[github_access]\nagent_read = false\nmirrors = false\n\n[member_vm]\n");
-  expect(readFileSync(configPath, "utf8")).not.toContain("github_access");
   expect(lines.some((line) => line.includes("mirrors set to false"))).toBe(true);
   expect(audits).toEqual(["settings.github_access"]);
-  writeFileSync(
-    configPath,
-    '[github]\nrepo = "o/r"\nmirrors = true\n\n[github_access]\nagent_read = true\n',
-  );
   const config = loadConfigFile(configPath);
   expect(agentReadAllowed(config)).toBe(false);
   expect(githubMirrorsOn(config)).toBe(false);
@@ -121,7 +116,7 @@ test("a member, a missing CSRF token or an invalid value cannot write", async ()
   );
   expect(invalid!.status).toBe(400);
   expect(((await invalid!.json()) as { error: string }).error).toContain("githubAccess.agentRead");
-  expect(stored).toBeNull();
+  expect(stored).toBe(SEEDED);
 });
 
 test("restartRequired compares the save with the reader Paws started with", async () => {

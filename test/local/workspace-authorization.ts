@@ -15,6 +15,7 @@ import {
   syncWorkspaceMember,
   workspaceMember,
 } from "../../src/db";
+import { useMemorySettings } from "../../src/config";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
 import { fakeSkillResolver } from "../../src/skills";
@@ -34,6 +35,7 @@ export async function probeWorkspaceAuthorization(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
+  useMemorySettings(join(root, "config.toml"));
   const { db, close } = await tempStore();
   const now = Date.now();
   const ownerId = await putWorkspaceUser(db, {

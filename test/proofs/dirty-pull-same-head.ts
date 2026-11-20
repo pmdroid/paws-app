@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { readConfigText, useMemorySettings } from "../../src/config";
 import { join } from "node:path";
 import dirty from "./dirty-pull-ci-wait";
 import { type Proof } from "./harness";
@@ -18,10 +18,8 @@ export default {
     return dirty.agent(input);
   },
   async run(proof) {
-    appendFileSync(
-      join(process.env.PAWS_HOME!, "config.toml"),
-      '\n[merge]\nmain_moved = "green"\n',
-    );
+    const configPath = join(process.env.PAWS_HOME!, "config.toml");
+    useMemorySettings(configPath, `${readConfigText(configPath)}\n[merge]\nmain_moved = "green"\n`);
     await proof.delegate();
     await proof.waitFor(
       "Closeout accepts and the item waits in the merge queue on CI",

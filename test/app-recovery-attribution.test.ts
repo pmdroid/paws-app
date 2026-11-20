@@ -33,7 +33,6 @@ for (const state of [
     const pawsHome = join(home, ".paws");
     mkdirSync(pawsHome);
     await migratedHome(pawsHome);
-    writeFileSync(join(pawsHome, "config.toml"), '[github]\nauth = "app"\nrepo = "acme/demo"\n');
     const env = {
       PATH: "/usr/bin:/bin",
       HOME: home,
@@ -67,7 +66,12 @@ for (const state of [
     const clock = new FakeClock(Date.now());
     const options: StartOptions = { hostClock: clock };
     const paws = await startPaws(
-      { PAWS_HOME: pawsHome, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" },
+      {
+        PAWS_HOME: pawsHome,
+        PAWS_PORT: "0",
+        PAWS_HOST: "127.0.0.1",
+        PAWS_GITHUB_REPOS: "acme/demo",
+      },
       options,
     );
     try {

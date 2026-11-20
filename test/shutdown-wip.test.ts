@@ -69,7 +69,6 @@ describe("shutdown WIP", () => {
     const evidence = join(home, "owned-agent.jsonl");
     await seedWorktree(home, "ENG-21");
     await writeFile(join(worktreePath(home, "ENG-21"), "notes.txt"), "dirty\n");
-    await writeFile(join(home, "config.toml"), "[linear]\n");
     const previous = process.env.PAWS_CLAUDE_ACP;
     process.env.PAWS_CLAUDE_ACP = [
       process.execPath,

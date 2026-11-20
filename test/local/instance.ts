@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
-import { loadRuntime, writeAgentSettings, type AgentSettings } from "../../src/config";
+import {
+  loadRuntime,
+  useMemorySettings,
+  writeAgentSettings,
+  type AgentSettings,
+} from "../../src/config";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -97,8 +102,8 @@ async function scenario(
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
-  writeFileSync(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "${implementer}"\n`);
-  if (settings) writeAgentSettings(join(pawsRoot, "config.toml"), settings);
+  useMemorySettings(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "${implementer}"\n`);
+  if (settings) await writeAgentSettings(join(pawsRoot, "config.toml"), settings);
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents/skills/local-review"), { recursive: true });

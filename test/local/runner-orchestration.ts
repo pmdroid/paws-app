@@ -3,6 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type RunAgentOptions } from "../../src/acp";
+import { useMemorySettings } from "../../src/config";
 import { JOB_KIND, systemClock, FakeClock } from "../../src/core";
 import {
   JobLoop,
@@ -407,7 +408,7 @@ export async function probeRunnerOrchestration(
     const crashed = scenario.startsWith("crashed-");
     // These scenarios check that a rebase before the merge runs Closeout again on the runner.
     const mergeSettings = '[merge]\nmain_moved = "closeout"\n';
-    writeFileSync(join(home, "config.toml"), mergeSettings);
+    useMemorySettings(join(home, "config.toml"), mergeSettings);
     const orchestrator = attachOrchestrator({
       store: db,
       admission: workspaceAdmission(db),

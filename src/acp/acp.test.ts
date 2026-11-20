@@ -10,6 +10,7 @@ import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
 import { createUpdateLimiter } from "./ask-team";
+import { useMemorySettings } from "../config";
 import { setJournalSink } from "../journal";
 import { createAcpPromptLifecycle } from "./lifecycle";
 import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
@@ -1522,7 +1523,7 @@ test("follow-up interrupts initialization without waiting for an agent response"
 
 test("grok authenticates with cached_token, scrubs the key, and denies a path outside the worktree", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot);
+  writeGrokConfig(layout.pawsRoot);
   const outside = join(layout.home, ".ssh", "id_rsa");
   const script: FakeScript = {
     authMethods: [{ id: "cached_token", name: "Cached login" }],
@@ -1589,7 +1590,7 @@ test("grok authenticates with cached_token, scrubs the key, and denies a path ou
 
 test("grok never receives XAI_API_KEY and signs in with its cached login when an API key method is offered", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot);
+  writeGrokConfig(layout.pawsRoot);
   const script: FakeScript = {
     authMethods: [
       { id: "cached_token", name: "Cached login" },
@@ -1627,7 +1628,7 @@ test("grok never receives XAI_API_KEY and signs in with its cached login when an
 
 test("grok with no auth method posts the login line and does not hang", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot);
+  writeGrokConfig(layout.pawsRoot);
   const events: AcpEvent[] = [];
   const script: FakeScript = { authMethods: [], steps: [{ type: "hang" }] };
   const files = await writeScript(layout.root, script);
@@ -1660,7 +1661,7 @@ test("grok with no auth method posts the login line and does not hang", async ()
 
 test("grok is not spawned with --yolo", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot);
+  writeGrokConfig(layout.pawsRoot);
   await expect(
     runAgent({
       role: "implementer",
@@ -1679,7 +1680,7 @@ test("grok is not spawned with --yolo", async () => {
 
 test("cancel still stops a grok session", async () => {
   const layout = await layoutRepo();
-  await writeGrokConfig(layout.pawsRoot);
+  writeGrokConfig(layout.pawsRoot);
   const script: FakeScript = {
     authMethods: [{ id: "cached_token", name: "Cached login" }],
     steps: [{ type: "hang" }],
@@ -2570,8 +2571,8 @@ test("a read-only session does not install a closeout stop hook", async () => {
   await expect(lstat(script)).rejects.toThrow();
 });
 
-async function writeGrokConfig(pawsRoot: string): Promise<void> {
-  await writeFile(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
+function writeGrokConfig(pawsRoot: string): void {
+  useMemorySettings(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
 }
 
 async function writeScript(

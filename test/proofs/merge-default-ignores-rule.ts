@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { readConfigText, useMemorySettings } from "../../src/config";
 import { join } from "node:path";
 import { ACME, type Proof } from "./harness";
 
@@ -33,9 +33,10 @@ export default {
         ]
       : [],
   async run(proof) {
-    appendFileSync(
-      join(process.env.PAWS_HOME!, "config.toml"),
-      '\n[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Hotfix"\nmain_moved = "closeout"\n',
+    const configPath = join(process.env.PAWS_HOME!, "config.toml");
+    useMemorySettings(
+      configPath,
+      `${readConfigText(configPath)}\n[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Hotfix"\nmain_moved = "closeout"\n`,
     );
     proof.linear.mergeContexts.set(ACME.issueId, { projectId: null, labels: ["Hotfix"] });
     await proof.delegate();

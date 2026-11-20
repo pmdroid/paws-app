@@ -1,6 +1,4 @@
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { databaseProbeSteps } from "../src/db";
 import { startPaws } from "../src/index";
 import { migratedHome } from "./helpers";
@@ -67,7 +65,6 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
 
 test("Paws shutdown joins an accepted HTTP operation before closing SQLite", async () => {
   const home = await migratedHome();
-  writeFileSync(join(home, "config.toml"), "[linear]\n");
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   const nativeFetch = globalThis.fetch;

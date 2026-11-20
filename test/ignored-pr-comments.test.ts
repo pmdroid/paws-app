@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ignoredCommentBots,
   ignoredCommentMarkers,
   loadConfigFile,
   parseConfigToml,
+  readConfigText,
   readMergeSettings,
   storedMerge,
+  useMemorySettings,
   writeMergePolicy,
 } from "../src/config";
 import {
@@ -28,6 +29,7 @@ const POLICY = { default: { order: "queue", mainMoved: "ci" } } as const;
 
 function fixture() {
   const configPath = join(tempHome(), "config.toml");
+  useMemorySettings(configPath);
   const audits: string[] = [];
   const options: MergeSettingsOptions = {
     configPath,
@@ -47,12 +49,12 @@ function request(method = "GET", body?: unknown) {
   });
 }
 
-describe("ignore_comment_markers in config.toml", () => {
-  test("parse, write back and parse again give the same lists", () => {
+describe("ignore_comment_markers in the merge settings", () => {
+  test("parse, write back and parse again give the same lists", async () => {
     const home = tempHome();
     const path = join(home, "config.toml");
     const text = `[merge.repositories."acme/monorepo"]\npackages = []\nignore_comment_bots = ["codecov[bot]"]\nignore_comment_markers = [${MARKERS.map((marker) => JSON.stringify(marker)).join(", ")}]\n`;
-    writeFileSync(path, text);
+    useMemorySettings(path, text);
     const first = loadConfigFile(path);
     const settings = readMergeSettings(first);
     expect(settings.repositories["acme/monorepo"]).toEqual({
@@ -63,8 +65,8 @@ describe("ignore_comment_markers in config.toml", () => {
     expect(ignoredCommentMarkers(settings, "ACME/monorepo")).toEqual(MARKERS);
     expect(ignoredCommentMarkers(settings, "acme/web")).toEqual([]);
 
-    writeMergePolicy(path, { default: settings.default }, storedMerge(first));
-    expect(readFileSync(path, "utf8")).toContain(
+    await writeMergePolicy(path, { default: settings.default }, storedMerge(first));
+    expect(readConfigText(path)).toContain(
       `ignore_comment_markers = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]`,
     );
     expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
@@ -90,7 +92,7 @@ describe("ignore_comment_markers in config.toml", () => {
 describe("Settings › Merging › Ignored PR comments", () => {
   test("GET returns both lists per repository and PUT saves changes to them", async () => {
     const { options, audits } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       '[merge.repositories."acme/monorepo"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
     );
@@ -160,10 +162,10 @@ describe("Settings › Merging › Ignored PR comments", () => {
     ).toEqual(MARKERS);
   });
 
-  test("an invalid value is rejected with a field error and the file stays unchanged", async () => {
+  test("an invalid value is rejected with a field error and the settings stay unchanged", async () => {
     const { options } = fixture();
     const text = '[merge.repositories."acme/monorepo"]\npackages = []\n';
-    writeFileSync(options.configPath, text);
+    useMemorySettings(options.configPath, text);
     const entry = { repository: "acme/monorepo", ignoreCommentBots: [], ignoreCommentMarkers: [] };
     for (const [lists, field, message] of [
       [{ ...entry, ignoreCommentMarkers: [""] }, "ignoreCommentMarkers", "must not be empty"],
@@ -185,7 +187,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       const body = (await response!.json()) as { error: string; field: string };
       expect(body.field).toBe(`ignoredComments.0.${field}`);
       expect(body.error).toContain(message);
-      expect(readFileSync(options.configPath, "utf8")).toBe(text);
+      expect(readConfigText(options.configPath)).toBe(text);
     }
   });
 

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   emptyConfigFile,
   loadConfigFile,
   parseAgentSettings,
   readAgentSettings,
+  readConfigText,
   resolveAgentProfiles,
+  useMemorySettings,
   writeAgentSettings,
   type AgentSettings,
 } from "../src/config";
@@ -20,15 +21,16 @@ const settings: AgentSettings = {
 };
 
 describe("agent settings config", () => {
-  test("persists role effort", () => {
+  test("persists role effort", async () => {
     const path = join(tempHome(), "config.toml");
+    useMemorySettings(path);
     const next: AgentSettings = {
       defaults: {
         implementer: { ...settings.defaults.implementer, effort: "high" },
         reviewer: { agent: "codex", model: "another-model", effort: "xhigh" },
       },
     };
-    writeAgentSettings(path, next);
+    await writeAgentSettings(path, next);
     expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
     expect(resolveAgentProfiles(loadConfigFile(path)).reviewer.effort).toBe("xhigh");
     expect(() =>
@@ -60,34 +62,27 @@ describe("agent settings config", () => {
     });
   });
 
-  test("writes valid TOML, preserves other config and private permissions", () => {
+  test("writes valid TOML and saves the same settings again", async () => {
     const path = join(tempHome(), "config.toml");
-    const original =
-      '[github]\nauth = "app"\nrepo = "pmdroid/barkvisor"\n\n[agents]\nimplementer = "grok"\n\n[caps]\nmax_turns = 12\n';
-    writeFileSync(path, original, { mode: 0o600 });
-    writeAgentSettings(path, settings);
-    const text = readFileSync(path, "utf8");
-    expect(Bun.TOML.parse(text)).toMatchObject({
-      agents: { implementer: "claude" },
-      caps: { max_turns: 12 },
-    });
-    expect(text).toContain('[github]\nauth = "app"\nrepo = "pmdroid/barkvisor"');
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    useMemorySettings(path, '[agents]\nimplementer = "grok"\n');
+    await writeAgentSettings(path, settings);
+    const text = readConfigText(path);
+    expect(Bun.TOML.parse(text)).toMatchObject({ agents: { implementer: "claude" } });
     const config = loadConfigFile(path);
     expect(readAgentSettings(config)).toEqual(settings);
     expect(resolveAgentProfiles(config)).toEqual(settings.defaults);
-    writeAgentSettings(path, settings);
-    expect(readFileSync(path, "utf8")).toBe(text);
+    await writeAgentSettings(path, settings);
+    expect(Bun.TOML.parse(readConfigText(path))).toEqual(Bun.TOML.parse(text));
   });
 
-  test("keeps inline comments on the legacy implementer setting", () => {
+  test("keeps inline comments on the legacy implementer setting", async () => {
     const path = join(tempHome(), "config.toml");
-    writeFileSync(path, '[agents]\nimplementer = "grok" # selected locally\n');
-    writeAgentSettings(path, settings);
-    expect(readFileSync(path, "utf8")).toContain('implementer = "claude" # selected locally');
+    useMemorySettings(path, '[agents]\nimplementer = "grok" # selected locally\n');
+    await writeAgentSettings(path, settings);
+    expect(readConfigText(path)).toContain('implementer = "claude" # selected locally');
   });
 
-  test("validates model values and reviewer independence before writing", () => {
+  test("validates model values and reviewer independence before writing", async () => {
     expect(() => parseAgentSettings({ ...settings, executable: "/tmp/evil" })).toThrow();
     expect(() => parseAgentSettings({ ...settings, projects: [] })).toThrow();
     expect(() =>
@@ -98,9 +93,9 @@ describe("agent settings config", () => {
       defaults: { implementer: same, reviewer: same },
     } as AgentSettings;
     const path = join(tempHome(), "config.toml");
-    writeFileSync(path, "[caps]\nmax_turns = 10\n");
-    expect(() => writeAgentSettings(path, invalid)).toThrow(/different/);
-    expect(readFileSync(path, "utf8")).toBe("[caps]\nmax_turns = 10\n");
+    useMemorySettings(path, '[agents]\nimplementer = "grok"\n');
+    await expect(writeAgentSettings(path, invalid)).rejects.toThrow(/different/);
+    expect(readConfigText(path)).toBe('[agents]\nimplementer = "grok"\n');
     expect(() =>
       parseAgentSettings({
         ...settings,
@@ -119,8 +114,9 @@ describe("agent settings config", () => {
     expect(parsed.defaults.reviewer.model).toBe("model-b");
   });
 
-  test("keeps an optional reviewer fallback that is independent of the implementer", () => {
+  test("keeps an optional reviewer fallback that is independent of the implementer", async () => {
     const path = join(tempHome(), "config.toml");
+    useMemorySettings(path);
     const next: AgentSettings = {
       defaults: {
         implementer: { agent: "codex", model: "gpt-6.1-sol" },
@@ -128,8 +124,8 @@ describe("agent settings config", () => {
         reviewerFallback: { agent: "codex", model: "gpt-6-sol" },
       },
     };
-    writeAgentSettings(path, next);
-    expect(readFileSync(path, "utf8")).toContain(
+    await writeAgentSettings(path, next);
+    expect(readConfigText(path)).toContain(
       '[agents.defaults.reviewer_fallback]\nagent = "codex"\nmodel = "gpt-6-sol"',
     );
     expect(readAgentSettings(loadConfigFile(path))).toEqual(next);

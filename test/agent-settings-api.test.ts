@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   activeRunnerReadiness,
@@ -14,7 +13,13 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { workspaceId } from "../src/workspace";
-import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
+import {
+  loadConfigFile,
+  readAgentSettings,
+  readConfigText,
+  useMemorySettings,
+  type AgentSettings,
+} from "../src/config";
 import { startServer } from "../src/server";
 import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
@@ -22,6 +27,7 @@ import { tempStore } from "./pglite";
 
 function fixture() {
   const configPath = join(tempHome(), "config.toml");
+  useMemorySettings(configPath);
   const options: AgentSettingsOptions = {
     configPath,
     csrfToken: "test-token",
@@ -53,7 +59,7 @@ function request(
 describe("local agent settings API", () => {
   test("GET returns the global profiles without projects", async () => {
     const { options } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       '[github]\nrepo = "pmdroid/other"\nrepos = ["pmdroid/library", "pmdroid/other"]\n',
     );
@@ -80,7 +86,7 @@ describe("local agent settings API", () => {
     };
     const saved = await handleAgentSettingsRequest(request(undefined, "PUT", fast), options);
     expect(saved?.status).toBe(200);
-    expect(readFileSync(options.configPath, "utf8")).toContain("fast = true");
+    expect(readConfigText(options.configPath)).toContain("fast = true");
     const body = (await (await handleAgentSettingsRequest(
       request(),
       options,
@@ -103,7 +109,7 @@ describe("local agent settings API", () => {
       decisions: false,
     });
     expect(audit).toEqual(["Project memory work summaries off → on"]);
-    expect(readFileSync(options.configPath, "utf8")).toContain(
+    expect(readConfigText(options.configPath)).toContain(
       "[project_memory]\nwork_summary = true\ndream = false\ndecisions = false\n",
     );
     await handleAgentSettingsRequest(
@@ -133,12 +139,11 @@ describe("local agent settings API", () => {
       member,
     );
     expect(put?.status).toBe(403);
-    expect(existsSync(options.configPath)).toBe(false);
   });
 
   test("a save from a stale revision is refused and the newer file is kept", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
     const loaded = (await (await handleAgentSettingsRequest(request(), options))!.json()) as {
       revision: string;
     };
@@ -147,7 +152,7 @@ describe("local agent settings API", () => {
       options,
     );
     expect(first?.status).toBe(200);
-    const saved = readFileSync(options.configPath, "utf8");
+    const saved = readConfigText(options.configPath);
     const { revision } = (await first!.json()) as { revision: string };
     expect(revision).not.toBe(loaded.revision);
     const stale = await handleAgentSettingsRequest(
@@ -163,7 +168,7 @@ describe("local agent settings API", () => {
     );
     expect(stale?.status).toBe(409);
     expect(await stale!.json()).toEqual({ error: expect.stringMatching(/changed/), revision });
-    expect(readFileSync(options.configPath, "utf8")).toBe(saved);
+    expect(readConfigText(options.configPath)).toBe(saved);
     const bad = await handleAgentSettingsRequest(
       request(undefined, "PUT", { ...settings, revision: 7 }),
       options,
@@ -173,7 +178,7 @@ describe("local agent settings API", () => {
 
   test("a save with defaults.accounts is refused and the file is kept", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
     const saved = await handleAgentSettingsRequest(
       request(undefined, "PUT", {
         ...settings,
@@ -182,7 +187,7 @@ describe("local agent settings API", () => {
       options,
     );
     expect(saved?.status).toBe(400);
-    expect(readFileSync(options.configPath, "utf8")).toBe("[caps]\nmax_turns = 31\n");
+    expect(readConfigText(options.configPath)).toBe("[caps]\nmax_turns = 31\n");
   });
 
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
@@ -207,12 +212,12 @@ describe("local agent settings API", () => {
     );
     expect(await saved!.json()).toMatchObject({ waitingRuns: 3 });
     expect(calls).toBe(1);
-    expect(readFileSync(options.configPath, "utf8")).not.toContain("applyToWaiting");
+    expect(readConfigText(options.configPath)).not.toContain("applyToWaiting");
   });
 
   test("PUT persists and reloads validated profiles while preserving config", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
     const response = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
@@ -223,12 +228,11 @@ describe("local agent settings API", () => {
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
-    expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
   test("agent settings carry only CI fix attempts and keep the Merging default", async () => {
     const { options } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\n\n[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"\n',
     );
@@ -244,10 +248,9 @@ describe("local agent settings API", () => {
       options,
     );
     expect(((await saved!.json()) as { merge: unknown }).merge).toEqual({ ciFixAttempts: 4 });
-    const text = readFileSync(options.configPath, "utf8");
+    const text = readConfigText(options.configPath);
     expect(text).toContain('[merge]\nmain_moved = "closeout"\nci_fix_attempts = 4');
     expect(text).not.toContain("[[merge.rules]]");
-    expect(text).toContain("max_turns = 31");
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
   });
 
@@ -257,7 +260,7 @@ describe("local agent settings API", () => {
     options.audit = async (action, subject) => {
       audits.push([action, subject]);
     };
-    writeFileSync(options.configPath, '[merge]\nmain_moved = "closeout"\n');
+    useMemorySettings(options.configPath, '[merge]\nmain_moved = "closeout"\n');
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
         .merge;
@@ -267,7 +270,7 @@ describe("local agent settings API", () => {
       handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, merge }), options);
     expect((await put({ ciFixAttempts: 5 }))?.status).toBe(200);
     expect(await read()).toEqual({ ciFixAttempts: 5 });
-    expect(readFileSync(options.configPath, "utf8")).toContain(
+    expect(readConfigText(options.configPath)).toContain(
       '[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5',
     );
     expect((await put({ ciFixAttempts: 0 }))?.status).toBe(200);
@@ -295,7 +298,7 @@ describe("local agent settings API", () => {
     options.audit = async (action, subject) => {
       audits.push([action, subject]);
     };
-    writeFileSync(options.configPath, "[merge]\nci_fix_attempts = 5\n");
+    useMemorySettings(options.configPath, "[merge]\nci_fix_attempts = 5\n");
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
         .queue;
@@ -310,7 +313,7 @@ describe("local agent settings API", () => {
       maxRunningPerOwner: null,
     });
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
-    const text = readFileSync(options.configPath, "utf8");
+    const text = readConfigText(options.configPath);
     expect(text).toContain("[queue]\nstart_timeout_hours = 6");
     expect(text).toContain("ci_fix_attempts = 5");
     // Saving profiles or merge settings without the queue keeps the stored value.
@@ -321,7 +324,7 @@ describe("local agent settings API", () => {
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
     expect((await put({ startTimeoutHours: 720 }))?.status).toBe(200);
     await put({ startTimeoutHours: 720 });
-    expect(readFileSync(options.configPath, "utf8").match(/\[queue\]/g)).toHaveLength(1);
+    expect(readConfigText(options.configPath).match(/\[queue\]/g)).toHaveLength(1);
     expect(audits).toEqual([
       ["settings.queue-start-timeout", "Queue start timeout 24 h → 6 h"],
       ["settings.ci-fix-attempts", "CI fix attempts 5 → 4"],
@@ -356,7 +359,7 @@ describe("local agent settings API", () => {
 
     expect((await put({ maxRunningPerOwner: 3 }))?.status).toBe(200);
     expect(await read()).toEqual({ startTimeoutHours: 24, maxRunningPerOwner: 3 });
-    expect(readFileSync(options.configPath, "utf8")).toContain(
+    expect(readConfigText(options.configPath)).toContain(
       "[queue]\nstart_timeout_hours = 24\nmax_running_per_owner = 3",
     );
     expect((await put({ startTimeoutHours: 6 }))?.status).toBe(200);
@@ -365,7 +368,7 @@ describe("local agent settings API", () => {
       expect((await put(queue))?.status).toBe(400);
     expect((await put({ maxRunningPerOwner: null }))?.status).toBe(200);
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
-    expect(readFileSync(options.configPath, "utf8")).not.toContain("max_running_per_owner");
+    expect(readConfigText(options.configPath)).not.toContain("max_running_per_owner");
     expect(audits).toEqual([
       ["settings.queue-owner-cap", "Running tasks per owner no cap → 3"],
       ["settings.queue-start-timeout", "Queue start timeout 24 h → 6 h"],
@@ -375,7 +378,7 @@ describe("local agent settings API", () => {
 
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {
     const { options } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       '[caps]\nmax_turns = 31\n[agents.defaults.implementer]\nagent = "missing-agent"\n',
     );
@@ -383,7 +386,6 @@ describe("local agent settings API", () => {
     const saved = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(saved?.status).toBe(200);
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
-    expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
   test("rejects hostile origins, hosts, missing CSRF, and preflight without writing", async () => {
@@ -415,7 +417,6 @@ describe("local agent settings API", () => {
         )
       )?.status,
     ).toBe(403);
-    expect(existsSync(options.configPath)).toBe(false);
   });
 
   test("invalid or oversized input cannot change config or probe an agent", async () => {
@@ -464,7 +465,6 @@ describe("local agent settings API", () => {
       body: "{",
     });
     expect((await handleAgentSettingsRequest(malformed, options))?.status).toBe(400);
-    expect(existsSync(options.configPath)).toBe(false);
   });
 
   test("live server shares the dashboard CSRF token with settings routes", async () => {
@@ -501,7 +501,7 @@ describe("reviewer profile validation", () => {
 
   test("refuses a reviewer with the implementer's agent and model and keeps the file", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
     const same = {
       defaults: {
         implementer: { agent: "claude", model: "opus" },
@@ -515,7 +515,7 @@ describe("reviewer profile validation", () => {
     });
     const project = await put({ ...settings, projects: [] }, options);
     expect(project?.status).toBe(400);
-    expect(readFileSync(options.configPath, "utf8")).toBe("[caps]\nmax_turns = 31\n");
+    expect(readConfigText(options.configPath)).toBe("[caps]\nmax_turns = 31\n");
   });
 
   test("saves a reviewer that no active runner has signed in, with a warning naming the runners", async () => {

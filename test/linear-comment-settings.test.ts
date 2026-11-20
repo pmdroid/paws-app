@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadConfigFile,
-  overriddenConfigSections,
+  readConfigText,
   resolveLinearCommentAgents,
+  useMemorySettings,
   useSettingsStore,
 } from "../src/config";
 import { CONFIG_SETTINGS_KEY, readSettingSteps, updateSettingSteps } from "../src/db";
@@ -19,16 +20,21 @@ afterEach(async () => {
 });
 
 function fileWith(agents: string): string {
-  return `[linear]\nteam = "ACME"\ncomment_agents = ${agents}\n`;
+  return `[linear]\ncomment_agents = ${agents}\n`;
 }
 
 async function instance(withStore: boolean) {
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  writeFileSync(configPath, fileWith('["file-agent"]'));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  if (withStore) {
+  if (!withStore) {
+    const settings = useMemorySettings(configPath, fileWith('["file-agent"]'));
+    cleanups.push(() => settings.release());
+  } else {
     const { db, close } = await tempStore();
+    await db.transaction((q) =>
+      updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => fileWith('["file-agent"]')),
+    );
     const settings = await useSettingsStore(configPath, {
       read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
       update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
@@ -70,29 +76,21 @@ test("while nothing is saved, GET and the reader use [linear] comment_agents", a
   expect(agents(configPath)).toEqual(["file-agent"]);
 });
 
-test("a save goes to the database and wins over the file without a restart", async () => {
+test("a save goes to the database and wins over [linear] comment_agents without a restart", async () => {
   const configPath = await instance(true);
   const response = await put(configPath, { agents: ["saved-1", "saved-2", "saved-1"] });
   expect(response!.status).toBe(200);
   expect(await response!.json()).toEqual({ agents: ["saved-1", "saved-2"], configured: true });
-  expect(readFileSync(configPath, "utf8")).toBe(fileWith('["file-agent"]'));
   expect(agents(configPath)).toEqual(["saved-1", "saved-2"]);
-
-  writeFileSync(
-    configPath,
-    `${fileWith('["changed"]')}\n[linear_comments]\nagents = ["file-copy"]\n`,
-  );
-  expect(agents(configPath)).toEqual(["saved-1", "saved-2"]);
-  expect(overriddenConfigSections(configPath)).toEqual(["linear_comments"]);
 
   expect((await put(configPath, { agents: [] }))!.status).toBe(200);
   expect(agents(configPath)).toEqual([]);
 });
 
-test("without a database the save is written to config.toml", async () => {
+test("with settings in memory the save is read back", async () => {
   const configPath = await instance(false);
   expect((await put(configPath, { agents: ["saved"] }))!.status).toBe(200);
-  expect(readFileSync(configPath, "utf8")).toContain('[linear_comments]\nagents = ["saved"]\n');
+  expect(readConfigText(configPath)).toContain('[linear_comments]\nagents = ["saved"]\n');
   expect(agents(configPath)).toEqual(["saved"]);
 });
 

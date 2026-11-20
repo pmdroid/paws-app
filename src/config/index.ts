@@ -32,6 +32,7 @@ export {
   readConfigText,
   removeRetiredConfigSection,
   retiredConfigSections,
+  useMemorySettings,
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";

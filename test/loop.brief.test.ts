@@ -15,7 +15,7 @@ import { worktreePath } from "../src/acp";
 import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
 import { JobLoop, OutboxDispatcher, getWorkItem, listWorkItems, openPawsStore } from "../src/db";
 import { systemClock, defaultBriefTemplate } from "../src/core";
-import { writeBriefTemplates } from "../src/config";
+import { readConfigText, useMemorySettings, writeBriefTemplates } from "../src/config";
 import {
   createFakeTracker,
   createLinearTracker,
@@ -188,13 +188,15 @@ test.each([
         home: process.env.HOME,
         launch,
       });
-      await writeBriefTemplates(join(pawsRoot, "config.toml"), {
+      const configPath = join(pawsRoot, "config.toml");
+      useMemorySettings(configPath);
+      await writeBriefTemplates(configPath, {
         template: `${workspace}\n\n${defaultBriefTemplate()}`,
       });
       if (override)
-        appendFileSync(
-          join(pawsRoot, "config.toml"),
-          `\n[brief.projects."acme/widgets"]\ntemplate = ${JSON.stringify(override)}\n`,
+        useMemorySettings(
+          configPath,
+          `${readConfigText(configPath)}\n[brief.projects."acme/widgets"]\ntemplate = ${JSON.stringify(override)}\n`,
         );
       await tickWithRestartsPg(jobs, orchestrator, db);
       const item = await getWorkItem(db, itemId!);

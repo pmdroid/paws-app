@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useMemorySettings } from "../config";
 import { snapshotImplementationSkills, materializeImplementationSkills } from "./skill-bundle";
 
 const roots: string[] = [];
@@ -24,7 +25,10 @@ function fixture() {
   const skill = join(pawsRoot, "skills/check");
   mkdirSync(worktree);
   mkdirSync(join(skill, "scripts"), { recursive: true });
-  writeFileSync(join(pawsRoot, "config.toml"), '[skills.projects."acme/repo"]\nroot = "skills"\n');
+  useMemorySettings(
+    join(pawsRoot, "config.toml"),
+    '[skills.projects."acme/repo"]\nroot = "skills"\n',
+  );
   writeFileSync(join(skill, "SKILL.md"), "Check with scripts/run.sh");
   writeFileSync(join(skill, "scripts/run.sh"), "printf checked");
   chmodSync(join(skill, "scripts/run.sh"), 0o755);
