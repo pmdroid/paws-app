@@ -6,6 +6,7 @@ import {
   type CloseoutOutputPointer,
 } from "./closeout-progress";
 import { type Q, type Db } from "./db";
+import { moveAgentTimeToCloseoutSteps } from "./items";
 import type * as pgSchema from "./schema-pg";
 
 export type AgentCloseoutCheck = {
@@ -115,6 +116,8 @@ export function* recordAgentCloseoutSteps(
           : null,
     }),
   );
+  if (progress.type === "finished")
+    yield* moveAgentTimeToCloseoutSteps(q, itemId, progress.durationMs);
 }
 
 export async function recordAgentCloseout(
