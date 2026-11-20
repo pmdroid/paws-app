@@ -3,7 +3,8 @@ import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { openDatabase } from "../runner-journal";
+import { openDatabase, readRunnerToolRequests, type RunnerToolRequest } from "../runner-journal";
+import { publishRunnerAnswer } from "../runner-answers";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createHealthStore } from "./health-ddl";
@@ -38,7 +39,16 @@ type Entry = {
   result?: RunnerHealthResult | RunnerHelperResult;
   stopped?: Promise<void>;
   pulsing?: Promise<void>;
+  tools?: {
+    offset: number;
+    queue: RunnerToolRequest[];
+    answered: Set<string>;
+    failed: Set<string>;
+    forwarding?: Promise<void>;
+    timer?: ReturnType<typeof setInterval>;
+  };
 };
+const unanswered = { text: "Paws could not answer that tool.", isError: true };
 const conversation = (command: Pick<RunnerCommand, "type"> & { purpose?: string }) =>
   command.type === "helper" &&
   (command.purpose === "conversation" || command.purpose === "slack_reply");
@@ -92,6 +102,7 @@ export async function openRunnerHealthRuntime(options: {
         RunnerDaemon,
         | "pollHelperCommands"
         | "helperLease"
+        | "helperRequest"
         | "postHelperResult"
         | "carriesCredential"
         | "credentialRecipient"
@@ -198,7 +209,59 @@ export async function openRunnerHealthRuntime(options: {
       readRunnerCredentials(options.results, entry.id),
     );
   }
+  async function forward(entry: Entry) {
+    const tools = entry.tools;
+    if (!tools || entry.command.type !== "helper" || !options.daemon.helperRequest) return;
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, entry.id, "events.jsonl");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return;
+    }
+    const read = readRunnerToolRequests(raw, tools.offset);
+    tools.offset = read.offset;
+    tools.queue.push(...read.requests);
+    for (const request of tools.queue.splice(0)) {
+      if (tools.answered.has(request.requestId) || closed || entry.stopped || entry.result)
+        continue;
+      let answer: { text: string; isError?: boolean };
+      try {
+        answer = await options.daemon.helperRequest(entry.command.id, request);
+      } catch (error) {
+        journalCaught(error, "runner-health-runtime.forward.helperRequest", null);
+        const final = error instanceof RunnerRequestError && error.status < 500;
+        if (!final && !tools.failed.has(request.requestId)) {
+          tools.failed.add(request.requestId);
+          tools.queue.push(request);
+          continue;
+        }
+        answer = unanswered;
+      }
+      tools.answered.add(request.requestId);
+      publishRunnerAnswer(options.spool, entry.id, {
+        requestId: request.requestId,
+        answer: JSON.stringify(
+          answer.isError ? { text: answer.text, isError: true } : { text: answer.text },
+        ),
+      });
+    }
+  }
+  function forwarding(entry: Entry) {
+    const tools = entry.tools;
+    if (!tools || tools.forwarding) return;
+    if (closed || entry.stopped || entry.result) {
+      clearInterval(tools.timer);
+      return;
+    }
+    tools.forwarding = forward(entry)
+      .catch(journalRejection("runner-health-runtime.forwarding", report, null))
+      .finally(() => {
+        tools.forwarding = undefined;
+      });
+  }
   async function interrupt(entry: Entry) {
+    clearInterval(entry.tools?.timer);
     entry.stopped ??= (async () => {
       await broker.stop(entry.id);
       setPhase(entry.id, "interrupted");
@@ -417,6 +480,10 @@ export async function openRunnerHealthRuntime(options: {
         if (command.type === "helper") await pulse(entry);
         check(entry);
         setPhase(id, "running");
+        if (command.type === "helper" && command.tools && options.daemon.helperRequest) {
+          entry.tools = { offset: 0, queue: [], answered: new Set(), failed: new Set() };
+          entry.tools.timer = setInterval(() => forwarding(entry), 250);
+        }
         await options.daemon
           .acknowledgeCommand(command.id)
           .catch(journalRejection("runner-health-runtime.step.acknowledgeCommand", report, null));
@@ -496,7 +563,10 @@ export async function openRunnerHealthRuntime(options: {
         clearInterval(heartbeat);
         const held = entries();
         await Promise.all(held.map((entry) => interrupt(entry)));
-        await Promise.allSettled([ticking, ...held.map((entry) => entry.pulsing)]);
+        await Promise.allSettled([
+          ticking,
+          ...held.flatMap((entry) => [entry.pulsing, entry.tools?.forwarding]),
+        ]);
         db.close();
       })();
       return stopping;

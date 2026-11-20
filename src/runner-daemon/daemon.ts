@@ -308,13 +308,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     method: "GET" | "POST",
     body?: unknown,
     runGrant?: string,
+    timeoutMs?: number,
   ) {
     if (rejection) {
       if (identityRetryIn() > 0) throw rejection.error;
       rejection.attemptAt = now();
     }
     try {
-      const response = await send(path, method, body, runGrant);
+      const response = await send(path, method, body, runGrant, timeoutMs);
       rejection = null;
       return response;
     } catch (error) {
@@ -328,17 +329,26 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       throw error;
     }
   }
-  async function send(path: string, method: "GET" | "POST", body?: unknown, runGrant?: string) {
+  async function send(
+    path: string,
+    method: "GET" | "POST",
+    body?: unknown,
+    runGrant?: string,
+    timeoutMs?: number,
+  ) {
     const identity = paired();
-    const response = await requestJson({
-      origin: origins.runnerApiUrl,
-      path,
-      method,
-      body,
-      runGrant,
-      serverCa: options.serverCa,
-      identity: { certificate: identity.certificate, key: localKey(options.root) },
-    });
+    const response = await requestJson(
+      {
+        origin: origins.runnerApiUrl,
+        path,
+        method,
+        body,
+        runGrant,
+        serverCa: options.serverCa,
+        identity: { certificate: identity.certificate, key: localKey(options.root) },
+      },
+      timeoutMs,
+    );
     unchangedIdentity(identity);
     return response;
   }
@@ -1384,6 +1394,23 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (result.expiresAt <= now())
         throw new Error("Runner helper lease differs from the admitted command.");
       return result;
+    },
+    async helperRequest(
+      id: string,
+      request: { requestId: string; name: string; arguments: Record<string, unknown> },
+    ) {
+      helperCommand(id, true);
+      return z
+        .strictObject({ text: z.string(), isError: z.boolean().optional() })
+        .parse(
+          await authenticated(
+            `/v1/helper-commands/${encodeURIComponent(id)}/request`,
+            "POST",
+            request,
+            undefined,
+            45_000,
+          ),
+        );
     },
     async postHelperResult(result: RunnerHelperResult) {
       const valid = RunnerHelperResultSchema.parse(result);

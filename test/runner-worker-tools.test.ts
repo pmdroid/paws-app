@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { RunnerEventSchema } from "../src/runner-protocol";
-import { remoteTools } from "../src/runner-worker";
+import { commandTools, remoteTools } from "../src/runner-worker";
 
 const definitions = [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }];
 
@@ -65,4 +65,42 @@ test("oversized arguments and the 201st call return an error and emit nothing", 
   expect(emitted).toBe(200);
   expect(await tools.call("linear_issue", {})).toMatchObject({ isError: true });
   expect(emitted).toBe(200);
+});
+
+test("a Slack reply helper's tools reach the agent, up to 64 calls", async () => {
+  const base = {
+    id: "01K00000000000000000000000",
+    type: "helper" as const,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    issuedAt: 0,
+    expiresAt: 1,
+    sessionId: "session",
+    sessionGeneration: 1,
+    profile: { agent: "claude" as const, model: null },
+    prompt: "Which issue covers checkout?",
+    tools: definitions,
+  };
+  let emitted = 0;
+  const answer = async () => ({ answer: JSON.stringify({ text: "ok" }) });
+  const { hostTools } = commandTools(
+    { ...base, purpose: "slack_reply" },
+    () => emitted++,
+    answer,
+    undefined,
+  );
+  expect(hostTools?.definitions).toEqual(definitions);
+  for (let i = 0; i < 64; i++)
+    expect(await hostTools!.call("linear_issue", {})).toEqual({ text: "ok" });
+  expect(await hostTools!.call("linear_issue", {})).toMatchObject({ isError: true });
+  expect(emitted).toBe(64);
+  expect(commandTools({ ...base, purpose: "classify" }, () => {}, answer, undefined)).toEqual({});
+  expect(
+    commandTools(
+      { ...base, purpose: "slack_reply", tools: undefined },
+      () => {},
+      answer,
+      undefined,
+    ),
+  ).toEqual({});
 });
