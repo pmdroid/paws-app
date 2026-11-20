@@ -1,4 +1,3 @@
-import type { WorkItemState } from "../core";
 import {
   enqueueOutboxOnceSteps,
   getItemPullRequestSteps,
@@ -8,13 +7,14 @@ import {
   updateSettingSteps,
   type Q,
   type Steps,
+  type WorkItemRecord,
 } from "../db";
 import type { SlackTaskPost } from "./delivery";
 import { filedTasksSteps } from "./work";
 
 const LATEST_CHARS = 500;
 
-const STATE_LINES: Record<WorkItemState, string> = {
+const STATE_LINES: Record<WorkItemRecord["state"], string> = {
   planning: "Waiting for a runner",
   queued: "Waiting for a runner",
   running: "Working",
@@ -58,7 +58,7 @@ export function* slackWorkMessageSteps(
     thread: Pick<SlackTaskPost, "workspaceId" | "teamId" | "channelId" | "threadTs" | "generation">;
     slackUserId: string;
     member: { userId: string; linkId: string };
-    item: { id: string; state: WorkItemState; linearIdentifier: string; title: string };
+    item: { id: string; state: WorkItemRecord["state"]; linearIdentifier: string; title: string };
     key: string;
     fence: { sessionId: string; generation: number; stop: boolean };
     update?: string;
