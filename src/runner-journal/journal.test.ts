@@ -617,3 +617,38 @@ test("journal lines with and without their write time deliver the same events", 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a tool request waits for its answer and a redelivered answer keeps the cursor", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-tool-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const tool = {
+      type: "tool",
+      requestId: "33333333-3333-4333-8333-333333333333",
+      name: "linear_issue",
+      arguments: { id: "PAS-1" },
+    };
+    await journal.ingest(execution.id, Buffer.from(`${JSON.stringify(tool)}\n`));
+    expect(journal.pending(execution.id)).toEqual([
+      { sequence: 1, event: { type: "tool", name: "linear_issue", arguments: { id: "PAS-1" } } },
+    ]);
+    expect(journal.waiting(execution.id)).toBe(true);
+    journal.sent(execution.id, 1);
+    journal.answered(execution.id, 1);
+    expect(journal.waiting(execution.id)).toBe(false);
+    journal.close();
+    journal = openExecutionJournal(root);
+    journal.answered(execution.id, 1);
+    expect(journal.answerCursor(execution.id)).toBe(1);
+    await expect(
+      journal.ingest(
+        execution.id,
+        Buffer.from(`${JSON.stringify({ ...tool, name: "ask_team" })}\n`),
+      ),
+    ).rejects.toThrow();
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
