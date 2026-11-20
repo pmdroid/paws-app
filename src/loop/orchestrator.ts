@@ -8083,6 +8083,7 @@ export class Orchestrator {
         ? {
             parallelFiles: (repository: string) => parallelFiles(merge, repository),
             overlapHold: merge.overlapHold,
+            conflictProne: { conflicts: merge.conflictProneAfter, days: merge.conflictProneDays },
           }
         : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),

@@ -4,7 +4,11 @@ import {
   DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
+  DEFAULT_CONFLICT_PRONE_AFTER,
+  DEFAULT_CONFLICT_PRONE_DAYS,
   loadConfigFile,
+  MAX_CONFLICT_PRONE_AFTER,
+  MAX_CONFLICT_PRONE_DAYS,
   MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   parseCommentWait,
@@ -64,8 +68,8 @@ export type MergeSettingsOptions = {
    * mirror, without a network call. Null when Paws has no local copy yet.
    */
   highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
-  /** The files that caused merge-queue conflicts in the last 7 days, shown read-only. */
-  hotFiles?: () => Promise<HotFileView[]>;
+  /** The files with at least `conflicts` merge-queue conflicts in the last `days` days, shown read-only. */
+  hotFiles?: (rule: { conflicts: number; days: number }) => Promise<HotFileView[]>;
   /** Current overlap holds: `held` waits for `holder` to merge because both change `files`. */
   overlapHolds?: () => Promise<OverlapHoldView[]>;
 };
@@ -147,6 +151,8 @@ export async function handleMergeSettingsRequest(
       lanes: policy.lanes,
       noProject: policy.noProject,
       parallel: policy.parallel,
+      conflictProneAfter: policy.conflictProneAfter,
+      conflictProneDays: policy.conflictProneDays,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -159,7 +165,15 @@ export async function handleMergeSettingsRequest(
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
       parallelFiles: parallelFilesView(policy),
       ...(options.hotFiles
-        ? await hotFileView(options.hotFiles, options.overlapHolds, parallelFilesView(policy))
+        ? await hotFileView(
+            () =>
+              options.hotFiles!({
+                conflicts: policy.conflictProneAfter,
+                days: policy.conflictProneDays,
+              }),
+            options.overlapHolds,
+            parallelFilesView(policy),
+          )
         : {}),
     });
   }
@@ -186,6 +200,7 @@ export async function handleMergeSettingsRequest(
   let lanes: MergeLaneSplit[] | undefined;
   let noProject: MergeNoProject | undefined;
   let parallel: number | undefined;
+  const conflictProne: { conflictProneAfter?: number; conflictProneDays?: number } = {};
   let session: Partial<Record<keyof SessionDoneSettings, unknown>> | undefined;
   try {
     if (isRecord(body) && ("sessionDone" in body || "sessionQuietMinutes" in body)) {
@@ -210,6 +225,17 @@ export async function handleMergeSettingsRequest(
       parallel = count;
       body = rest;
     }
+    for (const [field, max] of [
+      ["conflictProneAfter", MAX_CONFLICT_PRONE_AFTER],
+      ["conflictProneDays", MAX_CONFLICT_PRONE_DAYS],
+    ] as const)
+      if (isRecord(body) && field in body) {
+        const { [field]: count, ...rest } = body;
+        if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > max)
+          return json({ error: `${field} must be a whole number from 1 to ${max}`, field }, 400);
+        conflictProne[field] = count;
+        body = rest;
+      }
     if (isRecord(body) && "lanes" in body) {
       const { lanes: splits, ...rest } = body;
       lanes = parseMergeLanes(splits);
@@ -325,6 +351,7 @@ export async function handleMergeSettingsRequest(
         ...(lanes === undefined ? {} : { lanes }),
         ...(noProject === undefined ? {} : { noProject }),
         ...(parallel === undefined ? {} : { parallel }),
+        ...conflictProne,
       },
       highRiskPaths,
       commentWait,
@@ -370,6 +397,24 @@ export async function handleMergeSettingsRequest(
     await options.audit?.(
       "settings.merging",
       `Merges at once in a lane: ${before?.parallel ?? 1} → ${parallel}`,
+    );
+  const afterBefore = before?.conflictProneAfter ?? DEFAULT_CONFLICT_PRONE_AFTER;
+  if (
+    conflictProne.conflictProneAfter !== undefined &&
+    conflictProne.conflictProneAfter !== afterBefore
+  )
+    await options.audit?.(
+      "settings.merging",
+      `Conflicts that make a file conflict-prone: ${afterBefore} → ${conflictProne.conflictProneAfter}`,
+    );
+  const daysBefore = before?.conflictProneDays ?? DEFAULT_CONFLICT_PRONE_DAYS;
+  if (
+    conflictProne.conflictProneDays !== undefined &&
+    conflictProne.conflictProneDays !== daysBefore
+  )
+    await options.audit?.(
+      "settings.merging",
+      `Days a conflict counts toward conflict-prone: ${daysBefore} → ${conflictProne.conflictProneDays}`,
     );
   if (
     autoApproveHighRisk !== undefined &&
@@ -434,6 +479,9 @@ export async function handleMergeSettingsRequest(
     lanes: after?.lanes ?? lanes,
     noProject: after?.noProject ?? noProject,
     parallel: after?.parallel ?? parallel,
+    conflictProneAfter:
+      after?.conflictProneAfter ?? conflictProne.conflictProneAfter ?? afterBefore,
+    conflictProneDays: after?.conflictProneDays ?? conflictProne.conflictProneDays ?? daysBefore,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)

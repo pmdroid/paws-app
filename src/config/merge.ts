@@ -6,6 +6,10 @@ import type { PawsConfigFile } from "./file";
 export const DEFAULT_CI_FIX_ATTEMPTS = 3;
 export const MAX_CI_FIX_ATTEMPTS = 10;
 export const MAX_MERGE_PARALLEL = 5;
+export const DEFAULT_CONFLICT_PRONE_AFTER = 2;
+export const MAX_CONFLICT_PRONE_AFTER = 20;
+export const DEFAULT_CONFLICT_PRONE_DAYS = 7;
+export const MAX_CONFLICT_PRONE_DAYS = 30;
 
 /**
  * How long Paws collects pull request comments and changes-requested reviews before it hands them
@@ -92,6 +96,8 @@ export type MergeSettings = Pick<MergePolicy, "default"> & {
   overlapHold: boolean;
   ciFixAttempts: number;
   parallel: number;
+  conflictProneAfter: number;
+  conflictProneDays: number;
   repositories: MergeRepositories;
   commentWait: CommentWait;
 };
@@ -104,6 +110,8 @@ export type StoredMerge = Partial<MergeChoice> & {
   overlapHold?: boolean;
   ciFixAttempts?: number;
   parallel?: number;
+  conflictProneAfter?: number;
+  conflictProneDays?: number;
   commentQuietSeconds?: number;
   commentMaxWaitSeconds?: number;
   reviewWaitMaxSeconds?: number;
@@ -240,6 +248,12 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
     ...(config.overlapHold === undefined ? {} : { overlapHold: config.overlapHold }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
     ...(config.mergeParallel === undefined ? {} : { parallel: config.mergeParallel }),
+    ...(config.conflictProneAfter === undefined
+      ? {}
+      : { conflictProneAfter: config.conflictProneAfter }),
+    ...(config.conflictProneDays === undefined
+      ? {}
+      : { conflictProneDays: config.conflictProneDays }),
     ...(config.commentQuietSeconds === undefined
       ? {}
       : { commentQuietSeconds: config.commentQuietSeconds }),
@@ -268,6 +282,8 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     overlapHold: stored.overlapHold ?? true,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
     parallel: stored.parallel ?? 1,
+    conflictProneAfter: stored.conflictProneAfter ?? DEFAULT_CONFLICT_PRONE_AFTER,
+    conflictProneDays: stored.conflictProneDays ?? DEFAULT_CONFLICT_PRONE_DAYS,
     commentWait: commentWait(stored),
   };
 }
@@ -658,6 +674,14 @@ export function renderMergeSettings(settings: StoredMerge): string {
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
     ...(settings.parallel === undefined ? [] : [`parallel = ${settings.parallel}`]),
+    ...(settings.conflictProneAfter === undefined ||
+    settings.conflictProneAfter === DEFAULT_CONFLICT_PRONE_AFTER
+      ? []
+      : [`conflict_prone_after = ${settings.conflictProneAfter}`]),
+    ...(settings.conflictProneDays === undefined ||
+    settings.conflictProneDays === DEFAULT_CONFLICT_PRONE_DAYS
+      ? []
+      : [`conflict_prone_days = ${settings.conflictProneDays}`]),
     ...(settings.commentQuietSeconds === undefined
       ? []
       : [`comment_quiet_seconds = ${settings.commentQuietSeconds}`]),
@@ -798,6 +822,12 @@ export function writeMergePolicy(
       ...(current.overlapHold === undefined ? {} : { overlapHold: current.overlapHold }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       ...(current.parallel === undefined ? {} : { parallel: current.parallel }),
+      ...(current.conflictProneAfter === undefined
+        ? {}
+        : { conflictProneAfter: current.conflictProneAfter }),
+      ...(current.conflictProneDays === undefined
+        ? {}
+        : { conflictProneDays: current.conflictProneDays }),
       ...(wait?.reviewWaitMaxSeconds !== undefined
         ? { reviewWaitMaxSeconds: wait.reviewWaitMaxSeconds }
         : current.reviewWaitMaxSeconds === undefined

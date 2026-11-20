@@ -923,7 +923,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(secrets.store
           ? {
               store: secrets.store,
-              hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())),
+              hotFiles: (rule) => secrets.store!.run((q) => hotFilesSteps(q, Date.now(), rule)),
               overlapHolds: () => secrets.store!.run((q) => overlapHoldsSteps(q)),
             }
           : {}),

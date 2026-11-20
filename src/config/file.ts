@@ -8,6 +8,8 @@ import {
   MERGE_LANES,
   MERGE_NO_PROJECT,
   MERGE_ORDERS,
+  MAX_CONFLICT_PRONE_AFTER,
+  MAX_CONFLICT_PRONE_DAYS,
   MAX_MERGE_PARALLEL,
   parseMergeLanes,
   parseMergeTables,
@@ -86,6 +88,10 @@ export type PawsConfigFile = {
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
   mergeParallel?: number;
+  /** `[merge] conflict_prone_after`. Missing means the default of 2. */
+  conflictProneAfter?: number;
+  /** `[merge] conflict_prone_days`. Missing means the default of 7. */
+  conflictProneDays?: number;
   autoApproveHighRisk?: boolean;
   overlapHold?: boolean;
   /** `[merge] comment_quiet_seconds`. Missing means the default of 60. */
@@ -425,6 +431,20 @@ function assignConfig(
     else if (key === "overlap_hold") config.overlapHold = asBoolean(value, line);
     else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "parallel") config.mergeParallel = mergeParallel(value, line);
+    else if (key === "conflict_prone_after")
+      config.conflictProneAfter = mergeRange(
+        value,
+        line,
+        "conflict_prone_after",
+        MAX_CONFLICT_PRONE_AFTER,
+      );
+    else if (key === "conflict_prone_days")
+      config.conflictProneDays = mergeRange(
+        value,
+        line,
+        "conflict_prone_days",
+        MAX_CONFLICT_PRONE_DAYS,
+      );
     else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
     else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, line);
     else if (key === "review_wait_max_seconds") config.reviewWaitMaxSeconds = asInt(value, line);
@@ -497,12 +517,19 @@ function oneOf<T extends string>(
 }
 
 function mergeParallel(value: string | number | boolean | string[], line: number): number {
-  const parallel = asInt(value, line);
-  if (parallel < 1 || parallel > MAX_MERGE_PARALLEL)
-    throw new Error(
-      `config.toml line ${line} merge.parallel must be from 1 to ${MAX_MERGE_PARALLEL}`,
-    );
-  return parallel;
+  return mergeRange(value, line, "parallel", MAX_MERGE_PARALLEL);
+}
+
+function mergeRange(
+  value: string | number | boolean | string[],
+  line: number,
+  key: string,
+  max: number,
+): number {
+  const count = asInt(value, line);
+  if (count < 1 || count > max)
+    throw new Error(`config.toml line ${line} merge.${key} must be from 1 to ${max}`);
+  return count;
 }
 
 function mergeLanes(value: string | number | boolean | string[], line: number): MergeLaneSplit[] {
