@@ -570,6 +570,7 @@ export type CommandRecord = {
   /** Set when the result was taken from green GitHub checks at `head` instead of a run. */
   ci?: CiProvenance;
   turn?: { at: number };
+  carried?: { head: string };
 };
 
 /** The GitHub checks a command's result was taken from. */
@@ -583,6 +584,8 @@ export type CiCheckConclusion = { name: string; conclusion: string; url: string 
 
 /** A command check whose result Closeout takes from green CI instead of running it. */
 export type CiResult = CiProvenance & { id: string };
+
+export type CarriedPass = { id: string; head: string };
 
 export type TurnPass = {
   id: string;

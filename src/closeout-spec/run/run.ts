@@ -17,8 +17,10 @@ import type {
   ResolvedRule,
   ResolvedSetup,
   TurnPass,
+  CarriedPass,
 } from "../types";
 import {
+  carriedMessage,
   ciMessage,
   turnMessage,
   evaluate,
@@ -114,6 +116,7 @@ export type CloseoutRunInput = {
    */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  carried?: readonly CarriedPass[];
   pullRequest?: PullRequestDraft;
 };
 
@@ -199,6 +202,25 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
         });
         continue;
       }
+      if (action.kind === "carried") {
+        await recordCarried(
+          input,
+          action.item,
+          action.pass,
+          base,
+          head,
+          records,
+          identity,
+          ordinalOf(actions, action.item.id),
+        );
+        taken.push({
+          id: action.item.id,
+          kind: action.item.kind,
+          state: "ran",
+          message: carriedMessage(action.pass.head),
+        });
+        continue;
+      }
       if (action.kind !== "ci") continue;
       await recordFromCi(
         input,
@@ -219,7 +241,11 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     }
     if (
       actions.every(
-        (action) => action.kind === "skip" || action.kind === "ci" || action.kind === "turn",
+        (action) =>
+          action.kind === "skip" ||
+          action.kind === "ci" ||
+          action.kind === "turn" ||
+          action.kind === "carried",
       )
     ) {
       return { dispositions: [...skips(actions), ...taken] };
@@ -258,7 +284,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
         return { blocked, dispositions: [] };
       }
       for (const action of actions) {
-        if (action.kind === "ci" || action.kind === "turn") continue;
+        if (action.kind === "ci" || action.kind === "turn" || action.kind === "carried") continue;
         if (action.kind === "skip") {
           dispositions.push(action.disposition);
           continue;
@@ -373,6 +399,7 @@ type Action =
   | { kind: "run"; item: Runnable }
   | { kind: "ci"; item: Runnable; ci: CiResult }
   | { kind: "turn"; item: Runnable; pass: TurnPass }
+  | { kind: "carried"; item: Runnable; pass: CarriedPass }
   | { kind: "rule"; item: Runnable; rule: ResolvedRule }
   | { kind: "skip"; item: Runnable; disposition: CommandDisposition };
 
@@ -431,7 +458,16 @@ function classifyAll(
     else actions.push({ kind: "skip", item, disposition: decision.disposition });
     if (decision.stop) stop = true;
   }
-  return fromTurn(actions, input, base, head);
+  return fromCarried(fromTurn(actions, input, base, head), input);
+}
+
+function fromCarried(actions: Action[], input: CloseoutRunInput): Action[] {
+  if (!input.carried?.length) return actions;
+  return actions.map((action): Action => {
+    if (action.kind !== "run" || action.item.kind !== "command") return action;
+    const pass = input.carried!.find((entry) => entry.id === action.item.id);
+    return pass ? { kind: "carried", item: action.item, pass } : action;
+  });
 }
 
 function fromTurn(
@@ -664,6 +700,57 @@ async function recordFromCi(
     ...blankStep(item, ordinal),
     state: "passed",
     detail: ciMessage(ci),
+    attempt,
+    startedAt: now,
+    finishedAt: now,
+    exitCode: 0,
+    evidencePath: evidenceRelative(digest, head, item.id, attempt),
+  });
+}
+
+async function recordCarried(
+  input: CloseoutRunInput,
+  item: Runnable,
+  pass: CarriedPass,
+  base: string,
+  head: string,
+  records: EvidenceRecord[],
+  identity: CloseoutProgressIdentity,
+  ordinal: number,
+): Promise<void> {
+  const digest = input.policy.digest ?? "";
+  const attempt = nextAttempt(records, item.id, head, digest);
+  const task = input.candidate.task;
+  const record: CommandRecord = {
+    specVersion: SPEC_VERSION,
+    recordType: "command",
+    ...(task !== undefined && task.length > 0 ? { task } : {}),
+    itemId: item.id,
+    base,
+    head,
+    policyDigest: digest,
+    attempt,
+    evaluator: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    producer: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    exec: {
+      argv: item.exec,
+      exitCode: 0,
+      timedOut: false,
+      dirty: false,
+      headMoved: false,
+      durationMs: 0,
+      truncated: false,
+    },
+    artifacts: [],
+    carried: { head: pass.head },
+  };
+  await input.evidence.add(record);
+  records.push(record);
+  const now = Date.now();
+  await input.progress?.step(identity, {
+    ...blankStep(item, ordinal),
+    state: "passed",
+    detail: carriedMessage(pass.head),
     attempt,
     startedAt: now,
     finishedAt: now,
@@ -990,7 +1077,7 @@ async function blockPending(
 ): Promise<void> {
   if (progress === undefined) return;
   for (const action of actions) {
-    if (action.kind === "skip" || action.kind === "ci") continue;
+    if (action.kind === "skip" || action.kind === "ci" || action.kind === "carried") continue;
     await progress.step(identity, {
       ...blankStep(action.item, ordinalOf(actions, action.item.id)),
       state: "blocked",

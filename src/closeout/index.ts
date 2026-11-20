@@ -1,4 +1,6 @@
 export {
+  CARRIED_PREFIX,
+  carriedMessage,
   candidatePolicyDigest,
   candidatePolicyDigests,
   credentialSecrets,
@@ -72,6 +74,7 @@ export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
   CiResult,
   TurnPass,
+  CarriedPass,
   CloseoutFocus,
   CloseoutOutputStream,
   CloseoutProgress,
