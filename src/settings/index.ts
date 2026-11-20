@@ -1,6 +1,11 @@
 export { handleAgentSettingsRequest } from "./handler";
 export { BRIEF_SETTINGS_PATH, handleBriefSettingsRequest } from "./brief";
 export type { BriefSettingsOptions } from "./brief";
+export {
+  REPOSITORY_DESCRIPTIONS_PATH,
+  handleRepositoryDescriptionSettingsRequest,
+} from "./repository-descriptions";
+export type { RepositoryDescriptionSettingsOptions } from "./repository-descriptions";
 export type { AgentSettingsOptions } from "./handler";
 export { activeRunnerReadiness } from "./reviewer-runners";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";

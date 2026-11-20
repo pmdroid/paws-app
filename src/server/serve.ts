@@ -58,6 +58,8 @@ import {
 } from "../evidence";
 import {
   BRIEF_SETTINGS_PATH,
+  REPOSITORY_DESCRIPTIONS_PATH,
+  handleRepositoryDescriptionSettingsRequest,
   handleBriefSettingsRequest,
   FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
@@ -700,6 +702,26 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       csrfToken,
       workspaceId,
       ...(configPath === undefined ? {} : { configPath }),
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === REPOSITORY_DESCRIPTIONS_PATH && secrets.store) {
+    const store = secrets.store;
+    const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    return (await handleRepositoryDescriptionSettingsRequest(request, {
+      store,
+      csrfToken,
+      workspaceId,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
