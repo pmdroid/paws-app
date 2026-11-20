@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fixChangedPaths, samePatch } from "../closeout";
+import { carriedMessage, fixChangedPaths, samePatch } from "../closeout";
 import { JOB_KIND, riskCarryOverReason } from "../core";
 import {
   applyWorkItemEvent,
@@ -47,6 +47,7 @@ import {
   riskApprovalsSteps,
 } from "./risk-approval";
 
+import { automaticRiskApprovalSteps } from "./automatic-risk-approval";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { saveChangedPaths, seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
@@ -863,6 +864,44 @@ for (const review of ["security-review", "independent-review"]) {
     await f.close();
   });
 }
+
+test("a command check carried from an earlier commit asks for approval", async () => {
+  const f = await cleanRiskFixture();
+  await f.progress.step(f.identity, {
+    id: "proof",
+    kind: "command",
+    state: "passed",
+    command: "bun run verify:proof",
+    detail: carriedMessage(heads.base),
+    attempt: 0,
+    timeoutSeconds: null,
+    startedAt: null,
+    finishedAt: null,
+    exitCode: null,
+    timedOut: false,
+    timeoutReason: null,
+    truncated: false,
+    logPath: null,
+    evidencePath: null,
+    findings: null,
+    ordinal: 1,
+  });
+  expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+  const risk = (await getCandidateRisk(f.db, f.itemId, heads.s))!;
+  expect(
+    await f.db.run((q) =>
+      automaticRiskApprovalSteps(q, risk, {
+        autoApproveHighRisk: true,
+        policyDigest: "policy",
+        policyPaths: [".agents/closeout.yaml"],
+      }),
+    ),
+  ).toEqual({
+    eligible: false,
+    detail: "Manual approval required: a Closeout check was carried from an earlier commit",
+  });
+  await f.close();
+});
 
 for (const policyPath of [
   ".paws/high-risk-paths",
