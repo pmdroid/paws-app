@@ -1259,7 +1259,6 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
     const f = await cleanRiskFixture();
     const display = new RiskDisplayReader({
       store: f.db,
-      configPath: "/tmp/pas934-no-config",
       readSettings: () => ({ autoApproveHighRisk: scenario !== "off", repositories: {} }),
       publicUrl: PUBLIC_URL,
     });
@@ -1343,7 +1342,6 @@ test("an unreadable risk row cannot prevent the sole pull-request response", asy
   const f = await cleanRiskFixture();
   const display = new RiskDisplayReader({
     store: f.db,
-    configPath: "/tmp/pas934-no-config",
     publicUrl: PUBLIC_URL,
     readSettings: () => ({ autoApproveHighRisk: true, repositories: {} }),
   });

@@ -89,13 +89,11 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const configured = existsSync(configPath);
   let file = emptyConfigFile();
   let configError: string | null = null;
-  if (configured) {
-    try {
-      file = loadConfigFile(configPath);
-    } catch (error) {
-      journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
-      configError = error instanceof Error ? error.message : "config.toml could not be parsed";
-    }
+  try {
+    file = loadConfigFile(configPath);
+  } catch (error) {
+    journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
+    configError = error instanceof Error ? error.message : "config.toml could not be parsed";
   }
 
   let databaseUrl = file.databaseUrl ?? null;
