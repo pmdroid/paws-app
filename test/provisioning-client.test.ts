@@ -157,7 +157,7 @@ describe("createVm", () => {
       const error = await failure(exe.createVm("ada-paws", { cpu: 64 }));
       expectCode(error, "createVm", "unknown");
       expect(error.message).toBe(
-        "exe.dev refused Create VM for ada-paws with --cpu=64: cpu 64 exceeds your plan limit of 16. Change [member_vm] in config.toml.",
+        "exe.dev refused Create VM for ada-paws with --cpu=64: cpu 64 exceeds your plan limit of 16. Change the VM size in Settings.",
       );
     }
     const { exe } = client(() => json({ error: `bad size for ${TOKEN}` }, 400));
@@ -182,7 +182,7 @@ describe("createVm", () => {
       const refused = client(() => json({ error: said }, status));
       const error = await failure(refused.exe.createVm("ada-paws", { pool: "gpu" }));
       expect(error.message).toBe(
-        `exe.dev refused Create VM for ada-paws with --pool=gpu: ${said}. Change [member_vm] in config.toml or choose another pool.`,
+        `exe.dev refused Create VM for ada-paws with --pool=gpu: ${said}. Change the VM size in Settings or choose another pool.`,
       );
     }
   });

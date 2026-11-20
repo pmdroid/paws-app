@@ -408,8 +408,8 @@ export function sizeRefused(
 ): ProvisioningError {
   const flags = command.split(" ").filter((flag) => SIZE_FLAGS.test(flag));
   const change = flags.some((flag) => flag.startsWith("--pool="))
-    ? "Change [member_vm] in config.toml or choose another pool."
-    : "Change [member_vm] in config.toml.";
+    ? "Change the VM size in Settings or choose another pool."
+    : "Change the VM size in Settings.";
   return new ProvisioningError(
     "createVm",
     error.code,

@@ -76,7 +76,7 @@ test("the fake places VMs in listed pools and refuses an unknown pool as exe.dev
   await exe.createVm("ada-paws", { pool: "build" });
   expect(exe.placement.get("ada-paws")).toBe("build");
   await expect(exe.createVm("bob-paws", { pool: "gpu" })).rejects.toThrow(
-    'exe.dev refused Create VM for bob-paws with --pool=gpu: pool "gpu" does not exist. Change [member_vm] in config.toml or choose another pool.',
+    'exe.dev refused Create VM for bob-paws with --pool=gpu: pool "gpu" does not exist. Change the VM size in Settings or choose another pool.',
   );
   expect(exe.vms.has("bob-paws")).toBe(false);
   expect(await exe.listPools()).toEqual([{ name: "build", region: "lon", status: "active" }]);

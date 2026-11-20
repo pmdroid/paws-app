@@ -123,7 +123,7 @@ export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "c
 export const DEFAULT_MERGE_LANES: readonly MergeLaneSplit[] = MERGE_LANE_SPLITS;
 export const DEFAULT_MERGE_NO_PROJECT: MergeNoProject = "own";
 export const MERGE_OVERRIDES_IGNORED =
-  "config.toml merge choices under [merge.projects] and [[merge.rules]] are ignored; every item uses the [merge] default";
+  "Saved settings merge choices under [merge.projects] and [[merge.rules]] are ignored; every item uses the [merge] default";
 
 /**
  * Bots that comment on pull requests with status, not findings: deploy previews, coverage
@@ -604,7 +604,7 @@ export function parseMergeTables(
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new Error(
-      `config.toml ${issue?.path.join(".") ?? "merge"} ${issue?.message ?? "is invalid"}`,
+      `Saved settings ${issue?.path.join(".") ?? "merge"} ${issue?.message ?? "is invalid"}`,
     );
   }
   const merge = parsed.data.merge;

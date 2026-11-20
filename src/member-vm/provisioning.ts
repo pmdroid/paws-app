@@ -27,7 +27,7 @@ export type MemberVmProvisioningSource = {
   latestRelease: () => Promise<string | null>;
   /** Reads `~/.paws/secrets/tailscale-authkey`. Absent or null: the VM joins no tailnet. */
   tailscaleAuthKey?: () => string | null;
-  /** Reads `[member_vm]` from config.toml for each Create VM step. */
+  /** Reads the VM size from Settings for each Create VM step. */
   size?: () => ExeDevVmSize;
   exeDev?: ExeDev;
   /** Replaces the bootstrap built from the release and installer. Tests pass the fake. */

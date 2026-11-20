@@ -104,7 +104,9 @@ test("invalid values get 400 with a message and members get 403", async () => {
   ] as const) {
     const response = await handleMemberVmSettingsRequest(put(body), options("admin"));
     expect(response!.status).toBe(400);
-    expect(((await response!.json()) as { error: string }).error).toContain(message);
+    const { error } = (await response!.json()) as { error: string };
+    expect(error).toContain(message);
+    expect(error).not.toContain("config.toml");
   }
   const member = await handleMemberVmSettingsRequest(put({ cpu: 4 }), options("member"));
   expect(member!.status).toBe(403);

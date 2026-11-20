@@ -210,7 +210,7 @@ describe("member VM routes", () => {
     size = () => ({});
     expect((await get()).size).toEqual({});
     size = () => {
-      throw new Error("config.toml line 3 member_vm.cpu must be a whole number from 1 to 512");
+      throw new Error("Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512");
     };
     expect((await get()).size).toBeUndefined();
   });
@@ -266,7 +266,7 @@ describe("member VM routes", () => {
     expect(failed.step).toBe("create");
     const shown = vmOf((await f.call(f.member, "GET")).body);
     expect(shown.failure).toBe(
-      'exe.dev refused Create VM for ada-lovelace-paws with --pool=gone: pool "gone" does not exist. Change [member_vm] in config.toml or choose another pool.',
+      'exe.dev refused Create VM for ada-lovelace-paws with --pool=gone: pool "gone" does not exist. Change the VM size in Settings or choose another pool.',
     );
     expect(states(shown)[0]).toBe("create:failed");
   });

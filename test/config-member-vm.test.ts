@@ -38,23 +38,23 @@ describe("[member_vm]", () => {
       `pool = "${"p".repeat(64)}"`,
     ])
       expect(() => parseConfigToml(`[member_vm]\n${line}\n`)).toThrow(
-        "config.toml line 2 member_vm.pool must be an exe.dev pool name",
+        "Saved settings line 2 member_vm.pool must be an exe.dev pool name",
       );
   });
 
   test("invalid values are refused with their line", () => {
     const cases: [string, string][] = [
-      ["cpu = -2", "config.toml line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ["cpu = 0", "config.toml line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ['cpu = "4"', "config.toml line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ["memory_gb = true", "config.toml line 3 member_vm.memory_gb must be a whole number"],
-      ["memory_gb = 8GB", "config.toml line 3 has an unsupported value"],
-      ["disk_gb = 1.5", "config.toml line 3 has an unsupported value"],
-      ["disk_gb = 1000000", "config.toml line 3 member_vm.disk_gb must be a whole number"],
-      ["image = 22", "config.toml line 3 member_vm.image must be an image name"],
-      ['image = "x --cpu=64"', "config.toml line 3 member_vm.image must be an image name"],
-      ["cpus = 4", "config.toml line 3 has an unknown key: member_vm.cpus"],
-      ["size = 4", "config.toml line 3 has an unknown key: member_vm.size"],
+      ["cpu = -2", "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
+      ["cpu = 0", "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
+      ['cpu = "4"', "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
+      ["memory_gb = true", "Saved settings line 3 member_vm.memory_gb must be a whole number"],
+      ["memory_gb = 8GB", "Saved settings line 3 has an unsupported value"],
+      ["disk_gb = 1.5", "Saved settings line 3 has an unsupported value"],
+      ["disk_gb = 1000000", "Saved settings line 3 member_vm.disk_gb must be a whole number"],
+      ["image = 22", "Saved settings line 3 member_vm.image must be an image name"],
+      ['image = "x --cpu=64"', "Saved settings line 3 member_vm.image must be an image name"],
+      ["cpus = 4", "Saved settings line 3 has an unknown key: member_vm.cpus"],
+      ["size = 4", "Saved settings line 3 has an unknown key: member_vm.size"],
     ];
     for (const [line, message] of cases)
       expect(() => parseConfigToml(`[member_vm]\ncpu = 2\n${line}\n`)).toThrow(message);

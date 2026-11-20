@@ -181,24 +181,24 @@ describe("config", () => {
   test("unknown keys and sections fail with plain config errors", () => {
     for (const section of ["merge", "project_memory"]) {
       expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(
-        `config.toml line 2 has an unknown key: ${section}.unknown`,
+        `Saved settings line 2 has an unknown key: ${section}.unknown`,
       );
     }
     expect(() => parseConfigToml("[unknown]\n")).toThrow(
-      "config.toml line 1 has an unknown section: unknown",
+      "Saved settings line 1 has an unknown section: unknown",
     );
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
     useMemorySettings(paths.configFile, "[merge]\nunknown = true\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).configError).toBe(
-      "config.toml line 2 has an unknown key: merge.unknown",
+      "Saved settings line 2 has an unknown key: merge.unknown",
     );
   });
 
   test("an [update] section is an unknown section", () => {
     expect(() =>
       parseConfigToml('[agents]\nimplementer = "codex"\n\n[update]\nautomatic = false\n'),
-    ).toThrow("config.toml line 4 has an unknown section: update");
+    ).toThrow("Saved settings line 4 has an unknown section: update");
   });
 
   test("missing config.toml defaults the implementer to claude", () => {
@@ -220,16 +220,16 @@ describe("config", () => {
   test("agents.grok and agents.opencode are unknown sections", () => {
     expect(() =>
       parseConfigToml('[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = "/opt/grok"\n'),
-    ).toThrow("config.toml line 4 has an unknown section: agents.grok");
+    ).toThrow("Saved settings line 4 has an unknown section: agents.grok");
     expect(() => parseConfigToml('[agents.opencode]\npath = "/opt/opencode"\n')).toThrow(
-      "config.toml line 1 has an unknown section: agents.opencode",
+      "Saved settings line 1 has an unknown section: agents.opencode",
     );
   });
 
   test("saved settings with a startup or retired section fail with the unknown-section error", () => {
     for (const section of ["database", "linear", "github", "tracker", "checkout", "caps", "server"])
       expect(() => parseConfigToml(`[${section}]\nurl = "x"\n`)).toThrow(
-        `config.toml line 1 has an unknown section: ${section}`,
+        `Saved settings line 1 has an unknown section: ${section}`,
       );
   });
 });

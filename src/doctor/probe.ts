@@ -231,7 +231,7 @@ async function closeoutPolicyFact(
     journalCaught(error, "probe.closeoutPolicyFact.loadConfigFile", null);
     return {
       ok: false,
-      detail: "config.toml could not be read for local Closeout policy roots",
+      detail: "Saved settings could not be read for local Closeout policy roots",
       fix: oneLine(error instanceof Error ? error.message : String(error)),
     };
   }

@@ -82,7 +82,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     file = loadConfigFile(configPath);
   } catch (error) {
     journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
-    configError = error instanceof Error ? error.message : "config.toml could not be parsed";
+    configError = error instanceof Error ? error.message : "Saved settings could not be parsed";
   }
 
   let databaseUrl: string | null = null;
