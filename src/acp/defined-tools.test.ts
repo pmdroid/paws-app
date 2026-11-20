@@ -65,7 +65,11 @@ test("the MCP server lists Paws-defined tools after the built-in ones and forwar
         .map((line) => JSON.parse(line) as { id: number; result: Record<string, unknown> })
         .map((message) => [message.id, message.result]),
     );
-    const tools = results.get(1)!.tools as { name: string; inputSchema: unknown }[];
+    const tools = results.get(1)!.tools as {
+      name: string;
+      description: string;
+      inputSchema: unknown;
+    }[];
     expect(tools.map((tool) => tool.name)).toEqual(["ask_team", "linear_issue"]);
     expect(tools[1]).toEqual({
       name: "linear_issue",
