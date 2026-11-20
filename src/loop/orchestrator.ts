@@ -11744,14 +11744,24 @@ export class Orchestrator {
   }
 
   private async adoptBranchArrivals(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
+    const moved = await this.branchRead(item, signal).catch((caught: unknown) => {
+      journalCaught(
+        caught,
+        "orchestrator.adoptBranchArrivals",
+        item.id,
+        "starting from the candidate",
+      );
+      return null;
+    });
     const remote = Boolean(this.options.remoteExecution);
     const checkout = worktreePath(this.options.pawsRoot, itemPathId(item));
-    const start = remote
-      ? (await this.store.run((q) => getItemCandidateSteps(q, item.id)))?.sha
-      : (await git(["-C", checkout, "rev-parse", "HEAD"])).trim();
+    const start = !moved
+      ? undefined
+      : remote
+        ? (await this.store.run((q) => getItemCandidateSteps(q, item.id)))?.sha
+        : (await git(["-C", checkout, "rev-parse", "HEAD"])).trim();
     if (!start) return "";
     this.runStartHeads.set(item.id, start);
-    const moved = await this.branchRead(item, signal);
     const published = await this.store.run((q) => getPublishedHeadSteps(q, item.id));
     if (!moved || moved.tip === start || moved.tip === published) return "";
     const { read, tip } = moved;
