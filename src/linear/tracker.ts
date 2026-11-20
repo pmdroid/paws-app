@@ -6,6 +6,7 @@ import { createLinearAttachmentMethods } from "./attachments";
 import { createLinearSubIssueMethods } from "./sub-issues";
 import { createLinearFindingIssueMethods } from "./finding-issues";
 import { createLinearSlackIssueMethods } from "./slack-issues";
+import { createLinearAgentIssueMethods } from "./agent-issues";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -90,6 +91,7 @@ type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
   ReturnType<typeof createLinearFindingIssueMethods> &
   ReturnType<typeof createLinearSlackIssueMethods> &
+  ReturnType<typeof createLinearAgentIssueMethods> &
   ReturnType<typeof createLinearMergeReads> &
   Required<Pick<import("./adapter").TrackerAdapter, "readIssueClosures" | "listBlockers">>;
 
@@ -119,6 +121,12 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   fileFindingIssue: "finding-issue",
   slackIssueTeam: "slack-issue",
   fileSlackIssue: "slack-issue",
+  searchAgentIssues: "agent-issue-read",
+  readAgentIssue: "agent-issue-read",
+  listAgentTeams: "agent-issue-read",
+  listAgentProjects: "agent-issue-read",
+  listAgentLabels: "agent-issue-read",
+  listAgentStates: "agent-issue-read",
   listIssuePullRequests: "issue-pull-requests",
   readIssueClosures: "issue-closures",
   loadEpic: "issue-snapshot",
@@ -146,6 +154,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),
     ...createLinearFindingIssueMethods(client),
     ...createLinearSlackIssueMethods(client),
+    ...createLinearAgentIssueMethods(client),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),

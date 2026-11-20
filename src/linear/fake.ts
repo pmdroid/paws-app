@@ -18,6 +18,7 @@ import {
   type FindingIssueTeamState,
 } from "./finding-issues";
 import type { LinearSessionAdapter } from "./sessions";
+import { createFakeAgentIssues, type FakeAgentIssues } from "./fake-agent-issues";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
 import {
   authorizedRepositorySuggestions,
@@ -42,7 +43,8 @@ import type {
 } from "./types";
 
 export type FakeTracker = LinearSessionAdapter &
-  LinearRepositoryAdapter & {
+  LinearRepositoryAdapter &
+  FakeAgentIssues & {
     attachments: IssueAttachment[];
     issueClosures: Map<string, LinearIssueClosed>;
     issueClosureReads: (readonly string[])[];
@@ -171,6 +173,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     return { id: question.id ?? crypto.randomUUID() };
   }
   return {
+    ...createFakeAgentIssues(),
     issuePullRequests,
     async listIssuePullRequests(id, options) {
       options?.signal?.throwIfAborted();

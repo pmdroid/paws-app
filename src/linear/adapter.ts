@@ -21,6 +21,7 @@ import type { BriefIssueRead } from "./brief-issue";
 import type { LinearIssueClosed } from "./administration";
 import type { FiledFindingIssue, FindingIssueRequest } from "./finding-issues";
 import type { FiledSlackIssue, SlackIssueRequest, SlackIssueTeam } from "./slack-issues";
+import type { createLinearAgentIssueMethods } from "./agent-issues";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -32,7 +33,7 @@ export type TrackerRequestOptions = {
  * Tracker port. Linear is the first implementation; later trackers use the same methods.
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
-export interface TrackerAdapter {
+export interface TrackerAdapter extends Partial<ReturnType<typeof createLinearAgentIssueMethods>> {
   readBriefIssue?(
     identifier: string,
     options?: TrackerRequestOptions,
