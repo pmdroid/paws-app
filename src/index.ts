@@ -417,6 +417,8 @@ import {
   createRemoteAgentRunner,
   createConversationTurns,
   createSlackReplies,
+  createRepositorySummaries,
+  repositorySummaryAllowedSteps,
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
@@ -717,12 +719,29 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     startup?: () => Promise<void>;
     run: (signal: AbortSignal) => Promise<unknown>;
   }[] = [];
+  const repositorySummaries = createRepositorySummaries({
+    store,
+    reader: createGitHubSnapshotReader({
+      locate: (name) => {
+        const repository = repositoryBinding(name);
+        const binding =
+          repository && githubBinding(authProvider(runtime, repository, "read", resolveApp));
+        return binding ? { ...binding, owner: repository.owner, repo: repository.repo } : null;
+      },
+    }),
+    helpers: async () => (await runnerReady)?.helpers,
+    placement: createRunnerPlacement({ store }),
+    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+  });
   if (options?.refreshRepositories)
     periodic.push({
       queue: "repository.catalog.refresh",
       everyMs: 600_000,
       atStartup: true,
-      run: () => refreshRepositoryCatalog(store, listCatalog),
+      run: async (signal) => {
+        await refreshRepositoryCatalog(store, listCatalog);
+        await repositorySummaries.pass(AbortSignal.any([signal, abort.signal]));
+      },
     });
   if (options?.refreshAgentCatalog) {
     const agentCatalog = createAgentCatalog({ store, registry: createNpmRegistry() });
@@ -1187,6 +1206,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
+          repositorySummaryAuthority: repositorySummaryAllowedSteps,
         }).then(async (value) => {
           if (runnerStopping) {
             await value.stop();

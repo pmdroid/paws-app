@@ -326,6 +326,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-placement": ["journal", "core", "db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "finding-groups",
+    "github",
+    "improvements",
     "journal",
     "core",
     "config",

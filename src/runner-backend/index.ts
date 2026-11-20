@@ -3081,3 +3081,8 @@ function toolAnswerText(text: string): string {
   }
   return end === text.length ? text : text.slice(0, end);
 }
+export {
+  createRepositorySummaries,
+  repositorySummaryAllowedSteps,
+  type RepositorySummaries,
+} from "./repository-summary";
