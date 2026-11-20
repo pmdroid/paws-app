@@ -54,7 +54,7 @@ import {
 import { createSlackReplies } from "../src/runner-backend";
 import { createFakeSnapshotReader, type FakeSnapshotReader } from "../src/github";
 import { createRunnerPlacement } from "../src/runner-placement";
-import { MINIMUM_RUNNER_VERSION, SLACK_REPLY_RUNNER_VERSION } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION } from "../src/runner-protocol";
 import { replaceScopedCredentialSteps } from "../src/credentials";
 import { pawsPaths } from "../src/config";
 import { CommandBus, JOB_KIND, type LinearCommand } from "../src/core";
@@ -343,7 +343,7 @@ async function fixture(
     const issued = await issueWorkspaceSession(db, at);
     cookies[user] = `${WORKSPACE_COOKIE}=${issued.token}`;
     csrf[user] = issued.session.csrfToken;
-    await addRunner(user, SLACK_REPLY_RUNNER_VERSION.join("."));
+    await addRunner(user, MINIMUM_RUNNER_VERSION.join("."));
   }
   await install();
 
@@ -843,7 +843,7 @@ const unansweredPosts = (f: Fixture) =>
 
 test("a runner too old for Slack replies, or none, gets one short note in the thread and no answer", async () => {
   const f = await linked();
-  await f.addRunner("ua", MINIMUM_RUNNER_VERSION.join("."));
+  await f.addRunner("ua", "0.1.94");
   const old = f.mention("SADMIN", "old runner");
   await f.deliver(old);
   await f.settle();
@@ -869,7 +869,7 @@ test("a runner too old for Slack replies, or none, gets one short note in the th
     const thread = f.posts(STATUS).filter((post) => post.body.thread_ts === asked.ts);
     expect(thread.at(-1)!.body.status).toBe("active");
   }
-  await f.addRunner("ua", SLACK_REPLY_RUNNER_VERSION.join("."));
+  await f.addRunner("ua", MINIMUM_RUNNER_VERSION.join("."));
   await f.db.run((q) => q.exec(q.orm.update(q.t.runner).set({ status: "active" })));
   await f.say("SADMIN", "and now?", { thread_ts: none.ts });
   expect(lastPrompt(f)).not.toContain("couldn't answer");
