@@ -126,15 +126,36 @@ test("doctor checks each Slack connection's thread scopes and treats the rest as
   expect(slack.map((item) => [item.name, item.ok, item.note ?? false])).toEqual([
     ["slack T0ONE", true, false],
     ["slack T0ONE optional", true, true],
+    ["slack T0ONE reactions", true, true],
     ["slack T0TWO", false, false],
     ["slack T0TWO optional", true, true],
+    ["slack T0TWO reactions", true, true],
   ]);
   expect(slack[1]!.detail).toContain("app messages would need im:history, im:write");
   expect(slack[1]!.detail).toContain("Slack Code is not available yet");
-  expect(slack[2]!.detail).toBe(
+  expect(slack[3]!.detail).toBe(
     "channel threads need app_mentions:read, channels:history, channels:read",
   );
-  expect(slack[2]!.fix).toContain("Reconnect Slack");
+  expect(slack[3]!.fix).toContain("Reconnect Slack");
+});
+
+test("doctor notes a Slack connection without reactions:write and still passes", () => {
+  const ready = probe(true);
+  const threads = "app_mentions:read,channels:history,channels:read,chat:write";
+  ready.facts.slack = [{ teamId: "T0OLD", capabilities: slackCapabilities(threads) }];
+  const checks = doctorChecks(ready);
+  expect(checks.every((item) => item.ok)).toBe(true);
+  expect(checks.find((item) => item.name === "slack T0OLD reactions")).toEqual({
+    name: "slack T0OLD reactions",
+    ok: true,
+    note: true,
+    detail:
+      "Slack T0OLD: reactions are off. Add reactions:write to the Slack app and reconnect Slack to show 🐾 on messages Paws takes up. Reconnecting resets the channel setup and member links.",
+  });
+  ready.facts.slack = [
+    { teamId: "T0NEW", capabilities: slackCapabilities(`${threads},reactions:write`) },
+  ];
+  expect(doctorChecks(ready).some((item) => item.name.endsWith("reactions"))).toBe(false);
 });
 
 test("doctor reports whether the exe.dev token is present and readable", () => {
