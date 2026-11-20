@@ -1,6 +1,6 @@
 import { bindFixtureAccounts } from "../pglite-fixtures";
 import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
-import { migratedHome } from "../helpers";
+import { migratedHome, withHomeStore } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
 import { seed } from "../pglite-fixtures";
@@ -12,6 +12,7 @@ import * as acp from "../../src/acp";
 import * as loop from "../../src/loop";
 import { startPaws } from "../../src/index";
 import {
+  CONFIG_SETTINGS_KEY,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -25,10 +26,11 @@ import {
   recordLinearInstallation,
   saveTaskMode,
   setJournalSink,
+  updateSettingSteps,
   type Q,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
-import { loadConfigFile, resolveAgentProfiles } from "../../src/config";
+import { parseConfigToml, resolveAgentProfiles } from "../../src/config";
 import { createFakeTracker } from "../../src/linear";
 import { createFakeGitHub } from "../../src/github";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
@@ -114,11 +116,12 @@ const head = await git(["-C", source, "rev-parse", "HEAD"]);
 await git(["-C", source, "bundle", "create", join(root, "candidate.bundle"), "HEAD", `^${base}`]);
 mkdirSync(home, { recursive: true });
 await migratedHome(home);
-writeFileSync(
-  join(home, "config.toml"),
-  '[agents.defaults.implementer]\nagent = "claude"\nmodel = "implement-model"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "review-model"\n',
+const agentSettings =
+  '[agents.defaults.implementer]\nagent = "claude"\nmodel = "implement-model"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "review-model"\n';
+await withHomeStore(home, (store) =>
+  store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => agentSettings)),
 );
-assert.deepEqual(resolveAgentProfiles(loadConfigFile(join(home, "config.toml"))), {
+assert.deepEqual(resolveAgentProfiles(parseConfigToml(agentSettings)), {
   implementer: { agent: "claude", model: "implement-model" },
   reviewer: { agent: "codex", model: "review-model" },
 });

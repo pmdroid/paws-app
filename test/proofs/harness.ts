@@ -14,7 +14,7 @@ import {
   type Db,
   type Q,
 } from "../../src/db";
-import { ensureLayout, pawsPaths } from "../../src/config";
+import { ensureLayout, pawsPaths, useMemorySettings } from "../../src/config";
 import { count as countRows, inArray, eq, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
@@ -417,7 +417,7 @@ export type Proof = {
   mergeServerErrors?: number;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
-  /** Appended to the scenario's `config.toml`. */
+  /** Appended to the scenario's saved settings. */
   config?: string;
   forbidRepos?: boolean;
   files?: Record<string, string>;
@@ -449,7 +449,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
-  writeFileSync(
+  useMemorySettings(
     join(pawsRoot, "config.toml"),
     `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`,
   );

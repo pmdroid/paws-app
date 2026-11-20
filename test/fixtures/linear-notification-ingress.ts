@@ -2,8 +2,6 @@ import "../quiet-journal";
 import { eq } from "drizzle-orm";
 import { storeHomeLinearToken, withHomeStore } from "../helpers";
 import { createHmac } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   bindLinearSessionTask,
   getLinearSessionContext,
@@ -28,12 +26,6 @@ const home = process.argv[2]!;
 const mode = process.argv[3] ?? "notification";
 const contextMode = mode === "context" || mode === "github-auth";
 let githubReads = 0;
-if (mode === "github-auth") {
-  writeFileSync(
-    join(home, "config.toml"),
-    '[tracker]\nkind = "linear"\n[github]\nauth = "app"\nrepo = "acme/app"\n',
-  );
-}
 let teamReads = 0;
 let contextReads = 0;
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
@@ -179,6 +171,7 @@ const paws = await startPaws({
   LINEAR_CLIENT_SECRET: "fake-secret",
   LINEAR_WEBHOOKS: "true",
   LINEAR_WEBHOOK_SECRET: "fake-webhook-secret",
+  ...(mode === "github-auth" ? { PAWS_GITHUB_REPOS: "acme/app" } : {}),
 });
 const statuses: number[] = [];
 const deliveries = contextMode
