@@ -3336,33 +3336,54 @@ test("the starter's stop and Stop button stop the thread's task once, keep its p
   ]);
 });
 
-test("an admin's native agent_session_stopped on finished work drops only the posts not yet sent", async () => {
-  const { f, root, send } = await stoppableTask();
-  await sqlRun(f.db, "UPDATE work_item SET state = 'completed' WHERE id = 'item-1'");
-  f.failNext["chat.postMessage"] = "rate";
-  await send("activity", "merged:item-1:1", { kind: "response", body: "Merged in main" });
-  const event = {
-    type: "agent_session_stopped",
-    channel: "C0ONE",
-    user: "SADMIN",
-    thread_ts: root.ts,
-    event_ts: "1790000000.000100",
-    streaming_message_ts: [],
-  };
+const sessionStop = (f: Fixture, user: string, threadTs: string) => ({
+  type: "agent_session_stopped",
+  channel: "C0ONE",
+  user,
+  thread_ts: threadTs,
+  event_ts: f.mention(user, "").ts,
+  streaming_message_ts: [],
+});
+
+const taskStopJobs = (f: Fixture) =>
+  sqlRows<{ id: string }>(f.db, "SELECT id FROM job WHERE job_key LIKE 'slack:task-stop:%'");
+
+test("Slack's own stop ends the thread's answers and leaves its running issue running until @Paws stop", async () => {
+  const { f, root } = await stoppableTask();
+  await stateOf(f, "running");
+  const event = sessionStop(f, "SMEMBER", root.ts);
   expect((await f.deliver(event, { eventId: "EvSTOP01" })).status).toBe(200);
   expect((await f.deliver(event, { eventId: "EvSTOP01" })).status).toBe(200);
   f.advance(60_000);
   await f.settle();
-  expect(JSON.stringify(f.posted)).not.toContain("Merged in main");
   expect(f.notice()).toBe(
-    "ENG-1 had already finished or stopped. Paws dropped its updates that hadn't reached this thread yet.",
+    "Stopped answering in this thread. ENG-1 keeps running. Reply stop ENG-1 to stop it.",
   );
+  expect(f.posts("chat.postEphemeral")).toHaveLength(1);
+  expect(await taskStopJobs(f)).toEqual([]);
   expect(f.commands).toEqual([]);
-  expect(await itemState(f, "item-1")).toBe("completed");
-  await send("activity", "reply:item-1:9", { kind: "response", body: "After stop" });
-  expect(JSON.stringify(f.posts("chat.postMessage"))).toContain("After stop");
-  const stopButton = f.posts("chat.postMessage").at(-1)!.body.blocks as { type: string }[];
-  expect(JSON.stringify(stopButton)).toContain("paws_stop");
+  expect(await itemState(f, "item-1")).toBe("running");
+  await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  f.advance(60_000);
+  await f.settle();
+  expect(await itemState(f, "item-1")).toBe("cancelled");
+  expect(f.commands).toEqual([expect.objectContaining({ type: "stop", itemId: "item-1" })]);
+});
+
+test("Slack's own stop names no issue that already finished, nor any in a thread without filed issues", async () => {
+  const { f, root } = await stoppableTask();
+  await stateOf(f, "completed");
+  await f.deliver(sessionStop(f, "SMEMBER", root.ts), { eventId: "EvSTOP02" });
+  await f.settle();
+  expect(f.notice()).toBe("Stopped answering in this thread.");
+  const g = await working();
+  const plain = g.mention("SMEMBER", "uploads fail");
+  await g.deliver(plain);
+  await g.settle();
+  await g.deliver(sessionStop(g, "SMEMBER", plain.ts), { eventId: "EvSTOP03" });
+  await g.settle();
+  expect(g.notice()).toBe("Stopped answering in this thread.");
+  expect(await taskStopJobs(g)).toEqual([]);
 });
 
 test("a stop whose member unlinks or is revoked before it runs stops nothing", async () => {
