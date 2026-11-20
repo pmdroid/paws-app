@@ -280,6 +280,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       },
     ),
   ),
+  api("GET PUT DELETE", "/api/settings/repository-descriptions", "preserved", "src/settings", {
+    sample: "/api/settings/repository-descriptions",
+  }),
   api("GET PUT DELETE", "/api/settings/runner-vm-keys", "preserved", "src/settings", {
     sample: "/api/settings/runner-vm-keys",
   }),
