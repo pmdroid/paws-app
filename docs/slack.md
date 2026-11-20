@@ -61,7 +61,7 @@ A thread needs no repository. Each turn is told the repositories its asker may u
 
 ### Look up Linear
 
-When Linear is connected, each turn gets read-only Linear tools, and its prompt says they only read: `search_issues` (text or an identifier such as `ENG-123`), `get_issue` (one issue with its relations and recent comments), and `list_teams`, `list_projects`, `list_labels` and `list_states`. Nothing in Linear changes through them. Without Linear, the turn has none of them.
+When Linear is connected, each turn gets read-only Linear tools, and its prompt says they only read: `search_issues` (text or an identifier such as `ENG-123`), `get_issue` (one issue with its relations and recent comments), and `list_teams`, `list_projects`, `list_labels` and `list_states`. Nothing in Linear changes through them. Without Linear, the turn has none of them, and an [`@Paws start`](#start-work-from-a-thread) draft is written without them.
 
 - Each call reads the asking member's Linear teams again from their Paws membership, so a team they lose during a turn is no longer read by the next call. The agent can't name other teams.
 - Private Linear teams are left out, since everyone in the thread reads the answer. With no team left, each tool answers `You have no Linear teams Paws can read here.` and reads nothing.

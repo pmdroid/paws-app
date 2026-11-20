@@ -4426,3 +4426,20 @@ test("a run that read a Linear team stores its notes and reply with that team, a
   expect(JSON.stringify(f.posts("chat.postMessage"))).not.toContain("canary-late");
   expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
 });
+
+test("a start's draft run carries no Linear tools", async () => {
+  const tracker = createFakeTracker();
+  const f = await linkedWith({ tools: [(run) => provider(run)] }, ["um", "SMEMBER"]);
+  const provider = slackLinearTools({ store: f.db, tracker: () => tracker });
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await syncWorkspaceMember(f.db, { ...member, teamIds: ["team-eng"], now: f.now() });
+  const root = f.mention("SMEMBER", "uploads fail sometimes");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.sent.at(-1)!.tools).toBeDefined();
+  f.answers.push(`Here it is: ${BRIEF}`);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).not.toContain("Linear tools:");
+  expect(f.sent.at(-1)!.tools).toBeUndefined();
+  expect(draftOf(f).post.body).toMatchObject({ user: "SMEMBER" });
+});

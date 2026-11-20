@@ -1341,7 +1341,7 @@ export function createSlackThreads<Profile>(options: {
       const made = provider(run);
       return () => made;
     });
-    const tools = slackRunTools(provided, run);
+    const tools = team ? undefined : slackRunTools(provided, run);
     const folderTools = folder && slackRunTools([...provided, folder.tools], run);
     const tail = `${
       woken
