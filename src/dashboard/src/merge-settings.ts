@@ -31,7 +31,9 @@ export type MergeSettings = {
   ignoredComments?: IgnoredComments[];
   /** Conflict-prone files Paws does not hold work for, per repository. Replaces every list. */
   parallelFiles?: { repository: string; paths: string[] }[];
+  conflictChecks?: ConflictChecks[];
 };
+export type ConflictChecks = { repository: string; ids: string[] };
 export type IgnoredComments = {
   repository: string;
   ignoreCommentBots: string[];
