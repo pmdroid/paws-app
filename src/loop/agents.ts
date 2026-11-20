@@ -161,6 +161,7 @@ export function implementPrompt(input: {
     "When you need a product decision, call ask_team with select options when there is a closed set of choices. ask_team ends your turn, and the answer arrives as your next message, so state the question completely and stop working on that path.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     POST_UPDATE_PROMPT,
+    "People and other agents may push to this branch. Keep their commits; never force-push or reset the branch to drop them.",
     REPLY_PROMPT,
     closeoutPrompt(),
     ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus, input.conflictRun)] : []),

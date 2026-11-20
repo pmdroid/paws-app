@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { pushBranch } from "./pulls";
-import { GitCommandError, type GitExec } from "./types";
+import { BranchMovedError, GitCommandError, type GitExec } from "./types";
 
 const HEAD = "a".repeat(40);
 const OLDER = "b".repeat(40);
@@ -22,8 +22,9 @@ function recordingGit(remotes: Array<string | Error>): { calls: string[][]; gitE
   return { calls, gitExec };
 }
 
-function publish(gitExec: GitExec) {
+function publish(gitExec: GitExec, expected: string | null = OLDER) {
   return pushBranch({
+    expected,
     worktree: "/tmp/acme-widgets",
     issue: "ACME-7",
     owner: "acme",
@@ -47,32 +48,56 @@ test("a remote branch already at the head skips staging and the push", async () 
   expect(ran(calls, "push")).toBe(false);
 });
 
-test("a remote branch at another head stages and pushes leased on it", async () => {
+test("a remote branch at the expected head stages and pushes leased on it", async () => {
   const { calls, gitExec } = recordingGit([OLDER]);
   expect(await publish(gitExec)).toEqual({ branch: "paws/ACME-7", head: HEAD });
   expect(calls.filter((args) => args.includes("ls-remote"))).toHaveLength(1);
-  expect(ran(calls, "bundle")).toBe(true);
   expect(fetchedBundle(calls)).toBe(true);
   const push = calls.find((args) => args.includes("push"));
   expect(push).toContain(`--force-with-lease=${BRANCH}:${OLDER}`);
   expect(push).toContain(`HEAD:${BRANCH}`);
 });
 
-test("a missing remote branch stages and pushes without a lease", async () => {
-  const { calls, gitExec } = recordingGit([""]);
-  await publish(gitExec);
-  expect(fetchedBundle(calls)).toBe(true);
-  const push = calls.find((args) => args.includes("push"));
-  expect(push?.some((arg) => arg.startsWith("--force-with-lease"))).toBe(false);
+test("a remote branch at another head than expected fails without pushing", async () => {
+  const theirs = "c".repeat(40);
+  const { calls, gitExec } = recordingGit([theirs]);
+  const error = await publish(gitExec).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BranchMovedError);
+  expect((error as BranchMovedError).tip).toBe(theirs);
+  expect(ran(calls, "push")).toBe(false);
 });
 
-test("a failed remote read pushes as before", async () => {
-  const failed = new GitCommandError(["ls-remote", URL], "fatal: Authentication failed");
-  const { calls, gitExec } = recordingGit([failed, OLDER]);
-  expect(await publish(gitExec)).toEqual({ branch: "paws/ACME-7", head: HEAD });
-  expect(ran(calls, "bundle")).toBe(true);
+test("a missing remote branch pushes leased on its absence", async () => {
+  const { calls, gitExec } = recordingGit([""]);
+  await publish(gitExec, null);
   expect(fetchedBundle(calls)).toBe(true);
+  expect(calls.find((args) => args.includes("push"))).toContain(`--force-with-lease=${BRANCH}:`);
+});
+
+test("a failed remote read still pushes leased on the expected head", async () => {
+  const failed = new GitCommandError(["ls-remote", URL], "fatal: Authentication failed");
+  const { calls, gitExec } = recordingGit([failed]);
+  expect(await publish(gitExec)).toEqual({ branch: "paws/ACME-7", head: HEAD });
   expect(calls.find((args) => args.includes("push"))).toContain(
     `--force-with-lease=${BRANCH}:${OLDER}`,
   );
+});
+
+test("a lease Git refuses as stale reads the tip and fails without a second push", async () => {
+  const theirs = "c".repeat(40);
+  const calls: string[][] = [];
+  const remotes = [OLDER, theirs];
+  const gitExec: GitExec = async (args) => {
+    calls.push(args);
+    if (args.includes("ls-remote"))
+      return { stdout: `${remotes.shift()}\t${BRANCH}\n`, stderr: "" };
+    if (args.includes("rev-parse")) return { stdout: `${HEAD}\n`, stderr: "" };
+    if (args.includes("push") && args.some((arg) => arg.startsWith("--force-with-lease")))
+      throw new GitCommandError(args, " ! [rejected] HEAD -> paws/ACME-7 (stale info)\n");
+    return { stdout: "", stderr: "" };
+  };
+  const error = await publish(gitExec).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BranchMovedError);
+  expect((error as BranchMovedError).tip).toBe(theirs);
+  expect(calls.filter((args) => args.includes("push"))).toHaveLength(1);
 });

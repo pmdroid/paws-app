@@ -115,6 +115,16 @@ export class GitHubHttpError extends Error {
 
 export class SquashServerError extends GitHubHttpError {}
 
+export class BranchMovedError extends Error {
+  constructor(
+    readonly branch: string,
+    readonly tip: string | null,
+  ) {
+    super(`${branch} moved to ${tip ? tip.slice(0, 7) : "nothing"} on GitHub`);
+    this.name = "BranchMovedError";
+  }
+}
+
 export class GitCommandError extends Error {
   readonly args: string[];
   readonly stderr: string;

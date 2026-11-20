@@ -1,7 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { getItemCandidate, recordItemCandidate } from "../src/db";
 import { CHECKPOINT_COMMIT_MESSAGE } from "../src/core";
-import { pushBranch, readBranchTip, readRef, type GitHubClient } from "../src/github";
+import {
+  BranchMovedError,
+  pushBranch,
+  readBranchTip,
+  readRef,
+  type GitHubClient,
+} from "../src/github";
 import {
   ensureStoredStartOnGitHub,
   RemoteStartUnverified,
@@ -53,8 +59,9 @@ const noGit = async () => {
   throw new Error("git must not run");
 };
 
-function publish(client: GitHubClient, candidate: string) {
+function publish(client: GitHubClient, candidate: string, expected: string | null = null) {
   return pushBranch({
+    expected,
     worktree: "/paws/repos/acme/app.git",
     candidate,
     client,
@@ -89,13 +96,23 @@ test("a stored candidate publishes through the refs API without git", async () =
   expect(github.calls.at(-1)).toBe("POST /repos/acme/app/git/refs");
 
   const moved = "c".repeat(40);
-  await publish(github.client, moved);
+  await publish(github.client, moved, CANDIDATE);
   expect(github.branches["paws/acme-1"]).toBe(moved);
   expect(github.calls.at(-1)).toBe("PATCH /repos/acme/app/git/refs/heads/paws/acme-1");
 
   github.calls.length = 0;
-  await publish(github.client, moved);
+  await publish(github.client, moved, CANDIDATE);
   expect(github.calls).toEqual(["GET /repos/acme/app/git/ref/heads/paws/acme-1"]);
+});
+
+test("a branch whose tip differs from the expected head is not moved", async () => {
+  const theirs = "d".repeat(40);
+  const github = fakeRefs({ main: MAIN, "paws/acme-1": theirs });
+  const error = await publish(github.client, CANDIDATE, MAIN).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BranchMovedError);
+  expect((error as BranchMovedError).tip).toBe(theirs);
+  expect(github.branches["paws/acme-1"]).toBe(theirs);
+  expect(github.calls.some((call) => !call.startsWith("GET "))).toBe(false);
 });
 
 test("a refused branch move fails the publication", async () => {

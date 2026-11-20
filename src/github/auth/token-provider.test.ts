@@ -71,6 +71,7 @@ describe("GitHub operation tokens", () => {
       return { stdout: "", stderr: "" };
     };
     const pushed = await pushBranch({
+      expected: null,
       tokenProvider: provider,
       worktree: fake.root,
       issue: "ENG-17",

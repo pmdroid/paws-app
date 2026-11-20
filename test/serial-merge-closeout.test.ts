@@ -32,6 +32,7 @@ describe("the merge lane runs Closeout on a rebased head before it merges", () =
   test("native Closeout accepts the rebased head and the squash carries it", async () => {
     const repo = await oneClone();
     await commitFile(repo.work, "file.txt", "checked\n");
+    await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-5"]);
     const other = path.join(repo.root, "other");
     await exec("git", ["clone", repo.bare, other]);
     await gitIdentity(other);

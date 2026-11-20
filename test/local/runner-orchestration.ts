@@ -480,6 +480,21 @@ export async function probeRunnerOrchestration(
                     };
                   if (request.method === "POST" && request.path.endsWith("/labels"))
                     return { status: 201, body: { name: "paws" } };
+                  const branch = /\/git\/ref\/(heads\/paws\/.+)$/.exec(request.path)?.[1];
+                  if (request.method === "GET" && branch) {
+                    const sha = await git([
+                      "--git-dir",
+                      origin,
+                      "rev-parse",
+                      "--verify",
+                      `refs/${branch}`,
+                    ])
+                      .then((out) => out.trim())
+                      .catch(() => null);
+                    return sha
+                      ? { status: 200, body: { object: { type: "commit", sha } } }
+                      : { status: 404, body: { message: "Not Found" } };
+                  }
                   if (request.method === "PUT" && request.path.endsWith("/merge")) {
                     const { sha } = request.body as { sha: string };
                     await git(["-C", source, "fetch", origin, sha]);

@@ -6,6 +6,7 @@ import { defaultGitExec, git, gitFailureReason, redact } from "./git";
 import { moveBranchToCandidate } from "./publication";
 import { pushDenial, pushWithLease } from "./push";
 import {
+  BranchMovedError,
   GitCommandError,
   type GitExec,
   type GitHubClient,
@@ -20,6 +21,7 @@ export async function pushBranch(
     /** The ref that names the candidate in `worktree`; `HEAD` when unset. */
     ref?: string;
     candidate?: string;
+    expected: string | null;
     client?: GitHubClient;
     issue: string;
     branchKey?: string;
@@ -41,8 +43,10 @@ export async function pushBranch(
       repo: input.repo,
       branch,
       sha: input.candidate,
+      expected: input.expected,
       token,
     }).catch((error: unknown) => {
+      if (error instanceof BranchMovedError) throw error;
       throw new Error(`push failed: ${gitFailureReason(token, error)}`, { cause: error });
     });
     return { branch, head: input.candidate };
@@ -58,8 +62,10 @@ export async function pushBranch(
       token,
       gitExec,
       head,
+      expected: input.expected,
     });
   } catch (error) {
+    if (error instanceof BranchMovedError) throw error;
     const denial =
       error instanceof GitCommandError
         ? pushDenial(redact(token, error.stderr), {
@@ -242,6 +248,7 @@ export async function publishAccepted(
     worktree: string;
     ref?: string;
     candidate?: string;
+    expected: string | null;
     issue: string;
     branchKey?: string;
     owner: string;

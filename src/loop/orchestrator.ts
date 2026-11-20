@@ -103,6 +103,7 @@ import {
 } from "./runner-repository";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
+import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-arrivals";
 import {
   saveHumanRetryWindowSteps,
   checkTriggers,
@@ -457,7 +458,10 @@ import {
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
   readBranchTip,
+  readCommit,
   readBranchWork,
+  type BranchArrival,
+  BranchMovedError,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
@@ -972,6 +976,7 @@ export class Orchestrator {
   /** Temporary errors thrown while the agent was being prepared, before it started. */
   private readonly preparationFailures = new WeakSet<object>();
   private readonly pullRequestReads = new Set<string>();
+  private readonly runStartHeads = new Map<string, string>();
   private releasingBlocks: Promise<void> | null = null;
   private readonly live = new Map<
     string,
@@ -4015,7 +4020,7 @@ export class Orchestrator {
       });
       const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict);
       const draft = await this.savedDraft(item.id);
-      const prompt = implementPrompt({
+      let prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
         brief: await this.workContext(item, true),
@@ -4028,8 +4033,12 @@ export class Orchestrator {
       await this.flush();
       if (await this.stopped(item.id)) return;
       try {
+        const remote = Boolean(this.options.remoteExecution);
+        const early = remote ? await this.adoptBranchArrivals(item, controller.signal) : "";
         if (!this.readProfileSnapshot(run.id)?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
+        const arrived = remote ? early : await this.adoptBranchArrivals(item, controller.signal);
+        if (arrived) prompt = `${arrived}\n\n${prompt}`;
       } catch (error) {
         if (
           (await this.stopped(item.id)) ||
@@ -4227,9 +4236,12 @@ export class Orchestrator {
               );
           },
         });
-        await pushBranch({
+        const lease = await this.lease(finished, head, controller.signal);
+        if (!lease) return;
+        const pushed = await pushBranch({
           worktree: at.repo,
           ref: head,
+          expected: lease.expected,
           issue: item.linearIdentifier,
           branchKey: taskBranchKey(item),
           owner: repository.owner,
@@ -4238,7 +4250,8 @@ export class Orchestrator {
           client: github.client,
           gitExec: github.gitExec,
           ...this.gitHubCredentials(github),
-        });
+        }).catch((error: unknown) => this.branchMoved(finished, error));
+        if (pushed === null) return;
       }
 
       await recordAgentFindingDecisions(
@@ -6522,10 +6535,13 @@ export class Orchestrator {
           journalCaught(caught, "orchestrator.pullRequestMember", item.id, "opening as Paws");
           return null;
         });
+    const lease = await this.lease(item, candidateHead, live.controller.signal);
+    if (!lease) return { kind: "returned" };
     const published = await publishAccepted({
       accepted: true,
       evidence,
       worktree,
+      expected: lease.expected,
       ...(ref === "HEAD" ? {} : this.storedCandidates() ? { candidate: ref } : { ref }),
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
@@ -6540,7 +6556,8 @@ export class Orchestrator {
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
-    });
+    }).catch((error: unknown) => this.branchMoved(item, error));
+    if (published === null) return { kind: "returned" };
     const refused = published.published ? published.pull.memberRefused : undefined;
     if (refused && published.published)
       await this.post(
@@ -11720,11 +11737,128 @@ export class Orchestrator {
     );
   }
 
-  private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+  private async branchRead(item: WorkItemRecord, signal: AbortSignal) {
+    const repository = await this.repositoryForItem(item);
+    const github = repository && this.githubForRepository(repository);
+    if (!repository || !github) return null;
+    const read = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: `paws/${taskBranchKey(item)}`,
+      ...this.gitHubCredentials(github),
+      signal,
+    };
+    const tip = await readBranchTip(read);
+    return tip === null ? null : { read, tip };
+  }
+
+  private async descends(
+    item: WorkItemRecord,
+    read: Omit<Parameters<typeof branchContains>[0], "sha">,
+    head: string,
+    tip: string,
+  ): Promise<boolean> {
+    const { repo } = await this.itemHead(item);
+    const local = await git(["-C", repo, "merge-base", "--is-ancestor", tip, head]).then(
+      () => true,
+      () => false,
+    );
+    return local || (await branchContains({ ...read, branch: head, sha: tip })).contains;
+  }
+
+  private async adoptBranchArrivals(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
+    const remote = Boolean(this.options.remoteExecution);
+    const checkout = worktreePath(this.options.pawsRoot, itemPathId(item));
+    const start = remote
+      ? (await this.store.run((q) => getItemCandidateSteps(q, item.id)))?.sha
+      : (await git(["-C", checkout, "rev-parse", "HEAD"])).trim();
+    if (!start) return "";
+    this.runStartHeads.set(item.id, start);
+    const moved = await this.branchRead(item, signal).catch((caught: unknown) => {
+      journalCaught(caught, "orchestrator.adoptBranchArrivals", item.id, "keeping the candidate");
+      return null;
+    });
+    const published = await this.store.run((q) => getPublishedHeadSteps(q, item.id));
+    if (!moved || moved.tip === start || moved.tip === published) return "";
+    const { read, tip } = moved;
+    if (!remote) {
+      const repository = (await this.repositoryForItem(item))!;
+      const fetch = (await this.repositoryGit(item, repository, signal, "read")) ?? git;
+      const ref = `+refs/heads/${read.branch}:refs/remotes/origin/${read.branch}`;
+      await fetch(["-C", checkout, "fetch", "--no-tags", "--", repository.remoteUrl, ref]);
+    }
+    if (await this.descends(item, read, start, tip)) return "";
+    const from = remote ? start : (await git(["-C", checkout, "merge-base", start, tip])).trim();
+    let commits: BranchArrival[] | null = null;
+    for (const base of [from, published]) {
+      if (!base || commits !== null) continue;
+      const compared = await branchContains({ ...read, sha: base });
+      if (compared.head !== null) commits = compared.commits;
+    }
+    commits ??= [
+      { sha: tip, author: "unknown", subject: (await readCommit({ ...read, sha: tip })).subject },
+    ];
+    if (!remote) await git(["-C", checkout, "reset", "--hard", tip]);
+    else {
+      await this.restoreCandidate(item, signal, tip);
+      await this.store.run((q) =>
+        recordItemCandidateSteps(q, {
+          itemId: item.id,
+          sha: tip,
+          branch: item.branchName,
+          recordedAt: this.now(),
+        }),
+      );
+    }
+    await this.post(
+      item,
+      "thought",
+      arrivalsThought(read.branch, commits.length),
+      `${item.id}:branch-arrivals:${tip}`,
+    );
+    return arrivalsPrompt(read.branch, commits);
+  }
+
+  private async lease(
+    item: WorkItemRecord,
+    head: string | null,
+    signal: AbortSignal,
+  ): Promise<{ expected: string | null } | null> {
+    const moved = head === null ? null : await this.branchRead(item, signal);
+    if (!moved || head === null) return { expected: null };
+    const known = [
+      head,
+      this.runStartHeads.get(item.id),
+      item.checkpoint?.wipCommit,
+      await this.store.run((q) => getPublishedHeadSteps(q, item.id)),
+    ];
+    if (known.includes(moved.tip) || (await this.descends(item, moved.read, head, moved.tip)))
+      return { expected: moved.tip };
+    return this.branchMoved(item, new BranchMovedError(moved.read.branch, moved.tip));
+  }
+
+  private async branchMoved(item: WorkItemRecord, error: unknown): Promise<null> {
+    if (!(error instanceof BranchMovedError)) throw error;
+    const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
+    if (current)
+      await restart(this.store, current, {
+        reason: "follow_up",
+        body: branchMovedHandoff(error.branch),
+        now: this.now(),
+      });
+    return null;
+  }
+
+  private async restoreCandidate(
+    item: WorkItemRecord,
+    signal?: AbortSignal,
+    tip?: string,
+  ): Promise<void> {
     if (this.storedCandidates()) return;
     const repository = await this.repositoryForItem(item);
-    const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
-    if (!this.options.remoteExecution || !repository || !recorded) return;
+    const sha = tip ?? (await this.store.run((q) => getItemCandidateSteps(q, item.id)))?.sha;
+    if (!this.options.remoteExecution || !repository || !sha) return;
     const owned = signal ?? AbortSignal.timeout(120_000);
     const networkGit = await this.repositoryGit(item, repository, owned, "read");
     const baseSha = item.checkpoint?.baseSha;
@@ -11732,7 +11866,7 @@ export class Orchestrator {
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
-      sha: recorded.sha,
+      sha,
       signal: owned,
       ...(baseSha ? { baseSha } : {}),
       ...(networkGit ? { networkGit } : {}),

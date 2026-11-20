@@ -76,7 +76,7 @@ export async function hasOpenPullOnPrefix(input: HeadRead & { prefix: string }):
  */
 export async function branchContains(
   input: HeadRead & { branch: string; sha: string },
-): Promise<{ head: string | null; contains: boolean }> {
+): Promise<{ head: string | null; contains: boolean; commits: BranchArrival[] }> {
   input.signal?.throwIfAborted();
   const token = await acquireOperationToken(input, "pr");
   const compared = await input.client.request({
@@ -89,7 +89,7 @@ export async function branchContains(
     token,
     signal: input.signal,
   });
-  if (compared.status === 404) return { head: null, contains: false };
+  if (compared.status === 404) return { head: null, contains: false, commits: [] };
   const body: unknown = compared.body;
   if (compared.status !== 200 || typeof body !== "object" || body === null)
     throw new Error(`Could not compare ${input.branch} with ${input.sha}`);
@@ -98,8 +98,23 @@ export async function branchContains(
     ? (commits.at(-1) as { sha?: unknown } | undefined)
     : undefined;
   const head = status === "identical" ? input.sha : typeof last?.sha === "string" ? last.sha : null;
-  return { head, contains: status === "identical" || status === "ahead" };
+  const listed = (status === "behind" || !Array.isArray(commits) ? [] : commits) as {
+    sha?: unknown;
+    author?: { login?: unknown } | null;
+    commit?: { message?: unknown };
+  }[];
+  return {
+    head,
+    contains: status === "identical" || status === "ahead",
+    commits: listed.map((entry) => ({
+      sha: String(entry.sha).toLowerCase(),
+      author: String(entry.author?.login ?? "unknown"),
+      subject: String(entry.commit?.message ?? "").split("\n")[0]!,
+    })),
+  };
 }
+
+export type BranchArrival = { sha: string; author: string; subject: string };
 
 /**
  * What GitHub holds for `branch`: the state of its latest pull request into main and how many of

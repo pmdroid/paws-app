@@ -766,7 +766,7 @@ async function rebaseOnRunner(
     reason = `refused ${asked.head.slice(0, 7)}: ${adopted.refused}`;
   }
   journal(`item ${item.linearIdentifier} rebases on the control plane: runner rebase ${reason}`);
-  return rebaseOntoMain(lane);
+  return rebaseOntoMain(asked.outcome === "rebased" ? { ...lane, expectedHead: asked.head } : lane);
 }
 
 /** The repository as the merge queue names it. */

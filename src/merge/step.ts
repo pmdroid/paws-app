@@ -72,6 +72,8 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
   }
   if (verdict.block !== "behind_main") return { kind: "blocked", block: verdict.block, pull };
   const rebased = await actions.rebase(pull);
+  if (!rebased.rebased && rebased.result.outcome === "sha_moved")
+    return { kind: "blocked", block: "head_moved", pull };
   if (!rebased.rebased) return { kind: "stopped", result: rebased.result };
   return {
     kind: "rebased",

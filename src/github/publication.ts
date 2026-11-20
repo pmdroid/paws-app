@@ -5,7 +5,7 @@ import { HostDiskFullError, isDiskFullText } from "../core";
 import { journal, journalCaught } from "../journal";
 import { repoApiPath } from "./client";
 import { gitTempDirectory } from "./temp";
-import { GitCommandError, type GitExec, type GitHubClient } from "./types";
+import { BranchMovedError, GitCommandError, type GitExec, type GitHubClient } from "./types";
 
 /** A branch literally named `HEAD`, which some repositories carry by accident. */
 const HEAD_BRANCH = "refs/heads/HEAD";
@@ -18,6 +18,7 @@ export async function moveBranchToCandidate(input: {
   repo: string;
   branch: string;
   sha: string;
+  expected: string | null;
   token: string;
   signal?: AbortSignal;
 }): Promise<void> {
@@ -34,6 +35,10 @@ export async function moveBranchToCandidate(input: {
   if (read.status === 200 && typeof tip === "string" && tip.toLowerCase() === input.sha) return;
   if (read.status !== 200 && read.status !== 404)
     throw new Error(`reading ${input.branch} failed with status ${read.status}`);
+  if (read.status === 200) {
+    const found = typeof tip === "string" ? tip.toLowerCase() : null;
+    if (found !== input.expected) throw new BranchMovedError(input.branch, found);
+  }
   const moved =
     read.status === 404
       ? await call("POST", "/git/refs", { ref: `refs/heads/${input.branch}`, sha: input.sha })
