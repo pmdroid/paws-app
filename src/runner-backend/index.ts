@@ -92,16 +92,24 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
+  HOST_TOOL_LIMITS,
   REVIEW_BRIEF_LIMIT,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   redactedJson,
   withSignedOutAuth,
+  type HostToolDefinitions,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerResult,
 } from "../runner-protocol";
+
+function truncateUtf8(text: string, bytes: number): string {
+  const encoded = Buffer.from(text);
+  if (encoded.length <= bytes) return text;
+  return new TextDecoder().decode(encoded.subarray(0, bytes)).replace(/\uFFFD$/, "");
+}
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { CandidateMismatch, fastForwardToBranchTip, restartCandidateFrom } from "./candidate";
@@ -1654,6 +1662,11 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.recall && input.readOnly !== true
                         ? { recall: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" && input.hostTools?.definitions.length
+                        ? {
+                            tools: [...input.hostTools.definitions] as HostToolDefinitions,
+                          }
+                        : {}),
                       ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),
@@ -2080,7 +2093,8 @@ export function createRemoteAgentRunner(options: {
                   event.type === "closeout_policy" ||
                   event.type === "ci_rerun" ||
                   event.type === "remember" ||
-                  event.type === "recall") &&
+                  event.type === "recall" ||
+                  event.type === "tool") &&
                 (await results.answered(assigned.runId, assigned.generation, row.sequence)) !==
                   null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
@@ -2141,6 +2155,27 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(recalled),
+                });
+              }
+              if (event.type === "tool" && !answered) {
+                const unavailable = { text: "That tool is not available.", isError: true };
+                const result = input.hostTools
+                  ? await input.hostTools
+                      .call(event.name, event.arguments)
+                      .catch((error: unknown) => {
+                        journalCaught(error, "runner-backend.forItem.tool", itemId);
+                        return unavailable;
+                      })
+                  : unavailable;
+                signal.throwIfAborted();
+                await results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify({
+                    text: truncateUtf8(result.text, HOST_TOOL_LIMITS.answerBytes),
+                    ...(result.isError ? { isError: true } : {}),
+                  }),
                 });
               }
               if (event.type === "remember" && !answered) {

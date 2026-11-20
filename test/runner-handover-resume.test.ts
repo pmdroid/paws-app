@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { PawsShutdown } from "../src/core";
-import { candidateRef, mirrorPath } from "../src/acp";
+import { candidateRef, mirrorPath, type RunAgentOptions } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   bindAgentAccount,
@@ -493,6 +493,7 @@ async function setup() {
       | "stale"
       | "waiting"
       | ((request: { question: string }, signal: AbortSignal) => Promise<{ answer: string }>),
+    hostTools?: RunAgentOptions["hostTools"],
   ) {
     const stop = new AbortController();
     const running = backend
@@ -506,6 +507,7 @@ async function setup() {
         pawsRoot: root,
         networkGit: async () => "",
         signal: stop.signal,
+        ...(hostTools ? { hostTools } : {}),
         ...(question
           ? {
               askTeam: {
@@ -593,6 +595,7 @@ async function setup() {
         after,
       });
     },
+    grant,
     principal,
     workspaceId: workspace.id,
     item,
@@ -1252,6 +1255,66 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   expect(onA.checkpoint).not.toBe(false);
   await context.submit(onA, runners.a, { candidateSha: context.base });
   expect(await work.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+test("a redelivered tool event is answered once, and a tool without a handler is not available", async () => {
+  const { runners, work, results } = context;
+  const calls: string[] = [];
+  const record = await context.item();
+  await setRunner(context.db, runners.b, { status: "paused" });
+  const turn = context.turn(record, [], undefined, {
+    definitions: [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }],
+    async call(name, args) {
+      calls.push(name);
+      if (args.id === "PAS-0") throw new Error("Linear is down");
+      return { text: `${String(args.id)}: ${"x".repeat(20_000)}` };
+    },
+  });
+  const command = (await context.next(runners.a)) as RunCommand;
+  expect(command.tools).toEqual([
+    { name: "linear_issue", description: "Read an issue.", inputSchema: {} },
+  ]);
+  const event = { type: "tool" as const, name: "linear_issue", arguments: { id: "PAS-1" } };
+  await context.events(command, runners.a, [event]);
+  await until(() => results.answered(command.runId, command.generation, 1));
+  const token = await context.grant(command, runners.a);
+  await work
+    .event({
+      runnerId: runners.a,
+      runId: command.runId,
+      generation: command.generation,
+      sequence: 1,
+      token,
+      event,
+    })
+    .catch(() => undefined);
+  await context.events(command, runners.a, [
+    { type: "tool", name: "linear_issue", arguments: { id: "PAS-0" } },
+  ]);
+  await until(() => results.answered(command.runId, command.generation, 2));
+  const first = JSON.parse((await results.answered(command.runId, command.generation, 1))!);
+  expect(first.text.startsWith("PAS-1: ")).toBe(true);
+  expect(Buffer.byteLength(first.text)).toBe(16_384);
+  expect(JSON.parse((await results.answered(command.runId, command.generation, 2))!)).toEqual({
+    text: "That tool is not available.",
+    isError: true,
+  });
+  expect(calls).toEqual(["linear_issue", "linear_issue"]);
+  await context.submit(command, runners.a, { candidateSha: context.base });
+  expect(await turn.running).toMatchObject({ stopReason: "end_turn" });
+
+  const bare = await context.item();
+  const plain = context.turn(bare, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  expect(onA.tools).toBeUndefined();
+  await context.events(onA, runners.a, [event]);
+  await until(() => results.answered(onA.runId, onA.generation, 1));
+  expect(JSON.parse((await results.answered(onA.runId, onA.generation, 1))!)).toEqual({
+    text: "That tool is not available.",
+    isError: true,
+  });
+  await context.submit(onA, runners.a, { candidateSha: context.base });
+  expect(await plain.running).toMatchObject({ stopReason: "end_turn" });
 });
 
 test("replayed questions attach to the open answer without asking or cancelling again", async () => {
