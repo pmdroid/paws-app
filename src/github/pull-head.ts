@@ -105,7 +105,7 @@ export type BranchArrival = { sha: string; author: string; subject: string };
 
 export async function readBranchArrivals(
   input: HeadRead & { branch: string; sha: string },
-): Promise<BranchArrival[]> {
+): Promise<BranchArrival[] | null> {
   input.signal?.throwIfAborted();
   const token = await acquireOperationToken(input, "pr");
   const compared = await input.client.request({
@@ -118,6 +118,7 @@ export async function readBranchArrivals(
     token,
     signal: input.signal,
   });
+  if (compared.status === 404) return null;
   const body = compared.body as { status?: unknown; commits?: unknown } | null;
   if (compared.status !== 200 || !Array.isArray(body?.commits))
     throw new Error(`Could not compare ${input.branch} with ${input.sha}`);

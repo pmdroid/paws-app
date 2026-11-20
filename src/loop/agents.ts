@@ -129,6 +129,9 @@ export function closeoutFocusPrompt(focus: CloseoutFocus, conflictRun?: readonly
 export const POST_UPDATE_PROMPT =
   "Call post_update when a step of your plan completes or changes, when you find something that matters (a cause, a constraint, a failing or passing check), and when you are blocked. Say what you found and what you do next. Combine changes that happen close together.";
 
+const KEEP_PUSHED_COMMITS_PROMPT =
+  "People and other agents may push to this branch. Keep their commits; never force-push or reset the branch to drop them.";
+
 export const REPLY_PROMPT =
   "When a person in Linear asks you something or sends a follow-up, answer them with reply; it posts in the conversation where they wrote. Use post_update only for progress.";
 
@@ -161,6 +164,7 @@ export function implementPrompt(input: {
     "When you need a product decision, call ask_team with select options when there is a closed set of choices. ask_team ends your turn, and the answer arrives as your next message, so state the question completely and stop working on that path.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     POST_UPDATE_PROMPT,
+    KEEP_PUSHED_COMMITS_PROMPT,
     REPLY_PROMPT,
     closeoutPrompt(),
     ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus, input.conflictRun)] : []),

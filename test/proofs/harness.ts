@@ -190,6 +190,10 @@ function fixtureGitHub(input: {
     };
   }
   const branchUpdates: { expected: string; rebased: string }[] = [];
+  const branchTip = (branch: string, prefix = "refs/heads/") =>
+    git("-C", input.origin, "rev-parse", "--verify", "--quiet", `${prefix}${branch}`).catch(
+      () => null,
+    );
   async function respond(request: GitHubRequest) {
     const { method, path } = request;
     if (method === "GET" && path.endsWith("/git/ref/heads/main"))
@@ -199,6 +203,31 @@ function fixtureGitHub(input: {
           object: { type: "commit", sha: await git("-C", input.origin, "rev-parse", "main") },
         },
       };
+    const branchRef = /\/git\/ref\/heads\/(paws\/.+)$/.exec(path);
+    if (method === "GET" && branchRef) {
+      const sha = await branchTip(branchRef[1]!);
+      return sha
+        ? { status: 200, body: { object: { type: "commit", sha } } }
+        : { status: 404, body: { message: "Not Found" } };
+    }
+    const branchCompare = /\/compare\/([a-f0-9]{40})\.\.\.(paws%2F[^?]+)$/.exec(path);
+    if (method === "GET" && branchCompare) {
+      const from = branchCompare[1]!;
+      const tip = await branchTip(decodeURIComponent(branchCompare[2]!));
+      if (!tip) return { status: 404, body: { message: "Not Found" } };
+      const log = ["log", "--reverse", "--format=%H%x00%an%x00%s", `${from}..${tip}`];
+      const ahead = (await gitOutput("-C", input.origin, ...log)).split("\n").filter(Boolean);
+      return {
+        status: 200,
+        body: {
+          status: ahead.length ? "ahead" : "behind",
+          commits: ahead.map((line) => {
+            const [sha, author, subject] = line.split("\0");
+            return { sha, author: { login: author }, commit: { message: subject } };
+          }),
+        },
+      };
+    }
     const tree = /\/git\/trees\/([a-f0-9]{40})\?recursive=1$/.exec(path);
     if (method === "GET" && tree) {
       const entries = (await gitOutput("-C", input.origin, "ls-tree", "-r", "-t", "-z", tree[1]!))
@@ -230,6 +259,9 @@ function fixtureGitHub(input: {
     const compare = /\/compare\/([a-f0-9]{40})\.\.\.([a-f0-9]{40})/.exec(path);
     if (method === "GET" && compare) {
       const repositoryPath = input.origin;
+      for (const sha of [compare[1]!, compare[2]!])
+        if (!(await branchTip(`${sha}^{commit}`, "")))
+          return { status: 404, body: { message: "Not Found" } };
       const base = await git("-C", repositoryPath, "merge-base", compare[1]!, compare[2]!);
       const files = (
         await gitOutput(
