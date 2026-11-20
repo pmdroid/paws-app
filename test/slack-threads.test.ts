@@ -3099,15 +3099,18 @@ test("a stop while the thread's issue is being filed or awaits intake waits for 
   expect(f.commands).toEqual([expect.objectContaining({ type: "stop", itemId: "item-1" })]);
 });
 
-async function twoTasks() {
-  const task = await stoppableTask();
+async function secondFiling(task: Awaited<ReturnType<typeof stoppableTask>>, lost = false) {
   const { f, root } = task;
   f.answers.push(JSON.stringify({ ...JSON.parse(BRIEF), title: "Log failed uploads" }));
   await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
   const message = { ts: "1800000000.000999", threadTs: root.ts };
+  if (lost) f.linear.fail = "lost";
   await f.click("SMEMBER", message, { action: "paws_file", value: draftOf(f).id });
   await f.settle();
-  const issueId = [...f.linear.issues.keys()][1]!;
+  return [...f.linear.issues.keys()][1]!;
+}
+
+async function secondItem(f: Awaited<ReturnType<typeof fixture>>, issueId: string) {
   await f.db.run(function* (q) {
     yield* ensureLinearSessionSteps(q, { sessionId: "S2", issueId, organizationId: "ORG1" });
     yield* insertWorkItemSteps(q, "item-2");
@@ -3120,9 +3123,44 @@ async function twoTasks() {
     bindWorkItemRepositorySteps(q, "item-2", { owner: "acme", repo: "app", remoteUrl }),
   );
   await bindLinearSessionTask(f.db, "S2", "delegation-item-2");
-  f.posted.length = 0;
+}
+
+async function twoTasks() {
+  const task = await stoppableTask();
+  await secondItem(task.f, await secondFiling(task));
+  task.f.posted.length = 0;
   return task;
 }
+
+test("a reply naming an issue that no longer waits answers no other issue", async () => {
+  const { f, root } = await twoTasks();
+  await openQuestion(f.db, { itemId: "item-1", sessionId: "S1", body: "Which?", now: f.now() });
+  f.advance(2_000);
+  const ts = `${Math.ceil(f.now() / 1000) + 1}.000100`;
+  await f.deliver(f.mention("SMEMBER", "ENG-2 yes", { thread_ts: root.ts, ts }));
+  await f.settle();
+  expect(f.submitted).toEqual([]);
+  expect(f.notice()).toStartWith("ENG-2: That question was already answered");
+});
+
+test("stop ENG-2 before intake waits for its work item, and stop reaches an issue whose filing Linear didn't confirm", async () => {
+  for (const lost of [false, true]) {
+    const task = await stoppableTask();
+    const { f, root } = task;
+    const issueId = await secondFiling(task, lost);
+    await f.say("SMEMBER", lost ? "stop" : "stop ENG-2", { thread_ts: root.ts });
+    f.advance(10_000);
+    await f.settle();
+    expect(await itemState(f, "item-1")).toBe(lost ? "cancelled" : "queued");
+    await secondItem(f, issueId);
+    f.advance(10_000);
+    await f.settle();
+    f.advance(10_000);
+    await f.settle();
+    expect(await itemState(f, "item-2")).toBe("cancelled");
+    expect(await itemState(f, "item-1")).toBe(lost ? "cancelled" : "queued");
+  }
+});
 
 test("a reply answers the one waiting issue, and with several waiting it must name the issue key", async () => {
   const { f, root } = await twoTasks();

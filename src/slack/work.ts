@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   enqueueJobOnceSteps,
+  lockSlackStatusSteps,
   readSettingSteps,
   settingsWithPrefixSteps,
   slackIssueKey,
@@ -181,6 +182,11 @@ export function* filingPendingSteps(q: Q, thread: Thread): Steps<boolean> {
   return (yield* threadDraftsSteps(q, thread)).some(({ draft }) => !!draft.approvedAt);
 }
 
+export function* approvedIssueKeysSteps(q: Q, thread: Thread): Steps<string[]> {
+  const drafts = yield* threadDraftsSteps(q, thread);
+  return drafts.flatMap(({ draft }) => (draft.approvedAt ? [slackDraftIssueKey(draft)] : []));
+}
+
 export function* startStateSteps(q: Q, thread: Thread): Steps<string | Draft | null> {
   const draft = yield* ownDraftSteps(q, thread);
   if (draft?.attemptedAt) return draft;
@@ -302,6 +308,7 @@ export function* fileReadySteps(
 }
 
 export function* recordFiledSteps(q: Q, draft: Draft, task: SlackTask, at: number): Steps<void> {
+  yield* lockSlackStatusSteps(q, taskKey(draft));
   const tasks = (yield* filedTasksSteps(q, draft)).filter((t) => t.issueId !== task.issueId);
   yield* updateSettingSteps(q, taskKey(draft), () => JSON.stringify([...tasks, task]), at);
   yield* takeSettingSteps(q, draftKey(draft));

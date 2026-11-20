@@ -1214,15 +1214,22 @@ export function createSlackThreads<Profile>(options: {
     });
   }
 
-  function* threadTasksSteps(q: Q, place: Place) {
+  function* threadTasksSteps(q: Q, place: Place, attempted: string[] = []) {
     const found: { itemId: string; sessionKey: string; starterId: string; identifier: string }[] =
       [];
-    for (const filed of yield* work.filedTasksSteps(q, place)) {
+    const issues = [
+      ...(yield* work.filedTasksSteps(q, place)),
+      ...attempted.map((issueId) => ({ issueId, identifier: null })),
+    ];
+    for (const filed of issues) {
       const task = yield* slackIssueTaskSteps(q, filed.issueId);
       const filedFrom = task ? yield* slackSessionOriginSteps(q, task.sessionKey) : null;
       if (filedFrom?.workspaceId !== place.workspaceId || filedFrom.generation !== place.generation)
         continue;
-      found.push({ ...task!, starterId: filedFrom.userId, identifier: filed.identifier });
+      if (found.some((other) => other.itemId === task!.itemId)) continue;
+      const item = filed.identifier ? null : yield* getWorkItemSteps(q, task!.itemId);
+      const identifier = filed.identifier ?? item?.linearIdentifier ?? task!.itemId;
+      found.push({ ...task!, starterId: filedFrom.userId, identifier });
     }
     return found;
   }
@@ -1238,15 +1245,21 @@ export function createSlackThreads<Profile>(options: {
     if (await store.run((q) => slackOutboxExistsSteps(q, `slack:notice:${key}`))) return true;
     const prefix = work.slackIssuePrefix(text);
     const sentAt = Number(mentionTs) * 1000;
-    const waiting = await store.run(function* (q) {
+    const { waiting, addressed } = await store.run(function* (q) {
       const open = [];
+      const filed = yield* work.filedTasksSteps(q, place);
       for (const task of yield* threadTasksSteps(q, place)) {
         const question = yield* findOpenQuestionSteps(q, task.sessionKey);
         if (question && question.createdAt < sentAt) open.push({ ...task, question });
       }
-      return open;
+      const listed = filed.find((task) => task.identifier.toUpperCase() === prefix?.identifier);
+      return { waiting: open, addressed: listed?.identifier ?? null };
     });
     const named = waiting.find((task) => task.identifier.toUpperCase() === prefix?.identifier);
+    if (!named && addressed) {
+      await notice(place, key, `${addressed}: ${NOTICES.not_waiting}`, { member: asker });
+      return true;
+    }
     if (!named && waiting.length > 1) {
       const identifiers = waiting.map((task) => task.identifier);
       await notice(place, key, work.severalWaiting(identifiers), { member: asker });
@@ -1308,13 +1321,23 @@ export function createSlackThreads<Profile>(options: {
     }
     const stop = options.stop?.() ?? null;
     if (!stop) throw new Error("Paws can't stop this thread's work yet; retrying.");
+    const tracker = options.work?.() ?? null;
     const { tasks, pending } = await store.run(function* (q) {
-      const found = (yield* threadTasksSteps(q, place)).filter(
+      const keys = identifier || !tracker ? [] : yield* work.approvedIssueKeysSteps(q, place);
+      const approved = keys.map((key) => tracker!.issueId(key));
+      const all = yield* threadTasksSteps(q, place, approved);
+      const found = all.filter(
         (task) => !identifier || task.identifier.toUpperCase() === identifier,
       );
       const filed = yield* work.filedTasksSteps(q, place);
-      const unseen = filed.length > found.length || (yield* work.filingPendingSteps(q, place));
-      return { tasks: found, pending: !identifier && unseen };
+      if (identifier) {
+        const listed = filed.some((task) => task.identifier.toUpperCase() === identifier);
+        return { tasks: found, pending: listed && !found.length };
+      }
+      const issues = [...filed.map((task) => task.issueId), ...approved];
+      let unseen = !tracker && (yield* work.filingPendingSteps(q, place));
+      for (const issueId of issues) if (!(yield* slackIssueTaskSteps(q, issueId))) unseen = true;
+      return { tasks: found, pending: unseen };
     });
     let mark = request.mark ?? 0;
     let retry = false;
