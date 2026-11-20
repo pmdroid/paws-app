@@ -9734,6 +9734,12 @@ export class Orchestrator {
     return main;
   }
 
+  async followUpRunningAgent(itemId: string, body: string): Promise<boolean> {
+    if (!this.options.remoteFollowUp) return false;
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
+    return item?.state === "running" && (await this.options.remoteFollowUp(item.id, body));
+  }
+
   private async forwardFollowUp(
     sessionId: string,
     turn: { eventKey: string; body: string },

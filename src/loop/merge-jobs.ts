@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
   githubDeliveryRecordedSteps,
@@ -32,6 +33,7 @@ import { askSteps } from "./operations";
 import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDeliverySteps } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
+import { outsidePushDelivery, outsidePushFollowUp, outsidePushSteps } from "./outside-push";
 
 export const MERGE_OWNER_POLL_MS = 5_000;
 
@@ -94,6 +96,7 @@ export async function acceptGitHubDelivery(
   delivery: { deliveryId: string; event: string; payload: string },
   now: number,
   comments?: PullCommentFilter,
+  followUp?: (itemId: string, body: string) => boolean | Promise<boolean>,
 ): Promise<boolean> {
   // Avoid provider callbacks for successful duplicates. The transactional insert remains
   // authoritative when another connection accepts this delivery after the read.
@@ -103,12 +106,15 @@ export async function acceptGitHubDelivery(
   // before taking the write lock; only synchronous database effects belong below.
   const wait = comments?.commentWait?.();
   const recordComment = await prepareCommentDelivery(delivery.event, body, now, comments);
+  const pushed = outsidePushDelivery(delivery.event, body);
+  const appLogin = pushed ? (comments?.appLogin(`${pushed.owner}/${pushed.repo}`) ?? null) : null;
   const accepted = await store.transaction(function* (q) {
     if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
     const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);
     const comment = recordComment ? yield* q.transaction(recordComment) : null;
     const moved = mainMove(delivery.event, body);
     const swept = moved ? yield* mainMovedSteps(q, { ...moved, now }) : false;
+    const outside = pushed ? yield* outsidePushSteps(q, pushed, appLogin, now) : null;
     const facts = deliveryFacts(delivery.event, body);
     for (const job of yield* openMergeJobsSteps(q)) {
       const payload = payloadRecord(JSON.parse(job.payload));
@@ -124,10 +130,14 @@ export async function acceptGitHubDelivery(
             (item !== null && facts.branches.has(worktreeBranch(item)));
       if (matches) yield* nudgeJobRunAtSteps(q, job.id, now);
     }
-    return review.enqueued || comment?.enqueued === true || swept;
+    return { ready: review.enqueued || comment?.enqueued === true || swept, outside };
   });
   if (accepted === null) return false;
-  if (accepted) emitJobReady(store);
+  if (accepted.ready) emitJobReady(store);
+  if (accepted.outside?.running && followUp)
+    await Promise.resolve(
+      followUp(accepted.outside.itemId, outsidePushFollowUp(accepted.outside)),
+    ).catch((error: unknown) => journalCaught(error, "mergeJobs.outsidePush.followUp", null));
   return true;
 }
 
