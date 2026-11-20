@@ -307,11 +307,12 @@ async function proposal(
     };
   const stateId = await named("state", "State", () => linear.listAgentStates(scope));
   if (title) shown.unshift(`Title: ${title}`);
-  if (description) shown.push(`Description: ${description}`);
+  const described = typeof args["description"] === "string";
+  if (described) shown.push(`Description: ${description || "(empty)"}`);
   const fields = {
     ...optional,
     ...(title ? { title } : {}),
-    ...(description ? { description } : {}),
+    ...(described ? { description } : {}),
     ...(stateId ? { stateId } : {}),
   };
   if (!Object.keys(fields).length) throw new Refused("Name at least one field to change.");

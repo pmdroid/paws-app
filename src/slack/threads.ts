@@ -1928,9 +1928,9 @@ export function createSlackThreads<Profile>(options: {
         const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200);
         journal(`slack draft ${draft.id}: Linear filing failed: ${reason}`);
         if (change) {
-          await say(`Linear didn't confirm the change (${reason}).`, `failed:${job.id}`);
-          const { attemptedAt: _attempted, ...fresh } = draft;
-          return void (await review(fresh, team, `file:${draft.id}:review:${job.id}`));
+          await drop();
+          const text = `Linear didn't confirm the change (${reason}). ${work.WORK_NOTICES.unknown}`;
+          return void (await say(text, `failed:${job.id}`));
         }
         await drop();
         const text = `Linear didn't confirm the issue (${reason}). Nothing is running. Mention \`@Paws start\` in this thread to try again; Paws reuses the issue if Linear filed it.`;

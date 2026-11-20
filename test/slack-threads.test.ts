@@ -4627,3 +4627,26 @@ test("an update whose outcome is unknown is never applied again", async () => {
   await f.settle();
   expect(writes()).toEqual([]);
 });
+
+test("a change Linear doesn't confirm is dropped with a notice and never shown or sent again", async () => {
+  const { f, pick, writes } = await proposing([["update_issue", { id: "ENG-7", description: "" }]]);
+  const id = pick("Description: (empty)");
+  const update = f.agent.updateAgentIssue!;
+  let calls = 0;
+  f.agent.updateAgentIssue = async (request) => {
+    calls++;
+    expect(request).toMatchObject({ description: "" });
+    throw new Error("Linear timed out");
+  };
+  const proposals = () => f.posts("chat.postEphemeral").filter((post) => post.body.blocks).length;
+  const shown = proposals();
+  const message = { ts: "1800000000.000999", threadTs: "x" };
+  await f.click("SMEMBER", message, { action: "paws_file", value: id }).then(f.settle);
+  expect(f.notice()).toContain("Linear didn't confirm the change (Linear timed out)");
+  expect(f.notice()).toContain("Check the issue in Linear");
+  expect(proposals()).toBe(shown);
+  await f.click("SMEMBER", message, { action: "paws_file", value: id }).then(f.settle);
+  expect(calls).toBe(1);
+  f.agent.updateAgentIssue = update;
+  expect(writes()).toEqual([]);
+});
