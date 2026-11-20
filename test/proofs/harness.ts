@@ -61,7 +61,7 @@ function guardLoopback(): string[] {
 }
 
 async function gitOutput(...args: string[]) {
-  const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe", env: process.env });
   const [exit, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
