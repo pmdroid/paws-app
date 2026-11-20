@@ -92,6 +92,13 @@
       "when": 1795076663952,
       "tag": "0012_slack_conversation",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795133852005,
+      "tag": "0013_slack_thread_note",
+      "breakpoints": true
     }
   ]
 }
