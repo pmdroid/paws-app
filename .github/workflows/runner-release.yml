@@ -196,7 +196,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-        run: gh release upload "$RELEASE_TAG" dist/*.deb dist/*.rpm dist/*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$RELEASE_TAG" dist/*.deb dist/*.sha256 dist/*.rpm --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-apt:
     name: Publish signed apt repository
