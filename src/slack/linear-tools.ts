@@ -1,18 +1,28 @@
 import { workspaceMemberSteps, workspaceMemberUsable, type Db } from "../db";
-import type { AgentIssue, AgentIssueRow, AgentTeam, TrackerAdapter } from "../linear";
 import type { SlackToolProvider } from "./tools";
 
-type Linear = Required<
-  Pick<
-    TrackerAdapter,
-    | "searchAgentIssues"
-    | "readAgentIssue"
-    | "listAgentTeams"
-    | "listAgentProjects"
-    | "listAgentLabels"
-    | "listAgentStates"
-  >
->;
+type Scope = { teamIds: readonly string[] };
+type AgentTeam = { id: string; key: string; name: string; private: boolean };
+type AgentIssueRow = Record<"id" | "identifier" | "title" | "teamKey" | "updatedAt", string> &
+  Record<"url" | "assignee" | "delegate", string | null> & {
+    state: { name: string; type: string } | null;
+  };
+type AgentIssue = AgentIssueRow &
+  Record<"project" | "parent", string | null> & {
+    description: string;
+    labels: string[];
+    relations: { type: string; identifier: string; direction: "outgoing" | "incoming" }[];
+    comments: { author: string | null; createdAt: string; body: string }[];
+  };
+type Linear = {
+  searchAgentIssues(search: Scope & { query: string; limit?: number }): Promise<AgentIssueRow[]>;
+  readAgentIssue(read: Scope & { id: string }): Promise<AgentIssue | null>;
+  listAgentTeams(scope: Scope): Promise<AgentTeam[]>;
+  listAgentProjects(scope: Scope): Promise<{ name: string; teamKey: string | null }[]>;
+  listAgentLabels(scope: Scope): Promise<{ name: string; teamKey: string }[]>;
+  listAgentStates(scope: Scope): Promise<{ name: string; type: string; teamKey: string }[]>;
+};
+type SlackLinearReader = { [K in keyof Linear]?: Linear[K] | undefined };
 type Args = Record<string, unknown>;
 
 const METHODS = [
@@ -66,7 +76,7 @@ const DEFINITIONS = [
 
 export function slackLinearTools(options: {
   store: Db;
-  tracker: () => TrackerAdapter | null | undefined;
+  tracker: () => SlackLinearReader | null | undefined;
 }): SlackToolProvider {
   return (run) => {
     const linear = options.tracker();
@@ -140,7 +150,7 @@ export function slackLinearTools(options: {
   };
 }
 
-function usable(tracker: TrackerAdapter | null | undefined): tracker is TrackerAdapter & Linear {
+function usable(tracker: SlackLinearReader | null | undefined): tracker is Linear {
   return !!tracker && METHODS.every((key) => typeof tracker[key] === "function");
 }
 

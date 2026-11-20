@@ -1,14 +1,14 @@
 import { afterAll, expect, test } from "bun:test";
-import { putWorkspaceUserSteps, syncWorkspaceMemberSteps, type Db } from "../db";
-import { createFakeTracker, type AgentIssue, type TrackerAdapter } from "../linear";
+import { putWorkspaceUserSteps, syncWorkspaceMemberSteps, type Db } from "../src/db";
+import { createFakeTracker, type AgentIssue, type TrackerAdapter } from "../src/linear";
 import {
   slackLinearTools,
   SLACK_LINEAR_CUT,
   SLACK_LINEAR_NO_ISSUE,
   SLACK_LINEAR_NO_TEAMS,
-} from "./linear-tools";
-import { withoutForeignKeys } from "../../test/pglite-fixtures";
-import { tempStore } from "../../test/pglite";
+} from "../src/slack";
+import { withoutForeignKeys } from "./pglite-fixtures";
+import { tempStore } from "./pglite";
 
 const stores: { close(): Promise<void> }[] = [];
 afterAll(() => Promise.all(stores.map((store) => store.close())));
