@@ -25,6 +25,7 @@ import {
 import {
   HelperFencedError,
   RunnerHelperBusyError,
+  type HelperRepositoryHandler,
   type HelperToolHandler,
   type RunnerHelpers,
 } from "../runner-helpers";
@@ -48,6 +49,7 @@ export type SlackReplyRequest = {
   timeoutMs?: number;
   signal?: AbortSignal;
   tools?: { definitions: HostToolDefinitions; call: HelperToolHandler };
+  repositories?: HelperRepositoryHandler;
 };
 
 export type SlackReplyOutcome =
@@ -185,9 +187,14 @@ export function createSlackReplies(options: {
         const { command } = sent;
         excluded.add(command.runnerId);
         const tools = request.tools;
-        const unhandle = tools
-          ? helpers.handle(command.id, (name, args) => tools.call(name, args))
-          : () => undefined;
+        const unhandle =
+          tools || request.repositories
+            ? helpers.handle(
+                command.id,
+                tools && ((name, args) => tools.call(name, args)),
+                request.repositories,
+              )
+            : () => undefined;
         let settled: RunnerHelperResult | "timeout" | "error" = "error";
         try {
           const deadline = Math.min(command.expiresAt, now() + (request.timeoutMs ?? Infinity));

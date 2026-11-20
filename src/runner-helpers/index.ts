@@ -24,7 +24,7 @@ import {
   type UsableRunner,
   type Db,
 } from "../db";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
@@ -70,7 +70,13 @@ export type HelperToolHandler = (
   args: z.infer<typeof HostToolArgumentsSchema>,
 ) => Promise<HelperToolAnswer>;
 
+export type HelperRepositoryHandler = (name: string) => Promise<{ commit: string } | null>;
+
 const HELPER_TOOL_REQUESTS = 64;
+const HELPER_REPOSITORIES = 5;
+const HelperRepositoryRequestSchema = z.strictObject({
+  repository: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9_.-]{1,100}$/),
+});
 const HELPER_TOOL_TIMEOUT_MS = 30_000;
 const HELPER_TOOL_BODY_LIMIT = 65_536;
 const usedUp: HelperToolAnswer = { text: "This run has used all its tool calls.", isError: true };
@@ -94,6 +100,9 @@ type RepositorySummaryAuthority = (
 export class HelperFencedError extends Error {
   override readonly name = "HelperFencedError";
 }
+class HelperForbiddenError extends Error {
+  override readonly name = "HelperForbiddenError";
+}
 export class RunnerHelperBusyError extends Error {
   override readonly name = "RunnerHelperBusyError";
   constructor(readonly heldRunnerId?: string) {
@@ -112,13 +121,68 @@ export function createRunnerHelpers(options: {
   ) => Promise<SignedRunnerCommand[]>;
   slack?: SlackReplyAuthority;
   summary?: RepositorySummaryAuthority;
+  repositoryAccess?: {
+    github: {
+      mintInstallationToken(input: {
+        access: "read";
+        repository: string;
+        installationId: string;
+      }): Promise<{ token: string; expiresAt: number; repository: string }>;
+    };
+    installationForRepository(repository: string): Promise<string | null>;
+  };
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
   const handlers = new Map<
     string,
-    { handler: HelperToolHandler; answers: Map<string, Promise<HelperToolAnswer>> }
+    {
+      handler?: HelperToolHandler;
+      repositories?: HelperRepositoryHandler;
+      answers: Map<string, Promise<HelperToolAnswer>>;
+      granted: Set<string>;
+    }
   >();
+  async function repositoryCredential(runnerId: string, id: string, repository: string) {
+    const { command } = await api.current(id, runnerId);
+    const entry = handlers.get(id);
+    const access = options.repositoryAccess;
+    const handler = entry?.repositories;
+    if (command.purpose !== "slack_reply" || !entry || !handler || !access)
+      throw new HelperForbiddenError("Runner helper repository is unavailable");
+    const repeated = entry.granted.has(repository);
+    if (!repeated && entry.granted.size >= HELPER_REPOSITORIES)
+      throw new HelperForbiddenError("Runner helper repository limit reached");
+    entry.granted.add(repository);
+    const grant = await handler(repository).catch((error: unknown) => {
+      journalCaught(error, "runner-helpers.repository.answer", null);
+      return null;
+    });
+    const commit = grant?.commit;
+    if (typeof commit !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) {
+      if (!repeated) entry.granted.delete(repository);
+      throw new HelperForbiddenError("Runner helper repository is refused");
+    }
+    const installationId = await access.installationForRepository(repository);
+    if (!installationId) throw new HelperForbiddenError("No installation covers the repository");
+    await api.current(id, runnerId);
+    const credential = await access.github.mintInstallationToken({
+      access: "read",
+      repository,
+      installationId,
+    });
+    const checkedAt = now();
+    if (credential.repository !== repository || !(credential.expiresAt > checkedAt))
+      throw new HelperForbiddenError("GitHub returned an unusable credential");
+    journal(`helper repository-credential command=${id} repository=${repository}`);
+    return {
+      token: credential.token,
+      expiresAt: credential.expiresAt,
+      remoteUrl: `https://github.com/${repository}.git`,
+      branch: null,
+      commit,
+    };
+  }
   async function answerTool(
     handler: HelperToolHandler,
     name: string,
@@ -334,8 +398,17 @@ export function createRunnerHelpers(options: {
       });
     },
     current: (id: string, runnerId?: string) => store.run((q) => currentSteps(q, id, runnerId)),
-    handle(commandId: string, handler: HelperToolHandler): () => void {
-      const entry = { handler, answers: new Map<string, Promise<HelperToolAnswer>>() };
+    handle(
+      commandId: string,
+      handler: HelperToolHandler | undefined,
+      repositories?: HelperRepositoryHandler,
+    ): () => void {
+      const entry = {
+        ...(handler ? { handler } : {}),
+        ...(repositories ? { repositories } : {}),
+        answers: new Map<string, Promise<HelperToolAnswer>>(),
+        granted: new Set<string>(),
+      };
       handlers.set(commandId, entry);
       return () => {
         if (handlers.get(commandId) === entry) handlers.delete(commandId);
@@ -348,7 +421,7 @@ export function createRunnerHelpers(options: {
     ): Promise<HelperToolAnswer> {
       const { command } = await api.current(id, runnerId);
       const entry = handlers.get(id);
-      if (!entry || !command.tools?.some((tool) => tool.name === input.name))
+      if (!entry?.handler || !command.tools?.some((tool) => tool.name === input.name))
         throw new HelperFencedError("Runner helper tool is unavailable");
       const known = entry.answers.get(input.requestId);
       if (known) return known;
@@ -403,7 +476,10 @@ export function createRunnerHelpers(options: {
               await api.commands(runnerId),
             ),
           });
-        const match = /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result|request)$/.exec(path);
+        const match =
+          /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result|request|repository-credential)$/.exec(
+            path,
+          );
         if (!match || request.method !== "POST") return null;
         const id = z
           .string()
@@ -415,6 +491,14 @@ export function createRunnerHelpers(options: {
         );
         if (match[2] === "request")
           return json(await api.request(runnerId, id, HelperToolRequestSchema.parse(input)));
+        if (match[2] === "repository-credential")
+          return json(
+            await repositoryCredential(
+              runnerId,
+              id,
+              HelperRepositoryRequestSchema.parse(input).repository,
+            ),
+          );
         if (match[2] === "result") {
           const result = RunnerHelperResultSchema.parse(input);
           if (result.commandId !== id) throw new Error("Runner helper result command changed");
@@ -430,6 +514,8 @@ export function createRunnerHelpers(options: {
         journalCaught(error, "runner-helpers.fetch.json", null);
         if (error instanceof HelperFencedError)
           return json({ error: "Runner helper is fenced.", code: "fenced" }, 409);
+        if (error instanceof HelperForbiddenError)
+          return json({ error: "Runner helper repository is denied.", code: "forbidden" }, 403);
         if (runnerRequestUnavailable(error))
           return json({ error: "Paws is busy. Retry the request." }, 503);
         const denied = json({ error: "Runner helper request is denied or invalid." }, 403);
