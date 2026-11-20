@@ -212,10 +212,9 @@ function fixtureGitHub(input: {
     }
     const branchCompare = /\/compare\/([a-f0-9]{40})\.\.\.(paws%2F[^?]+)$/.exec(path);
     if (method === "GET" && branchCompare) {
-      const from = branchCompare[1]!;
       const tip = await branchTip(decodeURIComponent(branchCompare[2]!));
       if (!tip) return { status: 404, body: { message: "Not Found" } };
-      const log = ["log", "--reverse", "--format=%H%x00%an%x00%s", `${from}..${tip}`];
+      const log = ["log", "--reverse", "--format=%H%x00%an%x00%s", `${branchCompare[1]}..${tip}`];
       const ahead = (await gitOutput("-C", input.origin, ...log)).split("\n").filter(Boolean);
       return {
         status: 200,

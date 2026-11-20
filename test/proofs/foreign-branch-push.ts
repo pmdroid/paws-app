@@ -6,7 +6,6 @@ import fixRound from "./closeout-fix-round";
 import { type LaunchInput, type Proof } from "./harness";
 
 const FAILURE = "widgets.txt is missing the line: shelf b: 7";
-const MOVED = "while you worked. Start from their commits";
 const ARRIVED = "commits that Paws didn't push arrived on";
 
 function personPushes(worktree: string): void {
@@ -20,10 +19,9 @@ function personPushes(worktree: string): void {
   };
   const branch = git(worktree, "rev-parse", "--abbrev-ref", "HEAD");
   const other = mkdtempSync(join(tmpdir(), "paws-person-"));
-  git(other, "clone", "-q", git(worktree, "remote", "get-url", "origin"), ".");
-  git(other, "checkout", "-q", branch);
+  git(other, "clone", "-q", "-b", branch, git(worktree, "remote", "get-url", "origin"), ".");
   writeFileSync(join(other, "notes.txt"), "shelf a sits by the door\n");
-  git(other, "add", "notes.txt");
+  git(other, "add", ".");
   git(other, "commit", "-q", "-m", "Note where shelf a sits");
   git(other, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
   rmSync(other, { recursive: true, force: true });
@@ -61,7 +59,7 @@ export default {
     const turns = proof.launches.filter((launch) => ["implement", "fix"].includes(launch.purpose));
     proof.expect(
       "publishing over the moved branch restarts the item with the follow-up body",
-      turns.length === 3 && turns[2]!.prompt.includes(MOVED),
+      turns.length === 3 && turns[2]!.prompt.includes("while you worked. Start from their commits"),
       { purposes: turns.map((turn) => turn.purpose), transitions: await proof.transitions() },
     );
     proof.expect(

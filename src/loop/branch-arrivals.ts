@@ -3,9 +3,7 @@ import type { BranchArrival } from "../github";
 export function arrivalsPrompt(branch: string, commits: readonly BranchArrival[]): string {
   return [
     `Since the last turn, commits that Paws didn't push arrived on ${branch}:`,
-    ...commits
-      .slice(0, 10)
-      .map((commit) => `${commit.sha.slice(0, 7)} ${commit.author} ${commit.subject}`),
+    ...commits.slice(0, 10).map((c) => `${c.sha.slice(0, 7)} ${c.author} ${c.subject}`),
     "Your checkout starts from them. Keep these changes and build on them; don't revert or rewrite them unless the issue or a person asks.",
   ].join("\n");
 }
