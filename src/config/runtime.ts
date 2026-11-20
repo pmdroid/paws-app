@@ -13,6 +13,7 @@ import {
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
 import { checkDatabaseUrl } from "./database";
+import { parseRepositoryList } from "./repositories";
 
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
@@ -45,7 +46,7 @@ export type RuntimeConfig = {
   linearOrganizationId: string | null;
   githubAuth: GitHubConfigAuth;
   trackerKind: "linear";
-  /** Repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
+  /** `PAWS_GITHUB_REPOS`, else the repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
   maxAwakeMs: number;
@@ -106,6 +107,15 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       configError ??= (error as Error).message;
     }
   }
+  let repos = [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))];
+  const reposEnv = optional(source, "PAWS_GITHUB_REPOS");
+  if (reposEnv !== null) {
+    try {
+      repos = parseRepositoryList(reposEnv);
+    } catch (error) {
+      configError ??= `PAWS_GITHUB_REPOS: ${(error as Error).message}`;
+    }
+  }
   const secrets = readLinearClient(env.home, file);
   const githubAuth: GitHubConfigAuth = "app";
 
@@ -129,7 +139,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
     githubAuth,
     trackerKind: "linear",
-    repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
+    repos,
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
     maxAwakeMs: maxAwakeMsFrom(source),
     webhooks: resolveWebhooks(file, source),

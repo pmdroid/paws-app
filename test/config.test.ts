@@ -179,6 +179,19 @@ describe("config", () => {
     expect(overridden.linearAccessToken).toBe("lin_oauth_from_env");
   });
 
+  test("PAWS_GITHUB_REPOS names the startup repositories", () => {
+    const paths = pawsPaths(tempHome());
+    ensureLayout(paths);
+    writeFileSync(paths.configFile, '[github]\nrepo = "acme/file"\n', { mode: 0o600 });
+    const set = loadRuntime({ PAWS_HOME: paths.home, PAWS_GITHUB_REPOS: "acme/a, acme/b,acme/a" });
+    expect(set.repos).toEqual(["acme/a", "acme/b"]);
+    expect(set.configError).toBeNull();
+    const invalid = loadRuntime({ PAWS_HOME: paths.home, PAWS_GITHUB_REPOS: "acme" });
+    expect(invalid.configError).toContain("PAWS_GITHUB_REPOS");
+    expect(invalid.configError).toContain("acme");
+    expect(loadRuntime({ PAWS_HOME: paths.home }).repos).toEqual(["acme/file"]);
+  });
+
   test("unknown keys and sections fail with plain config errors", () => {
     for (const section of ["linear", "merge"]) {
       expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(

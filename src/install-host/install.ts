@@ -2,14 +2,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import {
-  DEFAULT_HOST,
-  DEFAULT_PORT,
-  ensureLayout,
-  parseConfigToml,
-  pawsPaths,
-  type EnvSource,
-} from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, ensureLayout, pawsPaths, type EnvSource } from "../config";
 import {
   ANSWER_KEYS,
   FIELDS,
@@ -25,7 +18,6 @@ import {
   installedUnit,
   parseEnvFile,
   readText,
-  renderConfig,
   renderDropIn,
   renderEnvFile,
   renderUnit,
@@ -80,7 +72,7 @@ export type InstallArgs = {
 
 export const INSTALL_HELP = `usage: paws install [--non-interactive] [--answers <file.toml>] [--<key> <value>]...
 
-Writes PAWS_HOME/${ENV_FILE}, config.toml and the systemd user unit, then reloads systemd.
+Writes PAWS_HOME/${ENV_FILE} and the systemd user unit, then reloads systemd.
 A public dashboard on a *.ts.net URL can fetch its certificate with tailscale cert and
 renews it weekly with ${RENEW_TIMER}.
 Keys: ${ANSWER_KEYS.map((key) => key.replaceAll("_", "-")).join(", ")}.
@@ -144,8 +136,6 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
   const envPath = join(paths.home, ENV_FILE);
   const envText = readText(envPath);
   const envNow = parseEnvFile(envText);
-  const configText = readText(paths.configFile);
-  const configNow = configText ? parseConfig(configText) : null;
 
   await resolve("paws_host", envNow.PAWS_HOST ?? DEFAULT_HOST);
   await resolve("paws_port", envNow.PAWS_PORT ?? String(DEFAULT_PORT));
@@ -153,7 +143,7 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
     "paws_public_dashboard",
     (envNow.PAWS_PUBLIC_DASHBOARD ?? "1") === "1" ? "yes" : "no",
   );
-  await resolve("paws_public_url", envNow.PAWS_PUBLIC_URL ?? configNow?.publicUrl ?? "");
+  await resolve("paws_public_url", envNow.PAWS_PUBLIC_URL ?? "");
   await resolve(
     "paws_runner_host",
     envNow.PAWS_RUNNER_HOST ?? (existsSync(envPath) ? "" : hostOf(raw.paws_public_url!)),
@@ -161,17 +151,8 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
   if (raw.paws_runner_host)
     await resolve("paws_runner_port", envNow.PAWS_RUNNER_PORT ?? DEFAULT_RUNNER_PORT);
   else raw.paws_runner_port = envNow.PAWS_RUNNER_PORT ?? DEFAULT_RUNNER_PORT;
-  await resolve("linear_team", configNow?.linearTeam ?? "");
-  await resolve(
-    "github_repos",
-    [configNow?.repo, ...(configNow?.githubRepos ?? [])].filter(Boolean).join(", "),
-  );
-  const size = configNow?.memberVm;
-  await resolve("member_vm_cpu", size?.cpu === undefined ? "" : String(size.cpu));
-  await resolve("member_vm_memory_gb", size?.memoryGb === undefined ? "" : String(size.memoryGb));
-  await resolve("member_vm_disk_gb", size?.diskGb === undefined ? "" : String(size.diskGb));
-  await resolve("member_vm_image", size?.image ?? "");
-  await resolve("member_vm_pool", size?.pool ?? "");
+  await resolve("linear_team", envNow.LINEAR_TEAM ?? "");
+  await resolve("github_repos", envNow.PAWS_GITHUB_REPOS ?? "");
   const tailnet = raw.paws_public_dashboard === "yes" ? tailnetHost(raw.paws_public_url!) : null;
   let renew: string | null = null;
   if (raw.paws_public_dashboard === "yes") {
@@ -188,14 +169,10 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
 
   const answers = toAnswers(raw as Required<RawAnswers>);
   ensureLayout(paths);
-  const config = renderConfig(configText, answers);
   const renewService = join(dirname(units.unit), RENEW_SERVICE);
   const renewTimer = join(dirname(units.unit), RENEW_TIMER);
   const written = [
     writeIfChanged(envPath, renderEnvFile(envText, answers), 0o600) && envPath,
-    (config.length > 0 || configText.length > 0) &&
-      writeIfChanged(paths.configFile, config, 0o600) &&
-      paths.configFile,
     writeIfChanged(units.unit, renderUnit({ envFile: envPath, bun: bun.path }), 0o644) &&
       units.unit,
     writeIfChanged(units.dropIn, renderDropIn(answers.checkout), 0o644) && units.dropIn,
@@ -329,14 +306,6 @@ async function answer(
     } catch (error) {
       deps.out(`  ${message(error)}`);
     }
-  }
-}
-
-function parseConfig(text: string) {
-  try {
-    return parseConfigToml(text);
-  } catch (error) {
-    throw new Error(`config.toml: ${message(error)}`, { cause: error });
   }
 }
 

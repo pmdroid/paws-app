@@ -1,6 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseConfigToml, setConfigKeys } from "../config";
 import type { InstallAnswers } from "./answers";
 
 export const ENV_FILE = "https.env";
@@ -27,6 +26,8 @@ const MANAGED_ENV = [
   "PAWS_RUNNER_PORT",
   "PAWS_TLS_KEY_PATH",
   "PAWS_TLS_CERT_PATH",
+  "LINEAR_TEAM",
+  "PAWS_GITHUB_REPOS",
 ] as const;
 
 /** `KEY=value` pairs from an env file. Values are never printed. */
@@ -53,6 +54,8 @@ export function renderEnvFile(current: string, answers: InstallAnswers): string 
     PAWS_RUNNER_PORT: answers.runnerHost ? String(answers.runnerPort) : null,
     PAWS_TLS_KEY_PATH: answers.tlsKeyPath || null,
     PAWS_TLS_CERT_PATH: answers.tlsCertPath || null,
+    LINEAR_TEAM: answers.linearTeam || null,
+    PAWS_GITHUB_REPOS: answers.githubRepos.length > 0 ? answers.githubRepos.join(",") : null,
   };
   const written = new Set<string>();
   const lines: string[] = [];
@@ -72,26 +75,6 @@ export function renderEnvFile(current: string, answers: InstallAnswers): string 
     if (!written.has(key) && value !== null) lines.push(`${key}=${value}`);
   }
   return `${lines.join("\n")}\n`;
-}
-
-/** `config.toml` with the Linear team, repositories and VM size set, keeping every other key. */
-export function renderConfig(current: string, answers: InstallAnswers): string {
-  const [repo, ...repos] = answers.githubRepos;
-  let text = setConfigKeys(current, "linear", { team: answers.linearTeam || null });
-  text = setConfigKeys(text, "github", {
-    repo: repo ?? null,
-    repos: repos.length > 0 ? repos : null,
-  });
-  const size = answers.memberVm;
-  text = setConfigKeys(text, "member_vm", {
-    cpu: size.cpu ?? null,
-    memory_gb: size.memoryGb ?? null,
-    disk_gb: size.diskGb ?? null,
-    image: size.image ?? null,
-    pool: size.pool ?? null,
-  });
-  parseConfigToml(text);
-  return text;
 }
 
 export function renderUnit(input: { envFile: string; bun: string }): string {

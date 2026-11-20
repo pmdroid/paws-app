@@ -1,19 +1,20 @@
 # Configuration reference
 
-Paws reads two kinds of configuration:
+Paws reads three kinds of configuration:
 
 - `~/.paws/config.toml` supplies startup settings. Edit it while Paws is stopped. Once you save settings through the dashboard, manage those settings there; saved dashboard values take precedence over the corresponding file sections. `bun run paws doctor` reports ignored file settings as `settings-overrides`. Invalid settings stop startup with a line number and what to change. A section in the saved dashboard settings that this Paws no longer knows, such as one a newer or older build wrote, does not stop startup: Paws ignores it, journals its name, and Workspace › Agents lists it with a **Remove** button that deletes it from the saved settings.
+- Environment variables, usually from `PAWS_HOME/https.env`. At startup Paws reads `PAWS_DATABASE_URL`, `PAWS_PUBLIC_URL`, `LINEAR_TEAM`, `LINEAR_TEAM_ID`, `LINEAR_APP_USER_ID`, `LINEAR_WEBHOOKS` and `PAWS_GITHUB_REPOS`, the startup repositories as comma-separated `owner/repo` (`acme/api,acme/web`). When `PAWS_GITHUB_REPOS` is set it replaces `[github] repo` and `repos`; an entry that is not `owner/repo` stops startup.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
 
 ## `paws install`
 
-`bun run paws install` sets up a control plane as a systemd user service. It asks for the checkout path (`~/.local/share/paws/app`), `PAWS_HOME` (`~/.paws`), `PAWS_HOST`, `PAWS_PORT`, `PAWS_PUBLIC_DASHBOARD`, `PAWS_PUBLIC_URL`, `PAWS_RUNNER_HOST`, `PAWS_RUNNER_PORT`, the Linear team and the GitHub repositories. It writes `PAWS_HOME/https.env` (mode 0600), the `[linear] team` and `[github] repo`/`repos` keys of `config.toml`, `~/.config/systemd/user/paws.service` and its `paws.service.d/working-directory.conf` drop-in, then runs `systemctl --user daemon-reload`. It does not start the service.
+`bun run paws install` sets up a control plane as a systemd user service. It asks for the checkout path (`~/.local/share/paws/app`), `PAWS_HOME` (`~/.paws`), `PAWS_HOST`, `PAWS_PORT`, `PAWS_PUBLIC_DASHBOARD`, `PAWS_PUBLIC_URL`, `PAWS_RUNNER_HOST`, `PAWS_RUNNER_PORT`, the Linear team and the GitHub repositories. It writes `PAWS_HOME/https.env` (mode 0600), with the Linear team as `LINEAR_TEAM` and the repositories as `PAWS_GITHUB_REPOS`, then `~/.config/systemd/user/paws.service` and its `paws.service.d/working-directory.conf` drop-in, then runs `systemctl --user daemon-reload`. It does not start the service.
 
-Run it again to change a value: each prompt shows the current value as its default, and other env lines and `config.toml` keys stay as they are. Type `-` to clear an optional value. It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
+Run it again to change a value: each prompt shows the current value in the env file as its default, and other env lines stay as they are. Type `-` to clear an optional value and remove its line. `paws install` does not read or write `config.toml`; set the runner VM size in Settings ([Member VM size](#member-vm-size)). It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
-`bun run paws install secrets` asks for nothing. It prints the public URL and the setup link, the same text as `paws setup-link`; before Paws has started once it says to start Paws and run `paws setup-link`. GitHub, Linear, [Slack](slack.md) and the runner VM keys are then set up in the browser ([workspace access](workspace-access.md)). Secrets already in `PAWS_HOME/secrets` or the environment keep working.
+`bun run paws install secrets` asks for nothing. It prints the public URL from `PAWS_PUBLIC_URL` and the setup link, the same text as `paws setup-link`; before Paws has started once it says to start Paws and run `paws setup-link`. GitHub, Linear, [Slack](slack.md) and the runner VM keys are then set up in the browser ([workspace access](workspace-access.md)). Secrets already in `PAWS_HOME/secrets` or the environment keep working.
 
 For a scripted install, pass `--non-interactive` with flags such as `--paws-port 443`, or `--answers answers.toml` with the same keys in snake case (`paws_port = 443`, `github_repos = ["owner/repo"]`). Flags override the file, and a value left out keeps its current or default value.
 

@@ -58,6 +58,7 @@ export {
 } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
+export { parseRepositoryList } from "./repositories";
 export type { PawsPaths } from "./paths";
 export {
   databaseUrlOf,
