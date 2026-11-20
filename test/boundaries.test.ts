@@ -242,7 +242,13 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   auth: ["journal", "config", "github", "credentials", "core", "db"],
   workspace: ["journal", "credentials", "db", "linear", "decisions", "dashboard-links"],
   "runner-identity": ["journal", "credentials"],
-  "runner-repository-access": ["journal", "github", "runner-work", "runner-repository-commands"],
+  "runner-repository-access": [
+    "journal",
+    "github",
+    "runner-work",
+    "runner-repository-commands",
+    "runner-protocol",
+  ],
   "runner-repository-commands": ["journal", "db", "runner-protocol", "workspace"],
   "runner-transcript-config": [
     "journal",

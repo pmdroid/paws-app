@@ -485,6 +485,13 @@ export function commandTools(
 
 type HelperRepository = { repository: string; commit: string; path: string };
 
+function withoutWriteBits(path: string): void {
+  const info = lstatSync(path);
+  if (info.isSymbolicLink()) return;
+  if (info.isDirectory()) for (const name of readdirSync(path)) withoutWriteBits(join(path, name));
+  chmodSync(path, info.mode & 0o7555);
+}
+
 export function commandRepositories(
   command: RunnerCommand,
   emit: (event: { type: "repository"; requestId: string; repository: string }) => void,
@@ -494,29 +501,26 @@ export function commandRepositories(
   published: (() => readonly HelperRepository[]) | undefined,
 ): { addRepository?: NonNullable<RunAgentOptions["addRepository"]>; preload(): void } {
   const copied = new Map<string, string>();
+  const run = command.type === "run";
   const copy = (added: HelperRepository) => {
     const target = join(worktree, "repositories", added.repository);
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     cpSync(added.path, target, { recursive: true, force: false, errorOnExist: true });
+    if (run) withoutWriteBits(target);
     copied.set(added.repository, added.commit);
   };
   const done = (repository: string) => ({
-    text: `Added at repositories/${repository} (commit ${copied.get(repository)}).`,
+    text: `Added at ${run ? join(worktree, "repositories", repository) : `repositories/${repository}`} (commit ${copied.get(repository)}).`,
   });
-  if (
-    command.type !== "helper" ||
-    command.purpose !== "slack_reply" ||
-    !command.repositories ||
-    !answer ||
-    !published
-  )
+  const preloaded =
+    command.type === "helper" && command.purpose === "slack_reply" ? command.repositories : [];
+  if ((command.type === "run" ? !command.addRepositories : !preloaded) || !answer || !published)
     return { preload() {} };
   const asked = new Set<string>();
   return {
     preload() {
       for (const added of published())
-        if (command.repositories!.includes(added.repository) && !copied.has(added.repository))
-          copy(added);
+        if (preloaded?.includes(added.repository) && !copied.has(added.repository)) copy(added);
     },
     async addRepository(input) {
       const parsed = RunnerRepositoryNameSchema.safeParse(input);
@@ -745,6 +749,10 @@ function appendJournal(directory: string): number {
 }
 
 /** Removes an earlier command's checkout of the same run, so the new one is never merged into it. */
+function addedRepositoriesRoot(workRoot: string, executionId: string): string {
+  return join(workRoot, ".paws", "runs", executionId);
+}
+
 function removeLeftoverCheckout(path: string): void {
   let info;
   try {
@@ -1341,7 +1349,7 @@ export async function executeRunnerCommand(
       emit,
       options.answer,
       options.signal,
-      worktree,
+      command.type === "run" ? addedRepositoriesRoot(options.workRoot, job.executionId) : worktree,
       options.helperRepositories,
     );
     try {
@@ -2756,6 +2764,14 @@ export async function executeRunnerCommand(
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     if (runTemp) rmSync(runTemp, { recursive: true, force: true });
+    if (command.type === "run")
+      try {
+        removeLeftoverCheckout(
+          join(addedRepositoriesRoot(options.workRoot, job.executionId), "repositories"),
+        );
+      } catch (error) {
+        journalCaught(error, "runner-worker.removeAddedRepositories", command.itemId);
+      }
     if (options.owners && process.getuid?.() !== options.owners.runnerUid) {
       if (checkout) openRunnerCheckoutToGroup(checkout);
       openRunnerRunStatesToGroup(options.workRoot);
@@ -2895,6 +2911,9 @@ export async function runRunnerWorker(options: {
           repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId),
           repositoryBlobs: runnerRepositoryBlobsPath(spool, options.executionId),
           sessionBundle: runnerSessionBundlePath(spool, options.executionId),
+          ...(job.command.type === "run" && job.command.addRepositories
+            ? { helperRepositories: () => runnerHelperRepositories(spool, options.executionId) }
+            : {}),
         }
       : job.command.type === "task" && job.command.repository
         ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }

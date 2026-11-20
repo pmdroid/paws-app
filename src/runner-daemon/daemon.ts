@@ -1256,10 +1256,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       generation: number,
       access: "read" | "write",
       grantToken: string,
+      repository?: string,
     ) {
       ensureOpen();
       identifier.parse(runId);
-      const body = RunnerRepositoryAccessSchema.parse({ generation, access });
+      const body = RunnerRepositoryAccessSchema.parse({
+        generation,
+        access,
+        ...(repository === undefined ? {} : { repository }),
+      });
       RunnerGrantTokenSchema.parse(grantToken);
       const field = (path: string) => sql`json_extract(${pendingCommand.payload},${path})`;
       const stored = q
@@ -1284,6 +1289,29 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner work command is invalid.");
       if (access === "write" && command.type !== "run")
         throw new Error("Review commands cannot request repository write access.");
+      if (repository !== undefined) {
+        if (command.type !== "run" || !command.addRepositories || access !== "read")
+          throw new Error("Runner work takes no added repositories.");
+        const added = RunnerRepositoryCredentialSchema.extend({
+          commit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+        }).parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/repository-credential`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+        const checked = now();
+        if (
+          added.expiresAt <= checked ||
+          added.expiresAt > checked + 60 * 60_000 ||
+          added.remoteUrl !== `https://github.com/${repository}.git` ||
+          added.branch !== null
+        )
+          throw new Error("Paws returned an unusable added repository credential.");
+        return added;
+      }
       const credential = RunnerRepositoryCredentialSchema.parse(
         await authenticated(
           `/v1/runs/${encodeURIComponent(runId)}/repository-credential`,
