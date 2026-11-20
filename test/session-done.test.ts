@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { parseConfigToml, useMemorySettings } from "../src/config";
+import { useMemorySettings } from "../src/config";
 import {
   enqueueOutbox,
   listOutbox,
@@ -340,10 +340,5 @@ describe("the session setting on the Merging settings API", () => {
       expect((await put(body))?.status).toBe(400);
     expect((await put({}))?.status).toBe(200);
     expect(await read()).toMatchObject({ sessionDone: "settled", sessionQuietMinutes: 25 });
-  });
-
-  test("config.toml has no [linear] session key", () => {
-    for (const key of ['session_done = "settled"', "session_quiet_minutes = 5"])
-      expect(() => parseConfigToml(`[linear]\n${key}\n`)).toThrow("unknown key");
   });
 });

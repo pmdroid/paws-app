@@ -11,13 +11,13 @@ const settingsSchema = z.strictObject({
 });
 
 export function resolveLinearCommentAgents(
-  config: Pick<PawsConfigFile, "linearCommentAgents" | "savedLinearCommentAgents">,
+  config: Pick<PawsConfigFile, "savedLinearCommentAgents">,
 ): string[] {
-  return config.savedLinearCommentAgents ?? config.linearCommentAgents ?? [];
+  return config.savedLinearCommentAgents ?? [];
 }
 
 export function readLinearCommentSettings(
-  config: Pick<PawsConfigFile, "linearCommentAgents" | "savedLinearCommentAgents">,
+  config: Pick<PawsConfigFile, "savedLinearCommentAgents">,
 ): LinearCommentSettings {
   return {
     agents: resolveLinearCommentAgents(config),

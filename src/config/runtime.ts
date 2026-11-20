@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import { readSecretFile, secretFileExists } from "../credentials";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import {
@@ -39,7 +39,7 @@ export type RuntimeConfig = {
   linearOrganizationId: string | null;
   githubAuth: GitHubConfigAuth;
   trackerKind: "linear";
-  /** `PAWS_GITHUB_REPOS`, else the repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
+  /** `PAWS_GITHUB_REPOS`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
   maxAwakeMs: number;
@@ -49,14 +49,11 @@ export type RuntimeConfig = {
 
 export function startupSettings(source: EnvSource = process.env) {
   const env = loadEnv(source);
-  const path = pawsPaths(env.home).configFile;
-  const file = loadConfigFile(path);
   const url = optional(source, "PAWS_DATABASE_URL");
   return {
     env,
-    publicUrl: env.publicUrl ?? file.publicUrl ?? null,
-    databaseUrl:
-      url === null ? (file.databaseUrl ?? null) : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
+    publicUrl: env.publicUrl ?? null,
+    databaseUrl: url === null ? null : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
   };
 }
 
@@ -88,7 +85,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     configError = error instanceof Error ? error.message : "config.toml could not be parsed";
   }
 
-  let databaseUrl = file.databaseUrl ?? null;
+  let databaseUrl: string | null = null;
   const databaseEnv = optional(source, "PAWS_DATABASE_URL");
   if (databaseEnv !== null) {
     try {
@@ -97,7 +94,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       configError ??= (error as Error).message;
     }
   }
-  let repos = [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))];
+  let repos: string[] = [];
   const reposEnv = optional(source, "PAWS_GITHUB_REPOS");
   if (reposEnv !== null) {
     try {
@@ -106,7 +103,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       configError ??= `PAWS_GITHUB_REPOS: ${(error as Error).message}`;
     }
   }
-  const secrets = readLinearClient(env.home, file);
+  const secrets = readLinearClient(env.home);
   const githubAuth: GitHubConfigAuth = "app";
 
   return {
@@ -114,24 +111,21 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     role: readRole(optional(source, "PAWS_ROLE")),
     file,
     configError,
-    linearTeam: optional(source, "LINEAR_TEAM") ?? file.linearTeam,
-    linearTeamId: optional(source, "LINEAR_TEAM_ID") ?? file.linearTeamId,
-    linearViewerId:
-      optional(source, "LINEAR_APP_USER_ID") ??
-      optional(source, "LINEAR_VIEWER_ID") ??
-      file.linearViewerId,
+    linearTeam: optional(source, "LINEAR_TEAM"),
+    linearTeamId: optional(source, "LINEAR_TEAM_ID"),
+    linearViewerId: optional(source, "LINEAR_APP_USER_ID") ?? optional(source, "LINEAR_VIEWER_ID"),
     linearAccessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
-    linearTokenFile: secretPath(env.home, file.linearSecret ?? "secrets/linear-oauth.json")!,
+    linearTokenFile: join(env.home, "secrets/linear-oauth.json"),
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
     githubAuth,
     trackerKind: "linear",
     repos,
-    publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
+    publicUrl: optional(source, "PAWS_PUBLIC_URL"),
     maxAwakeMs: maxAwakeMsFrom(source),
-    webhooks: resolveWebhooks(file, source),
+    webhooks: resolveWebhooks(source),
     databaseUrl,
   };
 }
@@ -148,33 +142,27 @@ function readRole(value: string | null): PawsRole {
   return role;
 }
 
-function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
+function resolveWebhooks(source: EnvSource): boolean {
   const flagged = optional(source, "LINEAR_WEBHOOKS");
-  if (flagged === "1" || flagged === "true") return true;
-  if (flagged === "0" || flagged === "false") return false;
-  return file.webhooks === true;
+  return flagged === "1" || flagged === "true";
 }
 
-function readLinearClient(
-  home: string,
-  file: PawsConfigFile,
-): { clientId: string | null; clientSecret: string | null } {
-  const client = readJson(home, file.linearClientFile ?? "secrets/linear-client.json");
+function readLinearClient(home: string): { clientId: string | null; clientSecret: string | null } {
+  const client = readJson(join(home, "secrets/linear-client.json"));
   return {
     clientId: jsonString(client, "clientId"),
     clientSecret: jsonString(client, "clientSecret"),
   };
 }
 
-function readText(home: string, relative: string | null): string | null {
-  const path = secretPath(home, relative);
-  if (path === null || !secretFileExists(path)) return null;
+function readText(path: string): string | null {
+  if (!secretFileExists(path)) return null;
   const text = readSecretFile(path)!.trim();
   return text.length > 0 ? text : null;
 }
 
-function readJson(home: string, relative: string | null): Record<string, unknown> | null {
-  const text = readText(home, relative);
+function readJson(path: string): Record<string, unknown> | null {
+  const text = readText(path);
   if (text === null) return null;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -184,12 +172,6 @@ function readJson(home: string, relative: string | null): Record<string, unknown
     journalCaught(caughtError1, "runtime.readJson.parse", null);
     return null;
   }
-}
-
-function secretPath(home: string, relative: string | null): string | null {
-  if (relative === null || relative.trim().length === 0) return null;
-  const trimmed = relative.trim();
-  return isAbsolute(trimmed) ? trimmed : join(home, trimmed);
 }
 
 function jsonString(record: Record<string, unknown> | null, key: string): string | null {

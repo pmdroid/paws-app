@@ -92,7 +92,7 @@ async function saveSettings(
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(linear|github|github_access|tracker|closeout|merge|queue|project_memory|findings|checkout|caps|agents|server|member_vm|brief|database|linear_comments|time_limits|skills)$/.test(
+    /^(github_access|closeout|merge|queue|project_memory|findings|agents|member_vm|brief|linear_comments|time_limits|skills)$/.test(
       section,
     ) ||
     /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||

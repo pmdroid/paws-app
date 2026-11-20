@@ -20,9 +20,9 @@ export default {
     "test/proofs/harness.ts",
   ],
   summary:
-    'With [github] mirrors = false and main_moved = "ci", main moves after Closeout accepts; GitHub rebases the pull request through update-branch, and the item merges the head GitHub made without Closeout running again.',
+    'With [github_access] mirrors = false and main_moved = "ci", main moves after Closeout accepts; GitHub rebases the pull request through update-branch, and the item merges the head GitHub made without Closeout running again.',
   forbidRepos: true,
-  config: "[github]\nmirrors = false\n",
+  config: "[github_access]\nmirrors = false\n",
   async run(proof) {
     await mainMoved.run(proof);
     proof.expect(

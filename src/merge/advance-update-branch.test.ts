@@ -26,7 +26,7 @@ const fallbacks = () =>
     (line) => line.includes("without GitHub's update-branch") || line.includes("control plane"),
   );
 
-describe("advanceMerge with [github] mirrors = false", () => {
+describe("advanceMerge with [github_access] mirrors = false", () => {
   test("main_moved = ci rebases through GitHub's update-branch and merges the head GitHub made", async () => {
     const h = await start({ settings: { mainMoved: "ci" }, githubMirrors: false });
     const item = await h.addItem("ENG-1");

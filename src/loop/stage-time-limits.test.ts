@@ -17,11 +17,11 @@ import { tempStore } from "../../test/pglite";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-async function harness(toml: string) {
+async function harness(toml: string, maxAwakeMs = DEFAULT_MAX_AWAKE_MS) {
   const clock = new FakeClock(20_000);
   const db = (await tempStore()).db;
   const config = parseConfigToml(toml);
-  const limits = resolveTimeLimits(config, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS);
+  const limits = resolveTimeLimits(config, maxAwakeMs);
   const item = await insertQueuedItem(db, {
     id: "eng-1",
     sessionKey: "ses",
@@ -101,7 +101,7 @@ test("Closeout time does not count by default", async () => {
 });
 
 test("without [time_limits], max_awake_ms limits implementation and nothing else", async () => {
-  const { limits, work, question } = await harness("[caps]\nmax_awake_ms = 3600000\n");
+  const { limits, work, question } = await harness("", HOUR);
   expect(limits).toEqual({ implementation: HOUR, fixes: 0, closeout: 0 });
   expect((await work(3 * HOUR, "ci")).asked).toBeUndefined();
   expect((await work(HOUR, "answer")).asked).toBe(true);

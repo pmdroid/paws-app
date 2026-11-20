@@ -19,22 +19,15 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function fileWith(agents: string): string {
-  return `[linear]\ncomment_agents = ${agents}\n`;
-}
-
 async function instance(withStore: boolean) {
   const home = tempHome();
   const configPath = join(home, "config.toml");
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   if (!withStore) {
-    const settings = useMemorySettings(configPath, fileWith('["file-agent"]'));
+    const settings = useMemorySettings(configPath, "");
     cleanups.push(() => settings.release());
   } else {
     const { db, close } = await tempStore();
-    await db.transaction((q) =>
-      updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => fileWith('["file-agent"]')),
-    );
     const settings = await useSettingsStore(configPath, {
       read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
       update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
@@ -67,16 +60,16 @@ function put(configPath: string, body: unknown, role = "admin") {
 
 const agents = (configPath: string) => resolveLinearCommentAgents(loadConfigFile(configPath));
 
-test("while nothing is saved, GET and the reader use [linear] comment_agents", async () => {
+test("while nothing is saved, GET and the reader return no agents", async () => {
   const configPath = await instance(true);
   expect(await (await request(configPath))!.json()).toEqual({
-    agents: ["file-agent"],
+    agents: [],
     configured: false,
   });
-  expect(agents(configPath)).toEqual(["file-agent"]);
+  expect(agents(configPath)).toEqual([]);
 });
 
-test("a save goes to the database and wins over [linear] comment_agents without a restart", async () => {
+test("a save goes to the database and applies without a restart", async () => {
   const configPath = await instance(true);
   const response = await put(configPath, { agents: ["saved-1", "saved-2", "saved-1"] });
   expect(response!.status).toBe(200);
@@ -102,5 +95,5 @@ test("members get 403 and invalid values get 400 with a message", async () => {
     expect(response!.status).toBe(400);
     expect(((await response!.json()) as { error: string }).error).toBeTruthy();
   }
-  expect(agents(configPath)).toEqual(["file-agent"]);
+  expect(agents(configPath)).toEqual([]);
 });

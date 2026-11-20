@@ -1350,7 +1350,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
-            ...(loadConfigFile(paths.configFile).githubMirrors === false
+            ...(!githubMirrorsOn(loadConfigFile(paths.configFile))
               ? { storedCandidates: githubCommits }
               : {}),
             placement,
@@ -2211,7 +2211,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        githubMirrors: loadConfigFile(paths.configFile).githubMirrors !== false,
+        githubMirrors: githubMirrorsOn(loadConfigFile(paths.configFile)),
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
           limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),

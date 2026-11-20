@@ -24,7 +24,6 @@ import { knownConfigSection, readConfigText, updateConfigText } from "./settings
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
-import { checkDatabaseUrl } from "./database";
 
 /** `github.auth`. Paws uses the GitHub App only. */
 export type GitHubConfigAuth = "app";
@@ -54,21 +53,8 @@ export function isImplementer(value: string): value is ImplementerName {
  * Secret values are paths, never the secret itself.
  */
 export type PawsConfigFile = {
-  linearTeam: string | null;
-  linearTeamId: string | null;
-  linearViewerId: string | null;
-  /** Path relative to `~/.paws`, or absolute. */
-  linearSecret: string | null;
-  linearClientFile: string | null;
-  linearCommentAgents?: string[];
   savedLinearCommentAgents?: string[];
-  webhooks: boolean | null;
-  repo: string | null;
-  githubRepos: string[];
-  githubMirrors?: boolean;
   githubAccess?: GitHubAccess;
-  publicUrl: string | null;
-  maxAwakeMs: number | null;
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
@@ -112,21 +98,10 @@ export type PawsConfigFile = {
   /** `[brief] template`. Missing means the built-in brief. */
   briefTemplate?: string | null;
   timeLimits?: StoredTimeLimits;
-  databaseUrl?: string;
 };
 
 export function emptyConfigFile(): PawsConfigFile {
   return {
-    linearTeam: null,
-    linearTeamId: null,
-    linearViewerId: null,
-    linearSecret: null,
-    linearClientFile: null,
-    webhooks: null,
-    repo: null,
-    githubRepos: [],
-    publicUrl: null,
-    maxAwakeMs: null,
     agents: defaultAgents(),
   };
 }
@@ -179,8 +154,8 @@ export function agentReadAllowed(config: Pick<PawsConfigFile, "githubAccess">) {
   return config.githubAccess?.agentRead ?? true;
 }
 
-export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubMirrors" | "githubAccess">) {
-  return config.githubAccess?.mirrors ?? config.githubMirrors ?? true;
+export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubAccess">) {
+  return config.githubAccess?.mirrors ?? true;
 }
 
 export type ConfigKeyValue = string | number | readonly string[] | null;
@@ -369,36 +344,10 @@ function assignConfig(
     config.findingsGroupingTime = value;
     return;
   }
-  if (section === "database") {
-    if (key !== "url")
-      throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
-    config.databaseUrl = checkDatabaseUrl(
-      asString(value, line),
-      `config.toml line ${line}: database.url`,
-    );
-    return;
-  }
   if (section === "linear_comments") {
     if (key !== "agents")
       throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     config.savedLinearCommentAgents = asStringArray(value, line);
-    return;
-  }
-  if (section === "linear") {
-    if (key === "team") config.linearTeam = asString(value, line);
-    else if (key === "team_id") config.linearTeamId = asString(value, line);
-    else if (key === "viewer_id") config.linearViewerId = asString(value, line);
-    else if (key === "secret") config.linearSecret = asString(value, line);
-    else if (key === "client_file") config.linearClientFile = asString(value, line);
-    else if (key === "comment_agents") config.linearCommentAgents = asStringArray(value, line);
-    else if (key === "webhooks") config.webhooks = asBoolean(value, line);
-    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
-    return;
-  }
-  if (section === "github") {
-    if (key === "repo") config.repo = asString(value, line);
-    else if (key === "repos") config.githubRepos = asStringArray(value, line);
-    else if (key === "mirrors") config.githubMirrors = asBoolean(value, line);
     return;
   }
   if (section === "github_access") {
@@ -479,18 +428,9 @@ function assignConfig(
     assignMemberVmKey((config.memberVm ??= {}), key, value, line);
     return;
   }
-  if (section === "caps") {
-    if (key === "max_awake_ms") config.maxAwakeMs = asInt(value, line);
-    return;
-  }
   if (section === "agents") {
     if (key === "implementer") config.agents.implementer = implementerName(value, line);
     return;
-  }
-  if (section === "" || section === "server") {
-    if (key === "public_url") config.publicUrl = asString(value, line);
-    else if (key === "repo") config.repo = asString(value, line);
-    else if (key === "linear_team" || key === "team") config.linearTeam = asString(value, line);
   }
 }
 

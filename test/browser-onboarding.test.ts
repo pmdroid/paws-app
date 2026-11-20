@@ -147,7 +147,7 @@ import {
   getLinearSessionAccess,
   type Db,
 } from "../src/db";
-import { loadRuntime, pawsPaths, useMemorySettings } from "../src/config";
+import { loadRuntime, pawsPaths } from "../src/config";
 import { seed } from "./pglite-fixtures";
 
 type Table = "workspace" | "workspaceOauthRequest" | "browserInstallationRequest" | "credential";
@@ -684,93 +684,67 @@ for (const admin of [false, true]) {
 
 import { useDatabaseSecrets, readSecretFile, saveSecret } from "../src/credentials";
 
-for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outside-client.json"]) {
-  test(
-    "token protects setup and stores the client at " + (clientFile ?? "the default path"),
-    async () => {
-      const scene = await fixture(true);
-      try {
-        scene.state.expectedOrganizationId = null;
-        await writeStoredToken(scene.db, join(scene.home, "secrets"), {
-          actor: "app",
-          scope: null,
-          accessToken: "old-token",
-          refreshToken: "old-refresh",
-          expiresAtMs: Date.now() + 600000,
-        });
-        expect((await scene.request("/setup")).status).toBe(403);
-        expect((await scene.request("/setup?token=wrong")).status).toBe(403);
-        expect((await scene.request("/api/issues")).status).toBe(503);
-        const start = await scene.request("/");
-        expect(start.status).toBe(503);
-        const page = await start.text();
-        expect(page).toContain("paws setup-link");
-        expect(page).not.toContain("setup-token");
-        expect((await scene.request("/setup?token=setup-token")).status).toBe(200);
-        const response = await scene.raw(
-          new Request("https://paws.example/setup?token=setup-token", {
-            method: "POST",
-            headers: { origin: "https://paws.example" },
-            body: new URLSearchParams({
-              clientId: "fixture-client",
-              clientSecret: "fixture-client-secret",
-              webhookSecret: "signing-secret",
-            }),
-          }),
-        );
-        expect(response.status).toBe(303);
-        expect(response.headers.get("location")).toContain("client_id=fixture-client");
-        const dir = join(scene.home, "secrets");
-        expect(
-          JSON.parse(readSecretFile(join(scene.home, "secrets/linear-browser-client.json"))!),
-        ).toMatchObject({ clientId: "fixture-client", clientSecret: "fixture-client-secret" });
-        expect(readSecretFile(join(dir, "linear-webhook"))).toBe("signing-secret");
-        expect(existsSync(join(dir, "linear-webhook"))).toBe(false);
-        const stored = await scene.db.run((q) => q.all(q.orm.select().from(q.t.secret)));
-        expect(JSON.stringify(stored)).not.toContain("signing-secret");
-        expect(JSON.stringify(stored)).not.toContain("fixture-client-secret");
-        expect((await scene.request("/auth/linear")).status).toBe(403);
-        expect((await scene.request("/auth/linear/callback?code=attacker")).status).toBe(403);
-        expect((await scene.request("/auth/linear/install/callback?code=attacker")).status).toBe(
-          403,
-        );
-        if (clientFile) {
-          expect(existsSync(join(scene.home, clientFile))).toBe(false);
-          const settings = useMemorySettings(
-            join(scene.home, "config.toml"),
-            '[linear]\nclient_file = "' + clientFile + '"\n',
-          );
-          try {
-            const runtime = loadRuntime({ PAWS_HOME: scene.home });
-            expect(runtime.file.linearClientFile).toBe(clientFile);
-            expect((await browserSetupRuntime(scene.db, runtime)).runtime.linearClientId).toBe(
-              "fixture-client",
-            );
-          } finally {
-            settings.release();
-          }
-        }
-        await saveSecret(join(dir, "setup-token"), "setup-token");
-        const install = await scene.installation();
-        const connected = await scene.request(
-          `/auth/linear/install/callback?state=${install.state}&code=app-code`,
-          install.cookie,
-        );
-        expect(connected.headers.get("location")).toBe(
-          "/dashboard/settings/integrations?connecting=1",
-        );
-        expect(scene.state.installed).toBe(1);
-        expect(readSecretFile(join(dir, "linear-setup-pending"))).toBeNull();
-        expect(readSecretFile(join(dir, "setup-token"))).toBeNull();
-        expect(existsSync(join(dir, "setup-token"))).toBe(false);
-        expect((await scene.request("/setup?token=setup-token")).status).toBe(403);
-      } finally {
-        await scene.close();
-      }
-    },
-  );
-}
-
+test("token protects setup and stores the client at the default path", async () => {
+  const scene = await fixture(true);
+  try {
+    scene.state.expectedOrganizationId = null;
+    await writeStoredToken(scene.db, join(scene.home, "secrets"), {
+      actor: "app",
+      scope: null,
+      accessToken: "old-token",
+      refreshToken: "old-refresh",
+      expiresAtMs: Date.now() + 600000,
+    });
+    expect((await scene.request("/setup")).status).toBe(403);
+    expect((await scene.request("/setup?token=wrong")).status).toBe(403);
+    expect((await scene.request("/api/issues")).status).toBe(503);
+    const start = await scene.request("/");
+    expect(start.status).toBe(503);
+    const page = await start.text();
+    expect(page).toContain("paws setup-link");
+    expect(page).not.toContain("setup-token");
+    expect((await scene.request("/setup?token=setup-token")).status).toBe(200);
+    const response = await scene.raw(
+      new Request("https://paws.example/setup?token=setup-token", {
+        method: "POST",
+        headers: { origin: "https://paws.example" },
+        body: new URLSearchParams({
+          clientId: "fixture-client",
+          clientSecret: "fixture-client-secret",
+          webhookSecret: "signing-secret",
+        }),
+      }),
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toContain("client_id=fixture-client");
+    const dir = join(scene.home, "secrets");
+    expect(
+      JSON.parse(readSecretFile(join(scene.home, "secrets/linear-browser-client.json"))!),
+    ).toMatchObject({ clientId: "fixture-client", clientSecret: "fixture-client-secret" });
+    expect(readSecretFile(join(dir, "linear-webhook"))).toBe("signing-secret");
+    expect(existsSync(join(dir, "linear-webhook"))).toBe(false);
+    const stored = await scene.db.run((q) => q.all(q.orm.select().from(q.t.secret)));
+    expect(JSON.stringify(stored)).not.toContain("signing-secret");
+    expect(JSON.stringify(stored)).not.toContain("fixture-client-secret");
+    expect((await scene.request("/auth/linear")).status).toBe(403);
+    expect((await scene.request("/auth/linear/callback?code=attacker")).status).toBe(403);
+    expect((await scene.request("/auth/linear/install/callback?code=attacker")).status).toBe(403);
+    await saveSecret(join(dir, "setup-token"), "setup-token");
+    const install = await scene.installation();
+    const connected = await scene.request(
+      `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+      install.cookie,
+    );
+    expect(connected.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
+    expect(scene.state.installed).toBe(1);
+    expect(readSecretFile(join(dir, "linear-setup-pending"))).toBeNull();
+    expect(readSecretFile(join(dir, "setup-token"))).toBeNull();
+    expect(existsSync(join(dir, "setup-token"))).toBe(false);
+    expect((await scene.request("/setup?token=setup-token")).status).toBe(403);
+  } finally {
+    await scene.close();
+  }
+});
 import { setJournalSink } from "../src/journal";
 
 test("a process without a Linear client starts in token-protected setup mode", async () => {
