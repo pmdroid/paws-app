@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfigToml } from "./file";
@@ -11,9 +11,7 @@ afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true
 test("project skills resolve per repository", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-skills-config-"));
   roots.push(root);
-  const path = join(root, "config.toml");
-  writeFileSync(path, '[skills.projects."Acme/Demo"]\nroot = "local-skills"\n');
-  const config = parseConfigToml(readFileSync(path, "utf8"));
+  const config = parseConfigToml('[skills.projects."Acme/Demo"]\nroot = "local-skills"\n');
   expect(projectSkillsRoot(config, root, "ACME/DEMO")).toBe(join(root, "local-skills"));
   expect(projectSkillsRoot(config, root, "other/repo")).toBeUndefined();
 });

@@ -13,10 +13,12 @@ function tempHome() {
   homes.push(home);
   return home;
 }
+import { useMemorySettings } from "../config";
 import { handleAgentSettingsRequest } from "./handler";
 
 test("agents settings save and return presets and refuse duplicate names", async () => {
   const options = { configPath: join(tempHome(), "config.toml"), csrfToken: "test" };
+  useMemorySettings(options.configPath);
   const settings = {
     defaults: {
       implementer: { agent: "claude", model: "opus" },

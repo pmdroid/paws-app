@@ -391,7 +391,6 @@ describe("live status provider", () => {
         }),
       );
     }
-    writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
       port: 0,
       store: db,

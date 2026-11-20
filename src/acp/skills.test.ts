@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyConfigFile, parseConfigToml } from "../config";
+import { emptyConfigFile, parseConfigToml, readConfigText, useMemorySettings } from "../config";
 import { executeItem } from "./executor";
 import { git } from "./git";
 import { runAgent } from "./run";
@@ -61,7 +61,7 @@ async function fixture() {
     "Local added skill\nRead references/context.txt.\n",
   );
   await writeFile(join(skillRoot, "added/references/context.txt"), "Local reference\n");
-  await writeFile(
+  useMemorySettings(
     join(pawsRoot, "config.toml"),
     '[skills.projects."Acme/Demo"]\nroot = "local skills"\n',
   );
@@ -149,7 +149,7 @@ test("local additions and replacements run with resources without entering candi
 test("follow-up runs discover project skills from origin while review material stays authoritative", async () => {
   const layout = await fixture();
   await git(["-C", layout.source, "remote", "add", "origin", "git@github.com:acme/demo.git"]);
-  const config = parseConfigToml(await readFile(join(layout.pawsRoot, "config.toml"), "utf8"));
+  const config = parseConfigToml(readConfigText(join(layout.pawsRoot, "config.toml")));
   const selected = await loadImplementationSkills({
     config,
     pawsRoot: layout.pawsRoot,
