@@ -1,4 +1,10 @@
-import { createCloseoutGate, useGitReader, type CodexReviewer } from "../../src/closeout";
+import {
+  createCloseoutGate,
+  useGitReader,
+  type CloseoutGate,
+  type CloseoutGateOptions,
+  type CodexReviewer,
+} from "../../src/closeout";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
@@ -55,7 +61,7 @@ function guardLoopback(): string[] {
 }
 
 async function gitOutput(...args: string[]) {
-  const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe", env: process.env });
   const [exit, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -119,7 +125,7 @@ function fixtureGitHub(input: {
 }): {
   client: GitHubClient;
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
-  ci: { pending: boolean; failed: boolean; dirty: boolean };
+  ci: { pending: boolean; failed: boolean; dirty: boolean; unreadable: boolean };
   calls: GitHubCall[];
   comments: Map<number, { id: number; body: string; html_url: string }[]>;
   closed: Set<number>;
@@ -132,7 +138,7 @@ function fixtureGitHub(input: {
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
   const merged = new Map<number, string>();
-  const ci = { pending: input.ciPending ?? false, failed: false, dirty: false };
+  const ci = { pending: input.ciPending ?? false, failed: false, dirty: false, unreadable: false };
   const comments = new Map<number, { id: number; body: string; html_url: string }[]>();
   let serverErrors = input.mergeServerErrors ?? 0;
   const pullJson = (number: number) => ({
@@ -249,6 +255,7 @@ function fixtureGitHub(input: {
         request.body as { query: string; variables: Record<string, unknown> },
       );
       if (update) return update;
+      if (ci.unreadable) return { status: 502, body: { message: "Bad Gateway" } };
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
       if (input.noCi || ci.dirty) {
@@ -422,6 +429,7 @@ export type Proof = {
   forbidRepos?: boolean;
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
+  closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   member?: { login: string; token: string; refused?: number };
   runnerSignIn?: { runner: string; signedIn: boolean };
   projectContext?: (store: Db) => ProjectSessionContext;
@@ -537,10 +545,12 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      ...(proof.reviewer
+      ...(proof.reviewer || proof.closeoutGate
         ? {
-            closeoutGate: (options) =>
-              createCloseoutGate({ ...options, reviewer: proof.reviewer! }),
+            closeoutGate: (options) => {
+              const reviewed = proof.reviewer ? { ...options, reviewer: proof.reviewer } : options;
+              return (proof.closeoutGate ?? createCloseoutGate)(reviewed);
+            },
           }
         : {}),
       store: db,
