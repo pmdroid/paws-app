@@ -9,7 +9,7 @@ import {
   type Steps,
 } from "../db";
 import { isPawsAnswerKind, type StoredQuestion } from "../questions";
-import { filedTaskSteps } from "./work";
+import { filedTasksSteps } from "./work";
 
 export type SlackTaskUpdateKind = "question" | "update" | "response" | "error";
 
@@ -59,7 +59,8 @@ export function* slackTaskUpdateSteps(
   const { workspaceId, teamId, channelId, threadTs, generation, userId, linkId, slackUserId } =
     origin;
   const thread = { workspaceId, teamId, channelId, threadTs, generation };
-  const task = yield* filedTaskSteps(q, { ...thread, slackUserId });
+  const tasks = yield* filedTasksSteps(q, { ...thread, slackUserId });
+  const task = tasks.find((filed) => filed.issueId === origin.issueId);
   const asked = update.kind === "question" ? update.asked : null;
   const paws = !asked
     ? undefined
@@ -73,7 +74,7 @@ export function* slackTaskUpdateSteps(
   const link = url ? `<${url}|${identifier}>` : identifier;
   const heading =
     update.kind === "question"
-      ? `*Paws asks on ${link}* (answer by mentioning @Paws in this thread)`
+      ? `*${link}* Paws asks (answer by replying in this thread)`
       : `*${link}*`;
   const body = text.replace(/<!--[\s\S]*?-->/g, "").trim();
   const payload: SlackTaskPost = {
