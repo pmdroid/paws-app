@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeoutPolicyRoot, loadConfigFile, useSettingsStore } from "../src/config";
@@ -20,9 +20,8 @@ beforeEach(async () => {
   configPath = join(dir, "config.toml");
   policies = join(dir, "policies");
   mkdirSync(policies);
-  writeFileSync(configPath, FILE);
   audits = [];
-  stored = null;
+  stored = FILE;
   const snapshot = await useSettingsStore(configPath, {
     read: async () => stored,
     update: async (change) => {
@@ -59,7 +58,7 @@ function put(body: unknown): Request {
 
 const liveRoot = () => closeoutPolicyRoot(loadConfigFile(configPath), dir, "Acme/One");
 
-test("GET reads the file until a save, then the database wins over later file edits", async () => {
+test("GET reads the saved settings and a save replaces them", async () => {
   const before = await handleCloseoutSettingsRequest(new Request(url), options());
   expect(await before!.json()).toEqual({ projects: { "acme/one": { policyRoot: "/from/file" } } });
 
@@ -68,12 +67,9 @@ test("GET reads the file until a save, then the database wins over later file ed
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toEqual({ projects: { "acme/one": { policyRoot: policies } } });
   expect(stored).toContain(`[closeout.projects."acme/one"]\npolicy_root = "${policies}"`);
-  expect(readFileSync(configPath, "utf8")).toBe(FILE);
   expect(liveRoot()).toBe(policies);
   expect(audits).toEqual(["settings.closeout"]);
 
-  writeFileSync(configPath, FILE.replace("/from/file", "/edited/file"));
-  expect(liveRoot()).toBe(policies);
   const after = await handleCloseoutSettingsRequest(new Request(url), options());
   expect(await after!.json()).toEqual({ projects: { "acme/one": { policyRoot: policies } } });
 });
@@ -94,12 +90,12 @@ test("a relative, missing or non-directory policyRoot is a 400 with a message", 
     options("admin"),
   );
   expect(badRepo!.status).toBe(400);
-  expect(stored).toBeNull();
+  expect(stored).toBe(FILE);
 });
 
 test("only workspace admins can save", async () => {
   const body = { projects: { "acme/one": { policyRoot: policies } } };
   expect((await handleCloseoutSettingsRequest(put(body), options("member")))!.status).toBe(403);
-  expect(stored).toBeNull();
+  expect(stored).toBe(FILE);
   expect(liveRoot()).toBe("/from/file");
 });

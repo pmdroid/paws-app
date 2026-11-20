@@ -1,22 +1,31 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, resolveTimeLimits } from "../src/config";
+import {
+  loadConfigFile,
+  readConfigText,
+  resolveTimeLimits,
+  useMemorySettings,
+} from "../src/config";
 import { handleTimeLimitSettingsRequest, type TimeLimitSettingsOptions } from "../src/settings";
 
 let dir: string;
 let configPath: string;
 let audits: [string, string][];
+let release: () => void;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "paws-time-limits-"));
   configPath = join(dir, "config.toml");
-  writeFileSync(configPath, '[merge]\norder = "queue"\n');
+  release = useMemorySettings(configPath, '[merge]\norder = "queue"\n').release;
   audits = [];
 });
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  release();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 function options(role?: string): TimeLimitSettingsOptions {
   return {
@@ -53,7 +62,7 @@ test("a write replaces [time_limits] and keeps every other table", async () => {
   const response = await handleTimeLimitSettingsRequest(put(body), options("admin"));
   expect(response!.status).toBe(200);
   expect(await response!.json()).toEqual({ configured: true, ...body });
-  const text = readFileSync(configPath, "utf8");
+  const text = readConfigText(configPath);
   expect(text).toContain('[merge]\norder = "queue"');
   expect(text).toContain(
     "[time_limits]\nimplementation_minutes = 180\nfixes_minutes = 60\ncloseout_minutes = 0\n",
@@ -75,5 +84,5 @@ test("a member, a missing CSRF token or an invalid limit cannot write", async ()
   expect((await handleTimeLimitSettingsRequest(put(body, "wrong"), options()))!.status).toBe(403);
   const invalid = { ...body, default: { ...body.default, fixesMinutes: -1 } };
   expect((await handleTimeLimitSettingsRequest(put(invalid), options()))!.status).toBe(400);
-  expect(readFileSync(configPath, "utf8")).not.toContain("time_limits");
+  expect(readConfigText(configPath)).not.toContain("time_limits");
 });

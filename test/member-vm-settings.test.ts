@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadConfigFile,
-  overriddenConfigSections,
   parseBriefTemplates,
   readConfigText,
   useSettingsStore,
@@ -15,7 +14,7 @@ import { handleMemberVmSettingsRequest, type MemberVmSettingsOptions } from "../
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
-const FILE = '[linear]\nteam = "ACME"\n\n[member_vm]\ncpu = 2\nimage = "ubuntu:24.04"\n';
+const SEEDED = '[member_vm]\ncpu = 2\nimage = "ubuntu:24.04"\n';
 const url = "http://127.0.0.1:8787/api/settings/member-vm";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -23,11 +22,11 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function instance() {
+async function instance(seeded = SEEDED) {
   const { db, close } = await tempStore();
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  writeFileSync(configPath, FILE);
+  await db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => seeded));
   const settings = await useSettingsStore(configPath, {
     read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
@@ -47,7 +46,7 @@ async function instance() {
   });
   const read = async () =>
     (await handleMemberVmSettingsRequest(new Request(url), options()))!.json();
-  return { db, configPath, options, audits, read, refresh: settings.refresh };
+  return { db, configPath, options, audits, read };
 }
 
 function put(body: unknown): Request {
@@ -58,8 +57,8 @@ function put(body: unknown): Request {
   });
 }
 
-test("GET reads the file until a save, then the database wins over later file edits", async () => {
-  const { db, configPath, options, audits, read } = await instance();
+test("GET reads the saved size and a save replaces it", async () => {
+  const { db, options, audits, read } = await instance();
   expect(await read()).toEqual({ cpu: 2, image: "ubuntu:24.04" });
 
   const saved = { cpu: 8, memoryGb: 16, diskGb: 100, pool: "build" };
@@ -67,14 +66,10 @@ test("GET reads the file until a save, then the database wins over later file ed
   expect(response!.status).toBe(200);
   expect(await response!.json()).toEqual(saved);
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain("[member_vm]\ncpu = 8");
-  expect(readFileSync(configPath, "utf8")).toBe(FILE);
   expect(audits).toEqual([
     "settings.member_vm: Set member VM size: cpu 8, memoryGb 16, diskGb 100, pool build",
   ]);
-
-  writeFileSync(configPath, FILE.replace("cpu = 2", "cpu = 4"));
   expect(await read()).toEqual(saved);
-  expect(overriddenConfigSections(configPath)).toEqual(["member_vm"]);
 });
 
 test("the next VM is created with the saved size", async () => {
@@ -113,43 +108,20 @@ test("invalid values get 400 with a message and members get 403", async () => {
   }
   const member = await handleMemberVmSettingsRequest(put({ cpu: 4 }), options("member"));
   expect(member!.status).toBe(403);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(null);
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(SEEDED);
 });
 
-test("an older row keeps file ownership until a save adopts member_vm", async () => {
-  const { db, configPath, options, read, refresh } = await instance();
-  await db.transaction((q) =>
-    updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "queue"\n'),
-  );
-  await refresh();
-  expect(await read()).toEqual({ cpu: 2, image: "ubuntu:24.04" });
-  expect(overriddenConfigSections(configPath)).toEqual([]);
-
-  writeFileSync(configPath, FILE.replace("cpu = 2", "cpu = 4"));
-  expect(await read()).toEqual({ cpu: 4, image: "ubuntu:24.04" });
-  expect((await handleMemberVmSettingsRequest(put({ cpu: 8 }), options("admin")))!.status).toBe(
-    200,
-  );
-  writeFileSync(configPath, FILE);
-  await refresh();
-  expect(await read()).toEqual({ cpu: 8 });
-});
-
-test("a saved empty size permanently resets defaults instead of using the file", async () => {
-  const { db, configPath, options, read, refresh } = await instance();
+test("a saved empty size resets the defaults", async () => {
+  const { db, configPath, options, read } = await instance();
   expect((await handleMemberVmSettingsRequest(put({}), options("admin")))!.status).toBe(200);
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain("[member_vm]");
-  writeFileSync(configPath, FILE.replace("cpu = 2", "cpu = 16"));
-  await refresh();
   expect(await read()).toEqual({});
   expect(loadConfigFile(configPath).memberVm ?? {}).toEqual({});
-  expect(overriddenConfigSections(configPath)).toEqual(["member_vm"]);
 });
 
 test("a [member_vm] line inside a multiline brief template survives a save", async () => {
-  const { configPath } = await instance();
   const template = "Example:\n[member_vm]\ncpu = 4\n";
-  writeFileSync(configPath, `${FILE}\n[brief]\ntemplate = """\n${template}"""\n`);
+  const { configPath } = await instance(`${SEEDED}\n[brief]\ntemplate = """\n${template}"""\n`);
   await writeMemberVmSize(configPath, { cpu: 6 });
   const text = readConfigText(configPath);
   expect(parseBriefTemplates(text).template).toBe(template);

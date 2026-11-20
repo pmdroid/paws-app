@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
@@ -21,6 +21,7 @@ let audits: [string, string][];
 let dir: string;
 let configPath: string;
 let release: () => void;
+const SEEDED = '[findings]\ngrouping_time = "07:30"\n';
 
 beforeEach(async () => {
   ({ db, close } = await tempStore());
@@ -32,7 +33,7 @@ beforeEach(async () => {
   audits = [];
   dir = mkdtempSync(join(tmpdir(), "paws-finding-settings-"));
   configPath = join(dir, "config.toml");
-  writeFileSync(configPath, '[findings]\ngrouping_time = "07:30"\n');
+  await db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => SEEDED));
   ({ release } = await useSettingsStore(configPath, {
     read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
@@ -97,7 +98,7 @@ test("members, missing CSRF and malformed bodies cannot change grouping", async 
   expect(audits).toEqual([]);
 });
 
-test("an admin saves the grouping time to the database and the file no longer applies", async () => {
+test("an admin saves the grouping time to the database", async () => {
   const saved = await handleFindingSettingsRequest(
     post({ groupingTime: "21:15" }, "csrf", "PUT"),
     options("admin"),
@@ -105,7 +106,6 @@ test("an admin saves the grouping time to the database and the file no longer ap
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain('grouping_time = "21:15"');
-  writeFileSync(configPath, '[findings]\ngrouping_time = "03:00"\n');
   expect(loadConfigFile(configPath).findingsGroupingTime).toBe("21:15");
   const listed = await handleFindingSettingsRequest(new Request(url), options("admin"));
   expect(await listed!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
@@ -131,7 +131,6 @@ test("members and invalid times cannot change the grouping time", async () => {
       error: "Send groupingTime as HH:MM (24-hour, UTC).",
     });
   }
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBeNull();
-  expect(readFileSync(configPath, "utf8")).toContain('"07:30"');
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(SEEDED);
   expect(audits).toEqual([]);
 });
