@@ -1,13 +1,13 @@
 import { fixtureProvider, fullStatusFixture, issueResource } from "../src/dashboard/test/fixtures";
 // The Risk card on the issue page from the item detail, and Settings › Merging › High-risk paths
-// against the real settings handler and a temporary config.toml: edit, save, reload, and the
+// against the real settings handler and in-memory settings: edit, save, reload, and the
 // repository file read-only. Light and dark, at 1440 and 390 px.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-risk-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { highRiskPaths, loadConfigFile, readMergeSettings } from "../src/config";
+import { highRiskPaths, loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import type { IssueDetailResponse, StatusItemRisk } from "../src/dashboard/src/contract";
@@ -87,7 +87,7 @@ const fits = (page: import("@playwright/test").Page) =>
 try {
   for (const scheme of ["light", "dark"] as const)
     for (const width of [1440, 390]) {
-      writeFileSync(configPath, '[merge]\norder = "queue"\nmain_moved = "closeout"\n');
+      useMemorySettings(configPath, '[merge]\norder = "queue"\nmain_moved = "closeout"\n');
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });

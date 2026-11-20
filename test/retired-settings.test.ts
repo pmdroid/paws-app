@@ -26,13 +26,17 @@ const settingsRequest = (method: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
-test("stored settings with a retired section start Paws, which names it and removes it on request", async () => {
+test("stored settings with a retired section and a config.toml Paws does not read start Paws, which names it and removes it on request", async () => {
   const server = await pgliteServer();
   const home = tempHome();
   const messages: string[] = [];
   const restore = setJournalSink((message) => messages.push(message));
   try {
     await updateSetting(server.store, CONFIG_SETTINGS_KEY, () => STORED);
+    writeFileSync(
+      join(home, "config.toml"),
+      '[agents.grok]\npath = "/usr/local/bin/grok"\n[nope]\n',
+    );
     const paws = await start(home, server.url);
     try {
       expect(messages.filter((message) => message.includes("[agents.grok]"))).toEqual([
@@ -64,20 +68,6 @@ test("stored settings with a retired section start Paws, which names it and remo
     }
   } finally {
     restore();
-    rmSync(home, { recursive: true, force: true });
-    await server.close();
-  }
-});
-
-test("an unknown section in config.toml on disk still stops startup", async () => {
-  const server = await pgliteServer();
-  const home = tempHome();
-  try {
-    writeFileSync(join(home, "config.toml"), '[agents.grok]\npath = "/usr/local/bin/grok"\n');
-    await expect(start(home, server.url)).rejects.toThrow(
-      "config.toml line 1 has an unknown section: agents.grok",
-    );
-  } finally {
     rmSync(home, { recursive: true, force: true });
     await server.close();
   }

@@ -1,6 +1,6 @@
 # Moving to Postgres
 
-Paws runs on Postgres: PGlite in `~/.paws/pglite` by default, or the server named by `[database] url` ([Database](postgres.md)). The SQLite database of earlier releases is not carried over, and Paws starts fresh.
+Paws runs on Postgres: PGlite in `~/.paws/pglite` by default, or the server named by `PAWS_DATABASE_URL` ([Database](postgres.md)). The SQLite database of earlier releases is not carried over, and Paws starts fresh.
 
 Paws ignores any old SQLite database files. Remove them manually when no longer needed.
 
@@ -21,4 +21,4 @@ Nothing in the old database is copied. Work items, questions, evidence, settings
 
 4. Delegate again any Linear issue that was in progress. Its open pull request stays on GitHub; close it or let the new run open its own.
 
-Secrets under `~/.paws/secrets`, `config.toml` and the environment file are not in the database and stay as they were.
+Secrets under `~/.paws/secrets` and the environment file are not in the database and stay as they were.

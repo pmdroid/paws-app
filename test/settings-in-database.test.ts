@@ -1,17 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  describeOverriddenSections,
+  emptyConfigFile,
   loadConfigFile,
-  overriddenConfigSections,
   loadRuntime,
   parseBriefTemplates,
   readConfigText,
@@ -54,10 +46,9 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function instance(store: Db, team: string) {
+async function instance(store: Db) {
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  writeFileSync(configPath, BOOTSTRAP.replace("ACME", team));
   const settings = await useSettingsStore(configPath, {
     read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) =>
@@ -89,17 +80,30 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
   );
 }
 
-test("an empty setting table reads config.toml as the bootstrap", async () => {
-  const a = await instance(await shared(), "ACME");
+test("a config.toml with a [merge] section in PAWS_HOME changes nothing", async () => {
+  const a = await instance(await shared());
+  writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
   expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
-  expect(readMergeSettings(loadConfigFile(a.configPath)).default.order).toBe("queue");
-  expect(loadConfigFile(a.configPath).linearTeam).toBe("ACME");
+  expect(readConfigText(a.configPath)).toBe("");
+  expect(loadConfigFile(a.configPath)).toEqual(emptyConfigFile());
+  expect(loadRuntime({ PAWS_HOME: join(a.configPath, "..") }).linearTeam).toBeNull();
+});
+
+test("a setting saved through a Settings route is read back from the database after a restart", async () => {
+  const db = await shared();
+  const before = await instance(db);
+  expect((await saveTimeLimits(before.configPath, 45))?.status).toBe(200);
+  expect(existsSync(before.configPath)).toBe(false);
+  for (const cleanup of cleanups.splice(1).reverse()) await cleanup();
+  const after = await instance(db);
+  expect(existsSync(after.configPath)).toBe(false);
+  expect(loadConfigFile(after.configPath).timeLimits?.implementationMinutes).toBe(45);
 });
 
 test("a setting saved on instance A is read by instance B after its next refresh", async () => {
   const db = await shared();
-  const a = await instance(db, "ACME");
-  const b = await instance(db, "ACME-B");
+  const a = await instance(db);
+  const b = await instance(db);
   expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
 
   expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
@@ -108,25 +112,11 @@ test("a setting saved on instance A is read by instance B after its next refresh
 
   await b.refresh();
   expect(loadConfigFile(b.configPath).timeLimits?.implementationMinutes).toBe(45);
-  expect(readMergeSettings(loadConfigFile(b.configPath)).default.order).toBe("queue");
-  expect(loadConfigFile(b.configPath).linearTeam).toBe("ACME-B");
-  expect(readFileSync(a.configPath, "utf8")).toBe(BOOTSTRAP);
+  expect(existsSync(a.configPath)).toBe(false);
 
   expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
   await a.refresh();
   expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(30);
-});
-
-test("once the table holds settings, config.toml supplies only what Settings does not own", async () => {
-  const a = await instance(await shared(), "ACME");
-  writeFileSync(a.configPath, `${BOOTSTRAP}\n[queue]\nmax_running_per_owner = 2\n`);
-  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
-  await a.refresh();
-  const config = loadConfigFile(a.configPath);
-  expect(readMergeSettings(config).default.order).toBe("ci-green");
-  expect(config.queueMaxRunningPerOwner).toBeUndefined();
-  expect(config.maxAwakeMs).toBe(5_400_000);
-  expect(config.linearTeam).toBe("ACME");
 });
 
 const SAVED_AGENTS = [
@@ -138,7 +128,6 @@ const SAVED_AGENTS = [
 async function savedSettingsHome(): Promise<string> {
   const home = tempHome();
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  writeFileSync(join(home, "config.toml"), BOOTSTRAP);
   await copyMigratedPglite(join(home, "pglite"));
   const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
   await updateSetting(database.store, CONFIG_SETTINGS_KEY, () => SAVED_AGENTS);
@@ -158,13 +147,12 @@ test("a command without a running Paws, such as paws doctor, reads the saved set
     implementer: { agent: "codex" },
     reviewer: { agent: "claude" },
   });
-  expect(saved.runtime.linearTeam).toBe("ACME");
   expect(resolveAgentProfiles(loadRuntime({ PAWS_HOME: home }).file).implementer.agent).toBe(
     "claude",
   );
 }, 30_000);
 
-test("while Paws holds PGlite a command uses config.toml and says so", async () => {
+test("while Paws holds PGlite a command reads the settings as empty and says so", async () => {
   const home = await savedSettingsHome();
   writeFileSync(join(home, "pglite.lock"), String(process.ppid));
   const saved = await withSavedStore({ PAWS_HOME: home }, async ({ store, held }) => ({
@@ -176,12 +164,11 @@ test("while Paws holds PGlite a command uses config.toml and says so", async () 
   expect(resolveAgentProfiles(saved.runtime.file).implementer.agent).toBe("claude");
 }, 30_000);
 
-test("with [database] url a command reads the saved settings from that Postgres", async () => {
+test("with PAWS_DATABASE_URL a command reads the saved settings from that Postgres", async () => {
   const server = await pgliteServer();
   const home = tempHome();
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   try {
-    writeFileSync(join(home, "config.toml"), BOOTSTRAP);
     await updateSetting(server.store, CONFIG_SETTINGS_KEY, () => SAVED_AGENTS);
     const env = { PAWS_HOME: home, PAWS_DATABASE_URL: server.url };
     const saved = await withSavedStore(env, async ({ held }) => ({
@@ -197,50 +184,34 @@ test("with [database] url a command reads the saved settings from that Postgres"
 }, 30_000);
 
 test("a table-like line inside a multiline string is not read as a section", async () => {
-  const a = await instance(await shared(), "ACME");
+  const a = await instance(await shared());
   const template = "Summarise the issue.\n[example]\nKeep it short.\n";
-  writeFileSync(a.configPath, `${BOOTSTRAP}\n[brief]\ntemplate = """\n${template}"""\n`);
-  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => "[queue]\nmax_running_per_owner = 2\n");
-  await a.refresh();
-  const text = readConfigText(a.configPath);
-  expect(text).not.toContain("[example]");
-  expect(parseBriefTemplates(text).template).toBe(null);
-
   await updateSetting(
     a.db,
     CONFIG_SETTINGS_KEY,
     () => `[brief]\ntemplate = """\n${template}"""\n\n[queue]\nmax_running_per_owner = 2\n`,
   );
   await a.refresh();
-  expect(parseBriefTemplates(readConfigText(a.configPath)).template).toBe(template);
+  const text = readConfigText(a.configPath);
+  expect(parseBriefTemplates(text).template).toBe(template);
+  expect(text).toContain("[queue]\nmax_running_per_owner = 2");
 });
 
 test("triple quotes in a comment or a one-line string do not hide later sections", async () => {
   for (const quote of ['"""', "'''"]) {
-    const a = await instance(await shared(), "ACME");
-    writeFileSync(
-      a.configPath,
-      `[linear]\nteam = "ACME" # see ${quote}\nnote = "${quote === '"""' ? "'''" : '\\"\\"\\"'}"\n\n[caps]\nmax_awake_ms = 5400000\n\n[merge]\norder = "queue"\n`,
+    const a = await instance(await shared());
+    await updateSetting(
+      a.db,
+      CONFIG_SETTINGS_KEY,
+      () =>
+        `[merge]\norder = "ci-green" # see ${quote}\n\n[unknown]\nnote = "${quote === '"""' ? "'''" : '\\"\\"\\"'}"\n\n[queue]\nmax_running_per_owner = 2\n`,
     );
-    await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
     await a.refresh();
     const text = readConfigText(a.configPath);
-    expect(text).not.toContain('order = "queue"');
-    expect(text).toContain("max_awake_ms = 5400000");
+    expect(text).not.toContain("[unknown]");
     expect(text).toContain('order = "ci-green"');
+    expect(text).toContain("max_running_per_owner = 2");
   }
-});
-
-test("config.toml sections the saved settings override are named, the rest are not", async () => {
-  const a = await instance(await shared(), "ACME");
-  writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
-  expect(overriddenConfigSections(a.configPath)).toEqual([]);
-  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
-  await a.refresh();
-  expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "merge.projects.abc"]);
-  expect(describeOverriddenSections(["merge"])).toBe(
-    "config.toml [merge] is ignored: the Settings page saved this section to the database, which wins",
-  );
 });
 
 function gatedStore(initial: string | null) {
@@ -272,7 +243,6 @@ function gatedStore(initial: string | null) {
 async function gatedInstance(initial: string) {
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  writeFileSync(configPath, BOOTSTRAP);
   const gated = gatedStore(initial);
   const settings = await useSettingsStore(configPath, gated.store);
   cleanups.push(() => {
@@ -300,7 +270,7 @@ test("a failed refresh keeps the last settings", async () => {
 });
 
 test("project skill roots save to the database and the next turn's skill loading uses them", async () => {
-  const a = await instance(await shared(), "ACME");
+  const a = await instance(await shared());
   const home = join(a.configPath, "..");
   const skills = (name: string) => {
     const root = join(home, name);
@@ -308,11 +278,10 @@ test("project skill roots save to the database and the next turn's skill loading
     writeFileSync(join(root, name, "SKILL.md"), `# ${name}\n`);
     return root;
   };
-  const fileRoot = skills("from-file");
+  const otherRoot = skills("other");
   const savedRoot = skills("from-settings");
   const worktree = join(home, "worktree");
   mkdirSync(worktree);
-  appendFileSync(a.configPath, `\n[skills.projects."acme/app"]\nroot = "${fileRoot}"\n`);
   const audit: string[] = [];
   const request = (role: string, init?: RequestInit) =>
     handleSkillSettingsRequest(new Request("http://127.0.0.1:8787/api/settings/skills", init), {
@@ -339,8 +308,8 @@ test("project skill roots save to the database and the next turn's skill loading
       await snapshotImplementationSkills({ pawsRoot: home, worktree, repository: "acme/app" }),
     );
 
-  expect(await roots()).toEqual({ projects: { "acme/app": { root: fileRoot } } });
-  expect(await loaded()).toContain("from-file");
+  expect(await roots()).toEqual({ projects: {} });
+  expect(await loaded()).not.toContain("from-settings");
 
   expect((await put("member", { projects: { "acme/app": { root: savedRoot } } }))!.status).toBe(
     403,
@@ -348,7 +317,7 @@ test("project skill roots save to the database and the next turn's skill loading
   for (const root of [
     "relative/skills",
     join(home, "missing"),
-    join(fileRoot, "from-file", "SKILL.md"),
+    join(otherRoot, "other", "SKILL.md"),
   ]) {
     const refused = await put("admin", { projects: { "acme/app": { root } } });
     expect(refused!.status).toBe(400);
@@ -364,19 +333,10 @@ test("project skill roots save to the database and the next turn's skill loading
   expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain(savedRoot);
   expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
   expect(await loaded()).toContain("from-settings");
-
-  appendFileSync(a.configPath, `\n[skills.projects."acme/other"]\nroot = "${fileRoot}"\n`);
-  expect(await roots()).toEqual({ projects: { "acme/app": { root: savedRoot } } });
-  expect(overriddenConfigSections(a.configPath)).toEqual([
-    "merge",
-    'skills.projects."acme/app"',
-    'skills.projects."acme/other"',
-  ]);
-  expect(await loaded()).toContain("from-settings");
 });
 
 test("merging repository settings and project lanes round-trip in Postgres without restarting", async () => {
-  const a = await instance(await shared(), "ACME");
+  const a = await instance(await shared());
   const initial = `${BOOTSTRAP}
 [merge.repositories."acme/web"]
 packages = ["old/*"]
@@ -386,7 +346,8 @@ high_risk_paths = ["infra/**"]
 [merge.projects.project]
 lane = "project"
 `;
-  writeFileSync(a.configPath, initial);
+  await updateSetting(a.db, CONFIG_SETTINGS_KEY, () => initial);
+  await a.refresh();
   const options = { configPath: a.configPath, csrfToken: "csrf", role: "admin" };
   const get = async () =>
     (await handleMergeSettingsRequest(
@@ -421,8 +382,6 @@ lane = "project"
   expect(response?.status).toBe(200);
   expect(await response!.json()).toMatchObject(body);
   expect(await readSetting(a.db, CONFIG_SETTINGS_KEY)).toContain('review_apps = ["acme-review"]');
-  expect(readFileSync(a.configPath, "utf8")).toBe(initial);
-  writeFileSync(a.configPath, initial.replace("old/*", "changed/*"));
   expect(await get()).toMatchObject(body);
   expect(readMergeSettings(loadConfigFile(a.configPath))).toMatchObject({
     repositories: {

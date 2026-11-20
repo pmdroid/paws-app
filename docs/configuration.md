@@ -2,8 +2,8 @@
 
 Paws reads three kinds of configuration:
 
-- `~/.paws/config.toml` supplies startup settings. Edit it while Paws is stopped. Once you save settings through the dashboard, manage those settings there; saved dashboard values take precedence over the corresponding file sections. `bun run paws doctor` reports ignored file settings as `settings-overrides`. Invalid settings stop startup with a line number and what to change. A section in the saved dashboard settings that this Paws no longer knows, such as one a newer or older build wrote, does not stop startup: Paws ignores it, journals its name, and Workspace › Agents lists it with a **Remove** button that deletes it from the saved settings.
-- Environment variables, usually from `PAWS_HOME/https.env`. At startup Paws reads `PAWS_DATABASE_URL`, `PAWS_PUBLIC_URL`, `LINEAR_TEAM`, `LINEAR_TEAM_ID`, `LINEAR_APP_USER_ID`, `LINEAR_WEBHOOKS` and `PAWS_GITHUB_REPOS`, the startup repositories as comma-separated `owner/repo` (`acme/api,acme/web`). When `PAWS_GITHUB_REPOS` is set it replaces `[github] repo` and `repos`; an entry that is not `owner/repo` stops startup.
+- Settings, saved in the database and changed on the Settings pages of the dashboard. Invalid saved settings stop startup with a line number and what to change. A section in the saved dashboard settings that this Paws no longer knows, such as one a newer or older build wrote, does not stop startup: Paws ignores it, journals its name, and Workspace › Agents lists it with a **Remove** button that deletes it from the saved settings.
+- Environment variables, usually from `PAWS_HOME/https.env`. At startup Paws reads `PAWS_DATABASE_URL`, `PAWS_PUBLIC_URL`, `LINEAR_TEAM`, `LINEAR_TEAM_ID`, `LINEAR_APP_USER_ID`, `LINEAR_WEBHOOKS` and `PAWS_GITHUB_REPOS`, the startup repositories as comma-separated `owner/repo` (`acme/api,acme/web`); an entry that is not `owner/repo` stops startup.
 - The Closeout policy for each repository, `.agents/closeout.yaml` on `origin/main` or a [local Closeout policy](local-closeout.md). Its `retry` block sets the fix budgets.
 
 Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
@@ -12,7 +12,7 @@ Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
 
 `bun run paws install` sets up a control plane as a systemd user service. It asks for the checkout path (`~/.local/share/paws/app`), `PAWS_HOME` (`~/.paws`), `PAWS_HOST`, `PAWS_PORT`, `PAWS_PUBLIC_DASHBOARD`, `PAWS_PUBLIC_URL`, `PAWS_RUNNER_HOST`, `PAWS_RUNNER_PORT`, the Linear team and the GitHub repositories. It writes `PAWS_HOME/https.env` (mode 0600), with the Linear team as `LINEAR_TEAM` and the repositories as `PAWS_GITHUB_REPOS`, then `~/.config/systemd/user/paws.service` and its `paws.service.d/working-directory.conf` drop-in, then runs `systemctl --user daemon-reload`. It does not start the service.
 
-Run it again to change a value: each prompt shows the current value in the env file as its default, and other env lines stay as they are. Type `-` to clear an optional value and remove its line. `paws install` does not read or write `config.toml`; set the runner VM size in Settings ([Member VM size](#member-vm-size)). It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
+Run it again to change a value: each prompt shows the current value in the env file as its default, and other env lines stay as they are. Type `-` to clear an optional value and remove its line. `paws install` does not change settings; set the runner VM size in Settings ([Member VM size](#member-vm-size)). It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
 `bun run paws install secrets` asks for nothing. It prints the public URL from `PAWS_PUBLIC_URL` and the setup link, the same text as `paws setup-link`; before Paws has started once it says to start Paws and run `paws setup-link`. GitHub, Linear, [Slack](slack.md) and the runner VM keys are then set up in the browser ([workspace access](workspace-access.md)). Secrets already in `PAWS_HOME/secrets` or the environment keep working.
 
@@ -22,19 +22,16 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 
 `PAWS_PUBLIC_TLS=proxy` is for a public dashboard behind a proxy that terminates HTTPS. Paws then serves plain HTTP, takes no `PAWS_TLS_KEY_PATH` or `PAWS_TLS_CERT_PATH`, runs runner control only with `PAWS_RUNNER_URL`, `PAWS_RUNNER_TLS_KEY_PATH` and `PAWS_RUNNER_TLS_CERT_PATH`, and reads the client address for the sign-in limits from the last `X-Forwarded-For` entry. Any other value fails startup. See [Behind a proxy](workspace-access.md#behind-a-proxy).
 
-## `config.toml`
+## Settings
+
+Settings are saved in the database and changed on the Settings pages. The tables below name each saved section and its keys.
 
 | Section         | Keys                                                                                                                                                                                                                                                 | Notes                                                                                                                                                                                           |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[linear]`      | `team`, `team_id`, `viewer_id`, `secret`, `client_file`, `webhooks`                                                                                                                                                                                  | Written by setup. `secret` and `client_file` are paths under `~/.paws`, never the secret itself.                                                                                                |
-| `[github]`      | `repo`, `repos`                                                                                                                                                                                                                                      | The older `mirrors` key still loads until Settings saves [GitHub access](#github_access).                                                                                                       |
 | `[time_limits]` | `implementation_minutes`, `fixes_minutes`, `closeout_minutes`                                                                                                                                                                                        | See [below](#time_limits).                                                                                                                                                                      |
 | `[agents]`      | `implementer`                                                                                                                                                                                                                                        | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. Whether an agent keeps running on extra usage is a runner setting, under Settings › Runners. |
 | `[merge]`       | `order`, `main_moved`, `lanes`, `no_project`, `parallel`, `ci_fix_attempts`, `comment_quiet_seconds`, `comment_max_wait_seconds`, `review_wait_max_seconds`, `auto_approve_high_risk`, `overlap_hold`, `conflict_prone_after`, `conflict_prone_days` | See [below](#merge).                                                                                                                                                                            |
 | `[queue]`       | `start_timeout_hours`, `max_running_per_owner`                                                                                                                                                                                                       | See [below](#queue).                                                                                                                                                                            |
-| `[database]`    | `url`                                                                                                                                                                                                                                                | A Postgres URL, a secret; `PAWS_DATABASE_URL` wins. Without it Paws uses PGlite in `~/.paws/pglite`: see [Database](postgres.md).                                                               |
-
-Paws ignores the retired `[tracker] kind`, `[checkout] path` and `[github] auth` keys, so an older file that still has them loads.
 
 Time limits count active work only. Waiting does not spend them: queued items, runner capacity waits, questions, pauses, usage limits, retry backoff, Closeout waiting on CI or a runner, and the merge queue all count zero. Time-limit messages report each stage's time separately from waiting.
 
@@ -57,14 +54,14 @@ The limits are global: every item uses the same `[time_limits]`. A missing `impl
 
 ### `[github_access]`
 
-Workspace administrators manage GitHub access in Settings. Before the first save, Paws reads `[github] mirrors` from `config.toml`.
+Workspace administrators manage GitHub access in Settings.
 
 - `agent_read` (default `true`): `false` gives no agent turn a read-only GitHub token, from the next turn on; see [the agent's token](runner-enrollment.md#the-agents-read-only-github-token).
 - `mirrors` (default `true`): set `false` to use GitHub API reads instead of local repository mirrors. Restart Paws after changing it. Existing worktrees are converted to independent checkouts with their commits and uncommitted work preserved; keep the old mirror available until the conversion finishes.
 
 ### Linear comment agents
 
-Workspace administrators can choose which external Linear agents' issue comments reach Paws through Settings. Save their Linear app user IDs. The change applies to the next comment without restarting Paws. Before the first save, the older `[linear] comment_agents` setting is used.
+Workspace administrators can choose which external Linear agents' issue comments reach Paws through Settings. Save their Linear app user IDs. The change applies to the next comment without restarting Paws.
 
 ### `[brief]`
 
@@ -76,7 +73,7 @@ Continue, or a typed answer to the time-limit question, starts over only the sta
 
 ### Local Closeout policy roots
 
-Workspace administrators can set a [local Closeout policy](local-closeout.md) folder for each `owner/repo` through Settings > Closeout. Use an absolute path to an existing folder on the Paws host. Saves apply without a restart. Before the first save, use `[closeout.projects."owner/repo"] policy_root` in `config.toml`.
+Workspace administrators can set a [local Closeout policy](local-closeout.md) folder for each `owner/repo` through Settings > Closeout. Use an absolute path to an existing folder on the Paws host. Saves apply without a restart.
 
 ### `[merge]`
 
@@ -137,7 +134,7 @@ Paws merges after verification, required CI, reviews and branch protection permi
 
 ### `[findings]`
 
-Settings › Findings reads and writes the grouping time: `GET` returns `groupingTime`, and an admin's `PUT` with `{"groupingTime": "HH:MM"}` (24-hour, UTC) saves it to the database; any other value gets 400. Daily review-finding grouping runs at that UTC time, `06:00` by default, and a save moves the next run without a restart. Until the first Settings save, `config.toml` `[findings] grouping_time` supplies it. Unchanged findings skip the helper and the Linear title read. Each workspace can spend at most one helper turn per UTC day, including **Run now** from the Findings page. Failed or interrupted attempts consume that day's allowance. An admin can turn grouping off for a workspace with the switch at the top of the Findings page; while it is off, the daily job skips that workspace and **Run now** is refused.
+Settings › Findings reads and writes the grouping time: `GET` returns `groupingTime`, and an admin's `PUT` with `{"groupingTime": "HH:MM"}` (24-hour, UTC) saves it to the database; any other value gets 400. Daily review-finding grouping runs at that UTC time, `06:00` by default, and a save moves the next run without a restart. Unchanged findings skip the helper and the Linear title read. Each workspace can spend at most one helper turn per UTC day, including **Run now** from the Findings page. Failed or interrupted attempts consume that day's allowance. An admin can turn grouping off for a workspace with the switch at the top of the Findings page; while it is off, the daily job skips that workspace and **Run now** is refused.
 
 Grouping uses a paired runner owned by an active workspace owner or admin who can authorize the reporting session, signed in to the configured implementer. When an earlier admin has no runner, the job uses an admin who does. A runner whose owner cannot see that session is not selected. It runs read-only without a repository checkout. The job only reads open issue titles. A member must choose **File as one issue**, **Add to** the suggested issue, or **Dismiss group** with a reason. Filing creates an undelegated Triage issue with the `review finding` label. Open groups are replaced on the next changed snapshot; groups already acted on remain in history.
 
@@ -150,11 +147,11 @@ Workspace › Queue and limits › Queue sets both.
 
 ## Project skill roots
 
-Workspace administrators can set a [local skills](local-skills.md) folder for each repository in Settings. Use an absolute path to an existing folder on the Paws host. Saves apply to the next implementation turn without a restart. Before the first save, use `[skills.projects."owner/repo"] root` in `config.toml`.
+Workspace administrators can set a [local skills](local-skills.md) folder for each repository in Settings. Use an absolute path to an existing folder on the Paws host. Saves apply to the next implementation turn without a restart.
 
 ## Member VM size
 
-Set the CPU count, memory, disk size, image and pool for newly created VMs in Settings. Existing VMs keep their size. An omitted setting uses the exe.dev default. Before the first save, Paws reads the `[member_vm]` table from `config.toml`.
+Set the CPU count, memory, disk size, image and pool for newly created VMs in Settings. Existing VMs keep their size. An omitted setting uses the exe.dev default.
 
 ## Closeout `retry`
 

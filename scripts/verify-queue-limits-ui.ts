@@ -1,7 +1,8 @@
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readConfigText, useMemorySettings } from "../src/config";
 import { openDatabase, migrate, sqliteDb } from "../src/db";
 import {
   handleAgentSettingsRequest,
@@ -74,7 +75,7 @@ const base = `http://127.0.0.1:${server.port}/dashboard/settings`;
 try {
   for (const width of [1440, 390])
     for (const scheme of ["light", "dark"] as const) {
-      writeFileSync(configPath, "");
+      useMemorySettings(configPath);
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
@@ -102,7 +103,7 @@ try {
       await page.locator("#time-default-implementation").fill("240");
       await page.getByRole("button", { name: "Save time limits" }).click();
       await expect(page.locator("#time-limit-settings").getByText("Saved")).toBeVisible();
-      const config = readFileSync(configPath, "utf8");
+      const config = readConfigText(configPath);
       expect(config).toContain("start_timeout_hours = 6");
       expect(config).toContain("max_running_per_owner = 2");
       expect(config).toContain("implementation_minutes = 240");

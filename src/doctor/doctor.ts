@@ -8,7 +8,6 @@ import {
   loadEnv,
   pawsPaths,
   type EnvSource,
-  describeOverriddenSections,
   isTailnetUrl,
   type ExeDevTokenStatus,
   type TailscaleAuthKeyStatus,
@@ -124,8 +123,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   if (facts.databaseRefused)
     checks.push(check("database", false, facts.databaseRefused, FIX.database));
   if (facts.secrets) checks.push(secretsCheck(facts.secrets));
-  const overridden = facts.overriddenSections ?? [];
-  if (overridden.length > 0) checks.push(overriddenSectionsNote(overridden));
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
   if (facts.tailscaleAuthKey !== undefined)
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
@@ -378,10 +375,6 @@ function tailscaleAuthKeyCheck(status: TailscaleAuthKeyStatus, tailnet: boolean)
         FIX.tailscaleAuthKey,
       );
   }
-}
-
-function overriddenSectionsNote(sections: readonly string[]): DoctorCheck {
-  return note("settings-overrides", describeOverriddenSections(sections));
 }
 
 function slackChecks(slack: NonNullable<ProbeFacts["slack"]>[number]): DoctorCheck[] {

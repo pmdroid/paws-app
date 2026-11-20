@@ -5,4 +5,5 @@ preload = [
   "./test/sync-process-timeout.ts",
   "./test/test-progress.ts",
   "./test/pglite-template.ts",
+  "./test/memory-settings.ts",
 ]

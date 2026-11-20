@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDir } from "../src/acp";
-import { writeAgentSettings } from "../src/config";
+import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { systemClock } from "../src/core";
 import {
   sqliteDb,
@@ -34,6 +34,7 @@ const orchestrator = new Orchestrator({
   outbox: new OutboxDispatcher(db, systemClock),
 });
 const configPath = join(root, "config.toml");
+useMemorySettings(configPath);
 const original = {
   implementer: { agent: "claude", model: "old" },
   reviewer: { agent: "codex", model: "review" },
@@ -93,7 +94,7 @@ const errors: string[] = [];
 try {
   for (const width of [1440, 390]) {
     for (const file of files) writeFileSync(file, JSON.stringify({ profiles: original }));
-    writeAgentSettings(configPath, { defaults: original });
+    await writeAgentSettings(configPath, { defaults: original });
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/agents`);
