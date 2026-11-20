@@ -303,6 +303,25 @@ const RECALL_TOOL = {
   },
 };
 
+const ADD_REPOSITORY_TOOL = {
+  name: "add_repository",
+  description:
+    "Add a GitHub repository to your working folder, read-only, at repositories/<owner>/<name>. Use it when you need to read files Paws did not give you. At most 5 repositories per run.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      repository: {
+        type: "string",
+        minLength: 3,
+        maxLength: 140,
+        description: "The repository as owner/name.",
+      },
+    },
+    required: ["repository"],
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 const BUILT_IN_TOOLS = [
@@ -318,6 +337,7 @@ const BUILT_IN_TOOLS = [
   RERUN_CI_TOOL,
   REMEMBER_TOOL,
   RECALL_TOOL,
+  ADD_REPOSITORY_TOOL,
 ];
 
 function definedTools(): { name: string; description: string; inputSchema: unknown }[] {

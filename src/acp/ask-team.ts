@@ -203,6 +203,7 @@ interface HostToolBridgeOptions {
   remember?: (operations: unknown) => Promise<string>;
   recall?: (request: unknown) => Promise<string>;
   hostTools?: HostTools;
+  addRepository?: (repository: unknown) => Promise<HostToolResult>;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
   /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
@@ -371,6 +372,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.ciRerun ? "rerun_ci" : "",
             options.remember ? "remember" : "",
             options.recall ? "recall" : "",
+            options.addRepository ? "add_repository" : "",
             ...(options.hostTools?.definitions.map((tool) => tool.name) ?? []),
           ]
             .filter(Boolean)
@@ -691,6 +693,20 @@ async function handleConnection(
       const link = `${image ? "!" : ""}[${label}](<${url.href}>)`;
       const note = typeof published.note === "string" ? published.note.trim() : "";
       socket.end(`${JSON.stringify({ id, answer: note ? `${link}\n\n${note}` : link })}\n`);
+      return;
+    }
+    const addRepository = options.addRepository;
+    if (parsed.tool === "add_repository" && addRepository) {
+      options.onHookStart?.();
+      let result: HostToolResult;
+      try {
+        result = await abortable(addRepository(parsed.arguments?.repository), options.signal);
+      } finally {
+        options.onHookEnd?.();
+      }
+      socket.end(
+        `${JSON.stringify(result.isError ? { id, error: result.text } : { id, answer: result.text })}\n`,
+      );
       return;
     }
     const hostTools = options.hostTools;

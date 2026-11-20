@@ -146,8 +146,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     worktree: options.worktreePath,
     home,
     pawsRoot: options.pawsRoot,
-    ...(options.hostTools?.definitions.length
-      ? { definedTools: options.hostTools.definitions.map((tool) => tool.name) }
+    ...(options.hostTools?.definitions.length || options.addRepository
+      ? {
+          definedTools: [
+            ...(options.hostTools?.definitions.map((tool) => tool.name) ?? []),
+            ...(options.addRepository ? ["add_repository"] : []),
+          ],
+        }
       : {}),
   };
   const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
@@ -389,7 +394,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.publishArtifact ||
       (options.remember && options.readOnly !== true) ||
       (options.recall && options.readOnly !== true) ||
-      options.hostTools
+      options.hostTools ||
+      options.addRepository
     ) {
       bridge = await startAskTeamBridge({
         socketPath,
@@ -414,6 +420,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         ...(options.remember && options.readOnly !== true ? { remember: options.remember } : {}),
         ...(options.recall && options.readOnly !== true ? { recall: options.recall } : {}),
         ...(options.hostTools ? { hostTools: options.hostTools } : {}),
+        ...(options.addRepository ? { addRepository: options.addRepository } : {}),
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined
           ? { closeoutBasePath: options.closeoutBasePath }

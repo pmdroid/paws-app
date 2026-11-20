@@ -8,6 +8,8 @@ export {
   runnerRepositoryBundlePath,
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
+  publishRunnerHelperRepository,
+  runnerHelperRepositories,
   runnerJobDirectory,
   type RunnerSpool,
 } from "./spool";

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RUNNER_HANDOVER_FAILURES } from "./commands";
+import { RUNNER_HANDOVER_FAILURES, RunnerRepositoryNameSchema } from "./commands";
 import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 import { RunnerPreviewEventSchema } from "./preview";
@@ -268,6 +268,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     name: HostToolNameSchema,
     arguments: HostToolArgumentsSchema,
   }),
+  z.strictObject({ type: z.literal("repository"), repository: RunnerRepositoryNameSchema }),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),

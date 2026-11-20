@@ -14,6 +14,7 @@ export const BUILT_IN_HOST_TOOL_NAMES = [
   "rerun_ci",
   "remember",
   "recall",
+  "add_repository",
 ] as const;
 
 export const HOST_TOOL_LIMITS = {

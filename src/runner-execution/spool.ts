@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { RunnerRepositoryNameSchema } from "../runner-protocol";
 import { ExecutionIdSchema, RunnerJobSchema, type RunnerJob } from "./jobs";
 
 export interface RunnerSpool {
@@ -487,6 +488,99 @@ export function runnerTaskRepositoryPath(spool: RunnerSpool, executionId: string
   if (job.command.type !== "task" || !job.command.repository)
     throw new Error("Job has no task repository");
   return join(spool.root, executionId, "repository");
+}
+
+function helperRepositoryJob(spool: RunnerSpool, executionId: string, repository?: string) {
+  const job = readRunnerJob(spool, executionId);
+  if (
+    job.command.type !== "helper" ||
+    job.command.purpose !== "slack_reply" ||
+    !job.command.repositories ||
+    (repository !== undefined && !RunnerRepositoryNameSchema.safeParse(repository).success)
+  )
+    throw new Error("Job takes no helper repositories");
+  return join(spool.root, executionId, "repositories");
+}
+
+export function runnerHelperRepositories(
+  spool: RunnerSpool,
+  executionId: string,
+): { repository: string; commit: string; path: string }[] {
+  const root = helperRepositoryJob(spool, executionId);
+  const list = (path: string) => {
+    try {
+      return readdirSync(path).filter((name) => !name.startsWith("."));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  return list(root).flatMap((owner) =>
+    list(join(root, owner)).flatMap((name) =>
+      list(join(root, owner, name))
+        .filter((commit) => /^[a-f0-9]{40}([a-f0-9]{24})?$/.test(commit))
+        .map((commit) => ({
+          repository: `${owner}/${name}`,
+          commit,
+          path: join(root, owner, name, commit),
+        })),
+    ),
+  );
+}
+
+export function publishRunnerHelperRepository(
+  spool: RunnerSpool,
+  executionId: string,
+  input: { repository: string; commit: string; snapshot: string },
+): string {
+  const path = join(helperRepositoryJob(spool, executionId, input.repository), input.repository);
+  if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.commit))
+    throw new Error("Invalid helper repository commit");
+  if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may publish jobs");
+  const opened: number[] = [openRoot(spool)];
+  try {
+    for (const name of [executionId, "repositories", ...input.repository.split("/")]) {
+      const child = `/proc/self/fd/${opened.at(-1)}/${name}`;
+      let created = false;
+      try {
+        mkdirSync(child, { mode: 0o750 });
+        created = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const fd = openDirectory(child);
+      opened.push(fd);
+      if (created) {
+        fchownSync(fd, spool.runnerUid, spool.agentGid);
+        fchmodSync(fd, 0o750);
+      }
+      validateDirectory(fd, spool);
+    }
+    const parent = opened.at(-1)!;
+    if (readdirSync(`/proc/self/fd/${parent}`).includes(input.commit))
+      return join(path, input.commit);
+    const staging = `.${input.commit}.${randomUUID()}`;
+    const source = openAbsoluteDirectory(input.snapshot);
+    let target: number | undefined;
+    try {
+      mkdirSync(`/proc/self/fd/${parent}/${staging}`, { mode: 0o750 });
+      target = openDirectory(`/proc/self/fd/${parent}/${staging}`);
+      fchownSync(target, spool.runnerUid, spool.agentGid);
+      fchmodSync(target, 0o750);
+      snapshotTree(source, spool, false, target);
+      fsyncSync(target);
+      renameSync(`/proc/self/fd/${parent}/${staging}`, `/proc/self/fd/${parent}/${input.commit}`);
+    } catch (error) {
+      rmSync(`/proc/self/fd/${parent}/${staging}`, { recursive: true, force: true });
+      throw error;
+    } finally {
+      closeSync(source);
+      if (target !== undefined) closeSync(target);
+    }
+    return join(path, input.commit);
+  } finally {
+    for (const fd of opened) closeSync(fd);
+  }
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   type RunnerCodingAgent,
   type RunnerAccountCapability,
   RunnerCommandSchema,
+  RunnerRepositoryNameSchema,
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
@@ -1411,6 +1412,33 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             45_000,
           ),
         );
+    },
+    async helperRepositoryCredential(id: string, repository: string) {
+      const command = helperCommand(id);
+      if (
+        command.purpose !== "slack_reply" ||
+        !command.repositories ||
+        !RunnerRepositoryNameSchema.safeParse(repository).success
+      )
+        throw new Error("Runner helper takes no repositories.");
+      const credential = RunnerRepositoryCredentialSchema.extend({
+        commit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+      }).parse(
+        await authenticated(
+          `/v1/helper-commands/${encodeURIComponent(id)}/repository-credential`,
+          "POST",
+          { repository },
+        ),
+      );
+      const current = now();
+      if (
+        credential.expiresAt <= current ||
+        credential.expiresAt > current + 60 * 60_000 ||
+        credential.remoteUrl !== `https://github.com/${repository}.git` ||
+        credential.branch !== null
+      )
+        throw new Error("Paws returned an unusable helper repository credential.");
+      return credential;
     },
     async postHelperResult(result: RunnerHelperResult) {
       const valid = RunnerHelperResultSchema.parse(result);
