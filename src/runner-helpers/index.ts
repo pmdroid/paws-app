@@ -62,6 +62,7 @@ type HelperDispatch = {
   slack?: RunnerSlackReplyScope;
   summary?: HelperCommand["summary"];
   tools?: HostToolDefinitions;
+  repositories?: HelperCommand["repositories"];
 };
 
 export type HelperToolAnswer = { text: string; isError?: boolean };

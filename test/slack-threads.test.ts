@@ -19,6 +19,7 @@ import {
   recordRunnerHostStatus,
   runnerOccupancy,
   syncWorkspaceMember,
+  writeRepositoryDescriptionSteps,
 } from "../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -82,6 +83,12 @@ async function fixture(
     scope?: string;
     tools?: SlackToolProvider[];
     toolCalls?: string[];
+    folder?: {
+      add?: string[];
+      list?: (string | null)[];
+      before?: () => Promise<unknown>;
+      after?: () => Promise<unknown>;
+    };
   } = {},
 ) {
   const home = tempHome();
@@ -217,7 +224,16 @@ async function fixture(
   });
   const placement = createRunnerPlacement({ store: db });
   const lane = createSlackReplies({ store: db, helpers, placement, pollIntervalMs: 1 });
-  const runner = { hold: false, stopped: false };
+  const grantFor = new Map<string, (name: string) => Promise<{ commit: string } | null>>();
+  const handle = helpers.handle;
+  helpers.handle = (id, tool, repositories) => {
+    if (repositories) grantFor.set(id, repositories);
+    return handle(id, tool, repositories);
+  };
+  const folders: { prompt: string; repositories: string[]; tools?: unknown }[] = [];
+  const grants: [string, { commit: string } | null][] = [];
+  const listed: unknown[] = [];
+  const runner = { hold: false, holdExcerpts: false, stopped: false };
   const submitted: { questionId: string; answer: string; answeredBy: string; note?: string }[] = [];
   const answer = async (input: (typeof submitted)[number]) => {
     const rows = await sqlRows(
@@ -241,9 +257,47 @@ async function fixture(
         answered.add(row.id);
         const { command } = await helpers.current(row.id).catch(() => ({ command: null }));
         if (command?.type !== "helper" || !command.slack) continue;
-        prompts.push({ userId: command.slack.memberUserId, prompt: command.prompt });
-        sent.push(command);
+        const folded = command.repositories !== undefined;
+        if (!folded && runner.holdExcerpts) {
+          answered.delete(row.id);
+          continue;
+        }
         await helpers.acknowledge(row.runner_id, command.id).catch(() => undefined);
+        if (folded) folders.push({ ...command, repositories: command.repositories! });
+        else {
+          prompts.push({ userId: command.slack.memberUserId, prompt: command.prompt });
+          sent.push(command);
+        }
+        if (folded && !setup.folder) {
+          await helpers
+            .submit(row.runner_id, {
+              executionId: workspaceId(),
+              commandId: command.id,
+              ...(command.account ? { account: command.account } : {}),
+              role: "implementer" as const,
+              stopReason: "end_turn" as const,
+              cancelled: false,
+              timedOut: false,
+              authRequired: false,
+              agentExited: true,
+              errorMessage: "folder runs are off in this fixture",
+              text: "",
+            })
+            .catch(() => undefined);
+          continue;
+        }
+        if (folded) await setup.folder?.before?.();
+        for (const name of folded ? (setup.folder?.add ?? []) : [])
+          grants.push([name, (await grantFor.get(command.id)?.(name)) ?? null]);
+        if (folded) await setup.folder?.after?.();
+        for (const [index, after] of (folded ? (setup.folder?.list ?? []) : []).entries())
+          listed.push(
+            await helpers.request(row.runner_id, command.id, {
+              requestId: `l${index}`,
+              name: "list_repositories",
+              arguments: after === null ? {} : { after },
+            }),
+          );
         for (const [index, name] of (setup.toolCalls ?? []).entries())
           toolAnswers.push(
             await helpers.request(row.runner_id, command.id, {
@@ -559,6 +613,9 @@ async function fixture(
     prompts,
     sent,
     toolAnswers,
+    folders,
+    grants,
+    listed,
     answers,
     linear,
     submitted,
@@ -1739,7 +1796,10 @@ const V1 = "b".repeat(40);
 const OSS = "c".repeat(40);
 const NEXT = "d".repeat(40);
 
-async function withSource(disclosed: string[] = ["acme/app", "acme/oss"]) {
+async function withSource(
+  disclosed: string[] = ["acme/app", "acme/oss"],
+  setup: Parameters<typeof fixture>[0] = {},
+) {
   const reader = createFakeSnapshotReader({
     "acme/app": {
       visibility: "private",
@@ -1764,7 +1824,7 @@ async function withSource(disclosed: string[] = ["acme/app", "acme/oss"]) {
       files: { [OSS]: { "lib/billing.js": "canary-oss" } },
     },
   });
-  const f = await linkedWith({ source: reader }, ["um", "SMEMBER"]);
+  const f = await linkedWith({ ...setup, source: reader }, ["um", "SMEMBER"]);
   for (const repository of ["acme/app", "acme/oss"])
     await sqlRun(
       f.db,
@@ -1859,13 +1919,13 @@ test("source needs the requester's current access and a covered audience, before
     const g = await withSource();
     const ts = await g.thread("SMEMBER", "repo acme/app");
     if (change === "running") {
-      g.runner.hold = true;
+      g.runner.holdExcerpts = true;
       await g.deliver(g.mention("SMEMBER", "billing?", { thread_ts: ts }));
       const pending = g.settle();
-      while (!(await g.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length)
+      while ((await g.db.run((q) => q.all(q.orm.select().from(q.t.runnerHelper)))).length < 2)
         await Bun.sleep(2);
       await g.teams([]);
-      g.runner.hold = false;
+      g.runner.holdExcerpts = false;
       await pending;
       expect(g.notice()).toContain("changed while Paws was answering");
       expect(await g.replies()).toEqual([]);
@@ -4173,4 +4233,138 @@ test("a Slack reply runs for ten minutes and carries tools only when a provider 
   await g.say("SADMIN", "no tools?");
   expect(g.sent).toHaveLength(1);
   expect(g.sent[0]!.tools).toBeUndefined();
+});
+
+test("a folder run lists what the asker may read and the channel may show, attached first, and the rest through list_repositories", async () => {
+  const f = await withSource(["acme/app", "acme/oss", "acme/other"], {
+    folder: { list: [null, "acme/r097", "acme/nope"] },
+  });
+  for (let index = 0; index < 100; index++) {
+    const name = `acme/r${String(index).padStart(3, "0")}`;
+    await sqlRun(
+      f.db,
+      "INSERT INTO workspace_repository(workspace_id, repository, team_id) VALUES('W1', ?, 'tA')",
+      [name],
+    );
+    await sqlRun(f.db, "INSERT INTO setting(key, value, updated_at) VALUES(?, 'workspace', 0)", [
+      `slack.disclosure:W1:${name}`,
+    ]);
+  }
+  for (const [repository, team] of [
+    ["acme/hidden", "tA"],
+    ["acme/other", "tB"],
+  ])
+    await sqlRun(
+      f.db,
+      "INSERT INTO workspace_repository(workspace_id, repository, team_id) VALUES('W1', ?, ?)",
+      [repository, team],
+    );
+  await f.db.transaction((q) =>
+    writeRepositoryDescriptionSteps(q, {
+      workspaceId: "W1",
+      repository: "acme/oss",
+      text: "Open source billing.",
+      source: "admin",
+      contentHash: null,
+      now: f.now(),
+    }),
+  );
+  const ts = await f.thread("SMEMBER", "repo acme/oss");
+  await f.say("SMEMBER", "where is billing?", { thread_ts: ts });
+  const run = f.folders.at(-1)!;
+  expect(run.repositories).toEqual(["acme/oss"]);
+  const lines = run.prompt.split("\n").filter((line) => line.startsWith("- acme/"));
+  expect(lines).toHaveLength(100);
+  expect(lines.slice(0, 3)).toEqual([
+    "- acme/oss: Open source billing.",
+    "- acme/app",
+    "- acme/r000",
+  ]);
+  expect(lines.at(-1)).toBe("- acme/r097");
+  for (const text of ["acme/r098", "acme/hidden", "acme/other"])
+    expect(run.prompt).not.toContain(text);
+  for (const text of [
+    "repositories/<owner>/<name>",
+    "`add_repository`",
+    "at most 5 per run",
+    "read-only and there is no network",
+    "filing a Linear issue",
+    "2 more: call `list_repositories` with `after` set to `acme/r097`",
+  ])
+    expect(run.prompt).toContain(text);
+  expect(f.listed).toMatchObject([
+    {
+      text: expect.stringMatching(
+        /^acme\/oss: Open source billing\.\nacme\/app\n.*\nMore after acme\/r097\.$/s,
+      ),
+    },
+    { text: "acme/r098\nacme/r099" },
+    { isError: true },
+  ]);
+  expect(f.prompts).toEqual([]);
+});
+
+test("add_repository grants a listed repository at its newest default-branch commit, checked again at call time", async () => {
+  let before: () => Promise<unknown> = async () => undefined;
+  let after: () => Promise<unknown> = async () => undefined;
+  const f = await withSource(["acme/app"], {
+    folder: {
+      add: ["acme/app", "acme/oss", "acme/unknown"],
+      before: () => before(),
+      after: () => after(),
+    },
+  });
+  f.answers.push(
+    `Billing uses plans.\n\n${notesBlock([
+      { kind: "observation", text: "Plans.", repository: "acme/app", path: "src/billing.ts" },
+      { kind: "guess", text: "Missing.", repository: "acme/app", path: "src/missing.ts" },
+    ])}`,
+  );
+  await f.say("SMEMBER", "how does billing work?");
+  expect(f.folders.at(-1)!.repositories).toEqual([]);
+  expect(f.grants).toEqual([
+    ["acme/app", { commit: MAIN }],
+    ["acme/oss", null],
+    ["acme/unknown", null],
+  ]);
+  expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toBe(
+    "Billing uses plans.\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._",
+  );
+  expect(sourcesOf((await f.replies()).at(-1)!)).toEqual([
+    { repository: "acme/app", ref: "main", commit: MAIN },
+  ]);
+  expect(await sqlRows(f.db, "SELECT key FROM setting WHERE key LIKE 'slack.repo:%'")).toEqual([]);
+  expect((await storedNotes(f)).map((note) => [note.text, note.commit])).toEqual([
+    ["Plans.", MAIN],
+  ]);
+
+  f.grants.length = 0;
+  before = () => disclose(f, "ua", "acme/app", "none");
+  await f.say("SMEMBER", "and refunds?");
+  expect(f.grants[0]).toEqual(["acme/app", null]);
+  before = () => Promise.all([disclose(f, "ua", "acme/app", "workspace"), f.teams([])]);
+  await f.say("SMEMBER", "and taxes?");
+  expect(f.grants[3]).toEqual(["acme/app", null]);
+  expect(f.prompts).toEqual([]);
+
+  before = async () => undefined;
+  await f.teams(["tA"]);
+  after = () => disclose(f, "ua", "acme/app", "none");
+  const posts = f.posts("chat.postMessage").length;
+  await f.say("SMEMBER", "and invoices?");
+  expect(f.grants[6]).toEqual(["acme/app", { commit: MAIN }]);
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(f.posts("chat.postMessage")).toHaveLength(posts);
+});
+
+test("a thread's attached repository goes into the folder, and a failed folder run answers from excerpts", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "channel repo acme/app");
+  await f.say("SMEMBER", "how does billing work?");
+  expect(f.folders.map((run) => run.repositories)).toEqual([["acme/app"]]);
+  expect(lastPrompt(f)).toContain("canary-main");
+  expect(lastPrompt(f)).not.toContain("repositories/<owner>/<name>");
+  expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toBe(
+    "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._",
+  );
 });
