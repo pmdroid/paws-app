@@ -38,10 +38,12 @@ const repo = z
   .string()
   .regex(/^[A-Za-z0-9._-]{1,100}$/)
   .refine((name) => ![".", ".."].includes(name));
-const ownerRepository = z.string().refine((name) => {
+export const RUNNER_HELPER_REPOSITORIES = 5;
+export const RunnerRepositoryNameSchema = z.string().refine((name) => {
   const [first, second, ...rest] = name.split("/");
   return rest.length === 0 && owner.safeParse(first).success && repo.safeParse(second).success;
 });
+const ownerRepository = RunnerRepositoryNameSchema;
 
 export const RunnerCheckoutExclusionsSchema = z
   .array(
@@ -363,6 +365,11 @@ export const RunnerCommandSchema = z
       conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
       slack: RunnerSlackReplyScopeSchema.optional(),
       summary: z.strictObject({ repository: ownerRepository }).optional(),
+      repositories: z
+        .array(ownerRepository)
+        .max(RUNNER_HELPER_REPOSITORIES)
+        .refine((names) => new Set(names).size === names.length)
+        .optional(),
     }),
     z.strictObject({
       ...common,
@@ -474,6 +481,13 @@ export const RunnerCommandSchema = z
       command.type !== "helper" ||
       (command.purpose === "repository_summary") === (command.summary !== undefined),
     { path: ["summary"], message: "only repository_summary carries summary" },
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      command.purpose === "slack_reply" ||
+      command.repositories === undefined,
+    { path: ["repositories"], message: "only slack_reply carries repositories" },
   );
 
 type HelperPurpose =

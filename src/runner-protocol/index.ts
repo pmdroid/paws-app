@@ -38,6 +38,8 @@ export {
   SignedRunnerCommandSchema,
   RunnerRepositoryBranchSchema,
   RunnerRepositoryCommandResultSchema,
+  RunnerRepositoryNameSchema,
+  RUNNER_HELPER_REPOSITORIES,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
   type RunnerCommand,

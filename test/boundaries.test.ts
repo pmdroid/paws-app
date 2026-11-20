@@ -355,6 +355,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-health": ["journal", "db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": [
+    "acp",
+    "github",
     "runner-journal",
     "journal",
     "runner-answers",

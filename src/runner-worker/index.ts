@@ -44,7 +44,7 @@ import {
   rmdirSync,
   unlinkSync,
 } from "node:fs";
-import { join, isAbsolute } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
@@ -105,6 +105,7 @@ import {
   runnerRepositoryBundlePath,
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
+  runnerHelperRepositories,
   RunnerJobSchema,
   sharedDirectoryAllowed,
   type RunnerAccountOwners,
@@ -154,6 +155,8 @@ import {
   GITHUB_READ_FAILURES,
   HOST_TOOL_LIMITS,
   HostToolArgumentsSchema,
+  RUNNER_HELPER_REPOSITORIES,
+  RunnerRepositoryNameSchema,
   type GitHubReadFailure,
   type HostToolDefinitions,
   type RunnerArtifact,
@@ -221,6 +224,7 @@ export interface RunnerWorkerOptions {
   runAgent?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
+  helperRepositories?: () => readonly HelperRepository[];
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
   codexRateLimits?: RateLimitReader;
@@ -479,6 +483,83 @@ export function commandTools(
   };
 }
 
+type HelperRepository = { repository: string; commit: string; path: string };
+
+export function commandRepositories(
+  command: RunnerCommand,
+  emit: (event: { type: "repository"; requestId: string; repository: string }) => void,
+  answer: Parameters<typeof remoteTools>[2] | undefined,
+  signal: AbortSignal | undefined,
+  worktree: string,
+  published: (() => readonly HelperRepository[]) | undefined,
+): { addRepository?: NonNullable<RunAgentOptions["addRepository"]>; preload(): void } {
+  const copied = new Map<string, string>();
+  const copy = (added: HelperRepository) => {
+    const target = join(worktree, "repositories", added.repository);
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    cpSync(added.path, target, { recursive: true, force: false, errorOnExist: true });
+    copied.set(added.repository, added.commit);
+  };
+  const done = (repository: string) => ({
+    text: `Added at repositories/${repository} (commit ${copied.get(repository)}).`,
+  });
+  if (
+    command.type !== "helper" ||
+    command.purpose !== "slack_reply" ||
+    !command.repositories ||
+    !answer ||
+    !published
+  )
+    return { preload() {} };
+  const asked = new Set<string>();
+  return {
+    preload() {
+      for (const added of published())
+        if (command.repositories!.includes(added.repository) && !copied.has(added.repository))
+          copy(added);
+    },
+    async addRepository(input) {
+      const parsed = RunnerRepositoryNameSchema.safeParse(input);
+      if (!parsed.success) return { text: "Pass repository as owner/name.", isError: true };
+      const repository = parsed.data;
+      const refused = { text: `Paws could not add ${repository}.`, isError: true };
+      if (copied.has(repository)) return done(repository);
+      if (
+        !asked.has(repository) &&
+        new Set([...asked, ...copied.keys()]).size >= RUNNER_HELPER_REPOSITORIES
+      )
+        return refused;
+      asked.add(repository);
+      const requestId = randomUUID();
+      emit({ type: "repository", requestId, repository });
+      let decoded: { path?: unknown; commit?: unknown; error?: unknown };
+      try {
+        decoded = JSON.parse(
+          (await answer(requestId, signal ?? new AbortController().signal)).answer,
+        );
+      } catch (error) {
+        journalCaught(error, "runner-worker.addRepository.answer", null);
+        return refused;
+      }
+      if (typeof decoded.error === "string") return { text: decoded.error, isError: true };
+      const added = published().find(
+        (entry) =>
+          entry.repository === repository &&
+          entry.commit === decoded.commit &&
+          entry.path === decoded.path,
+      );
+      if (!added) return refused;
+      try {
+        copy(added);
+      } catch (error) {
+        journalCaught(error, "runner-worker.addRepository.copy", null);
+        return refused;
+      }
+      return done(repository);
+    },
+  };
+}
+
 export function remoteTools(
   definitions: HostToolDefinitions,
   emit: (event: {
@@ -544,6 +625,7 @@ export type RunnerWorkerEvent =
   | { type: "remember"; requestId: string; operations: readonly RunnerRememberOperation[] }
   | ({ type: "recall"; requestId: string } & RunnerRecallRequest)
   | { type: "tool"; requestId: string; name: string; arguments: Record<string, unknown> }
+  | { type: "repository"; requestId: string; repository: string }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1254,6 +1336,19 @@ export async function executeRunnerCommand(
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
+    const repositories = commandRepositories(
+      command,
+      emit,
+      options.answer,
+      options.signal,
+      worktree,
+      options.helperRepositories,
+    );
+    try {
+      repositories.preload();
+    } catch (error) {
+      journalCaught(error, "runner-worker.preload", null);
+    }
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1583,6 +1678,7 @@ export async function executeRunnerCommand(
           }
         : {}),
       ...commandTools(command, emit, options.answer, options.signal),
+      ...(repositories.addRepository ? { addRepository: repositories.addRepository } : {}),
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : (talk?.itemId ?? job.executionId),
       runId: job.executionId,
@@ -2802,7 +2898,9 @@ export async function runRunnerWorker(options: {
         }
       : job.command.type === "task" && job.command.repository
         ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }
-        : {}),
+        : job.command.type === "helper" && job.command.repositories
+          ? { helperRepositories: () => runnerHelperRepositories(spool, options.executionId) }
+          : {}),
     outputDirectory: createRunnerResultDirectory(options.results, options.executionId),
     workRoot: job.command.type === "task" ? "/var/lib/paws-agent-tasks" : options.workRoot,
     home: options.home,

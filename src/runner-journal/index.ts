@@ -20,6 +20,7 @@ import {
   HostToolArgumentsSchema,
   HostToolNameSchema,
   RunnerRememberOperationsSchema,
+  RunnerRepositoryNameSchema,
   RunnerResultSchema,
   type RunnerResult,
   type RunnerCommand,
@@ -96,28 +97,41 @@ const toolRequest = z.strictObject({
   arguments: HostToolArgumentsSchema,
 });
 
+const repositoryRequest = z.strictObject({
+  type: z.literal("repository"),
+  requestId: z.uuid(),
+  repository: RunnerRepositoryNameSchema,
+});
+
 export type RunnerToolRequest = Omit<z.infer<typeof toolRequest>, "type">;
+type RunnerRepositoryRequest = Omit<z.infer<typeof repositoryRequest>, "type">;
 
 export function readRunnerToolRequests(
   bytes: Buffer,
   offset: number,
-): { requests: RunnerToolRequest[]; offset: number } {
+): { requests: RunnerToolRequest[]; repositories: RunnerRepositoryRequest[]; offset: number } {
   const requests: RunnerToolRequest[] = [];
+  const repositories: RunnerRepositoryRequest[] = [];
   while (offset < bytes.length) {
     const end = bytes.indexOf(10, offset);
     if (end < 0) break;
-    const tool = toolRequest.safeParse(
-      withoutJournalTime(JSON.parse(bytes.subarray(offset, end).toString("utf8"))),
-    );
+    const raw = withoutJournalTime(JSON.parse(bytes.subarray(offset, end).toString("utf8")));
+    const tool = toolRequest.safeParse(raw);
+    const repository = repositoryRequest.safeParse(raw);
     if (tool.success)
       requests.push({
         requestId: tool.data.requestId,
         name: tool.data.name,
         arguments: tool.data.arguments,
       });
+    if (repository.success)
+      repositories.push({
+        requestId: repository.data.requestId,
+        repository: repository.data.repository,
+      });
     offset = end + 1;
   }
-  return { requests, offset };
+  return { requests, repositories, offset };
 }
 
 function executionId(now: number): string {

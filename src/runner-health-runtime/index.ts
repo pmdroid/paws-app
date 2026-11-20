@@ -1,10 +1,13 @@
 import { journalCaught, journalRejection } from "../journal";
 import { chmodSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { openDatabase, readRunnerToolRequests, type RunnerToolRequest } from "../runner-journal";
 import { publishRunnerAnswer } from "../runner-answers";
+import { prepareRepositorySnapshot } from "../acp";
+import { runGitHubGit } from "../github";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createHealthStore } from "./health-ddl";
@@ -12,8 +15,10 @@ import { healthExecution } from "./health-schema";
 import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
+  publishRunnerHelperRepository,
   publishRunnerJob,
   readRunnerCredentials,
+  runnerHelperRepositories,
   readRunnerResultFile,
   type RunnerBrokerClient,
   type RunnerResults,
@@ -21,6 +26,7 @@ import {
 } from "../runner-execution";
 import type { RunnerAgentUser } from "../runner-protocol";
 import {
+  RUNNER_HELPER_REPOSITORIES,
   RunnerCommandSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
@@ -47,7 +53,15 @@ type Entry = {
     forwarding?: Promise<void>;
     timer?: ReturnType<typeof setInterval>;
   };
+  repositories?: {
+    offset: number;
+    requested: Set<string>;
+    answered: Set<string>;
+    adding?: Promise<void>;
+    timer?: ReturnType<typeof setInterval>;
+  };
 };
+const HELPER_REPOSITORY_MS = 120_000;
 const unanswered = { text: "Paws could not answer that tool.", isError: true };
 const conversation = (command: Pick<RunnerCommand, "type"> & { purpose?: string }) =>
   command.type === "helper" &&
@@ -103,6 +117,7 @@ export async function openRunnerHealthRuntime(options: {
         | "pollHelperCommands"
         | "helperLease"
         | "helperRequest"
+        | "helperRepositoryCredential"
         | "postHelperResult"
         | "carriesCredential"
         | "credentialRecipient"
@@ -118,6 +133,7 @@ export async function openRunnerHealthRuntime(options: {
   now?: () => number;
   monotonic?: () => number;
   onError?: (error: Error) => void;
+  networkGit?: typeof runGitHubGit;
 }) {
   if (!isAbsolute(options.root) || options.daemon.status().phase !== "paired")
     throw new Error("Paired runner and absolute health root are required");
@@ -260,8 +276,132 @@ export async function openRunnerHealthRuntime(options: {
         tools.forwarding = undefined;
       });
   }
+  async function snapshot(entry: Entry, repository: string) {
+    if (!options.daemon.helperRepositoryCredential)
+      throw new Error("Runner helper repositories are unavailable");
+    const signal = AbortSignal.timeout(HELPER_REPOSITORY_MS);
+    const credential = await options.daemon.helperRepositoryCredential(
+      entry.command.id,
+      repository,
+    );
+    const [owner, repo] = repository.split("/") as [string, string];
+    const workspace = join(options.root, "repositories", entry.id, owner, repo);
+    const env = {
+      PATH: "/usr/bin:/bin",
+      HOME: options.root,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    };
+    try {
+      const prepared = await prepareRepositorySnapshot({
+        owner,
+        repo,
+        remoteUrl: credential.remoteUrl,
+        workspace,
+        commit: credential.commit,
+        maxArchiveBytes: 536_870_912,
+        signal,
+        env,
+        async networkGit(args) {
+          await (options.networkGit ?? runGitHubGit)({
+            operation: "clone",
+            remoteUrl: credential.remoteUrl,
+            token: credential.token,
+            cwd: options.root,
+            dest: args.at(-1)!,
+            env,
+            signal,
+          });
+          return "";
+        },
+      });
+      return {
+        clean: () => removeSnapshot(workspace),
+        publish: () =>
+          publishRunnerHelperRepository(options.spool, entry.id, {
+            repository,
+            commit: prepared.commit,
+            snapshot: prepared.path,
+          }),
+        commit: prepared.commit,
+      };
+    } catch (error) {
+      await removeSnapshot(workspace);
+      throw error;
+    }
+  }
+  async function removeSnapshot(workspace: string) {
+    await Promise.all(
+      [workspace, `${workspace}.repository.json`].map((target) =>
+        rm(target, { recursive: true, force: true }),
+      ),
+    );
+  }
+  async function addRepository(entry: Entry, repository: string) {
+    const listed = runnerHelperRepositories(options.spool, entry.id).find(
+      (added) => added.repository === repository,
+    );
+    if (listed) return { path: listed.path, commit: listed.commit };
+    const repositories = entry.repositories!;
+    if (
+      !repositories.requested.has(repository) &&
+      repositories.requested.size >= RUNNER_HELPER_REPOSITORIES
+    )
+      throw new Error("Runner helper repository limit reached");
+    repositories.requested.add(repository);
+    const prepared = await snapshot(entry, repository);
+    try {
+      return { path: prepared.publish(), commit: prepared.commit };
+    } finally {
+      await prepared.clean();
+    }
+  }
+  async function answerRepositories(entry: Entry) {
+    const repositories = entry.repositories;
+    if (!repositories) return;
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, entry.id, "events.jsonl");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return;
+    }
+    const read = readRunnerToolRequests(raw, repositories.offset);
+    repositories.offset = read.offset;
+    for (const request of read.repositories) {
+      if (repositories.answered.has(request.requestId) || closed || entry.stopped || entry.result)
+        continue;
+      repositories.answered.add(request.requestId);
+      let answer: { path: string; commit: string } | { error: string };
+      try {
+        answer = await addRepository(entry, request.repository);
+      } catch (error) {
+        journalCaught(error, "runner-health-runtime.answerRepositories.add", null);
+        answer = { error: `Paws could not add ${request.repository}.` };
+      }
+      publishRunnerAnswer(options.spool, entry.id, {
+        requestId: request.requestId,
+        answer: JSON.stringify(answer),
+      });
+    }
+  }
+  function adding(entry: Entry) {
+    const repositories = entry.repositories;
+    if (!repositories || repositories.adding) return;
+    if (closed || entry.stopped || entry.result) {
+      clearInterval(repositories.timer);
+      return;
+    }
+    repositories.adding = answerRepositories(entry)
+      .catch(journalRejection("runner-health-runtime.adding", report, null))
+      .finally(() => {
+        repositories.adding = undefined;
+      });
+  }
   async function interrupt(entry: Entry) {
     clearInterval(entry.tools?.timer);
+    clearInterval(entry.repositories?.timer);
     entry.stopped ??= (async () => {
       await broker.stop(entry.id);
       setPhase(entry.id, "interrupted");
@@ -464,6 +604,20 @@ export async function openRunnerHealthRuntime(options: {
         check(entry);
         if (command.type === "helper") await pulse(entry);
         check(entry);
+        const prepared: Awaited<ReturnType<typeof snapshot>>[] = [];
+        if (command.type === "helper" && command.repositories) {
+          entry.repositories = { offset: 0, requested: new Set(), answered: new Set() };
+          for (const repository of command.repositories) {
+            entry.repositories.requested.add(repository);
+            try {
+              prepared.push(await snapshot(entry, repository));
+            } catch (error) {
+              journalCaught(error, "runner-health-runtime.step.snapshot", null);
+            }
+            await pulse(entry);
+            check(entry);
+          }
+        }
         options.daemon.restoreCredentials?.(command.id);
         publishRunnerJob(options.spool, {
           executionId: id,
@@ -472,6 +626,14 @@ export async function openRunnerHealthRuntime(options: {
             ? { credentials: { certificate: options.daemon.credentialRecipient() } }
             : {}),
         });
+        for (const repository of prepared) {
+          try {
+            repository.publish();
+          } catch (error) {
+            journalCaught(error, "runner-health-runtime.step.publishRepository", null);
+          }
+          await repository.clean();
+        }
         check(entry);
         const receipt = await broker.start(id);
         if (receipt.alreadyAdmitted)
@@ -484,11 +646,14 @@ export async function openRunnerHealthRuntime(options: {
           entry.tools = { offset: 0, queue: [], answered: new Set(), failed: new Set() };
           entry.tools.timer = setInterval(() => forwarding(entry), 250);
         }
+        if (entry.repositories && options.daemon.helperRepositoryCredential)
+          entry.repositories.timer = setInterval(() => adding(entry), 250);
         await options.daemon
           .acknowledgeCommand(command.id)
           .catch(journalRejection("runner-health-runtime.step.acknowledgeCommand", report, null));
       } catch (caughtError5) {
         journalCaught(caughtError5, "runner-health-runtime.step.check", null);
+        await rm(join(options.root, "repositories", id), { recursive: true, force: true });
         await interrupt(entry);
         report();
       }
@@ -565,7 +730,11 @@ export async function openRunnerHealthRuntime(options: {
         await Promise.all(held.map((entry) => interrupt(entry)));
         await Promise.allSettled([
           ticking,
-          ...held.flatMap((entry) => [entry.pulsing, entry.tools?.forwarding]),
+          ...held.flatMap((entry) => [
+            entry.pulsing,
+            entry.tools?.forwarding,
+            entry.repositories?.adding,
+          ]),
         ]);
         db.close();
       })();
