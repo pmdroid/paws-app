@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import type { AcpEvent, AcpEventOrigin } from "../acp";
-import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
+import type { ActionDetails, ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
 import { scrubText } from "../closeout";
 
 /** Backup post when a run has produced no Linear activity yet. */
@@ -47,6 +47,7 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
 export function createAcpActivityReporter(
   emit: (activity: AcpActivity, origin?: ActivityOrigin) => void,
   onPlan?: (steps: readonly SessionPlanStep[]) => void,
+  onTool?: (details: ActionDetails) => void,
 ): {
   onEvent(event: AcpEvent, origin?: AcpEventOrigin): void;
   flush(): void;
@@ -85,6 +86,8 @@ export function createAcpActivityReporter(
         }
         if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           if (update.kind !== "think" && update.kind !== "switch_mode") flush();
+          const details = onTool && toolActionDetails(update);
+          if (details) onTool?.(details);
           return;
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
@@ -102,6 +105,39 @@ export function createAcpActivityReporter(
     flush,
     resultBody: () => resultBody,
   };
+}
+
+export const LIVE_LINE_MS = 30_000;
+
+const PATH_ACTIONS: Record<string, string> = {
+  read: "Reading",
+  edit: "Editing",
+  delete: "Deleting",
+  move: "Moving",
+};
+
+const FIXED_ACTIONS: Record<string, ActionDetails> = {
+  search: { action: "Searching", parameter: "the code" },
+  execute: { action: "Running", parameter: "a command" },
+  fetch: { action: "Reading", parameter: "a web page" },
+};
+
+function toolActionDetails(update: {
+  kind?: string | null;
+  locations?: readonly { path: string }[] | null;
+}): ActionDetails | null {
+  const kind = update.kind ?? "";
+  const fixed = FIXED_ACTIONS[kind];
+  if (fixed) return { ...fixed };
+  const action = PATH_ACTIONS[kind];
+  if (!action) return null;
+  const path = update.locations?.[0]?.path ?? "";
+  const parameter = path
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .slice(-2)
+    .join("/");
+  return { action, parameter: parameter ? publicToolText(parameter) : "files" };
 }
 
 function textOf(content: { type: string; text?: string }): string {

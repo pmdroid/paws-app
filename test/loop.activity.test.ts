@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { GROK_LOGIN_MESSAGE, type AcpEvent } from "../src/acp";
-import { createLinearTracker, type LinearClient, type ProgressUpdate } from "../src/linear";
+import {
+  createLinearTracker,
+  type ActionDetails,
+  type LinearClient,
+  type ProgressUpdate,
+} from "../src/linear";
 import {
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
@@ -440,3 +445,61 @@ function row(op: string, payload: unknown): OutboxRow {
     error: null,
   };
 }
+
+describe("live tool line", () => {
+  function details(update: Record<string, unknown>) {
+    const tools: ActionDetails[] = [];
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter(
+      (activity) => posted.push(activity),
+      undefined,
+      (tool) => tools.push(tool),
+    );
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "t",
+        title: "private-title",
+        rawInput: { command: "private-input" },
+        ...update,
+      } as never,
+    });
+    expect(posted).toEqual([]);
+    expect(JSON.stringify(tools)).not.toContain("private");
+    return tools;
+  }
+
+  const path = "/home/x/work/repo/src/slack/threads.ts";
+
+  test.each([
+    ["read", "Reading"],
+    ["edit", "Editing"],
+    ["delete", "Deleting"],
+    ["move", "Moving"],
+  ])("%s names the last two path segments", (kind, action) => {
+    expect(details({ kind, locations: [{ path }, { path: "/other/file.ts" }] })).toEqual([
+      { action, parameter: "slack/threads.ts" },
+    ]);
+    expect(details({ kind })).toEqual([{ action, parameter: "files" }]);
+  });
+
+  test.each([
+    ["search", "Searching", "the code"],
+    ["execute", "Running", "a command"],
+    ["fetch", "Reading", "a web page"],
+  ])("%s has a fixed parameter", (kind, action, parameter) => {
+    expect(details({ kind, locations: [{ path }] })).toEqual([{ action, parameter }]);
+  });
+
+  test.each(["think", "switch_mode", "other", undefined])("%s posts nothing", (kind) => {
+    expect(details({ kind, locations: [{ path }] })).toEqual([]);
+  });
+
+  test("tool call updates map the same way", () => {
+    expect(
+      details({ sessionUpdate: "tool_call_update", kind: "edit", locations: [{ path }] }),
+    ).toEqual([{ action: "Editing", parameter: "slack/threads.ts" }]);
+  });
+});
