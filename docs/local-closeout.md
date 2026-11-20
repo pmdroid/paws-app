@@ -1,6 +1,6 @@
 # Local Closeout policy
 
-Keep the Closeout policy for a work repository on your machine. [Review checks and evidence](closeout.md) explains verification. Save the repository's policy folder in Settings > Closeout. See [Local Closeout policy roots](configuration.md#local-closeout-policy-roots).
+Keep the Closeout policy for a work repository on your machine. [Review checks and evidence](closeout.md) explains verification. Save the repository's policy folder in Settings > Closeout. See [Closeout settings](configuration.md#closeout).
 
 The project key is the GitHub `owner/repo`, matched without case sensitivity. `policyRoot` is an absolute directory on the Paws host. A save applies without restarting Paws.
 
