@@ -67,6 +67,7 @@ export {
 export { LinearTaskAccess } from "./linear-task-access";
 export { TASK_ACCESS_TTL_MS } from "./github-integration";
 export { createRepositoryGit } from "./repository-git";
+export { repositoryGrant } from "./repositories";
 export { createLinearInputLoader, inputSources } from "./input-files";
 export { createTaskPlanner } from "./task-planner";
 export { createLinearSessionProgress } from "./session-progress";

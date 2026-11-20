@@ -9,11 +9,13 @@ import {
   workspaceMemberUsable,
   workspaceUserIdForLinearUserSteps,
   type Db,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import { agentIssueId, type AgentIssue, type TrackerAdapter } from "../linear";
 
-type HostTools = NonNullable<RunAgentOptions["hostTools"]>;
+export type HostTools = NonNullable<RunAgentOptions["hostTools"]>;
 type Args = Record<string, unknown>;
 type Linear = Required<
   Pick<
@@ -228,17 +230,24 @@ export async function linearToolsFor(input: LinearToolsInput): Promise<HostTools
   };
 }
 
-async function delegatorTeams(store: Db, item: WorkItemRecord): Promise<string[] | null> {
+export function* delegatorSteps(
+  q: Q,
+  item: WorkItemRecord,
+): Steps<{ workspaceId: string; userId: string; teamIds: string[] } | null> {
   if (!item.sessionKey) return null;
-  return store.run(function* (q) {
-    const session = yield* getLinearSessionSteps(q, item.sessionKey!);
-    if (!session?.organizationId || !session.creatorId) return null;
-    const workspace = yield* workspaceForOrganizationSteps(q, session.organizationId);
-    const userId = yield* workspaceUserIdForLinearUserSteps(q, session.creatorId);
-    if (!workspace || !userId) return null;
-    const member = yield* workspaceMemberSteps(q, workspace.id, userId);
-    return workspaceMemberUsable(member) ? [...member.teamIds] : null;
-  });
+  const session = yield* getLinearSessionSteps(q, item.sessionKey);
+  if (!session?.organizationId || !session.creatorId) return null;
+  const workspace = yield* workspaceForOrganizationSteps(q, session.organizationId);
+  const userId = yield* workspaceUserIdForLinearUserSteps(q, session.creatorId);
+  if (!workspace || !userId) return null;
+  const member = yield* workspaceMemberSteps(q, workspace.id, userId);
+  return workspaceMemberUsable(member)
+    ? { workspaceId: workspace.id, userId, teamIds: [...member.teamIds] }
+    : null;
+}
+
+async function delegatorTeams(store: Db, item: WorkItemRecord): Promise<string[] | null> {
+  return (await store.run((q) => delegatorSteps(q, item)))?.teamIds ?? null;
 }
 
 function usable(tracker: TrackerAdapter | null): tracker is TrackerAdapter & Linear {
