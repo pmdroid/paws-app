@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import { existsSync } from "node:fs";
 import { readSecretFile, secretFileExists } from "../credentials";
 import { isAbsolute, join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
@@ -18,10 +17,6 @@ import { parseRepositoryList } from "./repositories";
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
 
-/**
- * What the process runs with. `config.toml` and the secret files it names
- * are the source. Environment variables override a single field when set.
- */
 export type PawsRole = "all" | "web" | "worker";
 
 const PAWS_ROLES: readonly PawsRole[] = ["all", "web", "worker"];
@@ -30,8 +25,6 @@ export type RuntimeConfig = {
   env: PawsEnv;
   role: PawsRole;
   file: PawsConfigFile;
-  /** True when `config.toml` was present. */
-  configured: boolean;
   configError: string | null;
   linearTeam: string | null;
   linearTeamId: string | null;
@@ -57,13 +50,13 @@ export type RuntimeConfig = {
 export function startupSettings(source: EnvSource = process.env) {
   const env = loadEnv(source);
   const path = pawsPaths(env.home).configFile;
-  const file = existsSync(path) ? loadConfigFile(path) : null;
+  const file = loadConfigFile(path);
   const url = optional(source, "PAWS_DATABASE_URL");
   return {
     env,
-    publicUrl: env.publicUrl ?? file?.publicUrl ?? null,
+    publicUrl: env.publicUrl ?? file.publicUrl ?? null,
     databaseUrl:
-      url === null ? (file?.databaseUrl ?? null) : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
+      url === null ? (file.databaseUrl ?? null) : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
   };
 }
 
@@ -86,7 +79,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     env.githubAppPrivateKeyPath = app.privateKeyPath;
   }
   const configPath = pawsPaths(env.home).configFile;
-  const configured = existsSync(configPath);
   let file = emptyConfigFile();
   let configError: string | null = null;
   try {
@@ -121,7 +113,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     env,
     role: readRole(optional(source, "PAWS_ROLE")),
     file,
-    configured,
     configError,
     linearTeam: optional(source, "LINEAR_TEAM") ?? file.linearTeam,
     linearTeamId: optional(source, "LINEAR_TEAM_ID") ?? file.linearTeamId,

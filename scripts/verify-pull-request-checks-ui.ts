@@ -1,8 +1,8 @@
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, readMergeSettings } from "../src/config";
+import { loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
 import { handleAgentSettingsRequest, handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
@@ -62,7 +62,7 @@ const prefix = before ? "before" : "after";
 try {
   for (const width of [1440, 390])
     for (const scheme of ["light", "dark"] as const) {
-      writeFileSync(
+      useMemorySettings(
         configPath,
         `[agents.defaults.implementer]\nagent = "claude"\n\n[agents.defaults.reviewer]\nagent = "codex"\n\n[merge]\norder = "queue"\nmain_moved = "overlap"\nci_fix_attempts = 3\n`,
       );

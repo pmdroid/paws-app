@@ -90,7 +90,7 @@ test("a save goes to the database, wins over [github] mirrors and applies withou
   } finally {
     restore();
   }
-  expect(stored).toBe("[github_access]\nagent_read = false\nmirrors = false\n\n[member_vm]\n");
+  expect(stored).toBe("[github_access]\nagent_read = false\nmirrors = false\n");
   expect(lines.some((line) => line.includes("mirrors set to false"))).toBe(true);
   expect(audits).toEqual(["settings.github_access"]);
   const config = loadConfigFile(configPath);

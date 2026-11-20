@@ -16,7 +16,13 @@ import {
   type GitHubDoctorFacts,
   type ProbeFacts,
 } from "../src/doctor";
-import { LINEAR_WEBHOOK_FIX, openPawsStore, type Db } from "../src/db";
+import {
+  CONFIG_SETTINGS_KEY,
+  LINEAR_WEBHOOK_FIX,
+  openPawsStore,
+  updateSetting,
+  type Db,
+} from "../src/db";
 import { grokLoginStatus } from "../src/install";
 import { slackCapabilities } from "../src/slack";
 import { copyMigratedPglite, pgliteServer, sqlRun } from "./pglite";
@@ -100,17 +106,9 @@ test("doctor reports where secrets are read from and fails when the key does not
   });
 });
 
-test("doctor notes config.toml sections the database overrides, naming them", () => {
-  const ready = probe(true);
-  expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toBeUndefined();
-  ready.facts.overriddenSections = ["merge", "queue"];
-  expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toEqual({
-    name: "settings-overrides",
-    ok: true,
-    note: true,
-    detail:
-      "config.toml [merge], [queue] are ignored: the Settings page saved these sections to the database, which wins",
-  });
+test("doctor has no settings-overrides check", () => {
+  for (const ready of [probe(true), probe(false)])
+    expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toBeUndefined();
 });
 
 test("doctor checks each Slack connection's thread scopes and treats the rest as optional", () => {
@@ -283,10 +281,13 @@ test("doctor passes Closeout without a checkout and loads configured local polic
   const localRoot = join(home, "policies");
   mkdirSync(join(localRoot, ".agents"), { recursive: true });
   writeFileSync(join(localRoot, ".agents/closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
-  writeFileSync(
-    join(home, "config.toml"),
-    '[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
+  const saved = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
+  await updateSetting(
+    saved.store,
+    CONFIG_SETTINGS_KEY,
+    () => '[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
   );
+  await saved.close();
   expect((await realProbe(env)).facts.closeout).toEqual({
     ok: true,
     detail: "local policy loads for acme/widgets",
@@ -322,7 +323,7 @@ test("doctor reads the workspace from the Postgres at [database] url", async () 
   }
 }, 30_000);
 
-test("while Paws holds PGlite doctor uses config.toml and prints one note", async () => {
+test("while Paws holds PGlite doctor reads settings as empty, ignores config.toml and prints one note", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-doctor-held-"));
   await copyMigratedPglite(join(home, "pglite"));
   writeFileSync(join(home, "pglite.lock"), String(process.ppid));
@@ -330,7 +331,7 @@ test("while Paws holds PGlite doctor uses config.toml and prints one note", asyn
   const held = await realProbe({ HOME: home, PAWS_HOME: home, PATH: "" });
   expect(held.facts.databaseHeld).toBe(true);
   expect(held.facts.workspace).toBe(null);
-  expect(held.facts.repos).toEqual(["acme/from-file"]);
+  expect(held.facts.repos).toEqual([]);
   const notes = formatDoctor(doctorChecks(held))
     .split("\n")
     .filter((line) => line.includes(DATABASE_HELD));
@@ -650,7 +651,6 @@ function githubReady(): GitHubDoctorFacts {
 function greenFacts(): ProbeFacts {
   return {
     configError: null,
-    configured: true,
     trackerKind: "linear",
     githubDoctor: githubReady(),
     webhooks: false,
@@ -678,7 +678,6 @@ function greenFacts(): ProbeFacts {
 function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
   return {
     configError: null,
-    configured: false,
     trackerKind: "linear",
     githubDoctor: {
       appId: null,

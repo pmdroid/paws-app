@@ -1,15 +1,3 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
-
 export type SettingsStore = {
   read(): Promise<string | null>;
   update(change: (stored: string | null) => string): Promise<void>;
@@ -62,51 +50,44 @@ export function useMemorySettings(configPath: string, text?: string): { release(
   };
 }
 
+let memoryByDefault = false;
+
+export function useMemorySettingsByDefault(enabled = true): void {
+  memoryByDefault = enabled;
+}
+
+function snapshotOf(configPath: string): Snapshot | undefined {
+  if (!snapshots.has(configPath) && memoryByDefault) useMemorySettings(configPath);
+  return snapshots.get(configPath);
+}
+
 export function readConfigText(configPath: string): string {
-  const file = readFileText(configPath);
-  const stored = storedSettings(configPath);
-  return stored === null ? file : withSettings(file, stored);
+  const stored = snapshotOf(configPath)?.stored ?? null;
+  const known = stored === null ? "" : knownSections(stored);
+  return known === "" ? "" : `${known}\n`;
 }
 
 export function updateConfigText(
   configPath: string,
   change: (current: string) => string,
 ): Promise<void> {
-  const snapshot = snapshots.get(configPath);
-  if (snapshot === undefined) {
-    replaceConfigText(configPath, change(readFileText(configPath)));
-    return Promise.resolve();
-  }
-  return saveSettings(configPath, snapshot, change);
+  const snapshot = snapshotOf(configPath);
+  if (snapshot === undefined)
+    return Promise.reject(new Error("Settings are not available: the database is not open"));
+  return saveSettings(snapshot, change);
 }
 
 async function saveSettings(
-  configPath: string,
   snapshot: Snapshot,
   change: (current: string) => string,
 ): Promise<void> {
   let saved = "";
   await snapshot.store.update((stored) => {
-    const file = readFileText(configPath);
-    saved = withOwnedSections(
-      settingsSections(change(stored === null ? file : withSettings(file, knownSections(stored)))),
-    );
+    saved = settingsSections(change(stored === null ? "" : knownSections(stored)));
     return saved;
   });
   snapshot.stored = saved;
   snapshot.ticket = ++tickets;
-}
-
-export function overriddenConfigSections(configPath: string): string[] {
-  const stored = storedSettings(configPath);
-  if (stored === null) return [];
-  const fromFile = keptFromFile(stored);
-  const sections = new Set<string>();
-  splitSections(readFileText(configPath), (settings, heading) => {
-    if (settings && heading !== undefined && !fromFile(heading)) sections.add(heading);
-    return false;
-  });
-  return [...sections];
 }
 
 export function knownConfigSection(section: string): boolean {
@@ -127,7 +108,7 @@ function knownSections(text: string): string {
 }
 
 export function retiredConfigSections(configPath: string): string[] {
-  const stored = snapshots.get(configPath)?.stored ?? null;
+  const stored = snapshotOf(configPath)?.stored ?? null;
   const sections = new Set<string>();
   splitSections(stored ?? "", (_settings, heading) => {
     if (heading !== undefined && !knownConfigSection(heading.toLowerCase()))
@@ -142,7 +123,7 @@ export function describeRetiredSections(sections: readonly string[]): string {
 }
 
 export async function removeRetiredConfigSection(configPath: string, name: string): Promise<void> {
-  const snapshot = snapshots.get(configPath);
+  const snapshot = snapshotOf(configPath);
   const section = name.toLowerCase();
   if (snapshot === undefined || !retiredConfigSections(configPath).includes(section)) return;
   let saved = "";
@@ -153,32 +134,6 @@ export async function removeRetiredConfigSection(configPath: string, name: strin
   });
   snapshot.stored = saved;
   snapshot.ticket = ++tickets;
-}
-
-export function describeOverriddenSections(sections: readonly string[]): string {
-  return `config.toml ${sections.map((name) => `[${name}]`).join(", ")} ${sections.length === 1 ? "is" : "are"} ignored: the Settings page saved ${sections.length === 1 ? "this section" : "these sections"} to the database, which wins`;
-}
-
-function replaceConfigText(path: string, next: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
-  const temp = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    writeFileSync(temp, next, { mode });
-    chmodSync(temp, mode);
-    renameSync(temp, path);
-  } finally {
-    rmSync(temp, { force: true });
-  }
-}
-
-function storedSettings(configPath: string): string | null {
-  const stored = snapshots.get(configPath)?.stored ?? null;
-  return stored === null ? null : knownSections(stored);
-}
-
-function readFileText(configPath: string): string {
-  return existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
 }
 
 function isSettingsSection(section: string): boolean {
@@ -202,26 +157,6 @@ function isSettingsSection(section: string): boolean {
     name === "member_vm" ||
     name === "linear_comments"
   );
-}
-
-const FILE_UNTIL_SAVED = ["member_vm"];
-
-function familyOf(section: string): string | undefined {
-  const name = section.trim().toLowerCase();
-  return FILE_UNTIL_SAVED.find((prefix) => name === prefix || name.startsWith(`${prefix}.`));
-}
-
-function keptFromFile(stored: string): (section: string) => boolean {
-  const saved = new Set<string>();
-  splitSections(stored, (_settings, heading) => {
-    const family = heading === undefined ? undefined : familyOf(heading);
-    if (family !== undefined) saved.add(family);
-    return false;
-  });
-  return (section) => {
-    const family = familyOf(section);
-    return family !== undefined && !saved.has(family);
-  };
 }
 
 export function withoutConfigSection(text: string, name: string): string {
@@ -279,28 +214,10 @@ function openStringAfter(line: string, start: string | null): string | null {
   return open;
 }
 
-function withOwnedSections(saved: string): string {
-  const fromFile = keptFromFile(saved);
-  const missing = FILE_UNTIL_SAVED.filter((family) => fromFile(family));
-  return [saved.trim(), ...missing.map((family) => `[${family}]`)]
-    .filter((part) => part !== "")
-    .join("\n\n")
-    .concat("\n");
-}
-
 function settingsSections(text: string): string {
   const sections = splitSections(
     text,
     (settings, _heading, section) => settings && knownConfigSection(section.toLowerCase()),
   );
   return sections === "" ? "" : `${sections}\n`;
-}
-
-function withSettings(file: string, stored: string): string {
-  const fromFile = keptFromFile(stored);
-  const retained = splitSections(
-    file,
-    (settings, _heading, section) => !settings || fromFile(section),
-  );
-  return [retained, stored.trim()].filter((part) => part !== "").join("\n\n") + "\n";
 }

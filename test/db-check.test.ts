@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as pgliteMigrate } from "drizzle-orm/pglite/migrator";
-import { loadRuntime } from "../src/config";
+import { databaseUrlOf, loadRuntime } from "../src/config";
 import {
   migrationTags,
   openPawsStore,
@@ -37,26 +37,25 @@ async function check(env: Record<string, string>, connect?: (url: string) => Pos
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
-describe("[database] url", () => {
-  test("config.toml sets it and PAWS_DATABASE_URL wins", () => {
+describe("PAWS_DATABASE_URL", () => {
+  test("a config.toml [database] url is not read and the variable sets the URL", () => {
     const home = tempHome();
     writeFileSync(join(home, "config.toml"), `[database]\nurl = "postgres://a:b@file-host/one"\n`);
-    expect(loadRuntime({ PAWS_HOME: home }).databaseUrl).toBe("postgres://a:b@file-host/one");
+    expect(databaseUrlOf({ PAWS_HOME: home })).toBeNull();
+    expect(loadRuntime({ PAWS_HOME: home }).databaseUrl).toBeNull();
     expect(
       loadRuntime({ PAWS_HOME: home, PAWS_DATABASE_URL: "postgresql://env-host/two" }).databaseUrl,
     ).toBe("postgresql://env-host/two");
-    expect(loadRuntime({ PAWS_HOME: tempHome() }).databaseUrl).toBeNull();
   });
 
   test("a URL that is not Postgres is a config error that does not repeat it", () => {
-    const home = tempHome();
-    writeFileSync(join(home, "config.toml"), `[database]\nurl = "mysql://u:hunter2@h/db"\n`);
-    const fromFile = loadRuntime({ PAWS_HOME: home }).configError;
-    expect(fromFile).toBe(
-      "config.toml line 2: database.url must start with postgres:// or postgresql://",
-    );
     const fromEnv = loadRuntime({ PAWS_HOME: tempHome(), PAWS_DATABASE_URL: "hunter2" });
     expect(fromEnv.configError).toBe("PAWS_DATABASE_URL is not a URL");
+    const mysql = loadRuntime({
+      PAWS_HOME: tempHome(),
+      PAWS_DATABASE_URL: "mysql://u:hunter2@h/db",
+    });
+    expect(mysql.configError).not.toContain("hunter2");
   });
 });
 
@@ -126,7 +125,7 @@ describe("paws db check", () => {
     expect(result.code).toBe(1);
     expect(result.out).toBe("");
     expect(result.err).toBe(
-      "paws db check: Paws is running; stop it or set [database] url to check",
+      "paws db check: Paws is running; stop it or set PAWS_DATABASE_URL to check",
     );
     expect(readFileSync(join(home, "pglite.lock"), "utf8")).toBe(String(process.ppid));
   });

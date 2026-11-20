@@ -1,12 +1,17 @@
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
-// Settings → Merging against the real settings handler and a temporary config.toml, and a run
+// Settings → Merging against the real settings handler and in-memory settings, and a run
 // page whose pull request waits in the GitHub merge queue.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, readMergeSettings } from "../src/config";
+import {
+  loadConfigFile,
+  readConfigText,
+  readMergeSettings,
+  useMemorySettings,
+} from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import { openPawsStore } from "../src/db";
@@ -69,7 +74,7 @@ const errors: string[] = [];
 try {
   for (const width of [1440, 390]) {
     githubQueues = ["acme/platform"];
-    writeFileSync(
+    useMemorySettings(
       configPath,
       `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*", "packages/*"]\n`,
     );
@@ -91,7 +96,7 @@ try {
 
     const saved = readMergeSettings(loadConfigFile(configPath));
     expect(saved.default).toEqual({ order: "queue", mainMoved: "closeout" });
-    expect(readFileSync(configPath, "utf8")).not.toContain("[[merge.rules]]");
+    expect(readConfigText(configPath)).not.toContain("[[merge.rules]]");
     expect(saved.repositories).toEqual({
       "acme/platform": { packages: ["apps/*", "packages/*"], reviewApps: [] },
     });

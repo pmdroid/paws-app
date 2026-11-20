@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
+import { useMemorySettings } from "./settings-store";
 
 const homes: string[] = [];
 
@@ -49,11 +50,11 @@ test("the startup sweep removes only tmp entries older than 24 hours", () => {
   expect(readdirSync(paths.tmpDir)).toEqual(["paws-publication-recent"]);
 });
 
-test("mirrors disabled leaves repos absent at startup", () => {
+test("mirrors turned off in Settings leave repos absent at startup", () => {
   const home = mkdtempSync(join(tmpdir(), "paws-home-"));
   homes.push(home);
   const paths = pawsPaths(home);
-  writeFileSync(paths.configFile, "[github]\nmirrors = false\n");
+  useMemorySettings(paths.configFile, "[github_access]\nmirrors = false\n");
   ensureLayout(paths);
   expect(existsSync(paths.reposDir)).toBe(false);
 });

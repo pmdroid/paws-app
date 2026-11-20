@@ -7,7 +7,6 @@ import {
   exeDevTokenStatus,
   loadConfigFile,
   loadRuntime,
-  overriddenConfigSections,
   tailscaleAuthKeyStatus,
   pawsPaths,
   type AgentProfiles,
@@ -69,10 +68,8 @@ export type ProbeFacts = {
   databaseHeld?: boolean;
   databaseRefused?: string;
   secrets?: { where: string; count: number; failed: string[]; stored: string[] | null };
-  overriddenSections?: string[];
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
-  configured: boolean;
   trackerKind: TrackerKind;
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
@@ -83,7 +80,7 @@ export type ProbeFacts = {
   tailscaleAuthKey?: TailscaleAuthKeyStatus;
   slack?: { teamId: string; capabilities: SlackCapabilities }[] | null;
   publicUrl: string | null;
-  /** `owner/repo` names the workspace chose, plus any named in `config.toml`. */
+  /** `owner/repo` names the workspace chose, plus `PAWS_GITHUB_REPOS`. */
   repos: string[];
   team: string | null;
   teamId: string | null;
@@ -130,10 +127,8 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
     configError: runtime.configError,
     databaseHeld: saved.held,
     databaseRefused: saved.refused,
-    overriddenSections: overriddenConfigSections(pawsPaths(runtime.env.home).configFile),
     agentProfiles,
     grokLogin,
-    configured: runtime.configured,
     trackerKind: runtime.trackerKind,
     githubDoctor,
     webhooks: runtime.webhooks,

@@ -3,9 +3,10 @@ import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtur
 // for one shows which item it waits for.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useMemorySettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 
@@ -25,7 +26,7 @@ held.held = {
   files: ["src/dashboard/src/live/provider.ts"],
 };
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-hot-files-")), "config.toml");
-writeFileSync(
+useMemorySettings(
   configPath,
   `[merge]\norder = "queue"\nmain_moved = "ci"\n\n[merge.repositories."acme/platform"]\npackages = []\nparallel_files = ["src/dashboard/src/server/handler.ts"]\n`,
 );

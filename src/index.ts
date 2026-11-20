@@ -109,9 +109,7 @@ import {
   readProjectMemorySettings,
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
-  describeOverriddenSections,
   describeRetiredSections,
-  overriddenConfigSections,
   retiredConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -641,8 +639,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     clearInterval(settingsTimer);
     savedSettings.release();
   };
-  const overriddenSections = overriddenConfigSections(paths.configFile);
-  if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   const retiredSections = retiredConfigSections(paths.configFile);
   if (retiredSections.length > 0) journal(describeRetiredSections(retiredSections));
   try {
@@ -3008,7 +3004,7 @@ async function checkPglite(
     return 0;
   } catch (error) {
     if (error instanceof PgliteInUseError) {
-      fail("paws db check: Paws is running; stop it or set [database] url to check");
+      fail("paws db check: Paws is running; stop it or set PAWS_DATABASE_URL to check");
       return 1;
     }
     fail(`paws db check failed on PGlite ${dir}: ${(error as Error).message}`);
@@ -3119,7 +3115,7 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   const database = await openCommandStore(process.env);
   if (database === null)
     throw new Error(
-      `paws ${command} needs [database] url: only the running Paws opens its embedded PGlite database.`,
+      `paws ${command} needs PAWS_DATABASE_URL: only the running Paws opens its embedded PGlite database.`,
     );
   try {
     return await work(database.store);

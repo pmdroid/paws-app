@@ -26,13 +26,12 @@ export type {
   TrackerKind,
 } from "./file";
 export {
-  describeOverriddenSections,
   describeRetiredSections,
-  overriddenConfigSections,
   readConfigText,
   removeRetiredConfigSection,
   retiredConfigSections,
   useMemorySettings,
+  useMemorySettingsByDefault,
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";

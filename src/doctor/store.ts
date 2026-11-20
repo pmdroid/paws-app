@@ -17,7 +17,7 @@ import { storedSecrets, useDatabaseSecrets } from "../credentials";
 import { journalCaught } from "../journal";
 
 export const DATABASE_HELD =
-  "saved Settings-page values were not read because Paws holds the database; using config.toml";
+  "saved Settings-page values were not read because Paws holds the database; using defaults";
 
 export type SavedStore = { store: Db | null; held: boolean; refused?: string };
 

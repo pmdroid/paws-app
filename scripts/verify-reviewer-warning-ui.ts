@@ -2,7 +2,7 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeAgentSettings } from "../src/config";
+import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
@@ -12,6 +12,7 @@ if (!directory) throw new Error("Provide a proof directory");
 mkdirSync(directory, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "paws-reviewer-warning-"));
 const configPath = join(root, "config.toml");
+useMemorySettings(configPath);
 const snapshot = fullStatusFixture();
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -52,7 +53,7 @@ const errors: string[] = [];
 const refusals: string[] = [];
 try {
   for (const width of [1440, 390]) {
-    writeAgentSettings(configPath, {
+    await writeAgentSettings(configPath, {
       defaults: {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "claude", model: "opus" },

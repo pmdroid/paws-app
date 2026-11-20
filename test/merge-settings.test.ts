@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_IGNORED_COMMENT_BOTS,
@@ -17,6 +16,8 @@ import {
   reviewApps,
   storedMerge,
   suggestedFindingsMode,
+  readConfigText,
+  useMemorySettings,
   writeMergePolicy,
 } from "../src/config";
 import { createFakeMergeQueue, repositoriesWithMergeQueue, type GitHubClient } from "../src/github";
@@ -101,7 +102,7 @@ packages = ["apps/*", "packages/*"]
     ).toThrow("must be a GitHub login");
   });
 
-  test("a repository's review apps read, render and write back", () => {
+  test("a repository's review apps read, render and write back", async () => {
     const text = `[merge]\nreview_wait_max_seconds = 600\n\n[merge.repositories."acme/platform"]\npackages = []\nreview_apps = ["Acme-Review", "acme-lint"]\n`;
     const settings = readMergeSettings(parseConfigToml(text));
     expect(reviewApps(settings, "ACME/platform")).toEqual(["acme-review", "acme-lint"]);
@@ -109,7 +110,7 @@ packages = ["apps/*", "packages/*"]
     expect(settings.commentWait.reviewWaitMaxSeconds).toBe(600);
     const home = tempHome();
     const path = join(home, "config.toml");
-    writeMergePolicy(
+    await writeMergePolicy(
       path,
       { default: { order: "queue", mainMoved: "ci" } },
       storedMerge(parseConfigToml(text)),
@@ -122,7 +123,7 @@ packages = ["apps/*", "packages/*"]
     ).toThrow("must be a GitHub App slug");
   });
 
-  test("each main_moved value round-trips through config.toml, and a missing key means ci", () => {
+  test("each main_moved value round-trips through the saved settings, and a missing key means ci", async () => {
     expect(readMergeSettings(parseConfigToml('[merge]\norder = "queue"\n')).default).toEqual({
       order: "queue",
       mainMoved: "ci",
@@ -134,12 +135,12 @@ packages = ["apps/*", "packages/*"]
       const settings = readMergeSettings(config);
       expect(settings.default.mainMoved).toBe(value);
       const path = join(tempHome(), "config.toml");
-      writeMergePolicy(path, { default: settings.default }, storedMerge(config));
+      await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
       expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
     }
   });
 
-  test("lanes split by project and person, and an item without a project merges on its own", () => {
+  test("lanes split by project and person, and an item without a project merges on its own", async () => {
     const fallback = readMergeSettings(parseConfigToml(""));
     expect(fallback.lanes).toEqual(["project", "person"]);
     expect(fallback.noProject).toBe("own");
@@ -168,10 +169,10 @@ packages = ["apps/*", "packages/*"]
     expect(mergeLaneKey(item("B", PAYMENTS, "ann"), settings)).toBe(":ann");
 
     const path = join(tempHome(), "config.toml");
-    writeMergePolicy(path, { default: settings.default }, storedMerge(config));
+    await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
-    expect(readFileSync(path, "utf8")).toContain('lanes = ["person"]\nno_project = "lane"');
-    expect(readFileSync(path, "utf8")).not.toContain("ci-green");
+    expect(readConfigText(path)).toContain('lanes = ["person"]\nno_project = "lane"');
+    expect(readConfigText(path)).not.toContain("ci-green");
 
     for (const [old, lanes] of [
       ["project", ["project", "person"]],
@@ -180,12 +181,12 @@ packages = ["apps/*", "packages/*"]
       const legacy = parseConfigToml(`[merge]\nlane = "${old}"\n`);
       expect(readMergeSettings(legacy).lanes).toEqual([...lanes]);
       const written = join(tempHome(), "config.toml");
-      writeMergePolicy(
+      await writeMergePolicy(
         written,
         { default: readMergeSettings(legacy).default },
         storedMerge(legacy),
       );
-      expect(readFileSync(written, "utf8")).not.toMatch(/^lane =/m);
+      expect(readConfigText(written)).not.toMatch(/^lane =/m);
     }
     expect(
       readMergeSettings(parseConfigToml('[merge]\nlanes = []\nlane = "project"\n')).lanes,
@@ -227,7 +228,7 @@ packages = ["apps/*", "packages/*"]
       ).toThrow("high_risk_paths");
   });
 
-  test("a repository's suggested-findings mode round-trips, and a missing key means next_turn", () => {
+  test("a repository's suggested-findings mode round-trips, and a missing key means next_turn", async () => {
     const config = parseConfigToml(
       `[merge.repositories."acme/platform"]\nsuggested_findings = "own_turn"\n\n[merge.repositories."acme/web"]\nsuggested_findings = "off"\n`,
     );
@@ -236,7 +237,7 @@ packages = ["apps/*", "packages/*"]
     expect(suggestedFindingsMode(settings, "acme/web")).toBe("off");
     expect(suggestedFindingsMode(settings, "acme/api")).toBe("next_turn");
     const path = join(tempHome(), "config.toml");
-    writeMergePolicy(path, { default: settings.default }, storedMerge(config));
+    await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
     expect(() =>
       parseConfigToml(`[merge.repositories."acme/platform"]\nsuggested_findings = "always"\n`),
@@ -419,7 +420,7 @@ describe("Merging settings API", () => {
         withFiles,
       );
     expect((await put(["src/index.ts"]))?.status).toBe(200);
-    expect(readFileSync(options.configPath, "utf8")).toContain(
+    expect(readConfigText(options.configPath)).toContain(
       '[merge.repositories."acme/platform"]\npackages = []\nparallel_files = ["src/index.ts"]',
     );
     expect(
@@ -437,7 +438,7 @@ describe("Merging settings API", () => {
     }))!.json()) as { hotFiles: unknown };
     expect(expired.hotFiles).toEqual([{ ...file, conflicts: 0, items: [], held: false }]);
     expect((await put([]))?.status).toBe(200);
-    expect(readFileSync(options.configPath, "utf8")).not.toContain("parallel_files");
+    expect(readConfigText(options.configPath)).not.toContain("parallel_files");
     expect(audits.map(([, text]) => text)).toEqual([
       "Conflict-prone files not held: none → acme/platform src/index.ts",
       "Conflict-prone files not held: acme/platform src/index.ts → none",
@@ -445,11 +446,11 @@ describe("Merging settings API", () => {
     expect((await put(["src/*.ts"]))?.status).toBe(400);
   });
 
-  test("PUT saves to config.toml, keeps other settings and audits each change", async () => {
+  test("PUT saves the settings, keeps other settings and audits each change", async () => {
     const { options, audits } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
-      `[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.projects."${PAYMENTS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n`,
+      `[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.projects."${PAYMENTS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n`,
     );
     const stored = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
       default: unknown;
@@ -480,8 +481,7 @@ describe("Merging settings API", () => {
       sessionDone: "pull_request",
       sessionQuietMinutes: 10,
     });
-    const text = readFileSync(options.configPath, "utf8");
-    expect(text).toContain("max_turns = 31");
+    const text = readConfigText(options.configPath);
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
     expect(text).not.toContain("[merge.projects.");
     expect(text).not.toContain("[[merge.rules]]");
@@ -522,9 +522,7 @@ describe("Merging settings API", () => {
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toMatchObject({ lanes: ["person"], noProject: "lane" });
-    expect(readFileSync(options.configPath, "utf8")).toContain(
-      'lanes = ["person"]\nno_project = "lane"',
-    );
+    expect(readConfigText(options.configPath)).toContain('lanes = ["person"]\nno_project = "lane"');
     expect(audits).toContainEqual([
       "settings.merging",
       "Merge lanes split by: project, person → person",
@@ -548,7 +546,7 @@ describe("Merging settings API", () => {
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toMatchObject({ parallel: 3 });
-    expect(readFileSync(options.configPath, "utf8")).toContain("parallel = 3");
+    expect(readConfigText(options.configPath)).toContain("parallel = 3");
     expect(audits).toContainEqual(["settings.merging", "Merges at once in a lane: 1 → 3"]);
     const read = await handleMergeSettingsRequest(request(), options);
     expect(await read!.json()).toMatchObject({ parallel: 3 });
@@ -563,7 +561,7 @@ describe("Merging settings API", () => {
 
   test("PUT saves high-risk paths per repository and a body without them keeps them", async () => {
     const { options, audits } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
     );
@@ -637,7 +635,7 @@ describe("Merging settings API", () => {
 
   test("High-risk paths list each repository with its settings and its file read-only", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, 'repo = "acme/platform"\n');
+    useMemorySettings(options.configPath, 'repo = "acme/platform"\n');
     const reads: string[] = [];
     const withFile: MergeSettingsOptions = {
       ...options,
@@ -691,7 +689,6 @@ describe("Merging settings API", () => {
 
   test("PUT saves the comment wait, audits it, and a body without it keeps it", async () => {
     const { options, audits } = fixture();
-    writeFileSync(options.configPath, "max_turns = 31\n");
     const valid = { default: { order: "queue", mainMoved: "ci" } };
     const read = async () =>
       (
@@ -715,8 +712,7 @@ describe("Merging settings API", () => {
       maxWaitSeconds: 900,
       reviewWaitMaxSeconds: 900,
     });
-    const text = readFileSync(options.configPath, "utf8");
-    expect(text).toContain("max_turns = 31");
+    const text = readConfigText(options.configPath);
     expect(text).toContain("comment_quiet_seconds = 120\ncomment_max_wait_seconds = 900");
     expect(audits).toContainEqual([
       "settings.merging",
@@ -733,7 +729,7 @@ describe("Merging settings API", () => {
     const review = { quietSeconds: 120, maxWaitSeconds: 900, reviewWaitMaxSeconds: 1200 };
     await handleMergeSettingsRequest(request("PUT", { ...valid, commentWait: review }), options);
     expect(await read()).toEqual(review);
-    expect(readFileSync(options.configPath, "utf8")).toContain("review_wait_max_seconds = 1200");
+    expect(readConfigText(options.configPath)).toContain("review_wait_max_seconds = 1200");
     expect(audits).toContainEqual([
       "settings.merging",
       "Review check wait: 900s at most → 1200s at most",
@@ -846,9 +842,7 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
     expect(((await response!.json()) as { autoApproveHighRisk: boolean }).autoApproveHighRisk).toBe(
       enabled,
     );
-    expect(readFileSync(options.configPath, "utf8")).toContain(
-      `auto_approve_high_risk = ${enabled}`,
-    );
+    expect(readConfigText(options.configPath)).toContain(`auto_approve_high_risk = ${enabled}`);
     expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(enabled);
     await handleMergeSettingsRequest(request("PUT", body), options);
     expect(
@@ -862,12 +856,12 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
   options.riskGate = { on: false };
   const put = (enabled: boolean) =>
     handleMergeSettingsRequest(request("PUT", { ...body, autoApproveHighRisk: enabled }), options);
-  const saved = readFileSync(options.configPath, "utf8");
+  const saved = readConfigText(options.configPath);
   const auditCount = audits.length;
   expect((await put(true))?.status).toBe(400);
-  expect(readFileSync(options.configPath, "utf8")).toBe(saved);
+  expect(readConfigText(options.configPath)).toBe(saved);
   expect(audits).toHaveLength(auditCount);
-  writeFileSync(options.configPath, "[merge]\nauto_approve_high_risk = true\n");
+  useMemorySettings(options.configPath, "[merge]\nauto_approve_high_risk = true\n");
   expect((await put(true))?.status).toBe(200);
   expect((await put(false))?.status).toBe(200);
   expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
@@ -898,7 +892,7 @@ test("the overlap hold defaults on, round-trips off, survives other saves and is
   const response = await put(false);
   expect(response?.status).toBe(200);
   expect(((await response!.json()) as { overlapHold: boolean }).overlapHold).toBe(false);
-  expect(readFileSync(options.configPath, "utf8")).toContain("overlap_hold = false");
+  expect(readConfigText(options.configPath)).toContain("overlap_hold = false");
   expect(audits.map(([, text]) => text)).toContain(
     "Hold work that changes conflict-prone files: off",
   );
@@ -917,7 +911,7 @@ test("the overlap hold defaults on, round-trips off, survives other saves and is
   ).toBe(403);
   expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(false);
   expect((await put(true))?.status).toBe(200);
-  expect(readFileSync(options.configPath, "utf8")).not.toContain("overlap_hold");
+  expect(readConfigText(options.configPath)).not.toContain("overlap_hold");
   expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(true);
   expect(audits.map(([, text]) => text)).toContain(
     "Hold work that changes conflict-prone files: on",
@@ -948,7 +942,7 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
     handleMergeSettingsRequest(request("PUT", { ...body, ...extra }), options);
   const saved = await put({ conflictProneAfter: 3, conflictProneDays: 14 });
   expect(await saved!.json()).toMatchObject({ conflictProneAfter: 3, conflictProneDays: 14 });
-  expect(readFileSync(options.configPath, "utf8")).toContain(
+  expect(readConfigText(options.configPath)).toContain(
     "conflict_prone_after = 3\nconflict_prone_days = 14",
   );
   expect(audits.map(([, text]) => text)).toEqual([
@@ -976,7 +970,7 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
     expect(((await refused!.json()) as { field: string }).field).toBe(field);
   }
   await put({ conflictProneAfter: 2, conflictProneDays: 7 });
-  expect(readFileSync(options.configPath, "utf8")).not.toContain("conflict_prone");
+  expect(readConfigText(options.configPath)).not.toContain("conflict_prone");
 });
 
 test("conflict_checks round-trips, survives other saves, and rejects invalid check ids", async () => {
@@ -990,7 +984,7 @@ test("conflict_checks round-trips, survives other saves, and rejects invalid che
   expect(((await saved!.json()) as { conflictChecks: unknown }).conflictChecks).toEqual([
     { repository: "acme/platform", ids: ["lint", "shared/lint"] },
   ]);
-  expect(readFileSync(options.configPath, "utf8")).toContain(
+  expect(readConfigText(options.configPath)).toContain(
     '[merge.repositories."acme/platform"]\npackages = []\nconflict_checks = ["lint", "shared/lint"]',
   );
   const settings = readMergeSettings(loadConfigFile(options.configPath));
@@ -1030,7 +1024,7 @@ test("conflict_checks round-trips, survives other saves, and rejects invalid che
     conflictChecks(readMergeSettings(loadConfigFile(options.configPath)), "acme/platform"),
   ).toEqual(["lint", "shared/lint"]);
   expect((await put(checks([])))?.status).toBe(200);
-  expect(readFileSync(options.configPath, "utf8")).not.toContain("conflict_checks");
+  expect(readConfigText(options.configPath)).not.toContain("conflict_checks");
   expect(audits.at(-1)?.[1]).toBe(
     "Checks after a conflict fix: acme/platform lint, shared/lint → all",
   );
@@ -1081,7 +1075,7 @@ test("repository and project settings reject invalid values and member writes", 
 test("both enabled stored finding modes are exposed as true", async () => {
   for (const mode of ["next_turn", "own_turn"]) {
     const { options } = fixture();
-    writeFileSync(
+    useMemorySettings(
       options.configPath,
       `[merge.repositories."acme/web"]\nsuggested_findings = "${mode}"\n`,
     );

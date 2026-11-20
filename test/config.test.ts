@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   closeoutPolicyRoot,
+  databaseUrlOf,
   emptyConfigFile,
   ensureLayout,
   loadConfigFile,
@@ -11,6 +12,8 @@ import {
   parseConfigToml,
   pawsPaths,
   readMergeSettings,
+  startupSettings,
+  useMemorySettings,
 } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS } from "../src/core";
 import { tempHome } from "./helpers";
@@ -19,10 +22,9 @@ describe("config", () => {
   test("configured repository candidates and Closeout roots load", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    writeFileSync(
+    useMemorySettings(
       paths.configFile,
       '[github]\nrepo = "acme/one"\nrepos = ["acme/one", "acme/two"]\n\n[closeout.projects."acme/one"]\npolicy_root = "policies/one"\n\n[merge]\nmain_moved = "closeout"\n',
-      { mode: 0o600 },
     );
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
     expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
@@ -59,7 +61,7 @@ describe("config", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
     expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
-    writeFileSync(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
+    useMemorySettings(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     expect(loadRuntime({ PAWS_HOME: paths.home, PAWS_MAX_AWAKE_MS: "7200000" }).maxAwakeMs).toBe(
       2 * 60 * 60 * 1000,
@@ -120,9 +122,7 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeFileSync(paths.configFile, "[caps]\nmax_turns = 2\nmax_awake_ms = 5000\n", {
-      mode: 0o600,
-    });
+    useMemorySettings(paths.configFile, "[caps]\nmax_turns = 2\nmax_awake_ms = 5000\n");
     const parsed = loadConfigFile(paths.configFile);
     expect(parsed.maxAwakeMs).toBe(5_000);
     expect(parsed).not.toHaveProperty("maxTurns");
@@ -137,59 +137,61 @@ describe("config", () => {
     expect(loadConfigFile(paths.configFile)).toEqual(emptyConfigFile());
   });
 
-  test("config.toml is the source and env overrides one field", () => {
+  test("a config.toml on disk is not read: startup values come from their variables", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeFileSync(
       paths.configFile,
-      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nsecret = "secrets/acme-linear.json"\n\n[github]\nrepo = "pmdroid/paws-demo"\n\n[caps]\nmax_awake_ms = 1000\n',
-      { mode: 0o600 },
+      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nwebhooks = true\n\n[github]\nrepo = "acme/file"\n\n[database]\nurl = "postgres://file@localhost/paws"\n\n[server]\npublic_url = "https://file.example"\n',
     );
-    mkdirSync(paths.secretsDir, { recursive: true });
-    writeFileSync(
-      join(paths.secretsDir, "acme-linear.json"),
-      JSON.stringify({ accessToken: "lin_oauth_from_file" }),
-      { mode: 0o600 },
-    );
-    chmodSync(join(paths.secretsDir, "acme-linear.json"), 0o600);
-
-    const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.linearTeam).toBe("ENG");
-    expect(parsed.repo).toBe("pmdroid/paws-demo");
-    expect(parsed.maxAwakeMs).toBe(1_000);
-
-    const runtime = loadRuntime({
-      PAWS_HOME: home,
-      PAWS_GITHUB_REPOSITORY: "other/repo",
-      PAWS_CHECKOUT: "/elsewhere",
-    });
-    expect(runtime.configured).toBe(true);
-    expect(runtime.linearAccessToken).toBeNull();
-    expect(runtime.linearTokenFile).toBe(join(paths.secretsDir, "acme-linear.json"));
-    expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
+    expect(databaseUrlOf({ PAWS_HOME: home })).toBeNull();
+    expect(startupSettings({ PAWS_HOME: home }).publicUrl).toBeNull();
+    const runtime = loadRuntime({ PAWS_HOME: home });
+    expect(runtime.configError).toBeNull();
+    expect(runtime.databaseUrl).toBeNull();
+    expect(runtime.linearTeam).toBeNull();
+    expect(runtime.linearTeamId).toBeNull();
+    expect(runtime.linearViewerId).toBeNull();
+    expect(runtime.repos).toEqual([]);
+    expect(runtime.publicUrl).toBeNull();
+    expect(runtime.webhooks).toBe(false);
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
-    expect(runtime.webhooks).toBe(false);
 
-    const overridden = loadRuntime({
+    const set = loadRuntime({
       PAWS_HOME: home,
+      PAWS_DATABASE_URL: "postgres://env@localhost/paws",
+      LINEAR_TEAM: "OPS",
+      LINEAR_TEAM_ID: "team_ops",
+      LINEAR_APP_USER_ID: "viewer_2",
+      LINEAR_WEBHOOKS: "1",
+      PAWS_GITHUB_REPOS: "acme/env",
+      PAWS_PUBLIC_URL: "https://env.example",
       LINEAR_ACCESS_TOKEN: "lin_oauth_from_env",
     });
-    expect(overridden.linearAccessToken).toBe("lin_oauth_from_env");
+    expect(set).toMatchObject({
+      databaseUrl: "postgres://env@localhost/paws",
+      linearTeam: "OPS",
+      linearTeamId: "team_ops",
+      linearViewerId: "viewer_2",
+      webhooks: true,
+      repos: ["acme/env"],
+      publicUrl: "https://env.example",
+      linearAccessToken: "lin_oauth_from_env",
+    });
   });
 
   test("PAWS_GITHUB_REPOS names the startup repositories", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    writeFileSync(paths.configFile, '[github]\nrepo = "acme/file"\n', { mode: 0o600 });
     const set = loadRuntime({ PAWS_HOME: paths.home, PAWS_GITHUB_REPOS: "acme/a, acme/b,acme/a" });
     expect(set.repos).toEqual(["acme/a", "acme/b"]);
     expect(set.configError).toBeNull();
     const invalid = loadRuntime({ PAWS_HOME: paths.home, PAWS_GITHUB_REPOS: "acme" });
     expect(invalid.configError).toContain("PAWS_GITHUB_REPOS");
     expect(invalid.configError).toContain("acme");
-    expect(loadRuntime({ PAWS_HOME: paths.home }).repos).toEqual(["acme/file"]);
+    expect(loadRuntime({ PAWS_HOME: paths.home }).repos).toEqual([]);
   });
 
   test("unknown keys and sections fail with plain config errors", () => {
@@ -203,7 +205,7 @@ describe("config", () => {
     );
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    writeFileSync(paths.configFile, "[linear]\nunknown = true\n");
+    useMemorySettings(paths.configFile, "[linear]\nunknown = true\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).configError).toBe(
       "config.toml line 2 has an unknown key: linear.unknown",
     );
@@ -225,14 +227,14 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeFileSync(
+    useMemorySettings(
       paths.configFile,
       ['repo = "pmdroid/paws-demo"', "", "[agents]", 'implementer = "grok"', ""].join("\n"),
     );
     const parsed = loadConfigFile(paths.configFile);
     expect(parsed.repo).toBe("pmdroid/paws-demo");
     expect(parsed.agents).toEqual({ implementer: "grok" });
-    writeFileSync(paths.configFile, '[agents]\nimplementer = "gpt"\n');
+    useMemorySettings(paths.configFile, '[agents]\nimplementer = "gpt"\n');
     expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
   });
 
@@ -249,7 +251,7 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeFileSync(paths.configFile, 'repo = "pmdroid/paws-demo"\n', { mode: 0o600 });
+    useMemorySettings(paths.configFile, 'repo = "pmdroid/paws-demo"\n');
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.trackerKind).toBe("linear");
@@ -261,7 +263,7 @@ describe("config", () => {
     ensureLayout(paths);
     const retired =
       '[github]\nauth = "oauth"\nrepo = "pmdroid/paws-demo"\n\n[tracker]\nkind = "jira"\n\n[checkout]\npath = "/repo"\n';
-    writeFileSync(paths.configFile, retired, { mode: 0o600 });
+    useMemorySettings(paths.configFile, retired);
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.configError).toBeNull();
     expect(runtime.githubAuth).toBe("app");

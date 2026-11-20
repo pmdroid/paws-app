@@ -114,7 +114,7 @@ test("invalid values get 400 with a message and members get 403", async () => {
 test("a saved empty size resets the defaults", async () => {
   const { db, configPath, options, read } = await instance();
   expect((await handleMemberVmSettingsRequest(put({}), options("admin")))!.status).toBe(200);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain("[member_vm]");
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).not.toMatch(/cpu|memory|disk/);
   expect(await read()).toEqual({});
   expect(loadConfigFile(configPath).memberVm ?? {}).toEqual({});
 });

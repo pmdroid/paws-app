@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRuntime } from "../config";
+import { loadRuntime, useMemorySettings } from "../config";
 import { validatePublicTls, validatePublicTlsFiles } from "../deployment";
 import {
   fakePrompt,
@@ -384,7 +384,7 @@ describe("paws install TLS", () => {
   test("TLS validation ignores unrelated runtime settings", async () => {
     const home = tempHome();
     mkdirSync(join(home, ".paws"));
-    writeFileSync(join(home, ".paws/config.toml"), "[agent]\nmax_turns = -1\n");
+    useMemorySettings(join(home, ".paws/config.toml"), "[merge]\nunknown = true\n");
     const source = {
       PAWS_HOME: join(home, ".paws"),
       PAWS_PUBLIC_DASHBOARD: "1",
