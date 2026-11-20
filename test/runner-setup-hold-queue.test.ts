@@ -21,7 +21,7 @@ import {
   listJobs,
   type Db,
 } from "../src/db";
-import { writeAgentSettings } from "../src/config";
+import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { createFakeTracker, type FakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import {
@@ -493,9 +493,10 @@ test("two triggers at once resume the item once", async () => {
 });
 
 /** Acme's default implementer is Claude; the Codex preset is reachable only through its label. */
-function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
+async function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
   const pawsRoot = tempHome();
-  writeAgentSettings(join(pawsRoot, "config.toml"), {
+  useMemorySettings(join(pawsRoot, "config.toml"));
+  await writeAgentSettings(join(pawsRoot, "config.toml"), {
     defaults: {
       implementer: { agent: "claude", model: "acme-claude" },
       reviewer: { agent: "codex", model: "acme-review" },
@@ -549,7 +550,7 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
   const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
-  const { paws, label, counted } = labelled(db, clock, jobs);
+  const { paws, label, counted } = await labelled(db, clock, jobs);
   try {
     const users = await workspace(db);
     await addRunner(db, "own", users.me!, START, 1);
@@ -571,7 +572,7 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
   const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
-  const { paws, label, counted } = labelled(db, clock, jobs);
+  const { paws, label, counted } = await labelled(db, clock, jobs);
   try {
     const users = await workspace(db);
     await addRunner(db, "own", users.me!, START, 0);
@@ -607,7 +608,7 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
   const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
-  const { paws, counted } = labelled(db, clock, jobs, false);
+  const { paws, counted } = await labelled(db, clock, jobs, false);
   try {
     await workspace(db);
     await paws.reconcileExecution();

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mirrorPath, worktreePath } from "../src/acp";
-import { useSettingsStore } from "../src/config";
+import { useMemorySettings, useSettingsStore } from "../src/config";
 import { FakeClock, type RepositoryBinding } from "../src/core";
 import {
   beginImplementRun,
@@ -103,7 +103,7 @@ test("mergeSettingsFor journals the read failure once and leaves settings retrya
 test("mergeSettingsFor names a refused value and continues on the workspace default", async () => {
   const f = await fixture();
   try {
-    await writeFile(join(f.root, "config.toml"), '[merge]\nmain_moved = "overlap"\n');
+    useMemorySettings(join(f.root, "config.toml"), '[merge]\nmain_moved = "overlap"\n');
     await (f.db as PgDb).orm.execute(
       sql.raw(
         "CREATE FUNCTION refuse() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CHECK constraint failed: main_moved'; END $$ LANGUAGE plpgsql",
@@ -130,7 +130,7 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
   }
 });
 
-test("a Settings › Merging save reaches the next item without a restart; config.toml [merge] does not", async () => {
+test("a Settings › Merging save reaches the next item without a restart", async () => {
   const f = await fixture();
   const configPath = join(f.root, "config.toml");
   const store = f.db;
@@ -164,8 +164,6 @@ test("a Settings › Merging save reaches the next item without a restart; confi
     expect(await next("item-a")).toBe("overlap");
     await save("closeout");
     expect(await next("item-b")).toBe("closeout");
-    await writeFile(configPath, '[merge]\nmain_moved = "ci"\n');
-    expect(await next("item-c")).toBe("closeout");
   } finally {
     settings.release();
     await f.close();

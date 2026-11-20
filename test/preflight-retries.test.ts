@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
-import { writeAgentSettings } from "../src/config";
+import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, listJobs, listOutbox, listWorkItems } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -144,14 +144,16 @@ async function runPreflight(fault: {
         fault.scope.startsWith("paths") ? { paths: ["src/**"] } : { minChangedLines: 100 },
       );
   }
-  if (fault.reviewerFallback)
-    writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
+  if (fault.reviewerFallback) {
+    useMemorySettings(path.join(layout.pawsRoot, "config.toml"));
+    await writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
       defaults: {
         implementer: { agent: "codex", model: "test-claude-model" },
         reviewer: { agent: "claude", model: null },
         reviewerFallback: { agent: "codex", model: "fallback-review" },
       },
     });
+  }
   const mirror =
     fault.mirror === undefined ? null : await serveMirror(layout, fault.mirror, fault.times);
   const preparations: Array<Pick<RunAgentOptions, "role" | "fallbackProfile">> = [];
