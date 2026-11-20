@@ -168,12 +168,7 @@ export function* claimDueSlackFollowUpsSteps(
 ): Steps<SlackFollowUp[]> {
   return yield* q.transaction(function* (tx) {
     const table = tx.t.slackFollowUp;
-    yield* settleSteps(
-      tx,
-      "expired",
-      and(eq(table.status, "pending"), lt(table.expiresAt, now)),
-      now,
-    );
+    yield* settleSteps(tx, "expired", and(openStatus(tx), lt(table.expiresAt, now)), now);
     const candidates = yield* tx.all(
       tx.orm
         .select()
@@ -204,8 +199,19 @@ export function* claimDueSlackFollowUpsSteps(
   });
 }
 
-export function* finishSlackFollowUpSteps(q: Q, id: string, now = Date.now()) {
+export function* finishSlackFollowUpSteps(
+  q: Q,
+  id: string,
+  now = Date.now(),
+  status: "done" | "cancelled" | "expired" = "done",
+) {
   const table = q.t.slackFollowUp;
   const claimed = and(eq(table.id, id), eq(table.status, "claimed"));
-  return (yield* settleSteps(q, "done", claimed, now)) === 1;
+  return (yield* settleSteps(q, status, claimed, now)) === 1;
+}
+
+export function* getSlackFollowUpSteps(q: Q, id: string): Steps<SlackFollowUp | null> {
+  const table = q.t.slackFollowUp;
+  const row = yield* q.one(q.orm.select().from(table).where(eq(table.id, id)));
+  return row ? followUp(row) : null;
 }
