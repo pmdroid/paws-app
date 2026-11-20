@@ -102,3 +102,16 @@ export function* clearRepositoryDescriptionSteps(
       .where(and(eq(t.workspaceId, workspaceId), eq(t.repository, repository.toLowerCase()))),
   );
 }
+
+export function* repositoryDescriptionWorkspacesSteps(
+  q: Q,
+): Steps<{ workspaceId: string; githubActorId: string | null }[]> {
+  const { workspace: w, workspaceGithubConnection: c } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ workspaceId: w.id, githubActorId: c.actorId })
+      .from(w)
+      .leftJoin(c, eq(c.workspaceId, w.id))
+      .orderBy(w.id),
+  );
+}

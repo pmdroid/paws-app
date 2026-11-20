@@ -7,6 +7,7 @@ export type RepositorySnapshot = {
   ref: string;
   commit: string;
   visibility: "public" | "private";
+  description?: string;
 };
 
 export type SnapshotFile = { path: string; object: string; size: number };
@@ -55,7 +56,14 @@ export function createGitHubSnapshotReader(options: {
       if (typeof commit !== "string" || !SHA.test(commit.toLowerCase())) return null;
       const visibility =
         info.private === false && info.visibility === "public" ? "public" : "private";
-      return { repository, ref: wanted, commit: commit.toLowerCase(), visibility };
+      const description = typeof info.description === "string" ? info.description : undefined;
+      return {
+        repository,
+        ref: wanted,
+        commit: commit.toLowerCase(),
+        visibility,
+        ...(description ? { description } : {}),
+      };
     },
     async files(snapshot, signal) {
       const get = await getter(snapshot.repository, signal);
@@ -87,6 +95,7 @@ export type FakeSnapshotRepository = {
   refs: Record<string, string>;
   defaultRef: string;
   files: Record<string, Record<string, string>>;
+  description?: string;
 };
 
 export type FakeSnapshotReader = GitHubSnapshotReader & {
@@ -112,7 +121,14 @@ export function createFakeSnapshotReader(
       if (!found || (ref !== null && !SNAPSHOT_REF.test(ref))) return null;
       const wanted = ref ?? found.defaultRef;
       const commit = found.refs[wanted] ?? (found.files[wanted] ? wanted : undefined);
-      return commit ? { repository, ref: wanted, commit, visibility: found.visibility } : null;
+      if (!commit) return null;
+      return {
+        repository,
+        ref: wanted,
+        commit,
+        visibility: found.visibility,
+        ...(found.description ? { description: found.description } : {}),
+      };
     },
     async files(snapshot, signal) {
       signal.throwIfAborted();
