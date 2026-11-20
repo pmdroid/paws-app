@@ -55,6 +55,15 @@ A thread needs no repository. When a question needs code, attach one; Paws then 
 - Paws downloads at most four files per answer, binary ones included, and uses at most 4 KB of each, 12 KB in total, chosen by the question's words in their paths, and lists up to 20 matching paths. It skips files over 64 KB, binary files and files named like secrets (`.env`, keys, credentials), and leaves out lines that look like a token or password. Reads are cached per Paws workspace, Slack installation, channel, member, repository and commit.
 - An answer that builds on an earlier answer from a repository depends on that repository too, also after `@Paws repo off`. Paws checks every such repository like the attached one, before the turn and before posting, and leaves an earlier answer out of later turns once the member can no longer read its repository.
 
+### Thread notes
+
+Each answer may leave notes for later questions in the same thread, so a follow-up starts from what an earlier answer found out instead of reading the code again.
+
+- Paws asks the agent to end its reply with a block of notes: what it found out, each marked as an observation, a guess or a decision, optionally naming a repository, a file and a symbol. Notes hold no names of people, no secrets and no quoted code. Paws removes the block before posting; nothing of it reaches Slack. A reply without the block, or with one Paws can't read, is posted as usual and leaves no notes. A turn that fails leaves no notes.
+- Paws keeps at most 16 notes and 16 KB per answer, each at most 1 KB. A note naming a repository must name one the answer read, and a file it names must exist at the commit the answer read; otherwise Paws drops the note. A note records the commit it was written at and every repository the answer read. The block may add up to 20,000 characters to the agent's reply on top of the answer's own limit.
+- A later answer in the thread gets the notes whose repositories its asker's Paws teams can read and may be shown in the channel now ([answers drawn from code](#answers-drawn-from-code)); Paws leaves out the others without saying so. Notes take at most 8 KB of the prompt: notes naming a file or symbol from the question first, then the newest. A note written at another commit than the one this answer reads shows that commit.
+- Notes are never merged, edited or deleted. When two disagree, both are shown and the agent is told to check the code.
+
 ### Channel memory
 
 Paws keeps a memory for the channel, so a new thread can build on what was decided in an earlier one. It holds only what linked members ask it to keep; Paws doesn't read or import channel history.
