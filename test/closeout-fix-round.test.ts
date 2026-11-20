@@ -11,8 +11,9 @@ import {
   workspacePolicyFiles,
   type CloseoutSessionEvent,
 } from "../src/closeout-spec";
-import { insertQueuedItem, type AgentCloseoutEvent } from "../src/db";
-import { closeoutPrompt, closeoutChecksPrompt } from "../src/loop/agents";
+import { getCloseoutProgress, insertQueuedItem, type AgentCloseoutEvent } from "../src/db";
+import { closeoutPrompt, closeoutChecksPrompt, closeoutFocusPrompt } from "../src/loop/agents";
+import { incompleteReport } from "../src/loop/incomplete-report";
 import { closeoutFocus } from "../src/loop/closeout-focus";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { turnPasses } from "../src/loop/turn-passes";
@@ -235,6 +236,55 @@ test("a round without a narrower scope keeps every check pending", async () => {
     "web-test",
   ]);
 }, 60_000);
+
+test("a conflict-only restart lists only the configured checks; Closeout carries the rest", async () => {
+  const repo = await seed();
+  await writeFile(path.join(repo.root, "ok"), "");
+  const accepted = await runCloseoutGate(repo.gate());
+  expect(accepted.outcome).toBe("accepted");
+  repo.ran();
+  const conflict = {
+    head: accepted.head,
+    policyDigest: (await getCloseoutProgress(repo.db, "acme-1", accepted.head))!.policyDigest,
+    run: ["lint"],
+    carried: ["engine-test", "web-test"],
+  };
+  const focus = (await closeoutFocus(repo.db, "acme-1", "conflict", conflict))!;
+  expect(focus).toEqual({
+    scope: "failed",
+    head: conflict.head,
+    policyDigest: conflict.policyDigest,
+    passed: ["engine-test", "web-test"],
+  });
+  expect((await session(repo.dir, focus).report()).pending).toEqual(["install", "lint"]);
+  expect(await closeoutFocus(repo.db, "acme-1", "conflict")).toBeUndefined();
+  expect((await closeoutFocus(repo.db, "acme-1", "review"))?.scope).toBe("changed");
+  expect(closeoutFocusPrompt(focus, conflict.run)).toBe(
+    `This restart only resolves a merge conflict with main. get_closeout lists only lint as pending. The other checks passed on ${conflict.head.slice(0, 12)} and Paws does not run them again for this fix. Resolve the conflict and change nothing else.`,
+  );
+  expect(closeoutFocusPrompt(focus)).toStartWith(
+    `Closeout failed on ${conflict.head.slice(0, 12)}.`,
+  );
+}, 60_000);
+
+test("the checks turn skips the carried ids and their missing results are not incomplete", () => {
+  const prompt = closeoutChecksPrompt("a".repeat(40), ["test"], ["proof", "knip"]);
+  expect(prompt).toContain(
+    "Skip these pending ids: test. Paws took their results from green CI on this commit.",
+  );
+  expect(prompt).toContain(
+    "Skip these pending ids too: proof, knip. They passed before the conflict fix and Paws does not run them again.",
+  );
+  expect(closeoutChecksPrompt("a".repeat(40))).not.toContain("Skip these");
+  const report = JSON.stringify({
+    required: [
+      { id: "lint", kind: "command", result: { exitCode: 0 } },
+      { id: "proof", kind: "command" },
+    ],
+  });
+  expect(incompleteReport(report, ["proof"])).toBeUndefined();
+  expect(incompleteReport(report, [])).toBe("no result for proof (it never started)");
+});
 
 test("the turn prompts run only the pending checks and leave the rest to Closeout", () => {
   expect(closeoutPrompt()).toContain(

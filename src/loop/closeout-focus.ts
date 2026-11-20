@@ -1,11 +1,20 @@
 import type { CloseoutFocus } from "../closeout";
 import { getCloseoutProgressSteps, latestCloseoutIdentitySteps, type Db } from "../db";
+import type { ConflictChecks } from "./conflict-checks";
 
 export async function closeoutFocus(
   store: Db,
   itemId: string,
   reason: string | undefined,
+  conflict?: ConflictChecks,
 ): Promise<CloseoutFocus | undefined> {
+  if (conflict)
+    return {
+      scope: "failed",
+      head: conflict.head,
+      policyDigest: conflict.policyDigest,
+      passed: conflict.carried,
+    };
   if (reason !== "findings" && reason !== "review") return undefined;
   const run = await store.run(function* (q) {
     const latest = yield* latestCloseoutIdentitySteps(q, itemId);
