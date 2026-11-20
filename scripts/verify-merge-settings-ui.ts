@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { loadConfigFile, readMergeSettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
+import { openPawsStore } from "../src/db";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
@@ -25,6 +26,10 @@ queuedItem.githubQueue = {
   line: "Second in the acme/platform GitHub merge queue, waiting for checks.",
 };
 const audits: string[] = [];
+const { store, close } = await openPawsStore({
+  url: null,
+  pgliteDir: mkdtempSync(join(tmpdir(), "paws-merging-db-")),
+});
 /** Configured repositories whose main has a GitHub merge queue. */
 let githubQueues = ["acme/platform"];
 const server = Bun.serve({
@@ -39,6 +44,7 @@ const server = Bun.serve({
       (await handleMergeSettingsRequest(request, {
         configPath,
         csrfToken: "ui-fixture",
+        store,
         audit: (_action, subject) => audits.push(subject),
         upToDateRules: async () => ["acme/platform"],
         repos: ["acme/platform"],
@@ -87,7 +93,7 @@ try {
     expect(saved.default).toEqual({ order: "queue", mainMoved: "closeout" });
     expect(readFileSync(configPath, "utf8")).not.toContain("[[merge.rules]]");
     expect(saved.repositories).toEqual({
-      "acme/platform": { packages: ["apps/*", "packages/*"] },
+      "acme/platform": { packages: ["apps/*", "packages/*"], reviewApps: [] },
     });
     await expect(page.locator("#default-main-help")).toHaveText(
       "A Closeout re-check starts with a fresh retry budget.",
@@ -107,6 +113,7 @@ try {
     await expect(page.getByText("Merging settings saved.")).toBeVisible();
     expect(readMergeSettings(loadConfigFile(configPath)).repositories["acme/platform"]).toEqual({
       packages: ["apps/*", "packages/*"],
+      reviewApps: [],
       ignoreCommentBots: ["codecov[bot]", "deploy-bot"],
       ignoreCommentMarkers: [
         "<!-- add-pr-comment:todo-count -->",
@@ -116,6 +123,28 @@ try {
     await page.locator("#merge-ignored-comments").screenshot({
       path: join(directory, `merging-ignored-comments-${width}.png`),
     });
+
+    const checks = page.locator("#merge-conflict-checks");
+    await expect(
+      checks.getByRole("heading", { name: "Checks after a conflict fix" }),
+    ).toBeVisible();
+    await expect(page.locator("#conflict-checks-0")).toHaveValue("");
+    await checks.screenshot({
+      path: join(directory, `merging-conflict-checks-empty-${width}.png`),
+    });
+    await page.locator("#conflict-checks-0").fill("lint\nType Check");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.locator("#conflict-checks-0-error")).toContainText(
+      "Line 2 must be a Closeout check id",
+    );
+    await page.locator("#conflict-checks-0").fill("lint\ntypecheck");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Merging settings saved.")).toBeVisible();
+    expect(
+      readMergeSettings(loadConfigFile(configPath)).repositories["acme/platform"]?.conflictChecks,
+    ).toEqual(["lint", "typecheck"]);
+    await expect(page.locator("#conflict-checks-0")).toHaveValue("lint\ntypecheck");
+    await checks.screenshot({ path: join(directory, `merging-conflict-checks-${width}.png`) });
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);
@@ -133,7 +162,8 @@ try {
       fullPage: true,
     });
 
-    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runs/r-102`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/${queuedItem.id}`);
+    await page.getByRole("button", { name: "Pull request and merge" }).click();
     await expect(
       page.getByRole("heading", {
         name: "Second in the acme/platform GitHub merge queue, waiting for checks.",
@@ -156,4 +186,5 @@ try {
 } finally {
   await browser.close();
   server.stop(true);
+  await close();
 }

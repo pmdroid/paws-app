@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { MergeSettingsView } from "../merge-settings";
 import {
   ciFixProblem,
+  conflictChecksFor,
   conflictProneProblem,
   mergeSettingsBody,
   mergeSettingsRequest,
@@ -572,4 +573,80 @@ test("repository settings round trip and render as editable controls", () => {
   expect(html).toContain('<option value="off" selected>Off</option>');
   expect(html).toContain('<label for="project-lane-0">abc</label>');
   expect(html).toContain('<option value="repository" selected>Repository lane</option>');
+});
+
+describe("Checks after a conflict fix", () => {
+  const view = (): MergeSettingsView => ({
+    ...data(),
+    highRiskRepositories: [
+      {
+        repository: "acme/platform",
+        paths: [],
+        file: { state: "missing", commit: "a".repeat(40) },
+      },
+      { repository: "acme/web", paths: [], file: { state: "missing", commit: "b".repeat(40) } },
+    ],
+    conflictChecks: [{ repository: "ACME/platform", ids: ["lint", "typecheck"] }],
+  });
+
+  test("one field per listed repository with the stored ids", () => {
+    const html = renderMergeSettings({ data: view(), busy: null, error: null, saved: false });
+    const section = html.slice(html.indexOf('id="merge-conflict-checks"'));
+    expect(section).toContain("<h2>Checks after a conflict fix</h2>");
+    expect(section).toContain(
+      "When a restart only resolved a merge conflict, the agent and Closeout run just these checks, and both reviews. The other checks keep their result from before the conflict, and CI has to be green on the fixed commit. Leave empty to run every check.",
+    );
+    expect(section).toMatch(
+      /<textarea id="conflict-checks-0" name="conflict-checks-0"[^>]*placeholder="lint&#10;typecheck"[^>]*>lint\ntypecheck<\/textarea>/,
+    );
+    expect(section).toMatch(
+      /<textarea id="conflict-checks-1" name="conflict-checks-1"[^>]*><\/textarea>/,
+    );
+    expect(section).not.toContain("conflict-checks-2");
+    const { conflictChecks: _, ...older } = view();
+    expect(
+      renderMergeSettings({ data: older, busy: null, error: null, saved: false }),
+    ).not.toContain("merge-conflict-checks");
+    expect(mergeSettingsBody(older)).not.toHaveProperty("conflictChecks");
+  });
+
+  test("the save body carries the edited lists and an emptied field sends an empty list", () => {
+    const edited = view();
+    const texts = ["", " lint \r\n\nproof\n"];
+    edited.conflictChecks = conflictChecksFor(
+      edited.highRiskRepositories!,
+      [...edited.conflictChecks!, { repository: "acme/docs", ids: ["lint"] }],
+      (index) => texts[index],
+    );
+    expect(mergeSettingsBody(edited).conflictChecks).toEqual([
+      { repository: "acme/platform", ids: [] },
+      { repository: "acme/web", ids: ["lint", "proof"] },
+      { repository: "acme/docs", ids: ["lint"] },
+    ]);
+    expect(mergeSettingsBody(view()).conflictChecks).toEqual([
+      { repository: "acme/platform", ids: ["lint", "typecheck"] },
+      { repository: "acme/web", ids: [] },
+    ]);
+  });
+
+  test("a rejected save shows the problem under the repository's field", () => {
+    const failed = renderMergeSettings({
+      data: view(),
+      busy: null,
+      error: "conflictChecks.1.ids.0 must be a Closeout check id such as lint or shared/lint",
+      field: "conflictChecks.1",
+      saved: false,
+    });
+    expect(failed).toContain(
+      "Merging settings were not saved. Fix the field marked under Checks after a conflict fix.",
+    );
+    expect(failed).toContain(
+      'aria-describedby="conflict-checks-1-help conflict-checks-1-error" aria-invalid="true"',
+    );
+    expect(failed).toContain(
+      '<small class="err" id="conflict-checks-1-error" role="alert">Line 1 must be a Closeout check id such as lint or shared/lint</small>',
+    );
+    expect(failed).not.toContain('id="conflict-checks-0-error"');
+    expect(fieldProblem("conflictChecks.0.ids lists a check twice")).toBe("Lists a check twice");
+  });
 });

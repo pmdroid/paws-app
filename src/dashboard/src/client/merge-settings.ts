@@ -3,6 +3,7 @@ import { MERGE_QUEUE_API_PATH, parseMergeQueueResponse } from "../contract";
 import { renderMarkup } from "./theme";
 import type {
   CommentWait,
+  ConflictChecks,
   HighRiskRepository,
   HotFile,
   IgnoredComments,
@@ -217,7 +218,7 @@ const IGNORED_LISTS = [
 
 export function fieldProblem(message: string): string {
   const text = message.replace(
-    /^(?:ignoredComments\.\d+\.\w+(?:\.(\d+))?|conflictProne\w+)\s*/,
+    /^(?:(?:ignoredComments\.\d+\.\w+|conflictChecks\.\d+\.ids)(?:\.(\d+))?|conflictChecks\.\d+\.\w+|conflictProne\w+)\s*/,
     (_, line) => (line === undefined ? "" : `Line ${Number(line) + 1} `),
   );
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -240,6 +241,47 @@ function ignoredSection(repositories: readonly IgnoredComments[], view: View): s
         .join("")
     : '<p class="sub">No repositories yet. Connect one under Integrations.</p>';
   return `<section class="settings-section" id="merge-ignored-comments"><div class="settings-label"><h2>Ignored PR comments</h2><p class="sub">Comments that only report status, so they never send the pull request back to the agent. One entry per line. Applies to the next comment.</p></div><div class="col">${body}</div></section>`;
+}
+
+export function conflictChecksFor(
+  repositories: readonly HighRiskRepository[],
+  stored: readonly ConflictChecks[],
+  text: (index: number) => string | undefined = () => undefined,
+): ConflictChecks[] {
+  const ids = (repository: string) =>
+    stored.find((entry) => entry.repository.toLowerCase() === repository.toLowerCase())?.ids ?? [];
+  const listed = new Set(repositories.map((entry) => entry.repository.toLowerCase()));
+  return [
+    ...repositories.map((entry, index) => {
+      const value = text(index);
+      return {
+        repository: entry.repository,
+        ids: value === undefined ? ids(entry.repository) : riskGlobs(value),
+      };
+    }),
+    ...stored.filter((entry) => !listed.has(entry.repository.toLowerCase())),
+  ];
+}
+
+function conflictChecksSection(
+  repositories: readonly HighRiskRepository[],
+  stored: readonly ConflictChecks[],
+  view: View,
+): string {
+  const lists = conflictChecksFor(repositories, stored);
+  const body = repositories.length
+    ? repositories
+        .map((entry, index) => {
+          const id = `conflict-checks-${index}`;
+          const problem =
+            view.error && view.field === `conflictChecks.${index}`
+              ? fieldProblem(view.error)
+              : null;
+          return `<section class="settings-project"><h3>${esc(entry.repository)}</h3><div class="settings-field"><label for="${id}">Check ids</label><textarea id="${id}" name="${id}" rows="4" spellcheck="false" autocapitalize="none" placeholder="lint&#10;typecheck" aria-describedby="${id}-help${problem ? ` ${id}-error` : ""}"${problem ? ' aria-invalid="true"' : ""}>${esc(lists[index]!.ids.join("\n"))}</textarea><small class="sub" id="${id}-help">One Closeout check id per line.</small>${problem ? `<small class="err" id="${id}-error" role="alert">${esc(problem)}</small>` : ""}</div></section>`;
+        })
+        .join("")
+    : '<p class="sub">No repositories yet. Connect one under Integrations.</p>';
+  return `<section class="settings-section" id="merge-conflict-checks"><div class="settings-label"><h2>Checks after a conflict fix</h2><p class="sub">When a restart only resolved a merge conflict, the agent and Closeout run just these checks, and both reviews. The other checks keep their result from before the conflict, and CI has to be green on the fixed commit. Leave empty to run every check.</p></div><div class="col">${body}</div></section>`;
 }
 
 function repositoryProjectSection(data: MergeSettingsView): string {
@@ -271,7 +313,7 @@ export function renderMergeSettings(view: View): string {
   const data = view.data;
   const repos = { queues: data.githubQueue?.repositories ?? [], upToDate: data.upToDateRule ?? [] };
   const feedback = view.error
-    ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.field && CONFLICT_PRONE_FIELDS.some((rule) => rule.key === view.field) ? "Merging settings were not saved. Fix the field marked under Conflict-prone files." : view.error)}</p>`
+    ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.field?.startsWith("conflictChecks.") ? "Merging settings were not saved. Fix the field marked under Checks after a conflict fix." : view.field && CONFLICT_PRONE_FIELDS.some((rule) => rule.key === view.field) ? "Merging settings were not saved. Fix the field marked under Conflict-prone files." : view.error)}</p>`
     : view.saved
       ? '<p class="settings-message" role="status">Merging settings saved. Items that start from now on use them.</p>'
       : "";
@@ -286,6 +328,7 @@ export function renderMergeSettings(view: View): string {
       ${riskGateSection(data.riskGate)}
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
+      ${data.highRiskRepositories && data.conflictChecks ? conflictChecksSection(data.highRiskRepositories, data.conflictChecks, view) : ""}
       ${data.ignoredComments ? ignoredSection(data.ignoredComments, view) : ""}
       ${data.hotFiles || data.overlapHold !== undefined || data.conflictProneAfter !== undefined || data.conflictProneDays !== undefined ? hotFileSection(data, view) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
@@ -467,6 +510,9 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       : {}),
     ...(data.ignoredComments ? { ignoredComments: data.ignoredComments } : {}),
     ...(data.parallelFiles ? { parallelFiles: data.parallelFiles } : {}),
+    ...(data.highRiskRepositories && data.conflictChecks
+      ? { conflictChecks: conflictChecksFor(data.highRiskRepositories, data.conflictChecks) }
+      : {}),
     ...(data.overlapHold === undefined ? {} : { overlapHold: data.overlapHold }),
     ...(data.conflictProneAfter === undefined
       ? {}
@@ -627,6 +673,13 @@ export function createMergeSettings(invalidate: () => void): {
       const text = form.querySelector<HTMLTextAreaElement>(`[name="risk-${index}"]`)?.value;
       return text === undefined ? entry : { ...entry, paths: riskGlobs(text) };
     });
+    if (data.highRiskRepositories && data.conflictChecks)
+      data.conflictChecks = conflictChecksFor(
+        data.highRiskRepositories,
+        data.conflictChecks,
+        (index) =>
+          form.querySelector<HTMLTextAreaElement>(`[name="conflict-checks-${index}"]`)?.value,
+      );
     data.ignoredComments = data.ignoredComments?.map((entry, index) => {
       const next = { ...entry };
       for (const list of IGNORED_LISTS) {
@@ -676,6 +729,10 @@ export function createMergeSettings(invalidate: () => void): {
         view.error = error instanceof Error ? error.message : "Could not update merging settings.";
         const field = (error as { field?: unknown }).field;
         if (typeof field === "string") view.field = field;
+        else {
+          const index = /^conflictChecks\.(\d+)\./.exec(view.error)?.[1];
+          if (index !== undefined) view.field = `conflictChecks.${index}`;
+        }
       }
     } finally {
       if (started === generation) {
@@ -817,7 +874,7 @@ export function createMergeSettings(invalidate: () => void): {
     // it, such as Save. Submit and the other buttons read it.
     if (target.name === "merge-ci-fix-attempts" || target.name === "session-quiet") return;
     if (target.name.startsWith("merge-conflict-prone-")) return;
-    if (/^(repo|new|risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
+    if (/^(repo|new|risk|ignore-bots|ignore-markers|conflict-checks)-/.test(target.name)) return;
     draft();
     paint();
   };
