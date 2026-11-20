@@ -64,6 +64,15 @@ Each answer may leave notes for later questions in the same thread, so a follow-
 - A later answer in the thread gets the notes whose repositories its asker's Paws teams can read and may be shown in the channel now ([answers drawn from code](#answers-drawn-from-code)); Paws leaves out the others without saying so. Notes take at most 8 KB of the prompt: notes naming a file or symbol from the question first, then the newest. A note written at another commit than the one this answer reads shows that commit. An answer given notes depends on every repository those notes record, like an answer that builds on an earlier one: Paws checks them again before posting, records them with the reply, and records them on the notes that answer leaves.
 - Notes are never merged, edited or deleted. When two disagree, both are shown and the agent is told to check the code.
 
+### Follow-ups
+
+When you ask Paws to tell you about something later, or its answer promises to check back, the answer can schedule a follow-up in its thread: after a time, or when an issue filed from the thread ([Work in the thread](#work-in-the-thread)) ends or opens its pull request.
+
+- The answer says what Paws will follow up on and ends with `_Follow-up <id>: <when>. Cancel with @Paws cancel <id>._`. Paws schedules it only once the answer is queued to post; an answer that is withheld, stopped or fails schedules nothing. A follow-up for work not filed from the thread, or one Paws can't read, schedules nothing and the answer posts as usual.
+- A thread has at most one pending follow-up, a member at most 10. A timed follow-up is 5 minutes to 24 hours ahead, and every follow-up lapses after 24 hours. When Paws can't schedule one, it tells only you why.
+- `follow-ups` lists your pending follow-ups in the thread, and `cancel <id>` cancels one of yours; both answer only you, with or without the mention, and need no runner.
+- `stop` in the thread cancels its follow-ups.
+
 ### Channel memory
 
 Paws keeps a memory for the channel, so a new thread can build on what was decided in an earlier one. It holds only what linked members ask it to keep; Paws doesn't read or import channel history.
