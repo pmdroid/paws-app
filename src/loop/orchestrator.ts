@@ -11780,7 +11780,7 @@ export class Orchestrator {
       { sha: tip, author: "unknown", subject: (await readCommit({ ...read, sha: tip })).subject },
     ];
     if (!remote) await git(["-C", checkout, "reset", "--hard", tip]);
-    else
+    else {
       await this.store.run((q) =>
         recordItemCandidateSteps(q, {
           itemId: item.id,
@@ -11789,6 +11789,8 @@ export class Orchestrator {
           recordedAt: this.now(),
         }),
       );
+      await this.restoreCandidate(item, signal);
+    }
     await this.post(
       item,
       "thought",
