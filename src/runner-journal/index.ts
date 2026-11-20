@@ -96,6 +96,30 @@ const toolRequest = z.strictObject({
   arguments: HostToolArgumentsSchema,
 });
 
+export type RunnerToolRequest = Omit<z.infer<typeof toolRequest>, "type">;
+
+export function readRunnerToolRequests(
+  bytes: Buffer,
+  offset: number,
+): { requests: RunnerToolRequest[]; offset: number } {
+  const requests: RunnerToolRequest[] = [];
+  while (offset < bytes.length) {
+    const end = bytes.indexOf(10, offset);
+    if (end < 0) break;
+    const tool = toolRequest.safeParse(
+      withoutJournalTime(JSON.parse(bytes.subarray(offset, end).toString("utf8"))),
+    );
+    if (tool.success)
+      requests.push({
+        requestId: tool.data.requestId,
+        name: tool.data.name,
+        arguments: tool.data.arguments,
+      });
+    offset = end + 1;
+  }
+  return { requests, offset };
+}
+
 function executionId(now: number): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);

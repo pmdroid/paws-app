@@ -157,6 +157,7 @@ import {
   type GitHubReadFailure,
   type HostToolDefinitions,
   type RunnerArtifact,
+  type RunnerCommand,
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
@@ -457,6 +458,27 @@ export function remoteRecall(
   };
 }
 
+const HELPER_TOOL_CALLS = 64;
+
+export function commandTools(
+  command: RunnerCommand,
+  emit: Parameters<typeof remoteTools>[1],
+  answer: Parameters<typeof remoteTools>[2] | undefined,
+  signal: AbortSignal | undefined,
+): Pick<RunAgentOptions, "hostTools"> {
+  const helper = command.type === "helper" && command.purpose === "slack_reply";
+  if ((command.type !== "run" && !helper) || !command.tools || !answer) return {};
+  return {
+    hostTools: remoteTools(
+      command.tools,
+      emit,
+      answer,
+      signal ?? new AbortController().signal,
+      helper ? HELPER_TOOL_CALLS : HOST_TOOL_LIMITS.callsPerCommand,
+    ),
+  };
+}
+
 export function remoteTools(
   definitions: HostToolDefinitions,
   emit: (event: {
@@ -467,6 +489,7 @@ export function remoteTools(
   }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
   signal: AbortSignal,
+  limit: number = HOST_TOOL_LIMITS.callsPerCommand,
 ): NonNullable<RunAgentOptions["hostTools"]> {
   let calls = 0;
   return {
@@ -481,9 +504,9 @@ export function remoteTools(
         };
       const parsed = HostToolArgumentsSchema.safeParse(args);
       if (!parsed.success) return { text: "The arguments must be a JSON object.", isError: true };
-      if (++calls > HOST_TOOL_LIMITS.callsPerCommand)
+      if (++calls > limit)
         return {
-          text: `This run already made ${HOST_TOOL_LIMITS.callsPerCommand} tool calls.`,
+          text: `This run already made ${limit} tool calls.`,
           isError: true,
         };
       const requestId = randomUUID();
@@ -1559,16 +1582,7 @@ export async function executeRunnerCommand(
             ),
           }
         : {}),
-      ...(command.type === "run" && command.tools && options.answer
-        ? {
-            hostTools: remoteTools(
-              command.tools,
-              emit,
-              options.answer,
-              options.signal ?? new AbortController().signal,
-            ),
-          }
-        : {}),
+      ...commandTools(command, emit, options.answer, options.signal),
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : (talk?.itemId ?? job.executionId),
       runId: job.executionId,

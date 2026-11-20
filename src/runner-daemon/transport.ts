@@ -98,8 +98,8 @@ type RunnerRequest = {
   runGrant?: string;
 };
 
-export async function requestJson(input: RunnerRequest): Promise<unknown> {
-  const bytes = await requestBytes(input, "application/json", 16 * 1024 * 1024);
+export async function requestJson(input: RunnerRequest, timeoutMs?: number): Promise<unknown> {
+  const bytes = await requestBytes(input, "application/json", 16 * 1024 * 1024, timeoutMs);
   try {
     return JSON.parse(bytes.toString("utf8"));
   } catch {
