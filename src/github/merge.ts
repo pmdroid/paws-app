@@ -37,6 +37,8 @@ export type SerialMergeInput = {
    * so its S is its candidate ref in the bare mirror.
    */
   ref?: string;
+  /** The head the rebase push expects on the branch; the head the lane read when unset. */
+  expectedHead?: string;
   publishedAt?: (head: string) => number | null | Promise<number | null>;
   issue: string;
   branchKey?: string;
@@ -646,7 +648,7 @@ async function pushRebased(
         token: minted,
         gitExec,
         sleep: input.sleep,
-        expected: before,
+        expected: input.expectedHead ?? before,
       });
     } catch (error) {
       // The push waits out the outage: keep the head the lane started from, not one GitHub lacks.
