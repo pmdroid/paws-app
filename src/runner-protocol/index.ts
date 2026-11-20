@@ -173,7 +173,6 @@ export {
 export {
   MINIMUM_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
-  SLACK_REPLY_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
 export {

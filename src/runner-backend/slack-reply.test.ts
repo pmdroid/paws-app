@@ -14,7 +14,6 @@ import {
   MINIMUM_RUNNER_VERSION,
   RUNNER_SLACK_REPLY_MS,
   RUNNER_SLACK_REPLY_PROMPT_BYTES,
-  SLACK_REPLY_RUNNER_VERSION,
   type RunnerCommand,
   type RunnerHelperResult,
   type RunnerSlackReplyScope,
@@ -34,7 +33,7 @@ afterEach(async () => {
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
-const SLACK_VERSION = SLACK_REPLY_RUNNER_VERSION.join(".");
+const SLACK_VERSION = MINIMUM_RUNNER_VERSION.join(".");
 
 async function fixture(
   options: { conversations?: number; version?: string; runners?: string[] } = {},
@@ -283,8 +282,8 @@ test("a Slack reply stops waiting at its timeout and ends its helper", async () 
   expect(await sqlRows(f.db, "SELECT id FROM runner_helper WHERE ended_at IS NULL")).toEqual([]);
 });
 
-test("a runner older than the Slack reply release gets no Slack reply", async () => {
-  const f = await fixture({ version: MINIMUM_RUNNER_VERSION.join(".") });
+test("a runner below the minimum release gets no Slack reply", async () => {
+  const f = await fixture({ version: "0.1.94" });
   expect((await f.ask()).status).toBe("refused");
   expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
   expect(await f.helpers.commands("runner")).toEqual([]);
@@ -294,12 +293,7 @@ test("a downgraded runner cannot pick up or answer a Slack reply", async () => {
   const f = await fixture();
   const reply = f.ask();
   const command = await f.sent();
-  await recordRunnerHostStatus(
-    f.db,
-    "runner",
-    { runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
-    Date.now(),
-  );
+  await recordRunnerHostStatus(f.db, "runner", { runnerVersion: "0.1.94" }, Date.now());
   expect(await f.helpers.commands("runner")).toEqual([]);
   await expect(f.helpers.submit("runner", f.result(command))).rejects.toThrow(
     "Slack reply authority changed",

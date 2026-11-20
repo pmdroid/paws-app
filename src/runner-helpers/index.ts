@@ -33,12 +33,12 @@ import {
   HostToolNameSchema,
   RunnerCommandSchema,
   RunnerHelperResultSchema,
+  MINIMUM_RUNNER_VERSION,
   RUNNER_RESULT_BODY_LIMIT,
   runnerHelperLifetime,
   runnerAccountEchoed,
   runnerReleaseAtLeast,
   signRunnerCommand,
-  SLACK_REPLY_RUNNER_VERSION,
   withRejectedFields,
   type HostToolDefinitions,
   type RunnerCommand,
@@ -242,10 +242,7 @@ export function createRunnerHelpers(options: {
         sessionId !== slack.requestId ||
         generation !== slack.installGeneration ||
         runner.userId !== slack.memberUserId ||
-        !runnerReleaseAtLeast(
-          yield* runnerHostVersionSteps(q, runnerId),
-          SLACK_REPLY_RUNNER_VERSION,
-        ) ||
+        !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runnerId), MINIMUM_RUNNER_VERSION) ||
         !(yield* options.slack(q, { workspaceId: runner.workspaceId, scope: slack, issuedAt }))
       )
         throw new HelperFencedError("Slack reply authority changed");
