@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, resolveBriefTemplate, writeBriefTemplates } from "../src/config";
+import {
+  loadConfigFile,
+  resolveBriefTemplate,
+  useMemorySettings,
+  writeBriefTemplates,
+} from "../src/config";
 import {
   previewBriefValues,
   defaultBriefTemplate,
@@ -61,6 +66,7 @@ describe("brief templates", () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-test-"));
     try {
       const path = join(dir, "config.toml");
+      useMemorySettings(path);
       await writeBriefTemplates(path, { template: "First" });
       expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
       await writeBriefTemplates(path, { template: "Second" });
@@ -158,6 +164,7 @@ describe("brief templates", () => {
           audit.push(`${action}: ${subject}`);
         },
       };
+      useMemorySettings(options.configPath);
       const put = (body: unknown, token = "token", origin = "http://localhost") =>
         handleBriefSettingsRequest(
           new Request("http://localhost/api/settings/brief", {

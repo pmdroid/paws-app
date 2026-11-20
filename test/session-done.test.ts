@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { parseConfigToml } from "../src/config";
+import { parseConfigToml, useMemorySettings } from "../src/config";
 import {
   enqueueOutbox,
   listOutbox,
@@ -319,6 +319,7 @@ describe("the session setting on the Merging settings API", () => {
     const store = await tempStore();
     close = store.close;
     const configPath = join(tempHome(), "config.toml");
+    useMemorySettings(configPath);
     const options = { configPath, csrfToken: "test-token", store: store.db };
     const read = async () => (await handleMergeSettingsRequest(request(), options))!.json();
     expect(await read()).toMatchObject({ sessionDone: "pull_request", sessionQuietMinutes: 10 });
