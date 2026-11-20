@@ -25,6 +25,30 @@ import { askSteps, restartSteps } from "./operations";
 /** Marks a comment Paws posted as a review reply, so it never comes back as a new comment. */
 export const REVIEW_REPLY_MARKER = "<!-- paws-review-reply -->";
 
+function botName(login: string): string {
+  return login.toLowerCase().replace(/\[bot\]$/, "");
+}
+
+export function isPawsComment(
+  comment: { author: string | null; body: string },
+  appLogin: string | null,
+): boolean {
+  if (comment.body.includes(REVIEW_REPLY_MARKER)) return true;
+  return (
+    appLogin !== null && comment.author !== null && botName(comment.author) === botName(appLogin)
+  );
+}
+
+export function withoutPawsComments(
+  threads: readonly ReviewThread[],
+  appLogin: string | null,
+): ReviewThread[] {
+  return threads.flatMap((thread) => {
+    const comments = thread.comments.filter((comment) => !isPawsComment(comment, appLogin));
+    return comments.length === 0 ? [] : [{ ...thread, comments }];
+  });
+}
+
 const EXCERPT_CHARS = 160;
 
 /**
@@ -37,19 +61,25 @@ export function replyTargets(input: {
   threads: readonly ReviewThread[];
   reviews: readonly Pick<PullReviewRecord, "reviewId" | "reviewer" | "body">[];
   comments: readonly PullCommentRecord[];
+  appLogin?: string | null;
 }): NewReviewReply[] {
+  const appLogin = input.appLogin ?? null;
+  const own = (author: string | null, body: string) => isPawsComment({ author, body }, appLogin);
+  const threads = withoutPawsComments(input.threads, appLogin);
+  const reviews = input.reviews.filter((review) => !own(review.reviewer, review.body));
+  const comments = input.comments.filter((comment) => !own(comment.author, comment.body));
   const reviewIds = new Set<number>([
-    ...input.reviews.map((review) => review.reviewId),
-    ...input.comments.flatMap((comment) =>
+    ...reviews.map((review) => review.reviewId),
+    ...comments.flatMap((comment) =>
       comment.source !== "conversation" && comment.reviewId !== null ? [comment.reviewId] : [],
     ),
   ]);
   const inlineIds = new Set(
-    input.comments.filter((comment) => comment.source === "inline").map((c) => c.commentId),
+    comments.filter((comment) => comment.source === "inline").map((c) => c.commentId),
   );
   const targets: Omit<NewReviewReply, "number">[] = [];
   const answered = new Set<number>();
-  for (const thread of input.threads) {
+  for (const thread of threads) {
     const first = thread.comments[0];
     if (!first) continue;
     const belongs = thread.comments.some(
@@ -72,7 +102,7 @@ export function replyTargets(input: {
     });
   }
   // An inline comment whose thread the read did not return is answered on its own.
-  for (const comment of input.comments)
+  for (const comment of comments)
     if (comment.source === "inline" && !answered.has(comment.commentId))
       targets.push({
         pullNumber: input.pullNumber,
@@ -84,7 +114,7 @@ export function replyTargets(input: {
           `${comment.path ? `${comment.path}${comment.line === null ? "" : `:${comment.line}`}: ` : ""}${comment.body}`,
         ),
       });
-  for (const review of input.reviews)
+  for (const review of reviews)
     if (review.body.trim() !== "")
       targets.push({
         pullNumber: input.pullNumber,
@@ -94,7 +124,7 @@ export function replyTargets(input: {
         author: review.reviewer,
         excerpt: excerpt(review.body),
       });
-  for (const comment of input.comments)
+  for (const comment of comments)
     if ((comment.source === "review" || comment.source === "conversation") && comment.body.trim())
       targets.push({
         pullNumber: input.pullNumber,

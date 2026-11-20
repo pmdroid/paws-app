@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { z } from "zod";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
-import { readMergeReadiness, type Readiness, type FailedCheck } from "./readiness";
+import { readMergeReadiness, type Readiness, type FailedCheck, type OwnComment } from "./readiness";
 import type { GitHubClient } from "./types";
 
 /** GitHub's `MergeQueueEntryState`. */
@@ -334,6 +334,7 @@ export type GitHubQueueMergeInput = {
   /** The head Closeout accepted. GitHub refuses to queue another head. */
   head: string;
   client: GitHubClient;
+  ownComment?: OwnComment;
   appId?: string;
   installationId?: string;
   privateKeyPem?: string;
@@ -412,6 +413,7 @@ export async function githubQueueMerge(
     repo: input.repo,
     prNumber: input.prNumber,
     head: input.head,
+    ...(input.ownComment ? { ownComment: input.ownComment } : {}),
   });
   if (readiness.outcome === "pending")
     return { outcome: "checks_pending", message: readiness.message };

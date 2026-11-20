@@ -64,7 +64,13 @@ export function fakeMergeReadiness(head: string) {
             },
           },
           reviewThreads: {
-            nodes: [] as { isResolved: boolean }[],
+            nodes: [] as {
+              isResolved: boolean;
+              comments?: {
+                totalCount: number;
+                nodes: { author: { login: string } | null; body: string }[];
+              };
+            }[],
             pageInfo: { hasNextPage: false, endCursor: null as string | null },
           },
         },

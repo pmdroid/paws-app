@@ -419,6 +419,33 @@ test("no CI still waits for unresolved review threads", async () => {
   expect(result).toMatchObject({ outcome: "pending", unresolvedThreads: 1 });
 });
 
+test("an unresolved thread holds the merge unless all its comments are Paws's own", async () => {
+  const bot = { author: { login: "paws-arcade" }, body: "noted" };
+  const person = { author: { login: "octocat" }, body: "please fix" };
+  const cases = [
+    { nodes: [bot, bot], totalCount: 2, unresolved: undefined },
+    { nodes: [bot, person], totalCount: 2, unresolved: 1 },
+    { nodes: Array.from({ length: 100 }, () => bot), totalCount: 101, unresolved: 1 },
+  ];
+  for (const { nodes, totalCount, unresolved } of cases) {
+    const f = fixture(() => {
+      const response = noCi(new Date(Date.now() - 6 * 60_000).toISOString());
+      response.body.data.repository.pullRequest.reviewThreads.nodes = [
+        { isResolved: false, comments: { totalCount, nodes } },
+      ];
+      return response;
+    });
+    const result = await waitForMergeReadiness({
+      ...f.input,
+      publishedAt: () => Date.now() - 6 * 60_000,
+      releaseWhilePending: true,
+      ownComment: (comment) => comment.author === "paws-arcade",
+    });
+    expect(result.unresolvedThreads).toBe(unresolved);
+    expect(result.outcome).toBe(unresolved === undefined ? "ready" : "pending");
+  }
+});
+
 test("a failing check names the checks still running for the lane to wait", async () => {
   for (const conclusion of ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]) {
     const result = await readOnce(() =>

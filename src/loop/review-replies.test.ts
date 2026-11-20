@@ -38,9 +38,11 @@ import { questionEffects } from "./question-effects";
 import {
   REVIEW_REPLY_MARKER,
   checkReviewReplies,
+  isPawsComment,
   parseReviewReplies,
   postReviewReplies,
   recordReplyTargets,
+  replyTargets,
   type ReviewReplyGitHub,
 } from "./review-replies";
 import { worktreeBranch } from "./sources";
@@ -790,5 +792,48 @@ describe("parseReviewReplies", () => {
       [3, { outcome: "not_changed", reply: "Out of scope here." }],
       [4, { outcome: "not_changed", reply: "Would break the cache." }],
     ]);
+  });
+});
+
+describe("Paws's own comments", () => {
+  test("isPawsComment matches the App's bot login or the marker", () => {
+    const app = "paws-arcade[bot]";
+    expect(isPawsComment({ author: "paws-arcade[bot]", body: "x" }, app)).toBe(true);
+    expect(isPawsComment({ author: "Paws-Arcade", body: "x" }, app)).toBe(true);
+    expect(isPawsComment({ author: "rev", body: `ok\n\n${REVIEW_REPLY_MARKER}` }, null)).toBe(true);
+    expect(isPawsComment({ author: "rev", body: "please fix" }, app)).toBe(false);
+    expect(isPawsComment({ author: "paws-arcade[bot]", body: "x" }, null)).toBe(false);
+  });
+
+  test("replyTargets skips a thread Paws started and keeps a person's thread without Paws's reply", () => {
+    const targets = replyTargets({
+      pullNumber: 7,
+      appLogin: "paws-arcade[bot]",
+      threads: [
+        {
+          id: "RT_1",
+          path: "src/a.ts",
+          line: 1,
+          outdated: false,
+          comments: [{ author: "paws-arcade[bot]", body: "Paws note", reviewId: 601 }],
+        },
+        {
+          id: "RT_2",
+          path: "src/b.ts",
+          line: 2,
+          outdated: false,
+          comments: [
+            { author: "rev", body: "Fix this", reviewId: 601, databaseId: 1 },
+            { author: "paws-arcade[bot]", body: "Fixed", reviewId: 602, databaseId: 2 },
+          ],
+        },
+      ],
+      reviews: [
+        { reviewId: 601, reviewer: "rev", body: "" },
+        { reviewId: 602, reviewer: "paws-arcade[bot]", body: "Paws review" },
+      ],
+      comments: [],
+    });
+    expect(targets.map((target) => [target.threadId, target.author])).toEqual([["RT_2", "rev"]]);
   });
 });

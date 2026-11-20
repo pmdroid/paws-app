@@ -1929,6 +1929,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               })
             : null,
         linearTaskModes: true,
+        appLogin: (repository) => commentFilter.appLogin(repository),
         remoteExecution,
         ...(placeOnRunner
           ? {
