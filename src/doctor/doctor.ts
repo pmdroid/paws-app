@@ -400,6 +400,14 @@ function slackChecks(slack: NonNullable<ProbeFacts["slack"]>[number]): DoctorChe
       `slack ${teamId} optional`,
       [...later, "Slack Code is not available yet; channel threads work without it"].join("; "),
     ),
+    ...(capabilities.reactions.ready
+      ? []
+      : [
+          note(
+            `slack ${teamId} reactions`,
+            `Slack ${teamId}: reactions are off. Add reactions:write to the Slack app and reconnect Slack to show 🐾 on messages Paws takes up. Reconnecting resets the channel setup and member links.`,
+          ),
+        ]),
   ];
 }
 
