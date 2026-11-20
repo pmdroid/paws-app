@@ -490,3 +490,44 @@ test("a run command carries at most 16 well-formed Paws-defined tools within 32,
   );
   expect(parses(wide(16))).toBe(true);
 });
+
+test("a repository summary helper names one repository and carries no tools or Slack thread", () => {
+  const helper = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + 120_000,
+    sessionId: "summary-request",
+    sessionGeneration: 0,
+    purpose: "repository_summary",
+    profile,
+    prompt: "Summarise this README.",
+    summary: { repository: "acme/web" },
+  };
+  expect(RunnerCommandSchema.safeParse(helper).success).toBe(true);
+  for (const refused of [
+    { ...helper, summary: undefined },
+    { ...helper, summary: { repository: "acme" } },
+    { ...helper, summary: { repository: "acme/web/extra" } },
+    { ...helper, summary: { repository: "acme/web", token: "secret" } },
+    { ...helper, tools: [{ name: "linear_issue", description: "Read.", inputSchema: {} }] },
+    {
+      ...helper,
+      slack: {
+        requestId: "summary-request",
+        teamId: "T0ACME",
+        channelId: "C0GENERAL",
+        threadTs: "1795053091.151000",
+        memberUserId: "member-ada",
+        installGeneration: 0,
+      },
+    },
+    {
+      ...helper,
+      conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" },
+    },
+    { ...helper, expiresAt: common.issuedAt + 120_001 },
+    { ...helper, prompt: "x".repeat(65_537) },
+    { ...helper, purpose: "classify", expiresAt: common.issuedAt + 60_000 },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});

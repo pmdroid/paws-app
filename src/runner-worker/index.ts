@@ -1482,7 +1482,10 @@ export async function executeRunnerCommand(
         : talk?.resumeSessionId;
     const agent: RunAgentOptions = {
       ...options.launch,
-      hostAccess: !(command.type === "helper" && command.purpose === "slack_reply"),
+      hostAccess: !(
+        command.type === "helper" &&
+        (command.purpose === "slack_reply" || command.purpose === "repository_summary")
+      ),
       skillsRoot,
       ...(options.skills && (repository || task)
         ? {

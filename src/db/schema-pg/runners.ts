@@ -267,7 +267,10 @@ export const runnerHelper = pgTable(
   },
   (table) => [
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
-    check("runner_helper_session", sql`(purpose = 'slack_reply') = (session_id IS NULL)`),
+    check(
+      "runner_helper_session",
+      sql`(purpose IN ('slack_reply', 'repository_summary')) = (session_id IS NULL)`,
+    ),
   ],
 );
 

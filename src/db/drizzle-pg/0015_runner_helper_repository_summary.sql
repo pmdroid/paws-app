@@ -1,0 +1,2 @@
+ALTER TABLE "runner_helper" DROP CONSTRAINT "runner_helper_session";--> statement-breakpoint
+ALTER TABLE "runner_helper" ADD CONSTRAINT "runner_helper_session" CHECK ((purpose IN ('slack_reply', 'repository_summary')) = (session_id IS NULL));

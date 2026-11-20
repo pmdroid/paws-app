@@ -60,6 +60,7 @@ type HelperDispatch = {
   account?: RunnerAccount;
   conversation?: HelperCommand["conversation"];
   slack?: RunnerSlackReplyScope;
+  summary?: HelperCommand["summary"];
   tools?: HostToolDefinitions;
 };
 
@@ -85,6 +86,11 @@ export type SlackReplyAuthority = (
   input: { workspaceId: string; scope: RunnerSlackReplyScope; issuedAt?: number },
 ) => Steps<boolean>;
 
+type RepositorySummaryAuthority = (
+  q: Q,
+  input: { workspaceId: string; userId: string; repository: string },
+) => Steps<boolean>;
+
 export class HelperFencedError extends Error {
   override readonly name = "HelperFencedError";
 }
@@ -105,6 +111,7 @@ export function createRunnerHelpers(options: {
     envelopes: SignedRunnerCommand[],
   ) => Promise<SignedRunnerCommand[]>;
   slack?: SlackReplyAuthority;
+  summary?: RepositorySummaryAuthority;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
@@ -148,8 +155,22 @@ export function createRunnerHelpers(options: {
     purpose: HelperCommand["purpose"] | undefined,
     slack: RunnerSlackReplyScope | undefined,
     issuedAt: number,
+    summary?: HelperCommand["summary"],
   ) {
     const runner = yield* identitySteps(q, runnerId);
+    if (purpose === "repository_summary") {
+      if (
+        !summary ||
+        !options.summary ||
+        !(yield* options.summary(q, {
+          workspaceId: runner.workspaceId,
+          userId: runner.userId,
+          repository: summary.repository,
+        }))
+      )
+        throw new HelperFencedError("Repository summary authority changed");
+      return runner;
+    }
     if (purpose === "slack_reply") {
       if (
         !slack ||
@@ -191,6 +212,7 @@ export function createRunnerHelpers(options: {
       command.purpose,
       command.slack,
       command.issuedAt,
+      command.summary,
     );
     return { row: unchangedIdentity(runner, row), command, envelope };
   }
@@ -225,9 +247,15 @@ export function createRunnerHelpers(options: {
   }
   function* dispatchSteps(q: Q, input: HelperDispatch) {
     const slack = input.purpose === "slack_reply";
-    const session = slack ? null : yield* getLinearSessionSteps(q, input.sessionId);
-    if (!slack && !session) throw new HelperFencedError("Linear helper session is unavailable");
-    const generation = session ? session.generation : (input.slack?.installGeneration ?? -1);
+    const sessionless = slack || input.purpose === "repository_summary";
+    const session = sessionless ? null : yield* getLinearSessionSteps(q, input.sessionId);
+    if (!sessionless && !session)
+      throw new HelperFencedError("Linear helper session is unavailable");
+    const generation = session
+      ? session.generation
+      : slack
+        ? (input.slack?.installGeneration ?? -1)
+        : 0;
     const runner = yield* scopeSteps(
       q,
       input.runnerId,
@@ -236,6 +264,7 @@ export function createRunnerHelpers(options: {
       input.purpose,
       input.slack,
       now(),
+      input.summary,
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
     const conversation = input.purpose === "conversation" || slack;
@@ -275,7 +304,7 @@ export function createRunnerHelpers(options: {
       id: command.id,
       runnerId: command.runnerId,
       workspaceId: command.workspaceId,
-      sessionId: slack ? null : command.sessionId,
+      sessionId: sessionless ? null : command.sessionId,
       sessionGeneration: command.sessionGeneration,
       runnerFence: runner.fence,
       envelope: JSON.stringify(envelope),
