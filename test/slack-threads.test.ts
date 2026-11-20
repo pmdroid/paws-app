@@ -40,6 +40,7 @@ import {
   type SlackToolProvider,
   SLACK_THREAD_JOB,
   slackHandoffSteps,
+  slackLinearTools,
   slackReplyAllowedSteps,
   slackTaskUpdateSteps,
 } from "../src/slack";
@@ -4367,4 +4368,83 @@ test("a thread's attached repository goes into the folder, and a failed folder r
   expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toBe(
     "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._",
   );
+});
+
+test("a run that read a Linear team stores its notes and reply with that team, and later runs inherit it and show them only to askers in it", async () => {
+  let provider: SlackToolProvider | null = null;
+  const f = await linkedWith(
+    { tools: [(run) => provider?.(run) ?? null], toolCalls: ["list_teams"] },
+    ["um", "SMEMBER"],
+  );
+  const tracker = createFakeTracker();
+  tracker.agentTeams.push({ id: "tA", key: "ENG", name: "Engineering", private: false });
+  provider = slackLinearTools({ store: f.db, tracker: () => tracker });
+  f.advance(1);
+  for (const [userId, role, teamIds] of [
+    ["ua", "admin", ["tA"]],
+    ["um", "member", ["tB"]],
+  ] as const)
+    await syncWorkspaceMember(f.db, {
+      ...{ workspaceId: "W1", userId, role, active: true, teamIds: [...teamIds], now: f.now() },
+    });
+  f.answers.push(`canary-answer\n${notesBlock([{ kind: "observation", text: "canary-linear" }])}`);
+  const root = f.mention("SADMIN", "which teams?");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.toolAnswers).toEqual([{ text: "ENG Engineering" }]);
+  expect(lastPrompt(f)).toContain("nothing in Linear changes through them");
+  expect((await storedNotes(f)).map((note) => note.linearTeamIds)).toEqual([["tA"]]);
+  const payload = (await f.replies()).at(-1)!.payload as { linearTeamIds?: string[] };
+  expect(payload.linearTeamIds).toEqual(["tA"]);
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("which teams?");
+  expect(lastPrompt(f)).not.toContain("canary-answer");
+  expect(lastPrompt(f)).not.toContain("canary-linear");
+  tracker.agentTeams.length = 0;
+  f.answers.push(`Again.\n${notesBlock([{ kind: "decision", text: "canary-derived" }])}`);
+  await f.say("SADMIN", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("canary-answer");
+  expect(lastPrompt(f)).toContain("canary-linear");
+  expect((await storedNotes(f)).map((note) => [note.text, note.linearTeamIds])).toEqual([
+    ["canary-linear", ["tA"]],
+    ["canary-derived", ["tA"]],
+  ]);
+  expect(((await f.replies()).at(-1)!.payload as typeof payload).linearTeamIds).toEqual(["tA"]);
+  await f.say("SMEMBER", "and now?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("canary-derived");
+  expect(lastPrompt(f)).not.toContain("canary-answer");
+  tracker.agentTeams.push({ id: "tA", key: "ENG", name: "Engineering", private: false });
+  f.answers.push("canary-late");
+  await f.deliver(f.mention("SADMIN", "late?"));
+  await f.runJobs();
+  await f.dropStatus();
+  f.advance(1);
+  await syncWorkspaceMember(f.db, {
+    ...{ workspaceId: "W1", userId: "ua", role: "admin", active: true, teamIds: [], now: f.now() },
+  });
+  await f.settle();
+  expect(JSON.stringify(f.posts("chat.postMessage"))).not.toContain("canary-late");
+  expect((await f.replies()).at(-1)).toMatchObject({ status: "dropped", externalId: "withheld" });
+});
+
+test("a start's draft run carries no Linear tools and no Linear-restricted notes", async () => {
+  const tracker = createFakeTracker();
+  const f = await linkedWith({ tools: [(run) => provider(run)] }, ["um", "SMEMBER"]);
+  const provider = slackLinearTools({ store: f.db, tracker: () => tracker });
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await syncWorkspaceMember(f.db, { ...member, teamIds: ["team-eng"], now: f.now() });
+  f.answers.push(`Uploads.\n${notesBlock([{ kind: "observation", text: "canary-team-note" }])}`);
+  const root = f.mention("SMEMBER", "uploads fail sometimes");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.sent.at(-1)!.tools).toBeDefined();
+  await sqlRun(f.db, `UPDATE slack_thread_note SET linear_team_ids = '["team-eng"]'`);
+  await f.say("SMEMBER", "and?", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).toContain("canary-team-note");
+  f.answers.push(`Here it is: ${BRIEF}`);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).not.toContain("Linear tools:");
+  expect(f.prompts.at(-1)!.prompt).not.toContain("canary-team-note");
+  expect(f.sent.at(-1)!.tools).toBeUndefined();
+  expect(draftOf(f).post.body).toMatchObject({ user: "SMEMBER" });
 });

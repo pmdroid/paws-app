@@ -24,6 +24,12 @@ export {
   slackReplyAllowedSteps,
 } from "./threads";
 export type { SlackToolProvider } from "./tools";
+export {
+  slackLinearTools,
+  SLACK_LINEAR_CUT,
+  SLACK_LINEAR_NO_ISSUE,
+  SLACK_LINEAR_NO_TEAMS,
+} from "./linear-tools";
 export { markSlackInstallationSteps } from "./oauth";
 export { slackHandoffSteps, slackTaskUpdateSteps } from "./delivery";
 export type { SlackTaskUpdateKind } from "./delivery";

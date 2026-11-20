@@ -14,7 +14,12 @@ export type SlackToolRun = {
   requestId: string;
 };
 
-export type SlackTools = { definitions: HostToolDefinitions; call: HelperToolHandler };
+export type SlackTools = {
+  definitions: HostToolDefinitions;
+  call: HelperToolHandler;
+  instructions?: string;
+  linearTeamIds?: () => string[];
+};
 
 export type SlackToolProvider = (run: SlackToolRun) => SlackTools | null;
 
@@ -26,8 +31,10 @@ export function slackRunTools(
 ): SlackTools | undefined {
   const owners = new Map<string, SlackTools>();
   const definitions: HostToolDefinitions = [];
+  const made: SlackTools[] = [];
   for (const provider of providers) {
     const tools = provider(run);
+    if (tools?.definitions.length) made.push(tools);
     for (const definition of tools?.definitions ?? []) {
       if (owners.has(definition.name))
         throw new Error(`Two Slack tool providers define ${definition.name}.`);
@@ -38,6 +45,8 @@ export function slackRunTools(
   if (!definitions.length) return undefined;
   return {
     definitions,
+    instructions: made.map((tools) => tools.instructions ?? "").join(""),
+    linearTeamIds: () => [...new Set(made.flatMap((tools) => tools.linearTeamIds?.() ?? []))],
     async call(name, args) {
       const owner = owners.get(name);
       if (!owner) return FAILED;
