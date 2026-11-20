@@ -104,6 +104,12 @@
           "additionalProperties": false,
           "required": ["at"],
           "properties": { "at": { "type": "integer", "minimum": 0 } }
+        },
+        "carried": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["head"],
+          "properties": { "head": { "$ref": "#/$defs/sha" } }
         }
       }
     },

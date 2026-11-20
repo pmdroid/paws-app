@@ -600,7 +600,14 @@ function judgeCommand(
   if (judged.state !== "passed") return judged;
   if (record.ci) return row(item, "passed", ciMessage(record.ci), attempt);
   if (record.turn) return row(item, "passed", turnMessage(record.turn.at), attempt);
+  if (record.carried) return row(item, "passed", carriedMessage(record.carried.head), attempt);
   return judged;
+}
+
+export const CARRIED_PREFIX = "carried from ";
+
+export function carriedMessage(head: string): string {
+  return `${CARRIED_PREFIX}${head.slice(0, 12)}: passed there, not run again after the conflict fix`;
 }
 
 export function turnMessage(at: number): string {

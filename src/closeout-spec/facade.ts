@@ -61,6 +61,7 @@ import {
   type CandidateIdentity,
   type CiResult,
   type TurnPass,
+  type CarriedPass,
   type DecisionDocument,
   type DecisionWarning,
   type EarlierFinding,
@@ -155,6 +156,7 @@ export type RunRequest = {
   /** Command checks whose result comes from green CI at `head`. See {@link ciMappings}. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  carried?: readonly CarriedPass[];
   pullRequest?: PullRequestDraft;
 };
 
@@ -808,6 +810,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
     ...(input.fromCi !== undefined ? { fromCi: input.fromCi } : {}),
     ...(input.fromTurn !== undefined ? { fromTurn: input.fromTurn } : {}),
+    ...(input.carried !== undefined ? { carried: input.carried } : {}),
     ...(input.pullRequest !== undefined ? { pullRequest: input.pullRequest } : {}),
   });
   if (ran.blocked !== undefined) {

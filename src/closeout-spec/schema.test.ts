@@ -103,6 +103,19 @@ describe("closeout spec schemas", () => {
     };
     const validateEvidence = validators.get("evidence.schema.json");
     expectValid(validateEvidence, command, "evidence.schema.json");
+    expectValid(
+      validateEvidence,
+      { ...command, carried: { head: "d".repeat(40) } },
+      "evidence.schema.json",
+    );
+    expectValid(
+      validateEvidence,
+      { ...command, carried: { head: "e".repeat(64) } },
+      "evidence.schema.json",
+    );
+    for (const head of ["abc123", "D".repeat(40), "g".repeat(40)]) {
+      expect(validateEvidence?.({ ...command, carried: { head } })).toBe(false);
+    }
 
     const review: ReviewRecord = {
       specVersion: "0.1",

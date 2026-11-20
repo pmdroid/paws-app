@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
-    "evidence.schema.json": "40a265c9d08ba4bfcf55f939b44cef34cd2e69d235db246d44d3af927b8582ab",
+    "evidence.schema.json": "8dd15a0f562ca1b80b5337b8ea400ab16165c14b5ea26abac572c694503c6a44",
     "policy.schema.json": "22a5c77a02733878026f08a175a23f78382ccae405759360c741b01f7d4d8ec1"
   },
   "pawsExtensions": [
@@ -17,6 +17,7 @@
     "ci",
     "recheck",
     "preview",
-    "turn"
+    "turn",
+    "carried"
   ]
 }

@@ -15,6 +15,7 @@ export type {
   CiProvenance,
   CiResult,
   TurnPass,
+  CarriedPass,
   CommandExec,
   CommandRecord,
   CommandRunRequest,
@@ -125,7 +126,7 @@ export {
   visualReviewRequirements,
   workspacePolicyFiles,
 } from "./facade";
-export { POLICY_VALID_ID } from "./evaluate/evaluate";
+export { CARRIED_PREFIX, carriedMessage, POLICY_VALID_ID } from "./evaluate/evaluate";
 export { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
 export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
 export { previewAccept } from "./preview";
