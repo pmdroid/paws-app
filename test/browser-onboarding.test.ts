@@ -147,7 +147,7 @@ import {
   getLinearSessionAccess,
   type Db,
 } from "../src/db";
-import { loadRuntime, pawsPaths } from "../src/config";
+import { loadRuntime, pawsPaths, useMemorySettings } from "../src/config";
 import { seed } from "./pglite-fixtures";
 
 type Table = "workspace" | "workspaceOauthRequest" | "browserInstallationRequest" | "credential";
@@ -736,14 +736,19 @@ for (const clientFile of [undefined, "secrets/custom-linear.json", "missing/outs
         );
         if (clientFile) {
           expect(existsSync(join(scene.home, clientFile))).toBe(false);
-          writeFileSync(
+          const settings = useMemorySettings(
             join(scene.home, "config.toml"),
             '[linear]\nclient_file = "' + clientFile + '"\n',
           );
-          expect(
-            (await browserSetupRuntime(scene.db, loadRuntime({ PAWS_HOME: scene.home }))).runtime
-              .linearClientId,
-          ).toBe("fixture-client");
+          try {
+            const runtime = loadRuntime({ PAWS_HOME: scene.home });
+            expect(runtime.file.linearClientFile).toBe(clientFile);
+            expect((await browserSetupRuntime(scene.db, runtime)).runtime.linearClientId).toBe(
+              "fixture-client",
+            );
+          } finally {
+            settings.release();
+          }
         }
         await saveSecret(join(dir, "setup-token"), "setup-token");
         const install = await scene.installation();

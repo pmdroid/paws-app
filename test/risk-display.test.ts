@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { count, eq, sql, type SQL } from "drizzle-orm";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
-import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
+import {
+  loadConfigFile,
+  readMergeSettings,
+  useMemorySettings,
+  type MergeSettings,
+} from "../src/config";
 import {
   insertQueuedItem,
   saveCandidateRiskSteps,
@@ -69,7 +74,6 @@ async function fixture(
   const lines: string[] = [];
   const reader = new RiskDisplayReader({
     store: db,
-    configPath: "/tmp/pas934-no-config",
     readSettings: () => {
       settingsReads++;
       return settings;
@@ -363,16 +367,16 @@ test("custom review findings name the actual review", async () => {
   );
 });
 
-test("hand edits to config are observed outside the status read path", async () => {
+test("saved settings are observed outside the status read path", async () => {
   const f = await fixture();
   const home = tempHome();
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "config.toml");
-  writeFileSync(path, "[merge]\nauto_approve_high_risk = true\n");
+  const settings = useMemorySettings(path, "[merge]\nauto_approve_high_risk = true\n");
+  cleanup.push(() => settings.release());
   let reads = 0;
   const reader = new RiskDisplayReader({
     store: f.db,
-    configPath: path,
     publicUrl: "https://paws.example",
     readSettings: () => {
       reads++;
@@ -382,14 +386,13 @@ test("hand edits to config are observed outside the status read path", async () 
   cleanup.push(() => reader.close());
   await reader.remember(f.item.id, "head", { ...f.context, ...reader.inputs() });
   expect((await reader.read(f.item.id))?.detail).toContain("Passes automatically");
-  writeFileSync(path, "[merge]\nauto_approve_high_risk = false\n");
-  await waitFor(
-    async () =>
-      (await reader.read(f.item.id))?.detail.includes("automatic approval is off") ?? false,
-  );
+  const saved = useMemorySettings(path, "[merge]\nauto_approve_high_risk = false\n");
+  cleanup.push(() => saved.release());
   const before = reads;
-  await reader.read(f.item.id);
+  expect((await reader.read(f.item.id))?.detail).toContain("Passes automatically");
   expect(reads).toBe(before);
+  reader.refreshSettings();
+  expect((await reader.read(f.item.id))?.detail).toContain("automatic approval is off");
 });
 
 test("policy file edits invalidate display evidence, including across a reader restart", async () => {
@@ -411,7 +414,6 @@ test("policy file edits invalidate display evidence, including across a reader r
   f.reader.close();
   const restarted = new RiskDisplayReader({
     store: f.db,
-    configPath: "/tmp/pas934-no-config",
     publicUrl: "https://paws.example",
     readSettings: () => f.settings,
   });
