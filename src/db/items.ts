@@ -429,6 +429,11 @@ function* setItemSteps(q: Q, id: string, values: Partial<PgWorkItem>) {
 }
 
 export function* saveCheckpointSteps(q: Q, id: string, checkpoint: Checkpoint | null) {
+  const adopted =
+    checkpoint && !checkpoint.adopted
+      ? (yield* getWorkItemSteps(q, id))?.checkpoint?.adopted
+      : undefined;
+  if (checkpoint && adopted) checkpoint = { ...checkpoint, adopted };
   yield* setItemSteps(q, id, {
     checkpoint: checkpoint === null ? null : jsonValue(q, checkpoint),
   });

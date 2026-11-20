@@ -4794,26 +4794,51 @@ export class Orchestrator {
           }
         : undefined;
     const policy = await this.commitPolicy(item);
+    const adopted = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint
+      ?.adopted;
     if (policy && this.storedCandidates()) {
       if (!repository) throw new Error("Candidate repository is unavailable");
       const github = this.githubForRepository(repository);
       if (!github) throw new Error("Candidate GitHub access is unavailable");
-      await validateGitHubCandidateAttribution(
-        { ...repository, client: github.client, ...this.gitHubCredentials(github) },
-        base,
-        head,
-        policy,
-        await this.signalForItem(item.id),
-      );
-    } else if (policy)
+      const validate = async (from: string) =>
+        validateGitHubCandidateAttribution(
+          { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+          from,
+          head,
+          policy,
+          await this.signalForItem(item.id),
+        );
+      const last = adopted?.at(-1);
+      const validated =
+        last !== undefined &&
+        (await validate(last).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof Error && /does not descend/.test(error.message)) return false;
+            throw error;
+          },
+        ));
+      if (!validated) await validate(base);
+    } else if (policy) {
+      const tree = mirror?.path ?? worktree;
+      const present: string[] = [];
+      for (const sha of adopted ?? [])
+        if (
+          await git(["-C", tree, "cat-file", "-e", `${sha}^{commit}`]).then(
+            () => true,
+            () => false,
+          )
+        )
+          present.push(sha);
       await validateCandidateAttribution(
-        mirror?.path ?? worktree,
-        base,
+        tree,
+        [base, ...present],
         head,
         policy,
         undefined,
         await this.signalForItem(item.id),
       );
+    }
     const sessionProgress = await this.sessionProgress(item);
     await sessionProgress?.phase("verifying");
     const checkoutExclusions = (await this.runCheckout(item)).checks;
@@ -11744,6 +11769,12 @@ export class Orchestrator {
   }
 
   private async adoptBranchArrivals(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
+    const prompt = await this.adoptBranchTip(item, signal);
+    if (this.options.remoteExecution) await this.restoreCandidate(item, signal);
+    return prompt;
+  }
+
+  private async adoptBranchTip(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
     const remote = Boolean(this.options.remoteExecution);
     const checkout = worktreePath(this.options.pawsRoot, itemPathId(item));
     const start = remote
@@ -11780,7 +11811,15 @@ export class Orchestrator {
       { sha: tip, author: "unknown", subject: (await readCommit({ ...read, sha: tip })).subject },
     ];
     if (!remote) await git(["-C", checkout, "reset", "--hard", tip]);
-    else {
+    await this.store.run(function* (q) {
+      const checkpoint = (yield* getWorkItemSteps(q, item.id))?.checkpoint;
+      yield* saveCheckpointSteps(q, item.id, {
+        phase: "running",
+        ...checkpoint,
+        adopted: [...(checkpoint?.adopted ?? []), tip],
+      });
+    });
+    if (remote)
       await this.store.run((q) =>
         recordItemCandidateSteps(q, {
           itemId: item.id,
@@ -11789,8 +11828,6 @@ export class Orchestrator {
           recordedAt: this.now(),
         }),
       );
-      await this.restoreCandidate(item, signal);
-    }
     await this.post(
       item,
       "thought",
