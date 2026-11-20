@@ -31,6 +31,14 @@ import {
 
 export const SLACK_REPLY_ATTEMPTS = 2;
 export const SLACK_REPLY_TEXT_LIMIT = 12_000;
+const SLACK_REPLY_NOTES_LIMIT = 20_000;
+
+function replyFits(text: string): boolean {
+  const at = text.indexOf("```paws-notes");
+  const answer = at < 0 ? text : text.slice(0, at).trimEnd();
+  const notes = at < 0 ? "" : text.slice(at);
+  return answer.length <= SLACK_REPLY_TEXT_LIMIT && notes.length <= SLACK_REPLY_NOTES_LIMIT;
+}
 
 export type SlackReplyRequest = {
   workspaceId: string;
@@ -206,7 +214,7 @@ export function createSlackReplies(options: {
             result.stopReason === "end_turn" &&
             text
           ) {
-            if (text.length > SLACK_REPLY_TEXT_LIMIT)
+            if (!replyFits(text))
               return { status: "failed", reason: "The answer is too long for a Slack reply." };
             return {
               status: "answered",

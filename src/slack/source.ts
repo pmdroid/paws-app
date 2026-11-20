@@ -272,5 +272,15 @@ export function createSlackSource(options: { store: Db; reader: GitHubSnapshotRe
     return snapshot?.commit === source.commit;
   }
 
-  return { prepare, current };
+  async function has(source: SlackSourceRef, path: string, signal: AbortSignal): Promise<boolean> {
+    if (!reader) return false;
+    const files = await cached(["has", lower(source.repository), source.commit], async () => {
+      const snapshot = await reader.resolve(source.repository, source.commit, signal);
+      if (snapshot?.commit !== source.commit) return [];
+      return (await reader.files(snapshot, signal)).map((file) => file.path);
+    });
+    return files.includes(path);
+  }
+
+  return { prepare, current, has };
 }

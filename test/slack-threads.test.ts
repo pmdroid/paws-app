@@ -1924,6 +1924,130 @@ test("binary files count against the four-file read limit", async () => {
   expect(f.reader.calls.filter((call) => call.method === "read").length).toBeLessThanOrEqual(4);
 });
 
+const notesBlock = (notes: unknown) => `\`\`\`paws-notes\n${JSON.stringify(notes)}\n\`\`\``;
+const storedNotes = (f: Awaited<ReturnType<typeof fixture>>) =>
+  f.db.run((q) => q.all(q.orm.select().from(q.t.slackThreadNote)));
+
+test("a reply's notes block is stored with the run's sources and commit, checked, and never posted", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "channel repo acme/app");
+  f.answers.push(
+    `Billing uses plans.\n\n${notesBlock([
+      {
+        kind: "observation",
+        text: "Plans live in billing.",
+        repository: "acme/app",
+        path: "src/billing.ts",
+        symbol: "plan",
+      },
+      { kind: "guess", text: "A missing file.", repository: "acme/app", path: "src/missing.ts" },
+      { kind: "decision", text: "A repository the run was not given.", repository: "acme/oss" },
+      { kind: "observation", text: "Billing runs monthly." },
+    ])}`,
+  );
+  const root = f.mention("SMEMBER", "how does billing work?");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.prompts[0]!.prompt).toContain("`paws-notes`");
+  const posted = String(f.posts("chat.postMessage").at(-1)!.body.text);
+  expect(posted).toBe("Billing uses plans.\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._");
+  const source = [{ repository: "acme/app", ref: "main", commit: MAIN }];
+  expect(
+    (await storedNotes(f)).map(
+      ({ text, repository, path, symbol, commit, sources, linearTeamIds }) => ({
+        ...{ text, repository, path, symbol, commit, sources, linearTeamIds },
+      }),
+    ),
+  ).toEqual([
+    {
+      text: "Plans live in billing.",
+      repository: "acme/app",
+      path: "src/billing.ts",
+      symbol: "plan",
+      commit: MAIN,
+      sources: source,
+      linearTeamIds: [],
+    },
+    {
+      text: "Billing runs monthly.",
+      repository: null,
+      path: null,
+      symbol: null,
+      commit: null,
+      sources: source,
+      linearTeamIds: [],
+    },
+  ]);
+  for (const text of [
+    'Malformed.\n```paws-notes\n[{"kind":"fact","text":"x"}]\n```',
+    "Unclosed.\n```paws-notes\n[",
+    "No block.",
+  ]) {
+    f.answers.push(text);
+    await f.say("SMEMBER", "more?", { thread_ts: root.ts });
+    expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toStartWith(text.split("\n")[0]!);
+    expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).not.toContain("paws-notes");
+  }
+  expect(await storedNotes(f)).toHaveLength(2);
+  await f.say("SMEMBER", "where is plan set?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain(
+    "- [observation] acme/app src/billing.ts `plan`: Plans live in billing.",
+  );
+  expect(lastPrompt(f)).toContain("- [observation]: Billing runs monthly.");
+  expect(lastPrompt(f)).toContain("when two disagree, both are shown");
+  f.reader.repositories["acme/app"]!.refs.main = NEXT;
+  await f.say("SMEMBER", "and now?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain(`acme/app at commit ${NEXT}`);
+  expect(lastPrompt(f)).toContain(
+    "src/billing.ts `plan` (at aaaaaaaaaaaa): Plans live in billing.",
+  );
+});
+
+test("notes reach a later run only while its asker may read their sources and the channel may show them", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "channel repo acme/app");
+  f.answers.push(`Billing.\n${notesBlock([{ kind: "observation", text: "canary-note" }])}`);
+  const root = f.mention("SMEMBER", "how does billing work?");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SMEMBER", "repo off", { thread_ts: root.ts });
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("canary-note");
+  await f.teams([]);
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("canary-note");
+  await f.teams(["tA"]);
+  await disclose(f, "ua", "acme/app", "none");
+  const asked = f.prompts.length;
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(f.prompts).toHaveLength(asked + 1);
+  expect(lastPrompt(f)).not.toContain("canary-note");
+  expect(await storedNotes(f)).toHaveLength(1);
+});
+
+test("notes given to a run carry their sources into its reply and its own notes", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "remember canary-memory: billing is monthly");
+  const id = RECORD.exec(f.notice())![1]!;
+  await f.say("SADMIN", "channel repo acme/app");
+  f.answers.push(`Billing.\n${notesBlock([{ kind: "observation", text: "canary-note" }])}`);
+  const root = f.mention("SMEMBER", "how is billing monthly?");
+  await f.deliver(root);
+  await f.settle();
+  await f.say("SMEMBER", "repo off", { thread_ts: root.ts });
+  await f.say("SADMIN", `forget ${id}`);
+  f.answers.push(`Again.\n${notesBlock([{ kind: "decision", text: "canary-second" }])}`);
+  await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("[Paws]: Billing.");
+  expect(lastPrompt(f)).toContain("canary-note");
+  const source = [{ repository: "acme/app", ref: "main", commit: MAIN }];
+  expect(sourcesOf((await f.replies()).at(-1)!)).toEqual(source);
+  expect((await storedNotes(f)).map((note) => [note.text, note.sources])).toEqual([
+    ["canary-note", source],
+    ["canary-second", source],
+  ]);
+});
+
 const SOURCE_WITHHELD = /couldn't confirm that everyone who can read this channel/;
 
 async function sourceFixture(policy: "none" | "workspace" = "workspace") {

@@ -390,6 +390,20 @@ test("an answer that uses the reply tool is not handed back", async () => {
   expect((await reply).status).toBe("failed");
 });
 
+test("a notes block may add up to 20,000 characters to an answer of up to 12,000", async () => {
+  const notes = (size: number) => `\n\`\`\`paws-notes\n[${" ".repeat(size)}]\n\`\`\``;
+  for (const [text, status] of [
+    ["a".repeat(12_000) + notes(19_000), "answered"],
+    ["a".repeat(12_001) + notes(10), "failed"],
+    ["a".repeat(100) + notes(20_000), "failed"],
+  ] as const) {
+    const f = await fixture();
+    const reply = f.ask();
+    await f.answer("runner", () => ({ text }));
+    expect((await reply).status).toBe(status);
+  }
+});
+
 test("a failed agent is retried once on another runner", async () => {
   const f = await fixture({ runners: ["runner", "runner-2"] });
   const reply = f.ask();
