@@ -1326,7 +1326,9 @@ export function createSlackThreads<Profile>(options: {
         linkId: gate.linkId,
         mentionTs: mention.ts,
         question,
-        text: scheduled?.ok ? `${text}\n${slackFollowUpLine(scheduled.followUp, now())}` : text,
+        text: scheduled?.ok
+          ? `${text}\n${slackFollowUpLine(scheduled.followUp, scheduled.followUp.createdAt)}`
+          : text,
         ...(contexts.length ? { contexts } : {}),
         ...(dependencies.length ? { sources: dependencies } : {}),
       };
@@ -1358,9 +1360,10 @@ export function createSlackThreads<Profile>(options: {
     mentionTs: string,
     request: SlackFollowUpRequest,
   ) {
+    const at = now();
     let trigger: SlackFollowUpTrigger;
     if ("afterMinutes" in request)
-      trigger = { type: "timer", at: now() + request.afterMinutes * 60_000 };
+      trigger = { type: "timer", at: at + request.afterMinutes * 60_000 };
     else {
       const named = request.work.toUpperCase();
       const tasks = yield* threadTasksSteps(q, place);
@@ -1371,7 +1374,7 @@ export function createSlackThreads<Profile>(options: {
     }
     const purpose = request.purpose.trim();
     const input = { ...place, ...member, mentionTs, purpose, trigger };
-    return yield* createSlackFollowUpSteps(q, input, now());
+    return yield* createSlackFollowUpSteps(q, input, at);
   }
 
   function* threadTasksSteps(q: Q, place: Place, attempted: string[] = []) {

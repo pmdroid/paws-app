@@ -3837,16 +3837,19 @@ test("follow-ups lists only the member's own pending follow-ups here, and cancel
   await f.settle();
   f.answers.push(`Will do.\n${followUpBlock({ purpose: "member check", after_minutes: 45 })}`);
   await f.say("SMEMBER", "check back in 45 minutes");
-  const [admin, member] = await followUpRows(f);
-  const id = admin!.id.slice(-6).toLowerCase();
-  expect(member!.slackUserId).toBe("SMEMBER");
+  const rows = await followUpRows(f);
+  const admin = rows.find((row) => row.slackUserId === "SADMIN")!;
+  expect(rows.map((row) => row.slackUserId).sort()).toEqual(["SADMIN", "SMEMBER"]);
+  const id = admin.id.slice(-6).toLowerCase();
+  const statuses = async () =>
+    Object.fromEntries((await followUpRows(f)).map((row) => [row.slackUserId, row.status]));
   const asked = f.prompts.length;
   f.posted.length = 0;
   await f.say("SMEMBER", "follow-ups", { thread_ts: root.ts });
   await f.deliver(threadReply("SADMIN", "follow-ups", root.ts));
   await f.settle();
   await f.say("SMEMBER", `cancel ${id}`, { thread_ts: root.ts });
-  expect((await followUpRows(f)).map((row) => row.status)).toEqual(["pending", "pending"]);
+  expect(await statuses()).toEqual({ SADMIN: "pending", SMEMBER: "pending" });
   await f.say("SADMIN", `cancel ${id.toUpperCase()}`, { thread_ts: root.ts });
   expect(ephemerals(f)).toEqual([
     ["SMEMBER", "No follow-ups pending here."],
@@ -3854,6 +3857,6 @@ test("follow-ups lists only the member's own pending follow-ups here, and cancel
     ["SMEMBER", `No follow-up ${id} of yours here.`],
     ["SADMIN", `Cancelled follow-up ${id}.`],
   ]);
-  expect((await followUpRows(f)).map((row) => row.status)).toEqual(["cancelled", "pending"]);
+  expect(await statuses()).toEqual({ SADMIN: "cancelled", SMEMBER: "pending" });
   expect(f.prompts).toHaveLength(asked);
 });
