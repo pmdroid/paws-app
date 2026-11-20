@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createLinearAgentIssueMethods } from "./agent-issues";
+import { agentIssueId, createLinearAgentIssueMethods } from "./agent-issues";
 import { createFakeTracker } from "./fake";
 
 const ENG = { id: "team-eng", key: "ENG" };
@@ -146,4 +146,110 @@ test("the fake tracker records each call and applies the team rule to its issues
   expect(await tracker.readAgentIssue({ teamIds: [ENG.id], id: "OPS-1" })).toBeNull();
   const operations = tracker.agentIssueCalls.map((call) => call.operation);
   expect(operations).toEqual(["searchAgentIssues", "readAgentIssue", "readAgentIssue"]);
+});
+
+function linearWrites() {
+  const issues: Record<string, unknown>[] = [];
+  const sent: { text: string; variables: Record<string, unknown> }[] = [];
+  const query = async (text: string, variables: Record<string, unknown> = {}) => {
+    sent.push({ text, variables });
+    const input = variables["input"] as Record<string, unknown>;
+    if (text.includes("AgentIssueExisting") || text.includes("AgentIssueTarget"))
+      return { viewer: { id: "paws-app" }, issues: { nodes: issues } };
+    if (text.includes("issueCreate")) {
+      const team = { id: input["teamId"] };
+      const created = { id: input["id"], identifier: "ENG-5", url: null, team };
+      issues.push({ ...created, relations: { nodes: [] }, inverseRelations: { nodes: [] } });
+      return { issueCreate: { success: true, issue: created } };
+    }
+    if (text.includes("issueRelationCreate")) {
+      const link = { type: input["type"], issue: { id: input["issueId"], identifier: "ENG-1" } };
+      (issues[0]!["inverseRelations"] as { nodes: unknown[] }).nodes.push(link);
+      return { issueRelationCreate: { success: true } };
+    }
+    return { issueUpdate: { success: true, issue: issues[0] } };
+  };
+  const mutations = () => sent.filter((entry) => entry.text.startsWith("mutation"));
+  return { issues, sent, mutations, methods: createLinearAgentIssueMethods({ query }) };
+}
+
+test("an agent issue is created once per key, delegated to Paws, with one relation", async () => {
+  const linear = linearWrites();
+  const relation = { issueId: "ENG-1", type: "blocked_by" } as const;
+  const request = { key: "k1", teamId: ENG.id, title: "Retry", description: "Scope" };
+  const created = { ...request, labelIds: ["l1"], relation, delegate: true };
+  const first = await linear.methods.createAgentIssue(created);
+  expect(await linear.methods.createAgentIssue(created)).toEqual(first);
+  const id = agentIssueId("k1");
+  expect(first).toEqual({ id, identifier: "ENG-5", url: null });
+  expect(linear.mutations().map((entry) => entry.variables["input"])).toEqual([
+    {
+      id,
+      teamId: ENG.id,
+      title: "Retry",
+      description: "Scope",
+      delegateId: "paws-app",
+      labelIds: ["l1"],
+    },
+    { issueId: "ENG-1", relatedIssueId: id, type: "blocks" },
+  ]);
+  await expect(linear.methods.createAgentIssue({ ...created, teamId: OPS.id })).rejects.toThrow(
+    "another team",
+  );
+});
+
+test("updating or assigning an issue outside the teams changes nothing", async () => {
+  const linear = linearWrites();
+  linear.issues.push({ id: UUID, identifier: "ENG-5", url: null, team: ENG });
+  const { updateAgentIssue, assignAgentIssue } = linear.methods;
+  expect(await updateAgentIssue({ teamIds: [], id: UUID, title: "New" })).toBeNull();
+  expect(await assignAgentIssue({ teamIds: [], id: UUID })).toBeNull();
+  expect(linear.sent).toEqual([]);
+  expect(await updateAgentIssue({ teamIds: [OPS.id], id: UUID, title: "New" })).toBeNull();
+  expect(await assignAgentIssue({ teamIds: [OPS.id], id: "eng-5" })).toBeNull();
+  expect(linear.mutations()).toEqual([]);
+  const ref = { id: UUID, identifier: "ENG-5", url: null };
+  expect(
+    await updateAgentIssue({ teamIds: [ENG.id], id: UUID, priority: 2, title: "New" }),
+  ).toEqual(ref);
+  expect(await assignAgentIssue({ teamIds: [ENG.id], id: "ENG-5" })).toEqual(ref);
+  expect(linear.mutations().map((entry) => entry.variables)).toEqual([
+    { id: UUID, input: { title: "New", priority: 2 } },
+    { id: UUID, input: { delegateId: "paws-app" } },
+  ]);
+});
+
+test("writes over a limit throw before any request", async () => {
+  const linear = linearWrites();
+  const request = { key: "k1", teamId: ENG.id, title: "Retry", description: "", delegate: false };
+  const { createAgentIssue, updateAgentIssue } = linear.methods;
+  await expect(createAgentIssue({ ...request, title: "t".repeat(257) })).rejects.toThrow("256");
+  await expect(createAgentIssue({ ...request, description: "d".repeat(20_001) })).rejects.toThrow();
+  await expect(createAgentIssue({ ...request, labelIds: Array(11).fill("l") })).rejects.toThrow();
+  const scope = { teamIds: [ENG.id], id: UUID };
+  await expect(updateAgentIssue({ ...scope, title: "t".repeat(257) })).rejects.toThrow();
+  await expect(updateAgentIssue({ ...scope, description: "d".repeat(20_001) })).rejects.toThrow();
+  expect(linear.sent).toEqual([]);
+});
+
+test("the fake tracker keeps created issues per key and applies the team rule to writes", async () => {
+  const tracker = createFakeTracker();
+  tracker.agentTeams.push({ ...ENG, name: "Engineering", private: false });
+  const relation = { issueId: "ENG-9", type: "related" } as const;
+  const request = { key: "k1", teamId: ENG.id, title: "Retry", description: "", relation };
+  const first = await tracker.createAgentIssue({ ...request, delegate: true });
+  expect(await tracker.createAgentIssue({ ...request, delegate: true })).toEqual(first);
+  expect(tracker.agentIssues).toHaveLength(1);
+  expect(tracker.agentIssues[0]).toMatchObject({ identifier: "ENG-1", delegate: "Paws" });
+  expect(tracker.agentIssues[0]!.relations).toHaveLength(1);
+  expect(
+    await tracker.updateAgentIssue({ teamIds: [OPS.id], id: first.id, title: "X" }),
+  ).toBeNull();
+  expect(await tracker.assignAgentIssue({ teamIds: [OPS.id], id: "ENG-1" })).toBeNull();
+  await tracker.updateAgentIssue({ teamIds: [ENG.id], id: "eng-1", title: "Renamed" });
+  expect(tracker.agentIssues[0]!.title).toBe("Renamed");
+  const operations = tracker.agentIssueCalls.map((call) =>
+    call.operation.replace("AgentIssue", ""),
+  );
+  expect(operations).toEqual(["create", "create", "update", "assign", "update"]);
 });
