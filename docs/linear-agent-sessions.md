@@ -4,6 +4,8 @@ Delegate an issue to the Paws app after [setting up your workspace](workspace-ac
 
 Each issue has its own agent session. A parent issue's sub-issues run in dependency order, with a session for each one. Follow the session for progress, questions, results and the pull request link. The dashboard's issue page shows the work history and current run.
 
+While the agent works, the session shows what it is doing now, such as the file it is reading or editing or that it is running a command.
+
 ## Answer a question
 
 When Paws needs your decision, it asks in the session. Reply there or open the question in the dashboard. Include the guidance the agent needs to continue. Questions about repository access or verification may need an administrator or the person who delegated the issue.
