@@ -36,6 +36,7 @@ import {
   createSlackThreads,
   handleSlackWebhook,
   markSlackInstallationSteps,
+  type SlackToolProvider,
   SLACK_THREAD_JOB,
   slackHandoffSteps,
   slackReplyAllowedSteps,
@@ -79,6 +80,8 @@ async function fixture(
     source?: FakeSnapshotReader;
     outcomes?: ({ status: string; text?: string } | null)[];
     scope?: string;
+    tools?: SlackToolProvider[];
+    toolCalls?: string[];
   } = {},
 ) {
   const home = tempHome();
@@ -175,6 +178,8 @@ async function fixture(
     return Response.json({ ok: true, ts: sent });
   };
   const prompts: { userId: string; prompt: string }[] = [];
+  const sent: { expiresAt: number; issuedAt: number; tools?: unknown }[] = [];
+  const toolAnswers: unknown[] = [];
   const answers: string[] = [];
   type Filed = { key: string; teamId: string; title: string; description: string };
   const eng = { id: "team-eng", key: "ENG", name: "Engineering", private: false };
@@ -237,7 +242,16 @@ async function fixture(
         const { command } = await helpers.current(row.id).catch(() => ({ command: null }));
         if (command?.type !== "helper" || !command.slack) continue;
         prompts.push({ userId: command.slack.memberUserId, prompt: command.prompt });
+        sent.push(command);
         await helpers.acknowledge(row.runner_id, command.id).catch(() => undefined);
+        for (const [index, name] of (setup.toolCalls ?? []).entries())
+          toolAnswers.push(
+            await helpers.request(row.runner_id, command.id, {
+              requestId: `t${index}`,
+              name,
+              arguments: { q: name },
+            }),
+          );
         const result = {
           executionId: workspaceId(),
           commandId: command.id,
@@ -292,6 +306,7 @@ async function fixture(
       stop: () => controls.stopTask,
       ...(setup.memory ? { memory: setup.memory } : {}),
       ...(setup.source ? { source: setup.source } : {}),
+      ...(setup.tools ? { tools: setup.tools } : {}),
     });
   let threads = start();
   const jobs = new JobLoop(db, clock, { backoffBaseMs: 10 });
@@ -542,6 +557,8 @@ async function fixture(
     failNext,
     hooks,
     prompts,
+    sent,
+    toolAnswers,
     answers,
     linear,
     submitted,
@@ -3733,7 +3750,7 @@ test("a turn ending in a notice, a withheld answer, a stop or a thrown error lea
   expect((await markOf(g, root.ts)).turns).toBeUndefined();
 });
 
-test("in-flight questions older than ten minutes or from a member who unlinked hold nothing and aren't listed", async () => {
+test("in-flight questions older than eleven minutes or from a member who unlinked hold nothing and aren't listed", async () => {
   const f = await linked(["um", "SMEMBER"]);
   const root = f.mention("SADMIN", "root");
   await f.deliver(root);
@@ -3743,7 +3760,7 @@ test("in-flight questions older than ten minutes or from a member who unlinked h
   await f.say("SMEMBER", "fresh?", { thread_ts: root.ts });
   expect(lastPrompt(f)).toContain("[<@SADMIN>]: stale canary-33\n[Paws]: (answering now)");
   expect((await markOf(f, root.ts)).status).toBe("processing");
-  f.advance(10 * 60_000);
+  f.advance(11 * 60_000);
   await f.say("SMEMBER", "later?", { thread_ts: root.ts });
   expect(lastPrompt(f)).not.toContain("canary-33");
   expect(await markOf(f, root.ts)).toMatchObject({ status: "active" });
@@ -4099,4 +4116,61 @@ test("a filed task's repository withheld during the follow-up's turn drops its r
   await duringTurn(f, "ENG-1 merged.", () => disclose(f, "ua", "acme/app", "none"));
   expect(f.posted.filter((post) => post.method.startsWith("chat."))).toEqual([]);
   expect(await followUpStatus(f)).toEqual(["cancelled"]);
+});
+
+test("a Slack reply runs for ten minutes and carries tools only when a provider yields one", async () => {
+  const runs: unknown[] = [];
+  const calls: string[] = [];
+  const tool = (name: string) => ({ name, description: name, inputSchema: {} });
+  const f = await linkedWith({
+    tools: [
+      () => null,
+      (run) => {
+        runs.push(run);
+        return {
+          definitions: [tool("look_up")],
+          call: async (name, args) => {
+            calls.push(`${name}:${String(args.q)}`);
+            return { text: "found" };
+          },
+        };
+      },
+      () => ({
+        definitions: [tool("break_it")],
+        call: async () => {
+          throw new Error("canary-broken");
+        },
+      }),
+    ],
+    toolCalls: ["look_up", "break_it"],
+  });
+  const mention = f.mention("SADMIN", "look it up?");
+  await f.deliver(mention);
+  await f.settle();
+  expect(f.sent[0]!.expiresAt - f.sent[0]!.issuedAt).toBe(600_000);
+  expect(f.sent[0]!.tools).toEqual([tool("look_up"), tool("break_it")]);
+  expect(runs).toEqual([
+    {
+      workspaceId: "W1",
+      member: { userId: "ua", linkId: expect.any(String) },
+      thread: {
+        teamId: "T0ONE",
+        channelId: "C0ONE",
+        threadTs: mention.ts,
+        installGeneration: expect.any(Number),
+      },
+      requestId: `slack-T0ONE-C0ONE-${mention.ts.replace(".", "-")}`,
+    },
+  ]);
+  expect(calls).toEqual(["look_up:look_up"]);
+  expect(f.toolAnswers).toEqual([
+    { text: "found" },
+    { text: "Paws could not do that.", isError: true },
+  ]);
+  expect(String(f.posts("chat.postMessage").at(-1)!.body.text)).toContain("answer 1");
+
+  const g = await linkedWith({ tools: [() => null] });
+  await g.say("SADMIN", "no tools?");
+  expect(g.sent).toHaveLength(1);
+  expect(g.sent[0]!.tools).toBeUndefined();
 });

@@ -74,6 +74,7 @@ import {
   type SlackCall,
 } from "./api";
 import { slackSourceDisclosableSteps } from "./disclosure";
+import { slackRunTools, type SlackToolProvider, type SlackTools } from "./tools";
 import { slackCapabilities } from "./manifest";
 import {
   createSlackChannelMemory,
@@ -85,7 +86,7 @@ import {
   readableSlackNotesSteps,
   SLACK_NOTES_INSTRUCTIONS,
   slackNoteRepositories,
-  slackNotesText,
+  slackPrompt,
   slackNotesToStore,
   splitSlackNotes,
 } from "./notes";
@@ -203,6 +204,7 @@ type ReplyLane<Profile> = {
     profile: Profile;
     prompt: string;
     signal: AbortSignal;
+    tools?: SlackTools;
   }): Promise<{ status: string; text?: string }>;
 };
 
@@ -305,7 +307,6 @@ const NOTICES = {
   unanswered: "I couldn't answer that just now. Ask again in a moment.",
 };
 const UNANSWERED_WINDOW_MS = 10 * 60_000;
-const SOURCE_PROMPT_BYTES = 32_000;
 const HANDOFF_CHARS = 16_000;
 
 const tsValue = (ts: string) => BigInt(ts.replace(".", ""));
@@ -750,6 +751,7 @@ export function createSlackThreads<Profile>(options: {
   work?: () => SlackWorkTracker | null;
   answer?: QuestionAnswer;
   stop?: () => SlackTaskStop | null;
+  tools?: SlackToolProvider[];
 }) {
   const { store, home, env } = options;
   const memory = createSlackChannelMemory({
@@ -1329,13 +1331,13 @@ export function createSlackThreads<Profile>(options: {
     });
     const background = remembered.text ? `${remembered.text}\n\n` : "";
     const excerpts = source ? `Repository excerpts:\n${source.text}\n\n` : "";
-    const notes = slackNotesText(noted, question, commits);
-    const head = `${instructions}\n\n${background}${excerpts}${notes.text}`;
-    const room = Math.min(28_000, SOURCE_PROMPT_BYTES - Buffer.byteLength(head));
-    let recent = thread.join("\n").slice(-Math.max(room, 0));
-    while (recent && Buffer.byteLength(recent) > room)
-      recent = recent.slice(Math.ceil(recent.length / 8));
-    const prompt = `${head}${recent}`;
+    const { prompt, notes } = slackPrompt({
+      head: `${instructions}\n\n${background}${excerpts}`,
+      notes: noted,
+      question,
+      commits,
+      thread: thread.join("\n"),
+    });
     const replyScope = {
       requestId: `slack-${teamId}-${channelId}-${mention.ts.replace(".", "-")}${woken ? `-${woken.id}` : ""}`,
       teamId,
@@ -1359,8 +1361,21 @@ export function createSlackThreads<Profile>(options: {
         );
     }, STOP_POLL_MS);
     const signal = AbortSignal.any([context.signal, stop.signal]);
+    const tools = slackRunTools(options.tools ?? [], {
+      workspaceId,
+      member: asker,
+      thread: { teamId, channelId, threadTs, installGeneration: generation },
+      requestId: replyScope.requestId,
+    });
     const outcome = await lane
-      .reply({ workspaceId, scope: replyScope, profile: options.profile(), prompt, signal })
+      .reply({
+        workspaceId,
+        scope: replyScope,
+        profile: options.profile(),
+        prompt,
+        signal,
+        ...(tools ? { tools } : {}),
+      })
       .catch((error: unknown): Awaited<ReturnType<typeof lane.reply>> => {
         if (stop.signal.aborted) return { status: "stopped" };
         throw error;
@@ -1405,7 +1420,7 @@ export function createSlackThreads<Profile>(options: {
     const dependencies = uniqueSources([
       ...keptSources.values(),
       ...(used ? [used] : []),
-      ...notes.included.flatMap((note) => note.sources),
+      ...notes.flatMap((note) => note.sources),
     ]);
     if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return tell(place, replyKey, NOTICES.source_changed);

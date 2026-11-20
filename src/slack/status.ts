@@ -19,7 +19,7 @@ export const SLACK_STATUS_EVERY_MS = 60_000;
 export const SLACK_STATUS_REFRESH_MS = 50 * 60_000;
 export const SLACK_STREAM_CLOSE_MS = 9 * 60_000;
 export const SLACK_STREAM_LIFETIME_MS = 10 * 60_000;
-const TURN_MS = 10 * 60_000;
+const TURN_MS = 11 * 60_000;
 const STREAM_CHUNK = 1_000;
 
 export type SlackStatus = "processing" | "active" | "suspended" | "closed";

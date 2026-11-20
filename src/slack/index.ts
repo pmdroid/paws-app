@@ -23,6 +23,7 @@ export {
   SLACK_THREAD_JOB,
   slackReplyAllowedSteps,
 } from "./threads";
+export type { SlackToolProvider } from "./tools";
 export { markSlackInstallationSteps } from "./oauth";
 export { slackHandoffSteps, slackTaskUpdateSteps } from "./delivery";
 export type { SlackTaskUpdateKind } from "./delivery";
