@@ -50,6 +50,7 @@ export type SlackReplyRequest = {
   signal?: AbortSignal;
   tools?: { definitions: HostToolDefinitions; call: HelperToolHandler };
   repositories?: HelperRepositoryHandler;
+  attached?: string[];
 };
 
 export type SlackReplyOutcome =
@@ -120,6 +121,7 @@ export function createSlackReplies(options: {
             prompt: request.prompt,
             slack: request.scope,
             ...(request.tools ? { tools: request.tools.definitions } : {}),
+            ...(request.attached ? { repositories: request.attached } : {}),
             ...(candidate.account
               ? {
                   account: {
