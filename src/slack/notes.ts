@@ -7,12 +7,12 @@ import {
   type Steps,
 } from "../db";
 import { estimateContextTokens } from "../project-context";
-import { RUNNER_SLACK_REPLY_PROMPT_BYTES } from "../runner-protocol";
 import { SLACK_CONTEXT_TOKENS } from "./memory";
 import { readsSteps, type SlackSourceRef } from "./source";
 
 const SLACK_NOTES_PROMPT_TOKENS = SLACK_CONTEXT_TOKENS * 0.4;
 const THREAD_PROMPT_BYTES = 28_000;
+const PROMPT_BYTES = 393_216;
 const FENCE = "```paws-notes";
 const BLOCK = /^```paws-notes[ \t]*\n([\s\S]*?)\n?```\s*$/;
 const KINDS = new Set<string>(["observation", "guess", "decision"]);
@@ -161,7 +161,7 @@ export function slackNotesText(
 
 const promptFits = (prompt: string) =>
   estimateContextTokens(prompt) < SLACK_CONTEXT_TOKENS / 2 &&
-  Buffer.byteLength(prompt) <= RUNNER_SLACK_REPLY_PROMPT_BYTES;
+  Buffer.byteLength(prompt) <= PROMPT_BYTES;
 
 const shorten = (text: string) => text.slice(Math.ceil(text.length / 8));
 

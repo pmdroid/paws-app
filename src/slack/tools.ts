@@ -1,5 +1,11 @@
-import type { HelperToolAnswer, HelperToolHandler } from "../runner-helpers";
-import type { HostToolDefinitions } from "../runner-protocol";
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+type HostToolDefinitions = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, Json>;
+}[];
+type HelperToolAnswer = { text: string; isError?: boolean };
+type HelperToolHandler = (name: string, args: Record<string, Json>) => Promise<HelperToolAnswer>;
 
 export type SlackToolRun = {
   workspaceId: string;
