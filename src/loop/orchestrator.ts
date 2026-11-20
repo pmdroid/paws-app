@@ -460,6 +460,7 @@ import {
   readCommit,
   readBranchWork,
   type BranchArrival,
+  BranchMovedError,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
@@ -4235,7 +4236,7 @@ export class Orchestrator {
         });
         const lease = await this.lease(finished, head, controller.signal);
         if (!lease) return;
-        await pushBranch({
+        const pushed = await pushBranch({
           worktree: at.repo,
           ref: head,
           expected: lease.expected,
@@ -4247,7 +4248,8 @@ export class Orchestrator {
           client: github.client,
           gitExec: github.gitExec,
           ...this.gitHubCredentials(github),
-        });
+        }).catch((error: unknown) => this.branchMoved(finished, error));
+        if (pushed === null) return;
       }
 
       await recordAgentFindingDecisions(
@@ -6552,7 +6554,8 @@ export class Orchestrator {
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
-    });
+    }).catch((error: unknown) => this.branchMoved(item, error));
+    if (published === null) return { kind: "returned" };
     const refused = published.published ? published.pull.memberRefused : undefined;
     if (refused && published.published)
       await this.post(
@@ -11809,11 +11812,16 @@ export class Orchestrator {
     ];
     if (known.includes(moved.tip) || (await this.descends(item, moved.read, head, moved.tip)))
       return { expected: moved.tip };
+    return this.branchMoved(item, new BranchMovedError(moved.read.branch, moved.tip));
+  }
+
+  private async branchMoved(item: WorkItemRecord, error: unknown): Promise<null> {
+    if (!(error instanceof BranchMovedError)) throw error;
     const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (current)
       await restart(this.store, current, {
         reason: "follow_up",
-        body: branchMovedHandoff(moved.read.branch),
+        body: branchMovedHandoff(error.branch),
         now: this.now(),
       });
     return null;

@@ -271,6 +271,21 @@ export function githubClient(
           },
         };
       }
+      const branch = /\/git\/ref\/(heads\/paws\/.+)$/.exec(req.path)?.[1];
+      if (req.method === "GET" && branch) {
+        const sha = await exec("git", [
+          "--git-dir",
+          bare,
+          "rev-parse",
+          "--verify",
+          `refs/${branch}`,
+        ])
+          .then(({ stdout }) => stdout.trim())
+          .catch(() => null);
+        return sha
+          ? { status: 200, body: { object: { type: "commit", sha } } }
+          : { status: 404, body: {} };
+      }
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
         const body = req.body as { sha?: string; commit_message?: string };
         const number = Number(req.path.split("/").at(-2));
