@@ -9,6 +9,7 @@ import { expect, spyOn, test } from "bun:test";
 import { and, eq, sql } from "drizzle-orm";
 import { pgTable, serial, text as textColumn } from "drizzle-orm/pg-core";
 import * as acp from "../src/acp";
+import { useMemorySettings } from "../src/config";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCloseoutGate, type Finding } from "../src/closeout";
@@ -1016,7 +1017,7 @@ test.each(["claude", "codex", "grok"])(
   "stop from Linear pauses the live %s run",
   async (implementer) => {
     const layout = await repoLayout("paws-e2e-");
-    await writeFile(
+    useMemorySettings(
       path.join(layout.pawsRoot, "config.toml"),
       `[agents]\nimplementer = "${implementer}"\n`,
     );
@@ -1632,7 +1633,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
   const layout = await repoLayout("paws-e2e-");
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");
-  await writeFile(path.join(layout.pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
+  useMemorySettings(path.join(layout.pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -2082,11 +2083,11 @@ for (const sameModel of [true, false]) {
   test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use the global profiles and retain their candidate snapshot"}`, async () => {
     const layout = await repoLayout("paws-e2e-");
     const configPath = path.join(layout.pawsRoot, "config.toml");
-    writeFileSync(
+    useMemorySettings(
       configPath,
       `[agents.defaults.implementer]\nagent = "codex"\nmodel = "model-a"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "model-b"\n`,
     );
-    if (sameModel) writeFileSync(configPath, `[agents]\nimplementer = "codex"\n`);
+    if (sameModel) useMemorySettings(configPath, `[agents]\nimplementer = "codex"\n`);
     const tracker = createFakeTracker([
       {
         linearIssueId: "profile-item",
@@ -2130,7 +2131,7 @@ for (const sameModel of [true, false]) {
         };
         writeFileSync(scriptPath, JSON.stringify(script));
         if (input.purpose === "implement")
-          writeFileSync(configPath, `[agents]\nimplementer = "grok"\n`);
+          useMemorySettings(configPath, `[agents]\nimplementer = "grok"\n`);
         return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
       },
     });
@@ -2247,7 +2248,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       expect(question.body).not.toContain("Checks you can bypass");
       expect(question.options).toEqual(["Restart implementation"]);
       expect(question.body).not.toContain("Retry Closeout");
-      writeFileSync(
+      useMemorySettings(
         path.join(layout.pawsRoot, "config.toml"),
         `[agents.defaults.implementer]\nagent = "codex"\nmodel = "test-new-implementer"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "test-codex-model"\n`,
       );
@@ -3328,7 +3329,7 @@ async function runGitHubQueue(
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
+  useMemorySettings(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
   const dashboard: (string | null)[] = [];
   const tracker = createFakeTracker([
     {
@@ -3518,7 +3519,7 @@ async function runCiFix(options: {
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  if (options.config) await writeFile(path.join(layout.pawsRoot, "config.toml"), options.config);
+  if (options.config) useMemorySettings(path.join(layout.pawsRoot, "config.toml"), options.config);
   if (options.withoutReview || options.attempts !== undefined) {
     const policy = options.withoutReview ? CLOSEOUT_POLICY_WITHOUT_REVIEW : CLOSEOUT_POLICY;
     const configured =
@@ -3533,7 +3534,7 @@ async function runCiFix(options: {
     await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
   }
   if (options.rebaseAfterPr)
-    await writeFile(
+    useMemorySettings(
       path.join(layout.pawsRoot, "config.toml"),
       '[merge]\nmain_moved = "closeout"\n',
     );
@@ -4105,7 +4106,7 @@ async function runRebaseConflict(
     },
   ]);
   if (merging !== undefined) {
-    await writeFile(path.join(layout.pawsRoot, "config.toml"), merging.toml);
+    useMemorySettings(path.join(layout.pawsRoot, "config.toml"), merging.toml);
     if (merging.labels)
       tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
   }
