@@ -76,16 +76,13 @@ test("searches and reads only the asker's teams, and another team's issue is no 
   expect(writes).toEqual([]);
 });
 
-test("a channel leaves out private teams and a direct message includes them", async () => {
+test("private teams are left out", async () => {
   const { tools } = await setup();
   const channel = tools("C0ONE")!;
   expect((await channel.call("search_issues", { query: "canary" })).text).not.toContain("SEC-1");
   expect((await channel.call("get_issue", { id: "SEC-1" })).text).toBe(SLACK_LINEAR_NO_ISSUE);
   expect((await channel.call("list_teams", {})).text).toBe("ENG Engineering");
-  const direct = tools("D0ONE")!;
-  expect((await direct.call("search_issues", { query: "canary" })).text).toContain("SEC-1");
-  expect((await direct.call("list_teams", {})).text).toContain("SEC Security (private)");
-  expect(direct.linearTeamIds!().sort()).toEqual(["eng", "sec"]);
+  expect(channel.linearTeamIds!()).toEqual(["eng"]);
 });
 
 test("teams are read at each call, and with none left nothing is called", async () => {

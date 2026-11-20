@@ -82,7 +82,6 @@ export function slackLinearTools(options: {
     const linear = options.tracker();
     if (!usable(linear)) return null;
     const read = new Set<string>();
-    const direct = run.thread.channelId.startsWith("D");
     const readable = async (): Promise<AgentTeam[]> => {
       const member = await options.store.run((q) =>
         workspaceMemberSteps(q, run.workspaceId, run.member.userId),
@@ -90,7 +89,7 @@ export function slackLinearTools(options: {
       const teamIds = workspaceMemberUsable(member) ? [...member.teamIds] : [];
       if (!teamIds.length) return [];
       const teams = await linear.listAgentTeams({ teamIds });
-      return teams.filter((team) => teamIds.includes(team.id) && (direct || !team.private));
+      return teams.filter((team) => teamIds.includes(team.id) && !team.private);
     };
     const calls: Record<string, (teams: AgentTeam[], args: Args) => Promise<string | string[]>> = {
       search_issues: async (teams, args) => {
@@ -113,7 +112,7 @@ export function slackLinearTools(options: {
       },
       list_teams: async (teams) => {
         teams.forEach((team) => read.add(team.id));
-        return teams.map((team) => `${team.key} ${team.name}${team.private ? " (private)" : ""}`);
+        return teams.map((team) => `${team.key} ${team.name}`);
       },
       list_projects: async (teams) => {
         const projects = await linear.listAgentProjects({ teamIds: teams.map((team) => team.id) });
