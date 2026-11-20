@@ -48,7 +48,7 @@ test("the MCP server lists Paws-defined tools after the built-in ones and forwar
       { method: "tools/call", params: { name: "linear_comment", arguments: {} } },
     ];
     for (const [index, request] of requests.entries())
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: index + 1, ...request })}\n`);
+      void child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: index + 1, ...request })}\n`);
     await child.stdin.flush();
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
