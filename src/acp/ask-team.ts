@@ -698,7 +698,10 @@ async function handleConnection(
       options.onHookStart?.();
       let result: HostToolResult;
       try {
-        result = await abortable(hostTools.call(parsed.tool, parsed.arguments ?? {}), options.signal);
+        result = await abortable(
+          hostTools.call(parsed.tool, parsed.arguments ?? {}),
+          options.signal,
+        );
       } finally {
         options.onHookEnd?.();
       }

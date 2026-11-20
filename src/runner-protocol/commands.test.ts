@@ -441,7 +441,9 @@ test("a run command carries at most 16 well-formed Paws-defined tools within 32,
   expect(parses([{ ...tool("linear_issue"), inputSchema: [] }])).toBe(false);
   expect(parses([{ ...tool("linear_issue"), extra: true }])).toBe(false);
   const wide = (count: number) =>
-    Array.from({ length: count }, (_, i) => tool(`tool_${"abcdefghijklmnop"[i]}`, "x".repeat(1024)));
+    Array.from({ length: count }, (_, i) =>
+      tool(`tool_${"abcdefghijklmnop"[i]}`, "x".repeat(1024)),
+    );
   expect(parses(wide(16).map((t) => ({ ...t, inputSchema: { pad: "y".repeat(1000) } })))).toBe(
     false,
   );
