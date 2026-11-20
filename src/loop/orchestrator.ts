@@ -1,4 +1,5 @@
 import {
+  getCandidatePathsSteps,
   getTaskMergeSettingsSteps,
   getTaskLinearReadSteps,
   keepTaskLinearReadSteps,
@@ -228,6 +229,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
+  type CarriedPass,
   type TurnPass,
   candidatePolicyDigests,
   ciMappings,
@@ -616,6 +618,8 @@ import {
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
 import { turnPasses } from "./turn-passes";
 import { closeoutFocus } from "./closeout-focus";
+import { incompleteReport } from "./incomplete-report";
+import { conflictCarried, conflictChecksFor, type ConflictChecks } from "./conflict-checks";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -3971,7 +3975,14 @@ export class Orchestrator {
       const turnHandoff = [handoff, comments?.text, suggestions]
         .filter((part) => part)
         .join("\n\n");
-      const focus = await closeoutFocus(this.store, item.id, returned?.reason);
+      const conflict = await conflictChecksFor(this.store, {
+        itemId: item.id,
+        reason: returned?.reason,
+        settings: readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        repository: `${repository.owner}/${repository.repo}`,
+        briefs: Boolean(comments?.text || suggestions),
+      });
+      const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict);
       const draft = await this.savedDraft(item.id);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
@@ -3981,6 +3992,7 @@ export class Orchestrator {
         ...(turnHandoff ? { handoff: turnHandoff } : {}),
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
         ...(focus ? { closeoutFocus: focus } : {}),
+        ...(conflict ? { conflictRun: conflict.run } : {}),
       });
       await this.flush();
       if (await this.stopped(item.id)) return;
@@ -4257,6 +4269,7 @@ export class Orchestrator {
           await this.agentCloseoutWithOutput(run.id),
           await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
         ),
+        conflict,
       );
     } catch (error) {
       const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
@@ -4351,6 +4364,7 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
     fromTurn: readonly TurnPass[],
+    conflict?: ConflictChecks,
   ): Promise<void> {
     const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (current === null || current.state !== "running") return;
@@ -4361,7 +4375,10 @@ export class Orchestrator {
     await this.store.run((q) =>
       saveCheckpointSteps(q, item.id, { phase: "verifying", baseSha: base, wipCommit: head }),
     );
-    await this.evaluateHead(verifying, worktree, base, head, candidate, { fromTurn });
+    await this.evaluateHead(verifying, worktree, base, head, candidate, {
+      fromTurn,
+      ...(conflict ? { conflict } : {}),
+    });
   }
 
   /**
@@ -4381,6 +4398,7 @@ export class Orchestrator {
       reverifyJobId?: number;
       onOwned?: () => Promise<void>;
       fromTurn?: readonly TurnPass[];
+      conflict?: ConflictChecks;
     } = {},
   ): Promise<void> {
     const startRound =
@@ -4417,6 +4435,7 @@ export class Orchestrator {
       reverifyJobId?: number;
       startRound: boolean;
       fromTurn?: readonly TurnPass[];
+      conflict?: ConflictChecks;
     },
     assertCurrent: () => Promise<void>,
     assertOwned: () => Promise<void>,
@@ -4444,6 +4463,9 @@ export class Orchestrator {
       return;
     }
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
+    const carried = options.conflict
+      ? await this.conflictCarried(item, worktree, base, head, fromCi, options)
+      : undefined;
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
       const before = (await this.store.run((q) => getWorkItemSteps(q, item.id))) ?? item;
@@ -4457,6 +4479,7 @@ export class Orchestrator {
         decide,
         fromCi,
         options.fromTurn,
+        carried,
       );
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
       await assertOwned();
@@ -4709,6 +4732,7 @@ export class Orchestrator {
     decide = false,
     fromCi: readonly CiResult[] = [],
     fromTurn: readonly TurnPass[] = [],
+    carried: readonly CarriedPass[] = [],
   ): Promise<CloseoutVerdict> {
     const repository = await this.repositoryForItem(item);
     const mirror =
@@ -4800,6 +4824,7 @@ export class Orchestrator {
           rulesFirst,
           // CI's results are for the head it ran on; a fixed head runs every check.
           fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
+          carried: commit === head ? carried.map((entry) => entry.id) : [],
         });
         runnerChecks.set(commit, checks);
       }
@@ -4882,6 +4907,7 @@ export class Orchestrator {
         this.store.run((q) => visualReviewApprovalsSteps(q, item.id, itemPathId(item))),
       ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(fromTurn.length > 0 ? { fromTurn } : {}),
+      ...(carried.length > 0 ? { carried } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       pullRequest: () => this.savedDraft(item.id),
       reviewer: {
@@ -4973,10 +4999,12 @@ export class Orchestrator {
       report: (body: string) => void;
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
+      carried?: readonly string[];
       rulesFirst: boolean;
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
+    const skipped = [...(input.fromCi ?? []), ...(input.carried ?? [])];
     const short = head.slice(0, 7);
     const { attempts, delayMs } = this.options.remoteCloseoutRetry ?? {
       attempts: 3,
@@ -5008,7 +5036,7 @@ export class Orchestrator {
           profile: (await deps.profiles?.())?.implementer,
           itemId: itemPathId(item),
           runId: checksRunId,
-          prompt: closeoutChecksPrompt(head, input.fromCi),
+          prompt: closeoutChecksPrompt(head, input.fromCi, input.carried),
           worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
@@ -5059,9 +5087,9 @@ export class Orchestrator {
         else if (!result.closeoutReport) reason = "the runner returned no Closeout report";
         else if (
           !(input.rulesFirst && brokenRuleOf(result.closeoutReport)) &&
-          incompleteReport(result.closeoutReport, input.fromCi ?? [])
+          incompleteReport(result.closeoutReport, skipped)
         ) {
-          reason = incompleteReport(result.closeoutReport, input.fromCi ?? [])!;
+          reason = incompleteReport(result.closeoutReport, skipped)!;
           incomplete += 1;
           if (incomplete >= 2) break;
         } else {
@@ -6644,32 +6672,19 @@ export class Orchestrator {
       (candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim());
-    const github = range ? this.githubForRepository(repository) : null;
-    if (range && !github) throw new Error("Candidate GitHub access is unavailable");
-    const api = github
-      ? await gitHubRiskInputs(
-          createGitHubGitReader({
-            locate: (path) =>
-              path === worktree
-                ? { ...repository, client: github.client, ...this.gitHubCredentials(github) }
-                : null,
-          }),
-          worktree,
-          base,
-          head,
-        )
-      : undefined;
-    const listed = api
-      ? { ok: true as const, paths: api.changed }
-      : await trustedChangedPaths(worktree, base, head);
-    if (!listed.ok) throw new Error(listed.message);
-    const changed = listed.paths;
+    const { changed, fileGlobs } = await this.riskPaths(
+      worktree,
+      repository,
+      base,
+      head,
+      range !== null,
+    );
     const recordedAt = this.now();
     const risk = await classifyPathsRisk({
       git: run,
       base,
       changed,
-      ...(api ? { fileGlobs: api.fileGlobs } : {}),
+      ...(fileGlobs ? { fileGlobs } : {}),
       settingsGlobs: highRiskPaths(
         readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         `${repository.owner}/${repository.repo}`,
@@ -6687,6 +6702,63 @@ export class Orchestrator {
       }),
     );
     return risk;
+  }
+
+  private async riskPaths(
+    worktree: string,
+    repository: RepositoryBinding,
+    base: string,
+    head: string,
+    viaGitHub: boolean,
+  ): Promise<{ changed: string[]; fileGlobs?: string[] }> {
+    const github = viaGitHub ? this.githubForRepository(repository) : null;
+    if (viaGitHub && !github) throw new Error("Candidate GitHub access is unavailable");
+    if (github)
+      return gitHubRiskInputs(
+        createGitHubGitReader({
+          locate: (path) =>
+            path === worktree
+              ? { ...repository, client: github.client, ...this.gitHubCredentials(github) }
+              : null,
+        }),
+        worktree,
+        base,
+        head,
+      );
+    const listed = await trustedChangedPaths(worktree, base, head);
+    if (!listed.ok) throw new Error(listed.message);
+    return { changed: listed.paths };
+  }
+
+  private async conflictCarried(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+    fromCi: readonly CiResult[],
+    options: { fromTurn?: readonly TurnPass[]; conflict?: ConflictChecks },
+  ): Promise<CarriedPass[] | undefined> {
+    const conflict = options.conflict;
+    const repository = await this.repositoryForItem(item);
+    if (!conflict || !repository || fromCi.length === 0) return undefined;
+    const paths = await this.riskPaths(worktree, repository, base, head, this.storedCandidates())
+      .then((read) => read.changed)
+      .catch(() => null);
+    const acceptedPaths = await this.store
+      .run((q) => getCandidatePathsSteps(q, item.id, conflict.head))
+      .catch(() => null);
+    const carried = conflictCarried(conflict, {
+      head,
+      fromCi,
+      fromTurn: options.fromTurn ?? [],
+      paths,
+      acceptedPaths,
+    });
+    if (carried)
+      this.options.journal?.(
+        `item ${item.linearIdentifier} conflict fix at ${head.slice(0, 7)}: Closeout runs only ${conflict.run.join(", ")}`,
+      );
+    return carried;
   }
 
   /**
@@ -12167,29 +12239,6 @@ function brokenRuleOf(report: string | undefined): string | undefined {
   } catch (caughtError) {
     journalCaught(caughtError, "orchestrator.brokenRuleOf.parse", null);
     return undefined;
-  }
-}
-
-function incompleteReport(report: string, fromCi: readonly string[]): string | undefined {
-  try {
-    const parsed = JSON.parse(report) as {
-      required?: { id?: string; kind?: string; result?: { exitCode?: unknown } }[];
-      rules?: unknown[];
-      blocked?: unknown;
-    };
-    const required = Array.isArray(parsed.required) ? parsed.required : [];
-    if (required.length === 0 && !(Array.isArray(parsed.rules) && parsed.rules.length > 0))
-      return typeof parsed.blocked === "string"
-        ? `the policy was unavailable: ${parsed.blocked}`
-        : "the runner's Closeout listed no checks";
-    if (required.some((entry) => entry.result && entry.result.exitCode !== 0)) return undefined;
-    const unstarted = required.find(
-      (entry) => entry.kind === "command" && !entry.result && !fromCi.includes(entry.id ?? ""),
-    );
-    return unstarted ? `no result for ${unstarted.id} (it never started)` : undefined;
-  } catch (caughtError18) {
-    journalCaught(caughtError18, "orchestrator.incompleteReport.parse", null);
-    return "the runner's Closeout report is unreadable";
   }
 }
 

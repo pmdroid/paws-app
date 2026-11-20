@@ -1,3 +1,4 @@
+import { CARRIED_PREFIX } from "../closeout";
 import { HIGH_RISK_PATHS_FILE } from "../core";
 import {
   getCloseoutProgressSteps,
@@ -74,6 +75,8 @@ export function* automaticRiskApprovalSteps(
     )
       return manual(`${name} has no clean evidence for this head`);
   }
+  if (run.steps.some((step) => step.detail?.startsWith(CARRIED_PREFIX)))
+    return manual("a Closeout check was carried from an earlier commit");
   if (
     run.steps.some(
       (step) =>
