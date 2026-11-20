@@ -59,6 +59,15 @@ A thread needs no repository. Each turn is told the repositories its asker may u
 - For an answer from excerpts, Paws downloads at most four files, binary ones included, and uses at most 4 KB of each, 12 KB in total, chosen by the question's words in their paths, and lists up to 20 matching paths. It skips files over 64 KB, binary files and files named like secrets (`.env`, keys, credentials), and leaves out lines that look like a token or password. Reads are cached per Paws workspace, Slack installation, channel, member, repository and commit.
 - An answer that builds on an earlier answer from a repository depends on that repository too, also after `@Paws repo off`. Paws checks every such repository like the attached one, before the turn and before posting, and leaves an earlier answer out of later turns once the member can no longer read its repository.
 
+### Look up Linear
+
+When Linear is connected, each turn gets read-only Linear tools, and its prompt says they only read: `search_issues` (text or an identifier such as `ENG-123`), `get_issue` (one issue with its relations and recent comments), and `list_teams`, `list_projects`, `list_labels` and `list_states`. Nothing in Linear changes through them. Without Linear, the turn has none of them.
+
+- Each call reads the asking member's Linear teams again from their Paws membership, so a team they lose during a turn is no longer read by the next call. The agent can't name other teams.
+- In a channel, private Linear teams are left out, since everyone in the thread reads the answer; in a direct message with Paws they are included. With no team left, each tool answers `You have no Linear teams Paws can read here.` and reads nothing.
+- An answer is plain text of at most 16 KB; a longer one is cut at a line end and ends with `(cut; narrow the search)`. An unknown issue and an issue in a team the member can't read here both answer `No such issue.`
+- The notes an answer leaves record the Linear teams its lookups read, and a later answer gets such a note only when its asker is in all of those teams.
+
 ### Thread notes
 
 Each answer may leave notes for later questions in the same thread, so a follow-up starts from what an earlier answer found out instead of reading the code again.

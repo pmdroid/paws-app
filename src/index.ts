@@ -33,6 +33,7 @@ import {
 } from "./provisioning";
 import {
   createSlackThreads,
+  slackLinearTools,
   loginSlack,
   SLACK_STATUS_EVERY_MS,
   SLACK_STATUS_JOB,
@@ -1866,6 +1867,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         answer: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         stop: () => executionControls?.stopTask ?? null,
+        tools: [slackLinearTools({ store, tracker: () => linear?.tracker })],
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);
