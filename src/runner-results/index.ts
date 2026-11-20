@@ -52,6 +52,7 @@ const QUESTION_TYPES: readonly string[] = [
   "ci_rerun",
   "remember",
   "recall",
+  "tool",
 ];
 
 export function createRunnerResults(options: { store: Db; work: RunnerWork; now?: () => number }) {

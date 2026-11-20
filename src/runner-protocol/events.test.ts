@@ -54,3 +54,18 @@ test("a recall event round-trips with exactly one of query or id", () => {
     error: expect.stringContaining("exactly one of query or id"),
   });
 });
+
+test("a tool event round-trips and refuses built-in names and oversized arguments", () => {
+  const event = { type: "tool", name: "linear_issue", arguments: { id: "PAS-1", deep: [1, null] } };
+  expect(RunnerEventSchema.parse(JSON.parse(JSON.stringify(event)))).toEqual(
+    event as ReturnType<typeof RunnerEventSchema.parse>,
+  );
+  for (const bad of [
+    { ...event, name: "ask_team" },
+    { ...event, name: "Linear" },
+    { ...event, arguments: { text: "x".repeat(16_384) } },
+    { ...event, arguments: [] },
+    { ...event, extra: 1 },
+  ])
+    expect(RunnerEventSchema.safeParse(bad).success).toBe(false);
+});

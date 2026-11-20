@@ -4,6 +4,7 @@ import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 import { RunnerPreviewEventSchema } from "./preview";
 import { GITHUB_READ_FAILURES } from "./github-read";
+import { HostToolArgumentsSchema, HostToolNameSchema } from "./host-tools";
 
 export const RunnerPlanStepSchema = z.strictObject({
   content: z
@@ -262,6 +263,11 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("ci_rerun"), reason: z.string().min(1).max(2000) }),
   z.strictObject({ type: z.literal("remember"), operations: RunnerRememberOperationsSchema }),
   z.strictObject({ type: z.literal("recall"), ...recallFields }).refine(...oneRecallTarget),
+  z.strictObject({
+    type: z.literal("tool"),
+    name: HostToolNameSchema,
+    arguments: HostToolArgumentsSchema,
+  }),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),

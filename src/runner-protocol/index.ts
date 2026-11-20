@@ -56,6 +56,15 @@ export {
 } from "./signature";
 
 export {
+  BUILT_IN_HOST_TOOL_NAMES,
+  HOST_TOOL_LIMITS,
+  HostToolArgumentsSchema,
+  HostToolDefinitionsSchema,
+  HostToolNameSchema,
+  type HostToolDefinitions,
+} from "./host-tools";
+
+export {
   GITHUB_READ_CONFIRM_MS,
   GITHUB_READ_FAILURES,
   type GitHubReadFailure,

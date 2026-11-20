@@ -152,7 +152,10 @@ import {
   AGENT_SIGNED_OUT,
   GITHUB_READ_CONFIRM_MS,
   GITHUB_READ_FAILURES,
+  HOST_TOOL_LIMITS,
+  HostToolArgumentsSchema,
   type GitHubReadFailure,
+  type HostToolDefinitions,
   type RunnerArtifact,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -454,6 +457,52 @@ export function remoteRecall(
   };
 }
 
+export function remoteTools(
+  definitions: HostToolDefinitions,
+  emit: (event: {
+    type: "tool";
+    requestId: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): NonNullable<RunAgentOptions["hostTools"]> {
+  let calls = 0;
+  return {
+    definitions,
+    async call(name, args) {
+      if (!definitions.some((tool) => tool.name === name))
+        return { text: "That tool is not available.", isError: true };
+      if (Buffer.byteLength(JSON.stringify(args) ?? "") > HOST_TOOL_LIMITS.argumentBytes)
+        return {
+          text: `The arguments exceed ${HOST_TOOL_LIMITS.argumentBytes} bytes.`,
+          isError: true,
+        };
+      const parsed = HostToolArgumentsSchema.safeParse(args);
+      if (!parsed.success) return { text: "The arguments must be a JSON object.", isError: true };
+      if (++calls > HOST_TOOL_LIMITS.callsPerCommand)
+        return {
+          text: `This run already made ${HOST_TOOL_LIMITS.callsPerCommand} tool calls.`,
+          isError: true,
+        };
+      const requestId = randomUUID();
+      emit({ type: "tool", requestId, name, arguments: parsed.data });
+      let decoded: { text?: unknown; isError?: unknown };
+      try {
+        decoded = JSON.parse((await answer(requestId, signal)).answer) as typeof decoded;
+      } catch {
+        return { text: "Paws sent an invalid tool answer.", isError: true };
+      }
+      if (typeof decoded.text !== "string")
+        return { text: "Paws sent an invalid tool answer.", isError: true };
+      return decoded.isError === true
+        ? { text: decoded.text, isError: true }
+        : { text: decoded.text };
+    },
+  };
+}
+
 function decodeHostAnswer(response: string, what: string): string {
   let decoded: { answer?: unknown; error?: unknown };
   try {
@@ -471,6 +520,7 @@ export type RunnerWorkerEvent =
   | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "remember"; requestId: string; operations: readonly RunnerRememberOperation[] }
   | ({ type: "recall"; requestId: string } & RunnerRecallRequest)
+  | { type: "tool"; requestId: string; name: string; arguments: Record<string, unknown> }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1500,6 +1550,16 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.recall && options.answer
         ? {
             recall: remoteRecall(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
+      ...(command.type === "run" && command.tools && options.answer
+        ? {
+            hostTools: remoteTools(
+              command.tools,
               emit,
               options.answer,
               options.signal ?? new AbortController().signal,

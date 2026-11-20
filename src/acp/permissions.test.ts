@@ -21,6 +21,21 @@ describe("permission guard", () => {
       ).toBe(false);
   });
 
+  test("a read-only turn without host access allows the tools Paws defined for it, and no other", () => {
+    const defined: GuardContext = { ...ctx, hostAccess: false, definedTools: ["linear_issue"] };
+    for (const name of ["mcp__paws__linear_issue", "linear_issue"])
+      expect(
+        decideReadOnlyPermission({ name, kind: "other", rawInput: { id: "PAS-1" } }, defined),
+      ).toMatchObject({ allow: true });
+    for (const [name, guard] of [
+      ["mcp__paws__linear_comment", defined],
+      ["mcp__paws__linear_issue", ctx],
+    ] as const)
+      expect(decideReadOnlyPermission({ name, kind: "other", rawInput: {} }, guard).allow).toBe(
+        false,
+      );
+  });
+
   test("allows edits and commands inside the worktree", () => {
     expect(
       decidePermission({ kind: "edit", locations: [{ path: `${worktree}/src/main.ts` }] }, ctx)

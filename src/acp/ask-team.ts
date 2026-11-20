@@ -7,7 +7,13 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
-import type { AcpEventOrigin, ReviewFindingGroup, SuggestedFindingLine } from "./types";
+import type {
+  AcpEventOrigin,
+  HostToolResult,
+  HostTools,
+  ReviewFindingGroup,
+  SuggestedFindingLine,
+} from "./types";
 import {
   artifactMimeType,
   ArtifactRejectedError,
@@ -196,6 +202,7 @@ interface HostToolBridgeOptions {
   ciRerun?: (reason: string) => Promise<string>;
   remember?: (operations: unknown) => Promise<string>;
   recall?: (request: unknown) => Promise<string>;
+  hostTools?: HostTools;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
   /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
@@ -364,10 +371,19 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.ciRerun ? "rerun_ci" : "",
             options.remember ? "remember" : "",
             options.recall ? "recall" : "",
+            ...(options.hostTools?.definitions.map((tool) => tool.name) ?? []),
           ]
             .filter(Boolean)
             .join(","),
         },
+        ...(options.hostTools?.definitions.length
+          ? [
+              {
+                name: "PAWS_HOST_TOOL_DEFINITIONS",
+                value: JSON.stringify(options.hostTools.definitions),
+              },
+            ]
+          : []),
       ],
     },
     /** The report that closes the turn. It reuses rule results `get_closeout` already has. */
@@ -675,6 +691,23 @@ async function handleConnection(
       const link = `${image ? "!" : ""}[${label}](<${url.href}>)`;
       const note = typeof published.note === "string" ? published.note.trim() : "";
       socket.end(`${JSON.stringify({ id, answer: note ? `${link}\n\n${note}` : link })}\n`);
+      return;
+    }
+    const hostTools = options.hostTools;
+    if (parsed.tool && hostTools?.definitions.some((tool) => tool.name === parsed.tool)) {
+      options.onHookStart?.();
+      let result: HostToolResult;
+      try {
+        result = await abortable(
+          hostTools.call(parsed.tool, parsed.arguments ?? {}),
+          options.signal,
+        );
+      } finally {
+        options.onHookEnd?.();
+      }
+      socket.end(
+        `${JSON.stringify(result.isError ? { id, error: result.text || "The tool failed." } : { id, answer: result.text })}\n`,
+      );
       return;
     }
     if (parsed.tool && parsed.tool !== "ask_team") throw new Error("unknown host tool");

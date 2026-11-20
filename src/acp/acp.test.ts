@@ -850,6 +850,38 @@ test("recall is offered only when the run options ask for it", async () => {
   expect(await hostTools()).toContain("recall");
 });
 
+test("a read-only run starts the tool bridge for the tools Paws defined", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-defined-tools",
+    prompt: "Look.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    readOnly: true,
+    hostTools: {
+      definitions: [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }],
+      call: async () => ({ text: "PAS-1" }),
+    },
+  });
+  const env = (
+    (await readResult(files.resultPath)).mcpServers[0] as { env: { name: string; value: string }[] }
+  ).env;
+  expect(env.find((entry) => entry.name === "PAWS_HOST_TOOLS")?.value.split(",")).toContain(
+    "linear_issue",
+  );
+  expect(
+    JSON.parse(env.find((entry) => entry.name === "PAWS_HOST_TOOL_DEFINITIONS")!.value),
+  ).toEqual([{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }]);
+});
+
 test("get_closeout lists the pending check and run_closeout runs it", async () => {
   const layout = await layoutRepo();
   await mkdir(join(layout.worktree, ".agents"), { recursive: true });

@@ -418,3 +418,34 @@ test("a review command may carry the issue brief and earlier findings", () => {
   ])
     expect(RunnerCommandSchema.safeParse({ ...review, reviewCommand }).success).toBe(false);
 });
+
+test("a run command carries at most 16 well-formed Paws-defined tools within 32,768 bytes", () => {
+  const tool = (name: string, description = "Look up an issue.") => ({
+    name,
+    description,
+    inputSchema: { type: "object", properties: { id: { type: "string" } } },
+  });
+  const parses = (tools: unknown) => RunnerCommandSchema.safeParse({ ...run, tools }).success;
+  expect(RunnerCommandSchema.parse(run)).toEqual(run);
+  expect(parses([tool("linear_issue")])).toBe(true);
+  expect(parses(Array.from({ length: 16 }, (_, i) => tool(`tool_${"abcdefghijklmnop"[i]}`)))).toBe(
+    true,
+  );
+  expect(parses(Array.from({ length: 17 }, (_, i) => tool(`tool_${"abcdefghijklmnopq"[i]}`)))).toBe(
+    false,
+  );
+  for (const name of ["Linear", "linear-issue", "1tool", "a".repeat(41), "ask_team", "recall"])
+    expect(parses([tool(name)])).toBe(false);
+  expect(parses([tool("linear_issue"), tool("linear_issue")])).toBe(false);
+  expect(parses([tool("linear_issue", "x".repeat(1025))])).toBe(false);
+  expect(parses([{ ...tool("linear_issue"), inputSchema: [] }])).toBe(false);
+  expect(parses([{ ...tool("linear_issue"), extra: true }])).toBe(false);
+  const wide = (count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      tool(`tool_${"abcdefghijklmnop"[i]}`, "x".repeat(1024)),
+    );
+  expect(parses(wide(16).map((t) => ({ ...t, inputSchema: { pad: "y".repeat(1000) } })))).toBe(
+    false,
+  );
+  expect(parses(wide(16))).toBe(true);
+});

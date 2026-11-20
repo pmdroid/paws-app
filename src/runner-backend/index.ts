@@ -92,16 +92,19 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
+  HOST_TOOL_LIMITS,
   REVIEW_BRIEF_LIMIT,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   redactedJson,
   withSignedOutAuth,
+  type HostToolDefinitions,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerResult,
 } from "../runner-protocol";
+
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { CandidateMismatch, fastForwardToBranchTip, restartCandidateFrom } from "./candidate";
@@ -1654,6 +1657,11 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.recall && input.readOnly !== true
                         ? { recall: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" && input.hostTools?.definitions.length
+                        ? {
+                            tools: [...input.hostTools.definitions] as HostToolDefinitions,
+                          }
+                        : {}),
                       ...(input.role !== "reviewer" && input.askTeam && input.readOnly !== true
                         ? { questionEndsTurn: true as const }
                         : {}),
@@ -2080,7 +2088,8 @@ export function createRemoteAgentRunner(options: {
                   event.type === "closeout_policy" ||
                   event.type === "ci_rerun" ||
                   event.type === "remember" ||
-                  event.type === "recall") &&
+                  event.type === "recall" ||
+                  event.type === "tool") &&
                 (await results.answered(assigned.runId, assigned.generation, row.sequence)) !==
                   null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
@@ -2141,6 +2150,28 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(recalled),
+                });
+              }
+              if (event.type === "tool" && !answered) {
+                const unavailable = { text: "That tool is not available.", isError: true };
+                const hostTools = input.hostTools;
+                const result = hostTools
+                  ? await Promise.resolve()
+                      .then(() => hostTools.call(event.name, event.arguments))
+                      .catch((error: unknown) => {
+                        journalCaught(error, "runner-backend.forItem.tool", itemId);
+                        return unavailable;
+                      })
+                  : unavailable;
+                signal.throwIfAborted();
+                await results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify({
+                    text: toolAnswerText(result.text),
+                    ...(result.isError ? { isError: true } : {}),
+                  }),
                 });
               }
               if (event.type === "remember" && !answered) {
@@ -3035,3 +3066,18 @@ async function hiddenCheckpoint(
   }
 }
 export { syncSteps } from "./sync-steps";
+
+const TOOL_ANSWER_SERIALIZED_LIMIT = 65_000;
+
+function toolAnswerText(text: string): string {
+  let bytes = 0;
+  let serialized = 0;
+  let end = 0;
+  for (const character of text) {
+    bytes += Buffer.byteLength(character);
+    serialized += JSON.stringify(character).length - 2;
+    if (bytes > HOST_TOOL_LIMITS.answerBytes || serialized > TOOL_ANSWER_SERIALIZED_LIMIT) break;
+    end += character.length;
+  }
+  return end === text.length ? text : text.slice(0, end);
+}

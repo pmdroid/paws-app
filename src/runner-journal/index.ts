@@ -17,6 +17,8 @@ import {
   RunnerCommandSchema,
   RunnerEventSchema,
   RECALL_LIMITS,
+  HostToolArgumentsSchema,
+  HostToolNameSchema,
   RunnerRememberOperationsSchema,
   RunnerResultSchema,
   type RunnerResult,
@@ -87,6 +89,13 @@ const recallRequest = z
   })
   .refine((request) => (request.query === undefined) !== (request.id === undefined));
 
+const toolRequest = z.strictObject({
+  type: z.literal("tool"),
+  requestId: z.uuid(),
+  name: HostToolNameSchema,
+  arguments: HostToolArgumentsSchema,
+});
+
 function executionId(now: number): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
@@ -115,6 +124,7 @@ const ANSWERED_TYPES = [
   "ci_rerun",
   "remember",
   "recall",
+  "tool",
 ] as const;
 const awaitsAnswer = inArray(sql`json_extract(${delivery.payload},'$.type')`, [...ANSWERED_TYPES]);
 const one = { one: sql`1` };
@@ -606,7 +616,11 @@ export function openExecutionJournal(root: string) {
           const ciRerun = ciRerunRequest.safeParse(raw);
           const remember = rememberRequest.safeParse(raw);
           const recall = recallRequest.safeParse(raw);
-          if (recall.success) {
+          const tool = toolRequest.safeParse(raw);
+          if (tool.success) {
+            event = { type: "tool", name: tool.data.name, arguments: tool.data.arguments };
+            requestId = tool.data.requestId;
+          } else if (recall.success) {
             event =
               recall.data.id !== undefined
                 ? { type: "recall", id: recall.data.id }
