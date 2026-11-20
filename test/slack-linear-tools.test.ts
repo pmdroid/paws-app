@@ -1,6 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
 import { putWorkspaceUserSteps, syncWorkspaceMemberSteps, type Db } from "../src/db";
-import { createFakeTracker, type AgentIssue, type TrackerAdapter } from "../src/linear";
+import {
+  checkAgentIssueWrite,
+  createFakeTracker,
+  type AgentIssue,
+  type TrackerAdapter,
+} from "../src/linear";
 import {
   slackLinearTools,
   SLACK_LINEAR_CUT,
@@ -46,7 +51,7 @@ async function setup() {
   );
   tracker.agentIssues.push(issue("ENG-1", "eng"), issue("SEC-1", "sec"), issue("OPS-1", "ops"));
   const tools = (channelId = "C0ONE", linear: TrackerAdapter | null = tracker) =>
-    slackLinearTools({ store: db, tracker: () => linear })({
+    slackLinearTools({ store: db, tracker: () => linear, checkWrite: checkAgentIssueWrite })({
       workspaceId: "W1",
       member: { userId: "um", linkId: "link" },
       slackUserId: "SMEMBER",
@@ -140,6 +145,17 @@ test("create, update and assign only store proposals for the asker's teams, at m
   await refused("update_issue", { id: "OPS-1", title: "x" }, "No such issue. (OPS-1)");
   await refused("assign_issue", { id: "SEC-1" }, "No such issue. (SEC-1)");
   await refused("update_issue", { id: "ENG-1" }, "Name at least one field to change.");
+  const long = "x".repeat(257);
+  await refused(
+    "create_issue",
+    { ...create, title: long },
+    "A Linear issue title has at most 256 characters",
+  );
+  await refused(
+    "update_issue",
+    { id: "ENG-1", title: long },
+    "A Linear issue title has at most 256 characters",
+  );
   expect(await made.call("create_issue", { ...create, labels: ["bug"], parent: "ENG-1" })).toEqual({
     text: proposed,
   });

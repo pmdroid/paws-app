@@ -4469,7 +4469,10 @@ test("a start's draft run carries no Linear tools and no Linear-restricted notes
   expect(draftOf(f).post.body).toMatchObject({ user: "SMEMBER" });
 });
 
-async function proposing(calls: [string, Record<string, unknown>][]) {
+async function proposing(
+  calls: [string, Record<string, unknown>][],
+  before?: (f: Awaited<ReturnType<typeof fixture>>, root: { ts: string }) => Promise<unknown>,
+) {
   let provider: SlackToolProvider | null = null;
   const f = await linkedWith({ tools: [(run) => provider?.(run) ?? null], toolCalls: calls }, [
     ...["um", "SMEMBER"],
@@ -4485,6 +4488,8 @@ async function proposing(calls: [string, Record<string, unknown>][]) {
   });
   const root = f.mention("SMEMBER", "file the follow-ups");
   await f.deliver(root);
+  await f.runJobs();
+  await before?.(f, root);
   await f.settle();
   const shown = f.posts("chat.postEphemeral").flatMap((post) => {
     const blocks = post.body.blocks as { elements?: { value: string; text: { text: string } }[] }[];
@@ -4576,4 +4581,49 @@ test("update and assign apply on the click, and the job refuses a team gone priv
   await again.click("SMEMBER", again.shown[0]!.id);
   expect(again.f.notice()).toContain("You aren't a member of that Linear team");
   expect(again.writes()).toEqual([]);
+});
+
+test("proposals are shown only once their answer is posted, so a withheld or stopped answer shows none", async () => {
+  const create = { team: "ENG", title: "Log uploads", description: "Log failed uploads." };
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  const left = await proposing([["create_issue", create]], async (f) => {
+    f.advance(1);
+    await syncWorkspaceMember(f.db, { ...member, teamIds: [], now: f.now() });
+  });
+  expect(left.f.toolAnswers).toEqual([
+    { text: "Proposed. <@SMEMBER> has to confirm it in Slack." },
+  ]);
+  expect(left.f.posts("chat.postMessage")).toHaveLength(0);
+  expect(left.shown).toEqual([]);
+  const stopped = await proposing([["create_issue", create]], (f, root) =>
+    f.say("SMEMBER", "stop", { thread_ts: root.ts }),
+  );
+  expect(stopped.f.posts("chat.postMessage")).toHaveLength(0);
+  expect(stopped.shown).toEqual([]);
+});
+
+test("an update whose outcome is unknown is never applied again", async () => {
+  const { f, pick, writes } = await proposing([
+    ["update_issue", { id: "ENG-7", title: "Renamed" }],
+  ]);
+  const id = pick("Title: Renamed");
+  await f.click(
+    "SMEMBER",
+    { ts: "1800000000.000999", threadTs: "x" },
+    { action: "paws_file", value: id },
+  );
+  await sqlRun(
+    f.db,
+    "UPDATE setting SET value = jsonb_set(value::jsonb, '{attemptedAt}', '1')::text WHERE key LIKE 'slack.draft:%'",
+  );
+  await f.settle();
+  expect(writes()).toEqual([]);
+  expect(f.notice()).toContain("can't tell whether Linear applied this change");
+  await f.click(
+    "SMEMBER",
+    { ts: "1800000000.000999", threadTs: "x" },
+    { action: "paws_file", value: id },
+  );
+  await f.settle();
+  expect(writes()).toEqual([]);
 });

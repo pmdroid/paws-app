@@ -257,6 +257,7 @@ import {
   sessionCreatedKey,
   slackIssueId,
   agentIssueId,
+  checkAgentIssueWrite,
   type AcceptedLinearEvent,
   type IntakeDecision,
   POLL_DUE_CURSOR,
@@ -1889,7 +1890,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         answer: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         stop: () => executionControls?.stopTask ?? null,
-        tools: [slackLinearTools({ store, tracker: () => linear?.tracker })],
+        tools: [
+          slackLinearTools({
+            store,
+            tracker: () => linear?.tracker,
+            checkWrite: checkAgentIssueWrite,
+          }),
+        ],
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

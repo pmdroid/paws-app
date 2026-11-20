@@ -109,6 +109,8 @@ export const WORK_NOTICES = {
   discarded: "Discarded. Paws sent nothing to Linear.",
   stale: "That draft is no longer current, so Paws filed nothing.",
   changed: "Who can read that Linear team changed, so Paws filed nothing. Start again.",
+  unknown:
+    "Paws can't tell whether Linear applied this change, so it won't apply it again. Check the issue in Linear.",
   proposals: "This run has proposed 3 changes already.",
 };
 
@@ -378,7 +380,7 @@ export function* fileReadySteps(
     const owner = { ...thread, ownerId: user.linearUserId, userId, slackUserId, linkId, context };
     const save = (k: string, v: unknown) =>
       updateSettingSteps(q, k, () => JSON.stringify(v), origin.at);
-    yield* save(slackIssueKey(origin.issueId), owner);
+    if (draft.change?.kind !== "update") yield* save(slackIssueKey(origin.issueId), owner);
     yield* save(key, { ...draft, attemptedAt: draft.attemptedAt ?? origin.at });
   }
   return draft;

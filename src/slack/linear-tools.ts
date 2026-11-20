@@ -122,6 +122,7 @@ export function slackLinearTools(options: {
   store: Db;
   tracker: () => SlackLinearReader | null | undefined;
   now?: () => number;
+  checkWrite?: (write: { title?: string; description?: string; labelIds?: string[] }) => void;
 }): SlackToolProvider {
   const now = options.now ?? Date.now;
   return (run) => {
@@ -180,6 +181,18 @@ export function slackLinearTools(options: {
     const propose = (teams: AgentTeam[], args: Args, kind: "create" | "update" | "assign") =>
       proposal(linear, run, teams, args, kind).then(async (draft) => {
         read.add(draft.team.id);
+        const change = draft.change!;
+        const write =
+          change.kind === "create"
+            ? { ...change, title: draft.title }
+            : change.kind === "update"
+              ? change.fields
+              : {};
+        try {
+          options.checkWrite?.(write);
+        } catch (error) {
+          throw new Refused(error instanceof Error ? error.message : String(error));
+        }
         if (!work.draftMessage(draft, draft.team, draft.id))
           throw new Refused("That change is too long to show in Slack; shorten it.");
         await options.store.transaction((q) => work.proposeChangeSteps(q, draft, now()));
