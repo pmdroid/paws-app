@@ -29,6 +29,7 @@ export { idleBackstopMs, listenForNotify } from "./notify";
 export { PG_MIGRATIONS_FOLDER, migrationTags } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
+export * from "./repository-descriptions";
 export * from "./pull-request-drafts";
 export * from "./candidate-risk";
 export * from "./review-findings";

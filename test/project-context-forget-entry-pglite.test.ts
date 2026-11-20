@@ -343,6 +343,7 @@ test("a populated database from before entry forgetting migrates, and a forget s
   const forgetting = journal.entries.find((entry) => entry.tag === "0008_context_forgotten_entry")!;
   await sqlRun(opened.store, "ALTER TABLE runner_helper DROP CONSTRAINT runner_helper_session");
   await sqlRun(opened.store, "ALTER TABLE runner_helper ALTER COLUMN session_id SET NOT NULL");
+  await sqlRun(opened.store, "DROP TABLE repository_description");
   await sqlRun(opened.store, "DROP TABLE slack_thread_note");
   await sqlRun(opened.store, "DROP TABLE slack_conversation");
   await sqlRun(opened.store, "DROP TABLE context_forgotten_entry");
