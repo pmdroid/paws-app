@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { RunnerEventSchema } from "../src/runner-protocol";
-import { commandTools, remoteTools } from "../src/runner-worker";
+import { commandRepositories, commandTools, remoteTools } from "../src/runner-worker";
 
 const definitions = [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }];
 
@@ -103,4 +103,96 @@ test("a Slack reply helper's tools reach the agent, up to 64 calls", async () =>
       undefined,
     ),
   ).toEqual({});
+});
+
+test("add_repository copies Paws' snapshot into the folder and refuses a sixth repository", async () => {
+  const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "paws-add-repository-"));
+  try {
+    const commit = "c".repeat(40);
+    const snapshot = (name: string) => {
+      const path = join(root, "spool", name, commit);
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, "README.md"), `${name}\n`);
+      return { repository: name, commit, path };
+    };
+    const published = [snapshot("acme/app"), snapshot("acme/lib")];
+    const worktree = join(root, "work");
+    mkdirSync(worktree);
+    const emitted: { requestId: string; repository: string }[] = [];
+    const command = {
+      id: "01K00000000000000000000000",
+      type: "helper" as const,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      issuedAt: 0,
+      expiresAt: 1,
+      sessionId: "session",
+      sessionGeneration: 1,
+      profile: { agent: "claude" as const, model: null },
+      prompt: "How does checkout round totals?",
+      purpose: "slack_reply" as const,
+      repositories: ["acme/app"],
+    };
+    const answers: Record<string, unknown> = {
+      "acme/lib": { path: published[1]!.path, commit },
+      "acme/forged": { path: published[1]!.path, commit },
+    };
+    const tool = commandRepositories(
+      command,
+      (event) => emitted.push(event),
+      async (requestId) => {
+        const name = emitted.find((event) => event.requestId === requestId)!.repository;
+        return {
+          answer: JSON.stringify(answers[name] ?? { error: `Paws could not add ${name}.` }),
+        };
+      },
+      undefined,
+      worktree,
+      () => published,
+    );
+    tool.preload();
+    expect(readFileSync(join(worktree, "repositories/acme/app/README.md"), "utf8")).toBe(
+      "acme/app\n",
+    );
+    const add = tool.addRepository!;
+    expect(await add("acme/app")).toEqual({
+      text: `Added at repositories/acme/app (commit ${commit}).`,
+    });
+    expect(await add("acme/lib")).toEqual({
+      text: `Added at repositories/acme/lib (commit ${commit}).`,
+    });
+    expect(readFileSync(join(worktree, "repositories/acme/lib/README.md"), "utf8")).toBe(
+      "acme/lib\n",
+    );
+    const refused = (name: string) => ({ text: `Paws could not add ${name}.`, isError: true });
+    expect(await add("acme/forged")).toEqual(refused("acme/forged"));
+    expect(await add("acme/third")).toEqual(refused("acme/third"));
+    expect(await add("acme/fourth")).toEqual(refused("acme/fourth"));
+    expect(await add("acme/sixth")).toEqual(refused("acme/sixth"));
+    expect(await add("../etc")).toMatchObject({ isError: true });
+    expect(emitted.map((event) => event.repository)).toEqual([
+      "acme/lib",
+      "acme/forged",
+      "acme/third",
+      "acme/fourth",
+    ]);
+    for (const { requestId: _requestId, ...event } of emitted)
+      expect(RunnerEventSchema.parse(event)).toEqual(event as never);
+    const { repositories: _repositories, ...plain } = command;
+    expect(
+      commandRepositories(
+        plain,
+        () => {},
+        async () => ({ answer: "{}" }),
+        undefined,
+        worktree,
+        () => published,
+      ).addRepository,
+    ).toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
