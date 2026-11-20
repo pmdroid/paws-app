@@ -153,6 +153,7 @@ import {
   GITHUB_READ_CONFIRM_MS,
   GITHUB_READ_FAILURES,
   HOST_TOOL_LIMITS,
+  HostToolArgumentsSchema,
   type GitHubReadFailure,
   type HostToolDefinitions,
   type RunnerArtifact,
@@ -473,18 +474,20 @@ export function remoteTools(
     async call(name, args) {
       if (!definitions.some((tool) => tool.name === name))
         return { text: "That tool is not available.", isError: true };
-      if (Buffer.byteLength(JSON.stringify(args)) > HOST_TOOL_LIMITS.argumentBytes)
+      if (Buffer.byteLength(JSON.stringify(args) ?? "") > HOST_TOOL_LIMITS.argumentBytes)
         return {
           text: `The arguments exceed ${HOST_TOOL_LIMITS.argumentBytes} bytes.`,
           isError: true,
         };
+      const parsed = HostToolArgumentsSchema.safeParse(args);
+      if (!parsed.success) return { text: "The arguments must be a JSON object.", isError: true };
       if (++calls > HOST_TOOL_LIMITS.callsPerCommand)
         return {
           text: `This run already made ${HOST_TOOL_LIMITS.callsPerCommand} tool calls.`,
           isError: true,
         };
       const requestId = randomUUID();
-      emit({ type: "tool", requestId, name, arguments: args });
+      emit({ type: "tool", requestId, name, arguments: parsed.data });
       let decoded: { text?: unknown; isError?: unknown };
       try {
         decoded = JSON.parse((await answer(requestId, signal)).answer) as typeof decoded;

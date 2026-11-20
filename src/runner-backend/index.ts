@@ -105,11 +105,6 @@ import {
   type RunnerResult,
 } from "../runner-protocol";
 
-function truncateUtf8(text: string, bytes: number): string {
-  const encoded = Buffer.from(text);
-  if (encoded.length <= bytes) return text;
-  return new TextDecoder().decode(encoded.subarray(0, bytes)).replace(/\uFFFD$/, "");
-}
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { CandidateMismatch, fastForwardToBranchTip, restartCandidateFrom } from "./candidate";
@@ -2159,9 +2154,10 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "tool" && !answered) {
                 const unavailable = { text: "That tool is not available.", isError: true };
-                const result = input.hostTools
-                  ? await input.hostTools
-                      .call(event.name, event.arguments)
+                const hostTools = input.hostTools;
+                const result = hostTools
+                  ? await Promise.resolve()
+                      .then(() => hostTools.call(event.name, event.arguments))
                       .catch((error: unknown) => {
                         journalCaught(error, "runner-backend.forItem.tool", itemId);
                         return unavailable;
@@ -2173,7 +2169,7 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify({
-                    text: truncateUtf8(result.text, HOST_TOOL_LIMITS.answerBytes),
+                    text: toolAnswerText(result.text),
                     ...(result.isError ? { isError: true } : {}),
                   }),
                 });
@@ -3070,3 +3066,18 @@ async function hiddenCheckpoint(
   }
 }
 export { syncSteps } from "./sync-steps";
+
+const TOOL_ANSWER_SERIALIZED_LIMIT = 65_000;
+
+function toolAnswerText(text: string): string {
+  let bytes = 0;
+  let serialized = 0;
+  let end = 0;
+  for (const character of text) {
+    bytes += Buffer.byteLength(character);
+    serialized += JSON.stringify(character).length - 2;
+    if (bytes > HOST_TOOL_LIMITS.answerBytes || serialized > TOOL_ANSWER_SERIALIZED_LIMIT) break;
+    end += character.length;
+  }
+  return end === text.length ? text : text.slice(0, end);
+}

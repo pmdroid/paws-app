@@ -1264,10 +1264,11 @@ test("a redelivered tool event is answered once, and a tool without a handler is
   await setRunner(context.db, runners.b, { status: "paused" });
   const turn = context.turn(record, [], undefined, {
     definitions: [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }],
-    async call(name, args) {
+    call(name, args) {
       calls.push(name);
       if (args.id === "PAS-0") throw new Error("Linear is down");
-      return { text: `${String(args.id)}: ${"x".repeat(20_000)}` };
+      if (args.id === "NUL") return Promise.resolve({ text: "\u0000".repeat(16_384) });
+      return Promise.resolve({ text: `${String(args.id)}: ${"x".repeat(20_000)}` });
     },
   });
   const command = (await context.next(runners.a)) as RunCommand;
@@ -1299,11 +1300,22 @@ test("a redelivered tool event is answered once, and a tool without a handler is
     text: "That tool is not available.",
     isError: true,
   });
-  expect(calls).toEqual(["linear_issue", "linear_issue"]);
+  await context.events(command, runners.a, [
+    { type: "tool", name: "linear_issue", arguments: { id: "NUL" } },
+  ]);
+  const escaped = (await until(() => results.answered(command.runId, command.generation, 3)))!;
+  expect(escaped.length).toBeLessThanOrEqual(65_536);
+  expect(new Set(JSON.parse(escaped).text)).toEqual(new Set(["\u0000"]));
+  expect(calls).toEqual(["linear_issue", "linear_issue", "linear_issue"]);
   await context.submit(command, runners.a, { candidateSha: context.base });
   expect(await turn.running).toMatchObject({ stopReason: "end_turn" });
+});
 
+test("a tool event on a run without a handler is answered as not available", async () => {
+  const { runners, results } = context;
+  const event = { type: "tool" as const, name: "linear_issue", arguments: { id: "PAS-1" } };
   const bare = await context.item();
+  await setRunner(context.db, runners.b, { status: "paused" });
   const plain = context.turn(bare, []);
   const onA = (await context.next(runners.a)) as RunCommand;
   expect(onA.tools).toBeUndefined();

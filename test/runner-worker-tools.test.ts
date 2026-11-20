@@ -55,6 +55,10 @@ test("oversized arguments and the 201st call return an error and emit nothing", 
     isError: true,
   });
   expect(await tools.call("linear_comment", {})).toMatchObject({ isError: true });
+  for (const args of [[1, 2], "text", 3, null])
+    expect(
+      await tools.call("linear_issue", args as unknown as Record<string, unknown>),
+    ).toMatchObject({ isError: true });
   expect(emitted).toBe(0);
   for (let i = 0; i < 200; i++)
     expect(await tools.call("linear_issue", {})).toEqual({ text: "ok" });
