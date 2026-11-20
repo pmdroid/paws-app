@@ -128,6 +128,7 @@ import {
   slackStreamChunks,
   slackStreamId,
   slackStreamState,
+  slackTaskStatusSteps,
   slackThreadWorkStatusSteps,
   slackThreadStatusSteps,
   slackTurnsSteps,
@@ -285,6 +286,9 @@ const same = (bound: Bound | null, place: Bound) =>
   bound.channelId === place.channelId &&
   bound.generation === place.generation;
 
+const keepsRunning = (identifier: string) =>
+  `${identifier} keeps running. Reply stop ${identifier} to stop it.`;
+
 const NOTICES = {
   linked: "Linked. Mention @Paws in the channel to ask it something.",
   released: "Linked. Paws is answering the question you asked before linking, in its thread.",
@@ -294,6 +298,7 @@ const NOTICES = {
   admin_required: "The first person to link must be a Paws workspace admin.",
   other_channel: "Paws already answers in another channel of this workspace.",
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
+  stoppedAnswering: "Stopped answering in this thread.",
   memory_changed:
     "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
   source_withheld:
@@ -488,19 +493,29 @@ function* stopSteps(
   conversationId: string,
   ts: string,
   at: number,
+  scope: "thread" | "conversation" = "thread",
 ): Steps<false | "chat" | "task"> {
   const gate = yield* gateSteps(q, home, place);
   if (gate.kind !== "member") return false;
   const { slackUserId } = place;
   yield* stopSlackConversationSteps(q, { id: conversationId, ts, slackUserId }, at);
   yield* cancelThreadFollowUpsSteps(q, place, at);
-  const filed = yield* work.filingStartedSteps(q, place);
+  const filed = scope === "thread" && (yield* work.filingStartedSteps(q, place));
   const mark = yield* slackOutboxMarkSteps(q);
   const stop: TaskStopJob = { place, userId: gate.userId, linkId: gate.linkId, ts, mark };
   const job = { queue: SLACK_THREAD_JOB, payload: { stop }, now: at };
   const jobKey = `slack:task-stop:${conversationId}:${ts}`;
   const queued = filed && (yield* enqueueJobOnceSteps(q, { ...job, jobKey })).inserted;
-  const payload: Payload = { ...place, kind: "notice", text: NOTICES.stopped };
+  const running: string[] = [];
+  if (scope === "conversation")
+    for (const task of yield* work.filedTasksSteps(q, place))
+      if ((yield* slackTaskStatusSteps(q, task.issueId))?.status !== "closed")
+        running.push(task.identifier);
+  const text =
+    scope === "thread"
+      ? NOTICES.stopped
+      : [NOTICES.stoppedAnswering, ...running.map(keepsRunning)].join(" ");
+  const payload: Payload = { ...place, kind: "notice", text };
   yield* enqueueOutboxOnceSteps(q, {
     target: "slack",
     op: "chat.postEphemeral",
@@ -561,19 +576,18 @@ export async function acceptSlackSessionStop(
   stop: SlackSessionStop,
   at = Date.now(),
 ): Promise<void> {
-  const queued = await store.transaction(function* (q) {
+  await store.transaction(function* (q) {
     const install = yield* installationSteps(q, home, stop.teamId);
-    if (!install || (stop.appId && install.appId && stop.appId !== install.appId)) return false;
+    if (!install || (stop.appId && install.appId && stop.appId !== install.appId)) return;
     const { workspaceId, generation } = install;
     const { teamId, channelId, threadTs, slackUserId } = stop;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const conversation = yield* slackConversationSteps(q, threadOf(place));
-    if (!conversation) return false;
+    if (!conversation) return;
     const event = { type: "SlackSessionStop", workspaceId, generation, stop };
-    if (!(yield* recordEventSteps(q, `slack:${teamId}:${stop.eventId}`, event, at))) return false;
-    return (yield* stopSteps(q, home, place, conversation.id, stop.eventTs, at)) === "task";
+    if (!(yield* recordEventSteps(q, `slack:${teamId}:${stop.eventId}`, event, at))) return;
+    yield* stopSteps(q, home, place, conversation.id, stop.eventTs, at, "conversation");
   });
-  if (queued) emitJobReady(store);
 }
 
 export async function acceptSlackInteraction(
