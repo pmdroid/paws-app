@@ -8,6 +8,7 @@ export interface GuardContext {
   home: string;
   pawsRoot: string;
   skillRoots?: readonly string[];
+  definedTools?: readonly string[];
 }
 
 export interface PermissionSubject {
@@ -56,11 +57,11 @@ const READ_ONLY_KINDS = new Set(["read", "search", "think", "switch_mode"]);
 const PAWS_MCP_PREFIX = "mcp__paws__";
 
 /** The Paws host tool `subject` calls, by its bare name or its `paws` MCP server name. */
-function hookTool(subject: PermissionSubject): string | undefined {
+function hookTool(subject: PermissionSubject, ctx: GuardContext): string | undefined {
   const name = subject.name?.startsWith(PAWS_MCP_PREFIX)
     ? subject.name.slice(PAWS_MCP_PREFIX.length)
     : subject.name;
-  return name && HOOK_TOOLS.has(name) ? name : undefined;
+  return name && (HOOK_TOOLS.has(name) || ctx.definedTools?.includes(name)) ? name : undefined;
 }
 
 export function isInside(parent: string, child: string): boolean {
@@ -76,7 +77,7 @@ export function decideReadOnlyPermission(
 ): GuardDecision {
   const decision = decidePermission(subject, ctx);
   if (!decision.allow) return decision;
-  if (hookTool(subject)) return decision;
+  if (hookTool(subject, ctx)) return decision;
   if (subject.kind && READ_ONLY_KINDS.has(subject.kind)) return decision;
   return { allow: false, reason: "this session is read-only" };
 }
@@ -86,7 +87,7 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
-  const hook = hookTool(subject);
+  const hook = hookTool(subject, ctx);
   if (hook) return { allow: true, reason: `${hook} is handled by the injected hook` };
 
   const command = commandText(subject);

@@ -155,6 +155,7 @@ export interface RunAgentOptions {
   ciRerun?: (reason: string) => Promise<string>;
   remember?: (operations: unknown) => Promise<string>;
   recall?: (request: unknown) => Promise<string>;
+  hostTools?: HostTools;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner
    * installs these before the agent starts. `notices` are lines for the task's Linear session.
@@ -250,3 +251,19 @@ export type SuggestedFindingLine = {
   explanation: string;
   reviewId: string;
 };
+
+export interface HostToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface HostToolResult {
+  text: string;
+  isError?: boolean;
+}
+
+export interface HostTools {
+  definitions: readonly HostToolDefinition[];
+  call(name: string, args: Record<string, unknown>): Promise<HostToolResult>;
+}

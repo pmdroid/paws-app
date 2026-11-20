@@ -305,6 +305,33 @@ const RECALL_TOOL = {
 
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
+const BUILT_IN_TOOLS = [
+  TOOL,
+  PLAN_TOOL,
+  ARTIFACT_TOOL,
+  PULL_REQUEST_TOOL,
+  POST_UPDATE_TOOL,
+  REPLY_TOOL,
+  START_WORK_TOOL,
+  GET_CLOSEOUT_TOOL,
+  RUN_CLOSEOUT_TOOL,
+  RERUN_CI_TOOL,
+  REMEMBER_TOOL,
+  RECALL_TOOL,
+];
+
+function definedTools(): { name: string; description: string; inputSchema: unknown }[] {
+  const raw = process.env.PAWS_HOST_TOOL_DEFINITIONS;
+  if (!raw) return [];
+  const builtIn = new Set(BUILT_IN_TOOLS.map((tool) => tool.name));
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (tool): tool is { name: string; description: string; inputSchema: unknown } =>
+      typeof tool?.name === "string" && !builtIn.has(tool.name) && enabledTools.has(tool.name),
+  );
+}
+
 type Rpc = {
   jsonrpc?: string;
   id?: number | string | null;
@@ -382,19 +409,13 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
     case "tools/list":
       respond(message.id, {
         tools: [
-          TOOL,
-          PLAN_TOOL,
-          ARTIFACT_TOOL,
-          PULL_REQUEST_TOOL,
-          POST_UPDATE_TOOL,
-          REPLY_TOOL,
-          START_WORK_TOOL,
-          GET_CLOSEOUT_TOOL,
-          RUN_CLOSEOUT_TOOL,
-          RERUN_CI_TOOL,
-          REMEMBER_TOOL,
-          RECALL_TOOL,
-        ].filter((tool) => enabledTools.has(tool.name)),
+          ...BUILT_IN_TOOLS.filter((tool) => enabledTools.has(tool.name)),
+          ...definedTools().map(({ name, description, inputSchema }) => ({
+            name,
+            description,
+            inputSchema,
+          })),
+        ],
       });
       return;
     case "prompts/list":

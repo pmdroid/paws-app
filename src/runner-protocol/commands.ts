@@ -2,6 +2,7 @@ import { RunnerAgentCredentialSchema } from "./agent-credentials";
 import { z } from "zod";
 import { RunnerAccountSchema } from "./accounts";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
+import { HostToolDefinitionsSchema } from "./host-tools";
 import { RunnerLivePreviewSchema } from "./preview";
 
 /** Maximum time granted by a work assignment or heartbeat renewal. */
@@ -277,6 +278,7 @@ export const RunnerCommandSchema = z
       ciRerun: z.literal(true).optional(),
       remember: z.literal(true).optional(),
       recall: z.literal(true).optional(),
+      tools: HostToolDefinitionsSchema.optional(),
       questionEndsTurn: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),
