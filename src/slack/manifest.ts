@@ -8,6 +8,7 @@ const CAPABILITIES = {
   directMessages: ["im:history", "im:write", "chat:write"],
   agent: ["assistant:write"],
   members: ["users:read", "users:read.email"],
+  reactions: ["reactions:write"],
 };
 
 export const SLACK_INSTALL_SCOPES = [...new Set(Object.values(CAPABILITIES).flat())];
