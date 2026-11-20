@@ -10,6 +10,7 @@ import {
 } from "../db";
 import { isPawsAnswerKind, type StoredQuestion } from "../questions";
 import { filedTasksSteps } from "./work";
+import { slackWorkMessageSteps } from "./work-message";
 
 export type SlackTaskUpdateKind = "question" | "update" | "response" | "error";
 
@@ -30,8 +31,8 @@ export type SlackTaskPost = {
   fence: { sessionId: string; generation: number; stop: boolean };
   questionId?: string;
   paws?: "repository" | "answer";
-  progress?: true;
   sourceId?: number;
+  work?: string;
 };
 
 const CHOOSE_IN_PAWS = new Set(["repository", "runner-repository"]);
@@ -59,6 +60,24 @@ export function* slackTaskUpdateSteps(
   const { workspaceId, teamId, channelId, threadTs, generation, userId, linkId, slackUserId } =
     origin;
   const thread = { workspaceId, teamId, channelId, threadTs, generation };
+  if (update.kind === "update") {
+    const body = text.replace(/<!--[\s\S]*?-->/g, "").trim();
+    return yield* slackWorkMessageSteps(
+      q,
+      {
+        issueId: origin.issueId,
+        thread,
+        slackUserId,
+        member: { userId, linkId },
+        item,
+        key: update.key,
+        fence: { sessionId: update.sessionId, ...update.fence },
+        update: body,
+        ...(update.sourceId === undefined ? {} : { sourceId: update.sourceId }),
+      },
+      now,
+    );
+  }
   const tasks = yield* filedTasksSteps(q, { ...thread, slackUserId });
   const task = tasks.find((filed) => filed.issueId === origin.issueId);
   const asked = update.kind === "question" ? update.asked : null;
@@ -91,7 +110,6 @@ export function* slackTaskUpdateSteps(
     itemId: item.id,
     fence: { sessionId: update.sessionId, ...update.fence },
     ...(asked ? { questionId: asked.id } : {}),
-    ...(update.kind === "update" ? { progress: true as const } : {}),
     ...(paws ? { paws } : {}),
     ...(update.sourceId === undefined ? {} : { sourceId: update.sourceId }),
   };

@@ -26,7 +26,7 @@ import {
   slackOutboxMarkSteps,
   slackSendingSteps,
   slackStreamingSteps,
-  slackLaterProgressSteps,
+  slackWorkPendingSteps,
   slackOutboxExternalIdSteps,
   slackMentionTextSteps,
   slackThreadContextSteps,
@@ -116,6 +116,7 @@ import {
 } from "./oauth";
 import type { SlackInteraction, SlackMention, SlackSessionStop } from "./webhook";
 import type { SlackTaskPost } from "./delivery";
+import { saveSlackWorkTsSteps, slackWorkTsSteps } from "./work-message";
 import {
   reconcileSlackStatusSteps,
   SLACK_STREAM_CLOSE_MS,
@@ -1863,9 +1864,17 @@ export function createSlackThreads<Profile>(options: {
       if (resume) await closeStream(payload, resume, context.signal);
       return settle({ kind: "withheld", note });
     };
-    const later = (itemId: string) => store.run((q) => slackLaterProgressSteps(q, row.id, itemId));
-    if (payload.kind === "task" && payload.progress && (await later(payload.itemId)))
-      return settle({ kind: "withheld", note: "a later progress update replaces it" });
+    const issueWork = payload.kind === "task" ? payload.work : undefined;
+    const pendingWork = (after: boolean) =>
+      store.run((q) => slackWorkPendingSteps(q, row.id, issueWork!, after));
+    if (issueWork && (await pendingWork(true)))
+      return settle({ kind: "withheld", note: "a later work message update replaces it" });
+    if (
+      issueWork &&
+      !(await store.run((q) => slackWorkTsSteps(q, issueWork))) &&
+      (await pendingWork(false))
+    )
+      throw new SlackNotSentError("chat.update", 5_000);
     if (payload.kind === "status" && !(await store.run((q) => slackStatusCurrentSteps(q, payload))))
       return settle({ kind: "withheld", note: "a later status replaced it" });
     const refused = (caught: unknown) =>
@@ -1958,11 +1967,13 @@ export function createSlackThreads<Profile>(options: {
               ]
             : [];
     function* withholdSourceSteps(q: Q): Steps<void> {
+      if (payload.kind === "task" && payload.work && (yield* slackWorkTsSteps(q, payload.work)))
+        return;
       if (payload.kind === "task")
         yield* enqueueOutboxOnceSteps(q, {
           target: "slack",
           op: "chat.postEphemeral",
-          idempotencyKey: `slack:notice:${row.idempotencyKey}`,
+          idempotencyKey: `slack:notice:${payload.work ? `work:${payload.work}` : row.idempotencyKey}`,
           payload: {
             ...payload,
             kind: "notice",
@@ -2134,6 +2145,7 @@ export function createSlackThreads<Profile>(options: {
         return settle({ kind: "unknown", note: "a stream update was lost; Slack closes it" });
       }
     }
+    const workTs = issueWork ? await store.run((q) => slackWorkTsSteps(q, issueWork)) : null;
     const visible = payload.kind === "notice" && payload.visible;
     const body = visible
       ? { unfurl_links: false, unfurl_media: false }
@@ -2141,17 +2153,23 @@ export function createSlackThreads<Profile>(options: {
         ? { user: payload.slackUserId, ...(payload.blocks ? { blocks: payload.blocks } : {}) }
         : payload.kind === "status"
           ? {}
-          : { unfurl_links: false, unfurl_media: false, blocks: [section(text), stopActions()] };
+          : workTs
+            ? { blocks: [section(text), stopActions()] }
+            : { unfurl_links: false, unfurl_media: false, blocks: [section(text), stopActions()] };
     const method =
       payload.kind === "notice" && !visible
         ? "chat.postEphemeral"
         : payload.kind === "status"
           ? "agents.sessions.setStatus"
-          : "chat.postMessage";
+          : workTs
+            ? "chat.update"
+            : "chat.postMessage";
     const fields =
       payload.kind === "status"
         ? { channel_id: payload.channelId, thread_ts: payload.threadTs, status: payload.status }
-        : { channel: payload.channelId, thread_ts: payload.threadTs, text };
+        : workTs
+          ? { channel: payload.channelId, ts: workTs, text }
+          : { channel: payload.channelId, thread_ts: payload.threadTs, text };
     let result: Record<string, unknown>;
     try {
       result = await call(method, { ...fields, ...body }, context.signal);
@@ -2163,6 +2181,8 @@ export function createSlackThreads<Profile>(options: {
       return failed(caught);
     }
     const ts = result.ts ?? result.message_ts;
+    if (issueWork && !workTs && typeof ts === "string" && ts)
+      await store.transaction((q) => saveSlackWorkTsSteps(q, issueWork, ts, now()));
     return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
   }
 
@@ -2172,7 +2192,8 @@ export function createSlackThreads<Profile>(options: {
     if (!fence) return false;
     const stoppedThrough = yield* readSettingSteps(q, taskStopKey(message.itemId));
     const queuedAs = message.sourceId ?? rowId;
-    if (stoppedThrough !== null && queuedAs <= Number(stoppedThrough)) return false;
+    if (stoppedThrough !== null && (message.work || queuedAs <= Number(stoppedThrough)))
+      return false;
     const open = { target: "linear" as const, orderingKey: fence.sessionId, ...fence };
     if (!(yield* outboxFenceOpenSteps(q, open))) return false;
     if (!(yield* taskVisibleSteps(q, workspaceId, userId, fence.sessionId))) return false;

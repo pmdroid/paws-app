@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, max, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, like, lt, max, or, sql } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { jsonField } from "./json-text";
 import { getLinearSessionSteps } from "./linear-sessions";
@@ -183,9 +183,14 @@ export function* slackOutboxExternalIdSteps(q: Q, id: number): Steps<string | nu
   return (yield* q.one(query.where(eq(outbox.id, id))))?.externalId ?? null;
 }
 
-export function* slackLaterProgressSteps(q: Q, id: number, itemId: string): Steps<boolean> {
+export function* slackWorkPendingSteps(
+  q: Q,
+  id: number,
+  issueId: string,
+  after: boolean,
+): Steps<boolean> {
   const { outbox } = q.t;
-  const later = yield* q.one(
+  const found = yield* q.one(
     q.orm
       .select({ id: outbox.id })
       .from(outbox)
@@ -193,14 +198,13 @@ export function* slackLaterProgressSteps(q: Q, id: number, itemId: string): Step
         and(
           eq(outbox.target, "slack"),
           eq(outbox.status, "pending"),
-          gt(outbox.id, id),
-          eq(jsonField(q, outbox.payload, "itemId"), itemId),
-          eq(jsonField(q, outbox.payload, "progress"), "true"),
+          after ? gt(outbox.id, id) : lt(outbox.id, id),
+          eq(jsonField(q, outbox.payload, "work"), issueId),
         ),
       )
       .limit(1),
   );
-  return later !== undefined;
+  return found !== undefined;
 }
 
 export function* slackStreamingSteps(q: Q, row: Held, state: string): Steps<boolean> {
