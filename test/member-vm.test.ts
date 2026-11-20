@@ -519,7 +519,7 @@ describe("member VM", () => {
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("create");
     expect(failed.failure).toBe(
-      "exe.dev refused Create VM for ada-lovelace-paws with --cpu=64 --memory=16GB: cpu 64 exceeds your plan limit of 16. Change [member_vm] in config.toml.",
+      "exe.dev refused Create VM for ada-lovelace-paws with --cpu=64 --memory=16GB: cpu 64 exceeds your plan limit of 16. Change the VM size in Settings.",
     );
     exeDev = f.exeDev;
     await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });

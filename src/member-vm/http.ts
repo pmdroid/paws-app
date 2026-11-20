@@ -78,7 +78,7 @@ export type MemberVmResponse =
       available: true;
       vm: MemberVmView | null;
       vms: MemberVmView[];
-      /** The size and pool Create VM asks exe.dev for. Absent when config.toml cannot be read. */
+      /** The size and pool Create VM asks exe.dev for. Absent when saved settings cannot be read. */
       size?: ExeDevVmSize;
     };
 
@@ -207,7 +207,7 @@ const MAX_BODY = 4096;
 export function createMemberVmHttp(options: {
   store: Db;
   available: () => boolean | Promise<boolean>;
-  /** `[member_vm]` from config.toml. */
+  /** The VM size from Settings. */
   size?: () => ExeDevVmSize;
   /** For `pool list` and `pool adopt`. Without it the pool routes answer 404. */
   exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;

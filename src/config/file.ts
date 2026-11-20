@@ -49,7 +49,7 @@ export function isImplementer(value: string): value is ImplementerName {
 }
 
 /**
- * Parsed `~/.paws/config.toml`. A missing file is empty.
+ * Parsed saved settings. No saved settings is empty.
  * Secret values are paths, never the secret itself.
  */
 export type PawsConfigFile = {
@@ -123,17 +123,17 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (!knownConfigSection(section))
-        throw new Error(`config.toml line ${index + 1} has an unknown section: ${section}`);
+        throw new Error(`Saved settings line ${index + 1} has an unknown section: ${section}`);
       continue;
     }
     const eq = line.indexOf("=");
-    if (eq <= 0) throw new Error(`config.toml line ${index + 1} is not a key`);
+    if (eq <= 0) throw new Error(`Saved settings line ${index + 1} is not a key`);
     if (section === "brief" || section.startsWith("brief.")) continue;
     if (section === "time_limits" || section.startsWith("time_limits.")) continue;
     const key = line.slice(0, eq).trim().toLowerCase();
     const raw = line.slice(eq + 1).trim();
     if (key.length === 0 || raw.length === 0) {
-      throw new Error(`config.toml line ${index + 1} is not a key`);
+      throw new Error(`Saved settings line ${index + 1} is not a key`);
     }
     assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
   }
@@ -161,7 +161,7 @@ export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubAccess">) {
 export type ConfigKeyValue = string | number | readonly string[] | null;
 
 /**
- * Set keys in one `[section]` of `config.toml` text, keeping every other line,
+ * Set keys in one `[section]` of saved settings text, keeping every other line,
  * section and comment. A null value removes the key. A missing section is appended.
  */
 export function setConfigKeys(
@@ -262,11 +262,11 @@ function parseValue(raw: string, line: number): string | number | boolean | stri
   if (raw.startsWith("[")) return parseArray(raw, line);
   if (/^-?\d+$/.test(raw)) return Number(raw);
   if (raw.startsWith('"')) return parseString(raw, line);
-  throw new Error(`config.toml line ${line} has an unsupported value`);
+  throw new Error(`Saved settings line ${line} has an unsupported value`);
 }
 
 function parseArray(raw: string, line: number): string[] {
-  if (!raw.endsWith("]")) throw new Error(`config.toml line ${line} has an unclosed array`);
+  if (!raw.endsWith("]")) throw new Error(`Saved settings line ${line} has an unclosed array`);
   const inner = raw.slice(1, -1).trim();
   if (inner.length === 0) return [];
   const parts: string[] = [];
@@ -303,7 +303,7 @@ function parseArray(raw: string, line: number): string[] {
   if (buf.trim().length > 0) parts.push(buf.trim());
   return parts.map((part) => {
     if (!part.startsWith('"')) {
-      throw new Error(`config.toml line ${line} has an unsupported array value`);
+      throw new Error(`Saved settings line ${line} has an unsupported array value`);
     }
     return parseString(part, line);
   });
@@ -311,7 +311,7 @@ function parseArray(raw: string, line: number): string[] {
 
 function parseString(raw: string, line: number): string {
   if (!raw.endsWith('"') || raw.length < 2) {
-    throw new Error(`config.toml line ${line} has an unclosed string`);
+    throw new Error(`Saved settings line ${line} has an unclosed string`);
   }
   let out = "";
   for (let index = 1; index < raw.length - 1; index += 1) {
@@ -326,7 +326,7 @@ function parseString(raw: string, line: number): string {
       index += 1;
       continue;
     }
-    throw new Error(`config.toml line ${line} has an unknown escape`);
+    throw new Error(`Saved settings line ${line} has an unknown escape`);
   }
   return out;
 }
@@ -340,13 +340,13 @@ function assignConfig(
 ): void {
   if (section === "findings") {
     if (key !== "grouping_time" || typeof value !== "string" || !GROUPING_TIME_PATTERN.test(value))
-      throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
+      throw new Error(`Saved settings line ${line}: findings.grouping_time must be HH:MM UTC`);
     config.findingsGroupingTime = value;
     return;
   }
   if (section === "linear_comments") {
     if (key !== "agents")
-      throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+      throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
     config.savedLinearCommentAgents = asStringArray(value, line);
     return;
   }
@@ -354,24 +354,24 @@ function assignConfig(
     const access = (config.githubAccess ??= {});
     if (key === "agent_read") access.agentRead = asBoolean(value, line);
     else if (key === "mirrors") access.mirrors = asBoolean(value, line);
-    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    else throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   const closeoutProject = /^closeout\.projects\."([^"\\]+)"$/.exec(section);
   if (closeoutProject) {
     const repo = closeoutProject[1]!;
     if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
-      throw new Error(`config.toml line ${line} requires a Closeout owner/repo`);
+      throw new Error(`Saved settings line ${line} requires a Closeout owner/repo`);
     if (key !== "policy_root")
-      throw new Error(`config.toml line ${line} has an unknown Closeout project key`);
+      throw new Error(`Saved settings line ${line} has an unknown Closeout project key`);
     const root = asString(value, line);
     if (!root.trim() || root.includes("\0"))
-      throw new Error(`config.toml line ${line} requires a nonempty Closeout policy_root`);
+      throw new Error(`Saved settings line ${line} requires a nonempty Closeout policy_root`);
     (config.closeoutProjects ??= {})[repo] = root;
     return;
   }
   if (section.startsWith("closeout.projects"))
-    throw new Error(`config.toml line ${line} requires [closeout.projects."owner/repo"]`);
+    throw new Error(`Saved settings line ${line} requires [closeout.projects."owner/repo"]`);
   if (section === "closeout") {
     return;
   }
@@ -408,7 +408,7 @@ function assignConfig(
           : ["person"];
     else if (key === "no_project")
       config.mergeNoProject = oneOf(MERGE_NO_PROJECT, value, line, "merge.no_project");
-    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    else throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "queue") {
@@ -421,7 +421,7 @@ function assignConfig(
     if (key === "work_summary") memory.workSummary = asBoolean(value, line);
     else if (key === "dream") memory.dream = asBoolean(value, line);
     else if (key === "decisions") memory.decisions = asBoolean(value, line);
-    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    else throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "member_vm") {
@@ -452,7 +452,7 @@ function oneOf<T extends string>(
 ): T {
   const text = asString(value, line);
   if (!(choices as readonly string[]).includes(text))
-    throw new Error(`config.toml line ${line} ${name} must be ${choices.join(", ")}`);
+    throw new Error(`Saved settings line ${line} ${name} must be ${choices.join(", ")}`);
   return text as T;
 }
 
@@ -468,7 +468,7 @@ function mergeRange(
 ): number {
   const count = asInt(value, line);
   if (count < 1 || count > max)
-    throw new Error(`config.toml line ${line} merge.${key} must be from 1 to ${max}`);
+    throw new Error(`Saved settings line ${line} merge.${key} must be from 1 to ${max}`);
   return count;
 }
 
@@ -476,7 +476,7 @@ function mergeLanes(value: string | number | boolean | string[], line: number): 
   try {
     return parseMergeLanes(value);
   } catch (error) {
-    throw new Error(`config.toml line ${line} merge.${(error as Error).message}`, {
+    throw new Error(`Saved settings line ${line} merge.${(error as Error).message}`, {
       cause: error,
     });
   }
@@ -489,7 +489,7 @@ function implementerName(
   const name = asString(value, line);
   if (!isImplementer(name)) {
     throw new Error(
-      `config.toml line ${line} agents.implementer must be claude, grok, codex, or opencode`,
+      `Saved settings line ${line} agents.implementer must be claude, grok, codex, or opencode`,
     );
   }
   return name;
@@ -527,25 +527,26 @@ export function setImplementerText(current: string, implementer: ImplementerName
 }
 
 function asString(value: string | number | boolean | string[], line: number): string {
-  if (typeof value !== "string") throw new Error(`config.toml line ${line} must be a string`);
+  if (typeof value !== "string") throw new Error(`Saved settings line ${line} must be a string`);
   return value;
 }
 
 function asStringArray(value: string | number | boolean | string[], line: number): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error(`config.toml line ${line} must be an array of strings`);
+    throw new Error(`Saved settings line ${line} must be an array of strings`);
   }
   return value;
 }
 
 function asBoolean(value: string | number | boolean | string[], line: number): boolean {
-  if (typeof value !== "boolean") throw new Error(`config.toml line ${line} must be true or false`);
+  if (typeof value !== "boolean")
+    throw new Error(`Saved settings line ${line} must be true or false`);
   return value;
 }
 
 function asInt(value: string | number | boolean | string[], line: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`config.toml line ${line} must be a non-negative integer`);
+    throw new Error(`Saved settings line ${line} must be a non-negative integer`);
   }
   return value;
 }

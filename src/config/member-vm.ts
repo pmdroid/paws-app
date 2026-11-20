@@ -51,13 +51,13 @@ export function assignMemberVmKey(
 ): void {
   if (!isMemberVmKey(key))
     throw new Error(
-      `config.toml line ${line} has an unknown key: member_vm.${key} (use ${MEMBER_VM_KEYS.join(", ")})`,
+      `Saved settings line ${line} has an unknown key: member_vm.${key} (use ${MEMBER_VM_KEYS.join(", ")})`,
     );
   let checked: number | string;
   try {
     checked = checkMemberVmValue(key, value);
   } catch (error) {
-    throw new Error(`config.toml line ${line} ${(error as Error).message}`, { cause: error });
+    throw new Error(`Saved settings line ${line} ${(error as Error).message}`, { cause: error });
   }
   if (key === "cpu") size.cpu = checked as number;
   else if (key === "memory_gb") size.memoryGb = checked as number;
@@ -66,7 +66,7 @@ export function assignMemberVmKey(
   else size.pool = checked as string;
 }
 
-/** One `[member_vm]` value, checked as config.toml and `paws install` take it. */
+/** One `[member_vm]` value, checked as Settings and `paws install` take it. */
 export function checkMemberVmValue(
   key: MemberVmKey,
   value: string | number | boolean | string[],

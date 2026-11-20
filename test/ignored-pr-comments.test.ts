@@ -76,7 +76,7 @@ describe("ignore_comment_markers in the merge settings", () => {
     const table = (markers: string[]) =>
       `[merge.repositories."acme/monorepo"]\nignore_comment_markers = [${markers.map((marker) => JSON.stringify(marker)).join(", ")}]\n`;
     expect(() => parseConfigToml(table([""]))).toThrow(
-      "config.toml merge.repositories.acme/monorepo.ignore_comment_markers.0 must not be empty",
+      "Saved settings merge.repositories.acme/monorepo.ignore_comment_markers.0 must not be empty",
     );
     expect(() => parseConfigToml(table(["  "]))).toThrow("must not be empty");
     expect(() =>
@@ -187,6 +187,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       const body = (await response!.json()) as { error: string; field: string };
       expect(body.field).toBe(`ignoredComments.0.${field}`);
       expect(body.error).toContain(message);
+      expect(body.error).not.toContain("config.toml");
       expect(readConfigText(options.configPath)).toBe(text);
     }
   });

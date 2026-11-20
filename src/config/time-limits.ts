@@ -61,7 +61,7 @@ export function parseTimeLimitTables(text: string): Pick<PawsConfigFile, "timeLi
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new Error(
-      `config.toml ${issue?.path.join(".") ?? "time_limits"} ${issue?.message ?? "is invalid"}`,
+      `Saved settings ${issue?.path.join(".") ?? "time_limits"} ${issue?.message ?? "is invalid"}`,
     );
   }
   return { timeLimits: fromToml(parsed.data.time_limits ?? {}) };

@@ -35,7 +35,7 @@ export type MemberVmProvisioning = {
   exeDev: ExeDev;
   bootstrap: ExeDevBootstrap;
   mintEnrollment: MintEnrollment;
-  /** `[member_vm]` in config.toml. Missing: a bare `new`, exe.dev's default size. */
+  /** The VM size from Settings. Missing: a bare `new`, exe.dev's default size. */
   size?: ExeDevVmSize;
 };
 
