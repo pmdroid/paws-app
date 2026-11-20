@@ -32,8 +32,13 @@ writeFileSync(
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  async fetch(request) {
-    const path = new URL(request.url).pathname;
+  async fetch(incoming) {
+    const path = new URL(incoming.url).pathname;
+    let request = incoming;
+    if (path === "/api/settings/merging" && incoming.method === "PUT") {
+      const { sessionDone: _done, sessionQuietMinutes: _quiet, ...body } = await incoming.json();
+      request = new Request(incoming, { body: JSON.stringify(body) });
+    }
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
     if (path === "/api/runners")
       return Response.json({ setupRequired: false, workspaceReady: true, runners: [] });
@@ -126,6 +131,31 @@ try {
       .toBe(true);
     await section.scrollIntoViewIfNeeded();
     await section.screenshot({ path: join(directory, `hot-files-${width}.png`) });
+    const holdAll = section.getByLabel("Hold work that changes conflict-prone files");
+    await expect(holdAll).toBeChecked();
+    await holdAll.uncheck();
+    await expect(section.locator('input[name="hot-hold"]:disabled')).toHaveCount(12);
+    await expect(section.locator('input[name="hot-hold"]:checked')).toHaveCount(10);
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await section.screenshot({ path: join(directory, `hot-files-off-${width}.png`) });
+
+    const save = async (hold: boolean, after: string, days: string) => {
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
+      const fresh = page.locator("#merge-hot-files");
+      await fresh.getByLabel("Hold work that changes conflict-prone files").setChecked(hold);
+      await fresh.getByLabel("Conflicts before a file holds work").fill(after);
+      await fresh.getByLabel("Counted over the last (days)").fill(days);
+      await page.getByRole("button", { name: "Save" }).click();
+      await expect(page.getByText("Merging settings saved.")).toBeVisible();
+      await expect(fresh).toContainText(`in the last ${days} days`);
+      await expect(fresh.getByLabel("Conflicts before a file holds work")).toHaveValue(after);
+      await expect(fresh.locator('input[name="hot-hold"]').first()).toBeEnabled({ enabled: hold });
+    };
+    await save(false, "3", "14");
+    await expect(page.locator("#merge-hot-files")).toContainText("4 conflicts in 14 days");
+    await save(true, "2", "7");
 
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/${held.id}`);
     await expect(

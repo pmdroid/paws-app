@@ -216,8 +216,9 @@ const IGNORED_LISTS = [
 ] as const;
 
 export function fieldProblem(message: string): string {
-  const text = message.replace(/^ignoredComments\.\d+\.\w+(?:\.(\d+))?\s*/, (_, line) =>
-    line === undefined ? "" : `Line ${Number(line) + 1} `,
+  const text = message.replace(
+    /^(?:ignoredComments\.\d+\.\w+(?:\.(\d+))?|conflictProne\w+)\s*/,
+    (_, line) => (line === undefined ? "" : `Line ${Number(line) + 1} `),
   );
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -270,7 +271,7 @@ export function renderMergeSettings(view: View): string {
   const data = view.data;
   const repos = { queues: data.githubQueue?.repositories ?? [], upToDate: data.upToDateRule ?? [] };
   const feedback = view.error
-    ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.error)}</p>`
+    ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.field && CONFLICT_PRONE_FIELDS.some((rule) => rule.key === view.field) ? "Merging settings were not saved. Fix the field marked under Conflict-prone files." : view.error)}</p>`
     : view.saved
       ? '<p class="settings-message" role="status">Merging settings saved. Items that start from now on use them.</p>'
       : "";
@@ -286,7 +287,7 @@ export function renderMergeSettings(view: View): string {
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.ignoredComments ? ignoredSection(data.ignoredComments, view) : ""}
-      ${data.hotFiles ? hotFileSection(data.hotFiles, data.parallelFiles !== undefined) : ""}
+      ${data.hotFiles || data.overlapHold !== undefined || data.conflictProneAfter !== undefined || data.conflictProneDays !== undefined ? hotFileSection(data, view) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
@@ -299,7 +300,44 @@ function issueLink(id: string): string {
 
 const MIGRATION_META = /^src\/db\/drizzle[^/]*\/meta\/[^/]+$/;
 
-function hotFileRow(file: HotFile, editable: boolean): string {
+const CONFLICT_PRONE_FIELDS = [
+  {
+    key: "conflictProneAfter",
+    id: "merge-conflict-prone-after",
+    title: "Conflicts before a file holds work",
+    max: 20,
+    fallback: 2,
+  },
+  {
+    key: "conflictProneDays",
+    id: "merge-conflict-prone-days",
+    title: "Counted over the last (days)",
+    max: 30,
+    fallback: 7,
+  },
+] as const;
+
+export function conflictProneProblem(
+  data: MergeSettingsView,
+): { field: string; error: string } | null {
+  for (const rule of CONFLICT_PRONE_FIELDS) {
+    const value = data[rule.key];
+    if (value !== undefined && !(Number.isInteger(value) && value >= 1 && value <= rule.max))
+      return { field: rule.key, error: `${rule.key} must be a whole number from 1 to ${rule.max}` };
+  }
+  return null;
+}
+
+function conflictProneFields(data: MergeSettingsView, view: View): string {
+  return CONFLICT_PRONE_FIELDS.map((rule) => {
+    const value = data[rule.key];
+    if (value === undefined) return "";
+    const problem = view.error && view.field === rule.key ? fieldProblem(view.error) : null;
+    return `<div class="settings-field"><label for="${rule.id}">${rule.title}</label><input id="${rule.id}" name="${rule.id}" type="number" inputmode="numeric" min="1" max="${rule.max}" step="1" required value="${Number.isFinite(value) ? value : ""}" aria-describedby="${rule.id}-help${problem ? ` ${rule.id}-error` : ""}"${problem ? ' aria-invalid="true"' : ""}><small class="sub" id="${rule.id}-help">From 1 to ${rule.max}.</small>${problem ? `<small class="err" id="${rule.id}-error" role="alert">${esc(problem)}</small>` : ""}</div>`;
+  }).join("");
+}
+
+function hotFileRow(file: HotFile, editable: boolean, days: number): string {
   const held = file.held !== false;
   const holds = held
     ? (file.holds ?? [])
@@ -309,22 +347,32 @@ function hotFileRow(file: HotFile, editable: boolean): string {
         .join("")
     : "";
   const toggle = `<label><input type="checkbox" name="hot-hold" data-repository="${esc(file.repository)}" data-path="${esc(file.path)}"${held ? " checked" : ""}${editable ? "" : " disabled"}> Hold work that changes this file</label>${held ? "" : '<span class="sub">Not held</span>'}${MIGRATION_META.test(file.path) ? '<p class="sub">Migrations made side by side need a manual rebase</p>' : ""}`;
-  return `<li class="hot-file${held ? "" : " opacity-60"}"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${toggle}${holds}</li>`;
+  return `<li class="hot-file${held ? "" : " opacity-60"}"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in ${days} days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${toggle}${holds}</li>`;
 }
 
-function hotFileSection(files: readonly HotFile[], editable: boolean): string {
-  const sorted = [...files].sort(
+function hotFileSection(data: MergeSettingsView, view: View): string {
+  const after = Number.isFinite(data.conflictProneAfter) ? data.conflictProneAfter! : 2;
+  const days = Number.isFinite(data.conflictProneDays) ? data.conflictProneDays! : 7;
+  const editable = data.parallelFiles !== undefined && data.overlapHold !== false;
+  const sorted = [...(data.hotFiles ?? [])].sort(
     (left, right) =>
       Number(Boolean(right.holds?.length)) - Number(Boolean(left.holds?.length)) ||
       right.conflicts - left.conflicts,
   );
   const rows = (list: readonly HotFile[]) =>
-    `<ul class="risk-file">${list.map((file) => hotFileRow(file, editable)).join("")}</ul>`;
+    `<ul class="risk-file">${list.map((file) => hotFileRow(file, editable, days)).join("")}</ul>`;
   const rest = sorted.slice(HOT_FILES_SHOWN);
-  const body = sorted.length
-    ? `${rows(sorted.slice(0, HOT_FILES_SHOWN))}${rest.length ? `<details><summary>Show all ${sorted.length}</summary>${rows(rest)}</details>` : ""}`
-    : '<p class="sub">No merge conflicts in the last 7 days, so nothing is held back.</p>';
-  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">These files caused merge conflicts in the last 7 days. Paws starts only one item at a time that changes them, so the next one doesn't hit the same conflict.</p></div><div class="col min-w-0">${body}</div></section>`;
+  const body = !data.hotFiles
+    ? '<p class="sub">The conflict-prone files could not be listed. Reload to try again.</p>'
+    : sorted.length
+      ? `${rows(sorted.slice(0, HOT_FILES_SHOWN))}${rest.length ? `<details><summary>Show all ${sorted.length}</summary>${rows(rest)}</details>` : ""}`
+      : `<p class="sub">No file reached ${after} ${after === 1 ? "conflict" : "conflicts"} in the last ${days} days, so nothing is held back.</p>`;
+  const hold =
+    data.overlapHold === undefined
+      ? ""
+      : `<label><input type="checkbox" name="overlap-hold" aria-describedby="merge-overlap-hold-help"${data.overlapHold ? " checked" : ""}> Hold work that changes conflict-prone files</label><small class="sub" id="merge-overlap-hold-help">On, a restart that changes one of these files waits until the other work on it has merged. Off, it does not wait for these files and is rebased if it conflicts.</small>`;
+  const fields = conflictProneFields(data, view);
+  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">These files caused merge conflicts in the last ${days} days. Paws starts only one item at a time that changes them, so the next one doesn't hit the same conflict.</p></div><div class="col min-w-0">${hold}${fields ? `<div class="settings-controls">${fields}</div>` : ""}${body}</div></section>`;
 }
 
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
@@ -419,6 +467,11 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       : {}),
     ...(data.ignoredComments ? { ignoredComments: data.ignoredComments } : {}),
     ...(data.parallelFiles ? { parallelFiles: data.parallelFiles } : {}),
+    ...(data.overlapHold === undefined ? {} : { overlapHold: data.overlapHold }),
+    ...(data.conflictProneAfter === undefined
+      ? {}
+      : { conflictProneAfter: data.conflictProneAfter }),
+    ...(data.conflictProneDays === undefined ? {} : { conflictProneDays: data.conflictProneDays }),
   };
 }
 
@@ -593,6 +646,14 @@ export function createMergeSettings(invalidate: () => void): {
           : file,
       );
     }
+    if (data.overlapHold !== undefined)
+      data.overlapHold =
+        form.querySelector<HTMLInputElement>('[name="overlap-hold"]')?.checked ?? data.overlapHold;
+    for (const rule of CONFLICT_PRONE_FIELDS) {
+      const text = value(rule.id)?.trim();
+      if (data[rule.key] !== undefined && text !== undefined)
+        data[rule.key] = text === "" ? NaN : Number(text);
+    }
     if (view.ciFix && "attempts" in view.ciFix) {
       const text = value("merge-ci-fix-attempts")?.trim();
       if (text !== undefined) view.ciFix.attempts = text === "" ? NaN : Number(text);
@@ -709,6 +770,13 @@ export function createMergeSettings(invalidate: () => void): {
       paint();
       return;
     }
+    const rule = conflictProneProblem(view.data);
+    if (rule) {
+      view.error = rule.error;
+      view.field = rule.field;
+      paint();
+      return;
+    }
     const started = generation;
     const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
@@ -748,6 +816,7 @@ export function createMergeSettings(invalidate: () => void): {
     // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
     // it, such as Save. Submit and the other buttons read it.
     if (target.name === "merge-ci-fix-attempts" || target.name === "session-quiet") return;
+    if (target.name.startsWith("merge-conflict-prone-")) return;
     if (/^(repo|new|risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
     draft();
     paint();
