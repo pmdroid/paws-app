@@ -132,6 +132,8 @@ export {
   type FindingIssueTeamState,
 } from "./finding-issues";
 export { slackIssueId } from "./slack-issues";
+export type { AgentIssue, AgentIssueRow, AgentTeam } from "./agent-issues";
+export type { AgentLabel, AgentProject, AgentState } from "./agent-issues";
 export type { LinearSessionAdapter } from "./sessions";
 export type {
   ActionDetails,
