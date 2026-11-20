@@ -3700,12 +3700,13 @@ test("a refused 🐾 never fails the job or holds back the answer", async () => 
     "answer 2",
   ]);
   expect(f.prompts).toHaveLength(2);
-  const jobs = await sqlRows<{ status: string; attempts: number }>(
+  const jobs = await sqlRows<{ status: string; attempts: number | string }>(
     f.db,
     "SELECT status, attempts FROM job WHERE queue = ? ORDER BY id",
     [SLACK_THREAD_JOB],
   );
-  expect(jobs.slice(-2)).toEqual([
+  const settled = jobs.slice(-2).map((job) => ({ ...job, attempts: Number(job.attempts) }));
+  expect(settled).toEqual([
     { status: "done", attempts: 1 },
     { status: "done", attempts: 1 },
   ]);
