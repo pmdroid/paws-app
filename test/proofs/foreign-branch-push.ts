@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FakeStep } from "../../src/acp/testing/script";
+import { listWorkItems } from "../../src/db";
 import fixRound from "./closeout-fix-round";
 import { type LaunchInput, type Proof } from "./harness";
 
@@ -43,7 +44,7 @@ export default {
     "src/loop/orchestrator.ts",
   ],
   summary:
-    "With mirrors off, a person pushes a commit to the Paws branch while the fix turn runs. Paws does not overwrite it: the publication sees the moved branch and restarts the item, the next turn starts from the person's commit with it listed in the prompt and one session thought, and the merge keeps both.",
+    "With mirrors off, a person pushes a commit to the Paws branch while the fix turn runs. Paws does not overwrite it: the publication sees the moved branch and restarts the item, the next turn starts from the person's commit with it listed in the prompt and one session thought, its patch-id is recorded for attribution, and the merge keeps both.",
   config: "[github_access]\nmirrors = false\n",
   forbidRepos: true,
   agent,
@@ -77,6 +78,12 @@ export default {
       (entry) => entry.kind === "thought" && /^Continuing from 1 commits on /.test(entry.body),
     );
     proof.expect("the session gets the thought once", thoughts.length === 1, thoughts);
+    const checkpoint = (await listWorkItems(proof.store))[0]?.checkpoint;
+    proof.expect(
+      "the item's checkpoint records the adopted commit's patch-id",
+      checkpoint?.adoptedPatchIds?.length === 1,
+      checkpoint,
+    );
     const log = await proof.originMainLog();
     proof.expect(
       "main keeps the person's commit and one fix, not the overwritten try",

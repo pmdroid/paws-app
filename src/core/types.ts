@@ -64,4 +64,5 @@ export type Checkpoint = {
   checkpointMain?: { sha: string; main: string };
   restartFrom?: { tip: string } | "main";
   hangs?: { runnerId: string; at: number }[];
+  adoptedPatchIds?: string[];
 };

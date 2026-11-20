@@ -169,7 +169,7 @@ export { assertNonSecretArtifactPath } from "./artifacts";
 
 export { appBotCommitIdentity, commitPolicyMessage } from "../core";
 
-export { validateCandidateAttribution } from "./commit-policy";
+export { commitPatchIds, validateCandidateAttribution } from "./commit-policy";
 export {
   assertDescendsFromAny,
   candidateBases,

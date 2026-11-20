@@ -4,8 +4,11 @@ import {
   validateCommitAttribution,
   type GitCommitPolicy,
 } from "../core";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { acquireOperationToken } from "./auth/provider";
-import { readTree, repositoryGet } from "./compare";
+import { COMPARE_FILE_LIMIT, readTree, repositoryGet, type RepositoryGet } from "./compare";
+import { gitEnv } from "./git";
 import type { GitHubGitRepository } from "./git-reader";
 
 export async function validateGitHubCandidateAttribution(
@@ -14,8 +17,10 @@ export async function validateGitHubCandidateAttribution(
   head: string,
   policy: GitCommitPolicy,
   signal?: AbortSignal,
+  adoptedPatchIds: readonly string[] = [],
 ): Promise<void> {
   policyCoauthors(policy);
+  const adopted = new Set(adoptedPatchIds);
   if (![base, head].every((sha) => /^[a-f0-9]{40}$/.test(sha)))
     throw new Error("Invalid attribution candidate range");
   const get = repositoryGet({
@@ -36,6 +41,13 @@ export async function validateGitHubCandidateAttribution(
     if (!Array.isArray(page.commits) || page.commits.length === 0)
       throw new Error("GitHub returned an incomplete candidate range");
     for (const entry of page.commits) {
+      validated++;
+      if (
+        adopted.size > 0 &&
+        typeof entry.sha === "string" &&
+        adopted.has((await gitHubCommitPatchId(get, entry.sha)) ?? "")
+      )
+        continue;
       const commit = entry.commit;
       if (!commit || typeof commit.message !== "string")
         throw new Error("GitHub returned incomplete commit attribution");
@@ -49,10 +61,57 @@ export async function validateGitHubCandidateAttribution(
         ],
         commitCoauthorTrailers(commit.message),
       );
-      validated++;
     }
   }
   if (validated !== total) throw new Error("GitHub returned an inconsistent candidate range");
+}
+
+export async function gitHubCommitPatchIds(
+  repository: GitHubGitRepository,
+  shas: readonly string[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const get = repositoryGet({
+    ...repository,
+    token: await acquireOperationToken(repository, "pr"),
+    signal,
+  });
+  const ids: string[] = [];
+  for (const sha of shas) {
+    const id = await gitHubCommitPatchId(get, sha);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+async function gitHubCommitPatchId(get: RepositoryGet, sha: string): Promise<string | null> {
+  if (!/^[a-f0-9]{40}$/.test(sha)) return null;
+  const commit = await get(`/commits/${sha}`);
+  const { parents, files } = commit;
+  if (!Array.isArray(parents) || parents.length !== 1) return null;
+  if (!Array.isArray(files) || files.length === 0 || files.length >= COMPARE_FILE_LIMIT)
+    return null;
+  const diff: string[] = [];
+  for (const file of files as Record<string, unknown>[]) {
+    if (typeof file.filename !== "string" || typeof file.patch !== "string") return null;
+    const from =
+      typeof file.previous_filename === "string" ? file.previous_filename : file.filename;
+    const before = file.status === "added" ? "/dev/null" : `a/${from}`;
+    const after = file.status === "removed" ? "/dev/null" : `b/${file.filename}`;
+    diff.push(
+      `diff --git a/${from} b/${file.filename}`,
+      `--- ${before}`,
+      `+++ ${after}`,
+      file.patch,
+    );
+  }
+  const running = promisify(execFile)("git", ["patch-id", "--stable"], {
+    env: gitEnv(),
+    encoding: "utf8",
+  });
+  running.child.stdin?.on("error", () => {}).end(`${diff.join("\n")}\n`);
+  const id = (await running).stdout.split(" ")[0] ?? "";
+  return /^[a-f0-9]{40}$/.test(id) ? id : null;
 }
 
 export async function sameGitHubCandidatePatch(

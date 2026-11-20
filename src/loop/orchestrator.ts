@@ -148,6 +148,7 @@ import {
   createUpdateLimiter,
   REPLIES_PER_TURN,
   validateCandidateAttribution,
+  commitPatchIds,
   git,
   removeWorktree,
   resolveAdapter,
@@ -457,6 +458,7 @@ import {
   readGitHubCandidateRange,
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
+  gitHubCommitPatchIds,
   readBranchTip,
   readCommit,
   readBranchWork,
@@ -4804,6 +4806,9 @@ export class Orchestrator {
           }
         : undefined;
     const policy = await this.commitPolicy(item);
+    const adopted =
+      (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint?.adoptedPatchIds ??
+      [];
     if (policy && this.storedCandidates()) {
       if (!repository) throw new Error("Candidate repository is unavailable");
       const github = this.githubForRepository(repository);
@@ -4814,6 +4819,7 @@ export class Orchestrator {
         head,
         policy,
         await this.signalForItem(item.id),
+        adopted,
       );
     } else if (policy)
       await validateCandidateAttribution(
@@ -4823,6 +4829,7 @@ export class Orchestrator {
         policy,
         undefined,
         await this.signalForItem(item.id),
+        adopted,
       );
     const sessionProgress = await this.sessionProgress(item);
     await sessionProgress?.phase("verifying");
@@ -11830,6 +11837,7 @@ export class Orchestrator {
         }),
       );
     }
+    await this.recordAdoptedPatchIds(item, checkout, commits, signal);
     await this.post(
       item,
       "thought",
@@ -11837,6 +11845,50 @@ export class Orchestrator {
       `${item.id}:branch-arrivals:${tip}`,
     );
     return arrivalsPrompt(read.branch, commits);
+  }
+
+  private async recordAdoptedPatchIds(
+    item: WorkItemRecord,
+    checkout: string,
+    commits: readonly BranchArrival[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const shas = commits.map((commit) => commit.sha);
+    const repository = await this.repositoryForItem(item);
+    const github = repository && this.githubForRepository(repository);
+    const ids = await (
+      this.storedCandidates() && repository && github
+        ? gitHubCommitPatchIds(
+            { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+            shas,
+            signal,
+          )
+        : commitPatchIds(
+            this.options.remoteExecution && repository
+              ? mirrorPath(this.options.pawsRoot, repository.owner, repository.repo)
+              : checkout,
+            shas,
+            undefined,
+            signal,
+          )
+    ).catch((caught: unknown) => {
+      journalCaught(
+        caught,
+        "orchestrator.recordAdoptedPatchIds",
+        item.id,
+        "checking them as before",
+      );
+      return [];
+    });
+    if (ids.length === 0) return;
+    await this.store.transaction(function* (q) {
+      const checkpoint = (yield* getWorkItemSteps(q, item.id))?.checkpoint;
+      const adoptedPatchIds = [...new Set([...(checkpoint?.adoptedPatchIds ?? []), ...ids])];
+      yield* saveCheckpointSteps(q, item.id, {
+        ...(checkpoint ?? { phase: "running" }),
+        adoptedPatchIds,
+      });
+    });
   }
 
   private async lease(

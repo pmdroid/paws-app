@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, validateCandidateAttribution } from "../src/acp";
+import { commitPatchIds, git, validateCandidateAttribution } from "../src/acp";
 import type { GitCommitPolicy } from "../src/core";
 
 const policy: GitCommitPolicy = {
@@ -67,4 +67,46 @@ test("a person's commit that is only on the branch is still rejected", async () 
   await expect(validateCandidateAttribution(r.tree, r.base, head, policy, r.env)).rejects.toThrow(
     "attribution rejected",
   );
+});
+
+test("a person's commit Paws adopted passes by patch-id, also after a rebase onto newer main", async () => {
+  const r = await repository();
+  await r.run(["update-ref", "refs/paws/upstream-main", r.main]);
+  const adopted = await r.commit("person.txt", "A person's commit Paws adopted");
+  const ids = await commitPatchIds(r.tree, [adopted], r.env);
+  expect(ids).toHaveLength(1);
+  await validateCandidateAttribution(r.tree, r.base, adopted, policy, r.env, undefined, ids);
+  await r.run(["checkout", "-q", "main"]);
+  const newer = await r.commit("newer.txt", "Main moved");
+  await r.run(["update-ref", "refs/paws/upstream-main", newer]);
+  await r.run(["checkout", "-q", "paws/item"]);
+  await r.run(["rebase", "-q", "main"], bot);
+  const rebased = (await r.run(["rev-parse", "HEAD"])).trim();
+  expect(rebased).not.toBe(adopted);
+  await validateCandidateAttribution(r.tree, newer, rebased, policy, r.env, undefined, ids);
+  const after = await r.commit("after.txt", "Agent work with the wrong author");
+  await expect(
+    validateCandidateAttribution(r.tree, newer, after, policy, r.env, undefined, ids),
+  ).rejects.toThrow("attribution rejected");
+});
+
+test("adopted patch-ids don't cover a person's other commit or a merge commit", async () => {
+  const r = await repository();
+  await r.run(["update-ref", "refs/paws/upstream-main", r.main]);
+  const adopted = await r.commit("person.txt", "A person's commit Paws adopted");
+  const ids = await commitPatchIds(r.tree, [adopted], r.env);
+  const other = await r.commit("other.txt", "A person's commit Paws never adopted");
+  await expect(
+    validateCandidateAttribution(r.tree, r.base, other, policy, r.env, undefined, ids),
+  ).rejects.toThrow("attribution rejected");
+  await r.run(["checkout", "-q", "-b", "side", adopted]);
+  await r.commit("side.txt", "Side work", bot);
+  await r.run(["checkout", "-q", "paws/item"]);
+  await r.run(["reset", "-q", "--hard", adopted]);
+  await r.run(["merge", "-q", "--no-ff", "-m", "Merge side", "side"]);
+  const merge = (await r.run(["rev-parse", "HEAD"])).trim();
+  expect(await commitPatchIds(r.tree, [merge], r.env)).toEqual([]);
+  await expect(
+    validateCandidateAttribution(r.tree, r.base, merge, policy, r.env, undefined, ids),
+  ).rejects.toThrow("attribution rejected");
 });

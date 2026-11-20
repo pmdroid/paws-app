@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import {
+  gitHubCommitPatchIds,
   readGitHubCandidateRange,
   sameGitHubCandidatePatch,
   validateGitHubCandidateAttribution,
@@ -12,6 +13,7 @@ const before = "b".repeat(40);
 const after = "c".repeat(40);
 const bot = { appId: "1", id: 123, login: "paws[bot]" };
 const identity = { name: "paws[bot]", email: "123+paws[bot]@users.noreply.github.com" };
+const policy = { bot, credit: null };
 
 function fixture(bodies: unknown[]) {
   const calls: string[] = [];
@@ -43,6 +45,49 @@ test("API attribution validates every candidate commit and rejects foreign autho
   const bad = fixture([comparison({ name: "Other", email: "other@example.com" })]);
   await expect(
     validateGitHubCandidateAttribution(bad.repository, base, before, { bot, credit: null }),
+  ).rejects.toThrow("attribution rejected");
+});
+
+test("API attribution skips adopted commits by patch-id, even after a rebase moved their hunks", async () => {
+  const person = { name: "Rita", email: "rita@example.com" };
+  const commit = (line: number, parents = [base]) => ({
+    parents: parents.map((sha) => ({ sha })),
+    files: [
+      {
+        filename: "notes",
+        status: "modified",
+        patch: `@@ -${line},2 +${line},2 @@\n shelf\n-a\n+b`,
+      },
+    ],
+  });
+  const adopted = fixture([commit(1)]);
+  const ids = await gitHubCommitPatchIds(adopted.repository, [before]);
+  expect(ids).toHaveLength(1);
+  expect(adopted.calls).toEqual([`/repos/acme/widgets/commits/${before}`]);
+  const range = (...authors: (typeof identity)[]) => ({
+    status: "ahead",
+    total_commits: authors.length,
+    commits: authors.map((author, index) => ({
+      sha: [after, before][index],
+      commit: { author, committer: author, message: "Work" },
+    })),
+  });
+  const rebased = fixture([range(person, identity), commit(9), commit(1, [])]);
+  await validateGitHubCandidateAttribution(rebased.repository, base, after, policy, undefined, ids);
+  const otherPatch = fixture([
+    range(person),
+    { ...commit(1), files: [{ filename: "x", patch: "+c" }] },
+  ]);
+  await expect(
+    validateGitHubCandidateAttribution(otherPatch.repository, base, after, policy, undefined, ids),
+  ).rejects.toThrow("attribution rejected");
+  const merge = fixture([range(person), commit(1, [base, before])]);
+  await expect(
+    validateGitHubCandidateAttribution(merge.repository, base, after, policy, undefined, ids),
+  ).rejects.toThrow("attribution rejected");
+  const wrongAgent = fixture([range(identity, person), commit(1), commit(1)]);
+  await expect(
+    validateGitHubCandidateAttribution(wrongAgent.repository, base, after, policy, undefined, []),
   ).rejects.toThrow("attribution rejected");
 });
 
