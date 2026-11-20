@@ -510,6 +510,16 @@ function addedToFloored(q: Q, columns: readonly ItemColumn[], amount: number) {
   ) as Partial<PgWorkItem>;
 }
 
+export function* moveAgentTimeToCloseoutSteps(q: Q, id: string, ms: number) {
+  if (!(ms > 0)) return;
+  const { workItem } = q.t;
+  const moved = { closeoutMs: sql`${workItem.closeoutMs} + LEAST(${workItem.agentMs}, ${ms})` };
+  yield* setItemSteps(q, id, {
+    ...addedToFloored(q, ["agentMs"], -ms),
+    ...(moved as unknown as Partial<PgWorkItem>),
+  });
+}
+
 export function* accrueAwakeSteps(
   q: Q,
   id: string,
