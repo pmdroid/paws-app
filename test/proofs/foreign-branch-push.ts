@@ -59,17 +59,14 @@ export default {
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
     const turns = proof.launches.filter((launch) => ["implement", "fix"].includes(launch.purpose));
-    const transitions = await proof.transitions();
     proof.expect(
       "publishing over the moved branch restarts the item with the follow-up body",
       turns.length === 3 && turns[2]!.prompt.includes(MOVED),
-      { purposes: turns.map((turn) => turn.purpose), transitions },
+      { purposes: turns.map((turn) => turn.purpose), transitions: await proof.transitions() },
     );
     proof.expect(
       "turns that start from the branch as Paws left it get no arrivals section",
-      turns.length >= 2 &&
-        !turns[0]!.prompt.includes(ARRIVED) &&
-        !turns[1]!.prompt.includes(ARRIVED),
+      turns.slice(0, 2).every((turn) => !turn.prompt.includes(ARRIVED)),
       turns.map((turn) => turn.prompt.slice(0, 300)),
     );
     const prompt = turns[2]?.prompt ?? "";
@@ -89,10 +86,7 @@ export default {
         log.filter((line) => line === "Count shelf b").length === 1,
       log,
     );
-    proof.expect(
-      "the item is merged",
-      settled && (await proof.itemState()) === "merged",
-      await proof.itemState(),
-    );
+    const state = await proof.itemState();
+    proof.expect("the item is merged", settled && state === "merged", state);
   },
 } satisfies Proof;

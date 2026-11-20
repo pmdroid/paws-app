@@ -4764,60 +4764,6 @@ export class Orchestrator {
     }
   }
 
-  private async validateAttribution(
-    item: WorkItemRecord,
-    tree: string,
-    base: string,
-    head: string,
-    policy: GitCommitPolicy,
-  ): Promise<void> {
-    const repository = await this.repositoryForItem(item);
-    const adopted = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint
-      ?.adopted;
-    if (this.storedCandidates()) {
-      if (!repository) throw new Error("Candidate repository is unavailable");
-      const github = this.githubForRepository(repository);
-      if (!github) throw new Error("Candidate GitHub access is unavailable");
-      const validate = async (from: string) =>
-        validateGitHubCandidateAttribution(
-          { ...repository, client: github.client, ...this.gitHubCredentials(github) },
-          from,
-          head,
-          policy,
-          await this.signalForItem(item.id),
-        );
-      const last = adopted?.at(-1);
-      const validated =
-        last !== undefined &&
-        (await validate(last).then(
-          () => true,
-          (error: unknown) => {
-            if (error instanceof Error && /does not descend/.test(error.message)) return false;
-            throw error;
-          },
-        ));
-      if (!validated) await validate(base);
-    } else {
-      const present: string[] = [];
-      for (const sha of adopted ?? [])
-        if (
-          await git(["-C", tree, "cat-file", "-e", `${sha}^{commit}`]).then(
-            () => true,
-            () => false,
-          )
-        )
-          present.push(sha);
-      await validateCandidateAttribution(
-        tree,
-        [base, ...present],
-        head,
-        policy,
-        undefined,
-        await this.signalForItem(item.id),
-      );
-    }
-  }
-
   private async verifyCandidate(
     item: WorkItemRecord,
     worktree: string,
@@ -4848,7 +4794,26 @@ export class Orchestrator {
           }
         : undefined;
     const policy = await this.commitPolicy(item);
-    if (policy) await this.validateAttribution(item, mirror?.path ?? worktree, base, head, policy);
+    if (policy && this.storedCandidates()) {
+      if (!repository) throw new Error("Candidate repository is unavailable");
+      const github = this.githubForRepository(repository);
+      if (!github) throw new Error("Candidate GitHub access is unavailable");
+      await validateGitHubCandidateAttribution(
+        { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+        base,
+        head,
+        policy,
+        await this.signalForItem(item.id),
+      );
+    } else if (policy)
+      await validateCandidateAttribution(
+        mirror?.path ?? worktree,
+        base,
+        head,
+        policy,
+        undefined,
+        await this.signalForItem(item.id),
+      );
     const sessionProgress = await this.sessionProgress(item);
     await sessionProgress?.phase("verifying");
     const checkoutExclusions = (await this.runCheckout(item)).checks;
@@ -11779,12 +11744,6 @@ export class Orchestrator {
   }
 
   private async adoptBranchArrivals(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
-    const prompt = await this.adoptBranchTip(item, signal);
-    if (this.options.remoteExecution) await this.restoreCandidate(item, signal);
-    return prompt;
-  }
-
-  private async adoptBranchTip(item: WorkItemRecord, signal: AbortSignal): Promise<string> {
     const remote = Boolean(this.options.remoteExecution);
     const checkout = worktreePath(this.options.pawsRoot, itemPathId(item));
     const start = remote
@@ -11803,16 +11762,9 @@ export class Orchestrator {
       await fetch(["-C", checkout, "fetch", "--no-tags", "--", repository.remoteUrl, ref]);
     }
     if (await this.descends(item, read, start, tip)) return "";
-    const bases = remote
-      ? [start, published]
-      : [
-          await git(["-C", checkout, "merge-base", start, tip]).then(
-            (base) => base.trim(),
-            () => null,
-          ),
-        ];
+    const from = remote ? start : (await git(["-C", checkout, "merge-base", start, tip])).trim();
     let commits: BranchArrival[] | null = null;
-    for (const base of bases) {
+    for (const base of [from, published]) {
       if (!base || commits !== null) continue;
       const compared = await branchContains({ ...read, sha: base });
       if (compared.head !== null) commits = compared.commits;
@@ -11821,15 +11773,8 @@ export class Orchestrator {
       { sha: tip, author: "unknown", subject: (await readCommit({ ...read, sha: tip })).subject },
     ];
     if (!remote) await git(["-C", checkout, "reset", "--hard", tip]);
-    await this.store.run(function* (q) {
-      const checkpoint = (yield* getWorkItemSteps(q, item.id))?.checkpoint;
-      yield* saveCheckpointSteps(q, item.id, {
-        phase: "running",
-        ...checkpoint,
-        adopted: [...(checkpoint?.adopted ?? []), tip],
-      });
-    });
-    if (remote)
+    else {
+      await this.restoreCandidate(item, signal, tip);
       await this.store.run((q) =>
         recordItemCandidateSteps(q, {
           itemId: item.id,
@@ -11838,6 +11783,7 @@ export class Orchestrator {
           recordedAt: this.now(),
         }),
       );
+    }
     await this.post(
       item,
       "thought",
@@ -11877,11 +11823,15 @@ export class Orchestrator {
     return null;
   }
 
-  private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+  private async restoreCandidate(
+    item: WorkItemRecord,
+    signal?: AbortSignal,
+    tip?: string,
+  ): Promise<void> {
     if (this.storedCandidates()) return;
     const repository = await this.repositoryForItem(item);
-    const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
-    if (!this.options.remoteExecution || !repository || !recorded) return;
+    const sha = tip ?? (await this.store.run((q) => getItemCandidateSteps(q, item.id)))?.sha;
+    if (!this.options.remoteExecution || !repository || !sha) return;
     const owned = signal ?? AbortSignal.timeout(120_000);
     const networkGit = await this.repositoryGit(item, repository, owned, "read");
     const baseSha = item.checkpoint?.baseSha;
@@ -11889,7 +11839,7 @@ export class Orchestrator {
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
-      sha: recorded.sha,
+      sha,
       signal: owned,
       ...(baseSha ? { baseSha } : {}),
       ...(networkGit ? { networkGit } : {}),
