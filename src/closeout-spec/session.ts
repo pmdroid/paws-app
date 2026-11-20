@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
@@ -174,7 +174,10 @@ type ItemMemory = {
   stale: boolean;
   kind: string;
   result?: SessionCommandResult;
+  covered?: Covered;
 };
+
+type Covered = { policyDigest: string; paths: string[]; except?: string[]; digest: string };
 
 type Listed = {
   id: string;
@@ -269,11 +272,16 @@ export function createCloseoutSession(
     if (!current.ok) return { kind: "blocked", message: current.message };
     const { head, paths, fingerprint: next } = current;
     if (fingerprint !== undefined && fingerprint !== next) {
-      for (const state of memory.values()) {
-        if (state.passed && (state.kind !== "setup" || checkedHead !== head)) {
-          state.passed = false;
-          state.stale = true;
-        }
+      for (const [id, kept] of await keptAfterChange(
+        workspace,
+        memory,
+        current,
+        checkedHead,
+        policy,
+      )) {
+        const state = memory.get(id)!;
+        state.passed = kept;
+        state.stale = !kept;
       }
     }
     fingerprint = next;
@@ -378,13 +386,11 @@ export function createCloseoutSession(
         if (!current.ok) {
           prepared = { kind: "blocked", message: current.message };
         } else if (current.fingerprint !== fingerprint) {
-          const head = current.head;
+          const kept = await keptAfterChange(workspace, memory, current, checkedHead, policy);
           view = new Map(
             [...memory].map(([id, state]) => [
               id,
-              state.passed && (state.kind !== "setup" || checkedHead !== head)
-                ? { ...state, passed: false, stale: true }
-                : state,
+              kept.has(id) ? { ...state, passed: kept.get(id)!, stale: !kept.get(id) } : state,
             ]),
           );
           // Select again for the files as they are now; published evidence and rule results
@@ -427,10 +433,88 @@ export function createCloseoutSession(
   };
 }
 
+async function keptAfterChange(
+  workspace: string,
+  memory: Map<string, ItemMemory>,
+  current: { head: string; paths: string[] },
+  previousHead: string | undefined,
+  policy: TreePolicy,
+): Promise<Map<string, boolean>> {
+  const kept = new Map<string, boolean>();
+  const base = await comparisonBase(workspace);
+  for (const [id, state] of memory) {
+    if (!state.passed && !(state.stale && state.covered)) continue;
+    if (state.covered === undefined) {
+      kept.set(id, state.kind === "setup" && previousHead === current.head);
+      continue;
+    }
+    kept.set(
+      id,
+      base !== undefined &&
+        state.covered.policyDigest === policy.digest &&
+        coveredDigest(workspace, base, state.covered, current.paths) === state.covered.digest,
+    );
+  }
+  return kept;
+}
+
+async function coveredOf(
+  workspace: string,
+  item: Listed,
+  policyDigest: string,
+): Promise<Covered | undefined> {
+  if (item.paths === undefined || item.paths.length === 0) return undefined;
+  const base = await comparisonBase(workspace);
+  if (base === undefined) return undefined;
+  const changes = await listChanges(workspace, base);
+  if (changes === undefined) return undefined;
+  const scope = {
+    paths: item.paths,
+    ...(item.except !== undefined ? { except: item.except } : {}),
+  };
+  return { policyDigest, ...scope, digest: coveredDigest(workspace, base, scope, changes.paths) };
+}
+
+function coveredDigest(
+  workspace: string,
+  base: string,
+  scope: { paths: string[]; except?: string[] },
+  changed: readonly string[],
+): string {
+  const hash = createHash("sha256");
+  hash.update(base);
+  hash.update("\0");
+  for (const path of matchedPaths(scope, changed)) {
+    hash.update(path);
+    hash.update("\0");
+    hash.update(blobId(workspace, path));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function blobId(workspace: string, path: string): string {
+  const mark = fileMark(workspace, path);
+  if (mark === "missing") return "deleted";
+  const bytes = mark === "link" ? linkTarget(workspace, path) : mark;
+  if (typeof bytes === "string") return bytes;
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+
+function linkTarget(workspace: string, path: string): Buffer | string {
+  try {
+    return Buffer.from(readlinkSync(join(workspace, ...path.split("/"))));
+  } catch (caughtError) {
+    journalCaught(caughtError, "session.linkTarget.readlinkSync", null, "link may be gone");
+    return "deleted";
+  }
+}
+
 function staleDraftChecks(policy: TreePolicy, memory: Map<string, ItemMemory>): void {
   for (const item of [...policy.setup, ...policy.items]) {
     const state = memory.get(item.id);
     if (!state?.passed || !("exec" in item) || !usesPullRequestDraft(item.exec)) continue;
+    delete state.covered;
     state.passed = false;
     state.stale = true;
   }
@@ -909,6 +993,7 @@ async function execute(
   const before = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const base = await comparisonBase(workspace);
   const cleanBefore = await clean(workspace);
+  const covered = await coveredOf(workspace, item, policyDigest);
   const progress = {
     head: before.ok ? before.stdout.toString("utf8").trim() : "",
     id: item.id,
@@ -995,11 +1080,14 @@ async function execute(
   if (result.code === 0 && !result.timedOut) {
     state.passed = true;
     state.stale = false;
+    if (covered === undefined) delete state.covered;
+    else state.covered = covered;
     memory.set(item.id, state);
     finished("passed");
     return { ok: true, text: `${item.id} passed.` };
   }
   state.failures += 1;
+  delete state.covered;
   state.passed = false;
   state.stale = false;
   memory.set(item.id, state);
