@@ -38,6 +38,10 @@ const repo = z
   .string()
   .regex(/^[A-Za-z0-9._-]{1,100}$/)
   .refine((name) => ![".", ".."].includes(name));
+const ownerRepository = z.string().refine((name) => {
+  const [first, second, ...rest] = name.split("/");
+  return rest.length === 0 && owner.safeParse(first).success && repo.safeParse(second).success;
+});
 
 export const RunnerCheckoutExclusionsSchema = z
   .array(
@@ -350,6 +354,7 @@ export const RunnerCommandSchema = z
         "finding_groups",
         "conversation",
         "slack_reply",
+        "repository_summary",
       ]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(393_216),
@@ -357,6 +362,7 @@ export const RunnerCommandSchema = z
       tools: HostToolDefinitionsSchema.optional(),
       conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
       slack: RunnerSlackReplyScopeSchema.optional(),
+      summary: z.strictObject({ repository: ownerRepository }).optional(),
     }),
     z.strictObject({
       ...common,
@@ -462,6 +468,12 @@ export const RunnerCommandSchema = z
     (command) =>
       command.type !== "helper" ||
       (command.purpose === "slack_reply") === (command.slack !== undefined),
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      (command.purpose === "repository_summary") === (command.summary !== undefined),
+    { path: ["summary"], message: "only repository_summary carries summary" },
   );
 
 type HelperPurpose =
@@ -469,11 +481,13 @@ type HelperPurpose =
   | "select_repository"
   | "finding_groups"
   | "conversation"
-  | "slack_reply";
+  | "slack_reply"
+  | "repository_summary";
 
 export function runnerHelperLifetime(purpose: HelperPurpose): number {
   if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
   if (purpose === "slack_reply") return RUNNER_SLACK_REPLY_MS;
+  if (purpose === "repository_summary") return 120_000;
   return purpose === "finding_groups" ? 600_000 : 60_000;
 }
 
