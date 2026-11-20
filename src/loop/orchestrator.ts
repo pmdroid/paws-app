@@ -8079,7 +8079,12 @@ export class Orchestrator {
       handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
       sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
       ...(await this.options.scheduling?.()),
-      ...(merge ? { parallelFiles: (repository: string) => parallelFiles(merge, repository) } : {}),
+      ...(merge
+        ? {
+            parallelFiles: (repository: string) => parallelFiles(merge, repository),
+            overlapHold: merge.overlapHold,
+          }
+        : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: async (waits) => {
         await this.noteWaits(waits);

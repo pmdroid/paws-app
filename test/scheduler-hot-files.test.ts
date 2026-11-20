@@ -118,6 +118,29 @@ test("a hot file in the repository's parallel files holds nothing there, but sti
   }
 });
 
+test("with the overlap hold off, an item behind an occupant on a hot file starts and its hold ends", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await conflicted(db, [PROVIDER]);
+    await item(db, "first", [PROVIDER]);
+    await item(db, "second", [PROVIDER], 2);
+    await item(db, "third", [PROVIDER], 3);
+    expect(await workspaceDispatch(db, { now: NOW, overlapHold: true })).toEqual(["first"]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["second", "overlap"],
+      ["third", "overlap"],
+    ]);
+    await setState(db, "first", "running");
+    expect(await workspaceDispatch(db, { now: NOW + 1, overlapHold: false })).toEqual([
+      "second",
+      "third",
+    ]);
+    expect(await listItemHolds(db)).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test("items that change different files run in parallel", async () => {
   const { db, close } = await tempStore();
   try {

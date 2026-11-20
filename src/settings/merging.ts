@@ -143,6 +143,7 @@ export async function handleMergeSettingsRequest(
       ...repositorySettingsView(policy),
       ...session,
       autoApproveHighRisk: policy.autoApproveHighRisk,
+      overlapHold: policy.overlapHold,
       lanes: policy.lanes,
       noProject: policy.noProject,
       parallel: policy.parallel,
@@ -179,6 +180,7 @@ export async function handleMergeSettingsRequest(
   let highRiskPaths: Record<string, string[]> | undefined;
   let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
+  let overlapHold: boolean | undefined;
   let ignoredComments: Record<string, IgnoredComments> | undefined;
   let parallelFiles: Record<string, string[]> | undefined;
   let lanes: MergeLaneSplit[] | undefined;
@@ -253,6 +255,12 @@ export async function handleMergeSettingsRequest(
       autoApproveHighRisk = enabled;
       body = rest;
     }
+    if (isRecord(body) && "overlapHold" in body) {
+      const { overlapHold: enabled, ...rest } = body;
+      if (typeof enabled !== "boolean") throw new Error("overlapHold must be a boolean");
+      overlapHold = enabled;
+      body = rest;
+    }
     policy = parseMergePolicy(body);
   } catch (error) {
     journalCaught(error, "merging.handleMergeSettingsRequest.parseMergePolicy", null);
@@ -313,6 +321,7 @@ export async function handleMergeSettingsRequest(
       {
         ...current,
         ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
+        ...(overlapHold === undefined ? {} : { overlapHold }),
         ...(lanes === undefined ? {} : { lanes }),
         ...(noProject === undefined ? {} : { noProject }),
         ...(parallel === undefined ? {} : { parallel }),
@@ -370,6 +379,11 @@ export async function handleMergeSettingsRequest(
       "settings.merging",
       `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
     );
+  if (overlapHold !== undefined && overlapHold !== (before?.overlapHold ?? true))
+    await options.audit?.(
+      "settings.merging",
+      `Hold work that changes conflict-prone files: ${overlapHold ? "on" : "off"}`,
+    );
   const waitBefore = before?.commentWait ?? DEFAULT_COMMENT_WAIT;
   const waitAfter: CommentWait = { ...waitBefore, ...commentWait };
   if (
@@ -416,6 +430,7 @@ export async function handleMergeSettingsRequest(
     ...repositorySettingsView(after),
     ...sessionAfter,
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
+    overlapHold: after?.overlapHold ?? overlapHold ?? before?.overlapHold ?? true,
     lanes: after?.lanes ?? lanes,
     noProject: after?.noProject ?? noProject,
     parallel: after?.parallel ?? parallel,

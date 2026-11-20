@@ -60,6 +60,7 @@ packages = ["apps/*", "packages/*"]
       noProject: "own",
       projectLanes: {},
       autoApproveHighRisk: false,
+      overlapHold: true,
       ciFixAttempts: 2,
       parallel: 1,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
@@ -317,6 +318,7 @@ describe("Merging settings API", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       autoApproveHighRisk: false,
+      overlapHold: true,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       default: { order: "queue", mainMoved: "ci" },
       highRiskPaths: [],
@@ -454,6 +456,7 @@ describe("Merging settings API", () => {
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toEqual({
       autoApproveHighRisk: false,
+      overlapHold: true,
       ...body,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       highRiskPaths: [],
@@ -481,6 +484,7 @@ describe("Merging settings API", () => {
       noProject: "own",
       projectLanes: {},
       autoApproveHighRisk: false,
+      overlapHold: true,
       ciFixAttempts: 5,
       parallel: 1,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
@@ -869,6 +873,45 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
     ).toBe(400);
   }
   expect(() => parseConfigToml('[merge]\nauto_approve_high_risk = "true"\n')).toThrow();
+});
+
+test("the overlap hold defaults on, round-trips off, survives other saves and is admin only", async () => {
+  const { options, audits } = fixture();
+  expect(readMergeSettings(parseConfigToml("")).overlapHold).toBe(true);
+  expect(readMergeSettings(parseConfigToml("[merge]\noverlap_hold = false\n")).overlapHold).toBe(
+    false,
+  );
+  const body = { default: { order: "queue", mainMoved: "ci" } };
+  const put = (value: unknown) =>
+    handleMergeSettingsRequest(request("PUT", { ...body, overlapHold: value }), options);
+  const response = await put(false);
+  expect(response?.status).toBe(200);
+  expect(((await response!.json()) as { overlapHold: boolean }).overlapHold).toBe(false);
+  expect(readFileSync(options.configPath, "utf8")).toContain("overlap_hold = false");
+  expect(audits.map(([, text]) => text)).toContain(
+    "Hold work that changes conflict-prone files: off",
+  );
+  await handleMergeSettingsRequest(request("PUT", { ...body, parallel: 2 }), options);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(false);
+  const read = await (await handleMergeSettingsRequest(request(), options))!.json();
+  expect((read as { overlapHold: boolean }).overlapHold).toBe(false);
+  for (const invalid of ["false", 0, null]) expect((await put(invalid))?.status).toBe(400);
+  expect(
+    (
+      await handleMergeSettingsRequest(request("PUT", { ...body, overlapHold: true }), {
+        ...options,
+        role: "member",
+      })
+    )?.status,
+  ).toBe(403);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(false);
+  expect((await put(true))?.status).toBe(200);
+  expect(readFileSync(options.configPath, "utf8")).not.toContain("overlap_hold");
+  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(true);
+  expect(audits.map(([, text]) => text)).toContain(
+    "Hold work that changes conflict-prone files: on",
+  );
+  expect(() => parseConfigToml('[merge]\noverlap_hold = "false"\n')).toThrow();
 });
 
 test("a failed display notification does not undo a settings write or its audit", async () => {

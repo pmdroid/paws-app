@@ -89,6 +89,7 @@ export type MergeSettings = Pick<MergePolicy, "default"> & {
   /** `[merge.projects."<Linear project id>"] lane`, kept apart from the Merging settings policy. */
   projectLanes: Record<string, MergeLane>;
   autoApproveHighRisk: boolean;
+  overlapHold: boolean;
   ciFixAttempts: number;
   parallel: number;
   repositories: MergeRepositories;
@@ -100,6 +101,7 @@ export type StoredMerge = Partial<MergeChoice> & {
   noProject?: MergeNoProject;
   projectLanes?: Record<string, MergeLane>;
   autoApproveHighRisk?: boolean;
+  overlapHold?: boolean;
   ciFixAttempts?: number;
   parallel?: number;
   commentQuietSeconds?: number;
@@ -235,6 +237,7 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
     ...(config.autoApproveHighRisk === undefined
       ? {}
       : { autoApproveHighRisk: config.autoApproveHighRisk }),
+    ...(config.overlapHold === undefined ? {} : { overlapHold: config.overlapHold }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
     ...(config.mergeParallel === undefined ? {} : { parallel: config.mergeParallel }),
     ...(config.commentQuietSeconds === undefined
@@ -262,6 +265,7 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     projectLanes: stored.projectLanes ?? {},
     repositories: stored.repositories ?? {},
     autoApproveHighRisk: stored.autoApproveHighRisk ?? false,
+    overlapHold: stored.overlapHold ?? true,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
     parallel: stored.parallel ?? 1,
     commentWait: commentWait(stored),
@@ -649,6 +653,7 @@ export function renderMergeSettings(settings: StoredMerge): string {
     ...(settings.autoApproveHighRisk === undefined
       ? []
       : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
+    ...(settings.overlapHold === false ? ["overlap_hold = false"] : []),
     ...(settings.ciFixAttempts === undefined
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
@@ -790,6 +795,7 @@ export function writeMergePolicy(
       ...(current.autoApproveHighRisk === undefined
         ? {}
         : { autoApproveHighRisk: current.autoApproveHighRisk }),
+      ...(current.overlapHold === undefined ? {} : { overlapHold: current.overlapHold }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       ...(current.parallel === undefined ? {} : { parallel: current.parallel }),
       ...(wait?.reviewWaitMaxSeconds !== undefined

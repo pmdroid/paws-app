@@ -87,6 +87,7 @@ export type PawsConfigFile = {
   ciFixAttempts?: number;
   mergeParallel?: number;
   autoApproveHighRisk?: boolean;
+  overlapHold?: boolean;
   /** `[merge] comment_quiet_seconds`. Missing means the default of 60. */
   commentQuietSeconds?: number;
   /** `[merge] comment_max_wait_seconds`. Missing means the default of 300. */
@@ -421,6 +422,7 @@ function assignConfig(
   }
   if (section === "merge") {
     if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, line);
+    else if (key === "overlap_hold") config.overlapHold = asBoolean(value, line);
     else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "parallel") config.mergeParallel = mergeParallel(value, line);
     else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
