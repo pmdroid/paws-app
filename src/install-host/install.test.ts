@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRuntime, parseConfigToml, setConfigKeys } from "../config";
+import { loadRuntime } from "../config";
 import { validatePublicTls, validatePublicTlsFiles } from "../deployment";
 import {
   fakePrompt,
@@ -112,11 +112,6 @@ const FIRST = [
   "", // runner port: 8788
   "PAS",
   "pmdroid/paws-app, pmdroid/agentbox",
-  "", // member_vm cpu: exe.dev's default
-  "", // member_vm memory
-  "", // member_vm disk
-  "", // member_vm image
-  "", // member_vm pool: the team's placement
   "", // tailscale cert: yes
 ];
 
@@ -125,7 +120,6 @@ function files(home: string) {
     existsSync(join(home, path)) ? readFileSync(join(home, path), "utf8") : "";
   return {
     env: read(".paws/https.env"),
-    config: read(".paws/config.toml"),
     unit: read(".config/systemd/user/paws.service"),
     dropIn: read(".config/systemd/user/paws.service.d/working-directory.conf"),
     renewService: read(".config/systemd/user/paws-tls-renew.service"),
@@ -134,7 +128,7 @@ function files(home: string) {
 }
 
 describe("paws install", () => {
-  test("a first install writes the env file, config and unit", async () => {
+  test("a first install writes the env file and unit and no config.toml", async () => {
     const home = tempHome();
     const prompt = fakePrompt(FIRST);
     const run = deps(home, prompt);
@@ -152,15 +146,13 @@ describe("paws install", () => {
         "PAWS_RUNNER_PORT=8788",
         `PAWS_TLS_KEY_PATH=${home}/.paws/tls/${HOST}.key`,
         `PAWS_TLS_CERT_PATH=${home}/.paws/tls/${HOST}.crt`,
+        "LINEAR_TEAM=PAS",
+        "PAWS_GITHUB_REPOS=pmdroid/paws-app,pmdroid/agentbox",
         "",
       ].join("\n"),
     );
     expect(statSync(join(home, ".paws/https.env")).mode & 0o777).toBe(0o600);
-    expect(statSync(join(home, ".paws/config.toml")).mode & 0o777).toBe(0o600);
-    const config = parseConfigToml(written.config);
-    expect(config.linearTeam).toBe("PAS");
-    expect(config.repo).toBe("pmdroid/paws-app");
-    expect(config.githubRepos).toEqual(["pmdroid/agentbox"]);
+    expect(existsSync(join(home, ".paws/config.toml"))).toBe(false);
     expect(written.unit).toContain(`EnvironmentFile=${home}/.paws/https.env`);
     expect(written.unit).toContain("ExecStart=/opt/bun/bin/bun --no-env-file src/index.ts\n");
     expect(written.unit).toContain("RestartForceExitStatus=75");
@@ -171,48 +163,47 @@ describe("paws install", () => {
       ["--user", "enable", "--now", "paws-tls-renew.timer"],
     ]);
     expect(prompt.questions[0]).toBe("Paws checkout path");
+    expect(prompt.questions.some((q) => q.includes("exe.dev"))).toBe(false);
 
     const runtime = loadRuntime(parseEnv(written.env));
     expect(runtime.configError).toBeNull();
     expect(runtime.env.port).toBe(443);
     expect(runtime.repos).toEqual(["pmdroid/paws-app", "pmdroid/agentbox"]);
+    expect(runtime.linearTeam).toBe("PAS");
   });
 
-  test("a re-run keeps unchanged values and unrelated config.toml keys", async () => {
+  test("a re-run shows saved values as defaults, keeps other env lines and - clears", async () => {
     const home = tempHome();
     await runInstall(parseInstallArgs([]), deps(home, fakePrompt(FIRST)).deps);
-    const configPath = join(home, ".paws/config.toml");
     const envPath = join(home, ".paws/https.env");
-    writeFileSync(
-      configPath,
-      setConfigKeys(
-        `# mine\n${readFileSync(configPath, "utf8")}\n[merge]\norder = "ci-green"\n`,
-        "linear",
-        { team_id: "team-uuid" },
-      ),
-    );
     writeFileSync(envPath, `${readFileSync(envPath, "utf8")}PAWS_EXECUTION=remote\n`);
     const before = files(home);
 
-    const prompt = fakePrompt(Array.from({ length: 16 }, () => ""));
+    const defaults = new Map<string, string>();
+    const prompt: Prompt = {
+      ask: async (question, value) => {
+        defaults.set(question, value);
+        return "";
+      },
+    };
     const run = deps(home, prompt);
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(files(home)).toEqual(before);
     expect(run.out).toContain("Nothing changed.");
+    expect(defaults.get("Linear team key or id (- for none)")).toBe("PAS");
+    expect(defaults.get("GitHub repositories (owner/repo, comma-separated) (- for none)")).toBe(
+      "pmdroid/paws-app,pmdroid/agentbox",
+    );
 
-    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "", "-", "", "", "", "", "", ""]);
+    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "-", "-", ""]);
     expect(await runInstall(parseInstallArgs([]), deps(home, rerun).deps)).toBe(0);
     const after = files(home);
     expect(after.env).toContain("PAWS_PORT=8443\n");
     expect(after.env).toContain("PAWS_EXECUTION=remote\n");
     expect(after.env).toContain("PAWS_HOST=0.0.0.0\n");
-    expect(after.config.startsWith("# mine\n")).toBe(true);
-    const config = parseConfigToml(after.config);
-    expect(config.linearTeamId).toBe("team-uuid");
-    expect(config.linearTeam).toBe("PAS");
-    expect(config.mergeOrder).toBe("ci-green");
-    expect(config.repo).toBeNull();
-    expect(config.githubRepos).toEqual([]);
+    expect(after.env).not.toContain("LINEAR_TEAM");
+    expect(after.env).not.toContain("PAWS_GITHUB_REPOS");
+    expect(existsSync(join(home, ".paws/config.toml"))).toBe(false);
   });
 
   test("an invalid port or URL is asked again", async () => {
@@ -229,11 +220,6 @@ describe("paws install", () => {
       "https://paws.example.com/path",
       "https://paws.example.com",
       "-",
-      "",
-      "",
-      "",
-      "",
-      "",
       "",
       "",
       cert("paws.example.com").key,
@@ -276,85 +262,14 @@ describe("paws install", () => {
     const expected = files(interactive);
     const actual = files(scripted);
     expect(swap(actual.env)).toBe(expected.env);
-    expect(swap(actual.config)).toBe(expected.config);
     expect(swap(actual.unit)).toBe(expected.unit);
     expect(swap(actual.dropIn)).toBe(expected.dropIn);
     expect(swap(actual.renewService)).toBe(expected.renewService);
     expect(swap(actual.renewTimer)).toBe(expected.renewTimer);
   });
 
-  test("the exe.dev VM size is asked, re-asked when invalid, kept on a re-run and cleared with -", async () => {
-    const home = tempHome();
-    const prompt = fakePrompt([
-      ...FIRST.slice(0, 10),
-      "-2",
-      "eight",
-      "8",
-      "16",
-      "100",
-      "ubuntu 24.04",
-      "ubuntu:24.04",
-      "build pool",
-      "build",
-      "", // tailscale cert: yes
-    ]);
-    const run = deps(home, prompt);
-    expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
-    expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM CPUs"))).toHaveLength(3);
-    expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM image"))).toHaveLength(2);
-    expect(prompt.questions.filter((q) => q.startsWith("exe.dev pool"))).toHaveLength(2);
-    expect(run.out).toContain("  member_vm.cpu must be a whole number from 1 to 512");
-    expect(
-      run.out.some((line) => line.startsWith("  member_vm.pool must be an exe.dev pool")),
-    ).toBe(true);
-    const written = parseConfigToml(files(home).config).memberVm;
-    expect(written).toEqual({
-      cpu: 8,
-      memoryGb: 16,
-      diskGb: 100,
-      image: "ubuntu:24.04",
-      pool: "build",
-    });
-    expect(files(home).config).toContain("[member_vm]\ncpu = 8\n");
-    expect(files(home).config).toContain('pool = "build"\n');
-
-    const keep = fakePrompt(Array.from({ length: 16 }, () => ""));
-    const kept = deps(home, keep);
-    expect(await runInstall(parseInstallArgs([]), kept.deps)).toBe(0);
-    expect(kept.out).toContain("Nothing changed.");
-
-    const clear = fakePrompt([...FIRST.slice(0, 10).map(() => ""), "-", "", "-", "-", "-", ""]);
-    expect(await runInstall(parseInstallArgs([]), deps(home, clear).deps)).toBe(0);
-    expect(parseConfigToml(files(home).config).memberVm).toEqual({ memoryGb: 16 });
-  });
-
-  test("an answers file sets the exe.dev VM size and rejects an invalid one", async () => {
-    const home = tempHome();
-    const answers = join(home, "answers.toml");
-    writeFileSync(
-      answers,
-      [
-        'paws_public_url = "https://paws.example.com"',
-        `tls_key_path = "${cert("paws.example.com").key}"`,
-        `tls_cert_path = "${cert("paws.example.com").cert}"`,
-        "member_vm_cpu = 4",
-        "member_vm_memory_gb = 8",
-      ].join("\n"),
-    );
-    const args = parseInstallArgs(["--non-interactive", "--answers", answers]);
-    expect(await runInstall(args, deps(home, null).deps)).toBe(0);
-    expect(parseConfigToml(files(home).config).memberVm).toEqual({ cpu: 4, memoryGb: 8 });
-
-    const bad = parseInstallArgs([
-      "--non-interactive",
-      "--answers",
-      answers,
-      "--member-vm-disk-gb",
-      "0",
-    ]);
-    await expect(runInstall(bad, deps(tempHome(), null).deps)).rejects.toThrow(
-      "member_vm_disk_gb: member_vm.disk_gb must be a whole number",
-    );
+  test("the exe.dev VM size is not an install option", () => {
+    expect(() => parseInstallArgs(["--member-vm-cpu", "4"])).toThrow("Unknown option");
   });
 
   test("--non-interactive rejects an invalid value instead of asking", async () => {
@@ -479,13 +394,6 @@ describe("paws install TLS", () => {
     };
     expect(() => validatePublicTls(source)).toThrow("configuration is invalid");
     expect(validatePublicTlsFiles(source)).toBeDefined();
-    const prompt = fakePrompt(FIRST.slice(0, 2));
-    await expect(
-      runInstall(parseInstallArgs(["--non-interactive"]), deps(home, prompt).deps),
-    ).rejects.toThrow("config.toml:");
-    expect(prompt.questions.some((question) => question.startsWith("Run tailscale cert"))).toBe(
-      false,
-    );
   });
 
   test("renewal escapes systemd expansion and certificate fetch drains verbose stdout", async () => {
@@ -523,7 +431,7 @@ describe("paws install TLS", () => {
     const before = [statSync(timer), statSync(service)].map((stat) => [stat.ino, stat.mtimeMs]);
     const text = readFileSync(timer, "utf8");
 
-    const run = deps(home, fakePrompt(Array.from({ length: 16 }, () => "")));
+    const run = deps(home, fakePrompt(Array.from({ length: 11 }, () => "")));
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(run.out).toContain("Nothing changed.");
     expect([statSync(timer), statSync(service)].map((stat) => [stat.ino, stat.mtimeMs])).toEqual(
@@ -561,7 +469,7 @@ describe("paws install TLS", () => {
     const open = join(home, "open.key");
     writeFileSync(open, readFileSync(cert("paws.example.com").key), { mode: 0o644 });
     chmodSync(open, 0o644);
-    const answers = [...FIRST.slice(0, 5), "https://paws.example.com", ...FIRST.slice(6, 15)];
+    const answers = [...FIRST.slice(0, 5), "https://paws.example.com", ...FIRST.slice(6, 10)];
     const prompt = fakePrompt([
       ...answers,
       open,

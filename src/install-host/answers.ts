@@ -1,11 +1,5 @@
 import { isAbsolute, join } from "node:path";
-import {
-  checkMemberVmValue,
-  loadEnv,
-  loadRunnerControl,
-  type MemberVmKey,
-  type MemberVmSize,
-} from "../config";
+import { loadEnv, loadRunnerControl, parseRepositoryList } from "../config";
 
 /** What `paws install` writes. An empty string leaves the value unset. */
 export type InstallAnswers = {
@@ -19,8 +13,6 @@ export type InstallAnswers = {
   runnerPort: number;
   linearTeam: string;
   githubRepos: string[];
-  /** `[member_vm]`: the exe.dev size Create VM asks for. A missing field sends no flag. */
-  memberVm: MemberVmSize;
   tlsKeyPath: string;
   tlsCertPath: string;
 };
@@ -36,11 +28,6 @@ export const ANSWER_KEYS = [
   "paws_runner_port",
   "linear_team",
   "github_repos",
-  "member_vm_cpu",
-  "member_vm_memory_gb",
-  "member_vm_disk_gb",
-  "member_vm_image",
-  "member_vm_pool",
   "tailscale_cert",
   "tls_key_path",
   "tls_cert_path",
@@ -93,35 +80,12 @@ export const FIELDS: Record<AnswerKey, Field> = {
   github_repos: {
     question: "GitHub repositories (owner/repo, comma-separated)",
     optional: true,
-    check: (value) => repositories(value).join(", "),
+    check: (value) => parseRepositoryList(value).join(", "),
   },
-  member_vm_cpu: memberVmField("exe.dev runner VM CPUs (--cpu)", "cpu"),
-  member_vm_memory_gb: memberVmField("exe.dev runner VM memory in GB (--memory)", "memory_gb"),
-  member_vm_disk_gb: memberVmField("exe.dev runner VM disk in GB (--disk)", "disk_gb"),
-  member_vm_image: memberVmField("exe.dev runner VM image (--image)", "image"),
-  member_vm_pool: memberVmField(
-    "exe.dev pool for runner VMs (--pool; `ssh exe.dev pool list` names them)",
-    "pool",
-  ),
   tailscale_cert: { question: "Run tailscale cert for the public host (yes/no)", check: yesNo },
   tls_key_path: { question: "PAWS_TLS_KEY_PATH", check: (value, _, home) => path(value, home) },
   tls_cert_path: { question: "PAWS_TLS_CERT_PATH", check: (value, _, home) => path(value, home) },
 };
-
-/** An optional `[member_vm]` key, checked as config.toml checks it. Empty keeps exe.dev's default. */
-function memberVmField(question: string, key: MemberVmKey): Field {
-  return {
-    question,
-    optional: true,
-    check: (value) => {
-      const trimmed = value.trim();
-      if (trimmed === "") return "";
-      const typed =
-        key !== "image" && key !== "pool" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
-      return String(checkMemberVmValue(key, typed));
-    },
-  };
-}
 
 export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
   return {
@@ -134,14 +98,7 @@ export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
     runnerHost: raw.paws_runner_host,
     runnerPort: Number(raw.paws_runner_port),
     linearTeam: raw.linear_team,
-    githubRepos: repositories(raw.github_repos),
-    memberVm: {
-      ...(raw.member_vm_cpu ? { cpu: Number(raw.member_vm_cpu) } : {}),
-      ...(raw.member_vm_memory_gb ? { memoryGb: Number(raw.member_vm_memory_gb) } : {}),
-      ...(raw.member_vm_disk_gb ? { diskGb: Number(raw.member_vm_disk_gb) } : {}),
-      ...(raw.member_vm_image ? { image: raw.member_vm_image } : {}),
-      ...(raw.member_vm_pool ? { pool: raw.member_vm_pool } : {}),
-    },
+    githubRepos: parseRepositoryList(raw.github_repos),
     tlsKeyPath: raw.tls_key_path,
     tlsCertPath: raw.tls_cert_path,
   };
@@ -218,15 +175,4 @@ function linearTeam(value: string): string {
   if (trimmed && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed))
     throw new Error("Enter a Linear team key such as ENG.");
   return trimmed;
-}
-
-function repositories(value: string): string[] {
-  const repos = value
-    .split(",")
-    .map((repo) => repo.trim().toLowerCase())
-    .filter((repo) => repo.length > 0);
-  for (const repo of repos)
-    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
-      throw new Error(`${repo} is not an owner/repo name.`);
-  return [...new Set(repos)];
 }

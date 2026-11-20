@@ -17,7 +17,6 @@ export {
   ENV_FILE,
   installedUnit,
   parseEnvFile,
-  renderConfig,
   renderDropIn,
   renderEnvFile,
   renderUnit,

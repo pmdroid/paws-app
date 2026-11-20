@@ -1,7 +1,7 @@
 import { closeSync, openSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ensureLayout, loadConfigFile, loadEnv, pawsPaths, type EnvSource } from "../config";
+import { ensureLayout, loadEnv, pawsPaths, type EnvSource } from "../config";
 import { ENV_FILE, installedUnit, unitPaths } from "../install-host";
 import { openEnvFile } from "./env-file";
 import { terminalPrompter, type PromptOutput } from "./prompt";
@@ -30,14 +30,13 @@ export async function runInstallCli(
   const home = loadEnv(merged).home;
   const paths = pawsPaths(home);
   ensureLayout(paths);
-  const config = loadConfigFile(paths.configFile);
   const terminal = openTerminal();
   try {
     await withSecrets(merged, async () =>
       runSecretsStep({
         home,
         prompter: terminalPrompter(process.stdin, process.stdout, terminal),
-        publicUrl: merged.PAWS_PUBLIC_URL || config.publicUrl,
+        publicUrl: merged.PAWS_PUBLIC_URL || null,
       }),
     );
     return 0;
