@@ -1334,6 +1334,8 @@ export function createSlackThreads<Profile>(options: {
     const run = {
       workspaceId,
       member: asker,
+      slackUserId,
+      mentionTs: mention.ts,
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
     };
@@ -1549,6 +1551,17 @@ export function createSlackThreads<Profile>(options: {
         payload,
         now: now(),
       });
+      for (const draft of yield* work.runDraftsSteps(q, place, replyScope.requestId)) {
+        const shown = work.draftMessage(draft, draft.team, draft.id);
+        if (shown)
+          yield* enqueueOutboxOnceSteps(q, {
+            target: "slack",
+            op: "chat.postEphemeral",
+            idempotencyKey: `slack:notice:${replyKey}:${draft.id}`,
+            payload: { ...place, kind: "notice", member: asker, ...shown },
+            now: now(),
+          });
+      }
       if (!keep.length || !earlier.conversationId) return;
       yield* addSlackNotesSteps(q, {
         conversationId: earlier.conversationId,
@@ -1848,19 +1861,23 @@ export function createSlackThreads<Profile>(options: {
           issue,
         );
       });
-    const draft = await check();
-    if (!draft) return;
+    const ready = await check();
+    if (!ready) return;
+    const draft = "refused" in ready ? ready.refused : ready;
     const { workspaceId, teamId, channelId, threadTs, slackUserId, generation } = draft;
     const place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const member = { userId: draft.userId, linkId: draft.linkId };
     const say = (text: string, suffix: string) =>
       notice(place, `file:${draft.id}:${suffix}`, text, { member });
+    if ("refused" in ready) return void (await say(work.WORK_NOTICES.not_member, "refused"));
+    const change = draft.change;
     await turnStatus(place, member, "processing");
     let done = false;
     try {
       const drop = () => store.transaction((q) => work.dropDraftSteps(q, key));
       const tracker = options.work?.() ?? null;
-      if (!tracker) return void (await drop());
+      const changes = tracker?.changes;
+      if (!tracker || (change && !changes)) return void (await drop());
       const call = await slackFor(workspaceId);
       if (
         (await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public"
@@ -1869,27 +1886,56 @@ export function createSlackThreads<Profile>(options: {
       const team = await tracker.team(draft.team.key, context.signal);
       if (team?.id !== draft.team.id || team.private !== draft.team.private) {
         await drop();
-        if (team?.id === draft.team.id && draft.attemptedAt)
+        if (team?.id === draft.team.id && draft.attemptedAt && !change)
           return void (await review(draft, team, `file:${draft.id}:review:${job.id}`));
         return void (await say(work.WORK_NOTICES.changed, "changed"));
       }
       const issueKey = work.slackDraftIssueKey(draft);
-      const issueId = tracker.issueId(issueKey);
-      if (!(await check({ issueId, at: now() }))) return;
+      const issueId = !change
+        ? tracker.issueId(issueKey)
+        : change.kind === "create"
+          ? changes!.issueId(issueKey)
+          : change.issueId;
+      if (change?.kind !== "update") {
+        const again = await check({ issueId, at: now() });
+        if (!again || "refused" in again) return;
+      }
       const request = {
         key: issueKey,
         teamId: team.id,
         title: draft.title,
         description: work.slackIssueDescription(draft),
       };
+      const target = { teamIds: [team.id], id: issueId };
+      const apply = async (signal: AbortSignal) => {
+        if (!change) return tracker.file(request, signal);
+        if (change.kind === "assign") return changes!.assign(target, signal);
+        if (change.kind === "update")
+          return changes!.update({ ...target, ...change.fields }, signal);
+        const { description, projectId, labelIds, parentId, relatedId, start } = change;
+        const create = { ...request, description, delegate: start };
+        const extra = {
+          ...(projectId ? { projectId } : {}),
+          ...(labelIds?.length ? { labelIds } : {}),
+          ...(parentId ? { parentId } : {}),
+          ...(relatedId ? { relation: { issueId: relatedId, type: "related" as const } } : {}),
+        };
+        return changes!.create({ ...create, ...extra }, signal);
+      };
       let filed: { id: string; identifier: string; url: string | null };
       try {
-        filed = await tracker.file(request, context.signal);
+        const applied = await apply(context.signal);
+        if (!applied) throw new Error("Linear can't find the issue");
+        filed = applied;
       } catch (error) {
         if (context.signal.aborted) throw error;
-        await drop();
         const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200);
         journal(`slack draft ${draft.id}: Linear filing failed: ${reason}`);
+        if (change) {
+          await say(`Linear didn't confirm the change (${reason}).`, `failed:${job.id}`);
+          return void (await review(draft, team, `file:${draft.id}:review:${job.id}`));
+        }
+        await drop();
         const text = `Linear didn't confirm the issue (${reason}). Nothing is running. Mention \`@Paws start\` in this thread to try again; Paws reuses the issue if Linear filed it.`;
         return void (await say(text, `failed:${job.id}`));
       }
@@ -1902,8 +1948,12 @@ export function createSlackThreads<Profile>(options: {
         teamId: team.id,
         filedAt: now(),
       };
-      await store.transaction((q) => work.recordFiledSteps(q, draft, task, now()));
-      await say(work.filedNotice(task), "filed");
+      await store.transaction((q) =>
+        change?.kind === "update"
+          ? work.dropDraftSteps(q, key)
+          : work.recordFiledSteps(q, draft, task, now()),
+      );
+      await say(change ? work.changedNotice(change, filed) : work.filedNotice(task), "filed");
       done = true;
     } finally {
       await turnStatus(place, member, null, done ? "processing" : "active");

@@ -8,7 +8,7 @@ import {
   SLACK_LINEAR_NO_TEAMS,
 } from "../src/slack";
 import { withoutForeignKeys } from "./pglite-fixtures";
-import { tempStore } from "./pglite";
+import { sqlRows, tempStore } from "./pglite";
 
 const stores: { close(): Promise<void> }[] = [];
 afterAll(() => Promise.all(stores.map((store) => store.close())));
@@ -49,10 +49,12 @@ async function setup() {
     slackLinearTools({ store: db, tracker: () => linear })({
       workspaceId: "W1",
       member: { userId: "um", linkId: "link" },
+      slackUserId: "SMEMBER",
+      mentionTs: "1.000002",
       thread: { teamId: "T0ONE", channelId, threadTs: "1.000001", installGeneration: 1 },
       requestId: "r1",
     });
-  return { tracker, teams, tools };
+  return { db, tracker, teams, tools };
 }
 
 test("searches and reads only the asker's teams, and another team's issue is no such issue", async () => {
@@ -61,6 +63,7 @@ test("searches and reads only the asker's teams, and another team's issue is no 
   expect(made.definitions.map((tool) => tool.name)).toEqual([
     ...["search_issues", "get_issue", "list_teams"],
     ...["list_projects", "list_labels", "list_states"],
+    ...["create_issue", "update_issue", "assign_issue"],
   ]);
   expect(made.instructions).toContain("nothing in Linear changes");
   const found = await made.call("search_issues", { query: "canary", teamIds: ["ops"] });
@@ -118,4 +121,51 @@ test("without the tracker operations there are no tools", async () => {
   const { tools } = await setup();
   expect(tools("C0ONE", null)).toBeNull();
   expect(tools("C0ONE", { ...createFakeTracker(), readAgentIssue: undefined })).toBeNull();
+});
+
+test("create, update and assign only store proposals for the asker's teams, at most three per run", async () => {
+  const { db, tracker, tools } = await setup();
+  tracker.agentLabels.push({ id: "l-bug", name: "Bug", teamKey: "ENG", teamIds: ["eng"] });
+  tracker.agentStates.push(
+    ...[{ id: "s-done", name: "Done", type: "completed", teamKey: "ENG", teamIds: ["eng"] }],
+  );
+  const made = tools()!;
+  const proposed = "Proposed. <@SMEMBER> has to confirm it in Slack.";
+  const refused = async (name: string, args: Record<string, unknown>, text: string) =>
+    expect(await made.call(name, args as never)).toEqual({ text, isError: true });
+  const create = { team: "eng", title: "Retry", description: "Retry uploads." };
+  await refused("create_issue", { ...create, team: "OPS" }, "Name one of these Linear teams: ENG.");
+  await refused("create_issue", { ...create, team: "SEC" }, "Name one of these Linear teams: ENG.");
+  await refused("create_issue", { ...create, labels: ["Nope"] }, 'No label named "Nope" in ENG.');
+  await refused("update_issue", { id: "OPS-1", title: "x" }, "No such issue. (OPS-1)");
+  await refused("assign_issue", { id: "SEC-1" }, "No such issue. (SEC-1)");
+  await refused("update_issue", { id: "ENG-1" }, "Name at least one field to change.");
+  expect(await made.call("create_issue", { ...create, labels: ["bug"], parent: "ENG-1" })).toEqual({
+    text: proposed,
+  });
+  expect(await made.call("update_issue", { id: "ENG-1", state: "done" })).toEqual({
+    text: proposed,
+  });
+  expect(await made.call("assign_issue", { id: "ENG-1" })).toEqual({ text: proposed });
+  await refused("assign_issue", { id: "ENG-1" }, "This run has proposed 3 changes already.");
+  const writes = tracker.agentIssueCalls.filter((call) => !/^(read|list)/.test(call.operation));
+  expect(writes).toEqual([]);
+  const rows = await sqlRows<{ value: string }>(
+    db,
+    "SELECT value FROM setting WHERE key LIKE 'slack.draft:W1:T0ONE:C0ONE:1.000001:%'",
+  );
+  const changes = rows
+    .map((row) => JSON.parse(row.value).change)
+    .sort((a, b) => a.kind.localeCompare(b.kind));
+  expect(changes).toEqual([
+    { kind: "assign", run: "r1", shown: [], issueId: "id-ENG-1", identifier: "ENG-1" },
+    {
+      ...{ kind: "create", run: "r1", description: "Retry uploads.", start: true },
+      ...{ shown: ["Labels: bug", "Parent: ENG-1"], labelIds: ["l-bug"], parentId: "id-ENG-1" },
+    },
+    {
+      ...{ kind: "update", run: "r1", shown: ["State: Done"], issueId: "id-ENG-1" },
+      ...{ identifier: "ENG-1", fields: { stateId: "s-done" } },
+    },
+  ]);
 });

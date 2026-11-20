@@ -10,6 +10,8 @@ type HelperToolHandler = (name: string, args: Record<string, Json>) => Promise<H
 export type SlackToolRun = {
   workspaceId: string;
   member: { userId: string; linkId: string };
+  slackUserId: string;
+  mentionTs: string;
   thread: { teamId: string; channelId: string; threadTs: string; installGeneration: number };
   requestId: string;
 };

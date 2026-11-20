@@ -44,7 +44,13 @@ import {
   slackReplyAllowedSteps,
   slackTaskUpdateSteps,
 } from "../src/slack";
-import { createFakeTracker, followUpSessionOwner } from "../src/linear";
+import {
+  agentIssueId,
+  createFakeTracker,
+  followUpSessionOwner,
+  type AgentIssueCreate,
+  type AgentIssueUpdate,
+} from "../src/linear";
 import { deliverLinearOutbox, SLACK_ASKED_NOTE, SLACK_ROUTED_NOTE } from "../src/loop";
 import { openQuestion } from "../src/questions";
 import { createRunnerHelpers } from "../src/runner-helpers";
@@ -83,7 +89,7 @@ async function fixture(
     outcomes?: ({ status: string; text?: string } | null)[];
     scope?: string;
     tools?: SlackToolProvider[];
-    toolCalls?: string[];
+    toolCalls?: (string | [string, Record<string, unknown>])[];
     folder?: {
       add?: string[];
       list?: (string | null)[];
@@ -199,6 +205,8 @@ async function fixture(
     fail: undefined as "lost" | "refused" | undefined,
   };
   const hash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
+  const agent = createFakeTracker();
+  agent.agentTeams.push(eng);
   const work = () =>
     linear.connected
       ? {
@@ -214,6 +222,13 @@ async function fixture(
             if (fail === "lost") throw new Error("socket hang up");
             const identifier = `ENG-${[...linear.issues.keys()].indexOf(id) + 1}`;
             return { id, identifier, url: `https://linear.app/acme/issue/${identifier}` };
+          },
+          changes: {
+            issueId: agentIssueId,
+            create: (request: AgentIssueCreate) => agent.createAgentIssue!(request),
+            update: (request: AgentIssueUpdate) => agent.updateAgentIssue!(request),
+            assign: (request: { teamIds: string[]; id: string }) =>
+              agent.assignAgentIssue!(request),
           },
         }
       : null;
@@ -299,14 +314,16 @@ async function fixture(
               arguments: after === null ? {} : { after },
             }),
           );
-        for (const [index, name] of (setup.toolCalls ?? []).entries())
+        for (const [index, call] of (setup.toolCalls ?? []).entries()) {
+          const [name, args] = typeof call === "string" ? [call, { q: call }] : call;
           toolAnswers.push(
             await helpers.request(row.runner_id, command.id, {
               requestId: `t${index}`,
               name,
-              arguments: { q: name },
+              arguments: args as never,
             }),
           );
+        }
         const result = {
           executionId: workspaceId(),
           commandId: command.id,
@@ -619,6 +636,7 @@ async function fixture(
     listed,
     answers,
     linear,
+    agent,
     submitted,
     commands,
     interrupted,
@@ -4214,6 +4232,8 @@ test("a Slack reply runs for ten minutes and carries tools only when a provider 
     {
       workspaceId: "W1",
       member: { userId: "ua", linkId: expect.any(String) },
+      slackUserId: "SADMIN",
+      mentionTs: mention.ts,
       thread: {
         teamId: "T0ONE",
         channelId: "C0ONE",
@@ -4447,4 +4467,113 @@ test("a start's draft run carries no Linear tools and no Linear-restricted notes
   expect(f.prompts.at(-1)!.prompt).not.toContain("canary-team-note");
   expect(f.sent.at(-1)!.tools).toBeUndefined();
   expect(draftOf(f).post.body).toMatchObject({ user: "SMEMBER" });
+});
+
+async function proposing(calls: [string, Record<string, unknown>][]) {
+  let provider: SlackToolProvider | null = null;
+  const f = await linkedWith({ tools: [(run) => provider?.(run) ?? null], toolCalls: calls }, [
+    ...["um", "SMEMBER"],
+  ] as ["um", string]);
+  provider = slackLinearTools({ store: f.db, tracker: () => f.agent, now: f.now });
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  await syncWorkspaceMember(f.db, { ...member, teamIds: ["team-eng"], now: f.now() });
+  f.agent.agentIssues.push({
+    ...{ id: "id-eng-7", identifier: "ENG-7", title: "Uploads", url: null, teamKey: "ENG" },
+    ...{ state: null, assignee: null, delegate: null, updatedAt: "2026-11-20", project: null },
+    ...{ parent: null, description: "", labels: [], relations: [], comments: [] },
+    teamIds: ["team-eng"],
+  });
+  const root = f.mention("SMEMBER", "file the follow-ups");
+  await f.deliver(root);
+  await f.settle();
+  const shown = f.posts("chat.postEphemeral").flatMap((post) => {
+    const blocks = post.body.blocks as { elements?: { value: string; text: { text: string } }[] }[];
+    const button = blocks?.[1]?.elements?.[0];
+    return button ? [{ post, id: button.value, label: button.text.text }] : [];
+  });
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  const click = (user: string, id: string, action = "paws_file") =>
+    f.click(user, message, { action, value: id }).then(f.settle);
+  const writes = () =>
+    f.agent.agentIssueCalls.filter((call) => !/^(read|list|search)/.test(call.operation));
+  const pick = (text: string) =>
+    shown.find((entry) => String(entry.post.body.text).includes(text))!.id;
+  return { f, shown, click, writes, pick };
+}
+
+test("a proposed change is shown only to its asker after the answer, and changes Linear once on their click", async () => {
+  const create = { team: "ENG", title: "Log uploads", description: "Log failed uploads." };
+  const { f, shown, click, writes, pick } = await proposing([
+    ["create_issue", create],
+    ["update_issue", { id: "ENG-7", title: "Uploads retry" }],
+    ["assign_issue", { id: "ENG-7" }],
+  ]);
+  const proposed = { text: "Proposed. <@SMEMBER> has to confirm it in Slack." };
+  expect(f.toolAnswers).toEqual([proposed, proposed, proposed]);
+  expect(lastPrompt(f)).toContain("only propose a change");
+  expect(writes()).toEqual([]);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  expect(shown.map((entry) => entry.label).sort()).toEqual(["Apply", "Apply", "Create issue"]);
+  for (const { post } of shown) {
+    expect(post.body).toMatchObject({ user: "SMEMBER" });
+    expect(String(post.body.text)).toContain("every member of your Linear workspace");
+  }
+  const [created, updated, assigned] = ["Log failed", "Title: Uploads", "delegate ENG-7"].map(pick);
+  await click("SADMIN", created!);
+  expect(writes()).toEqual([]);
+  await Promise.all([click("SMEMBER", created!), click("SMEMBER", created!)]);
+  await click("SMEMBER", created!);
+  expect(writes().map((call) => call.operation)).toEqual(["createAgentIssue"]);
+  const made = f.agent.agentIssues.find((issue) => issue.title === "Log uploads")!;
+  expect(made).toMatchObject({ delegate: "Paws", description: "Log failed uploads." });
+  expect(f.notice()).toContain("ENG-2 is filed from this thread and delegated to Paws");
+  const settings = async (like: string) =>
+    await sqlRows<{ key: string; value: string }>(
+      f.db,
+      "SELECT key, value FROM setting WHERE key LIKE ?",
+      [like],
+    );
+  const [tasks] = await settings("slack.task:%");
+  expect(JSON.parse(tasks!.value).map((task: { identifier: string }) => task.identifier)).toEqual([
+    "ENG-2",
+  ]);
+  expect((await settings(`slack.issue:${made.id}`)).length).toBe(1);
+  await click("SMEMBER", updated!, "paws_discard");
+  await click("SMEMBER", updated!);
+  expect(f.agent.agentIssues[0]!.title).toBe("Uploads");
+  f.advance(60 * 60_000);
+  await click("SMEMBER", assigned!);
+  expect(f.agent.agentIssues[0]!.delegate).toBeNull();
+  expect(writes().map((call) => call.operation)).toEqual(["createAgentIssue"]);
+});
+
+test("update and assign apply on the click, and the job refuses a team gone private or left", async () => {
+  const create = { team: "ENG", title: "Log uploads", description: "Log failed uploads." };
+  const { f, click, writes, pick } = await proposing([
+    ["update_issue", { id: "ENG-7", title: "Uploads retry" }],
+    ["assign_issue", { id: "ENG-7" }],
+    ["create_issue", create],
+  ]);
+  const [updated, assigned, created] = ["Title: Uploads", "delegate ENG-7", "Log failed"].map(pick);
+  expect(f.agent.agentIssues[0]).toMatchObject({ title: "Uploads", delegate: null });
+  await click("SMEMBER", updated!);
+  expect(f.agent.agentIssues[0]!.title).toBe("Uploads retry");
+  expect(f.notice()).toBe("ENG-7 is updated.");
+  await click("SMEMBER", assigned!);
+  expect(f.agent.agentIssues[0]!.delegate).toBe("Paws");
+  expect(
+    (await sqlRows(f.db, "SELECT key FROM setting WHERE key = 'slack.issue:id-eng-7'")).length,
+  ).toBe(1);
+  f.linear.teams.set("ENG", { ...f.linear.teams.get("ENG")!, private: true });
+  await click("SMEMBER", created!);
+  expect(f.notice()).toContain("Who can read that Linear team changed");
+  expect(writes().map((call) => call.operation)).toEqual(["updateAgentIssue", "assignAgentIssue"]);
+
+  const again = await proposing([["create_issue", create]]);
+  const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
+  again.f.advance(1);
+  await syncWorkspaceMember(again.f.db, { ...member, teamIds: [], now: again.f.now() });
+  await again.click("SMEMBER", again.shown[0]!.id);
+  expect(again.f.notice()).toContain("You aren't a member of that Linear team");
+  expect(again.writes()).toEqual([]);
 });
