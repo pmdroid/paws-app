@@ -3,8 +3,9 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import {
   RunnerCommandSchema,
   RunnerRepositorySchema,
+  RUNNER_SLACK_REPLY_ACCEPTED_MS,
+  RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES,
   RUNNER_SLACK_REPLY_MS,
-  RUNNER_SLACK_REPLY_PROMPT_BYTES,
   signRunnerCommand,
   verifyRunnerCommand,
   type RunnerCommand,
@@ -351,6 +352,44 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
     slack,
   };
   expect(RunnerCommandSchema.safeParse(helper).success).toBe(true);
+  const tools = [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }];
+  for (const accepted of [
+    { ...helper, tools },
+    {
+      ...helper,
+      expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_ACCEPTED_MS,
+      prompt: "x".repeat(RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES),
+    },
+  ])
+    expect(RunnerCommandSchema.safeParse(accepted).success).toBe(true);
+  for (const purpose of ["classify", "conversation"])
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...helper,
+        purpose,
+        slack: undefined,
+        expiresAt: common.issuedAt + 60_000,
+        ...(purpose === "conversation"
+          ? {
+              conversation: {
+                itemId: "item-acme",
+                runId: "run-acme",
+                resumeSessionId: "session-acme",
+              },
+            }
+          : {}),
+        tools,
+      }).success,
+    ).toBe(false);
+  expect(
+    RunnerCommandSchema.safeParse({
+      ...helper,
+      purpose: "classify",
+      slack: undefined,
+      expiresAt: common.issuedAt + 60_000,
+      prompt: "x".repeat(65_537),
+    }).success,
+  ).toBe(false);
   for (const refused of [
     { ...helper, slack: undefined },
     { ...helper, purpose: "classify", expiresAt: common.issuedAt + 60_000 },
@@ -361,8 +400,10 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
     { ...helper, slack: { ...slack, channelId: "D0PRIVATE" } },
     { ...helper, slack: { ...slack, threadTs: "../thread" } },
     { ...helper, slack: { ...slack, token: "xoxb-secret" } },
-    { ...helper, prompt: "x".repeat(RUNNER_SLACK_REPLY_PROMPT_BYTES + 1) },
-    { ...helper, expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_MS + 1 },
+    { ...helper, prompt: "x".repeat(RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES + 1) },
+    { ...helper, prompt: "é".repeat(RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES / 2 + 1) },
+    { ...helper, expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_ACCEPTED_MS + 1 },
+    { ...helper, tools: [{ name: "ask_team", description: "", inputSchema: {} }] },
   ])
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
   expect(

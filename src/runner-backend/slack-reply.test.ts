@@ -22,7 +22,7 @@ import {
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerPlacement } from "../runner-placement";
-import { createSlackReplies, SLACK_REPLY_ATTEMPTS } from "./slack-reply";
+import { createSlackReplies, SLACK_REPLY_ATTEMPTS, type SlackReplyRequest } from "./slack-reply";
 import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
 import { signInFixtureRunner } from "../../test/pglite-fixtures";
 
@@ -117,13 +117,18 @@ async function fixture(
     installGeneration: authority.generation,
     ...overrides,
   });
-  const ask = (overrides: Partial<RunnerSlackReplyScope> = {}, timeoutMs = 5_000) =>
+  const ask = (
+    overrides: Partial<RunnerSlackReplyScope> = {},
+    timeoutMs = 5_000,
+    tools?: SlackReplyRequest["tools"],
+  ) =>
     replies.reply({
       workspaceId: workspace.id,
       scope: scope(overrides),
       profile: { agent: "codex", model: null },
       prompt: "Thread so far:\nAda: what does the release checklist cover?",
       timeoutMs,
+      ...(tools ? { tools } : {}),
     });
   const result = (
     command: Pick<HelperCommand, "id" | "account">,
@@ -145,12 +150,12 @@ async function fixture(
     const { command } = await helpers.current(id);
     return command as Extract<RunnerCommand, { type: "helper" }>;
   };
-  async function sent(runnerId = "runner") {
+  async function sent(runnerId?: string) {
     for (let tick = 0; tick < 500; tick++) {
       const rows = await sqlRows<{ id: string }>(
         db,
-        "SELECT id FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND result IS NULL AND purpose='slack_reply'",
-        [runnerId],
+        "SELECT id FROM runner_helper WHERE runner_id LIKE ? AND ended_at IS NULL AND result IS NULL AND purpose='slack_reply'",
+        [runnerId ?? "%"],
       );
       if (rows[0]) return helperCommand(rows[0].id);
       await Bun.sleep(1);
@@ -454,4 +459,118 @@ test("a Slack reply's thread context is bounded", async () => {
   });
   expect(outcome.status).toBe("refused");
   expect(await sqlRows(f.db, "SELECT id FROM runner_helper")).toEqual([]);
+});
+
+const definitions = [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }];
+
+async function toolRequest(
+  f: Awaited<ReturnType<typeof fixture>>,
+  runnerId: string,
+  id: string,
+  body: { requestId: string; name: string; arguments: Record<string, string> },
+) {
+  const response = await f.helpers.fetch(
+    new Request(`http://paws/v1/helper-commands/${id}/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    runnerId,
+  );
+  return { status: response!.status, body: (await response!.json()) as Record<string, unknown> };
+}
+
+test("a Slack reply's tool requests reach its handler only while it waits", async () => {
+  const f = await fixture({ runners: ["runner", "other"] });
+  const calls: string[] = [];
+  const reply = f.ask({}, 5_000, {
+    definitions,
+    call: async (name, args) => {
+      calls.push(`${name}:${String(args.id)}`);
+      return { text: `Issue ${String(args.id)} is open.` };
+    },
+  });
+  const command = await f.sent();
+  expect(command.tools).toEqual(definitions);
+  const ask = (requestId: string, name = "linear_issue", runnerId = command.runnerId) =>
+    toolRequest(f, runnerId, command.id, { requestId, name, arguments: { id: requestId } });
+
+  expect(await ask("r1")).toEqual({ status: 200, body: { text: "Issue r1 is open." } });
+  expect(await ask("r1")).toEqual({ status: 200, body: { text: "Issue r1 is open." } });
+  expect(calls).toEqual(["linear_issue:r1"]);
+  const otherRunner = command.runnerId === "runner" ? "other" : "runner";
+  for (const refused of [
+    await ask("r2", "linear_team"),
+    await ask("r2", "linear_issue", otherRunner),
+  ])
+    expect(refused).toEqual({ status: 409, body: expect.objectContaining({ code: "fenced" }) });
+  for (let i = 2; i <= 64; i++) await ask(`r${i}`);
+  expect(calls).toHaveLength(64);
+  expect(await ask("r65")).toEqual({
+    status: 200,
+    body: { text: "This run has used all its tool calls.", isError: true },
+  });
+  expect(calls).toHaveLength(64);
+
+  await f.helpers.acknowledge(command.runnerId, command.id);
+  await f.helpers.submit(command.runnerId, f.result(command));
+  expect((await reply).status).toBe("answered");
+  expect((await ask("r66")).status).toBe(409);
+  expect(calls).toHaveLength(64);
+});
+
+test("a tool request with no handler gets 409 and a failed handler an error answer", async () => {
+  const f = await fixture();
+  const { command } = await f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "slack-unhandled",
+    purpose: "slack_reply",
+    profile: { agent: "codex", model: null },
+    prompt: "Ada: what is open?",
+    slack: f.scope({ requestId: "slack-unhandled" }),
+    tools: definitions,
+  });
+  const body = { requestId: "r1", name: "linear_issue", arguments: {} };
+  expect(await toolRequest(f, "runner", command.id, body)).toEqual({
+    status: 409,
+    body: expect.objectContaining({ code: "fenced" }),
+  });
+  const remove = f.helpers.handle(command.id, () => Promise.reject(new Error("Linear is down")));
+  expect((await toolRequest(f, "runner", command.id, body)).body).toEqual({
+    text: "Paws could not answer that tool.",
+    isError: true,
+  });
+  remove();
+  f.helpers.handle(command.id, async () => ({ text: "é".repeat(10_000) }));
+  const long = await toolRequest(f, "runner", command.id, { ...body, requestId: "r2" });
+  expect(Buffer.byteLength(long.body.text as string)).toBe(16_384);
+});
+
+test("a Slack reply removes its tool handler when it fails or times out", async () => {
+  const f = await fixture();
+  const events: string[] = [];
+  const handle = f.helpers.handle;
+  f.helpers.handle = (id, handler) => {
+    events.push(`add:${id}`);
+    const remove = handle(id, handler);
+    return () => {
+      events.push(`remove:${id}`);
+      remove();
+    };
+  };
+  const tools = { definitions, call: async () => ({ text: "open" }) };
+  const reply = f.ask({}, 5_000, tools);
+  const command = await f.sent();
+  expect(events).toEqual([`add:${command.id}`]);
+  await f.helpers.acknowledge("runner", command.id);
+  await f.helpers.submit(
+    "runner",
+    f.result(command, { errorMessage: "agent crashed", agentExited: false }),
+  );
+  expect((await reply).status).toBe("failed");
+  expect(events).toEqual([`add:${command.id}`, `remove:${command.id}`]);
+  events.length = 0;
+  expect(await f.ask({}, 30, tools)).toEqual({ status: "timed_out" });
+  expect(events).toHaveLength(2);
+  expect(events[1]).toBe(events[0]!.replace("add:", "remove:"));
 });

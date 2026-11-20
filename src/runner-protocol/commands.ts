@@ -352,8 +352,9 @@ export const RunnerCommandSchema = z
         "slack_reply",
       ]),
       profile: RunnerProfileSchema,
-      prompt: z.string().min(1).max(65_536),
+      prompt: z.string().min(1).max(393_216),
       account: work.account,
+      tools: HostToolDefinitionsSchema.optional(),
       conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
       slack: RunnerSlackReplyScopeSchema.optional(),
     }),
@@ -437,7 +438,20 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
-      command.expiresAt - command.issuedAt <= runnerHelperLifetime(command.purpose),
+      command.expiresAt - command.issuedAt <= runnerHelperAcceptedLifetime(command.purpose),
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      (command.purpose === "slack_reply"
+        ? Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES
+        : command.prompt.length <= 65_536),
+    { path: ["prompt"], message: "prompt is too long" },
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" || command.purpose === "slack_reply" || command.tools === undefined,
+    { path: ["tools"], message: "only slack_reply carries tools" },
   )
   .refine(
     (command) =>
@@ -447,22 +461,31 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
-      ((command.purpose === "slack_reply") === (command.slack !== undefined) &&
-        (command.purpose !== "slack_reply" ||
-          Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_PROMPT_BYTES)),
+      (command.purpose === "slack_reply") === (command.slack !== undefined),
   );
 
-export function runnerHelperLifetime(
-  purpose: "classify" | "select_repository" | "finding_groups" | "conversation" | "slack_reply",
-): number {
+type HelperPurpose =
+  | "classify"
+  | "select_repository"
+  | "finding_groups"
+  | "conversation"
+  | "slack_reply";
+
+export function runnerHelperLifetime(purpose: HelperPurpose): number {
   if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
   if (purpose === "slack_reply") return RUNNER_SLACK_REPLY_MS;
   return purpose === "finding_groups" ? 600_000 : 60_000;
 }
 
+export function runnerHelperAcceptedLifetime(purpose: HelperPurpose): number {
+  return purpose === "slack_reply" ? RUNNER_SLACK_REPLY_ACCEPTED_MS : runnerHelperLifetime(purpose);
+}
+
 export const RUNNER_CONVERSATION_MS = 900_000;
 export const RUNNER_SLACK_REPLY_MS = 180_000;
 export const RUNNER_SLACK_REPLY_PROMPT_BYTES = 32_768;
+export const RUNNER_SLACK_REPLY_ACCEPTED_MS = 600_000;
+export const RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES = 393_216;
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,
