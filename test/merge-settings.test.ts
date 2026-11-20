@@ -10,6 +10,7 @@ import {
   parseCommentWait,
   parseConfigToml,
   parallelFiles,
+  conflictChecks,
   readMergeSettings,
   highRiskPaths,
   repositoryPackages,
@@ -332,6 +333,7 @@ describe("Merging settings API", () => {
       conflictProneAfter: 2,
       conflictProneDays: 7,
       parallelFiles: [],
+      conflictChecks: [],
       repositories: {},
       projects: {},
       sessionDone: "pull_request",
@@ -472,6 +474,7 @@ describe("Merging settings API", () => {
       conflictProneAfter: 2,
       conflictProneDays: 7,
       parallelFiles: [],
+      conflictChecks: [],
       projects: {},
       repositories: { "acme/platform": { packages: ["apps/*"] } },
       sessionDone: "pull_request",
@@ -974,6 +977,63 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
   }
   await put({ conflictProneAfter: 2, conflictProneDays: 7 });
   expect(readFileSync(options.configPath, "utf8")).not.toContain("conflict_prone");
+});
+
+test("conflict_checks round-trips, survives other saves, and rejects invalid check ids", async () => {
+  const { options, audits } = fixture();
+  const body = { default: { order: "queue", mainMoved: "ci" } };
+  const put = (extra: Record<string, unknown>, opts: MergeSettingsOptions = options) =>
+    handleMergeSettingsRequest(request("PUT", { ...body, ...extra }), opts);
+  const checks = (ids: string[]) => ({ conflictChecks: [{ repository: "acme/platform", ids }] });
+  const saved = await put(checks(["lint", "shared/lint"]));
+  expect(saved?.status).toBe(200);
+  expect(((await saved!.json()) as { conflictChecks: unknown }).conflictChecks).toEqual([
+    { repository: "acme/platform", ids: ["lint", "shared/lint"] },
+  ]);
+  expect(readFileSync(options.configPath, "utf8")).toContain(
+    '[merge.repositories."acme/platform"]\npackages = []\nconflict_checks = ["lint", "shared/lint"]',
+  );
+  const settings = readMergeSettings(loadConfigFile(options.configPath));
+  expect(conflictChecks(settings, "Acme/Platform")).toEqual(["lint", "shared/lint"]);
+  expect(conflictChecks(settings, "acme/other")).toEqual([]);
+  expect(audits.map(([, text]) => text)).toEqual([
+    "Checks after a conflict fix: acme/platform all → lint, shared/lint",
+  ]);
+  await put({ parallel: 2 });
+  const read = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+    conflictChecks: unknown;
+  };
+  expect(read.conflictChecks).toEqual([
+    { repository: "acme/platform", ids: ["lint", "shared/lint"] },
+  ]);
+  expect((await put(checks(["lint"]), { ...options, role: "member" }))?.status).toBe(403);
+  for (const ids of [
+    ["Lint"],
+    ["lint", "lint"],
+    Array.from({ length: 51 }, (_, index) => `check${index}`),
+    ["a".repeat(201)],
+  ]) {
+    const refused = await put(checks(ids));
+    expect(refused?.status).toBe(400);
+    expect(((await refused!.json()) as { error: string }).error).toStartWith(
+      "conflictChecks.0.ids",
+    );
+  }
+  const twice = await put(checks(["lint", "lint"]));
+  expect(((await twice!.json()) as { error: string }).error).toBe(
+    "conflictChecks.0.ids lists a check twice",
+  );
+  expect(() =>
+    parseConfigToml('[merge.repositories."acme/web"]\nconflict_checks = ["Lint"]\n'),
+  ).toThrow("conflict_checks");
+  expect(
+    conflictChecks(readMergeSettings(loadConfigFile(options.configPath)), "acme/platform"),
+  ).toEqual(["lint", "shared/lint"]);
+  expect((await put(checks([])))?.status).toBe(200);
+  expect(readFileSync(options.configPath, "utf8")).not.toContain("conflict_checks");
+  expect(audits.at(-1)?.[1]).toBe(
+    "Checks after a conflict fix: acme/platform lint, shared/lint → all",
+  );
 });
 
 test("a failed display notification does not undo a settings write or its audit", async () => {
