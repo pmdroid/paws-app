@@ -45,6 +45,23 @@ export async function useSettingsStore(
   };
 }
 
+export function useMemorySettings(configPath: string, text?: string): { release(): void } {
+  let stored = text ?? null;
+  const store: SettingsStore = {
+    read: async () => stored,
+    update: async (change) => {
+      stored = change(stored);
+    },
+  };
+  const snapshot: Snapshot = { store, stored, ticket: ++tickets };
+  snapshots.set(configPath, snapshot);
+  return {
+    release() {
+      if (snapshots.get(configPath) === snapshot) snapshots.delete(configPath);
+    },
+  };
+}
+
 export function readConfigText(configPath: string): string {
   const file = readFileText(configPath);
   const stored = storedSettings(configPath);
