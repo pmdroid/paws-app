@@ -1,4 +1,16 @@
-import { aliasedTable, and, asc, desc, eq, gt, isNotNull, lte, or, sql } from "drizzle-orm";
+import {
+  aliasedTable,
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { jsonText } from "./json-text";
 
@@ -100,7 +112,7 @@ export function repositoryKey(owner: string, repo: string): string {
 }
 
 export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
-  const { rebaseReturn, remoteMergeFact, workItem, workItemRepository } = q.t;
+  const { candidateRisk, rebaseReturn, remoteMergeFact, workItem, workItemRepository } = q.t;
   const since = now - HOT_FILE_WINDOW_MS;
   const returns = yield* q.all(
     q.orm
@@ -109,29 +121,66 @@ export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
         identifier: workItem.linearIdentifier,
         owner: workItemRepository.owner,
         repo: workItemRepository.repo,
-        candidate: rebaseReturn.candidate,
         files: jsonText(q, rebaseReturn.files),
+        base: candidateRisk.baseSha,
+        paths: jsonText(q, candidateRisk.changedPaths),
         at: rebaseReturn.recordedAt,
       })
       .from(rebaseReturn)
       .innerJoin(workItem, eq(workItem.id, rebaseReturn.itemId))
       .innerJoin(workItemRepository, eq(workItemRepository.itemId, rebaseReturn.itemId))
-      .where(gt(rebaseReturn.recordedAt, since))
+      .leftJoin(
+        candidateRisk,
+        and(
+          eq(candidateRisk.itemId, rebaseReturn.itemId),
+          eq(candidateRisk.headSha, rebaseReturn.candidate),
+        ),
+      )
+      .where(
+        and(
+          gt(rebaseReturn.recordedAt, since),
+          inArray(rebaseReturn.reason, ["merge", "github_queue"]),
+        ),
+      )
       .orderBy(asc(rebaseReturn.recordedAt), asc(rebaseReturn.jobId)),
   );
   if (!returns.length) return [];
-  // Each merge counts the candidate it merged: the last one published before its confirmation.
-  const confirmed = yield* q.all(
-    q.orm
-      .select({
-        itemId: remoteMergeFact.itemId,
-        owner: remoteMergeFact.repositoryOwner,
-        repo: remoteMergeFact.repositoryName,
-        at: remoteMergeFact.confirmedAt,
-      })
-      .from(remoteMergeFact)
-      .where(gt(remoteMergeFact.confirmedAt, since)),
-  );
+  const shas = [
+    ...new Set(returns.flatMap((row) => (row.files === null && row.base ? [row.base] : []))),
+  ];
+  const bases = shas.length
+    ? yield* q.all(
+        q.orm
+          .select({
+            owner: remoteMergeFact.repositoryOwner,
+            repo: remoteMergeFact.repositoryName,
+            sha: remoteMergeFact.mergeSha,
+            at: remoteMergeFact.confirmedAt,
+          })
+          .from(remoteMergeFact)
+          .where(inArray(remoteMergeFact.mergeSha, shas)),
+      )
+    : [];
+  const baseAt = (key: string, sha: string | null) =>
+    bases.find((base) => base.sha === sha && repositoryKey(base.owner, base.repo) === key)?.at;
+  const times = returns.flatMap((row) => {
+    const at =
+      row.files === null ? baseAt(repositoryKey(row.owner, row.repo), row.base) : undefined;
+    return at === undefined ? [] : [at];
+  });
+  const confirmed = times.length
+    ? yield* q.all(
+        q.orm
+          .select({
+            itemId: remoteMergeFact.itemId,
+            owner: remoteMergeFact.repositoryOwner,
+            repo: remoteMergeFact.repositoryName,
+            at: remoteMergeFact.confirmedAt,
+          })
+          .from(remoteMergeFact)
+          .where(gt(remoteMergeFact.confirmedAt, Math.min(...times))),
+      )
+    : [];
   const merges = [];
   for (const merge of confirmed)
     merges.push({ ...merge, paths: yield* candidatePathsAtSteps(q, merge.itemId, null, merge.at) });
@@ -141,19 +190,23 @@ export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
     const key = repositoryKey(row.owner, row.repo);
     let files = row.files === null ? null : (JSON.parse(row.files) as string[]);
     if (files === null) {
+      const based = baseAt(key, row.base);
       const merged = new Set(
         merges
           .filter(
             (merge) =>
+              based !== undefined &&
               merge.itemId !== row.itemId &&
+              merge.at > based &&
               merge.at <= at &&
               repositoryKey(merge.owner, merge.repo) === key,
           )
           .flatMap((merge) => merge.paths),
       );
-      files = (yield* candidatePathsAtSteps(q, row.itemId, row.candidate, at)).filter((path) =>
-        merged.has(path),
-      );
+      files =
+        based === undefined || row.paths === null
+          ? []
+          : (JSON.parse(row.paths) as string[]).filter((path) => merged.has(path));
     }
     for (const path of new Set(files)) {
       const id = `${key}\0${path}`;
@@ -178,11 +231,11 @@ export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
 }
 
 /**
- * Files that caused merge-queue conflicts in the window before `now`, from conflict restarts,
- * most conflicts first. A restart records its conflicting files when the lane's rebase named
- * them. A restart without them, such as a GitHub merge queue removal, counts the files the
- * candidate it returned shares with pull requests that merged into the same repository before
- * it.
+ * Files that caused conflicts with main in the window before `now`, from merge and GitHub
+ * merge queue restarts, most conflicts first. A restart records its conflicting files when the
+ * lane's rebase named them. A restart without them counts the files the candidate it returned
+ * shares with other pull requests that merged into the same repository after the candidate's
+ * base merged and no later than the restart.
  */
 export async function hotFiles(store: Db, now: number): Promise<HotFile[]> {
   return await store.run((q) => hotFilesSteps(q, now));

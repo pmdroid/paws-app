@@ -17,12 +17,19 @@ afterEach(async () => {
   for (const handle of open.splice(0)) await handle.close();
 });
 
-const save = (db: Db, itemId: string, head: string, paths: string[], recordedAt: number) =>
+const save = (
+  db: Db,
+  itemId: string,
+  head: string,
+  paths: string[],
+  recordedAt: number,
+  base = "base",
+) =>
   db.run((q) =>
     saveCandidateRiskSteps(q, {
       itemId,
       head,
-      base: "base",
+      base,
       tier: "normal",
       paths: [],
       changedPaths: paths,
@@ -81,79 +88,111 @@ describePglite((connect) => {
     );
   });
 
-  test("hot files count named conflicts, and the files a returned candidate shared with merges", async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 30 * DAY;
+
+  async function items(db: Db, ids: string[], repo = "Paws") {
+    for (const id of ids) await insertWorkItem(db, id);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workItemRepository).values(
+        ids.map((itemId) => ({
+          itemId,
+          owner: "Acme",
+          repo,
+          remoteUrl: `https://github.com/acme/${repo.toLowerCase()}.git`,
+        })),
+      ),
+    );
+  }
+
+  async function merged(db: Db, itemId: string, at: number, paths: string[], repo = "paws") {
+    await save(db, itemId, `m-${itemId}`, paths, at - 1);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.remoteMergeFact).values({
+        itemId,
+        repositoryOwner: "acme",
+        repositoryName: repo,
+        pullNumber: 1,
+        mergeSha: `sha-${itemId}`,
+        confirmedAt: at,
+      }),
+    );
+  }
+
+  let job = 0;
+  const returned = (
+    db: Db,
+    itemId: string,
+    reason: string,
+    candidate: string | null,
+    files: string[] | null,
+    recordedAt = NOW - 2_000,
+  ) => {
+    job += 1;
+    return seed(db, (q) =>
+      q.orm.insert(q.t.rebaseReturn).values({
+        jobId: job,
+        activationId: job,
+        itemId,
+        candidate,
+        reason,
+        files: files === null ? null : json(db, files),
+        recordedAt,
+      }),
+    );
+  };
+
+  test("hot files count recorded files of merge and GitHub queue returns, not push or linear", async () => {
     const handle = await connect();
     open.push(handle);
     const { db } = handle;
-    for (const id of ["ENG-1", "ENG-2", "ENG-3"]) await insertWorkItem(db, id);
-    await seed(
-      db,
-      (q) =>
-        q.orm.insert(q.t.workItemRepository).values(
-          ["ENG-1", "ENG-2", "ENG-3"].map((itemId) => ({
-            itemId,
-            owner: "Acme",
-            repo: "Paws",
-            remoteUrl: "https://github.com/acme/paws.git",
-          })),
-        ),
-      (q) =>
-        q.orm.insert(q.t.remoteMergeFact).values({
-          itemId: "ENG-3",
-          repositoryOwner: "acme",
-          repositoryName: "paws",
-          pullNumber: 1,
-          confirmedAt: 1_000,
-        }),
-      (q) =>
-        q.orm.insert(q.t.rebaseReturn).values([
-          {
-            jobId: 1,
-            activationId: 1,
-            itemId: "ENG-1",
-            candidate: "a1",
-            reason: "merge",
-            files: json(db, ["src/a.ts", "src/b.ts"]),
-            recordedAt: 900,
-          },
-          {
-            jobId: 2,
-            activationId: 2,
-            itemId: "ENG-2",
-            candidate: "b1",
-            reason: "github_queue",
-            files: null,
-            recordedAt: 1_100,
-          },
-          {
-            jobId: 3,
-            activationId: 3,
-            itemId: "ENG-2",
-            candidate: null,
-            reason: "merge",
-            files: null,
-            recordedAt: 1,
-          },
-        ]),
-    );
-    await save(db, "ENG-3", "m1", ["src/a.ts", "src/c.ts"], 800);
-    await save(db, "ENG-3", "m2", ["src/late.ts"], 1_050);
-    await save(db, "ENG-2", "b1", ["src/a.ts", "src/c.ts", "src/d.ts"], 700);
+    await items(db, ["ENG-1", "ENG-2", "ENG-3"]);
+    await returned(db, "ENG-1", "push", "a1", ["src/push.ts"]);
+    await returned(db, "ENG-1", "linear", "a1", ["src/linear.ts"]);
+    await returned(db, "ENG-2", "merge", "b1", ["src/a.ts", "src/b.ts"]);
+    await returned(db, "ENG-3", "github_queue", "c1", ["src/a.ts"]);
+    await returned(db, "ENG-3", "merge", "c1", ["src/old.ts"], NOW - 8 * DAY);
 
-    await db.run((q) =>
-      q.exec(
-        q.orm
-          .update(q.t.candidateRisk)
-          .set({ classifiedAt: 3_000 })
-          .where(eq(q.t.candidateRisk.headSha, "m1")),
-      ),
-    );
-
-    expect(await db.run((q) => hotFilesSteps(q, 2_000))).toEqual([
-      { repository: "Acme/Paws", path: "src/a.ts", conflicts: 2, items: ["ENG-1", "ENG-2"] },
-      { repository: "Acme/Paws", path: "src/b.ts", conflicts: 1, items: ["ENG-1"] },
-      { repository: "Acme/Paws", path: "src/c.ts", conflicts: 1, items: ["ENG-2"] },
+    expect(await db.run((q) => hotFilesSteps(q, NOW))).toEqual([
+      { repository: "Acme/Paws", path: "src/a.ts", conflicts: 2, items: ["ENG-2", "ENG-3"] },
+      { repository: "Acme/Paws", path: "src/b.ts", conflicts: 1, items: ["ENG-2"] },
     ]);
-    expect(await db.run((q) => hotFilesSteps(q, 900 + 7 * 24 * 60 * 60 * 1000 + 200))).toEqual([]);
+  });
+
+  test("a return without files counts the paths other items merged after its candidate's base", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await items(db, ["OLD", "BASE", "EARLY", "MID", "LATE", "R", "Q", "N"]);
+    await items(db, ["OTHER"], "Other");
+    const all = ["old", "base", "early", "mid", "late", "other", "self"].map((n) => `src/${n}.ts`);
+    await merged(db, "OLD", NOW - 9 * DAY, ["src/old.ts"]);
+    await merged(db, "BASE", NOW - 8 * DAY, ["src/base.ts"]);
+    await merged(db, "EARLY", NOW - 7.5 * DAY, ["src/early.ts"]);
+    await merged(db, "MID", NOW - DAY, ["src/mid.ts"]);
+    await merged(db, "LATE", NOW - 1_000, ["src/late.ts"]);
+    await merged(db, "OTHER", NOW - DAY, ["src/other.ts"], "other");
+    await save(db, "R", "r1", all, NOW - 3 * DAY, "sha-BASE");
+    await merged(db, "R", NOW - 2 * DAY, ["src/self.ts"]);
+    await save(db, "Q", "q1", ["src/mid.ts", "src/old.ts"], NOW - 3 * DAY, "sha-BASE");
+    await save(db, "N", "older", all, NOW - 4 * DAY, "sha-BASE");
+    await save(db, "N", "nobase", all, NOW - 3 * DAY, "sha-unknown");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.candidateRisk).values({
+        itemId: "N",
+        headSha: "nopaths",
+        baseSha: "sha-BASE",
+        recordedAt: NOW - 3 * DAY,
+      }),
+    );
+    await returned(db, "R", "merge", "r1", null);
+    await returned(db, "Q", "github_queue", "q1", null);
+    for (const candidate of [null, "missing", "nopaths", "nobase"])
+      await returned(db, "N", "merge", candidate, null);
+
+    expect(await db.run((q) => hotFilesSteps(q, NOW))).toEqual([
+      { repository: "Acme/Paws", path: "src/mid.ts", conflicts: 2, items: ["R", "Q"] },
+      { repository: "Acme/Paws", path: "src/early.ts", conflicts: 1, items: ["R"] },
+    ]);
   });
 });

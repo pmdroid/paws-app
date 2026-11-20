@@ -61,6 +61,19 @@ async function conflicted(
   });
 }
 
+async function baseMerged(db: Db, at: number): Promise<void> {
+  await item(db, "base", null);
+  await recordConfirmedRemoteMerge(db, {
+    itemId: "base",
+    repositoryOwner: "owner",
+    repositoryName: "repo",
+    pullNumber: 2,
+    pullUrl: null,
+    mergeSha: "base",
+    confirmedAt: at,
+  });
+}
+
 async function setState(db: Db, id: string, state: string): Promise<void> {
   await exec(db, sql`UPDATE work_item SET state=${state} WHERE id=${id}`);
   await exec(db, sql`UPDATE job SET status='done' WHERE payload->>'itemId'=${id}`);
@@ -333,6 +346,7 @@ test("hot files come from conflict restarts in the last 7 days", async () => {
 test("a conflict restart without files counts the files a merge before it shared", async () => {
   const { db, close } = await tempStore();
   try {
+    await baseMerged(db, NOW - 180_000);
     await item(db, "merged", [PROVIDER, "src/a.ts"]);
     await recordConfirmedRemoteMerge(db, {
       itemId: "merged",
@@ -363,6 +377,7 @@ test("a conflict restart without files counts the files a merge before it shared
 test("a later candidate does not change the files of an earlier conflict", async () => {
   const { db, close } = await tempStore();
   try {
+    await baseMerged(db, NOW - 180_000);
     await item(db, "merged", [PROVIDER, "src/a.ts", "src/c.ts"], NOW - 200_000);
     await recordConfirmedRemoteMerge(db, {
       itemId: "merged",
