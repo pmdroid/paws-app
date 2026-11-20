@@ -58,6 +58,7 @@ import {
   createLinearFileTransfer,
   LinearRateLimitError,
   type AcceptedLinearEvent,
+  type ActionDetails,
   type SessionUpdate,
 } from "../src/linear";
 import { createEvidenceStore } from "../src/evidence";
@@ -3496,6 +3497,7 @@ async function runCiFix(options: {
   findings?: (round: number) => Finding[];
   publicUrl?: string;
   config?: string;
+  liveLineMs?: number;
   implement?: (
     run: number,
     worktree: string,
@@ -3509,6 +3511,7 @@ async function runCiFix(options: {
   lines: string[];
   bodies: string[];
   activities: { kind: string; body: string }[];
+  live: ActionDetails[];
   questions: string[];
   prompts: string[];
   /** Each pull request body Paws published, in order. */
@@ -3616,6 +3619,7 @@ async function runCiFix(options: {
     tracker,
     linearTaskModes: options.linearTaskModes,
     ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+    ...(options.liveLineMs ? { liveLineMs: options.liveLineMs } : {}),
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     githubForRepository: () => ({
       appId: "1",
@@ -3731,6 +3735,9 @@ async function runCiFix(options: {
       lines: (await queuedSummary()).filter((body) => body.startsWith("CI: ")),
       bodies: tracker.progress.map((update) => update.body),
       activities: tracker.progress.map(({ kind, body }) => ({ kind, body })),
+      live: tracker.progress.flatMap((update) =>
+        update.ephemeral && update.action ? [update.action] : [],
+      ),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       pullBodies: github.opened.map((pull) => pull.body),
@@ -5214,6 +5221,73 @@ test("a PR session stays quiet through a CI fix and rebase re-verification until
     result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
     result.detail,
   ).toEqual([responses[1]!]);
+}, 120_000);
+
+function toolCall(kind: string, file: string, delayMs?: number): FakeScript["steps"][number] {
+  return {
+    type: "update",
+    update: {
+      sessionUpdate: "tool_call",
+      toolCallId: `${kind}-${file}-${delayMs ?? 0}`,
+      title: "private-title",
+      kind,
+      locations: [{ path: `/home/x/work/repo/${file}` }],
+      rawInput: { command: "private-input" },
+    },
+    ...(delayMs ? { delayMs } : {}),
+  };
+}
+
+const LIVE_LINE_MS = 1_500;
+
+test("a work run shows the latest tool call as one live line per window and skips a repeat", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    liveLineMs: LIVE_LINE_MS,
+    implement: (_run, worktree) => [
+      ...Array.from({ length: 9 }, (_, index) => toolCall("read", `src/a/file${index}.ts`)),
+      toolCall("read", "src/slack/threads.ts", LIVE_LINE_MS * 2),
+      toolCall("edit", "src/slack/threads.ts", LIVE_LINE_MS * 2),
+      toolCall("edit", "src/slack/threads.ts", LIVE_LINE_MS * 2),
+      writeOk(worktree, "ok\n"),
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.prompts[0]).toContain(
+    "Call post_update when a step of your plan completes or changes, when you find something that matters (a cause, a constraint, a failing or passing check), and when you are blocked.",
+  );
+  expect(result.live, result.detail).toEqual([
+    { action: "Reading", parameter: "slack/threads.ts" },
+    { action: "Editing", parameter: "slack/threads.ts" },
+  ]);
+  expect(JSON.stringify(result.activities)).not.toContain("private");
+}, 120_000);
+
+test("tool calls after the pull request response post no live line", async () => {
+  const result = await runCiFix({
+    failRounds: 1,
+    liveLineMs: LIVE_LINE_MS,
+    implement: (run, worktree) => [
+      toolCall(run === 1 ? "read" : "edit", `src/round${run}.ts`, LIVE_LINE_MS * 2),
+      toolCall("execute", `src/round${run}.ts`, LIVE_LINE_MS * 2),
+      writeOk(worktree, `ok-${run}\n`),
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.live, result.detail).toEqual([
+    { action: "Reading", parameter: "src/round1.ts" },
+    { action: "Running", parameter: "a command" },
+  ]);
+  const opened = result.activities.findIndex(
+    (activity) => activity.kind === "response" && activity.body.includes("Opened"),
+  );
+  expect(
+    result.activities.slice(opened + 1).filter((activity) => activity.kind === "action"),
+    result.detail,
+  ).toEqual([]);
 }, 120_000);
 
 const SUGGESTED_P2: Finding = {

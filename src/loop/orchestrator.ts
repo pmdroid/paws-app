@@ -486,6 +486,7 @@ import {
 } from "../scheduler";
 import type {
   AcceptedLinearEvent,
+  ActionDetails,
   DependencyEdge,
   EpicSnapshot,
   ProgressUpdate,
@@ -647,6 +648,7 @@ import {
   createAcpActivityReporter,
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
+  LIVE_LINE_MS,
   publicToolText,
   type ActivityOrigin,
 } from "./activity";
@@ -916,6 +918,7 @@ export type OrchestratorOptions = {
     limits?: () => StageLimits;
   };
   retryBaseMs?: number;
+  liveLineMs?: number;
   placementPollMs?: number;
   random?: () => number;
   /** Runs publication Git (push, fetch, rebase) in place of the owned Git. Tests pass a wrapper. */
@@ -3909,6 +3912,26 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
+    let liveTool: ActionDetails | null = null;
+    let liveText = "";
+    let liveTimer: ReturnType<typeof setTimeout> | undefined;
+    const postLiveLine = () => {
+      liveTimer = undefined;
+      const details = liveTool;
+      liveTool = null;
+      if (!details || controller.signal.aborted) return;
+      const body = `${details.action} ${details.parameter}`;
+      if (body === liveText) return;
+      liveText = body;
+      void this.postWhileReporting(
+        item,
+        "action",
+        body,
+        this.activityKey(`${run.id}:live`),
+        { ephemeral: true, action: details },
+        () => (posted = true),
+      ).then((allowed) => (allowed ? this.flush() : undefined));
+    };
     const activity = createAcpActivityReporter(
       (update, origin) => {
         if (controller.signal.aborted || update.kind === "elicitation") return;
@@ -3923,6 +3946,12 @@ export class Orchestrator {
       },
       (steps) => {
         if (!controller.signal.aborted) this.reportPlan(item, sessionProgress, steps);
+      },
+      (details) => {
+        if (controller.signal.aborted) return;
+        liveTool = details;
+        liveTimer ??= setTimeout(postLiveLine, this.options.liveLineMs ?? LIVE_LINE_MS);
+        liveTimer.unref?.();
       },
     );
     let deferred = false;
@@ -4313,6 +4342,7 @@ export class Orchestrator {
     } finally {
       activity.flush();
       clearTimeout(first);
+      clearTimeout(liveTimer);
       clearInterval(keepAlive);
       await this.releaseAskedRun(run.id);
       if (

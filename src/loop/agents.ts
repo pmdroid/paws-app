@@ -127,7 +127,7 @@ export function closeoutFocusPrompt(focus: CloseoutFocus, conflictRun?: readonly
 }
 
 export const POST_UPDATE_PROMPT =
-  "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";
+  "Call post_update when a step of your plan completes or changes, when you find something that matters (a cause, a constraint, a failing or passing check), and when you are blocked. Say what you found and what you do next. Combine changes that happen close together.";
 
 export const REPLY_PROMPT =
   "When a person in Linear asks you something or sends a follow-up, answer them with reply; it posts in the conversation where they wrote. Use post_update only for progress.";
