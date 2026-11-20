@@ -11,6 +11,7 @@ import {
 import { journalCaught } from "../journal";
 import {
   RUNNER_SLACK_REPLY_PROMPT_BYTES,
+  type HostToolDefinitions,
   type RunnerCodingAgent,
   type RunnerHelperResult,
   type RunnerSlackReplyScope,
@@ -21,7 +22,12 @@ import {
   type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
-import { HelperFencedError, RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
+import {
+  HelperFencedError,
+  RunnerHelperBusyError,
+  type HelperToolHandler,
+  type RunnerHelpers,
+} from "../runner-helpers";
 
 export const SLACK_REPLY_ATTEMPTS = 2;
 export const SLACK_REPLY_TEXT_LIMIT = 12_000;
@@ -33,6 +39,7 @@ export type SlackReplyRequest = {
   prompt: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  tools?: { definitions: HostToolDefinitions; call: HelperToolHandler };
 };
 
 export type SlackReplyOutcome =
@@ -102,6 +109,7 @@ export function createSlackReplies(options: {
             profile: request.profile,
             prompt: request.prompt,
             slack: request.scope,
+            ...(request.tools ? { tools: request.tools.definitions } : {}),
             ...(candidate.account
               ? {
                   account: {
@@ -168,6 +176,10 @@ export function createSlackReplies(options: {
         if (!sent.command) return sent.busy && attempt === 0 ? { status: "busy" } : last;
         const { command } = sent;
         excluded.add(command.runnerId);
+        const tools = request.tools;
+        const unhandle = tools
+          ? helpers.handle(command.id, (name, args) => tools.call(name, args))
+          : () => undefined;
         let settled: RunnerHelperResult | "timeout" | "error" = "error";
         try {
           const deadline = Math.min(command.expiresAt, now() + (request.timeoutMs ?? Infinity));
@@ -213,6 +225,7 @@ export function createSlackReplies(options: {
           };
           if (result.cancelled || !result.agentExited) return last;
         } finally {
+          unhandle();
           await store
             .transaction((q) =>
               options.placement.finishedSteps(q, {

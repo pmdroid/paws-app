@@ -28,6 +28,9 @@ import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
+  HOST_TOOL_LIMITS,
+  HostToolArgumentsSchema,
+  HostToolNameSchema,
   RunnerCommandSchema,
   RunnerHelperResultSchema,
   RUNNER_RESULT_BODY_LIMIT,
@@ -37,6 +40,7 @@ import {
   signRunnerCommand,
   SLACK_REPLY_RUNNER_VERSION,
   withRejectedFields,
+  type HostToolDefinitions,
   type RunnerCommand,
   type RunnerHelperResult,
   type RunnerAccount,
@@ -56,7 +60,25 @@ type HelperDispatch = {
   account?: RunnerAccount;
   conversation?: HelperCommand["conversation"];
   slack?: RunnerSlackReplyScope;
+  tools?: HostToolDefinitions;
 };
+
+export type HelperToolAnswer = { text: string; isError?: boolean };
+export type HelperToolHandler = (
+  name: string,
+  args: z.infer<typeof HostToolArgumentsSchema>,
+) => Promise<HelperToolAnswer>;
+
+const HELPER_TOOL_REQUESTS = 64;
+const HELPER_TOOL_TIMEOUT_MS = 30_000;
+const HELPER_TOOL_BODY_LIMIT = 65_536;
+const usedUp: HelperToolAnswer = { text: "This run has used all its tool calls.", isError: true };
+const unanswered: HelperToolAnswer = { text: "Paws could not answer that tool.", isError: true };
+const HelperToolRequestSchema = z.strictObject({
+  requestId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
+  name: HostToolNameSchema,
+  arguments: HostToolArgumentsSchema,
+});
 
 export type SlackReplyAuthority = (
   q: Q,
@@ -86,6 +108,35 @@ export function createRunnerHelpers(options: {
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
+  const handlers = new Map<
+    string,
+    { handler: HelperToolHandler; answers: Map<string, Promise<HelperToolAnswer>> }
+  >();
+  async function answerTool(
+    handler: HelperToolHandler,
+    name: string,
+    args: z.infer<typeof HostToolArgumentsSchema>,
+  ): Promise<HelperToolAnswer> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answer = await Promise.race([
+        Promise.resolve().then(() => handler(name, args)),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), HELPER_TOOL_TIMEOUT_MS);
+        }),
+      ]);
+      if (!answer || typeof answer.text !== "string") return unanswered;
+      return {
+        text: cutBytes(answer.text, HOST_TOOL_LIMITS.answerBytes),
+        ...(answer.isError ? { isError: true } : {}),
+      };
+    } catch (error) {
+      journalCaught(error, "runner-helpers.tool.answer", null);
+      return unanswered;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   function* identitySteps(q: Q, runnerId: string) {
     return identified(yield* usableRunnerSteps(q, runnerId));
   }
@@ -254,6 +305,29 @@ export function createRunnerHelpers(options: {
       });
     },
     current: (id: string, runnerId?: string) => store.run((q) => currentSteps(q, id, runnerId)),
+    handle(commandId: string, handler: HelperToolHandler): () => void {
+      const entry = { handler, answers: new Map<string, Promise<HelperToolAnswer>>() };
+      handlers.set(commandId, entry);
+      return () => {
+        if (handlers.get(commandId) === entry) handlers.delete(commandId);
+      };
+    },
+    async request(
+      runnerId: string,
+      id: string,
+      input: z.infer<typeof HelperToolRequestSchema>,
+    ): Promise<HelperToolAnswer> {
+      const { command } = await api.current(id, runnerId);
+      const entry = handlers.get(id);
+      if (!entry || !command.tools?.some((tool) => tool.name === input.name))
+        throw new HelperFencedError("Runner helper tool is unavailable");
+      const known = entry.answers.get(input.requestId);
+      if (known) return known;
+      if (entry.answers.size >= HELPER_TOOL_REQUESTS) return usedUp;
+      const answer = answerTool(entry.handler, input.name, input.arguments);
+      entry.answers.set(input.requestId, answer);
+      return answer;
+    },
     openSteps,
     acknowledged: (id: string) => store.run((q) => runnerHelperAcknowledgedSteps(q, id)),
     async acknowledge(runnerId: string, id: string): Promise<void> {
@@ -300,13 +374,18 @@ export function createRunnerHelpers(options: {
               await api.commands(runnerId),
             ),
           });
-        const match = /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result)$/.exec(path);
+        const match = /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result|request)$/.exec(path);
         if (!match || request.method !== "POST") return null;
         const id = z
           .string()
           .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
           .parse(decodeURIComponent(match[1]!));
-        const input = await body(request);
+        const input = await body(
+          request,
+          match[2] === "request" ? HELPER_TOOL_BODY_LIMIT : RUNNER_RESULT_BODY_LIMIT,
+        );
+        if (match[2] === "request")
+          return json(await api.request(runnerId, id, HelperToolRequestSchema.parse(input)));
         if (match[2] === "result") {
           const result = RunnerHelperResultSchema.parse(input);
           if (result.commandId !== id) throw new Error("Runner helper result command changed");
@@ -360,7 +439,19 @@ function unchangedIdentity(runner: UsableRunner, row: RunnerHelperRow): RunnerHe
   return row;
 }
 
-async function body(request: Request) {
+function cutBytes(text: string, limit: number): string {
+  if (Buffer.byteLength(text) <= limit) return text;
+  let bytes = 0;
+  let end = 0;
+  for (const character of text) {
+    bytes += Buffer.byteLength(character);
+    if (bytes > limit) break;
+    end += character.length;
+  }
+  return text.slice(0, end);
+}
+
+async function body(request: Request, limit: number) {
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json")
     throw new Error("JSON is required");
   const reader = request.body?.getReader();
@@ -382,7 +473,7 @@ async function body(request: Request) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > RUNNER_RESULT_BODY_LIMIT) throw new Error("Runner helper input is too large");
+      if (bytes > limit) throw new Error("Runner helper input is too large");
       chunks.push(part.value);
     }
     timeout.throwIfAborted();
