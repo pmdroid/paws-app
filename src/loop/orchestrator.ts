@@ -124,6 +124,7 @@ import {
 } from "../db";
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
+import { LINEAR_TOOLS_NOTE, linearToolScope, linearToolsFor } from "./linear-tools";
 import { confirmDecisionSteps, suggestDecisionsSteps } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -966,6 +967,7 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly askedRuns = new Set<string>();
+  private readonly linearFiled = new Map<string, number>();
   /** Temporary errors thrown while the agent was being prepared, before it started. */
   private readonly preparationFailures = new WeakSet<object>();
   private readonly pullRequestReads = new Set<string>();
@@ -10197,7 +10199,8 @@ export class Orchestrator {
     const work = memory
       ? await this.store.run((q) => this.workContextSteps(q, item, projectContext, true))
       : brief;
-    return { brief, work };
+    const linear = !!(await linearToolScope(this.store, this.tracker, item));
+    return { brief, work: linear ? `${work}\n\n${LINEAR_TOOLS_NOTE}` : work };
   }
 
   private async projectScope(
@@ -11438,6 +11441,7 @@ export class Orchestrator {
       | "ciRerun"
       | "remember"
       | "recall"
+      | "hostTools"
       | "suggestedFindings"
       | "reviewFindings"
     >
@@ -11454,6 +11458,16 @@ export class Orchestrator {
       input.readOnly || input.runId.startsWith("checks-")
         ? undefined
         : await this.rememberFor(item);
+    const hostTools =
+      input.readOnly || input.runId.startsWith("checks-")
+        ? undefined
+        : await linearToolsFor({
+            store: this.store,
+            tracker: this.tracker,
+            item,
+            runId: input.runId,
+            filed: this.linearFiled,
+          });
     const { home, policyRoot } = await this.closeoutHome(item);
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     const github = pull ? this.githubForRepository(repository) : null;
@@ -11462,6 +11476,7 @@ export class Orchestrator {
     return {
       ...runtimes,
       ...memory,
+      ...(hostTools ? { hostTools } : {}),
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item)
