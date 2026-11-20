@@ -515,6 +515,22 @@ try {
           await route.fulfill({ json: saved });
         });
       }
+      await viewer.route("**/api/settings/repository-descriptions", async (route) => {
+        const body = route.request().postDataJSON();
+        const text = route.request().method() === "PUT" ? body.text : null;
+        await route.fulfill({
+          json: {
+            repositories: [
+              {
+                repository: "pmdroid/paws-app",
+                text: text ?? "Paws service, dashboard and runner for delegated Linear work.",
+                source: text ? "admin" : "paws",
+              },
+              { repository: "pmdroid/docs", text: null, source: null },
+            ],
+          },
+        });
+      });
     }
     for (const [name, heading] of [
       ["repositories", "Repositories"],
@@ -528,6 +544,10 @@ try {
         await expect(
           admin.getByText("Restart Paws for Closeout policy reads to use the new mirrors setting."),
         ).toBeVisible();
+        await expect(admin.getByText("No description yet")).toBeVisible();
+        await admin.locator("#description-0").fill("Paws runs delegated Linear issues.");
+        await admin.getByRole("button", { name: "Save description" }).first().click();
+        await expect(admin.getByText("Written by an admin")).toBeVisible();
       } else {
         await admin.getByLabel("Agents", { exact: true }).fill("app_kyoto\napp_reviewer");
         await admin.getByRole("button", { name: "Save settings", exact: true }).click();
