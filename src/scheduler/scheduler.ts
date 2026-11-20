@@ -101,6 +101,7 @@ export type SchedulerOptions = {
   ownerCap?: number | null;
   /** Hot files in `owner/repo` that never hold work, from `[merge.repositories] parallel_files`. */
   parallelFiles?: (repository: string) => readonly string[];
+  overlapHold?: boolean;
   log?: (line: string) => void;
 };
 
@@ -765,7 +766,10 @@ async function admit(
       )
         waiters.push(item);
     }
-    const overlapping = yield* overlapGate(q, now, waiters, options.parallelFiles);
+    const overlapping =
+      options.overlapHold === false
+        ? () => null
+        : yield* overlapGate(q, now, waiters, options.parallelFiles);
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||
