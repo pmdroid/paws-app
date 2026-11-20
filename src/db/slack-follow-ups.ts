@@ -204,8 +204,19 @@ export function* claimDueSlackFollowUpsSteps(
   });
 }
 
-export function* finishSlackFollowUpSteps(q: Q, id: string, now = Date.now()) {
+export function* finishSlackFollowUpSteps(
+  q: Q,
+  id: string,
+  now = Date.now(),
+  status: "done" | "cancelled" | "expired" = "done",
+) {
   const table = q.t.slackFollowUp;
   const claimed = and(eq(table.id, id), eq(table.status, "claimed"));
-  return (yield* settleSteps(q, "done", claimed, now)) === 1;
+  return (yield* settleSteps(q, status, claimed, now)) === 1;
+}
+
+export function* getSlackFollowUpSteps(q: Q, id: string): Steps<SlackFollowUp | null> {
+  const table = q.t.slackFollowUp;
+  const row = yield* q.one(q.orm.select().from(table).where(eq(table.id, id)));
+  return row ? followUp(row) : null;
 }

@@ -3860,3 +3860,128 @@ test("follow-ups lists only the member's own pending follow-ups here, and cancel
   expect(await statusByUser()).toEqual({ SADMIN: "cancelled", SMEMBER: "pending" });
   expect(f.prompts).toHaveLength(asked);
 });
+
+const MIN = 60_000;
+async function promised(f: Awaited<ReturnType<typeof fixture>>, threadTs?: string) {
+  const block = followUpBlock({ purpose: "check the deploy", after_minutes: 20 });
+  f.answers.push(`I'll check the deploy in 20 minutes.\n${block}`);
+  const root = f.mention(
+    "SMEMBER",
+    "tell me in 20 minutes",
+    threadTs ? { thread_ts: threadTs } : {},
+  );
+  await f.deliver(root);
+  await f.settle();
+  expect(await followUpRows(f)).toEqual([expect.objectContaining({ status: "pending" })]);
+  f.posted.length = 0;
+  return root;
+}
+async function wakeAfter(f: Awaited<ReturnType<typeof fixture>>, ms: number) {
+  f.advance(ms);
+  await f.reconcile();
+  await f.settle();
+}
+const followUpStatus = async (f: Awaited<ReturnType<typeof fixture>>) =>
+  (await followUpRows(f)).map((row) => row.status);
+
+test("a timer follow-up wakes once when due and posts its reply in the thread, mentioning the member", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = await promised(f);
+  const asked = f.prompts.length;
+  await wakeAfter(f, 19 * MIN);
+  expect(f.prompts).toHaveLength(asked);
+  f.answers.push("The deploy finished.");
+  await wakeAfter(f, MIN);
+  await f.reconcile();
+  await f.settle();
+  expect(f.prompts).toHaveLength(asked + 1);
+  const prompt = f.prompts.at(-1)!.prompt;
+  expect(prompt).toContain(
+    "Follow-up you promised: check the deploy. It is due because 20 minutes passed.",
+  );
+  expect(prompt).toContain("reply with exactly SKIP");
+  expect(prompt).not.toContain("`paws-follow-up`");
+  expect(f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text])).toEqual([
+    [root.ts, "<@SMEMBER> The deploy finished."],
+  ]);
+  expect(await followUpStatus(f)).toEqual(["done"]);
+});
+
+test("a work follow-up wakes once after the item merges, with its state and pull request in the prompt", async () => {
+  const { f, root } = await filedTask();
+  const block = followUpBlock({ purpose: "say when it lands", work: "ENG-1", on: "ended" });
+  f.answers.push(`I'll tell you when ENG-1 ends.\n${block}`);
+  await f.say("SMEMBER", "tell me when it lands", { thread_ts: root.ts });
+  f.posted.length = 0;
+  const asked = f.prompts.length;
+  await wakeAfter(f, MIN);
+  expect(f.prompts).toHaveLength(asked);
+  const pullUrl = "https://github.com/acme/app/pull/7";
+  await f.db.run(function* (q) {
+    yield* q.exec(
+      q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "item-1")),
+    );
+    const pull = { itemId: "item-1", pullNumber: 7, pullUrl, openedAt: f.now() };
+    yield* q.exec(q.orm.insert(q.t.itemPullRequest).values(pull));
+  });
+  f.answers.push("ENG-1 merged.\n" + followUpBlock({ purpose: "again", after_minutes: 20 }));
+  await wakeAfter(f, MIN);
+  await wakeAfter(f, MIN);
+  expect(f.prompts).toHaveLength(asked + 1);
+  const prompt = f.prompts.at(-1)!.prompt;
+  expect(prompt).toContain("It is due because ENG-1 ended as merged.");
+  expect(prompt).toContain(`Current state of the work:\n- ENG-1 (`);
+  expect(prompt).toContain(`: merged, pull request ${pullUrl} (merged)`);
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
+    "<@SMEMBER> ENG-1 merged.",
+  ]);
+  expect(await followUpStatus(f)).toEqual(["done"]);
+});
+
+test("a SKIP reply posts nothing and finishes the follow-up", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await promised(f);
+  const asked = f.prompts.length;
+  f.answers.push("  SKIP \n");
+  await wakeAfter(f, 20 * MIN);
+  expect(f.prompts).toHaveLength(asked + 1);
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.posts("chat.postEphemeral")).toEqual([]);
+  expect(await followUpStatus(f)).toEqual(["done"]);
+});
+
+test("an unlinked member, a stopped thread or a channel gone private cancels the follow-up without a turn", async () => {
+  for (const change of ["unlink", "stop", "private"] as const) {
+    const f = await linked(["um", "SMEMBER"]);
+    const root = await promised(f);
+    if (change === "private") f.channel.is_private = true;
+    else await f.say("SMEMBER", change, { thread_ts: root.ts });
+    f.posted.length = 0;
+    const asked = f.prompts.length;
+    await wakeAfter(f, 20 * MIN);
+    expect(f.prompts).toHaveLength(asked);
+    expect(f.posted.filter((post) => post.method.startsWith("chat."))).toEqual([]);
+    expect(await followUpStatus(f)).toEqual(["cancelled"]);
+  }
+});
+
+test("a stop after the follow-up's turn started drops its reply and cancels it", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = await promised(f);
+  f.runner.hold = true;
+  f.answers.push("The deploy finished.");
+  f.advance(20 * MIN);
+  await f.reconcile();
+  const running = f.runJobs();
+  while (
+    (await sqlRows(f.db, "SELECT id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL"))
+      .length === 0
+  )
+    await Bun.sleep(2);
+  await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  f.runner.hold = false;
+  await running;
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(await followUpStatus(f)).toEqual(["cancelled"]);
+});

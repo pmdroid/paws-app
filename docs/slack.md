@@ -72,6 +72,7 @@ When you ask Paws to tell you about something later, or its answer promises to c
 - A thread has at most one pending follow-up, a member at most 10. A timed follow-up is 5 minutes to 24 hours ahead, and every follow-up lapses after 24 hours. When Paws can't schedule one, it tells only you why.
 - `follow-ups` lists your pending follow-ups in the thread, and `cancel <id>` cancels one of yours; both answer only you, with or without the mention, and need no runner.
 - `stop` in the thread cancels its follow-ups.
+- When a follow-up is due (Paws checks once a minute), Paws answers it in the thread as a new turn on your runner, mentioning you, with the current state and pull request of the thread's issues you can see. When there's nothing new, it posts nothing. If you unlinked, the thread was stopped, the channel is no longer public, or the thread's repositories can no longer be shown there, Paws drops the follow-up without a word.
 
 ### Channel memory
 
