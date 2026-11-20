@@ -284,6 +284,9 @@ export async function advanceMerge(
     installationId: github.installationId,
     privateKeyPem: github.privateKeyPem,
     client: github.client,
+    ...(caps.ownComment
+      ? { ownComment: caps.ownComment(`${repository.owner}/${repository.repo}`) }
+      : {}),
     gitExec: github.gitExec,
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,

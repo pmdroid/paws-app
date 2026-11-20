@@ -62,7 +62,22 @@ const responseSchema = z.object({
           .nullable(),
         reviewThreads: z
           .object({
-            nodes: z.array(z.object({ isResolved: z.boolean() })),
+            nodes: z.array(
+              z.object({
+                isResolved: z.boolean(),
+                comments: z
+                  .object({
+                    totalCount: z.number(),
+                    nodes: z.array(
+                      z.object({
+                        author: z.object({ login: z.string() }).nullable(),
+                        body: z.string(),
+                      }),
+                    ),
+                  })
+                  .optional(),
+              }),
+            ),
             pageInfo: pageInfoSchema,
           })
           .optional(),
@@ -98,7 +113,7 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
         }
       }
       reviewThreads(first: 100, after: $threadsCursor) @include(if: $readThreads) {
-        nodes { isResolved }
+        nodes { isResolved comments(first: 100) { totalCount nodes { author { login } body } } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -165,8 +180,11 @@ type Check = {
 export const LOG_TAIL_LINES = 60;
 export const LOG_TAIL_CHARS = 6000;
 
+export type OwnComment = (comment: { author: string | null; body: string }) => boolean;
+
 type ReadinessInput = {
   client: GitHubClient;
+  ownComment?: OwnComment;
   token: () => Promise<string>;
   owner: string;
   repo: string;
@@ -179,6 +197,19 @@ type ReadinessInput = {
   onWait?: (message: string) => Promise<void>;
   releaseWhilePending?: boolean;
 };
+
+function onlyOwnComments(
+  comments:
+    | { totalCount: number; nodes: { author: { login: string } | null; body: string }[] }
+    | undefined,
+  own: OwnComment | undefined,
+): boolean {
+  if (!own || !comments || comments.nodes.length === 0) return false;
+  if (comments.totalCount > comments.nodes.length) return false;
+  return comments.nodes.every((comment) =>
+    own({ author: comment.author?.login ?? null, body: comment.body }),
+  );
+}
 
 export async function waitForMergeReadiness(input: ReadinessInput): Promise<Readiness> {
   const sleep =
@@ -300,7 +331,9 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       }
       if (more.threads) {
         if (!pull.reviewThreads) return unreadable();
-        unresolved += pull.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
+        unresolved += pull.reviewThreads.nodes.filter(
+          (thread) => !thread.isResolved && !onlyOwnComments(thread.comments, input.ownComment),
+        ).length;
         if (!advance("threads", pull.reviewThreads.pageInfo)) return unreadable();
       }
     }

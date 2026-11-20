@@ -36,6 +36,7 @@ import {
   handlePullReview,
   type PullReviewCapabilities,
 } from "./pull-reviews";
+import { withoutPawsComments } from "./review-replies";
 import { worktreeBranch } from "./sources";
 import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
@@ -170,6 +171,32 @@ const feedbackActivities = async (db: Awaited<ReturnType<typeof setup>>["db"]) =
     });
 
 describe("changes-requested reviews", () => {
+  test("hand the agent the review without a thread only Paws wrote in", async () => {
+    const { db, caps, deliver } = await setup([
+      {
+        path: "src/rank.ts",
+        line: 12,
+        comments: [{ author: "rev", body: "This sorts the wrong way round.", reviewId: 501 }],
+      },
+      {
+        path: "src/paws.ts",
+        line: 4,
+        comments: [{ author: "paws-test[bot]", body: "Paws noted this.", reviewId: 900 }],
+      },
+    ]);
+    const threads = caps.threads;
+    caps.threads = async (item, pullNumber) =>
+      withoutPawsComments(await threads(item, pullNumber), "paws-test[bot]");
+    await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    const [resume] = await resumeJobs(db);
+    const payload = resume?.payload as { handoff: string };
+    expect(payload.handoff).toContain("Please fix the ranking.");
+    expect(payload.handoff).toContain("This sorts the wrong way round.");
+    expect(payload.handoff).not.toContain("Paws noted this.");
+    expect(payload.handoff).not.toContain("src/paws.ts");
+  });
+
   test("restart the item once per review id with the review and its unresolved threads", async () => {
     const { db, caps, deliver, github } = await setup();
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });

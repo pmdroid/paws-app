@@ -41,6 +41,7 @@ import {
   githubQueueMerge,
   readPullReview,
   type GitHubBinding,
+  type OwnComment,
   type Readiness,
   type PullCi,
   type PullMergeable,
@@ -272,6 +273,7 @@ export type OrderCapabilities = {
   feedbackWait(): PullFeedbackWait;
   feedbackNoticed?(q: Q, itemId: string, now: number): Steps<void>;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
+  ownComment?(repository: string): OwnComment;
   /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
   readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;
   /**
@@ -572,6 +574,7 @@ export async function mergeThroughGitHubQueue(
     prNumber: pull.number,
     head,
     client: github.client,
+    ...(caps.ownComment ? { ownComment: caps.ownComment(name) } : {}),
     appId: github.appId,
     installationId: github.installationId,
     privateKeyPem: github.privateKeyPem,

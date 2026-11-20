@@ -602,7 +602,12 @@ import {
   type LinearCommentPolicy,
   type LinearConversations,
 } from "./linear-comments";
-import { checkReviewReplies, postReviewReplies } from "./review-replies";
+import {
+  checkReviewReplies,
+  isPawsComment,
+  postReviewReplies,
+  withoutPawsComments,
+} from "./review-replies";
 import {
   deliverGitHubOutbox,
   feedbackNoticeSteps,
@@ -843,6 +848,7 @@ export type OrchestratorOptions = {
     access: "read" | "write",
   ) => Promise<string>;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
+  appLogin?: (repository: string) => string | null;
   githubMirrors?: boolean;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   pullRequestMember?: (item: WorkItemRecord) => Promise<PullRequestMember | null>;
@@ -2427,13 +2433,14 @@ export class Orchestrator {
         const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return [];
-        return readReviewThreads({
+        const threads = await readReviewThreads({
           client: github.client,
           owner: repository.owner,
           repo: repository.repo,
           prNumber: pullNumber,
           ...this.gitHubCredentials(github),
         });
+        return withoutPawsComments(threads, this.appLogin(repository));
       },
       pullHead: async (item, pullNumber) => {
         const repository = await this.repositoryForItem(item);
@@ -6914,6 +6921,8 @@ export class Orchestrator {
       feedbackWait: () => this.feedbackWait(),
       feedbackNoticed: feedbackNoticeSteps,
       readPullCi: (item, pull) => this.readItemPullCi(item, pull),
+      ownComment: (repository) => (comment) =>
+        isPawsComment(comment, this.options.appLogin?.(repository) ?? null),
       readPull: async (item, pullNumber) =>
         this.readItemPull(item, pullNumber, await this.signalForItem(item.id)),
       restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
@@ -6995,6 +7004,10 @@ export class Orchestrator {
       );
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
     }
+  }
+
+  private appLogin(repository: { owner: string; repo: string }): string | null {
+    return this.options.appLogin?.(`${repository.owner}/${repository.repo}`) ?? null;
   }
 
   private repositoryPackages(repository: string): string[] {

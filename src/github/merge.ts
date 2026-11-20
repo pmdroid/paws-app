@@ -14,7 +14,7 @@ import { pushDenial, pushWithLease } from "./push";
 import { gitTempDirectory } from "./temp";
 import { pushOutageCause } from "./transport";
 import { readPullMergeable } from "./pull-mergeable";
-import { waitForMergeReadiness, type Readiness } from "./readiness";
+import { waitForMergeReadiness, type OwnComment, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient, sleep as pause } from "../core";
 import {
@@ -48,6 +48,7 @@ export type SerialMergeInput = {
   installationId: string;
   privateKeyPem: string;
   client: GitHubClient;
+  ownComment?: OwnComment;
   /** When set, push and merge each ask this provider. Otherwise the App mint path is used. */
   tokenProvider?: GitHubTokenProvider;
   remoteUrl?: string;
