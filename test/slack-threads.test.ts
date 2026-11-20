@@ -70,13 +70,14 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-type Fail = "rate" | "down" | "refused" | "lost" | "scope";
+type Fail = "rate" | "down" | "refused" | "lost" | "scope" | "reacted";
 
 async function fixture(
   setup: {
     memory?: Parameters<typeof createSlackThreads>[0]["memory"];
     source?: FakeSnapshotReader;
     outcomes?: ({ status: string; text?: string } | null)[];
+    scope?: string;
   } = {},
 ) {
   const home = tempHome();
@@ -137,6 +138,7 @@ async function fixture(
     if (fail === "down") return new Response("", { status: 503 });
     if (fail === "refused") throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
     if (fail === "scope") return Response.json({ ok: false, error: "missing_scope" });
+    if (fail === "reacted") return Response.json({ ok: false, error: "already_reacted" });
     if (method === "conversations.info") {
       const hook = hooks.onInfo;
       hooks.onInfo = undefined;
@@ -317,7 +319,7 @@ async function fixture(
       accessToken: "xoxb-T0ONE",
       refreshToken: null,
       expiresAtMs: null,
-      scope: "app_mentions:read,channels:read,chat:write",
+      scope: setup.scope ?? "app_mentions:read,channels:read,chat:write",
       teamId: "T0ONE",
       botUserId: BOT,
       appId: "A1",
@@ -3648,4 +3650,64 @@ test("in-flight questions older than ten minutes or from a member who unlinked h
   await f.say("SMEMBER", "unlink", { thread_ts: root.ts });
   await f.say("SADMIN", "and now?", { thread_ts: root.ts });
   expect(lastPrompt(f)).not.toContain("canary-44");
+});
+
+const REACT = "app_mentions:read,channels:read,chat:write,reactions:write";
+const reactions = (f: Fixture) => f.posts("reactions.add").map((post) => post.body);
+
+test("a linked member's message Paws takes up gets one 🐾 before its status, and stays after the answer", async () => {
+  const f = await linkedWith({ scope: REACT });
+  const root = f.mention("SADMIN", "what is a monad?");
+  await f.deliver(root);
+  await f.settle();
+  expect(reactions(f)).toEqual([{ channel: "C0ONE", timestamp: root.ts, name: "feet" }]);
+  const methods = f.posted.map((post) => post.method);
+  expect(methods.indexOf("reactions.add")).toBeLessThan(methods.indexOf(STATUS));
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual(["answer 1"]);
+  expect(f.posts("reactions.remove")).toEqual([]);
+});
+
+test("unlinked, ignored, direct and stop messages get no 🐾", async () => {
+  const f = await linkedWith({ scope: REACT });
+  await f.say("SMEMBER", "unlinked");
+  await f.say("SADMIN", "elsewhere", { channel: "C0TWO" });
+  await f.say("SADMIN", "bot", { bot_id: "B9" });
+  await f.pair("SADMIN", "hello there");
+  const root = f.mention("SADMIN", "write an essay");
+  await f.deliver(root);
+  await f.settle();
+  f.posted.length = 0;
+  await f.say("SADMIN", "stop", { thread_ts: root.ts });
+  expect(reactions(f)).toEqual([]);
+});
+
+test("an installation without reactions:write gets no 🐾 and still gets its answer", async () => {
+  const f = await linked();
+  await f.say("SADMIN", "what is a monad?");
+  expect(reactions(f)).toEqual([]);
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual(["answer 1"]);
+});
+
+test("a refused 🐾 never fails the job or holds back the answer", async () => {
+  const f = await linkedWith({ scope: REACT });
+  for (const fail of ["reacted", "scope"] as const) {
+    f.failNext["reactions.add"] = fail;
+    await f.say("SADMIN", `question ${fail}`);
+    expect(f.failNext["reactions.add"]).toBeUndefined();
+  }
+  expect(f.posts("chat.postMessage").map((post) => post.body.text)).toEqual([
+    "answer 1",
+    "answer 2",
+  ]);
+  expect(f.prompts).toHaveLength(2);
+  const jobs = await sqlRows<{ status: string; attempts: number | string }>(
+    f.db,
+    "SELECT status, attempts FROM job WHERE queue = ? ORDER BY id",
+    [SLACK_THREAD_JOB],
+  );
+  const settled = jobs.slice(-2).map((job) => ({ ...job, attempts: Number(job.attempts) }));
+  expect(settled).toEqual([
+    { status: "done", attempts: 1 },
+    { status: "done", attempts: 1 },
+  ]);
 });

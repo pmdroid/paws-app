@@ -12,7 +12,7 @@ The quickest way is the manifest in [`deploy/slack/manifest.yaml`](../deploy/sla
 
 ## Scopes
 
-Channel threads need `app_mentions:read`, `channels:history`, `channels:read` and `chat:write`. App messages need `im:history` and `im:write`. Agent status needs `assistant:write`. Member checks need `users:read` and `users:read.email`. The Integrations card shows each capability as ready, or names the scopes a reconnect adds. Slack Code is shown as not available yet.
+Channel threads need `app_mentions:read`, `channels:history`, `channels:read` and `chat:write`. App messages need `im:history` and `im:write`. Agent status needs `assistant:write`. Member checks need `users:read` and `users:read.email`. Reacting to messages needs `reactions:write`, which is optional: a connection without it works the same, without the reaction. The Integrations card shows each capability as ready, or names the scopes a reconnect adds. Slack Code is shown as not available yet.
 
 ## Connect, reconnect and disconnect
 
@@ -27,7 +27,7 @@ Channel threads need `app_mentions:read`, `channels:history`, `channels:read` an
 
 ## Answer in one channel
 
-Paws answers explicit `@Paws` mentions in one internal channel per Paws workspace, in the mention's thread. Once Paws was mentioned in a thread, a linked member's later replies there get answers without `@Paws`, and mean what the same text after `@Paws` means: `stop`, `unlink`, `repo …`, `remember …`, `memory`, `start <TEAM>` and answers to waiting work all work without the mention. It needs no repository and no Linear issue, and a conversation starts no work; only [`@Paws start`](#start-work-from-a-thread) files work. Other channels, edited messages, bot posts, other messages that don't mention Paws and direct messages other than `link <code>` get no answer. An unmentioned reply from someone who isn't a linked member, or in a thread Paws wasn't mentioned in, is ignored without a sign-in link; only a mention sends one.
+Paws answers explicit `@Paws` mentions in one internal channel per Paws workspace, in the mention's thread. Once Paws was mentioned in a thread, a linked member's later replies there get answers without `@Paws`, and mean what the same text after `@Paws` means: `stop`, `unlink`, `repo …`, `remember …`, `memory`, `start <TEAM>` and answers to waiting work all work without the mention. It needs no repository and no Linear issue, and a conversation starts no work; only [`@Paws start`](#start-work-from-a-thread) files work. Other channels, edited messages, bot posts, other messages that don't mention Paws and direct messages other than `link <code>` get no answer. When the connection has `reactions:write`, Paws reacts with 🐾 to each message it takes up for an answer; the reaction stays when the answer is posted, withheld or fails, or the thread is stopped. An unmentioned reply from someone who isn't a linked member, or in a thread Paws wasn't mentioned in, is ignored without a sign-in link; only a mention sends one.
 
 1. Invite Paws to the channel. The invitation alone changes nothing.
 2. Someone mentions `@Paws` there. Paws sends them a direct message from the Paws app with a link to `https://<paws>/oauth/slack/link` for them. When Slack refuses the direct message (for example, their direct messages with apps are turned off), Paws sends the same text as a message only they can see, in the mention's thread.

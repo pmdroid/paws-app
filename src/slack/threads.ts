@@ -64,6 +64,7 @@ import {
   type SlackCall,
 } from "./api";
 import { slackSourceDisclosableSteps } from "./disclosure";
+import { slackCapabilities } from "./manifest";
 import {
   createSlackChannelMemory,
   slackMemoryCommand,
@@ -858,6 +859,15 @@ export function createSlackThreads<Profile>(options: {
     await notice(direct, dedupeKey, NOTICES[outcome], { dm: true });
   }
 
+  async function react(call: SlackCall, place: Place, ts: string, signal: AbortSignal) {
+    const install = await store.run((q) => installationSteps(q, home, place.teamId));
+    if (!install || !slackCapabilities(install.scope).reactions.ready) return;
+    const body = { channel: place.channelId, timestamp: ts, name: "feet" };
+    await call("reactions.add", body, signal).catch((caught: unknown) => {
+      journal(`slack reaction: ${caught instanceof Error ? caught.message : String(caught)}`);
+    });
+  }
+
   async function handle(
     job: Job,
     context: {
@@ -914,6 +924,7 @@ export function createSlackThreads<Profile>(options: {
       const text = `To talk to Paws in <#${channelId}>, open ${origin}${SLACK_LINK_PATH}?${query}, sign in, and send the code it shows to Paws in this direct message. Paws answers your question once you link within 10 minutes.${setup}`;
       return void (await notice(place, dedupeKey!, text, { dm: true }));
     }
+    await react(call, place, mention.ts, context.signal);
     const asker = { userId: gate.userId, linkId: gate.linkId };
     const turn = { ts: mention.ts, slackUserId, event: dedupeKey! };
     await turnStatus(place, asker, null, "active", { ...turn, open: true });
