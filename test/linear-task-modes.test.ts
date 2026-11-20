@@ -42,6 +42,38 @@ test("task classification accepts supported modes and explicit clarification", (
     expect(() => parseTaskClassification(text)).toThrow();
 });
 
+test("task classification keeps a valid understood sentence and drops any other value", () => {
+  const sentence = "I understand this as a request to explain the retry policy.";
+  expect(
+    parseTaskClassification(JSON.stringify({ mode: "answer", understood: `  ${sentence} ` })),
+  ).toEqual({ mode: "answer", understood: sentence });
+  expect(parseTaskClassification(JSON.stringify({ mode: "plan", understood: sentence }))).toEqual({
+    mode: "plan",
+    repository: true,
+    understood: sentence,
+  });
+  expect(
+    parseTaskClassification(JSON.stringify({ mode: "code", understood: "x".repeat(280) })),
+  ).toEqual({ mode: "code", understood: "x".repeat(280) });
+  for (const understood of [
+    "x".repeat(281),
+    "First line.\nSecond line.",
+    "   ",
+    "",
+    42,
+    null,
+    ["a"],
+  ])
+    expect(parseTaskClassification(JSON.stringify({ mode: "code", understood }))).toEqual({
+      mode: "code",
+    });
+  expect(
+    parseTaskClassification(
+      JSON.stringify({ mode: "clarify", question: "Which file?", understood: sentence }),
+    ),
+  ).toEqual({ mode: "clarify", question: "Which file?" });
+});
+
 test.each(["code", "answer", "artifact", "plan"] as const)(
   "classification runs real ACP in an empty workspace and produces %s without a checkpoint",
   async (mode) => {

@@ -4,12 +4,14 @@ import type { AgentProfile } from "../config";
 import {
   assertLinearSessionCleanupSteps,
   blockLinearSessionCleanup,
+  enqueueOutboxOnceSteps,
   getLinearSessionSteps,
   getTaskClassificationSteps,
   saveTaskClassificationSteps,
   type Db,
   type StoredTaskClassification,
 } from "../db";
+import { publicToolText } from "./activity";
 import type { AgentLaunch } from "./agents";
 import type { PromptPart } from "./prompt-fit";
 import { classifyTask } from "./task-classifier";
@@ -98,8 +100,27 @@ export function createTaskPlanner(options: {
           onCleanupFailure: () => blockLinearSessionCleanup(store, input.sessionId),
         });
         await current();
-        await store.run((q) => saveTaskClassificationSteps(q, input.taskKey, classification));
-        return classification;
+        const understood =
+          classification.mode === "clarify" ? undefined : classification.understood;
+        const stored: StoredTaskClassification = { ...classification };
+        if ("understood" in stored) delete stored.understood;
+        await store.transaction(function* (q) {
+          yield* saveTaskClassificationSteps(q, input.taskKey, stored);
+          if (understood)
+            yield* enqueueOutboxOnceSteps(q, {
+              target: "linear",
+              op: "activity",
+              orderingKey: input.sessionId,
+              idempotencyKey: `understood:${input.taskKey}`,
+              payload: {
+                sessionId: input.sessionId,
+                kind: "thought",
+                body: publicToolText(understood),
+                id: crypto.randomUUID(),
+              },
+            });
+        });
+        return stored;
       })().finally(() => {
         if (active.get(input.sessionId)?.controller === controller) active.delete(input.sessionId);
       });

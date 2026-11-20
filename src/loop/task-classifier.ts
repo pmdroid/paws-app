@@ -7,8 +7,16 @@ import type { AgentLaunch } from "./agents";
 import { fitPrompt, RUNNER_PROMPT_LIMIT, type PromptPart } from "./prompt-fit";
 
 export type TaskClassification =
-  | { mode: TaskMode; repository?: boolean }
+  | { mode: TaskMode; repository?: boolean; understood?: string }
   | { mode: "clarify"; question: string };
+
+function understoodSentence(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const sentence = value.trim();
+  if (sentence.length < 1 || sentence.length > 280 || /[\r\n\u2028\u2029]/.test(sentence))
+    return undefined;
+  return sentence;
+}
 
 export function parseTaskClassification(text: string): TaskClassification {
   const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text.trim());
@@ -19,10 +27,12 @@ export function parseTaskClassification(text: string): TaskClassification {
   if (TASK_MODES.includes(input.mode as TaskMode)) {
     if (input.repository !== undefined && typeof input.repository !== "boolean")
       throw new Error("Repository context must be a boolean");
+    const understood = understoodSentence(input.understood);
     // A plan reads the repository it splits work for and labels the sub-issues with it.
     return {
       mode: input.mode as TaskMode,
       ...(input.repository === true || input.mode === "plan" ? { repository: true } : {}),
+      ...(understood ? { understood } : {}),
     };
   }
   if (input.mode === "clarify" && typeof input.question === "string" && input.question.trim())
@@ -55,6 +65,7 @@ export async function classifyTask(options: {
     "plan: a request to plan, split, scope, break down, or sequence the work into sub-issues or steps someone will implement later, without implementing it now.",
     'For answer or artifact, add "repository":true when the request requires reading or running a configured repository, such as explaining its code or taking a screenshot of its app. Otherwise omit repository. Do not choose code solely because repository context is required.',
     "clarify: the requested outcome is ambiguous and a question is needed before choosing a mode.",
+    'For every mode except clarify, add "understood": one sentence of at most 280 characters, starting "I understand this as a request to", that restates the requested outcome. Base it only on the request. Never say or suggest that code was read, a cause was found, or a time was estimated. Do not include names of people, links, or secrets.',
     "Do not perform the task, use tools, edit files, or include reasoning in the output.",
   ].join("\n\n");
   const parts = typeof options.request === "string" ? [{ text: options.request }] : options.request;
