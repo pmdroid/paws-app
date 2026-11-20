@@ -70,7 +70,7 @@ jobs:
   build:
     needs: prepare
     if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
-    name: Debian package (${{ matrix.architecture }})
+    name: Debian and RPM packages (${{ matrix.architecture }})
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +112,9 @@ jobs:
       - name: Build Debian package
         run: |
           python3 -I -B deploy/linux/deb-package.py --artifact "$RUNNER_TEMP/runner-archive/artifact.tar" --manifest "$RUNNER_TEMP/runner-archive/manifest.json" --output dist
-      - name: Build control-plane Debian package
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Build control-plane Debian and RPM packages
         env:
           DEBIAN_ARCHITECTURE: ${{ matrix.architecture }}
           BINARY_PLATFORM: ${{ matrix.platform }}
@@ -121,7 +123,17 @@ jobs:
           arch="${BINARY_PLATFORM#linux-}"
           bun scripts/build-binary.ts "$arch"
           python3 -I -B deploy/linux/deb-package.py --control-plane --binary "dist/paws-$arch" --version "$RUNNER_VERSION" --architecture "$DEBIAN_ARCHITECTURE" --output dist
+          python3 -I -B deploy/linux/rpm-package.py --binary "dist/paws-$arch" --version "$RUNNER_VERSION" --architecture "$DEBIAN_ARCHITECTURE" --output dist
           rm -- "dist/paws-$arch"
+      - name: Verify control-plane RPM package
+        env:
+          DEBIAN_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          rpm_arch=x86_64
+          if [ "$DEBIAN_ARCHITECTURE" = arm64 ]; then rpm_arch=aarch64; fi
+          package="dist/paws-control-plane-${RUNNER_VERSION}-1.${rpm_arch}.rpm"
+          test "$(rpm -qp --qf '%{NAME} %{VERSION} %{RELEASE} %{ARCH}' "$package")" = "paws-control-plane $RUNNER_VERSION 1 $rpm_arch"
+          rpm -qp --configfiles "$package" | grep -qx /etc/paws/control-plane.env
       - name: Verify Debian package
         env:
           DEBIAN_ARCHITECTURE: ${{ matrix.architecture }}
@@ -145,14 +157,16 @@ jobs:
         id: control-attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/paws-control-plane_*.deb
+          subject-path: |
+            dist/paws-control-plane_*.deb
+            dist/paws-control-plane-*.rpm
       - name: Preserve and verify bundles
         env:
           RUNNER_BUNDLE: ${{ steps.runner-attestation.outputs.bundle-path }}
           CONTROL_BUNDLE: ${{ steps.control-attestation.outputs.bundle-path }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          for package in dist/*.deb; do
+          for package in dist/*.deb dist/*.rpm; do
             bundle="$CONTROL_BUNDLE"
             case "$package" in dist/paws-runner_*) bundle="$RUNNER_BUNDLE" ;; esac
             cp "$bundle" "$package.sigstore.json"
@@ -166,7 +180,7 @@ jobs:
 
   publish:
     if: github.event_name == 'release'
-    name: Attach Debian packages to release
+    name: Attach Debian and RPM packages to release
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -182,7 +196,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-        run: gh release upload "$RELEASE_TAG" dist/*.deb dist/*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$RELEASE_TAG" dist/*.deb dist/*.sha256 dist/*.rpm --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-apt:
     name: Publish signed apt repository

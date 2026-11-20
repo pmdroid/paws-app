@@ -2332,5 +2332,119 @@ class ControlPlaneDebTests(unittest.TestCase):
 
 
 
+class ControlPlaneRpmTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("rpmbuild"), "rpmbuild is required to build the RPM")
+    def test_packages_match_the_deb_layout(self):
+        package = load("rpm-package")
+        deb = load("deb-package")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            binary = root / "paws"
+            binary.write_bytes(b"compiled fixture")
+            staged = root / "staged"
+            deb.stage_control_plane(binary, staged)
+            expected = sorted("/" + str(path.relative_to(staged)) for path in staged.rglob("*") if not path.is_dir() or path.is_symlink())
+            for arch, rpm_arch in (("amd64", "x86_64"), ("arm64", "aarch64")):
+                destination = package.build(SimpleNamespace(binary=binary, version="1.2.3", architecture=arch, output=root / arch))
+                self.assertEqual(destination.name, f"paws-control-plane-1.2.3-1.{rpm_arch}.rpm")
+                subprocess.run(["sha256sum", "-c", destination.name + ".sha256"], cwd=destination.parent, check=True)
+                def query(*args):
+                    return subprocess.run(["rpm", "-qp", *args, str(destination)], check=True, capture_output=True, text=True).stdout
+                self.assertEqual(query("--qf", "%{NAME} %{VERSION} %{RELEASE} %{ARCH} %{FILEDIGESTALGO}"), f"paws-control-plane 1.2.3 1 {rpm_arch} 8")
+                files = {}
+                for line in query("--qf", "[%{FILENAMES} %{FILEMODES:octal} %{FILEUSERNAME}:%{FILEGROUPNAME} %{FILEFLAGS:fflags}\n]").splitlines():
+                    name, mode, owner, *flags = line.split(" ")
+                    files[name] = (mode, owner, "".join(flags))
+                self.assertEqual(sorted(name for name, (mode, _, _) in files.items() if not mode.startswith("40")), expected)
+                self.assertEqual(files["/etc/paws/control-plane.env"], ("100600", "root:paws", "cn"))
+                self.assertEqual(files["/etc/paws"][0], "40755")
+                self.assertEqual(files["/usr/lib/paws"][0], "40755")
+                self.assertEqual(files["/usr/lib/paws/paws"][0], "100755")
+                requires = set(query("--requires").splitlines())
+                for name in ("systemd", "coreutils", "findutils", "libc.so.6()(64bit)", "libstdc++.so.6()(64bit)", "libgcc_s.so.1()(64bit)"):
+                    self.assertIn(name, requires)
+                extracted = root / ("extracted-" + arch)
+                extracted.mkdir()
+                archive = subprocess.run(["rpm2cpio", str(destination)], check=True, capture_output=True).stdout
+                subprocess.run(["cpio", "-idm", "--quiet"], input=archive, cwd=extracted, check=True)
+                self.assertEqual((extracted / "usr/lib/paws/paws").read_bytes(), binary.read_bytes())
+                self.assertEqual(os.readlink(extracted / "usr/bin/paws"), "../lib/paws/paws")
+                for name in ("usr/lib/systemd/system/paws.service", "usr/lib/sysusers.d/paws.conf", "usr/lib/tmpfiles.d/paws.conf", "etc/paws/control-plane.env"):
+                    self.assertEqual((extracted / name).read_bytes(), (staged / name).read_bytes())
+                scripts = query("--scripts")
+                self.assertIn("systemd-sysusers --replace=/usr/lib/sysusers.d/paws.conf", scripts)
+                self.assertIn("rpm -q --qf '%{VERSION}\\n' paws-control-plane", scripts)
+                self.assertIn("date -u +%Y%m%dT%H%M%S%NZ", scripts)
+
+    def test_scriptlets_install_upgrade_and_erase(self):
+        package = load("rpm-package")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "run/systemd/system").mkdir(parents=True)
+            home = root / "var/lib/paws"
+            config = root / "etc/paws/control-plane.env"
+            config.parent.mkdir(parents=True)
+            config.write_text("CUSTOM=preserved\n")
+            commands = root / "commands"
+            commands.mkdir()
+            log = root / "log"
+            for name in ("systemctl", "systemd-sysusers", "systemd-tmpfiles", "chown", "rpm"):
+                fake = commands / name
+                fake.write_text(f'#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "{log}"\n' + ('cat >/dev/null\n' if name == "systemd-sysusers" else "") + ('printf "1.0.0\\n"\n' if name == "rpm" else ""))
+                fake.chmod(0o755)
+            environment = {**os.environ, "PATH": str(commands) + ":" + os.environ["PATH"]}
+            scripts = package.scripts(str(root))
+            def run(name, *args):
+                log.write_text("")
+                script = root / name
+                script.write_text(scripts[name])
+                subprocess.run(["sh", str(script), *args], env=environment, check=True)
+                return log.read_text().splitlines()
+            self.assertEqual(run("pre", "1"), [f"systemd-sysusers --replace={root}/usr/lib/sysusers.d/paws.conf -"])
+            self.assertEqual(run("post", "1"), [f"systemd-tmpfiles --create {root}/usr/lib/tmpfiles.d/paws.conf", f"chown root:paws {config}", "systemctl daemon-reload", "systemctl enable paws.service"])
+            self.assertEqual(run("posttrans", "0"), ["systemctl daemon-reload", "systemctl start paws.service"])
+            (home / "pglite").mkdir(parents=True)
+            (home / "pglite/data").write_text("database")
+            calls = run("pre", "2")
+            self.assertIn("systemctl stop paws.service", calls)
+            self.assertNotIn("systemctl start paws.service", calls)
+            backups = list((home / "backups").iterdir())
+            self.assertEqual(len(backups), 1)
+            self.assertTrue(backups[0].name.startswith("pglite-1.0.0-"))
+            self.assertEqual((backups[0] / "data").read_text(), "database")
+            for _ in range(3):
+                run("pre", "2")
+            self.assertEqual(len(list((home / "backups").iterdir())), 3)
+            self.assertNotIn("systemctl enable paws.service", run("post", "2"))
+            self.assertEqual(run("preun", "1"), [])
+            self.assertEqual(run("postun", "1"), ["systemctl daemon-reload", "systemctl try-restart paws.service"])
+            self.assertEqual(config.read_text(), "CUSTOM=preserved\n")
+            config.write_text("PAWS_DATABASE_URL=postgres://localhost/paws\n")
+            before = set((home / "backups").iterdir())
+            run("pre", "2")
+            self.assertEqual(set((home / "backups").iterdir()), before)
+            cp = commands / "cp"
+            cp.write_text("#!/bin/sh\nexit 28\n")
+            cp.chmod(0o755)
+            config.write_text("PAWS_DATABASE_URL=\n")
+            log.write_text("")
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                subprocess.run(["sh", str(root / "pre"), "2"], env=environment, check=True)
+            self.assertEqual(failure.exception.returncode, 28)
+            self.assertEqual([line for line in log.read_text().splitlines() if line.startswith("systemctl")], ["systemctl stop paws.service", "systemctl start paws.service"])
+            self.assertEqual(set((home / "backups").iterdir()), before)
+            cp.unlink()
+            self.assertEqual(run("preun", "0"), ["systemctl disable --now paws.service"])
+            self.assertEqual(run("postun", "0"), ["systemctl daemon-reload"])
+            # Without a running systemd, as in a container image build, the unit is enabled but never started.
+            (root / "run/systemd/system").rmdir()
+            self.assertEqual(run("post", "1")[-1], "systemctl enable paws.service")
+            self.assertNotIn("systemctl daemon-reload", run("post", "1"))
+            self.assertEqual(run("posttrans", "0"), [])
+            self.assertNotIn("systemctl stop paws.service", run("pre", "2"))
+            self.assertEqual(run("preun", "0"), ["systemctl disable paws.service"])
+            self.assertEqual(run("postun", "1"), [])
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)

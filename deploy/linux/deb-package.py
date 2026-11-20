@@ -141,6 +141,23 @@ def build(arguments):
 
 
 
+def stage_control_plane(binary, package):
+    """Lay out the control-plane payload under `package`. The RPM build in rpm-package.py ships the same files."""
+    target = package / "usr/lib/paws/paws"
+    target.parent.mkdir(parents=True)
+    shutil.copyfile(binary, target)
+    target.chmod(0o755)
+    link = package / "usr/bin/paws"
+    link.parent.mkdir(parents=True)
+    link.symlink_to("../lib/paws/paws")
+    unit = (ROOT / "paws.service").read_text()
+    unit = unit.replace("/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts", "/usr/lib/paws/paws")
+    write(package / "usr/lib/systemd/system/paws.service", unit)
+    write(package / "usr/lib/sysusers.d/paws.conf", (ROOT / "paws.sysusers").read_text())
+    write(package / "usr/lib/tmpfiles.d/paws.conf", "d /var/lib/paws 0700 paws paws -\n")
+    write(package / "etc/paws/control-plane.env", (ROOT / "control-plane.env.example").read_text(), 0o600)
+
+
 def build_control_plane(arguments):
     if not release.SEMVER.fullmatch(arguments.version):
         raise ValueError("Invalid release version")
@@ -153,19 +170,7 @@ def build_control_plane(arguments):
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="paws-control-plane-") as temporary:
         package = pathlib.Path(temporary)
-        binary = package / "usr/lib/paws/paws"
-        binary.parent.mkdir(parents=True)
-        shutil.copyfile(arguments.binary, binary)
-        binary.chmod(0o755)
-        link = package / "usr/bin/paws"
-        link.parent.mkdir(parents=True)
-        link.symlink_to("../lib/paws/paws")
-        unit = (ROOT / "paws.service").read_text()
-        unit = unit.replace("/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts", "/usr/lib/paws/paws")
-        write(package / "usr/lib/systemd/system/paws.service", unit)
-        write(package / "usr/lib/sysusers.d/paws.conf", (ROOT / "paws.sysusers").read_text())
-        write(package / "usr/lib/tmpfiles.d/paws.conf", "d /var/lib/paws 0700 paws paws -\n")
-        write(package / "etc/paws/control-plane.env", (ROOT / "control-plane.env.example").read_text(), 0o600)
+        stage_control_plane(arguments.binary, package)
         write(package / "DEBIAN/conffiles", "/etc/paws/control-plane.env\n")
         size = sum(path.stat().st_size for path in package.rglob("*") if path.is_file())
         write(package / "DEBIAN/control", f"Package: paws-control-plane\nVersion: {arguments.version}\nArchitecture: {arguments.architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: systemd, coreutils, findutils, libc6, libstdc++6, libgcc-s1\nInstalled-Size: {(size + 1023) // 1024}\nDescription: Paws control plane\n Delegates Linear issues to paired Linux runners.\n")

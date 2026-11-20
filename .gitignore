@@ -21,3 +21,4 @@ landing/.astro
 assets/plates
 proof-evidence
 codemod-report.md
+__pycache__/

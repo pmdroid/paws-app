@@ -167,3 +167,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
       - run: bash deploy/linux/test-apt.sh
+
+  control-plane-rpm:
+    name: control-plane RPM (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update && sudo apt-get install -y rpm
+      - run: python3 -I -B test/local/linux-release-test.py deploy/linux/release.py ControlPlaneRpmTests ControlPlaneDebTests
+      - run: bash deploy/linux/test-rpm.sh fedora:latest rockylinux/rockylinux:9 almalinux:9

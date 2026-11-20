@@ -114,12 +114,9 @@ def restore():
 
 
 
-def control_plane_scripts(root=""):
-    return {
-        "preinst": f"""#!/bin/sh
-set -eu
-if [ "$1" = upgrade ]; then
-  read_setting() {{
+def control_plane_settings(root=""):
+    """Shell that reads PAWS_DATABASE_URL and PAWS_HOME from the environment file without evaluating it."""
+    return f"""  read_setting() {{
     awk -v key="$1" '
       function trim(value) {{
         sub(/^[[:space:]]*/, "", value)
@@ -149,14 +146,16 @@ if [ "$1" = upgrade ]; then
   fi
   case "$paws_home" in /*) ;; *) paws_home="/var/lib/paws/$paws_home" ;; esac
   paws_home="{root}$paws_home"
-  staging=
-  systemctl stop paws.service
-  trap 'status=$?; trap - 0; if [ -n "$staging" ]; then rm -rf -- "$staging" || true; fi; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi; exit "$status"' 0
-  if [ -z "$database_url" ] && [ -d "$paws_home/pglite" ]; then
+"""
+
+
+def control_plane_backup(version):
+    """Shell that copies local PGlite data to the backups folder, keeping the newest three. `version` names the copy."""
+    return f"""  if [ -z "$database_url" ] && [ -d "$paws_home/pglite" ]; then
     backups="$paws_home/backups"
     install -d -m 0700 "$backups"
     staging=$(mktemp -d "$backups/.pglite-XXXXXX")
-    destination="$backups/pglite-$2-$(date -u +%Y%m%dT%H%M%S%NZ)"
+    destination="$backups/pglite-{version}-$(date -u +%Y%m%dT%H%M%S%NZ)"
     cp -a -- "$paws_home/pglite" "$staging/data"
     touch "$staging/data"
     mv -T -- "$staging/data" "$destination"
@@ -166,7 +165,18 @@ if [ "$1" = upgrade ]; then
     cut -d ' ' -f 2- "$staging/old" > "$staging/paths"
     while IFS= read -r old; do rm -rf -- "$old"; done < "$staging/paths"
   fi
-elif [ "$1" = abort-upgrade ]; then
+"""
+
+
+def control_plane_scripts(root=""):
+    return {
+        "preinst": f"""#!/bin/sh
+set -eu
+if [ "$1" = upgrade ]; then
+{control_plane_settings(root)}  staging=
+  systemctl stop paws.service
+  trap 'status=$?; trap - 0; if [ -n "$staging" ]; then rm -rf -- "$staging" || true; fi; if [ "$status" -ne 0 ]; then systemctl start paws.service || true; fi; exit "$status"' 0
+{control_plane_backup("$2")}elif [ "$1" = abort-upgrade ]; then
   systemctl start paws.service
 fi
 """,
