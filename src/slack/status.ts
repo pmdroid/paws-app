@@ -1,6 +1,7 @@
 import {
   enqueueOutboxOnceSteps,
   getWorkItemSteps,
+  linearSessionGenerationSteps,
   lockSlackStatusSteps,
   readSettingSteps,
   settingsWithPrefixSteps,
@@ -11,6 +12,7 @@ import {
   type Steps,
 } from "../db";
 import { filedTasksSteps } from "./work";
+import { slackWorkMessageSteps } from "./work-message";
 
 export const SLACK_STATUS_JOB = "slack.status";
 export const SLACK_STATUS_EVERY_MS = 60_000;
@@ -167,16 +169,30 @@ export function* slackThreadWorkStatusSteps(
 export function* reconcileSlackStatusSteps(q: Q, now: number): Steps<number> {
   let queued = 0;
   for (const { key } of yield* settingsWithPrefixSteps(q, "slack.issue:")) {
-    const task = yield* slackIssueTaskSteps(q, key.slice("slack.issue:".length));
+    const issueId = key.slice("slack.issue:".length);
+    const task = yield* slackIssueTaskSteps(q, issueId);
     const origin = task ? yield* slackSessionOriginSteps(q, task.sessionKey) : null;
     const item = task && origin ? yield* getWorkItemSteps(q, task.itemId) : null;
     if (!task || !origin?.slackUserId || !origin.linkId || !item) continue;
     if (item.sessionKey !== task.sessionKey) continue;
     const thread: Thread = { ...origin, slackUserId: origin.slackUserId };
+    const member = { userId: origin.userId, linkId: origin.linkId };
+    const { workspaceId, teamId, channelId, threadTs, generation } = origin;
+    const generationNow = yield* linearSessionGenerationSteps(q, task.sessionKey);
+    const fence = { sessionId: task.sessionKey, generation: generationNow, stop: false };
+    const shown = {
+      issueId,
+      thread: { workspaceId, teamId, channelId, threadTs, generation },
+      slackUserId: origin.slackUserId,
+      member,
+      item,
+      key: `${issueId}:${item.state}:${now}`,
+      fence,
+    };
+    if (yield* slackWorkMessageSteps(q, shown, now)) queued++;
     const prior = yield* markSteps(q, thread);
     if (prior?.turnAt !== undefined && now - prior.turnAt < TURN_MS) continue;
     if (liveTurns(prior, now).length) continue;
-    const member = { userId: origin.userId, linkId: origin.linkId };
     const work = yield* slackThreadWorkStatusSteps(q, thread);
     if (work && work.itemId !== item.id) continue;
     const status = work?.status ?? slackStatusFor(item.state);

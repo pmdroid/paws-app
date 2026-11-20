@@ -3073,6 +3073,88 @@ test("queued progress coalesces to the latest update, while questions and result
   expect(texts[1]).toContain("Tests pass");
 });
 
+const WORK_HEAD = `*<https://linear.app/acme/issue/ENG-1|ENG-1>* ${BRIEF_TITLE}`;
+const workEdits = (f: Fixture) =>
+  f.posts("chat.update").map((post) => [post.body.ts, post.body.text]);
+
+test("progress updates post one work message with a Stop button and then edit it, while a question still posts as a reply", async () => {
+  const { f, send } = await filedTask();
+  await send("activity", "update:item-1:1", { kind: "thought", body: "Reading the code" });
+  const posts = f.posts("chat.postMessage");
+  expect(posts.map((post) => post.body.text)).toEqual([
+    `${WORK_HEAD}\nNow: Waiting for a runner\nLatest: Reading the code`,
+  ]);
+  expect(JSON.stringify(posts[0]!.body.blocks)).toContain("paws_stop");
+  await stateOf(f, "running");
+  await send("activity", "update:item-1:2", {
+    kind: "thought",
+    body: `Tests pass ${"x".repeat(600)}`,
+  });
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+  expect(workEdits(f)).toEqual([
+    [posts[0]!.ts, `${WORK_HEAD}\nNow: Working\nLatest: Tests pass ${"x".repeat(489)}…`],
+  ]);
+  expect(JSON.stringify(f.posts("chat.update")[0]!.body.blocks)).toContain("paws_stop");
+  const asked = await openQuestion(f.db, { itemId: "item-1", sessionId: "S1", body: "Which?" });
+  await send("elicitation", "question:q1", { questionId: asked.id, body: "Which region?" });
+  expect(f.posts("chat.postMessage")).toHaveLength(2);
+  expect(String(f.posts("chat.postMessage")[1]!.body.text)).toContain("Paws asks");
+  expect(f.posts("chat.update")).toHaveLength(1);
+});
+
+test("the minute reconcile edits the work message when its state line changes, and sends nothing otherwise", async () => {
+  const { f } = await filedTask();
+  const tick = async () => {
+    f.advance(60_000);
+    await f.reconcile();
+    await f.flush();
+  };
+  await tick();
+  const [post] = f.posts("chat.postMessage");
+  expect(post!.body.text).toBe(`${WORK_HEAD}\nNow: Waiting for a runner`);
+  await stateOf(f, "running");
+  await tick();
+  expect(workEdits(f)).toEqual([[post!.ts, `${WORK_HEAD}\nNow: Working`]]);
+  await tick();
+  expect(f.posts("chat.update")).toHaveLength(1);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+});
+
+test("two queued edits send only the newer, and an unlinked member or a stopped issue gets no edit", async () => {
+  const { f, root, send } = await stoppableTask();
+  await send("activity", "update:item-1:1", { kind: "thought", body: "Reading the code" });
+  const fence = { generation: 0, stop: false };
+  const base = { sessionId: "S1", itemId: "item-1", fence, asked: null, kind: "update" as const };
+  await f.db.transaction(function* (q) {
+    yield* slackTaskUpdateSteps(q, { ...base, key: "e1", text: "Older edit" }, f.now());
+    yield* slackTaskUpdateSteps(q, { ...base, key: "e2", text: "Newer edit" }, f.now());
+  });
+  await f.flush();
+  expect(workEdits(f).map(([, text]) => String(text).split("\n").at(-1))).toEqual([
+    "Latest: Newer edit",
+  ]);
+  await stateOf(f, "completed");
+  await f.say("SMEMBER", "stop ENG-1", { thread_ts: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  expect(f.notice()).toContain("had already finished");
+  await f.db.transaction((q) =>
+    slackTaskUpdateSteps(q, { ...base, key: "e3", text: "After stop" }, f.now()),
+  );
+  await f.reconcile();
+  await f.settle();
+  expect(f.posts("chat.update")).toHaveLength(1);
+  const other = await filedTask();
+  await other.send("activity", "update:item-1:1", { kind: "thought", body: "Reading" });
+  await other.f.say("SMEMBER", "unlink", { thread_ts: other.root.ts });
+  await other.send("activity", "update:item-1:2", { kind: "thought", body: "Unlinked" });
+  await stateOf(other.f, "running");
+  await other.f.reconcile();
+  await other.f.settle();
+  expect(other.f.posts("chat.postMessage")).toHaveLength(1);
+  expect(other.f.posts("chat.update")).toEqual([]);
+});
+
 test("a stream checks delivery again before each burst, and never repeats a burst whose outcome is unknown", async () => {
   const f = await linked(["um", "SMEMBER"]);
   const long = "a".repeat(1_000) + "b".repeat(1_000) + "c".repeat(500);
@@ -3912,6 +3994,8 @@ test("a work follow-up wakes once after the item merges, with its state and pull
   const block = followUpBlock({ purpose: "say when it lands", work: "ENG-1", on: "ended" });
   f.answers.push(`I'll tell you when ENG-1 ends.\n${block}`);
   await f.say("SMEMBER", "tell me when it lands", { thread_ts: root.ts });
+  await f.reconcile();
+  await f.settle();
   f.posted.length = 0;
   const asked = f.prompts.length;
   await wakeAfter(f, MIN);
@@ -4004,6 +4088,8 @@ test("a filed task's repository withheld during the follow-up's turn drops its r
   const block = followUpBlock({ purpose: "say when it lands", work: "ENG-1", on: "ended" });
   f.answers.push(`I'll tell you when ENG-1 ends.\n${block}`);
   await f.say("SMEMBER", "tell me when it lands", { thread_ts: root.ts });
+  await f.reconcile();
+  await f.settle();
   await f.db.run((q) =>
     q.exec(
       q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "item-1")),
