@@ -48,6 +48,7 @@ describe("pull requests", () => {
       return `ghs_push_${minted}`;
     });
     const result = await pushBranch({
+      expected: null,
       worktree: "/tmp/does-not-matter",
       issue: "ENG-123",
       owner: "pmdroid",
@@ -235,6 +236,7 @@ describe("pull requests", () => {
       },
     };
     const result = await publishAccepted({
+      expected: null,
       accepted: false,
       evidence: "Closeout: exhausted",
       worktree: "/tmp/none",
@@ -301,6 +303,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       const client = mergingClient(repo.bare, []);
       await commitFile(repo.wtA, "file.txt", "candidate\n");
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.wtA,
         issue: "ENG-8",
@@ -344,6 +347,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       };
       await commitFile(repo.wtA, "file.txt", "candidate\n");
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.wtA,
         issue: "ENG-8",
@@ -462,6 +466,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       });
       await commitFile(repo.wtA, "file.txt", "candidate\n");
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.wtA,
         issue: "ENG-8",
@@ -589,6 +594,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       await commitFile(repo.work, "candidate.txt", "candidate\n");
       const client = mergingClient(repo.bare, []);
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.work,
         issue: "ENG-8",
@@ -644,6 +650,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
         ["line-1-from-a", ...lines.slice(1)].join("\n") + "\n",
       );
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.wtA,
         issue: "ENG-1",
@@ -667,6 +674,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       changedTail[19] = "line-20-from-b";
       await commitFile(repo.wtB, "file.txt", `${changedTail.join("\n")}\n`);
       await pushBranch({
+        expected: null,
         ...creds(client),
         worktree: repo.wtB,
         issue: "ENG-2",
@@ -790,6 +798,7 @@ describe("Git transport failures and rejected pushes", () => {
     const repo = await oneClone();
     try {
       await commitFile(repo.work, "file.txt", "candidate\n");
+      await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
       const result = await rebaseOntoMain({
         ...lane(repo, mergingClient(repo.bare, []), 8),
         sleep: async () => {},
@@ -818,6 +827,7 @@ describe("Git transport failures and rejected pushes", () => {
     const other = await cloneOf(repo.bare);
     try {
       await commitFile(repo.work, "file.txt", "candidate\n");
+      await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
       await commitFile(other, "other.txt", "main moved\n");
       await exec("git", ["-C", other, "push", "origin", "HEAD:main"]);
       const accepted = await revParse(repo.work, "HEAD");
@@ -851,6 +861,7 @@ describe("Git transport failures and rejected pushes", () => {
     const repo = await oneClone();
     try {
       await commitFile(repo.work, "file.txt", "candidate\n");
+      await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
       const result = await rebaseOntoMain({
         ...lane(repo, mergingClient(repo.bare, []), 8),
         sleep: async () => {},
@@ -902,6 +913,7 @@ describe("Git transport failures and rejected pushes", () => {
     const repo = await oneClone();
     try {
       await commitFile(repo.work, "file.txt", "candidate\n");
+      await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
       const result = await rebaseOntoMain({
         ...lane(repo, mergingClient(repo.bare, []), 8),
         sleep: async () => {},
@@ -921,37 +933,34 @@ describe("Git transport failures and rejected pushes", () => {
     }
   });
 
-  for (const moves of [1, 2]) {
-    test(`a lease conflict re-reads the branch and pushes once more (${moves} remote move)`, async () => {
-      const repo = await oneClone();
-      const other = await cloneOf(repo.bare);
-      try {
-        await exec("git", ["-C", other, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
-        await commitFile(repo.work, "file.txt", "candidate\n");
-        let pushes = 0;
-        const result = await rebaseOntoMain({
-          ...lane(repo, mergingClient(repo.bare, []), 8),
-          sleep: async () => {},
-          gitExec: networkExec(repo.bare, async (command) => {
-            if (command !== "push") return;
-            pushes += 1;
-            if (pushes > moves) return;
-            await commitFile(other, `moved-${pushes}.txt`, "moved\n");
-            await exec("git", ["-C", other, "push", "-f", "origin", "HEAD:refs/heads/paws/ENG-8"]);
-          }),
-        });
-        expect(pushes).toBe(2);
-        if (moves === 1) expect(result.rebased).toBe(true);
-        else {
-          expect(result).toMatchObject({ rebased: false, result: { outcome: "push_rejected" } });
-          if (!result.rebased) expect(result.result.message).toContain("stale info");
-        }
-      } finally {
-        await rm(other, { recursive: true, force: true });
-        await repo.cleanup();
-      }
-    });
-  }
+  test("a branch moved by someone else is not overwritten and reads as a moved head", async () => {
+    const repo = await oneClone();
+    const other = await cloneOf(repo.bare);
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      await exec("git", ["-C", repo.work, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
+      await exec("git", ["-C", other, "fetch", "origin", "paws/ENG-8"]);
+      await exec("git", ["-C", other, "checkout", "-B", "theirs", "FETCH_HEAD"]);
+      await commitFile(other, "theirs.txt", "theirs\n");
+      const theirs = await revParse(other, "HEAD");
+      let pushes = 0;
+      const result = await rebaseOntoMain({
+        ...lane(repo, mergingClient(repo.bare, []), 8),
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command) => {
+          if (command !== "push") return;
+          pushes += 1;
+          await exec("git", ["-C", other, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
+        }),
+      });
+      expect(pushes).toBe(1);
+      expect(result).toMatchObject({ rebased: false, result: { outcome: "sha_moved" } });
+      expect(await remoteBranch(repo.bare, "paws/ENG-8")).toBe(theirs);
+    } finally {
+      await rm(other, { recursive: true, force: true });
+      await repo.cleanup();
+    }
+  });
 });
 
 function lane(

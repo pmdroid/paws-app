@@ -101,6 +101,42 @@ export async function branchContains(
   return { head, contains: status === "identical" || status === "ahead" };
 }
 
+export type BranchArrival = { sha: string; author: string; subject: string };
+
+export async function readBranchArrivals(
+  input: HeadRead & { branch: string; sha: string },
+): Promise<BranchArrival[]> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const compared = await input.client.request({
+    method: "GET",
+    path: repoApiPath(
+      input.owner,
+      input.repo,
+      `/compare/${encodeURIComponent(input.sha)}...${encodeURIComponent(input.branch)}`,
+    ),
+    token,
+    signal: input.signal,
+  });
+  const body = compared.body as { status?: unknown; commits?: unknown } | null;
+  if (compared.status !== 200 || !Array.isArray(body?.commits))
+    throw new Error(`Could not compare ${input.branch} with ${input.sha}`);
+  if (body.status === "identical" || body.status === "behind") return [];
+  return (
+    body.commits as {
+      sha?: unknown;
+      author?: { login?: unknown } | null;
+      commit?: { message?: unknown; author?: { name?: unknown } };
+    }[]
+  ).map((entry) => ({
+    sha: String(entry.sha).toLowerCase(),
+    author: String(entry.author?.login ?? entry.commit?.author?.name ?? "unknown"),
+    subject: String(entry.commit?.message ?? "")
+      .split("\n")[0]!
+      .trim(),
+  }));
+}
+
 /**
  * What GitHub holds for `branch`: the state of its latest pull request into main and how many of
  * its commits main lacks. A missing branch has no commits.

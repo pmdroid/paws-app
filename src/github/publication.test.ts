@@ -78,6 +78,7 @@ for (const hookMode of ["default", "include"]) {
       return realExec(args, options);
     };
     const result = await pushBranch({
+      expected: null,
       worktree: f.worktree,
       issue: "ENG-38",
       owner: "synthetic",
@@ -99,6 +100,7 @@ test("publication pushes HEAD when the repository has a branch named HEAD", asyn
   await f.git("update-ref", "refs/heads/HEAD", base);
   const candidate = await f.git("rev-parse", "refs/heads/main");
   const result = await pushBranch({
+    expected: null,
     worktree: f.worktree,
     issue: "ENG-38",
     owner: "synthetic",
@@ -118,6 +120,7 @@ test("publication pushes a detached HEAD that no branch contains", async () => {
   await f.git("commit", "-am", "detached");
   const detached = await f.git("rev-parse", "HEAD");
   await pushBranch({
+    expected: null,
     worktree: f.worktree,
     issue: "ENG-38",
     owner: "synthetic",
@@ -133,6 +136,7 @@ test("candidate URL rewriting and external transports never receive a publicatio
   await f.git("config", "protocol.ext.allow", "always");
   await f.git("config", `url.ext::${f.hook}.insteadOf`, f.remote);
   await pushBranch({
+    expected: null,
     worktree: f.worktree,
     issue: "ENG-38",
     owner: "synthetic",
@@ -183,6 +187,7 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
     },
   };
   const published = await publishAccepted({
+    expected: null,
     accepted: true,
     evidence: "synthetic accepted",
     worktree: f.worktree,

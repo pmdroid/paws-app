@@ -18,6 +18,7 @@ import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient, sleep as pause } from "../core";
 import {
+  BranchMovedError,
   GitCommandError,
   GitHubHttpError,
   SquashServerError,
@@ -645,10 +646,17 @@ async function pushRebased(
         token: minted,
         gitExec,
         sleep: input.sleep,
+        expected: before,
       });
     } catch (error) {
       // The push waits out the outage: keep the head the lane started from, not one GitHub lacks.
-      if (pushOutageCause(error)) await git(input.worktree, ["reset", "--hard", before], gitExec);
+      if (pushOutageCause(error) || error instanceof BranchMovedError)
+        await git(input.worktree, ["reset", "--hard", before], gitExec);
+      if (error instanceof BranchMovedError)
+        return {
+          ok: false,
+          result: { merged: false, outcome: "sha_moved", branch, message: error.message },
+        };
       const denial =
         error instanceof GitCommandError
           ? pushDenial(redact(minted, error.stderr), {

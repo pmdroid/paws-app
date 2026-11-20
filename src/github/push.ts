@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { gitFailureReason, withCredential } from "./git";
 import { isPushOutage, PushOutageError } from "./transport";
-import { GitCommandError, type GitExec } from "./types";
+import { BranchMovedError, GitCommandError, type GitExec } from "./types";
 
 type PushInput = {
   worktree: string;
@@ -14,42 +14,35 @@ type PushInput = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-export async function pushWithLease(input: PushInput & { head?: string }): Promise<void> {
-  let known = input.head === undefined ? undefined : await currentRemote(input);
+export async function pushWithLease(
+  input: PushInput & { head?: string; expected: string | null },
+): Promise<void> {
+  const known = await currentRemote(input);
   if (input.head !== undefined && known === input.head) return;
-  for (let attempt = 1; ; attempt++) {
-    const remote = known === undefined ? await remoteBranchSha(input) : known;
-    known = undefined;
-    try {
-      await withCredential(
-        input.token,
-        input.gitExec,
-        async (helper) => {
-          const args = [...helper.argsPrefix, "push"];
-          if (remote) args.push(`--force-with-lease=refs/heads/${input.branch}:${remote}`);
-          args.push(input.url, `${input.ref ?? "HEAD"}:refs/heads/${input.branch}`);
-          await helper.exec(args, { cwd: input.worktree, env: helper.env });
-        },
-        { sleep: input.sleep },
-      );
-      return;
-    } catch (error) {
-      if (
-        attempt === 1 &&
-        error instanceof GitCommandError &&
-        /\(stale info\)/.test(error.stderr)
-      ) {
-        const message = input.token
-          ? error.message.replaceAll(input.token, "[redacted]")
-          : error.message;
-        journalCaught(message, "push.pushWithLease", null, "remote lease changed; retrying once");
-        continue;
-      }
-      if (error instanceof PushOutageError) throw error;
-      if (error instanceof GitCommandError && isPushOutage(error.stderr))
-        throw new PushOutageError(error.args, error.stderr);
-      throw error;
+  if (known !== undefined && known !== input.expected)
+    throw new BranchMovedError(input.branch, known);
+  try {
+    await withCredential(
+      input.token,
+      input.gitExec,
+      async (helper) => {
+        const args = [...helper.argsPrefix, "push"];
+        args.push(`--force-with-lease=refs/heads/${input.branch}:${input.expected ?? ""}`);
+        args.push(input.url, `${input.ref ?? "HEAD"}:refs/heads/${input.branch}`);
+        await helper.exec(args, { cwd: input.worktree, env: helper.env });
+      },
+      { sleep: input.sleep },
+    );
+  } catch (error) {
+    if (error instanceof GitCommandError && /\(stale info\)/.test(error.stderr)) {
+      const tip = await currentRemote(input);
+      if (input.head !== undefined && tip === input.head) return;
+      throw new BranchMovedError(input.branch, tip ?? null);
     }
+    if (error instanceof PushOutageError) throw error;
+    if (error instanceof GitCommandError && isPushOutage(error.stderr))
+      throw new PushOutageError(error.args, error.stderr);
+    throw error;
   }
 }
 
