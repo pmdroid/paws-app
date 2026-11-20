@@ -63,6 +63,8 @@ packages = ["apps/*", "packages/*"]
       overlapHold: true,
       ciFixAttempts: 2,
       parallel: 1,
+      conflictProneAfter: 2,
+      conflictProneDays: 7,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(config.ignoredMergeOverrides).toBe(true);
@@ -327,6 +329,8 @@ describe("Merging settings API", () => {
       lanes: ["project", "person"],
       noProject: "own",
       parallel: 1,
+      conflictProneAfter: 2,
+      conflictProneDays: 7,
       parallelFiles: [],
       repositories: {},
       projects: {},
@@ -465,6 +469,8 @@ describe("Merging settings API", () => {
       lanes: ["project", "person"],
       noProject: "own",
       parallel: 1,
+      conflictProneAfter: 2,
+      conflictProneDays: 7,
       parallelFiles: [],
       projects: {},
       repositories: { "acme/platform": { packages: ["apps/*"] } },
@@ -487,6 +493,8 @@ describe("Merging settings API", () => {
       overlapHold: true,
       ciFixAttempts: 5,
       parallel: 1,
+      conflictProneAfter: 2,
+      conflictProneDays: 7,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(audits).toEqual([
@@ -912,6 +920,60 @@ test("the overlap hold defaults on, round-trips off, survives other saves and is
     "Hold work that changes conflict-prone files: on",
   );
   expect(() => parseConfigToml('[merge]\noverlap_hold = "false"\n')).toThrow();
+});
+
+test("the conflict-prone rule round-trips, survives other saves, and drives the conflict-prone list", async () => {
+  const { options, audits } = fixture();
+  const config = parseConfigToml("[merge]\nconflict_prone_after = 3\nconflict_prone_days = 14\n");
+  expect(readMergeSettings(config)).toMatchObject({ conflictProneAfter: 3, conflictProneDays: 14 });
+  for (const [key, value] of [
+    ["conflict_prone_after", 0],
+    ["conflict_prone_after", 21],
+    ["conflict_prone_days", 0],
+    ["conflict_prone_days", 31],
+  ] as const)
+    expect(() => parseConfigToml(`[merge]\n${key} = ${value}\n`)).toThrow(`merge.${key}`);
+  const rules: { conflicts: number; days: number }[] = [];
+  const withFiles = {
+    ...options,
+    hotFiles: async (rule: { conflicts: number; days: number }) => (rules.push(rule), []),
+  };
+  await handleMergeSettingsRequest(request(), withFiles);
+  expect(rules).toEqual([{ conflicts: 2, days: 7 }]);
+  const body = { default: { order: "queue", mainMoved: "ci" } };
+  const put = (extra: Record<string, unknown>) =>
+    handleMergeSettingsRequest(request("PUT", { ...body, ...extra }), options);
+  const saved = await put({ conflictProneAfter: 3, conflictProneDays: 14 });
+  expect(await saved!.json()).toMatchObject({ conflictProneAfter: 3, conflictProneDays: 14 });
+  expect(readFileSync(options.configPath, "utf8")).toContain(
+    "conflict_prone_after = 3\nconflict_prone_days = 14",
+  );
+  expect(audits.map(([, text]) => text)).toEqual([
+    "Conflicts that make a file conflict-prone: 2 → 3",
+    "Days a conflict counts toward conflict-prone: 7 → 14",
+  ]);
+  await put({ parallel: 2 });
+  expect(readMergeSettings(loadConfigFile(options.configPath))).toMatchObject({
+    conflictProneAfter: 3,
+    conflictProneDays: 14,
+  });
+  const read = await (await handleMergeSettingsRequest(request(), withFiles))!.json();
+  expect(read).toMatchObject({ conflictProneAfter: 3, conflictProneDays: 14 });
+  expect(rules.at(-1)).toEqual({ conflicts: 3, days: 14 });
+  for (const [field, value] of [
+    ["conflictProneAfter", 0],
+    ["conflictProneAfter", 21],
+    ["conflictProneAfter", 1.5],
+    ["conflictProneDays", 0],
+    ["conflictProneDays", 31],
+    ["conflictProneDays", 2.5],
+  ] as const) {
+    const refused = await put({ [field]: value });
+    expect(refused?.status).toBe(400);
+    expect(((await refused!.json()) as { field: string }).field).toBe(field);
+  }
+  await put({ conflictProneAfter: 2, conflictProneDays: 7 });
+  expect(readFileSync(options.configPath, "utf8")).not.toContain("conflict_prone");
 });
 
 test("a failed display notification does not undo a settings write or its audit", async () => {

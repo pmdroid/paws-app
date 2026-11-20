@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import {
-  HOT_FILE_WINDOW_MS,
   hotFiles,
   insertQueuedItem,
   listItemHolds,
@@ -10,12 +9,17 @@ import {
   type Db,
 } from "../src/db";
 import { sql, type SQL } from "drizzle-orm";
-import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
+import { workspaceDispatchPg } from "./fake-workspace";
 import { saveChangedPaths } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
 const PROVIDER = "src/dashboard/src/live/provider.ts";
+const DAY = 24 * 60 * 60 * 1000;
+const ONCE = { conflicts: 1, days: 7 };
+
+const workspaceDispatch = (db: Db, options: Parameters<typeof workspaceDispatchPg>[1]) =>
+  workspaceDispatchPg(db, { conflictProne: ONCE, ...options });
 
 const exec = (db: Db, query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
 
@@ -149,6 +153,23 @@ test("with the overlap hold off, an item behind an occupant on a hot file starts
       "third",
     ]);
     expect(await listItemHolds(db)).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
+test("an item is held on a file with one conflict under a one-conflict rule, and starts under a two-conflict rule", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await conflicted(db, [PROVIDER]);
+    await item(db, "first", [PROVIDER], 1);
+    await item(db, "second", [PROVIDER], 2);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["first"]);
+    await setState(db, "first", "running");
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(
+      await workspaceDispatch(db, { now: NOW + 2, conflictProne: { conflicts: 2, days: 7 } }),
+    ).toEqual(["second"]);
   } finally {
     await close();
   }
@@ -328,13 +349,13 @@ test("a merge-queue item ahead of a returned item still holds it", async () => {
 test("hot files come from conflict restarts in the last 7 days", async () => {
   const { db, close } = await tempStore();
   try {
-    await conflicted(db, ["src/old.ts"], NOW - HOT_FILE_WINDOW_MS - 1);
-    expect(await hotFiles(db, NOW)).toEqual([]);
+    await conflicted(db, ["src/old.ts"], NOW - 7 * DAY - 1);
+    expect(await hotFiles(db, NOW, ONCE)).toEqual([]);
     await exec(db, sql`DELETE FROM work_item_repository`);
     await exec(db, sql`DELETE FROM rebase_return`);
     await exec(db, sql`DELETE FROM work_item`);
     await conflicted(db, [PROVIDER, "src/index.ts"]);
-    expect(await hotFiles(db, NOW)).toEqual([
+    expect(await hotFiles(db, NOW, ONCE)).toEqual([
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["earlier"] },
       { repository: "owner/repo", path: "src/index.ts", conflicts: 1, items: ["earlier"] },
     ]);
@@ -366,7 +387,7 @@ test("a conflict restart without files counts the files a merge before it shared
       files: null,
       recordedAt: NOW - 60_000,
     });
-    expect(await hotFiles(db, NOW)).toEqual([
+    expect(await hotFiles(db, NOW, ONCE)).toEqual([
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["returned"] },
     ]);
   } finally {
@@ -411,7 +432,7 @@ test("a later candidate does not change the files of an earlier conflict", async
       paths: ["src/b.ts"],
       recordedAt: NOW - 10_000,
     });
-    expect((await hotFiles(db, NOW)).map((file) => file.path)).toEqual([PROVIDER]);
+    expect((await hotFiles(db, NOW, ONCE)).map((file) => file.path)).toEqual([PROVIDER]);
   } finally {
     await close();
   }

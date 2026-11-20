@@ -12,6 +12,7 @@ import { saveChangedPaths } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
+const ONCE = { conflicts: 1, days: 7 };
 const TOOLKIT = "libs/acme/toolkit.py";
 const PROJECT = "pyproject.toml";
 
@@ -115,7 +116,8 @@ test("an item sent back to rebase and held behind another posts one line naming 
     await item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
     await held(db, "ACME-2", "conflict");
 
-    for (const offset of [0, 1, 2]) await workspaceDispatchPg(db, { now: NOW + offset });
+    for (const offset of [0, 1, 2])
+      await workspaceDispatchPg(db, { now: NOW + offset, conflictProne: ONCE });
 
     expect(await holds(db, "ACME-2")).toEqual([
       {
@@ -138,8 +140,8 @@ test("two items held behind one blocker each get their own line", async () => {
     await held(db, "ACME-2", "conflict");
     await held(db, "ACME-3", "conflict");
 
-    await workspaceDispatchPg(db, { now: NOW });
-    await workspaceDispatchPg(db, { now: NOW + 1 });
+    await workspaceDispatchPg(db, { now: NOW, conflictProne: ONCE });
+    await workspaceDispatchPg(db, { now: NOW + 1, conflictProne: ONCE });
 
     expect(await holds(db, "ACME-2")).toHaveLength(1);
     expect(await holds(db, "ACME-3")).toHaveLength(1);
@@ -156,7 +158,7 @@ test("a hold says nothing without a conflict restart or before the pull request 
     await held(db, "ACME-2", "ci");
     await held(db, "ACME-3", "conflict", false);
 
-    await workspaceDispatchPg(db, { now: NOW });
+    await workspaceDispatchPg(db, { now: NOW, conflictProne: ONCE });
 
     expect(await holds(db, "ACME-2")).toEqual([]);
     expect(await holds(db, "ACME-3")).toEqual([]);
