@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { runDir } from "../src/acp";
-import { writeAgentSettings, type AgentProfiles } from "../src/config";
+import { useMemorySettings, writeAgentSettings, type AgentProfiles } from "../src/config";
 import { JOB_KIND, type Clock } from "../src/core";
 import { JobLoop, OutboxDispatcher, listJobs, listWorkItems } from "../src/db";
 import { createFakeCloseoutGate, type CloseoutVerdict } from "../src/closeout";
@@ -91,6 +91,8 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
         job.status === "pending" &&
         "reviewerFault" in (job.payload as object),
     );
+  const configPath = path.join(layout.pawsRoot, "config.toml");
+  const settings = useMemorySettings(configPath);
   try {
     for (const identifier of ["ENG-1", "ENG-2"])
       await orchestrator.onLinearEvent(created(identifier));
@@ -143,14 +145,12 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     const { profiles } = JSON.parse(
       readFileSync(path.join(runDir(layout.pawsRoot, run), "agent-profile.json"), "utf8"),
     ) as { profiles: AgentProfiles };
-    writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
+    await writeAgentSettings(configPath, {
       defaults: { ...profiles, reviewer: { agent: "codex", model: "a-working-reviewer" } },
     });
     gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
     const changed = Date.now();
-    await (
-      orchestrator as unknown as { reconcileAgentSettings(): Promise<void> }
-    ).reconcileAgentSettings();
+    await orchestrator.applyAgentSettingsToWaiting();
     const released = (await listJobs(db)).filter(
       (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
     );
@@ -168,6 +168,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     ]);
     expect(tracker.questions).toEqual([]);
   } finally {
+    settings.release();
     await orchestrator.shutdown();
     await close();
     await layout.cleanup();

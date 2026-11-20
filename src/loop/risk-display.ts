@@ -27,38 +27,25 @@ import { riskApprovalsSteps, riskGateOn } from "./risk-approval";
 
 export type RiskDisplay = { head: string; detail: string };
 
-/** Config is refreshed on writes and file changes, never on a status read. */
+/** Settings are refreshed on saves and evaluation, never on a status read. */
 export class RiskDisplayReader {
   private readonly policyWatches = new Map<
     string,
     { head: string; key: string; stale: boolean; close: () => void }
   >();
   private closed = false;
-  private configWatch: ReturnType<typeof watch> | undefined;
   private readonly heads = new Map<string, string>();
   private settings: { enabled: boolean; key: string } | null = null;
-  private readonly changed = () => {
-    if (this.closed) return;
-    this.refreshSettings();
-    this.watchConfig();
-  };
 
   constructor(
     private readonly options: {
       store: Db;
-      configPath: string;
       readSettings: () => Pick<MergeSettings, "autoApproveHighRisk" | "repositories">;
       publicUrl?: string | null;
       journal?: (line: string) => void;
     },
   ) {
     this.refreshSettings();
-    try {
-      watchFile(options.configPath, { persistent: false, interval: 1000 }, this.changed);
-      this.watchConfig();
-    } catch (error) {
-      this.caught(error, "watch", null);
-    }
     void this.restorePolicyWatches().catch((error: unknown) => this.caught(error, "watch", null));
   }
 
@@ -70,34 +57,8 @@ export class RiskDisplayReader {
 
   close(): void {
     this.closed = true;
-    this.configWatch?.close();
-    unwatchFile(this.options.configPath, this.changed);
     for (const policyWatch of this.policyWatches.values()) policyWatch.close();
     this.policyWatches.clear();
-  }
-
-  private watchConfig(): void {
-    if (this.closed || this.configWatch) return;
-    try {
-      this.configWatch = watch(this.options.configPath, { persistent: false }, (event) => {
-        if (event === "rename") {
-          this.configWatch?.close();
-          this.configWatch = undefined;
-        }
-        this.changed();
-      });
-      this.configWatch.on("error", (error) => {
-        this.settings = null;
-        this.configWatch?.close();
-        this.configWatch = undefined;
-        this.caught(error, "configWatch", null);
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        this.settings = null;
-        this.caught(error, "configWatch", null);
-      }
-    }
   }
 
   /** Captured during evaluation, never from read(). */

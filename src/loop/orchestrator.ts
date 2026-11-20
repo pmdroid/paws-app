@@ -1038,7 +1038,6 @@ export class Orchestrator {
     this.store = options.store;
     this.riskDisplayReader = new RiskDisplayReader({
       store: this.store,
-      configPath: join(options.pawsRoot, "config.toml"),
       readSettings: () => this.readMergePolicy(),
       publicUrl: options.publicUrl,
       journal: options.journal,
@@ -8130,7 +8129,7 @@ export class Orchestrator {
     let config: ReturnType<typeof loadConfigFile> | null = null;
     let merge: MergeSettings | null = null;
     try {
-      await this.reconcileAgentSettings();
+      await this.applyAgentSettingsToWaiting();
       const loaded = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
       merge = readMergeSettings(loaded);
       if (ownerHasRunner || this.options.itemRunners) config = loaded;
@@ -8470,7 +8469,7 @@ export class Orchestrator {
     if (item.currentRunId !== null) {
       const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
-        await this.reconcileAgentSettings();
+        await this.applyAgentSettingsToWaiting();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -8481,7 +8480,7 @@ export class Orchestrator {
         existing?.status === "lost" &&
         (await this.store.run((q) => takeRunnerSetupResumeSteps(q, item.id, existing.id)))
       ) {
-        await this.reconcileAgentSettings();
+        await this.applyAgentSettingsToWaiting();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -9164,7 +9163,7 @@ export class Orchestrator {
     return async (options: RunAgentOptions) => {
       await this.assertJobCurrent(itemId);
       const resolveProfiles = async () => {
-        await this.reconcileAgentSettings();
+        await this.applyAgentSettingsToWaiting();
         const currentRunId = (await this.store.run((q) => getWorkItemSteps(q, itemId)))
           ?.currentRunId;
         if (!currentRunId)
@@ -11175,12 +11174,6 @@ export class Orchestrator {
       }
       throw error;
     }
-  }
-
-  private async reconcileAgentSettings(): Promise<void> {
-    const configPath = join(this.options.pawsRoot, "config.toml");
-    if (!existsSync(configPath)) return;
-    await this.applyAgentSettingsToWaiting();
   }
 
   async applyAgentSettingsToWaiting(): Promise<number> {
