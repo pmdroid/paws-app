@@ -196,7 +196,8 @@ async function fixture(
             if (fail === "refused") throw new Error("Linear refused the request");
             if (!linear.issues.has(id)) linear.issues.set(id, { id, ...request });
             if (fail === "lost") throw new Error("socket hang up");
-            return { id, identifier: "ENG-1", url: "https://linear.app/acme/issue/ENG-1" };
+            const identifier = `ENG-${[...linear.issues.keys()].indexOf(id) + 1}`;
+            return { id, identifier, url: `https://linear.app/acme/issue/${identifier}` };
           },
         }
       : null;
@@ -2162,9 +2163,31 @@ test("a start drafts a minimal brief only its member sees, and Create files one 
     expect(outgoing).not.toContain(secret);
   expect(f.notice()).toContain("ENG-1");
   await f.click("SMEMBER", message, create);
-  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
-  expect(f.notice()).toContain("This thread's work is <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  await f.settle();
   expect(f.linear.calls).toHaveLength(1);
+  const next = JSON.stringify({ ...JSON.parse(BRIEF), title: "Log failed uploads" });
+  f.answers.push(next);
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).toContain(`ENG-1 (${BRIEF_TITLE})`);
+  const second = draftOf(f).id;
+  expect(second).not.toBe(id);
+  await f.click("SMEMBER", message, { action: "paws_file", value: second });
+  await f.click("SMEMBER", message, { action: "paws_file", value: second });
+  await f.settle();
+  expect(f.linear.issues.size).toBe(2);
+  expect(f.notice()).toContain("<https://linear.app/acme/issue/ENG-2|ENG-2> is filed");
+  const [listed] = await sqlRows<{ value: string }>(
+    f.db,
+    "SELECT value FROM setting WHERE key LIKE 'slack.task:%'",
+  );
+  const tasks = JSON.parse(listed!.value) as { identifier: string; title: string }[];
+  expect(tasks.map((task) => [task.identifier, task.title])).toEqual([
+    ["ENG-1", BRIEF_TITLE],
+    ["ENG-2", "Log failed uploads"],
+  ]);
+  f.answers.push("Sure.");
+  await f.say("SADMIN", "what is left?", { thread_ts: root.ts });
+  expect(f.prompts.at(-1)!.prompt).toContain("Linear issues: ENG-1, ENG-2.");
   const brief = (creatorId: string) => ({
     readBriefIssue: async (key: string) => ({ issue: { issueId: key }, parent: null, creatorId }),
   });
@@ -2211,7 +2234,7 @@ test("an unconfirmed or refused filing reconciles to the thread's one issue when
   expect(f.posts("chat.postEphemeral").map((post) => String(post.body.text))).toContainEqual(
     expect.stringContaining("Linear didn't confirm the issue (socket hang up)"),
   );
-  expect(f.notice()).toContain("This thread's work is <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  expect(f.notice()).toContain("<https://linear.app/acme/issue/ENG-1|ENG-1> is filed");
   const filings = f.linear.calls;
   expect(new Set(filings.map((call) => JSON.stringify(call))).size).toBe(1);
   expect(filings).toHaveLength(3);
@@ -2551,7 +2574,8 @@ test("a filed thread hands its context only to its own run, and gets questions, 
   const posts = f.posts("chat.postMessage");
   expect(posts.map((post) => post.body.thread_ts)).toEqual([root.ts, root.ts, root.ts]);
   const texts = posts.map((post) => String(post.body.text));
-  expect(texts[0]).toContain("Paws asks on <https://linear.app/acme/issue/ENG-1|ENG-1>");
+  expect(texts[0]).toStartWith("*<https://linear.app/acme/issue/ENG-1|ENG-1>* Paws asks");
+  expect(texts[1]).toStartWith("*<https://linear.app/acme/issue/ENG-1|ENG-1>*");
   expect(texts[0]).toContain("Which region?");
   expect(texts[1]).toContain("Tests pass");
   expect(texts[2]).toContain("pull/9");
@@ -2637,7 +2661,7 @@ test("a Slack answer needs the dashboard's task access, resumes once and leaves 
     questionId: asked.id,
     body: "Which bucket?",
   });
-  expect(String(f.posts("chat.postMessage")[0]!.body.text)).toContain("answer by mentioning @Paws");
+  expect(String(f.posts("chat.postMessage")[0]!.body.text)).toContain("answer by replying");
   f.advance(2_000);
   const at = () => `${Math.ceil(f.now() / 1000) + 1}.000100`;
   const member = { workspaceId: "W1", userId: "um", role: "member" as const, active: true };
@@ -2685,9 +2709,9 @@ test("questions Slack can't answer post only a Paws link, and a task without a r
   await send("activity", "fail:1", { kind: "error", body: "No configured GitHub repository." });
   const texts = f.posts("chat.postMessage").map((p) => p.body.text);
   expect(texts).toEqual([
-    `Choose the repository in Paws: ${link}`,
-    `Answer this in Paws: ${link}`,
-    `Paws has an update on this work that it can't share here. See it in Paws: ${link}`,
+    `ENG-1: Choose the repository in Paws: ${link}`,
+    `ENG-1: Answer this in Paws: ${link}`,
+    `ENG-1: Paws has an update on this work that it can't share here. See it in Paws: ${link}`,
   ]);
   expect(JSON.stringify(f.posts("chat.postMessage")[0]!.body.blocks)).toContain(link);
   expect(
@@ -3042,7 +3066,7 @@ test("a stop while the thread's issue is being filed or awaits intake waits for 
     f.db,
     "SELECT key, value FROM setting WHERE key LIKE 'slack.task:%'",
   );
-  const draft = task!.key.replace("slack.task:", "slack.draft:");
+  const draft = `${task!.key.replace("slack.task:", "slack.draft:")}:pending`;
   await sqlRun(f.db, "DELETE FROM setting WHERE key = ?", [task!.key]);
   await sqlRun(f.db, "INSERT INTO setting(key, value, updated_at) VALUES(?, ?, ?)", [
     draft,
@@ -3073,6 +3097,89 @@ test("a stop while the thread's issue is being filed or awaits intake waits for 
   await f.settle();
   expect(await itemState(f, "item-1")).toBe("cancelled");
   expect(f.commands).toEqual([expect.objectContaining({ type: "stop", itemId: "item-1" })]);
+});
+
+async function twoTasks() {
+  const task = await stoppableTask();
+  const { f, root } = task;
+  f.answers.push(JSON.stringify({ ...JSON.parse(BRIEF), title: "Log failed uploads" }));
+  await f.say("SMEMBER", "start ENG", { thread_ts: root.ts });
+  const message = { ts: "1800000000.000999", threadTs: root.ts };
+  await f.click("SMEMBER", message, { action: "paws_file", value: draftOf(f).id });
+  await f.settle();
+  const issueId = [...f.linear.issues.keys()][1]!;
+  await f.db.run(function* (q) {
+    yield* ensureLinearSessionSteps(q, { sessionId: "S2", issueId, organizationId: "ORG1" });
+    yield* insertWorkItemSteps(q, "item-2");
+    const set = { linearIssueId: issueId, linearIdentifier: "ENG-2", sessionKey: "S2" };
+    yield* q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, "item-2")));
+  });
+  await taskAccess(f, "S2");
+  const remoteUrl = "https://github.com/acme/app.git";
+  await f.db.transaction((q) =>
+    bindWorkItemRepositorySteps(q, "item-2", { owner: "acme", repo: "app", remoteUrl }),
+  );
+  await bindLinearSessionTask(f.db, "S2", "delegation-item-2");
+  f.posted.length = 0;
+  return task;
+}
+
+test("a reply answers the one waiting issue, and with several waiting it must name the issue key", async () => {
+  const { f, root } = await twoTasks();
+  const ask = (itemId: string, sessionId: string) =>
+    openQuestion(f.db, { itemId, sessionId, body: "Which?", now: f.now() });
+  const reply = async (text: string) => {
+    f.advance(2_000);
+    const ts = `${Math.ceil(f.now() / 1000) + 1}.000100`;
+    await f.deliver(f.mention("SMEMBER", text, { thread_ts: root.ts, ts }));
+    await f.settle();
+  };
+  const first = await ask("item-1", "S1");
+  await reply("uploads");
+  expect(f.submitted).toEqual([
+    expect.objectContaining({ questionId: first.id, answer: "uploads" }),
+  ]);
+  expect(f.notice()).toStartWith("ENG-1: Thanks");
+  const [one, two] = [await ask("item-1", "S1"), await ask("item-2", "S2")];
+  await reply("yes");
+  expect(f.notice()).toBe(
+    "Several issues are waiting: ENG-1, ENG-2. Start your reply with the issue key.",
+  );
+  expect(f.submitted).toHaveLength(1);
+  await reply("eng-2 yes");
+  expect(f.submitted.at(-1)).toMatchObject({ questionId: two.id, answer: "yes" });
+  expect(f.notice()).toStartWith("ENG-2: Thanks");
+  await reply("no");
+  expect(f.submitted.at(-1)).toMatchObject({ questionId: one.id, answer: "no" });
+  expect(f.submitted).toHaveLength(3);
+});
+
+test("stop stops every item the person may stop, and stop ENG-1 stops only that issue", async () => {
+  const { f, root } = await twoTasks();
+  const admin = { workspaceId: "W1", userId: "ua", active: true, now: f.now() };
+  await syncWorkspaceMember(f.db, { ...admin, role: "member", teamIds: ["team-eng"] });
+  await sqlRun(f.db, "UPDATE workspace_member SET role = 'member' WHERE user_id = 'ua'");
+  await f.say("SADMIN", "stop", { thread_ts: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  expect([await itemState(f, "item-1"), await itemState(f, "item-2")]).toEqual([
+    "queued",
+    "queued",
+  ]);
+  await f.say("SMEMBER", "stop ENG-1", { thread_ts: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  expect([await itemState(f, "item-1"), await itemState(f, "item-2")]).toEqual([
+    "cancelled",
+    "queued",
+  ]);
+  expect(f.notice()).toStartWith("Stopped ENG-1.");
+  await f.say("SMEMBER", "stop", { thread_ts: root.ts });
+  f.advance(60_000);
+  await f.settle();
+  expect(await itemState(f, "item-2")).toBe("cancelled");
+  const notices = f.posts("chat.postEphemeral").map((post) => String(post.body.text));
+  expect(notices.filter((text) => text.startsWith("Stopped ENG-2."))).toHaveLength(1);
 });
 
 test("a Linear update still waiting when the stop lands is never mirrored to the thread", async () => {

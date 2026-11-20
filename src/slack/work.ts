@@ -38,6 +38,7 @@ type Brief = { title: string; scope: string; acceptance: string[] };
 export type Draft = Thread &
   Brief & {
     id: string;
+    slot: string;
     userId: string;
     linkId: string;
     mentionTs: string;
@@ -47,13 +48,23 @@ export type Draft = Thread &
     approvedAt?: number;
     attemptedAt?: number;
   };
-type SlackTask = { identifier: string; url: string | null };
+export type SlackTask = {
+  issueId: string;
+  identifier: string;
+  url: string | null;
+  title: string;
+  teamId: string;
+  filedAt: number;
+};
 
 export const slackThreadKey = (t: Thread) =>
   `${t.workspaceId}:${t.teamId}:${t.channelId}:${t.threadTs}`;
-export const draftKey = (t: Thread) => `slack.draft:${slackThreadKey(t)}`;
+export const slackDraftIssueKey = (d: Draft) => `${slackThreadKey(d)}:${d.slot}`;
+export const draftKey = (d: Draft) => `slack.draft:${slackDraftIssueKey(d)}`;
+const draftPrefix = (t: Thread) => `slack.draft:${slackThreadKey(t)}:`;
 const taskKey = (t: Thread) => `slack.task:${slackThreadKey(t)}`;
 const parsed = <T>(value: string | null) => (value === null ? null : (JSON.parse(value) as T));
+const ISSUE_KEY = /^([A-Za-z][A-Za-z0-9_]*-\d+)\b[\s:,.-]*/;
 
 export const DRAFT_INSTRUCTIONS =
   'You are Paws, preparing a Linear issue from this Slack channel thread. Reply with only a JSON object {"title": string, "scope": string, "acceptance": string[]}: a short title, the implementation scope and constraints, and testable acceptance criteria for the work the thread asks for. Keep it under 2,000 characters. Include only what the work needs: no names, Slack messages, links, ids, secrets or quoted source code.';
@@ -64,7 +75,7 @@ export const WORK_NOTICES = {
   not_member: "You aren't a member of that Linear team, so Paws filed nothing.",
   no_linear: "Paws isn't connected to Linear, so it can't file work from Slack.",
   no_draft: "Paws couldn't draft a short enough issue from this thread, so it filed nothing.",
-  pending: "Paws is already filing this thread's issue.",
+  pending: "Paws is already filing your issue from this thread.",
   discarded: "Discarded. Paws sent nothing to Linear.",
   stale: "That draft is no longer current, so Paws filed nothing.",
   changed: "Who can read that Linear team changed, so Paws filed nothing. Start again.",
@@ -119,30 +130,65 @@ export function draftMessage(brief: Brief, team: SlackIssueTeam, id: string) {
   return text.length <= 3_000 ? { text, blocks } : null;
 }
 
-export function filedNotice(task: SlackTask): string {
+export function filedNotice(task: Pick<SlackTask, "identifier" | "url">): string {
   const link = task.url ? `<${task.url}|${task.identifier}>` : task.identifier;
-  return `This thread's work is ${link}, delegated to Paws. It starts when a runner is free; you can keep talking here meanwhile.`;
+  return `${link} is filed from this thread and delegated to Paws. It starts when a runner is free; you can keep talking here meanwhile.`;
 }
 
-export function* filedTaskSteps(q: Q, thread: Thread): Steps<SlackTask | null> {
-  return parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
+export function severalWaiting(identifiers: string[]): string {
+  return `Several issues are waiting: ${identifiers.join(", ")}. Start your reply with the issue key.`;
+}
+
+export function slackIssuePrefix(text: string): { identifier: string; rest: string } | null {
+  const match = ISSUE_KEY.exec(text.trim());
+  return match
+    ? { identifier: match[1]!.toUpperCase(), rest: text.trim().slice(match[0].length) }
+    : null;
+}
+
+export function filedLine(tasks: SlackTask[], teamIds: readonly string[]): string {
+  if (!tasks.length) return "";
+  const named = tasks.map((task) =>
+    teamIds.includes(task.teamId) ? `${task.identifier} (${task.title})` : task.identifier,
+  );
+  return ` This thread already filed these Linear issues: ${named.join(", ")}. Don't propose or draft work they already cover.`;
+}
+
+export function* filedTasksSteps(q: Q, thread: Thread): Steps<SlackTask[]> {
+  const value = parsed<unknown>(yield* readSettingSteps(q, taskKey(thread)));
+  return Array.isArray(value) ? (value as SlackTask[]) : [];
+}
+
+function* threadDraftsSteps(q: Q, thread: Thread): Steps<{ key: string; draft: Draft }[]> {
+  const rows = yield* settingsWithPrefixSteps(q, draftPrefix(thread));
+  return rows.flatMap((row) => {
+    const draft = parsed<Draft>(row.value);
+    return draft ? [{ key: row.key, draft }] : [];
+  });
+}
+
+function* ownDraftSteps(q: Q, thread: Thread): Steps<Draft | null> {
+  const drafts = yield* threadDraftsSteps(q, thread);
+  return drafts.find(({ draft }) => draft.slackUserId === thread.slackUserId)?.draft ?? null;
 }
 
 export function* filingStartedSteps(q: Q, thread: Thread): Steps<boolean> {
-  if (yield* readSettingSteps(q, taskKey(thread))) return true;
-  return !!parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)))?.approvedAt;
+  if ((yield* filedTasksSteps(q, thread)).length) return true;
+  return (yield* threadDraftsSteps(q, thread)).some(({ draft }) => !!draft.approvedAt);
+}
+
+export function* filingPendingSteps(q: Q, thread: Thread): Steps<boolean> {
+  return (yield* threadDraftsSteps(q, thread)).some(({ draft }) => !!draft.approvedAt);
 }
 
 export function* startStateSteps(q: Q, thread: Thread): Steps<string | Draft | null> {
-  const task = parsed<SlackTask>(yield* readSettingSteps(q, taskKey(thread)));
-  if (task) return filedNotice(task);
-  const draft = parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)));
+  const draft = yield* ownDraftSteps(q, thread);
   if (draft?.attemptedAt) return draft;
   return draft?.approvedAt ? WORK_NOTICES.pending : null;
 }
 
 export function* editableDraftSteps(q: Q, thread: Thread, linkId: string, at: number) {
-  const draft = parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)));
+  const draft = yield* ownDraftSteps(q, thread);
   const mine =
     draft?.slackUserId === thread.slackUserId &&
     draft.linkId === linkId &&
@@ -184,10 +230,12 @@ export function* proposeDraftSteps(
   at: number,
 ): Steps<Draft | null> {
   if ((yield* startStateSteps(q, input)) !== null) return null;
-  const current = parsed<Draft>(yield* readSettingSteps(q, draftKey(input)));
+  const current = yield* ownDraftSteps(q, input);
   if (current?.mentionTs === input.mentionTs) return current;
-  const draft: Draft = { ...input, id: randomBytes(12).toString("hex"), team, createdAt: at };
-  yield* updateSettingSteps(q, draftKey(input), () => JSON.stringify(draft), at);
+  if (current) yield* takeSettingSteps(q, draftKey(current));
+  const id = randomBytes(12).toString("hex");
+  const draft: Draft = { ...input, id, slot: id, team, createdAt: at };
+  yield* updateSettingSteps(q, draftKey(draft), () => JSON.stringify(draft), at);
   return draft;
 }
 
@@ -203,7 +251,8 @@ export function* decideDraftSteps(
   fileJob: (draft: Draft) => { queue: string; jobKey: string; payload: unknown },
   at: number,
 ): Steps<string | null> {
-  const draft = parsed<Draft>(yield* readSettingSteps(q, draftKey(thread)));
+  const drafts = yield* threadDraftsSteps(q, thread);
+  const draft = drafts.find((row) => row.draft.id === click.draftId)?.draft;
   const mine =
     draft?.id === click.draftId &&
     draft.slackUserId === thread.slackUserId &&
@@ -214,12 +263,12 @@ export function* decideDraftSteps(
   if (stale || !click.approve) {
     const retired = { ...draft, id: randomBytes(12).toString("hex") };
     if (draft.attemptedAt)
-      yield* updateSettingSteps(q, draftKey(thread), () => JSON.stringify(retired), at);
-    yield* dropDraftSteps(q, draftKey(thread));
+      yield* updateSettingSteps(q, draftKey(draft), () => JSON.stringify(retired), at);
+    yield* dropDraftSteps(q, draftKey(draft));
     return click.approve ? WORK_NOTICES.stale : WORK_NOTICES.discarded;
   }
   const approved: Draft = { ...draft, approvedAt: at };
-  yield* updateSettingSteps(q, draftKey(thread), () => JSON.stringify(approved), at);
+  yield* updateSettingSteps(q, draftKey(draft), () => JSON.stringify(approved), at);
   yield* enqueueJobOnceSteps(q, { ...fileJob(approved), now: at });
   return "";
 }
@@ -234,10 +283,7 @@ export function* fileReadySteps(
   if (!draft?.approvedAt) return null;
   const user = yield* workspaceMemberSteps(q, draft.workspaceId, draft.userId);
   const allowed =
-    !(yield* readSettingSteps(q, taskKey(draft))) &&
-    (yield* member(draft)) &&
-    workspaceMemberUsable(user) &&
-    user.teamIds.includes(draft.team.id);
+    (yield* member(draft)) && workspaceMemberUsable(user) && user.teamIds.includes(draft.team.id);
   if (!allowed) {
     yield* dropDraftSteps(q, key);
     return null;
@@ -256,6 +302,7 @@ export function* fileReadySteps(
 }
 
 export function* recordFiledSteps(q: Q, draft: Draft, task: SlackTask, at: number): Steps<void> {
-  yield* updateSettingSteps(q, taskKey(draft), () => JSON.stringify(task), at);
+  const tasks = (yield* filedTasksSteps(q, draft)).filter((t) => t.issueId !== task.issueId);
+  yield* updateSettingSteps(q, taskKey(draft), () => JSON.stringify([...tasks, task]), at);
   yield* takeSettingSteps(q, draftKey(draft));
 }

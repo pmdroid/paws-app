@@ -10,6 +10,7 @@ import {
   type Q,
   type Steps,
 } from "../db";
+import { filedTasksSteps } from "./work";
 
 export const SLACK_STATUS_JOB = "slack.status";
 export const SLACK_STATUS_EVERY_MS = 60_000;
@@ -149,6 +150,20 @@ export function* slackTaskStatusSteps(
   return item ? { status: slackStatusFor(item.state), itemId: item.id } : null;
 }
 
+const RANK: Record<SlackStatus, number> = { processing: 0, active: 1, suspended: 2, closed: 3 };
+
+export function* slackThreadWorkStatusSteps(
+  q: Q,
+  thread: Thread,
+): Steps<{ status: SlackStatus; itemId: string } | null> {
+  let best: { status: SlackStatus; itemId: string } | null = null;
+  for (const task of yield* filedTasksSteps(q, thread)) {
+    const found = yield* slackTaskStatusSteps(q, task.issueId);
+    if (found && (!best || RANK[found.status] < RANK[best.status])) best = found;
+  }
+  return best;
+}
+
 export function* reconcileSlackStatusSteps(q: Q, now: number): Steps<number> {
   let queued = 0;
   for (const { key } of yield* settingsWithPrefixSteps(q, "slack.issue:")) {
@@ -162,7 +177,9 @@ export function* reconcileSlackStatusSteps(q: Q, now: number): Steps<number> {
     if (prior?.turnAt !== undefined && now - prior.turnAt < TURN_MS) continue;
     if (liveTurns(prior, now).length) continue;
     const member = { userId: origin.userId, linkId: origin.linkId };
-    const status = slackStatusFor(item.state);
+    const work = yield* slackThreadWorkStatusSteps(q, thread);
+    if (work && work.itemId !== item.id) continue;
+    const status = work?.status ?? slackStatusFor(item.state);
     if (yield* slackStatusSteps(q, { thread, member, status, itemId: item.id }, now)) queued++;
   }
   return queued;
