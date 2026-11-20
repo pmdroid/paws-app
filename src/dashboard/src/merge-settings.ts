@@ -8,6 +8,9 @@ export type MergeSettings = {
   sessionDone?: "pull_request" | "ci_green" | "settled";
   sessionQuietMinutes?: number;
   autoApproveHighRisk?: boolean;
+  overlapHold?: boolean;
+  conflictProneAfter?: number;
+  conflictProneDays?: number;
   default: MergeChoice;
   repositories?: Record<
     string,
@@ -49,7 +52,7 @@ export type HighRiskRepository = {
     | { state: "unavailable"; reason: string };
 };
 /**
- * A file that sent work back for a merge-queue conflict in the last 7 days. While a running or
+ * A file that sent work back for a merge-queue conflict often enough in the configured window. While a running or
  * merge-queue item changes it, a queued item that changes it too waits for that one to merge.
  */
 export type HotFile = {

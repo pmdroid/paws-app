@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { MergeSettingsView } from "../merge-settings";
 import {
   ciFixProblem,
+  conflictProneProblem,
   mergeSettingsBody,
   mergeSettingsRequest,
   fieldProblem,
@@ -433,7 +434,101 @@ describe("Conflict-prone files", () => {
   });
 
   test("says nothing is held back without conflicts", () => {
-    expect(render([])).toContain("No merge conflicts in the last 7 days, so nothing is held back.");
+    expect(render([])).toContain(
+      "No file reached 2 conflicts in the last 7 days, so nothing is held back.",
+    );
+  });
+
+  const rule = { overlapHold: true, conflictProneAfter: 3, conflictProneDays: 14 };
+  const ruled = (view: Partial<MergeSettingsView>, field?: string, error?: string) =>
+    renderMergeSettings({
+      data: { ...data(), ...rule, ...view },
+      busy: null,
+      error: error ?? null,
+      ...(field ? { field } : {}),
+      saved: false,
+    });
+
+  test("the hold switch and the rule render with a list, an empty list and no list", () => {
+    for (const hotFiles of [[file("src/index.ts", 3)], [], undefined]) {
+      const html = ruled(hotFiles ? { hotFiles } : {});
+      expect(html).toContain(
+        '<input type="checkbox" name="overlap-hold" aria-describedby="merge-overlap-hold-help" checked> Hold work that changes conflict-prone files</label>',
+      );
+      expect(html).toContain(
+        "On, a restart that changes one of these files waits until the other work on it has merged. Off, it does not wait for these files and is rebased if it conflicts.",
+      );
+      expect(html).toContain(
+        '<label for="merge-conflict-prone-after">Conflicts before a file holds work</label>',
+      );
+      expect(html).toMatch(/id="merge-conflict-prone-after"[^>]*min="1" max="20"[^>]*value="3"/);
+      expect(html).toContain(
+        '<label for="merge-conflict-prone-days">Counted over the last (days)</label>',
+      );
+      expect(html).toMatch(/id="merge-conflict-prone-days"[^>]*min="1" max="30"[^>]*value="14"/);
+      expect(html).toContain("These files caused merge conflicts in the last 14 days.");
+    }
+    expect(ruled({ hotFiles: [file("src/index.ts", 3)] })).toContain("3 conflicts in 14 days");
+    expect(ruled({ hotFiles: [] })).toContain(
+      "No file reached 3 conflicts in the last 14 days, so nothing is held back.",
+    );
+    expect(ruled({})).toContain("The conflict-prone files could not be listed.");
+    expect(ruled({ overlapHold: false })).toContain(
+      'aria-describedby="merge-overlap-hold-help"> Hold work that changes conflict-prone files',
+    );
+  });
+
+  test("the save body carries the switch and both numbers", () => {
+    expect(mergeSettingsBody({ ...data(), ...rule, overlapHold: false })).toMatchObject({
+      overlapHold: false,
+      conflictProneAfter: 3,
+      conflictProneDays: 14,
+    });
+    for (const key of ["overlapHold", "conflictProneAfter", "conflictProneDays"])
+      expect(mergeSettingsBody(data())).not.toHaveProperty(key);
+  });
+
+  test("with the switch off each file's toggle is disabled and keeps its value", () => {
+    const html = ruled({
+      overlapHold: false,
+      parallelFiles: [{ repository: "acme/platform", paths: ["src/index.ts"] }],
+      hotFiles: [
+        { ...file("src/index.ts", 3), held: false },
+        { ...file("src/busy.ts", 4), held: true },
+      ],
+    });
+    expect(html).toContain('data-path="src/index.ts" disabled> Hold work that changes this file');
+    expect(html).toContain('data-path="src/busy.ts" checked disabled> Hold work that changes');
+    expect(
+      ruled({
+        parallelFiles: [],
+        hotFiles: [{ ...file("src/busy.ts", 4), held: true }],
+      }),
+    ).toContain('data-path="src/busy.ts" checked> Hold work');
+  });
+
+  test("an out-of-range number is named under its field and blocks the save", () => {
+    expect(conflictProneProblem({ ...data(), ...rule })).toBeNull();
+    for (const [view, field, max] of [
+      [{ conflictProneAfter: 21 }, "conflictProneAfter", 20],
+      [{ conflictProneAfter: NaN }, "conflictProneAfter", 20],
+      [{ conflictProneDays: 0 }, "conflictProneDays", 30],
+      [{ conflictProneDays: 1.5 }, "conflictProneDays", 30],
+    ] as const) {
+      const problem = conflictProneProblem({ ...data(), ...rule, ...view });
+      expect(problem).toEqual({ field, error: `${field} must be a whole number from 1 to ${max}` });
+      const html = ruled(view, problem!.field, problem!.error);
+      const id =
+        field === "conflictProneAfter" ? "merge-conflict-prone-after" : "merge-conflict-prone-days";
+      const other =
+        field === "conflictProneAfter" ? "merge-conflict-prone-days" : "merge-conflict-prone-after";
+      expect(html).toContain(`aria-describedby="${id}-help ${id}-error" aria-invalid="true"`);
+      expect(html).toContain(
+        `<small class="err" id="${id}-error" role="alert">Must be a whole number from 1 to ${max}</small>`,
+      );
+      expect(html).not.toContain(`id="${other}-error"`);
+      expect(html).toContain("Fix the field marked under Conflict-prone files.");
+    }
   });
 });
 

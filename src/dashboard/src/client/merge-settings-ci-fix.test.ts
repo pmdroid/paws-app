@@ -152,3 +152,47 @@ test("repository and project drafts survive server validation and then save", as
     projects: { abc: { lane: "project" } },
   });
 });
+
+test("the conflict hold switch and rule save from the form, and an out-of-range number saves nothing", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith("/api/settings/merging") && init?.method !== "PUT") {
+      requests.push({ url: "/api/settings/merging", method: "GET", body: undefined });
+      return Response.json({
+        ...MERGING,
+        overlapHold: true,
+        conflictProneAfter: 2,
+        conflictProneDays: 7,
+        parallelFiles: [],
+        hotFiles: [
+          { repository: "acme/app", path: "src/a.ts", conflicts: 2, items: [], held: true },
+        ],
+      });
+    }
+    return original(url, init);
+  }) as typeof fetch;
+  const root = mount();
+  await settle();
+  const hold = root.querySelector<HTMLInputElement>('[name="overlap-hold"]')!;
+  hold.checked = false;
+  hold.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
+  expect(root.querySelector<HTMLInputElement>('[name="hot-hold"]')!.disabled).toBe(true);
+  expect(root.querySelector<HTMLInputElement>('[name="hot-hold"]')!.checked).toBe(true);
+  setValue(root, "merge-conflict-prone-days", "31");
+  submit(root);
+  await settle();
+  expect(requests.filter(({ method }) => method === "PUT")).toEqual([]);
+  expect(root.querySelector("#merge-conflict-prone-days-error")!.textContent).toBe(
+    "Must be a whole number from 1 to 30",
+  );
+  setValue(root, "merge-conflict-prone-after", "4");
+  setValue(root, "merge-conflict-prone-days", "14");
+  submit(root);
+  await settle();
+  expect(requests.find(({ method }) => method === "PUT")?.body).toMatchObject({
+    overlapHold: false,
+    conflictProneAfter: 4,
+    conflictProneDays: 14,
+    parallelFiles: [],
+  });
+});
