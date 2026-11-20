@@ -49,7 +49,7 @@ export interface GitHubClient {
     body?: unknown;
     signal?: AbortSignal;
     /** `"text"` returns the body as a string and follows a redirect without the token (log downloads). */
-    accept?: "text";
+    accept?: "text" | "diff";
   }): Promise<GitHubResponse>;
 }
 
