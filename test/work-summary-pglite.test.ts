@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useMemorySettings } from "../src/config";
 import { currentSourceContextRecords, type Db } from "../src/db";
 import { recordPullRequestSummary } from "../src/loop";
 import {
@@ -28,7 +29,10 @@ afterAll(async () => {
 async function fixture(workSummary = true) {
   seq++;
   const pawsRoot = mkdtempSync(join(tmpdir(), "paws-work-summary-"));
-  writeFileSync(join(pawsRoot, "config.toml"), `[project_memory]\nwork_summary = ${workSummary}\n`);
+  useMemorySettings(
+    join(pawsRoot, "config.toml"),
+    `[project_memory]\nwork_summary = ${workSummary}\n`,
+  );
   const [organizationId, projectId, requesterId] = [`org-${seq}`, `project-${seq}`, `alice-${seq}`];
   const scope = { organizationId, projectId, requesterId };
   const requester = { workspaceId: organizationId, userId: requesterId };
