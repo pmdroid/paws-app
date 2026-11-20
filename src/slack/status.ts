@@ -16,7 +16,6 @@ import { slackWorkMessageSteps } from "./work-message";
 
 export const SLACK_STATUS_JOB = "slack.status";
 export const SLACK_STATUS_EVERY_MS = 60_000;
-export const SLACK_STATUS_REFRESH_MS = 50 * 60_000;
 export const SLACK_STREAM_CLOSE_MS = 9 * 60_000;
 export const SLACK_STREAM_LIFETIME_MS = 10 * 60_000;
 const TURN_MS = 11 * 60_000;
@@ -57,11 +56,9 @@ const liveTurns = (mark: Mark | null, now: number) =>
 const markKey = (t: Thread) =>
   `slack.status:${t.workspaceId}:${t.teamId}:${t.channelId}:${t.threadTs}`;
 
-const WORKING = new Set(["running", "verifying", "recovering"]);
 const TERMINAL = new Set(["completed", "merged", "cancelled", "failed"]);
 
 export function slackStatusFor(state: string): SlackStatus {
-  if (WORKING.has(state)) return "processing";
   if (state === "paused") return "suspended";
   return TERMINAL.has(state) ? "closed" : "active";
 }
@@ -97,8 +94,7 @@ export function* slackStatusSteps(
       ]
     : kept;
   const status = turns.length ? "processing" : input.status;
-  const stale = status === "processing" && now - (prior?.at ?? 0) >= SLACK_STATUS_REFRESH_MS;
-  const same = prior?.status === status && !stale;
+  const same = prior?.status === status;
   const turnAt = input.turn ? now : change ? prior?.turnAt : undefined;
   const unchanged = JSON.stringify(turns) === JSON.stringify(prior?.turns ?? []);
   if (same && turnAt === prior.turnAt && unchanged) return false;

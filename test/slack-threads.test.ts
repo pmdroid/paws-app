@@ -3040,7 +3040,7 @@ test("a chat turn shows processing promptly and active when ready, with no loadi
   expect(f.posts(STATUS).every((post) => Object.keys(post.body).length === 3)).toBe(true);
 });
 
-test("a filed task's status follows its work, never shows full capacity as execution, and refreshes only while it runs", async () => {
+test("a filed task's status follows its work as active, suspended or closed, and never shows processing", async () => {
   const { f } = await filedTask();
   await occupy(f, "runner-ua");
   f.advance(11 * 60_000);
@@ -3051,19 +3051,46 @@ test("a filed task's status follows its work, never shows full capacity as execu
     return statuses(f);
   };
   expect(await tick()).toEqual(["active"]);
-  await stateOf(f, "running");
-  expect(await tick()).toEqual(["active", "processing"]);
-  expect(await tick(30 * 60_000)).toEqual(["active", "processing"]);
-  expect(await tick(21 * 60_000)).toEqual(["active", "processing", "processing"]);
+  for (const state of ["running", "verifying", "recovering"]) {
+    await stateOf(f, state);
+    expect(await tick(51 * 60_000)).toEqual(["active"]);
+  }
   await stateOf(f, "paused");
-  expect((await tick()).at(-1)).toBe("suspended");
-  expect(await tick(70 * 60_000)).toHaveLength(4);
+  expect(await tick()).toEqual(["active", "suspended"]);
+  expect(await tick(70 * 60_000)).toHaveLength(2);
   await stateOf(f, "awaiting_input");
   expect((await tick()).at(-1)).toBe("active");
-  await stateOf(f, "failed");
+  await stateOf(f, "merged");
   expect((await tick()).at(-1)).toBe("closed");
-  await stateOf(f, "completed");
-  expect(await tick(70 * 60_000)).toHaveLength(6);
+  expect(await tick(70 * 60_000)).toEqual(["active", "suspended", "active", "closed"]);
+  expect(statuses(f)).not.toContain("processing");
+});
+
+test("a mention answered while the filed issue runs shows processing during the turn, then active", async () => {
+  const { f, root } = await filedTask();
+  f.advance(11 * 60_000);
+  await stateOf(f, "running");
+  await f.reconcile();
+  await f.flush();
+  expect(statuses(f)).toEqual(["active"]);
+  f.runner.hold = true;
+  await f.deliver(f.mention("SMEMBER", "how is it going?", { thread_ts: root.ts }));
+  const turn = f.runJobs();
+  for (let i = 0; i < 500 && statuses(f).length < 2; i++) {
+    await Bun.sleep(5);
+    await f.flush();
+  }
+  expect(statuses(f)).toEqual(["active", "processing"]);
+  await f.reconcile();
+  await f.flush();
+  expect(statuses(f)).toEqual(["active", "processing"]);
+  f.advance(1_000);
+  f.runner.hold = false;
+  await turn;
+  await f.settle();
+  await f.reconcile();
+  await f.flush();
+  expect(statuses(f)).toEqual(["active", "processing", "active"]);
 });
 
 test("status coalesces to the latest, honors Retry-After, never resends an uncertain write, and stops at a stale generation", async () => {
@@ -3088,7 +3115,7 @@ test("status coalesces to the latest, honors Retry-After, never resends an uncer
   await f.flush();
   f.advance(60_000);
   await f.flush();
-  expect(statuses(f)).toEqual(["suspended", "processing"]);
+  expect(statuses(f)).toEqual(["suspended", "active"]);
   const rows = await sqlRows<{ external_id: string }>(
     f.db,
     "SELECT external_id FROM outbox WHERE op = ? ORDER BY id",
@@ -3099,7 +3126,7 @@ test("status coalesces to the latest, honors Retry-After, never resends an uncer
   await f.reconcile();
   await f.reconnect();
   await f.flush();
-  expect(statuses(f)).toEqual(["suspended", "processing"]);
+  expect(statuses(f)).toEqual(["suspended", "active"]);
 });
 
 test("a long reply streams in bounded bursts, resumes its one stream after a rate limit and a restart, and closes within ten minutes", async () => {
