@@ -3732,3 +3732,131 @@ test("a refused 🐾 never fails the job or holds back the answer", async () => 
     { status: "done", attempts: 1 },
   ]);
 });
+
+const followUpBlock = (body: unknown) => `\`\`\`paws-follow-up\n${JSON.stringify(body)}\n\`\`\``;
+const followUpRows = (f: Awaited<ReturnType<typeof fixture>>) =>
+  f.db.run((q) => q.all(q.orm.select().from(q.t.slackFollowUp).orderBy(q.t.slackFollowUp.id)));
+const lastPost = (f: Awaited<ReturnType<typeof fixture>>) =>
+  String(f.posts("chat.postMessage").at(-1)?.body.text);
+const ephemerals = (f: Awaited<ReturnType<typeof fixture>>) =>
+  f.posts("chat.postEphemeral").map((post) => [post.body.user, post.body.text]);
+
+test("an answer's follow-up block schedules one pending follow-up, is never posted, and a second one is refused to the member only", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const block = followUpBlock({ purpose: "check the deploy", after_minutes: 20 });
+  f.answers.push(`I'll check the deploy in 20 minutes.\n\n${block}\n${notesBlock([])}`);
+  const root = f.mention("SMEMBER", "tell me in 20 minutes whether the deploy finished");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.prompts[0]!.prompt).toContain("`paws-follow-up`");
+  const rows = await followUpRows(f);
+  expect(rows).toEqual([
+    expect.objectContaining({
+      status: "pending",
+      userId: "um",
+      slackUserId: "SMEMBER",
+      threadTs: root.ts,
+      mentionTs: root.ts,
+      purpose: "check the deploy",
+      trigger: { type: "timer", at: f.now() + 20 * 60_000 },
+    }),
+  ]);
+  const id = rows[0]!.id.slice(-6).toLowerCase();
+  expect(lastPost(f)).toBe(
+    `I'll check the deploy in 20 minutes.\n_Follow-up ${id}: in about 20 minutes. Cancel with @Paws cancel ${id}._`,
+  );
+  f.answers.push(`Sure.\n${followUpBlock({ purpose: "again", after_minutes: 30 })}`);
+  await f.say("SMEMBER", "and tell me again in 30", { thread_ts: root.ts });
+  expect(lastPost(f)).toBe("Sure.");
+  expect(await followUpRows(f)).toHaveLength(1);
+  expect(ephemerals(f)).toEqual([
+    [
+      "SMEMBER",
+      "Paws couldn't schedule that follow-up: this thread already has a follow-up pending.",
+    ],
+  ]);
+});
+
+test("a malformed follow-up block or one naming work not filed here schedules nothing and the answer still posts", async () => {
+  const { f, root } = await filedTask();
+  for (const block of [
+    followUpBlock({ purpose: "x", after_minutes: 20, work: "ENG-1", on: "ended" }),
+    followUpBlock({ purpose: "x", after_minutes: 20, extra: 1 }),
+    followUpBlock({ purpose: "x", work: "ENG-1" }),
+    '```paws-follow-up\n{"purpose": "x"\n```',
+    followUpBlock({ purpose: "x", work: "ENG-9", on: "ended" }),
+    `${followUpBlock({ purpose: "x", after_minutes: 20 })}\n${followUpBlock({ purpose: "y", after_minutes: 20 })}`,
+  ]) {
+    f.answers.push(`Noted.\n${block}`);
+    await f.say("SMEMBER", "tell me later", { thread_ts: root.ts });
+    expect(lastPost(f)).toEndWith("Noted.");
+  }
+  expect(await followUpRows(f)).toEqual([]);
+  const block = followUpBlock({ purpose: "say when it ships", work: "eng-1", on: "pull_request" });
+  f.answers.push(`I'll tell you when ENG-1 has a pull request.\n${block}`);
+  await f.say("SMEMBER", "tell me when it has a PR", { thread_ts: root.ts });
+  const [row] = await followUpRows(f);
+  expect(row!.trigger).toEqual({
+    type: "work",
+    itemId: "item-1",
+    identifier: "ENG-1",
+    on: "pull_request",
+  });
+  const id = row!.id.slice(-6).toLowerCase();
+  expect(lastPost(f)).toEndWith(
+    `ENG-1 has a pull request.\n_Follow-up ${id}: when ENG-1 opens its pull request. Cancel with @Paws cancel ${id}._`,
+  );
+});
+
+test("a reply withheld after its turn schedules no follow-up", async () => {
+  const f = await withSource();
+  await f.say("SADMIN", "channel repo acme/app");
+  f.runner.hold = true;
+  f.answers.push(`Billing.\n${followUpBlock({ purpose: "billing", after_minutes: 20 })}`);
+  await f.deliver(f.mention("SMEMBER", "check billing again in 20 minutes"));
+  const running = f.runJobs();
+  while (
+    (await sqlRows(f.db, "SELECT id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL"))
+      .length === 0
+  )
+    await Bun.sleep(2);
+  await disclose(f, "ua", "acme/app", "none");
+  f.runner.hold = false;
+  await running;
+  await f.settle();
+  expect(f.posts("chat.postMessage")).toEqual([]);
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(await followUpRows(f)).toEqual([]);
+});
+
+test("follow-ups lists only the member's own pending follow-ups here, and cancel takes only their own", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.answers.push(`Will do.\n${followUpBlock({ purpose: "admin check", after_minutes: 20 })}`);
+  const root = f.mention("SADMIN", "check back in 20 minutes");
+  await f.deliver(root);
+  await f.settle();
+  f.answers.push(`Will do.\n${followUpBlock({ purpose: "member check", after_minutes: 45 })}`);
+  await f.say("SMEMBER", "check back in 45 minutes");
+  const rows = await followUpRows(f);
+  const admin = rows.find((row) => row.slackUserId === "SADMIN")!;
+  expect(rows.map((row) => row.slackUserId).sort()).toEqual(["SADMIN", "SMEMBER"]);
+  const id = admin.id.slice(-6).toLowerCase();
+  const statusByUser = async () =>
+    Object.fromEntries((await followUpRows(f)).map((row) => [row.slackUserId, row.status]));
+  const asked = f.prompts.length;
+  f.posted.length = 0;
+  await f.say("SMEMBER", "follow-ups", { thread_ts: root.ts });
+  await f.deliver(threadReply("SADMIN", "follow-ups", root.ts));
+  await f.settle();
+  await f.say("SMEMBER", `cancel ${id}`, { thread_ts: root.ts });
+  expect(await statusByUser()).toEqual({ SADMIN: "pending", SMEMBER: "pending" });
+  await f.say("SADMIN", `cancel ${id.toUpperCase()}`, { thread_ts: root.ts });
+  expect(ephemerals(f)).toEqual([
+    ["SMEMBER", "No follow-ups pending here."],
+    ["SADMIN", `Your follow-ups here:\n- \`${id}\` in about 20 minutes: admin check`],
+    ["SMEMBER", `No follow-up ${id} of yours here.`],
+    ["SADMIN", `Cancelled follow-up ${id}.`],
+  ]);
+  expect(await statusByUser()).toEqual({ SADMIN: "cancelled", SMEMBER: "pending" });
+  expect(f.prompts).toHaveLength(asked);
+});
