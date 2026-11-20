@@ -79,6 +79,25 @@ export const repositoryCatalog = pgTable("repository_catalog", {
   refreshedAt: bigint("refreshed_at", { mode: "number" }).notNull(),
 });
 
+export const repositoryDescription = pgTable(
+  "repository_description",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    repository: text().notNull(),
+    text: text().notNull(),
+    source: text().notNull(),
+    contentHash: text("content_hash"),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.workspaceId, table.repository],
+      name: "repository_description_workspace_id_repository_pk",
+    }),
+    check("repository_description_check_1", sql`source IN ('paws','admin','github')`),
+  ],
+);
+
 export const pullRequestDraft = pgTable("pull_request_draft", {
   itemId: text("item_id").primaryKey(),
   title: text().notNull(),
