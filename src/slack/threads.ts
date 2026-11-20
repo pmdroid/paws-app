@@ -233,6 +233,7 @@ type Reply = Place & {
   repositories?: string[];
   linearTeamIds?: string[];
   followUp?: { id: string; expiresAt: number };
+  proposals?: string;
 };
 type MemoryRef = { key: string; version: number };
 type Notice = Place & {
@@ -245,6 +246,7 @@ type Notice = Place & {
   dm?: boolean;
   mentionTs?: string;
   visible?: boolean;
+  proposal?: { repositories: string[]; linearTeamIds: string[] };
 };
 type Payload = Reply | Notice | SlackTaskPost | SlackStatusPost;
 
@@ -1334,6 +1336,8 @@ export function createSlackThreads<Profile>(options: {
     const run = {
       workspaceId,
       member: asker,
+      slackUserId,
+      mentionTs: mention.ts,
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
     };
@@ -1541,6 +1545,9 @@ export function createSlackThreads<Profile>(options: {
         ...(tasks.length ? { repositories: tasks } : {}),
         ...(linearTeamIds.length ? { linearTeamIds } : {}),
         ...(woken ? { followUp: { id: woken.id, expiresAt: woken.expiresAt } } : {}),
+        ...((yield* work.runDraftsSteps(q, place, replyScope.requestId)).length
+          ? { proposals: replyScope.requestId }
+          : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -1848,19 +1855,27 @@ export function createSlackThreads<Profile>(options: {
           issue,
         );
       });
-    const draft = await check();
-    if (!draft) return;
+    const ready = await check();
+    if (!ready) return;
+    const draft = "refused" in ready ? ready.refused : ready;
     const { workspaceId, teamId, channelId, threadTs, slackUserId, generation } = draft;
     const place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const member = { userId: draft.userId, linkId: draft.linkId };
     const say = (text: string, suffix: string) =>
       notice(place, `file:${draft.id}:${suffix}`, text, { member });
+    if ("refused" in ready) return void (await say(work.WORK_NOTICES.not_member, "refused"));
+    const change = draft.change;
+    if (change && change.kind !== "create" && draft.attemptedAt) {
+      await store.transaction((q) => work.dropDraftSteps(q, key));
+      return void (await say(work.WORK_NOTICES.unknown, "unknown"));
+    }
     await turnStatus(place, member, "processing");
     let done = false;
     try {
       const drop = () => store.transaction((q) => work.dropDraftSteps(q, key));
       const tracker = options.work?.() ?? null;
-      if (!tracker) return void (await drop());
+      const changes = tracker?.changes;
+      if (!tracker || (change && !changes)) return void (await drop());
       const call = await slackFor(workspaceId);
       if (
         (await slackChannelAudience(call, { teamId, channelId }, context.signal)).kind !== "public"
@@ -1869,27 +1884,55 @@ export function createSlackThreads<Profile>(options: {
       const team = await tracker.team(draft.team.key, context.signal);
       if (team?.id !== draft.team.id || team.private !== draft.team.private) {
         await drop();
-        if (team?.id === draft.team.id && draft.attemptedAt)
+        if (team?.id === draft.team.id && draft.attemptedAt && !change)
           return void (await review(draft, team, `file:${draft.id}:review:${job.id}`));
         return void (await say(work.WORK_NOTICES.changed, "changed"));
       }
       const issueKey = work.slackDraftIssueKey(draft);
-      const issueId = tracker.issueId(issueKey);
-      if (!(await check({ issueId, at: now() }))) return;
+      const issueId = !change
+        ? tracker.issueId(issueKey)
+        : change.kind === "create"
+          ? changes!.issueId(issueKey)
+          : change.issueId;
+      const again = await check({ issueId, at: now() });
+      if (!again || "refused" in again) return;
       const request = {
         key: issueKey,
         teamId: team.id,
         title: draft.title,
         description: work.slackIssueDescription(draft),
       };
+      const target = { teamIds: [team.id], id: issueId };
+      const apply = async (signal: AbortSignal) => {
+        if (!change) return tracker.file(request, signal);
+        if (change.kind === "assign") return changes!.assign(target, signal);
+        if (change.kind === "update")
+          return changes!.update({ ...target, ...change.fields }, signal);
+        const { description, projectId, labelIds, parentId, relatedId, start } = change;
+        const create = { ...request, description, delegate: start };
+        const extra = {
+          ...(projectId ? { projectId } : {}),
+          ...(labelIds?.length ? { labelIds } : {}),
+          ...(parentId ? { parentId } : {}),
+          ...(relatedId ? { relation: { issueId: relatedId, type: "related" as const } } : {}),
+        };
+        return changes!.create({ ...create, ...extra }, signal);
+      };
       let filed: { id: string; identifier: string; url: string | null };
       try {
-        filed = await tracker.file(request, context.signal);
+        const applied = await apply(context.signal);
+        if (!applied) throw new Error("Linear can't find the issue");
+        filed = applied;
       } catch (error) {
         if (context.signal.aborted) throw error;
-        await drop();
         const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200);
         journal(`slack draft ${draft.id}: Linear filing failed: ${reason}`);
+        if (change) {
+          await drop();
+          const text = `Linear didn't confirm the change (${reason}). ${work.WORK_NOTICES.unknown}`;
+          return void (await say(text, `failed:${job.id}`));
+        }
+        await drop();
         const text = `Linear didn't confirm the issue (${reason}). Nothing is running. Mention \`@Paws start\` in this thread to try again; Paws reuses the issue if Linear filed it.`;
         return void (await say(text, `failed:${job.id}`));
       }
@@ -1902,8 +1945,12 @@ export function createSlackThreads<Profile>(options: {
         teamId: team.id,
         filedAt: now(),
       };
-      await store.transaction((q) => work.recordFiledSteps(q, draft, task, now()));
-      await say(work.filedNotice(task), "filed");
+      await store.transaction((q) =>
+        change?.kind === "update"
+          ? work.dropDraftSteps(q, key)
+          : work.recordFiledSteps(q, draft, task, now()),
+      );
+      await say(change ? work.changedNotice(change, filed) : work.filedNotice(task), "filed");
       done = true;
     } finally {
       await turnStatus(place, member, null, done ? "processing" : "active");
@@ -2019,13 +2066,17 @@ export function createSlackThreads<Profile>(options: {
       if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
       if (payload.kind === "reply" && payload.followUp && now() > payload.followUp.expiresAt)
         return false;
-      if (payload.kind === "reply")
-        for (const repository of payload.repositories ?? [])
-          if (!(yield* readsSteps(q, payload.workspaceId, payload.userId, repository)))
-            return false;
-      if (payload.kind === "reply" && payload.linearTeamIds?.length) {
-        const member = yield* workspaceMemberSteps(q, payload.workspaceId, payload.userId);
-        if (!payload.linearTeamIds.every((id) => member?.teamIds.includes(id))) return false;
+      const needs =
+        payload.kind === "reply"
+          ? payload
+          : payload.kind === "notice" && payload.proposal && payload.member
+            ? { userId: payload.member.userId, ...payload.proposal }
+            : null;
+      if (needs) {
+        for (const repository of needs.repositories ?? [])
+          if (!(yield* readsSteps(q, payload.workspaceId, needs.userId, repository))) return false;
+        const member = yield* workspaceMemberSteps(q, payload.workspaceId, needs.userId);
+        if (!(needs.linearTeamIds ?? []).every((id) => member?.teamIds.includes(id))) return false;
       }
       const asked =
         payload.kind === "reply" || payload.kind === "notice" ? payload.mentionTs : null;
@@ -2055,7 +2106,9 @@ export function createSlackThreads<Profile>(options: {
                 ...(payload.sources ?? []).map((ref) => ref.repository),
                 ...(payload.repositories ?? []),
               ]
-            : [];
+            : payload.kind === "notice"
+              ? (payload.proposal?.repositories ?? [])
+              : [];
     function* withholdSourceSteps(q: Q): Steps<void> {
       if (payload.kind === "task" && payload.work && (yield* slackWorkTsSteps(q, payload.work)))
         return;
@@ -2208,12 +2261,15 @@ export function createSlackThreads<Profile>(options: {
           state = { ts: started.ts, startedAt: now(), sent: 1 };
           await save(state);
         }
-        if (now() - state.startedAt >= SLACK_STREAM_LIFETIME_MS)
-          return settle(
-            state.sent >= chunks.length
-              ? { kind: "sent", ts: state.ts }
-              : { kind: "unknown", note: "Slack closed the stream at ten minutes, unfinished" },
-          );
+        if (now() - state.startedAt >= SLACK_STREAM_LIFETIME_MS) {
+          if (state.sent < chunks.length)
+            return settle({
+              kind: "unknown",
+              note: "Slack closed the stream at ten minutes, unfinished",
+            });
+          await store.transaction((q) => proposalsSteps(q, payload));
+          return settle({ kind: "sent", ts: state.ts });
+        }
         while (state.sent < chunks.length - 1 && now() - state.startedAt < SLACK_STREAM_CLOSE_MS) {
           if (!(await stillAllowed())) return cut(state);
           await write("chat.appendStream", { markdown_text: chunks[state.sent] });
@@ -2225,6 +2281,7 @@ export function createSlackThreads<Profile>(options: {
         const session_status = await store.run((q) => slackThreadStatusSteps(q, payload));
         const close = { blocks: [stopActions()], session_status };
         await write("chat.stopStream", { ...close, ...(rest ? { markdown_text: rest } : {}) });
+        await store.transaction((q) => proposalsSteps(q, payload));
         return settle({ kind: "sent", ts: state.ts });
       } catch (caught) {
         if (caught instanceof SlackNotSentError) {
@@ -2274,6 +2331,38 @@ export function createSlackThreads<Profile>(options: {
     if (issueWork && !workTs && typeof ts === "string" && ts)
       await store.transaction((q) => saveSlackWorkTsSteps(q, issueWork, ts, now()));
     return settle({ kind: "sent", ts: typeof ts === "string" && ts ? ts : "ok" });
+  }
+
+  function* proposalsSteps(q: Q, reply: Reply): Steps<void> {
+    if (!reply.proposals) return;
+    const member = { userId: reply.userId, linkId: reply.linkId ?? "" };
+    const repositories = [
+      ...new Set([
+        ...(reply.sources ?? []).map((ref) => ref.repository),
+        ...(reply.repositories ?? []),
+      ]),
+    ];
+    for (const draft of yield* work.runDraftsSteps(q, reply, reply.proposals)) {
+      const shown = work.draftMessage(draft, draft.team, draft.id);
+      if (!shown) continue;
+      const linearTeamIds = [...new Set([...(reply.linearTeamIds ?? []), draft.team.id])];
+      const { workspaceId, teamId, channelId, threadTs, slackUserId, generation } = reply;
+      const payload: Payload = {
+        ...{ workspaceId, teamId, channelId, threadTs, slackUserId, generation },
+        kind: "notice",
+        member,
+        mentionTs: reply.mentionTs,
+        ...shown,
+        proposal: { repositories, linearTeamIds },
+      };
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "slack",
+        op: "chat.postEphemeral",
+        idempotencyKey: `slack:notice:proposal:${draft.id}`,
+        payload,
+        now: now(),
+      });
+    }
   }
 
   function* taskAllowedSteps(q: Q, message: SlackTaskPost, rowId: number): Steps<boolean> {

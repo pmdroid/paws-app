@@ -256,6 +256,8 @@ import {
   cacheLinearMemberships,
   sessionCreatedKey,
   slackIssueId,
+  agentIssueId,
+  checkAgentIssueWrite,
   type AcceptedLinearEvent,
   type IntakeDecision,
   POLL_DUE_CURSOR,
@@ -1869,11 +1871,32 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             team: (key, signal) => linearTracker.slackIssueTeam!(key, { signal }),
             issueId: slackIssueId,
             file: (request, signal) => linearTracker.fileSlackIssue!(request, { signal }),
+            ...(linearTracker.createAgentIssue &&
+            linearTracker.updateAgentIssue &&
+            linearTracker.assignAgentIssue
+              ? {
+                  changes: {
+                    issueId: agentIssueId,
+                    create: (request, signal) =>
+                      linearTracker.createAgentIssue!(request, { signal }),
+                    update: (request, signal) =>
+                      linearTracker.updateAgentIssue!(request, { signal }),
+                    assign: (request, signal) =>
+                      linearTracker.assignAgentIssue!(request, { signal }),
+                  },
+                }
+              : {}),
           };
         },
         answer: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         stop: () => executionControls?.stopTask ?? null,
-        tools: [slackLinearTools({ store, tracker: () => linear?.tracker })],
+        tools: [
+          slackLinearTools({
+            store,
+            tracker: () => linear?.tracker,
+            checkWrite: checkAgentIssueWrite,
+          }),
+        ],
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));
       created.outbox.setTargetHandler("slack", slackThreads.deliver);

@@ -20,14 +20,42 @@ const DRAFT_MS = 60 * 60_000;
 
 export type SlackIssueTeam = { id: string; key: string; name: string; private: boolean };
 
+type IssueRef = { id: string; identifier: string; url: string | null };
+type IssueTarget = { teamIds: readonly string[]; id: string };
+
 export type SlackWorkTracker = {
   team(key: string, signal: AbortSignal): Promise<SlackIssueTeam | null>;
   issueId(key: string): string;
   file(
     request: { key: string; teamId: string; title: string; description: string },
     signal: AbortSignal,
-  ): Promise<{ id: string; identifier: string; url: string | null }>;
+  ): Promise<IssueRef>;
+  changes?: {
+    issueId(key: string): string;
+    create(
+      request: Record<"key" | "teamId" | "title" | "description", string> &
+        Partial<Record<"projectId" | "parentId", string>> & {
+          labelIds?: string[];
+          relation?: { issueId: string; type: "related" };
+          delegate: boolean;
+        },
+      signal: AbortSignal,
+    ): Promise<IssueRef>;
+    update(request: IssueTarget & SlackIssueFields, signal: AbortSignal): Promise<IssueRef | null>;
+    assign(request: IssueTarget, signal: AbortSignal): Promise<IssueRef | null>;
+  };
 };
+
+export type SlackIssueFields = Partial<
+  Record<"title" | "description" | "stateId" | "projectId", string>
+> & { labelIds?: string[] };
+export type SlackChange = { run: string; shown: string[] } & (
+  | ({ kind: "create"; description: string; start: boolean } & Partial<
+      Record<"projectId" | "parentId" | "relatedId", string>
+    > & { labelIds?: string[] })
+  | { kind: "update"; issueId: string; identifier: string; fields: SlackIssueFields }
+  | { kind: "assign"; issueId: string; identifier: string }
+);
 
 type Thread = Record<
   "workspaceId" | "teamId" | "channelId" | "threadTs" | "slackUserId",
@@ -48,6 +76,7 @@ export type Draft = Thread &
     createdAt: number;
     approvedAt?: number;
     attemptedAt?: number;
+    change?: SlackChange;
   };
 export type SlackTask = {
   issueId: string;
@@ -80,7 +109,14 @@ export const WORK_NOTICES = {
   discarded: "Discarded. Paws sent nothing to Linear.",
   stale: "That draft is no longer current, so Paws filed nothing.",
   changed: "Who can read that Linear team changed, so Paws filed nothing. Start again.",
+  unknown:
+    "Paws can't tell whether Linear applied this change, so it won't apply it again. Check the issue in Linear.",
+  proposals: "This run has proposed 3 changes already.",
 };
+
+export const SLACK_PROPOSALS = 3;
+export const proposedText = (slackUserId: string) =>
+  `Proposed. <@${slackUserId}> has to confirm it in Slack.`;
 
 export function slackStartCommand(question: string): { teamKey: string | null } | null {
   const match = START.exec(question.trim());
@@ -108,12 +144,27 @@ export function slackIssueDescription(brief: Brief): string {
   return `${brief.scope}\n\n## Acceptance criteria\n\n${criteria}`;
 }
 
-export function draftMessage(brief: Brief, team: SlackIssueTeam, id: string) {
+export function draftMessage(
+  brief: Brief & { change?: SlackChange },
+  team: SlackIssueTeam,
+  id: string,
+) {
   const criteria = brief.acceptance.map((line) => `• ${line}`).join("\n");
   const audience = team.private
     ? `members of the private Linear team ${team.key}, anyone the issue is shared with, and Linear integrations with access`
     : `every member of your Linear workspace (${team.key} is a public team), and Linear integrations with access`;
-  const text = `Paws will file this issue in Linear team *${team.key}* (${team.name}) and delegate it to Paws:\n\n*${brief.title}*\n${brief.scope}\n\n*Acceptance criteria*\n${criteria}\n\nWho can read it: ${audience}. Only this title, scope and criteria are sent. To change it, mention \`@Paws start ${team.key}\` with what to change.`;
+  const change = brief.change;
+  const where = `in Linear team *${team.key}* (${team.name})`;
+  const lines = change?.shown.map((line) => `• ${line}`).join("\n") ?? "";
+  const text = !change
+    ? `Paws will file this issue ${where} and delegate it to Paws:\n\n*${brief.title}*\n${brief.scope}\n\n*Acceptance criteria*\n${criteria}\n\nWho can read it: ${audience}. Only this title, scope and criteria are sent. To change it, mention \`@Paws start ${team.key}\` with what to change.`
+    : `${
+        change.kind === "create"
+          ? `Paws proposes to create this issue ${where}${change.start ? " and delegate it to Paws" : ""}:\n\n*${brief.title}*\n${change.description}`
+          : change.kind === "update"
+            ? `Paws proposes to change ${change.identifier} (${brief.title}) ${where}:`
+            : `Paws proposes to delegate ${change.identifier} (${brief.title}) ${where} to Paws.`
+      }${lines ? `\n\n${lines}` : ""}\n\nWho can read it: ${audience}. Nothing changes until you click.`;
   const button = (action_id: string, label: string) => ({
     type: "button",
     action_id,
@@ -121,7 +172,7 @@ export function draftMessage(brief: Brief, team: SlackIssueTeam, id: string) {
     text: { type: "plain_text", text: label },
   });
   const actions = [
-    button(SLACK_FILE_ACTION, "Create issue"),
+    button(SLACK_FILE_ACTION, change && change.kind !== "create" ? "Apply" : "Create issue"),
     button(SLACK_DISCARD_ACTION, "Discard"),
   ];
   const blocks = [
@@ -134,6 +185,13 @@ export function draftMessage(brief: Brief, team: SlackIssueTeam, id: string) {
 export function filedNotice(task: Pick<SlackTask, "identifier" | "url">): string {
   const link = task.url ? `<${task.url}|${task.identifier}>` : task.identifier;
   return `${link} is filed from this thread and delegated to Paws. It starts when a runner is free; you can keep talking here meanwhile.`;
+}
+
+export function changedNotice(change: SlackChange, ref: IssueRef): string {
+  const link = ref.url ? `<${ref.url}|${ref.identifier}>` : ref.identifier;
+  if (change.kind === "update") return `${link} is updated.`;
+  if (change.kind === "assign" || change.start) return filedNotice(ref);
+  return `${link} is created from this thread.`;
 }
 
 export function severalWaiting(identifiers: string[]): string {
@@ -170,7 +228,10 @@ function* threadDraftsSteps(q: Q, thread: Thread): Steps<{ key: string; draft: D
 
 function* ownDraftSteps(q: Q, thread: Thread): Steps<Draft | null> {
   const drafts = yield* threadDraftsSteps(q, thread);
-  return drafts.find(({ draft }) => draft.slackUserId === thread.slackUserId)?.draft ?? null;
+  return (
+    drafts.find(({ draft }) => !draft.change && draft.slackUserId === thread.slackUserId)?.draft ??
+    null
+  );
 }
 
 export function* filingStartedSteps(q: Q, thread: Thread): Steps<boolean> {
@@ -184,7 +245,25 @@ export function* filingPendingSteps(q: Q, thread: Thread): Steps<boolean> {
 
 export function* approvedIssueKeysSteps(q: Q, thread: Thread): Steps<string[]> {
   const drafts = yield* threadDraftsSteps(q, thread);
-  return drafts.flatMap(({ draft }) => (draft.approvedAt ? [slackDraftIssueKey(draft)] : []));
+  return drafts.flatMap(({ draft }) =>
+    draft.approvedAt && !draft.change ? [slackDraftIssueKey(draft)] : [],
+  );
+}
+
+export function* runDraftsSteps(q: Q, thread: Thread, run: string): Steps<Draft[]> {
+  const drafts = yield* threadDraftsSteps(q, thread);
+  return drafts.flatMap(({ draft }) => (draft.change?.run === run ? [draft] : []));
+}
+
+export function* proposeChangeSteps(
+  q: Q,
+  input: Omit<Draft, "id" | "slot" | "createdAt">,
+  at: number,
+): Steps<Draft> {
+  const id = randomBytes(12).toString("hex");
+  const draft: Draft = { ...input, id, slot: id, createdAt: at };
+  yield* updateSettingSteps(q, draftKey(draft), () => JSON.stringify(draft), at);
+  return draft;
 }
 
 export function* startStateSteps(q: Q, thread: Thread): Steps<string | Draft | null> {
@@ -226,7 +305,7 @@ export function* reviewDraftSteps(q: Q, draft: Draft, team: SlackIssueTeam, at: 
 
 export function* dropDraftSteps(q: Q, key: string): Steps<void> {
   const draft = parsed<Draft>(yield* readSettingSteps(q, key));
-  if (draft && !draft.attemptedAt) yield* takeSettingSteps(q, key);
+  if (draft && (!draft.attemptedAt || draft.change)) yield* takeSettingSteps(q, key);
 }
 
 export function* proposeDraftSteps(
@@ -284,15 +363,15 @@ export function* fileReadySteps(
   key: string,
   member: (draft: Draft) => Steps<boolean>,
   origin?: { issueId: string; at: number },
-): Steps<Draft | null> {
+): Steps<Draft | { refused: Draft } | null> {
   const draft = parsed<Draft>(yield* readSettingSteps(q, key));
   if (!draft?.approvedAt) return null;
   const user = yield* workspaceMemberSteps(q, draft.workspaceId, draft.userId);
-  const allowed =
-    (yield* member(draft)) && workspaceMemberUsable(user) && user.teamIds.includes(draft.team.id);
+  const linked = yield* member(draft);
+  const allowed = linked && workspaceMemberUsable(user) && user.teamIds.includes(draft.team.id);
   if (!allowed) {
     yield* dropDraftSteps(q, key);
-    return null;
+    return linked && draft.change ? { refused: draft } : null;
   }
   if (origin) {
     const { workspaceId, teamId, channelId, threadTs, generation } = draft;
@@ -301,7 +380,7 @@ export function* fileReadySteps(
     const owner = { ...thread, ownerId: user.linearUserId, userId, slackUserId, linkId, context };
     const save = (k: string, v: unknown) =>
       updateSettingSteps(q, k, () => JSON.stringify(v), origin.at);
-    yield* save(slackIssueKey(origin.issueId), owner);
+    if (draft.change?.kind !== "update") yield* save(slackIssueKey(origin.issueId), owner);
     yield* save(key, { ...draft, attemptedAt: draft.attemptedAt ?? origin.at });
   }
   return draft;
