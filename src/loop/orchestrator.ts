@@ -4764,6 +4764,60 @@ export class Orchestrator {
     }
   }
 
+  private async validateAttribution(
+    item: WorkItemRecord,
+    tree: string,
+    base: string,
+    head: string,
+    policy: GitCommitPolicy,
+  ): Promise<void> {
+    const repository = await this.repositoryForItem(item);
+    const adopted = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint
+      ?.adopted;
+    if (this.storedCandidates()) {
+      if (!repository) throw new Error("Candidate repository is unavailable");
+      const github = this.githubForRepository(repository);
+      if (!github) throw new Error("Candidate GitHub access is unavailable");
+      const validate = async (from: string) =>
+        validateGitHubCandidateAttribution(
+          { ...repository, client: github.client, ...this.gitHubCredentials(github) },
+          from,
+          head,
+          policy,
+          await this.signalForItem(item.id),
+        );
+      const last = adopted?.at(-1);
+      const validated =
+        last !== undefined &&
+        (await validate(last).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof Error && /does not descend/.test(error.message)) return false;
+            throw error;
+          },
+        ));
+      if (!validated) await validate(base);
+    } else {
+      const present: string[] = [];
+      for (const sha of adopted ?? [])
+        if (
+          await git(["-C", tree, "cat-file", "-e", `${sha}^{commit}`]).then(
+            () => true,
+            () => false,
+          )
+        )
+          present.push(sha);
+      await validateCandidateAttribution(
+        tree,
+        [base, ...present],
+        head,
+        policy,
+        undefined,
+        await this.signalForItem(item.id),
+      );
+    }
+  }
+
   private async verifyCandidate(
     item: WorkItemRecord,
     worktree: string,
@@ -4794,51 +4848,7 @@ export class Orchestrator {
           }
         : undefined;
     const policy = await this.commitPolicy(item);
-    const adopted = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint
-      ?.adopted;
-    if (policy && this.storedCandidates()) {
-      if (!repository) throw new Error("Candidate repository is unavailable");
-      const github = this.githubForRepository(repository);
-      if (!github) throw new Error("Candidate GitHub access is unavailable");
-      const validate = async (from: string) =>
-        validateGitHubCandidateAttribution(
-          { ...repository, client: github.client, ...this.gitHubCredentials(github) },
-          from,
-          head,
-          policy,
-          await this.signalForItem(item.id),
-        );
-      const last = adopted?.at(-1);
-      const validated =
-        last !== undefined &&
-        (await validate(last).then(
-          () => true,
-          (error: unknown) => {
-            if (error instanceof Error && /does not descend/.test(error.message)) return false;
-            throw error;
-          },
-        ));
-      if (!validated) await validate(base);
-    } else if (policy) {
-      const tree = mirror?.path ?? worktree;
-      const present: string[] = [];
-      for (const sha of adopted ?? [])
-        if (
-          await git(["-C", tree, "cat-file", "-e", `${sha}^{commit}`]).then(
-            () => true,
-            () => false,
-          )
-        )
-          present.push(sha);
-      await validateCandidateAttribution(
-        tree,
-        [base, ...present],
-        head,
-        policy,
-        undefined,
-        await this.signalForItem(item.id),
-      );
-    }
+    if (policy) await this.validateAttribution(item, mirror?.path ?? worktree, base, head, policy);
     const sessionProgress = await this.sessionProgress(item);
     await sessionProgress?.phase("verifying");
     const checkoutExclusions = (await this.runCheckout(item)).checks;
