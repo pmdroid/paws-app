@@ -111,30 +111,30 @@ async function conflictFix(variant: Variant = {}): Promise<Outcome> {
           : []),
       ];
     },
-    async run(proof) {
-      context = proof;
-      await proof.delegate();
-      await proof.waitFor(
+    async run(run) {
+      context = run;
+      await run.delegate();
+      await run.waitFor(
         "Closeout accepts and the item waits in the merge queue on CI",
         async () =>
-          (await proof.itemState()) === "merge_queue" &&
-          proof.github.calls.some((call) => call.path === "/graphql"),
+          (await run.itemState()) === "merge_queue" &&
+          run.github.calls.some((call) => call.path === "/graphql"),
       );
       if (variant.policyOnMain)
-        await proof.pushToMain(
+        await run.pushToMain(
           ".agents/closeout.yaml",
           policy(variant.mapped ?? true, 20),
           "Give proof more time",
         );
-      await proof.pushToMain("widgets.txt", "99\n", "Set the acme widget count");
-      proof.github.ci.pending = false;
-      await proof.waitFor(
+      await run.pushToMain("widgets.txt", "99\n", "Set the acme widget count");
+      run.github.ci.pending = false;
+      await run.waitFor(
         "Closeout ran on the rebased head and the item left verification",
         async () =>
           rebased &&
           gates.length >= 2 &&
           ["merge_queue", "merged", "failed", "manual", "awaiting_input"].includes(
-            (await proof.itemState()) ?? "",
+            (await run.itemState()) ?? "",
           ),
         120_000,
       );
