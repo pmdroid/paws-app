@@ -1219,10 +1219,10 @@ export function createSlackThreads<Profile>(options: {
       [];
     for (const filed of yield* work.filedTasksSteps(q, place)) {
       const task = yield* slackIssueTaskSteps(q, filed.issueId);
-      const origin = task ? yield* slackSessionOriginSteps(q, task.sessionKey) : null;
-      if (origin?.workspaceId !== place.workspaceId || origin.generation !== place.generation)
+      const filedFrom = task ? yield* slackSessionOriginSteps(q, task.sessionKey) : null;
+      if (filedFrom?.workspaceId !== place.workspaceId || filedFrom.generation !== place.generation)
         continue;
-      found.push({ ...task!, starterId: origin.userId, identifier: filed.identifier });
+      found.push({ ...task!, starterId: filedFrom.userId, identifier: filed.identifier });
     }
     return found;
   }
