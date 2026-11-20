@@ -258,7 +258,7 @@ async function closeoutPolicyFact(
   };
 }
 
-/** Workspace repository choices from the Paws database, then `config.toml` repositories. */
+/** Workspace repository choices from the Paws database, then `PAWS_GITHUB_REPOS`. */
 async function chosenRepositories(runtime: RuntimeConfig, store: Db | null): Promise<string[]> {
   const chosen =
     (await readPawsDb(store, (db) => db.run(distinctWorkspaceRepositoriesSteps))) ?? [];

@@ -31,13 +31,7 @@ import { fakeSkillResolver } from "../src/skills";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, pgliteServer, tempStore } from "./pglite";
 
-const BOOTSTRAP = `[linear]
-team = "ACME"
-
-[caps]
-max_awake_ms = 5400000
-
-[merge]
+const BOOTSTRAP = `[merge]
 order = "queue"
 `;
 

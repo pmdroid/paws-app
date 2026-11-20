@@ -6,7 +6,7 @@ export default {
   covers: ["src/loop/orchestrator.ts", "src/loop/publication.ts", "src/github/push.ts"],
   summary:
     "With mirrors off, the first candidate is pushed before verification and fails its check. The fix turn amends that commit; guarded publication replaces the branch with a force-with-lease push, and the rewritten candidate passes verification and merges without creating repos.",
-  config: "[github]\nmirrors = false\n",
+  config: "[github_access]\nmirrors = false\n",
   forbidRepos: true,
   agent(input) {
     const steps = fixRound.agent(input);

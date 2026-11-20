@@ -29,10 +29,7 @@ const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
 
 describe("config.toml [merge]", () => {
   test("stored project choices and issue rules load and every item uses the default", () => {
-    const text = `[caps]
-max_awake_ms = 40
-
-[merge]
+    const text = `[merge]
 order = "ci-green"
 main_moved = "overlap"
 ci_fix_attempts = 2
@@ -54,7 +51,6 @@ label = "Needs \\"care\\""
 packages = ["apps/*", "packages/*"]
 `;
     const config = parseConfigToml(text);
-    expect(config.maxAwakeMs).toBe(40);
     expect(readMergeSettings(config)).toEqual({
       default: { order: "ci-green", mainMoved: "overlap" },
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
@@ -633,9 +629,8 @@ describe("Merging settings API", () => {
       ).toBe(400);
   });
 
-  test("High-risk paths list each repository with its settings and its file read-only", async () => {
+  test("High-risk paths list the repos option and saved repositories with their file read-only", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, 'repo = "acme/platform"\n');
     const reads: string[] = [];
     const withFile: MergeSettingsOptions = {
       ...options,

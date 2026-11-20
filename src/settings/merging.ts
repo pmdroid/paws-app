@@ -568,15 +568,8 @@ async function highRiskRepositoriesView(
 }
 
 function repositoryNames(withSettings: readonly string[], options: MergeSettingsOptions): string[] {
-  let configured: string[] = [];
-  try {
-    const config = loadConfigFile(options.configPath);
-    configured = [config.repo, ...config.githubRepos].flatMap((repo) => (repo ? [repo] : []));
-  } catch (caughtError) {
-    journalCaught(caughtError, "merging.repositoryNames.loadConfigFile", null);
-  }
   const names = new Map<string, string>();
-  for (const repository of [...withSettings, ...configured, ...(options.repos ?? [])])
+  for (const repository of [...withSettings, ...(options.repos ?? [])])
     if (!names.has(repository.toLowerCase())) names.set(repository.toLowerCase(), repository);
   return [...names.values()].sort((left, right) => left.localeCompare(right));
 }

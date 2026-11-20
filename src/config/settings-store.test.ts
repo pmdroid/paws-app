@@ -82,7 +82,6 @@ test("every section the settings writer emits parses again", async () => {
   for (const name of WRITER_SECTIONS) expect(saved).toContain(`[${name}]`);
   expect(saved).not.toContain("[agents.grok]");
   expect(() => parseConfigToml(saved)).not.toThrow();
-  expect(loadConfigFile(configPath).linearTeam).toBeNull();
   expect(retiredConfigSections(configPath)).toEqual([]);
 });
 
@@ -133,7 +132,7 @@ test("project memory defaults off and round-trips through the stored settings", 
   });
   expect(() => parseConfigToml("[project_memory]\nsummary = true\n")).toThrow("unknown key");
   const { configPath, stored } = await storedSettings(null);
-  const written = setProjectMemorySettingsText('[linear]\nteam = "ACME"\n', {
+  const written = setProjectMemorySettingsText("[merge]\nci_fix_attempts = 4\n", {
     workSummary: true,
     dream: true,
     decisions: true,

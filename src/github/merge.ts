@@ -287,7 +287,7 @@ type GraphqlAnswer = {
 const UPDATE_BRANCH_READS = 10;
 
 /**
- * `[merge] main_moved = "ci"` with `[github] mirrors = false`: GitHub rebases the pull request onto
+ * `[merge] main_moved = "ci"` with `[github_access] mirrors = false`: GitHub rebases the pull request onto
  * main through `updatePullRequestBranch`, guarded by the head the lane read. The head GitHub made is
  * adopted only when its patch-id matches the accepted head's. A conflict is the lane's conflict; any
  * other refusal leaves the branch where it was and is returned as `refused`.

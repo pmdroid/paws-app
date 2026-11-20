@@ -249,7 +249,7 @@ function linearCheck(facts: ProbeFacts): DoctorCheck {
     return check("linear", false, facts.linear.error ?? "Linear could not be reached", FIX.linear);
   }
   if (!facts.linear.viewerMatches) {
-    return check("linear", false, "viewer id does not match config.toml", FIX.linear);
+    return check("linear", false, "viewer id does not match LINEAR_APP_USER_ID", FIX.linear);
   }
   const viewer = facts.linear.viewerId ?? "viewer";
   return check("linear", true, `viewer ${viewer}`, FIX.linear);

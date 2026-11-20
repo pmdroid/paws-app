@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createWorktree, ensureBareMirror, commitCheckpoint } from "../src/acp";
-import { parseConfigToml } from "../src/config";
 import { checkoutPatterns, exclusionPatterns } from "../src/worktree-checkout";
 
 const roots: string[] = [];
@@ -151,9 +150,4 @@ test("excluded files are never passed through checkout filters", async () => {
   expect(existsSync(join(tree.path, "README.md"))).toBe(true);
   await f.create("FULL");
   expect(existsSync(touched)).toBe(true);
-});
-
-test("legacy config without sparse settings retains its existing parsing behavior", () => {
-  const config = parseConfigToml("[caps]\nmax_awake_ms = 3\nmax_awake_ms = 7\n");
-  expect(config.maxAwakeMs).toBe(7);
 });

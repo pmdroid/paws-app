@@ -59,10 +59,6 @@ function request(
 describe("local agent settings API", () => {
   test("GET returns the global profiles without projects", async () => {
     const { options } = fixture();
-    useMemorySettings(
-      options.configPath,
-      '[github]\nrepo = "pmdroid/other"\nrepos = ["pmdroid/library", "pmdroid/other"]\n',
-    );
     const response = await handleAgentSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
     expect(response?.headers.get("access-control-allow-origin")).toBeNull();
@@ -143,7 +139,7 @@ describe("local agent settings API", () => {
 
   test("a save from a stale revision is refused and the newer file is kept", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
     const loaded = (await (await handleAgentSettingsRequest(request(), options))!.json()) as {
       revision: string;
     };
@@ -178,7 +174,7 @@ describe("local agent settings API", () => {
 
   test("a save with defaults.accounts is refused and the file is kept", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
     const saved = await handleAgentSettingsRequest(
       request(undefined, "PUT", {
         ...settings,
@@ -187,7 +183,7 @@ describe("local agent settings API", () => {
       options,
     );
     expect(saved?.status).toBe(400);
-    expect(readConfigText(options.configPath)).toBe("[caps]\nmax_turns = 31\n");
+    expect(readConfigText(options.configPath)).toBe('[findings]\ngrouping_time = "07:00"\n');
   });
 
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
@@ -217,7 +213,7 @@ describe("local agent settings API", () => {
 
   test("PUT persists and reloads validated profiles while preserving config", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
     const response = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
@@ -234,7 +230,7 @@ describe("local agent settings API", () => {
     const { options } = fixture();
     useMemorySettings(
       options.configPath,
-      '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\n\n[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"\n',
+      '[findings]\ngrouping_time = "07:00"\n\n[merge]\nmain_moved = "closeout"\n\n[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"\n',
     );
     for (const merge of [{ closeoutAfterUpdate: true }, { other: true }, true]) {
       const rejected = await handleAgentSettingsRequest(
@@ -380,7 +376,7 @@ describe("local agent settings API", () => {
     const { options } = fixture();
     useMemorySettings(
       options.configPath,
-      '[caps]\nmax_turns = 31\n[agents.defaults.implementer]\nagent = "missing-agent"\n',
+      '[findings]\ngrouping_time = "07:00"\n[agents.defaults.implementer]\nagent = "missing-agent"\n',
     );
     expect((await handleAgentSettingsRequest(request(), options))?.status).toBe(503);
     const saved = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
@@ -501,7 +497,7 @@ describe("reviewer profile validation", () => {
 
   test("refuses a reviewer with the implementer's agent and model and keeps the file", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, "[caps]\nmax_turns = 31\n");
+    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
     const same = {
       defaults: {
         implementer: { agent: "claude", model: "opus" },
@@ -515,7 +511,7 @@ describe("reviewer profile validation", () => {
     });
     const project = await put({ ...settings, projects: [] }, options);
     expect(project?.status).toBe(400);
-    expect(readConfigText(options.configPath)).toBe("[caps]\nmax_turns = 31\n");
+    expect(readConfigText(options.configPath)).toBe('[findings]\ngrouping_time = "07:00"\n');
   });
 
   test("saves a reviewer that no active runner has signed in, with a warning naming the runners", async () => {

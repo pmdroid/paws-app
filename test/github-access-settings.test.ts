@@ -20,13 +20,12 @@ let configPath: string;
 let audits: string[];
 let stored: string | null;
 let release: () => void;
-const SEEDED = "[github]\nmirrors = true\n";
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "paws-github-access-"));
   configPath = join(dir, "config.toml");
   audits = [];
-  stored = SEEDED;
+  stored = null;
   const snapshot = await useSettingsStore(configPath, {
     read: async () => stored,
     update: async (change) => {
@@ -62,7 +61,7 @@ function put(body: unknown, csrf = "csrf"): Request {
   });
 }
 
-test("without a saved section the settings come from the [github] keys", async () => {
+test("without a saved section the settings read their defaults", async () => {
   const response = await handleGitHubAccessSettingsRequest(new Request(url), options());
   expect(await response!.json()).toEqual({
     configured: false,
@@ -70,9 +69,10 @@ test("without a saved section the settings come from the [github] keys", async (
     mirrors: true,
   });
   expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
+  expect(githubMirrorsOn(loadConfigFile(configPath))).toBe(true);
 });
 
-test("a save goes to the database, wins over [github] mirrors and applies without a restart", async () => {
+test("a save goes to the database and applies without a restart", async () => {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -116,7 +116,7 @@ test("a member, a missing CSRF token or an invalid value cannot write", async ()
   );
   expect(invalid!.status).toBe(400);
   expect(((await invalid!.json()) as { error: string }).error).toContain("githubAccess.agentRead");
-  expect(stored).toBe(SEEDED);
+  expect(stored).toBeNull();
 });
 
 test("restartRequired compares the save with the reader Paws started with", async () => {

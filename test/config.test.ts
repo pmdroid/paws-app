@@ -19,14 +19,13 @@ import { DEFAULT_MAX_AWAKE_MS } from "../src/core";
 import { tempHome } from "./helpers";
 
 describe("config", () => {
-  test("configured repository candidates and Closeout roots load", () => {
+  test("Closeout roots load", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
     useMemorySettings(
       paths.configFile,
-      '[github]\nrepo = "acme/one"\nrepos = ["acme/one", "acme/two"]\n\n[closeout.projects."acme/one"]\npolicy_root = "policies/one"\n\n[merge]\nmain_moved = "closeout"\n',
+      '[closeout.projects."acme/one"]\npolicy_root = "policies/one"\n\n[merge]\nmain_moved = "closeout"\n',
     );
-    expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
     expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
     expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
       join(paths.home, "policies/one"),
@@ -60,8 +59,6 @@ describe("config", () => {
   test("tasks default to three hours and retain explicit time limits", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
-    useMemorySettings(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
     expect(loadRuntime({ PAWS_HOME: paths.home, PAWS_MAX_AWAKE_MS: "7200000" }).maxAwakeMs).toBe(
       2 * 60 * 60 * 1000,
@@ -116,19 +113,6 @@ describe("config", () => {
     ensureLayout(paths);
     expect(statSync(paths.secretsDir).mode & 0o777).toBe(0o700);
     expect(statSync(paths.home).mode & 0o777).toBe(0o700);
-  });
-
-  test("a retired turn cap in config.toml or the environment loads and is not configured", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    useMemorySettings(paths.configFile, "[caps]\nmax_turns = 2\nmax_awake_ms = 5000\n");
-    const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.maxAwakeMs).toBe(5_000);
-    expect(parsed).not.toHaveProperty("maxTurns");
-    const runtime = loadRuntime({ PAWS_HOME: home, PAWS_MAX_TURNS: "3" });
-    expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
-    expect(runtime).not.toHaveProperty("maxTurns");
   });
 
   test("missing config.toml is empty", () => {
@@ -195,7 +179,7 @@ describe("config", () => {
   });
 
   test("unknown keys and sections fail with plain config errors", () => {
-    for (const section of ["linear", "merge"]) {
+    for (const section of ["merge", "project_memory"]) {
       expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(
         `config.toml line 2 has an unknown key: ${section}.unknown`,
       );
@@ -205,9 +189,9 @@ describe("config", () => {
     );
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    useMemorySettings(paths.configFile, "[linear]\nunknown = true\n");
+    useMemorySettings(paths.configFile, "[merge]\nunknown = true\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).configError).toBe(
-      "config.toml line 2 has an unknown key: linear.unknown",
+      "config.toml line 2 has an unknown key: merge.unknown",
     );
   });
 
@@ -227,13 +211,8 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    useMemorySettings(
-      paths.configFile,
-      ['repo = "pmdroid/paws-demo"', "", "[agents]", 'implementer = "grok"', ""].join("\n"),
-    );
-    const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.repo).toBe("pmdroid/paws-demo");
-    expect(parsed.agents).toEqual({ implementer: "grok" });
+    useMemorySettings(paths.configFile, '[agents]\nimplementer = "grok"\n');
+    expect(loadConfigFile(paths.configFile).agents).toEqual({ implementer: "grok" });
     useMemorySettings(paths.configFile, '[agents]\nimplementer = "gpt"\n');
     expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
   });
@@ -247,29 +226,10 @@ describe("config", () => {
     );
   });
 
-  test("old configs without github.auth or tracker load as the App and linear", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    useMemorySettings(paths.configFile, 'repo = "pmdroid/paws-demo"\n');
-    const runtime = loadRuntime({ PAWS_HOME: home });
-    expect(runtime.githubAuth).toBe("app");
-    expect(runtime.trackerKind).toBe("linear");
-  });
-
-  test("retired [tracker] kind, [checkout] path and github.auth load and are ignored", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    const retired =
-      '[github]\nauth = "oauth"\nrepo = "pmdroid/paws-demo"\n\n[tracker]\nkind = "jira"\n\n[checkout]\npath = "/repo"\n';
-    useMemorySettings(paths.configFile, retired);
-    const runtime = loadRuntime({ PAWS_HOME: home });
-    expect(runtime.configError).toBeNull();
-    expect(runtime.githubAuth).toBe("app");
-    expect(runtime.trackerKind).toBe("linear");
-    expect(parseConfigToml(retired)).toEqual(
-      parseConfigToml('[github]\nrepo = "pmdroid/paws-demo"\n'),
-    );
+  test("saved settings with a startup or retired section fail with the unknown-section error", () => {
+    for (const section of ["database", "linear", "github", "tracker", "checkout", "caps", "server"])
+      expect(() => parseConfigToml(`[${section}]\nurl = "x"\n`)).toThrow(
+        `config.toml line 1 has an unknown section: ${section}`,
+      );
   });
 });
