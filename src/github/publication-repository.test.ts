@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -438,3 +439,44 @@ for (const failures of [1, 2]) {
     ]);
   });
 }
+
+test("a rebuild replaces the old repository while another process still removes files from it", async () => {
+  const f = await fixture();
+  await f.commit("first");
+  await f.push("paws/acme-1");
+  const marker = path.join(f.persistent, "marker");
+  await writeFile(marker, "");
+  const loose = path.join(f.persistent, "objects", "loose");
+  await mkdir(loose);
+  await Promise.all(
+    Array.from({ length: 2000 }, (_, i) => writeFile(path.join(loose, `object-${i}`), "")),
+  );
+  const head = await f.commit("second");
+  let maintenance: ChildProcess | undefined;
+  const lacking: GitExec = async (args, options) => {
+    if (args.includes("update-ref") && args.includes(f.persistent) && !maintenance) {
+      maintenance = spawn("sh", ["-c", 'for i in $(seq 0 1999); do rm -f "object-$i"; done'], {
+        cwd: loose,
+      });
+      throw new GitCommandError(
+        args,
+        `fatal: update_ref failed for ref 'HEAD': cannot update ref 'HEAD': trying to write ref 'HEAD' with nonexistent object ${head}\n`,
+      );
+    }
+    return f.fake(args, options);
+  };
+
+  await publicationExec(
+    lacking,
+    undefined,
+    f.store,
+  )([...PREFIX, "push", WIDGETS, "HEAD:refs/heads/paws/acme-1"], {
+    cwd: f.worktree,
+    env: gitEnv(token),
+  });
+  if (maintenance!.exitCode === null) await once(maintenance!, "exit");
+
+  expect(await remoteBranch(f, "paws/acme-1")).toBe(head);
+  expect(await Bun.file(marker).exists()).toBe(false);
+  expect(await readdir(path.join(f.persistent, "objects"))).not.toContain("loose");
+});

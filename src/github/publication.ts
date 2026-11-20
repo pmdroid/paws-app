@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { statfsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HostDiskFullError, isDiskFullText } from "../core";
 import { journal, journalCaught } from "../journal";
@@ -196,7 +197,15 @@ async function lockRepository(
 }
 
 async function resetRepository(run: Run, repository: string): Promise<void> {
-  await rm(repository, { recursive: true, force: true });
+  const discarded = `${repository}.discarded-${randomUUID()}`;
+  try {
+    await rename(repository, discarded);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(discarded, { recursive: true, force: true }).catch((error: unknown) =>
+    journalCaught(error, "publication.resetRepository", null, "leaving the old repository behind"),
+  );
   await run(["init", "--bare", "--template=", repository]);
   await chmod(repository, 0o700);
 }
