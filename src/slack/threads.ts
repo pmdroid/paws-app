@@ -222,6 +222,8 @@ type Reply = Place & {
   text: string;
   contexts?: MemoryRef[];
   sources?: SlackSourceRef[];
+  repositories?: string[];
+  followUp?: { id: string; expiresAt: number };
 };
 type MemoryRef = { key: string; version: number };
 type Notice = Place & {
@@ -1032,6 +1034,21 @@ export function createSlackThreads<Profile>(options: {
     const finish = (status: "done" | "cancelled" | "expired") =>
       store.run((q) => finishSlackFollowUpSteps(q, id, now(), status)).then(() => undefined);
     if (now() > row.expiresAt) return finish("expired");
+    try {
+      return await wakeTurn(job, row, finish, context);
+    } catch (caught) {
+      if (job.attempts >= job.maxAttempts || now() > row.expiresAt) await finish("expired");
+      throw caught;
+    }
+  }
+
+  async function wakeTurn(
+    job: Job,
+    row: SlackFollowUp,
+    finish: (status: "done" | "cancelled" | "expired") => Promise<void>,
+    context: Parameters<typeof handle>[1],
+  ) {
+    const { id } = row;
     const { workspaceId, teamId, channelId, threadTs, slackUserId, generation } = row;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     const facts = await store.run(function* (q) {
@@ -1067,7 +1084,8 @@ export function createSlackThreads<Profile>(options: {
       externallyShared: false,
     };
     const dedupeKey = `slack.follow-up:${id}`;
-    const input = { place, mention, gate: facts.gate, call, dedupeKey, context, followUp: row };
+    const { gate, repositories } = facts;
+    const input = { place, mention, gate, call, dedupeKey, context, followUp: row, repositories };
     const ended = await respond(input);
     if (ended === "refused") return finish("cancelled");
     if (ended !== "busy") return finish("done");
@@ -1084,6 +1102,7 @@ export function createSlackThreads<Profile>(options: {
     dedupeKey: string;
     context: Parameters<typeof handle>[1];
     followUp?: SlackFollowUp;
+    repositories?: string[];
   }): Promise<"busy" | "refused" | void> {
     const { place, mention, gate, call, dedupeKey, context } = input;
     const woken = input.followUp;
@@ -1364,6 +1383,7 @@ export function createSlackThreads<Profile>(options: {
     const followUp = splitSlackFollowUp(reply.answer);
     const answer = followUp.answer.trim().slice(0, 2_900);
     const asked = woken ? null : followUp.request;
+    if (woken && (outcome.status === "stopped" || outcome.status === "fenced")) return "refused";
     if (woken && (!answer || answer === "SKIP")) return;
     if (!answer) {
       journal(`slack ${dedupeKey}: no answer (${outcome.status})`);
@@ -1388,20 +1408,23 @@ export function createSlackThreads<Profile>(options: {
     ]);
     if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return tell(place, replyKey, NOTICES.source_changed);
-    if (dependencies.length) {
-      const needed = dependencies.map((ref) => ref.repository);
+    const tasks = input.repositories ?? [];
+    if (dependencies.length || tasks.length) {
+      const needed = [...dependencies.map((ref) => ref.repository), ...tasks];
       const allowed = await disclosableSources(call, place, needed, context.signal);
       if (!needed.every((name) => allowed.has(name.toLowerCase())))
         return tell(place, replyKey, NOTICES.source_withheld, { member: asker, safe: true });
     }
     const has = (ref: SlackSourceRef, path: string) => sources.has(ref, path, context.signal);
     const keep = reply.notes ? await slackNotesToStore(reply.notes, dependencies, has) : [];
-    await store.transaction(function* (q) {
+    return store.transaction(function* (q): Steps<"refused" | void> {
       if (!(yield* context.isCurrentSteps(q))) return;
-      if (yield* stoppedSteps(q, place, mention.ts)) return;
+      if (yield* stoppedSteps(q, place, mention.ts)) return "refused";
       const fence = yield* gateSteps(q, home, place);
-      if (fence.kind !== "member" || fence.linkId !== gate.linkId) return;
+      if (fence.kind !== "member" || fence.linkId !== gate.linkId) return "refused";
       if (yield* slackOutboxExistsSteps(q, replyKey)) return;
+      if (woken && now() > woken.expiresAt)
+        return void (yield* finishSlackFollowUpSteps(q, woken.id, now(), "expired"));
       if (woken && !(yield* finishSlackFollowUpSteps(q, woken.id, now()))) return;
       const scheduled = asked ? yield* scheduleSteps(q, place, asker, mention.ts, asked) : null;
       if (scheduled && !scheduled.ok)
@@ -1429,6 +1452,8 @@ export function createSlackThreads<Profile>(options: {
           : text,
         ...(contexts.length ? { contexts } : {}),
         ...(dependencies.length ? { sources: dependencies } : {}),
+        ...(tasks.length ? { repositories: tasks } : {}),
+        ...(woken ? { followUp: { id: woken.id, expiresAt: woken.expiresAt } } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
         target: "slack",
@@ -1897,6 +1922,12 @@ export function createSlackThreads<Profile>(options: {
     function* allowedSteps(q: Q): Steps<boolean> {
       if (payload.kind === "task" && !(yield* taskAllowedSteps(q, payload, row.id))) return false;
       if (payload.kind === "status" && !(yield* statusAllowedSteps(q, payload))) return false;
+      if (payload.kind === "reply" && payload.followUp && now() > payload.followUp.expiresAt)
+        return false;
+      if (payload.kind === "reply")
+        for (const repository of payload.repositories ?? [])
+          if (!(yield* readsSteps(q, payload.workspaceId, payload.userId, repository)))
+            return false;
       const asked =
         payload.kind === "reply" || payload.kind === "notice" ? payload.mentionTs : null;
       if (asked && (yield* stoppedSteps(q, payload, asked))) return false;
@@ -1921,7 +1952,10 @@ export function createSlackThreads<Profile>(options: {
         : payload.kind === "status" && payload.itemId
           ? await store.run((q) => slackTaskScopeSteps(q, payload.itemId!))
           : payload.kind === "reply"
-            ? (payload.sources ?? []).map((ref) => ref.repository)
+            ? [
+                ...(payload.sources ?? []).map((ref) => ref.repository),
+                ...(payload.repositories ?? []),
+              ]
             : [];
     function* withholdSourceSteps(q: Q): Steps<void> {
       if (payload.kind === "task")
@@ -1937,7 +1971,7 @@ export function createSlackThreads<Profile>(options: {
           },
           now: now(),
         });
-      if (payload.kind !== "reply") return;
+      if (payload.kind !== "reply" || payload.followUp) return;
       const withheld: Payload = {
         ...payload,
         kind: "notice",

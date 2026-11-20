@@ -177,4 +177,6 @@ test("claiming returns a due timer once, work triggers when their item ends or o
 
   expect(await claim(db, T0 + 24 * HOUR + 1)).toEqual([]);
   expect(await statusOf(db, late.id)).toBe("expired");
+  expect(await statusOf(db, due.id)).toBe("expired");
+  expect(await statusOf(db, pull.id)).toBe("expired");
 });

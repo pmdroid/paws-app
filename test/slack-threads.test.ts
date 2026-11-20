@@ -3965,12 +3965,13 @@ test("an unlinked member, a stopped thread or a channel gone private cancels the
   }
 });
 
-test("a stop after the follow-up's turn started drops its reply and cancels it", async () => {
-  const f = await linked(["um", "SMEMBER"]);
-  const root = await promised(f);
+async function duringTurn(
+  f: Awaited<ReturnType<typeof fixture>>,
+  answer: string,
+  change: () => Promise<unknown>,
+) {
   f.runner.hold = true;
-  f.answers.push("The deploy finished.");
-  f.advance(20 * MIN);
+  f.answers.push(answer);
   await f.reconcile();
   const running = f.runJobs();
   while (
@@ -3978,10 +3979,38 @@ test("a stop after the follow-up's turn started drops its reply and cancels it",
       .length === 0
   )
     await Bun.sleep(2);
-  await f.deliver(f.mention("SMEMBER", "stop", { thread_ts: root.ts }));
+  await change();
   f.runner.hold = false;
   await running;
   await f.settle();
-  expect(f.posts("chat.postMessage")).toEqual([]);
+}
+
+test("a stop, an unlink or an expiry during the follow-up's turn drops its reply", async () => {
+  for (const change of ["stop", "unlink", "expire"] as const) {
+    const f = await linked(["um", "SMEMBER"]);
+    const root = await promised(f);
+    f.advance(20 * MIN);
+    await duringTurn(f, "The deploy finished.", async () => {
+      if (change === "expire") f.advance(24 * 60 * MIN);
+      else await f.deliver(f.mention("SMEMBER", change, { thread_ts: root.ts }));
+    });
+    expect(f.posts("chat.postMessage")).toEqual([]);
+    expect(await followUpStatus(f)).toEqual([change === "expire" ? "expired" : "cancelled"]);
+  }
+});
+
+test("a filed task's repository withheld during the follow-up's turn drops its reply silently", async () => {
+  const { f, root } = await filedTask();
+  const block = followUpBlock({ purpose: "say when it lands", work: "ENG-1", on: "ended" });
+  f.answers.push(`I'll tell you when ENG-1 ends.\n${block}`);
+  await f.say("SMEMBER", "tell me when it lands", { thread_ts: root.ts });
+  await f.db.run((q) =>
+    q.exec(
+      q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "item-1")),
+    ),
+  );
+  f.posted.length = 0;
+  await duringTurn(f, "ENG-1 merged.", () => disclose(f, "ua", "acme/app", "none"));
+  expect(f.posted.filter((post) => post.method.startsWith("chat."))).toEqual([]);
   expect(await followUpStatus(f)).toEqual(["cancelled"]);
 });

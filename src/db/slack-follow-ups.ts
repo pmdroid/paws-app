@@ -168,12 +168,7 @@ export function* claimDueSlackFollowUpsSteps(
 ): Steps<SlackFollowUp[]> {
   return yield* q.transaction(function* (tx) {
     const table = tx.t.slackFollowUp;
-    yield* settleSteps(
-      tx,
-      "expired",
-      and(eq(table.status, "pending"), lt(table.expiresAt, now)),
-      now,
-    );
+    yield* settleSteps(tx, "expired", and(openStatus(tx), lt(table.expiresAt, now)), now);
     const candidates = yield* tx.all(
       tx.orm
         .select()
