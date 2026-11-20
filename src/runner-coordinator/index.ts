@@ -162,6 +162,7 @@ export async function openRunnerCoordinator(options: {
     privateKey: signing.privateKey,
     now: options.now,
     ...(options.slackReplyAuthority ? { slack: options.slackReplyAuthority } : {}),
+    ...(options.repositoryAccess ? { repositoryAccess: options.repositoryAccess } : {}),
   });
   const results = createRunnerResults({ store: options.db, work, now: options.now });
   const health = createRunnerHealth({ store: options.db, work, now: options.now });

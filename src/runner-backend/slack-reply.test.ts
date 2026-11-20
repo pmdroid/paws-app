@@ -19,6 +19,7 @@ import {
   type RunnerHelperResult,
   type RunnerSlackReplyScope,
 } from "../runner-protocol";
+import { setJournalSink } from "../journal";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
 import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerPlacement } from "../runner-placement";
@@ -86,7 +87,23 @@ async function fixture(
     );
   }
   const authority = { allowed: true, generation: 3, checks: 0 };
+  const github = {
+    minted: [] as Array<{ access: "read"; repository: string; installationId: string }>,
+    async mintInstallationToken(input: {
+      access: "read";
+      repository: string;
+      installationId: string;
+    }) {
+      github.minted.push(input);
+      return {
+        token: "fake-installation-token",
+        expiresAt: Date.now() + 3_600_000,
+        repository: input.repository,
+      };
+    },
+  };
   const helpers = createRunnerHelpers({
+    repositoryAccess: { github, installationForRepository: async () => "installation-1" },
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
@@ -116,6 +133,13 @@ async function fixture(
     memberUserId: userId,
     installGeneration: authority.generation,
     ...overrides,
+  });
+  const request = () => ({
+    workspaceId: workspace.id,
+    scope: scope(),
+    profile: { agent: "codex" as const, model: null },
+    prompt: "Ada: which repositories matter?",
+    timeoutMs: 5_000,
   });
   const ask = (
     overrides: Partial<RunnerSlackReplyScope> = {},
@@ -174,11 +198,14 @@ async function fixture(
   return {
     db,
     now,
+    github,
     userId,
     otherUserId,
     workspace: workspace.id,
     authority,
     helpers,
+    replies,
+    request,
     scope,
     ask,
     answer,
@@ -587,4 +614,117 @@ test("a Slack reply removes its tool handler when it fails or times out", async 
   expect(await f.ask({}, 30, tools)).toEqual({ status: "timed_out" });
   expect(events).toHaveLength(2);
   expect(events[1]).toBe(events[0]!.replace("add:", "remove:"));
+});
+
+const COMMIT = "a".repeat(40);
+
+async function credentialRequest(
+  f: Awaited<ReturnType<typeof fixture>>,
+  runnerId: string,
+  id: string,
+  repository: string,
+) {
+  const response = await f.helpers.fetch(
+    new Request(`http://paws/v1/helper-commands/${id}/repository-credential`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repository }),
+    }),
+    runnerId,
+  );
+  return { status: response!.status, body: (await response!.json()) as Record<string, unknown> };
+}
+
+test("a Slack reply's repository handler grants up to five repositories with their commits", async () => {
+  const f = await fixture({ runners: ["runner", "other"] });
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    const asked: string[] = [];
+    const reply = f.replies.reply({
+      ...f.request(),
+      repositories: async (name) => {
+        asked.push(name);
+        return name === "acme/secret" ? null : { commit: COMMIT };
+      },
+    });
+    const command = await f.sent();
+    const ask = (repository: string, runnerId = command.runnerId) =>
+      credentialRequest(f, runnerId, command.id, repository);
+
+    expect(await ask("acme/web")).toEqual({
+      status: 200,
+      body: {
+        token: "fake-installation-token",
+        expiresAt: expect.any(Number),
+        remoteUrl: "https://github.com/acme/web.git",
+        branch: null,
+        commit: COMMIT,
+      },
+    });
+    expect(f.github.minted).toEqual([
+      { access: "read", repository: "acme/web", installationId: "installation-1" },
+    ]);
+    expect(await ask("acme/secret")).toEqual({
+      status: 403,
+      body: expect.objectContaining({ code: "forbidden" }),
+    });
+    const otherRunner = command.runnerId === "runner" ? "other" : "runner";
+    expect((await ask("acme/api", otherRunner)).status).toBe(409);
+    for (const name of ["acme/a", "acme/b", "acme/c", "acme/d"])
+      expect((await ask(name)).status).toBe(200);
+    expect(await ask("acme/e")).toEqual({
+      status: 403,
+      body: expect.objectContaining({ code: "forbidden" }),
+    });
+    expect((await ask("acme/web")).status).toBe(200);
+    expect(asked).not.toContain("acme/e");
+    expect(f.github.minted).toHaveLength(6);
+
+    await f.helpers.acknowledge(command.runnerId, command.id);
+    await f.helpers.submit(command.runnerId, f.result(command));
+    expect((await reply).status).toBe("answered");
+    expect((await ask("acme/web")).status).toBe(409);
+    expect(f.github.minted).toHaveLength(6);
+    expect(lines.filter((line) => line.includes("repository-credential"))).toContain(
+      `helper repository-credential command=${command.id} repository=acme/web`,
+    );
+    expect(lines.join("\n")).not.toContain("fake-installation-token");
+    expect(JSON.stringify(await sqlRows(f.db, "SELECT * FROM runner_helper"))).not.toContain(
+      "fake-installation-token",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("a repository credential is forbidden with no handler or for another purpose", async () => {
+  const f = await fixture();
+  const { command } = await f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "slack-bare",
+    purpose: "slack_reply",
+    profile: { agent: "codex", model: null },
+    prompt: "Ada: what is open?",
+    slack: f.scope({ requestId: "slack-bare" }),
+  });
+  expect((await credentialRequest(f, "runner", command.id, "acme/web")).body).toEqual(
+    expect.objectContaining({ code: "forbidden" }),
+  );
+  f.helpers.handle(command.id, undefined, async () => ({ commit: "not-a-commit" }));
+  expect((await credentialRequest(f, "runner", command.id, "acme/web")).status).toBe(403);
+  await f.helpers.finish(command.id);
+  const classify = await f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session-1",
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: "Classify this request",
+  });
+  f.helpers.handle(classify.command.id, undefined, async () => ({ commit: COMMIT }));
+  expect(await credentialRequest(f, "runner", classify.command.id, "acme/web")).toEqual({
+    status: 403,
+    body: expect.objectContaining({ code: "forbidden" }),
+  });
+  expect(f.github.minted).toEqual([]);
 });
