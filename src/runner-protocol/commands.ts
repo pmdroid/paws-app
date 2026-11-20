@@ -445,7 +445,13 @@ export const RunnerCommandSchema = z
       command.type !== "helper" ||
       (command.purpose === "slack_reply"
         ? Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES
-        : command.prompt.length <= 65_536 && command.tools === undefined),
+        : command.prompt.length <= 65_536),
+    { path: ["prompt"], message: "prompt is too long" },
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" || command.purpose === "slack_reply" || command.tools === undefined,
+    { path: ["tools"], message: "only slack_reply carries tools" },
   )
   .refine(
     (command) =>
