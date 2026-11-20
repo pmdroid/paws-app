@@ -1606,7 +1606,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
-        accept: (delivery) => acceptGitHubDelivery(store, delivery, Date.now(), commentFilter),
+        accept: (delivery) =>
+          acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
+            orchestrator ? orchestrator.followUpRunningAgent(itemId, body) : false,
+          ),
       },
       slackSigningSecret: () => slackSigningSecret(paths.home, envSource),
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
