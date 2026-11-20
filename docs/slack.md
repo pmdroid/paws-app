@@ -66,7 +66,7 @@ When Linear is connected, each turn gets read-only Linear tools, and its prompt 
 - Each call reads the asking member's Linear teams again from their Paws membership, so a team they lose during a turn is no longer read by the next call. The agent can't name other teams.
 - In a channel, private Linear teams are left out, since everyone in the thread reads the answer; in a direct message with Paws they are included. With no team left, each tool answers `You have no Linear teams Paws can read here.` and reads nothing.
 - An answer is plain text of at most 16 KB; a longer one is cut at a line end and ends with `(cut; narrow the search)`. An unknown issue and an issue in a team the member can't read here both answer `No such issue.`
-- The notes an answer leaves record the Linear teams its lookups read, and a later answer gets such a note only when its asker is in all of those teams.
+- An answer records the Linear teams its lookups read, together with those of the earlier answers and notes it was given, on its reply and on the notes it leaves. A later turn gets such an answer, or such a note, only when its asker is in all of those teams; otherwise an earlier answer reaches it as its question only.
 
 ### Thread notes
 

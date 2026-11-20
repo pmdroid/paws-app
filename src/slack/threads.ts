@@ -231,6 +231,7 @@ type Reply = Place & {
   contexts?: MemoryRef[];
   sources?: SlackSourceRef[];
   repositories?: string[];
+  linearTeamIds?: string[];
   followUp?: { id: string; expiresAt: number };
 };
 type MemoryRef = { key: string; version: number };
@@ -1236,9 +1237,16 @@ export function createSlackThreads<Profile>(options: {
     const checked = new Map<string, boolean>();
     const sourceChecked = new Map<string, boolean>();
     const turns: { slackUserId: string; question: string; text: string | null }[] = [];
+    const keptTeams = new Set<string>();
+    const askerTeams = new Set(
+      (await store.run((q) => workspaceMemberSteps(q, workspaceId, gate.userId)))?.teamIds ?? [],
+    );
     for (const turn of recentTurns) {
       const refs = uniqueRefs(turn.contexts ?? []);
-      let valid = (turn.sources ?? []).every((ref) => shareable.has(ref.repository.toLowerCase()));
+      const linearTeams = turn.linearTeamIds ?? [];
+      let valid =
+        (turn.sources ?? []).every((ref) => shareable.has(ref.repository.toLowerCase())) &&
+        linearTeams.every((id) => askerTeams.has(id));
       for (const ref of refs) {
         const id = refId(ref);
         if (!checked.has(id))
@@ -1260,9 +1268,10 @@ export function createSlackThreads<Profile>(options: {
           );
         if (!sourceChecked.get(id)) valid = false;
       }
-      const usable = valid && !(team && (refs.length || used.length));
+      const usable = valid && !(team && (refs.length || used.length || linearTeams.length));
       if (usable) for (const ref of refs) kept.set(refId(ref), ref);
       if (usable) for (const ref of used) keptSources.set(sourceId(ref), ref);
+      if (usable) for (const id of linearTeams) keptTeams.add(id);
       turns.push({ ...turn, text: usable && turn.text ? turn.text : null });
     }
     const readable = await store.run((q) =>
@@ -1292,6 +1301,7 @@ export function createSlackThreads<Profile>(options: {
       }
       if (current) noted.push(note);
     }
+    for (const note of noted) for (const id of note.linearTeamIds) keptTeams.add(id);
     const pending = waiting.map((turn) => ({ ...turn, text: "(answering now)" }));
     const thread = [...turns, ...pending, { slackUserId, question, text: null }].flatMap((turn) => [
       `[<@${turn.slackUserId}>]: ${turn.question}`,
@@ -1483,6 +1493,7 @@ export function createSlackThreads<Profile>(options: {
     ]);
     if (!(await currentSources(scope, gate.userId, dependencies, context.signal)))
       return tell(place, replyKey, NOTICES.source_changed);
+    const linearTeamIds = [...new Set([...keptTeams, ...(tools?.linearTeamIds?.() ?? [])])];
     const tasks = input.repositories ?? [];
     if (dependencies.length || tasks.length) {
       const needed = [...dependencies.map((ref) => ref.repository), ...tasks];
@@ -1528,6 +1539,7 @@ export function createSlackThreads<Profile>(options: {
         ...(contexts.length ? { contexts } : {}),
         ...(dependencies.length ? { sources: dependencies } : {}),
         ...(tasks.length ? { repositories: tasks } : {}),
+        ...(linearTeamIds.length ? { linearTeamIds } : {}),
         ...(woken ? { followUp: { id: woken.id, expiresAt: woken.expiresAt } } : {}),
       };
       yield* enqueueOutboxOnceSteps(q, {
@@ -1544,7 +1556,7 @@ export function createSlackThreads<Profile>(options: {
         requestId: replyScope.requestId,
         authorUserId: gate.userId,
         sources: dependencies,
-        linearTeamIds: tools?.linearTeamIds?.() ?? [],
+        linearTeamIds,
         notes: keep,
         now: now(),
       });

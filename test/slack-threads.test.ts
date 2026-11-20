@@ -4370,7 +4370,7 @@ test("a thread's attached repository goes into the folder, and a failed folder r
   );
 });
 
-test("a run that read a Linear team stores its notes with that team, shown only to askers in it", async () => {
+test("a run that read a Linear team stores its notes and reply with that team, and later runs inherit it and show them only to askers in it", async () => {
   let provider: SlackToolProvider | null = null;
   const f = await linkedWith(
     { tools: [(run) => provider?.(run) ?? null], toolCalls: ["list_teams"] },
@@ -4387,15 +4387,30 @@ test("a run that read a Linear team stores its notes with that team, shown only 
     await syncWorkspaceMember(f.db, {
       ...{ workspaceId: "W1", userId, role, active: true, teamIds: [...teamIds], now: f.now() },
     });
-  f.answers.push(`Teams.\n${notesBlock([{ kind: "observation", text: "canary-linear" }])}`);
+  f.answers.push(`canary-answer\n${notesBlock([{ kind: "observation", text: "canary-linear" }])}`);
   const root = f.mention("SADMIN", "which teams?");
   await f.deliver(root);
   await f.settle();
   expect(f.toolAnswers).toEqual([{ text: "ENG Engineering" }]);
   expect(lastPrompt(f)).toContain("nothing in Linear changes through them");
   expect((await storedNotes(f)).map((note) => note.linearTeamIds)).toEqual([["tA"]]);
+  const payload = (await f.replies()).at(-1)!.payload as { linearTeamIds?: string[] };
+  expect(payload.linearTeamIds).toEqual(["tA"]);
   await f.say("SMEMBER", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("which teams?");
+  expect(lastPrompt(f)).not.toContain("canary-answer");
   expect(lastPrompt(f)).not.toContain("canary-linear");
+  tracker.agentTeams.length = 0;
+  f.answers.push(`Again.\n${notesBlock([{ kind: "decision", text: "canary-derived" }])}`);
   await f.say("SADMIN", "again?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("canary-answer");
   expect(lastPrompt(f)).toContain("canary-linear");
+  expect((await storedNotes(f)).map((note) => [note.text, note.linearTeamIds])).toEqual([
+    ["canary-linear", ["tA"]],
+    ["canary-derived", ["tA"]],
+  ]);
+  expect(((await f.replies()).at(-1)!.payload as typeof payload).linearTeamIds).toEqual(["tA"]);
+  await f.say("SMEMBER", "and now?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).not.toContain("canary-derived");
+  expect(lastPrompt(f)).not.toContain("canary-answer");
 });
