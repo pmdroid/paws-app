@@ -184,7 +184,7 @@ During an implementation or fix turn, the agent can use the bundled GitHub CLI t
 
 The agent's prompt says `gh` is signed in only when the token reaches the runner within 30 seconds of the turn starting. When the runner can't deliver a token, the run's transcript shows "GitHub read access: not delivered" with a reason: `format` (the runner rejected the token), `fetch` (fetching it failed), `expiry` (its expiry was out of range) or `write` (the runner could not save it for `gh`). Paws also journals `agent-read item=… run=… not delivered: <reason>`.
 
-To disable this access, use Settings > GitHub access. See [GitHub access configuration](configuration.md#github_access).
+To disable this access, use Settings > GitHub access. See [GitHub access configuration](configuration.md#github-access).
 
 ## Working through a Paws outage
 

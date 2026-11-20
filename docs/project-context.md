@@ -100,7 +100,7 @@ Saved entries are records of the issue as a Paws task source, with the project's
 
 ## Decisions from people's answers
 
-With decisions turned on in the saved `[project_memory]` settings (off by default), a person's answer to an agent's `ask_team` question on an issue in a Linear project is stored as a decision: the question, the answer, and who answered on which issue. This includes questions from answer, plan and artifact sessions. Question and answer are each cut to 300 characters. The person who answered is the record's actor, and their access to the project is checked when it's stored.
+With **Save answers as decisions** turned on in Workspace › Project memory (off by default), a person's answer to an agent's `ask_team` question on an issue in a Linear project is stored as a decision: the question, the answer, and who answered on which issue. This includes questions from answer, plan and artifact sessions. Question and answer are each cut to 300 characters. The person who answered is the record's actor, and their access to the project is checked when it's stored.
 
 When the agent asks the same question again on the same issue, the new answer corrects that decision and keeps the earlier version in its history. A different question gets its own decision, even when it starts with the same words. Paws's own questions, like repository, runner or time-limit questions, and answers Paws rejects record nothing.
 

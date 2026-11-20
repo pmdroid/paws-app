@@ -1,6 +1,6 @@
 # Local implementation skills
 
-Give Paws project-specific skills from a folder on the Paws host. In Settings, open Skills and save the folder for each repository. See [Project skill roots](configuration.md#project-skill-roots).
+Give Paws project-specific skills from a folder on the Paws host. In Settings, open Skills and save the folder for each repository. See [Skills settings](configuration.md#skills).
 
 The root must be an absolute path to an existing directory. Repository names match without regard to case.
 
