@@ -131,6 +131,14 @@ async function view(db: Db, scope: NotebookScope) {
   };
 }
 
+function decoded(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return "";
+  }
+}
+
 async function json(request: Request): Promise<unknown> {
   const text = await request.text();
   return text.length > BODY_LIMIT ? undefined : new Response(text).json().catch(() => undefined);
@@ -147,10 +155,7 @@ export function createNotebookHttp(options: { db: Db; now?: () => number }) {
     }
     if (!path.startsWith(`${PATH}/`)) return null;
     const [kind = "", encoded = "", action, ...rest] = path.slice(PATH.length + 1).split("/");
-    let id = "";
-    try {
-      id = decodeURIComponent(encoded);
-    } catch {}
+    const id = decoded(encoded);
     if (
       (kind !== "repository" && kind !== "project") ||
       id.length === 0 ||
