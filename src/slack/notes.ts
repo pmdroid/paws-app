@@ -7,9 +7,9 @@ import {
   type Steps,
 } from "../db";
 import { estimateContextTokens } from "../project-context";
-import { SLACK_CONTEXT_TOKENS } from "./memory";
 import { readsSteps, type SlackSourceRef } from "./source";
 
+export const SLACK_CONTEXT_TOKENS = 200_000;
 const SLACK_NOTES_PROMPT_TOKENS = SLACK_CONTEXT_TOKENS * 0.4;
 const THREAD_PROMPT_BYTES = 28_000;
 const PROMPT_BYTES = 393_216;
