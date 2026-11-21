@@ -1354,11 +1354,14 @@ export function createSlackThreads<Profile>(options: {
       mentionTs: mention.ts,
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
+      ...(mention.direct ? { direct: true } : {}),
     };
-    const provided = (options.tools ?? []).map((provider) => {
-      const made = provider(run);
-      return () => made;
-    });
+    const provided = await Promise.all(
+      (options.tools ?? []).map(async (provider) => {
+        const made = await provider(run);
+        return () => made;
+      }),
+    );
     const tools = team ? undefined : slackRunTools(provided, run);
     const folderTools = folder && slackRunTools([...provided, folder.tools], run);
     const tail = `${

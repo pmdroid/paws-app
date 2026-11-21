@@ -1,5 +1,5 @@
 import { workspaceMemberSteps, workspaceMemberUsable, type Db } from "../db";
-import type { SlackToolProvider, SlackToolRun } from "./tools";
+import type { SlackSyncToolProvider, SlackToolRun } from "./tools";
 import * as work from "./work";
 
 type Scope = { teamIds: readonly string[] };
@@ -154,7 +154,7 @@ export function slackLinearTools(options: {
   tracker: () => SlackLinearReader | null | undefined;
   now?: () => number;
   checkWrite?: (write: { title?: string; description?: string; labelIds?: string[] }) => void;
-}): SlackToolProvider {
+}): SlackSyncToolProvider {
   const now = options.now ?? Date.now;
   return (run) => {
     const linear = options.tracker();

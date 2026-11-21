@@ -14,6 +14,7 @@ export type SlackToolRun = {
   mentionTs: string;
   thread: { teamId: string; channelId: string; threadTs: string; installGeneration: number };
   requestId: string;
+  direct?: boolean;
 };
 
 export type SlackTools = {
@@ -23,12 +24,16 @@ export type SlackTools = {
   linearTeamIds?: () => string[];
 };
 
-export type SlackToolProvider = (run: SlackToolRun) => SlackTools | null;
+export type SlackToolProvider = (
+  run: SlackToolRun,
+) => SlackTools | null | Promise<SlackTools | null>;
+
+export type SlackSyncToolProvider = (run: SlackToolRun) => SlackTools | null;
 
 const FAILED: HelperToolAnswer = { text: "Paws could not do that.", isError: true };
 
 export function slackRunTools(
-  providers: readonly SlackToolProvider[],
+  providers: readonly SlackSyncToolProvider[],
   run: SlackToolRun,
 ): SlackTools | undefined {
   const owners = new Map<string, SlackTools>();
