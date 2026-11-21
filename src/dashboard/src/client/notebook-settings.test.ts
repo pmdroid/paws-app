@@ -172,6 +172,10 @@ test("Edit turns the entry into a text area and Save sends a patch", async () =>
     ],
   });
   expect(root.querySelector('[data-notebook-form="edit:e2"]')).toBeNull();
+  await click(button(root, "Edit", entryItem(root, "static files")));
+  expect(
+    root.querySelector<HTMLTextAreaElement>('[data-notebook-form="edit:e2"] textarea')!.value,
+  ).toBe("The dashboard is static files.");
 });
 
 test("Remove asks once in place and then sends a remove", async () => {

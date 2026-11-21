@@ -188,7 +188,8 @@ export function createNotebookSettings(): {
       } else {
         view.open = data as Notebook;
         view.editing = view.removing = null;
-        if (at.startsWith("edit:") || at === "add") view.drafts = { ...view.drafts, [at]: "" };
+        const { [at]: _done, ...drafts } = view.drafts;
+        view.drafts = drafts;
       }
     } catch (error) {
       journalCaught(error, "notebook-settings.createNotebookSettings.request", null);
@@ -214,7 +215,8 @@ export function createNotebookSettings(): {
       view = { ...view, open: null, editing: null, removing: null, error: null };
       void request("list", "/api/notebooks");
     } else if (data.notebook === "cancel") {
-      view = { ...view, editing: null, removing: null, error: null };
+      const { [`edit:${view.editing}`]: _dropped, ...drafts } = view.drafts;
+      view = { ...view, drafts, editing: null, removing: null, error: null };
       paint();
     } else if (data.notebookEdit) {
       view = { ...view, editing: data.notebookEdit, removing: null, error: null };
