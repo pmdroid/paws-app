@@ -81,10 +81,16 @@ export async function repositoryTools(
     definitions: [
       {
         name: "list_repositories",
-        description: `List the next ${REPOSITORY_PAGE} repositories you may add with add_repository, after the given name.`,
+        description: `List up to ${REPOSITORY_PAGE} repositories available to add_repository. Use after to request the next page.`,
         inputSchema: {
           type: "object",
-          properties: { after: { type: "string" } },
+          properties: {
+            after: {
+              type: "string",
+              description:
+                "The last owner/name returned on the previous page. Omit for the first page.",
+            },
+          },
           additionalProperties: false,
         },
       },

@@ -10,6 +10,7 @@ import {
   type Db,
 } from "../db";
 import { createFakeTracker, type AgentIssue } from "../linear";
+import { HostToolDefinitionsSchema } from "../runner-protocol";
 import { linearToolsFor, NOT_YOURS } from "./linear-tools";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
@@ -96,6 +97,65 @@ test("a code-mode item gets the tools; answer, plan and an unresolved delegator 
   expect(await (await setup({ mode: "plan" })).tools()).toBeUndefined();
   expect(await (await setup({ creator: null })).tools()).toBeUndefined();
   expect(await (await setup({ creator: "linear-stranger" })).tools()).toBeUndefined();
+});
+
+const described = (
+  definitions: readonly { name: string; description: string; inputSchema: unknown }[],
+) =>
+  Object.fromEntries(
+    definitions.map((tool) => {
+      const { properties } = tool.inputSchema as {
+        properties: Record<string, { description?: string }>;
+      };
+      const params = Object.entries(properties).map(([key, value]) => [key, value.description]);
+      return [tool.name, [tool.description, Object.fromEntries(params)]];
+    }),
+  );
+
+test("each tool and every parameter is described, within the host tool limits", async () => {
+  const definitions = (await (await setup()).tools())!.definitions;
+  expect(HostToolDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  const id = "The issue's identifier, such as ENG-123, or its Linear id.";
+  const filed =
+    "The current issue or one you filed for this item: its identifier, such as ENG-123, or its Linear id.";
+  expect(described(definitions)).toEqual({
+    search_issues: [
+      "Search Linear issues by text or issue identifier within the delegating person's teams.",
+      {
+        query: "Search text or a Linear issue identifier, such as ENG-123.",
+        limit: "Maximum number of results: 10 by default, at most 25.",
+      },
+    ],
+    get_issue: ["Read a Linear issue, including its relations and recent comments.", { id }],
+    list_teams: ["List the Linear teams the delegating person belongs to.", {}],
+    list_projects: ["List the projects of the delegating person's Linear teams.", {}],
+    list_labels: ["List the labels of the delegating person's Linear teams.", {}],
+    list_states: ["List the workflow states of the delegating person's Linear teams.", {}],
+    create_issue: [
+      "Immediately create a follow-up Linear issue in the current issue's team and relate it to the current issue. At most 3 per run. Set start to true to delegate the new issue to Paws.",
+      {
+        title: "A concise title naming the problem or requested outcome, at most 256 characters.",
+        description:
+          "A self-contained Markdown brief: problem and evidence, decided change, relevant files and constraints, and acceptance checks.",
+        labels: "Existing label names to apply, not label IDs; at most 10.",
+        start: "Set true to delegate the new issue to Paws; false creates it without delegation.",
+      },
+    ],
+    update_issue: [
+      "Immediately update the current Linear issue or an issue you filed for this item. Supply only the fields you intend to change.",
+      {
+        id: filed,
+        title: "The new issue title.",
+        description: "The new issue description in Markdown.",
+        state: "The target workflow state name, not its ID.",
+        labels: "Label names, not IDs. They replace the issue's whole label set.",
+      },
+    ],
+    assign_issue: [
+      "Immediately delegate the current Linear issue or an issue you filed for this item to Paws.",
+      { id: filed },
+    ],
+  });
 });
 
 test("search_issues returns only issues of the delegating person's teams", async () => {

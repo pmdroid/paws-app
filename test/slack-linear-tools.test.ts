@@ -12,6 +12,7 @@ import {
   SLACK_LINEAR_NO_ISSUE,
   SLACK_LINEAR_NO_TEAMS,
 } from "../src/slack";
+import { HostToolDefinitionsSchema } from "../src/runner-protocol";
 import { withoutForeignKeys } from "./pglite-fixtures";
 import { sqlRows, tempStore } from "./pglite";
 
@@ -82,6 +83,67 @@ test("searches and reads only the asker's teams, and another team's issue is no 
     (call) => !/^(search|read|list)/.test(call.operation),
   );
   expect(writes).toEqual([]);
+});
+
+test("each tool and every parameter is described, within the host tool limits", async () => {
+  const definitions = (await setup()).tools()!.definitions;
+  expect(HostToolDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  const described = Object.fromEntries(
+    definitions.map((tool) => {
+      const { properties } = tool.inputSchema as {
+        properties: Record<string, { description?: string }>;
+      };
+      const params = Object.entries(properties).map(([key, value]) => [key, value.description]);
+      return [tool.name, [tool.description, Object.fromEntries(params)]];
+    }),
+  );
+  const id = "The issue's identifier, such as ENG-123, or its Linear id.";
+  expect(described).toEqual({
+    search_issues: [
+      "Search Linear issues by text or issue identifier within the asking person's teams.",
+      {
+        query: "Search text or a Linear issue identifier, such as ENG-123.",
+        limit: "Maximum number of results: 10 by default, at most 25.",
+      },
+    ],
+    get_issue: ["Read a Linear issue, including its relations and recent comments.", { id }],
+    list_teams: ["List the Linear teams the asking person belongs to. Read only.", {}],
+    list_projects: ["List the projects of the asking person's Linear teams. Read only.", {}],
+    list_labels: ["List the labels of the asking person's Linear teams. Read only.", {}],
+    list_states: ["List the workflow states of the asking person's Linear teams. Read only.", {}],
+    create_issue: [
+      "Propose creating a Linear issue; nothing changes until the person confirms. Choose one of the asking person's teams. Project and label names must exist in that team. By default, confirmation also delegates the issue to Paws.",
+      {
+        team: "The destination team key, such as ENG, from list_teams.",
+        title: "A concise title naming the problem or requested outcome, at most 256 characters.",
+        description:
+          "A self-contained Markdown brief: problem and evidence, decided change, relevant files and constraints, and acceptance checks.",
+        project: "An existing project name in the destination team, not a project ID.",
+        labels: "Existing label names in the destination team, not label IDs; at most 10.",
+        parent:
+          "The parent issue for a sub-issue: its identifier, such as ENG-123, or its Linear id.",
+        related_to:
+          "One issue to link as related: its identifier, such as ENG-123, or its Linear id.",
+        start:
+          "Whether confirmation also delegates the new issue to Paws. Defaults to true; set false to propose creation without delegation.",
+      },
+    ],
+    update_issue: [
+      "Propose changes to a Linear issue in the asking person's teams; nothing changes until the person confirms. Supply only the fields you intend to change.",
+      {
+        id,
+        title: "The proposed issue title.",
+        description: "The proposed issue description in Markdown.",
+        state: "The proposed workflow state name, not its ID.",
+        labels: "Label names, not IDs. They replace the issue's whole label set.",
+        project: "The proposed project name, not its ID.",
+      },
+    ],
+    assign_issue: [
+      "Propose delegating a Linear issue in the asking person's teams to Paws. Nothing changes until the person confirms.",
+      { id },
+    ],
+  });
 });
 
 test("private teams are left out", async () => {
