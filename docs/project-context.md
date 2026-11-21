@@ -85,18 +85,16 @@ The selection ends with a note telling the agent that the context is background 
 
 ## What agents may save
 
-A work turn on an issue in a Linear project, including a follow-up conversation on it, gets the `remember` tool, and the project overview in its brief ends with a note that explains project memory. Answer, plan and artifact sessions, reviewers and Closeout checks don't get the tool or the note. Neither do items outside a project, or any item when Linear isn't connected.
+Agents no longer save project memory. A work turn on a code task (or a task without a mode) whose delegating person is a member of the Paws workspace gets the `notebook` tool instead, and its brief ends with a note that explains the shared notebooks. Answer, plan and artifact sessions, read-only turns, reviewers and Closeout checks don't get the tool or the note.
 
-An agent may save short facts and open questions that a later agent on the project should know: a convention, a constraint, a pitfall or a question nobody has answered. It should not save what's already in the code, the issue or the docs, task progress, or what it changed. It can't save decisions or approvals: Paws records those when a person answers a question.
+The tool reads or edits one of two notebooks, chosen by the agent with `notebook`:
 
-| Limit                       | Value                                                      |
-| --------------------------- | ---------------------------------------------------------- |
-| Operations per call         | 1 to 5, applied together or not at all                     |
-| Entry text                  | 400 characters, cleaned of secrets like every record       |
-| Entries per issue           | 10. Patch or remove an entry this issue saved to make room |
-| Entries an agent can change | Only those saved for the same issue                        |
+| Notebook     | Holds                                               | Total limit       |
+| ------------ | --------------------------------------------------- | ----------------- |
+| `repository` | Codebase facts for the item's repository            | 12,000 characters |
+| `project`    | Facts for the issue's Linear project (none without) | 4,000 characters  |
 
-Saved entries are records of the issue as a Paws task source, with the project's access restriction. They follow the same access checks, forgetting, expiry and caps as every other record.
+Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. Each change records the issue and the person who delegated it.
 
 ## Decisions from people's answers
 

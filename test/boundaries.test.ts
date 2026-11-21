@@ -224,6 +224,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "evidence",
     "slack",
     "improvements",
+    "notebook",
   ],
   doctor: [
     "journal",
