@@ -1,10 +1,17 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { cpSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
+import { citext } from "@electric-sql/pglite/contrib/citext";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
 import { eq } from "drizzle-orm";
 import {
   listContextAudit,
   openPawsStore,
+  PG_MIGRATIONS_FOLDER,
   pgSchema,
+  postgresDb,
   type ContextNamespace,
   type Db,
 } from "../src/db";
@@ -26,7 +33,7 @@ import {
   type WorkItemContextEntry,
 } from "../src/project-context";
 import { tempHome } from "./helpers";
-import { sqlRun, tempStore } from "./pglite";
+import { sqlRows, sqlRun, tempStore } from "./pglite";
 import journal from "../src/db/drizzle-pg/meta/_journal.json";
 
 const T0 = Date.parse("2026-11-17T12:00:00Z");
@@ -46,6 +53,20 @@ const SETTINGS: Partial<ContextBudgetSettings> = {
   summaryTimeoutMs: 1_000,
   compactionRetryMs: 60_000,
 };
+
+async function migratedBefore(dir: string, tag: string) {
+  const folder = join(tempHome(), "drizzle-pg");
+  cpSync(PG_MIGRATIONS_FOLDER, folder, { recursive: true });
+  const entries = journal.entries.slice(
+    0,
+    journal.entries.findIndex((entry) => entry.tag === tag),
+  );
+  writeFileSync(join(folder, "meta/_journal.json"), JSON.stringify({ ...journal, entries }));
+  const client = new PGlite(dir, { extensions: { citext } });
+  const pg = drizzle({ client, schema: pgSchema });
+  await migrate(pg, { migrationsFolder: folder });
+  return { store: postgresDb(pg), close: () => client.close() };
+}
 
 let db: Db;
 let close: () => Promise<void>;
@@ -329,8 +350,8 @@ test("a forget racing ingestion and correction leaves the entry absent and its s
 test("a populated database from before entry forgetting migrates, and a forget survives a restart", async () => {
   const dir = join(tempHome(), "pglite");
   const f = fixture();
-  const opened = await openPawsStore({ url: null, pgliteDir: dir });
-  await recordWorkItemContext(opened.store, f.access, {
+  const scratch = await tempStore();
+  await recordWorkItemContext(scratch.db, f.access, {
     namespace: f.namespace,
     requester: f.alice,
     workItemId: "item-1",
@@ -340,26 +361,23 @@ test("a populated database from before entry forgetting migrates, and a forget s
     entries: ENTRIES,
     now: T0,
   });
-  const forgetting = journal.entries.find((entry) => entry.tag === "0008_context_forgotten_entry")!;
-  await sqlRun(opened.store, "ALTER TABLE runner_helper DROP CONSTRAINT runner_helper_session");
-  await sqlRun(opened.store, "ALTER TABLE runner_helper ALTER COLUMN session_id SET NOT NULL");
-  await sqlRun(opened.store, "DROP TABLE repository_description");
-  await sqlRun(opened.store, "DROP TABLE slack_follow_up");
-  await sqlRun(opened.store, "DROP TABLE slack_thread_note");
-  await sqlRun(opened.store, "DROP TABLE slack_conversation");
-  await sqlRun(opened.store, "DROP TABLE context_forgotten_entry");
-  await sqlRun(opened.store, "ALTER TABLE queue_position DROP COLUMN waiting_for");
-  await sqlRun(opened.store, "DROP INDEX context_summary_partition");
-  await sqlRun(opened.store, "ALTER TABLE context_summary DROP COLUMN title");
-  await sqlRun(opened.store, "ALTER TABLE context_scope DROP COLUMN dreamed_at");
-  await sqlRun(
+  const opened = await migratedBefore(dir, "0008_context_forgotten_entry");
+  const tables = await sqlRows<{ name: string }>(
     opened.store,
-    "CREATE UNIQUE INDEX context_summary_partition ON context_summary (workspace_id, scope_kind, scope_id, partition)",
+    "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'context_%'",
   );
-  await sqlRun(
-    opened.store,
-    `DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= ${forgetting.when}`,
-  );
+  for (const { name } of tables) {
+    const [copied] = await sqlRows<{ rows: string }>(
+      scratch.db,
+      `SELECT coalesce(json_agg(t), '[]')::text AS rows FROM ${name} t`,
+    );
+    await sqlRun(
+      opened.store,
+      `INSERT INTO ${name} SELECT * FROM json_populate_recordset(NULL::${name}, ?::json)`,
+      [copied!.rows],
+    );
+  }
+  await scratch.close();
   await opened.close();
 
   const migrated = await openPawsStore({ url: null, pgliteDir: dir });
