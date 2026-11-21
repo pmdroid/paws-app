@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, parseConfigToml } from "./file";
-import { readProjectMemorySettings, setProjectMemorySettingsText } from "./project-memory";
 import {
   readConfigText,
   retiredConfigSections,
@@ -31,7 +30,6 @@ const WRITER_SECTIONS = [
   "merge.projects.abc",
   `merge.repositories.${PROJECT}`,
   "queue",
-  "project_memory",
   "time_limits",
   `checkout.projects.${PROJECT}`,
   `closeout.projects.${PROJECT}`,
@@ -49,7 +47,6 @@ const BODIES: Record<string, string> = {
   "agents.presets.fast.implementer": 'agent = "claude"',
   "agents.presets.fast.reviewer": 'agent = "codex"',
   [`skills.projects.${PROJECT}`]: 'root = ".agents/skills"',
-  project_memory: "work_summary = true\ndream = false",
 };
 
 async function storedSettings(initial: string | null) {
@@ -89,10 +86,11 @@ test("a config.toml on disk is never read or written", async () => {
   const { configPath, stored } = await storedSettings("[merge]\nci_fix_attempts = 4\n");
   writeFileSync(configPath, '[linear]\nteam = "ACME"\n\n[merge]\nci_fix_attempts = 9\n');
   expect(readConfigText(configPath)).toBe("[merge]\nci_fix_attempts = 4\n");
-  await updateConfigText(configPath, (current) =>
-    setProjectMemorySettingsText(current, { workSummary: true, dream: false, decisions: false }),
+  await updateConfigText(
+    configPath,
+    (current) => `${current}\n[queue]\nstart_timeout_hours = 12\n`,
   );
-  expect(stored()).toContain("[project_memory]");
+  expect(stored()).toContain("[queue]\nstart_timeout_hours = 12");
   expect(readFileSync(configPath, "utf8")).toBe(
     '[linear]\nteam = "ACME"\n\n[merge]\nci_fix_attempts = 9\n',
   );
@@ -124,36 +122,12 @@ test("with no store and no default store, a save rejects and nothing is kept", a
   }
 });
 
-test("project memory defaults off and round-trips through the stored settings", async () => {
-  expect(readProjectMemorySettings(parseConfigToml(""))).toEqual({
-    workSummary: false,
-    dream: false,
-    decisions: false,
-  });
-  expect(() => parseConfigToml("[project_memory]\nsummary = true\n")).toThrow("unknown key");
-  const { configPath, stored } = await storedSettings(null);
-  const written = setProjectMemorySettingsText("[merge]\nci_fix_attempts = 4\n", {
-    workSummary: true,
-    dream: true,
-    decisions: true,
-  });
-  expect(readProjectMemorySettings(parseConfigToml(written))).toEqual({
-    workSummary: true,
-    dream: true,
-    decisions: true,
-  });
-  await updateConfigText(configPath, (current) =>
-    setProjectMemorySettingsText(current, { workSummary: false, dream: true, decisions: true }),
+test("stored [project_memory] settings are a retired section", async () => {
+  const { configPath } = await storedSettings(
+    "[merge]\nci_fix_attempts = 4\n\n[project_memory]\nwork_summary = true\n",
   );
-  expect(stored()).toContain(
-    "[project_memory]\nwork_summary = false\ndream = true\ndecisions = true\n",
-  );
-  expect(existsSync(configPath)).toBe(false);
-  expect(readProjectMemorySettings(loadConfigFile(configPath))).toEqual({
-    workSummary: false,
-    dream: true,
-    decisions: true,
-  });
+  expect(readConfigText(configPath)).toBe("[merge]\nci_fix_attempts = 4\n");
+  expect(retiredConfigSections(configPath)).toEqual(["project_memory"]);
 });
 
 test("a save drops a retired section the stored settings still hold", async () => {
@@ -170,10 +144,11 @@ test("memory settings seed loadConfigFile with no file on disk and keep a save",
   const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
   cleanups.push(() => settings.release());
   expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
-  await updateConfigText(configPath, (current) =>
-    setProjectMemorySettingsText(current, { workSummary: true, dream: false, decisions: true }),
+  await updateConfigText(
+    configPath,
+    (current) => `${current}\n[queue]\nstart_timeout_hours = 12\n`,
   );
-  expect(readConfigText(configPath)).toContain("[project_memory]\nwork_summary = true");
+  expect(readConfigText(configPath)).toContain("[queue]\nstart_timeout_hours = 12");
   expect(readConfigText(configPath)).toContain('implementer = "codex"');
   expect(existsSync(configPath)).toBe(false);
 });

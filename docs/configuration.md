@@ -154,7 +154,3 @@ Workspace › Member VMs › **Member VM size**: **CPUs**, **Memory (GB)**, **Di
 ### Linear comments
 
 Workspace › Linear › **Comment agents** › **Agents**: Linear app user IDs, one per line, of external Linear agents whose issue comments reach Paws. A change applies to the next comment without a restart.
-
-### Project memory
-
-Saved settings under `[project_memory]`: `decisions`, `work_summary` and `dream`. The dashboard has no page for them. Paws no longer acts on them: sessions use the shared notebooks instead ([project context](project-context.md)).

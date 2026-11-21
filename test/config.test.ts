@@ -179,11 +179,9 @@ describe("config", () => {
   });
 
   test("unknown keys and sections fail with plain config errors", () => {
-    for (const section of ["merge", "project_memory"]) {
-      expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(
-        `Saved settings line 2 has an unknown key: ${section}.unknown`,
-      );
-    }
+    expect(() => parseConfigToml("[merge]\nunknown = true\n")).toThrow(
+      "Saved settings line 2 has an unknown key: merge.unknown",
+    );
     expect(() => parseConfigToml("[unknown]\n")).toThrow(
       "Saved settings line 1 has an unknown section: unknown",
     );
