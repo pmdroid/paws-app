@@ -210,25 +210,14 @@ export default {
       null,
     );
     proof.expect(
-      "the work turn's project overview ends with the project memory note",
-      prompt.includes(
-        "Project memory: the context above is what earlier Paws sessions and the project's Linear documents left for this project.",
-      ) && prompt.indexOf(CONTEXT_PACK_HEADER) < prompt.indexOf("Project memory:"),
-      prompt.slice(prompt.indexOf("Project memory:"), prompt.indexOf("Project memory:") + 200),
-    );
-    proof.expect(
-      "the work turn lists remember and recall in PAWS_HOST_TOOLS, and no reviewer gets either tool or the note",
+      "no turn gets remember or recall, and the work turn's prompt never asks for `remember`",
       first !== undefined &&
-        proof.hostTools(first).includes("remember") &&
-        proof.hostTools(first).includes("recall") &&
-        proof.launches
-          .filter((launch) => launch.role === "reviewer")
-          .every(
-            (launch) =>
-              !proof.hostTools(launch).includes("remember") &&
-              !proof.hostTools(launch).includes("recall") &&
-              !launch.prompt.includes("Project memory:"),
-          ),
+        !prompt.includes("`remember`") &&
+        proof.launches.every(
+          (launch) =>
+            !proof.hostTools(launch).includes("remember") &&
+            !proof.hostTools(launch).includes("recall"),
+        ),
       proof.launches.map((launch) => [launch.purpose, proof.hostTools(launch)]),
     );
     const leaked = CANARIES.filter((canary) => prompt.includes(canary));
