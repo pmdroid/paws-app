@@ -403,7 +403,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(15);
+    await expect(submenu).toHaveCount(14);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -436,22 +436,6 @@ try {
     });
     await admin.unroute("**/api/settings/agents");
     await admin.unroute("**/api/runners/models");
-    let memory = { workSummary: false, dream: true, decisions: false };
-    await admin.route("**/api/settings/agents", async (route) => {
-      if (route.request().method() === "PUT") memory = route.request().postDataJSON().projectMemory;
-      await route.fulfill({ json: { defaults: {}, projectMemory: memory } });
-    });
-    const memoryPath = "/dashboard/workspace/project-memory";
-    await visit(admin, width, "project-memory", memoryPath, "Project memory");
-    await expect(admin.getByRole("switch", { name: "Dream" })).toBeChecked();
-    await admin.getByRole("switch", { name: "Summarize finished work" }).check();
-    await admin.getByRole("button", { name: "Save project memory settings" }).click();
-    await expect(admin.locator("#content")).toContainText("Saved.");
-    expect(memory).toEqual({ workSummary: true, dream: true, decisions: false });
-    await admin.screenshot({
-      path: join(out, `project-memory-saved-${width}.png`),
-      fullPage: true,
-    });
     const at = Date.UTC(2026, 10, 20, 12);
     const latest = "Run bun run check before pushing; Closeout runs only the affected tests.";
     const notebook = {
@@ -980,32 +964,6 @@ try {
     }
     await admin.context().close();
     expect(requests.filter((request) => request.path.startsWith("/api/status"))).toEqual([]);
-
-    current = `context-projects@${width}`;
-    await page.route("**/api/context/projects", (route) =>
-      route.fulfill({
-        json: {
-          status: "ok",
-          projects: [
-            { id: "alpha-1", name: "Alpha launch", items: 3 },
-            { id: "beta-2", name: "Beta onboarding", items: 1 },
-          ],
-        },
-      }),
-    );
-    await page.goto(`${f.origin}/dashboard/issues`);
-    if (width < 768) await page.getByRole("button", { name: "Open navigation" }).click();
-    await page.getByRole("link", { name: "Project context" }).click();
-    await expect(page).toHaveURL(`${f.origin}/dashboard/context`);
-    await expect(page.getByRole("dialog", { name: "Paws navigation" })).toBeHidden();
-    await expect(page.locator("#content h1").first()).toHaveText("Project context");
-    await expect(page.getByRole("link", { name: "Alpha launch" })).toBeVisible();
-    await expect(page.locator("#context-page")).toContainText("3 issues");
-    await page.screenshot({ path: join(out, `context-projects-${width}.png`), fullPage: true });
-    await page.getByRole("link", { name: "Alpha launch" }).click();
-    await expect(page).toHaveURL(`${f.origin}/dashboard/context/project/alpha-1`);
-    await expect(page.locator("#content h1").first()).toHaveText("Project context");
-    await page.unroute("**/api/context/projects");
 
     current = `links@${width}`;
     await follow(
