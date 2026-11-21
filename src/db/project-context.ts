@@ -2,12 +2,10 @@ import { createHash } from "node:crypto";
 import {
   and,
   asc,
-  count,
   desc,
   eq,
   exists,
   gt,
-  ilike,
   inArray,
   isNotNull,
   isNull,
@@ -899,54 +897,6 @@ export async function listContextCandidates(store: Db, input: ContextCandidateRe
   return store.run((q) => listContextCandidatesSteps(q, input));
 }
 
-export type ContextPageRead = {
-  readonly namespace: ContextNamespace;
-  readonly visibility: ContextVisibility;
-  readonly now: number;
-  readonly offset: number;
-  readonly limit: number;
-  readonly search?: string;
-  readonly currentOnly?: boolean;
-  readonly classifications?: readonly ContextClassification[];
-  readonly sourceKinds?: readonly string[];
-};
-
-export async function listContextPage(store: Db, input: ContextPageRead) {
-  return store.run(function* (q) {
-    const scope = yield* scopeStatusSteps(q, input.namespace);
-    if (!scope || scope.status !== "connected") return [] as ContextRecordRow[];
-    const { contextRecord } = q.t;
-    const search = input.search?.replace(/[\\%_]/g, (match) => `\\${match}`);
-    const rows = yield* q.all(
-      q.orm
-        .select(contextRecordColumns(q))
-        .from(contextRecord)
-        .where(
-          and(
-            nsWhere(contextRecord, input.namespace),
-            input.currentOnly
-              ? eq(contextRecord.status, "current")
-              : inArray(contextRecord.status, ["current", "superseded"]),
-            gt(contextRecord.expiresAt, input.now),
-            visibleTo(q, input.visibility),
-            contextSourceVerified(q),
-            search ? ilike(contextRecord.body, `%${search}%`) : undefined,
-            input.classifications
-              ? inArray(contextRecord.classification, [...input.classifications])
-              : undefined,
-            input.sourceKinds
-              ? inArray(contextRecord.sourceKind, [...input.sourceKinds])
-              : undefined,
-          ),
-        )
-        .orderBy(desc(contextRecord.observedAt), desc(contextRecord.id))
-        .offset(input.offset)
-        .limit(input.limit),
-    );
-    return rows.map(contextRecordRow);
-  });
-}
-
 export function* contextRecordHistorySteps(
   q: Q,
   namespace: ContextNamespace,
@@ -1017,55 +967,6 @@ export async function contextSourceRestriction(
   source: ContextSourceRef,
 ) {
   return store.run((q) => contextSourceRestrictionSteps(q, namespace, source));
-}
-
-export type WorkItemProject = { id: string; name: string | null; items: number };
-
-export async function listWorkItemProjects(store: Db, max: number): Promise<WorkItemProject[]> {
-  return store.run(function* (q) {
-    const { workItem } = q.t;
-    const rows = yield* q.all(
-      q.orm
-        .select({
-          id: workItem.linearProjectId,
-          name: sql<
-            string | null
-          >`(array_agg(${workItem.linearProjectName} ORDER BY ${workItem.createdAt} DESC) FILTER (WHERE ${workItem.linearProjectName} IS NOT NULL))[1]`,
-          items: count(),
-        })
-        .from(workItem)
-        .where(isNotNull(workItem.linearProjectId))
-        .groupBy(workItem.linearProjectId)
-        .orderBy(asc(workItem.linearProjectId))
-        .limit(max),
-    );
-    return rows.map((row) => ({ id: row.id!, name: row.name ?? null, items: Number(row.items) }));
-  });
-}
-
-export async function workItemIdentifiersInProject(
-  store: Db,
-  namespace: ContextNamespace,
-  ids: readonly string[],
-): Promise<Map<string, string>> {
-  if (namespace.scopeKind !== "linear_project" || ids.length === 0) return new Map();
-  return store.run(function* (q) {
-    const { workItem, linearSession } = q.t;
-    const rows = yield* q.all(
-      q.orm
-        .select({ id: workItem.id, identifier: workItem.linearIdentifier })
-        .from(workItem)
-        .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
-        .where(
-          and(
-            inArray(workItem.id, [...new Set(ids)]),
-            eq(workItem.linearProjectId, namespace.scopeId),
-            eq(linearSession.organizationId, namespace.workspaceId),
-          ),
-        ),
-    );
-    return new Map(rows.map((row) => [row.id, row.identifier]));
-  });
 }
 
 export type ContextSourceChange = {

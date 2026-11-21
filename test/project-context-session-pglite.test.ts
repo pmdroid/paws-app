@@ -11,7 +11,6 @@ import {
   checkContextDelivery,
   correctContext,
   createFakeContextAccess,
-  createLinearContextAccess,
   inspectSessionContext,
   prepareSessionContext,
   recordWorkItemContext,
@@ -305,29 +304,6 @@ test("other projects, workspaces, narrower sources and Slack-shaped consumers ne
   });
   expect(carolView?.records).toEqual([]);
   expect(JSON.stringify(carolView)).not.toContain(DECISION);
-});
-
-test("Linear membership decides access and an inactive or foreign member sees nothing", async () => {
-  const members = new Map<string, { active: boolean; organizationId: string; teamIds: string[] }>([
-    ["active", { active: true, organizationId: "org", teamIds: ["team-a"] }],
-    ["gone", { active: false, organizationId: "org", teamIds: ["team-a"] }],
-    ["foreign", { active: true, organizationId: "other", teamIds: ["team-a"] }],
-  ]);
-  const access = createLinearContextAccess({
-    async member(organizationId, userId) {
-      const found = members.get(userId);
-      if (!found) throw new Error("unknown");
-      return { userId, guest: false, admin: false, ...found, organizationId: found.organizationId };
-    },
-  });
-  expect(await access.currentAccess({ workspaceId: "org", userId: "active" })).toEqual({
-    userId: "active",
-    teamIds: ["team-a"],
-    repositories: [],
-    channelIds: [],
-  });
-  expect(await access.currentAccess({ workspaceId: "org", userId: "gone" })).toBeNull();
-  expect(await access.currentAccess({ workspaceId: "org", userId: "foreign" })).toBeNull();
 });
 
 test("concurrent prepares for one session are serialized and each stays deliverable", async () => {

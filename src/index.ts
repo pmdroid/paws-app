@@ -263,7 +263,6 @@ import {
   POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
-import { createLinearContextAccess, createProjectContextHttp } from "./project-context";
 import {
   acceptGitHubDelivery,
   type PullCommentFilter,
@@ -1531,34 +1530,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           );
         },
       }),
-      ...(members
-        ? {
-            projectContext: (() => {
-              const read = createProjectContextHttp({
-                db: store,
-                access: createLinearContextAccess(members),
-              });
-              return async (request: Request, principal: WorkspacePrincipal) => {
-                const requester = await store.run(function* (q) {
-                  const found = yield* getWorkspaceSteps(q, principal.workspaceId);
-                  const userId = yield* workspaceUserLinearIdSteps(q, principal.userId);
-                  return found && userId ? { workspaceId: found.organizationId, userId } : null;
-                });
-                if (!requester)
-                  return Response.json(
-                    { status: "unavailable", error: "This context is not available." },
-                    { status: 404, headers: { "cache-control": "no-store, private" } },
-                  );
-                return read(request, requester, async () => {
-                  const member = await store.run((q) =>
-                    workspaceMemberSteps(q, principal.workspaceId, principal.userId),
-                  );
-                  return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
-                });
-              };
-            })(),
-          }
-        : {}),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
