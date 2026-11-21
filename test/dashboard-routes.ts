@@ -186,20 +186,20 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET HEAD", "/api/evidence/*", "preserved", "src/evidence"),
   api("*", "/api/context/*", "canonical", "PAS-2115"),
   api("GET", "/api/context/projects", "canonical", "PAS-2139", {
-    via: "/api/context/:scope",
+    via: "/api/context/*",
     sample: "/api/context/projects",
     member: 404,
   }),
   api("GET", "/api/context/:kind/:id", "canonical", "PAS-2115", {
-    via: "/api/context/:scope",
+    via: "/api/context/*",
     sample: "/api/context/project/{project}",
     member: 404,
   }),
   api("GET", "/api/context/:kind/:id/records/:record", "canonical", "PAS-2115", {
-    via: "/api/context/:scope",
+    via: "/api/context/*",
   }),
   api("POST", "/api/context/:kind/:id/records/:record/forget", "canonical", "PAS-2146", {
-    via: "/api/context/:scope",
+    via: "/api/context/*",
     sample: "/api/context/project/{project}/records/{record}/forget",
     member: 403,
   }),
