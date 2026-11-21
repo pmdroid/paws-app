@@ -65,15 +65,15 @@ const SMALL: Partial<ContextBudgetSettings> = {
 
 const ROOMY: Partial<ContextBudgetSettings> = { ...SMALL, memoryTokens: 1_200 };
 
-const project: ContextDestination = { audience: "project_members" };
+const project: ContextDestination = { audience: "channel_members", channelId: "C-project" };
 
 function fixture() {
   seq++;
   const workspaceId = `ws-sel-${seq}`;
   const namespace: ContextNamespace = {
     workspaceId,
-    scopeKind: "linear_project",
-    scopeId: `project-${seq}`,
+    scopeKind: "slack_channel",
+    scopeId: "C-project",
   };
   const alice: ContextRequester = { workspaceId, userId: `alice-${seq}` };
   const access = createFakeContextAccess();
@@ -101,7 +101,7 @@ async function put(
     namespace,
     requester,
     source: {
-      kind: options.kind ?? "linear_project_document",
+      kind: options.kind ?? "slack_channel_message",
       id,
       url: `https://linear.app/doc/${id}`,
       revision: `rev-${at}`,
@@ -123,7 +123,7 @@ function selection(
   return {
     namespace,
     requester,
-    destination: project,
+    destination: { audience: "channel_members", channelId: namespace.scopeId },
     instructions: "You are working on a Paws task.",
     request: "Fix the billing export retry behaviour",
     toolsTokens: 300,
@@ -241,7 +241,7 @@ test("10,000 records across workspaces, projects and repositories stay inside ev
   let total = 0;
   const target = {
     workspaceId: workspaces[0]!,
-    scopeKind: "linear_project",
+    scopeKind: "slack_channel",
     scopeId: "p-0",
   } as const;
   const alice: ContextRequester = { workspaceId: workspaces[0]!, userId: "alice-big" };
@@ -253,7 +253,7 @@ test("10,000 records across workspaces, projects and repositories stay inside ev
       channelIds: [],
     });
     for (let p = 0; p < 5; p++) {
-      const namespace = { workspaceId, scopeKind: "linear_project", scopeId: `p-${p}` } as const;
+      const namespace = { workspaceId, scopeKind: "slack_channel", scopeId: `p-${p}` } as const;
       for (let s = 0; s < 25; s++) {
         const repository = s % 5 === 0 ? (s % 2 ? "acme/app" : "acme/api") : undefined;
         const claims = Array.from({ length: 40 }, (_, i) =>
@@ -641,7 +641,7 @@ test("forget, delete and revoke before, during and after summarization keep cana
   await forgetContextSource(db, access, {
     namespace,
     requester: alice,
-    source: { kind: "linear_project_document", id: "doc-before" },
+    source: { kind: "slack_channel_message", id: "doc-before" },
     now: T0 + 1,
   });
   const summarizer = createFakeContextSummarizer();
@@ -658,7 +658,7 @@ test("forget, delete and revoke before, during and after summarization keep cana
     await forgetContextSource(db, access, {
       namespace,
       requester: alice,
-      source: { kind: "linear_project_document", id: "doc-during" },
+      source: { kind: "slack_channel_message", id: "doc-during" },
       now: T0 + 5 * MINUTE,
     });
   };
@@ -678,7 +678,7 @@ test("forget, delete and revoke before, during and after summarization keep cana
   await forgetContextSource(db, access, {
     namespace,
     requester: alice,
-    source: { kind: "linear_project_document", id: "doc-after" },
+    source: { kind: "slack_channel_message", id: "doc-after" },
     now: T0 + 9 * MINUTE,
   });
   expect(await allSummaryText()).not.toContain("CANARY-AFTER");
@@ -691,7 +691,7 @@ test("forget, delete and revoke before, during and after summarization keep cana
   await compact(access, namespace, alice, summarizer, T0 + 11 * MINUTE);
   await invalidateContext(db, {
     namespace,
-    source: { kind: "linear_project_document", id: "doc-deleted" },
+    source: { kind: "slack_channel_message", id: "doc-deleted" },
     reason: "deleted",
     now: T0 + 12 * MINUTE,
   });
@@ -864,8 +864,8 @@ test("requests the requester can't compact never starve one it can", async () =>
     expect(
       await requestContextCompaction(db, {
         namespace,
-        audience: "project_members",
-        audienceLineage: "project_members@1",
+        audience: "channel_members",
+        audienceLineage: "channel_members@1",
         restriction: { teamIds: [`team-secret-${i}`] },
         now: T0 - 60 * MINUTE + i,
         retryAfterMs: MINUTE,

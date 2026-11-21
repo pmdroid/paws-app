@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 const SECRETS: readonly [RegExp, string][] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted]"],
   [/\blin_(api|oauth|wh)_[A-Za-z0-9]{16,}/g, "[redacted]"],
@@ -26,9 +24,4 @@ export function sanitizedContextText(text: string, maxBytes: number): string {
       Math.floor((clean.length * maxBytes) / Buffer.byteLength(clean, "utf8")) - 1,
     );
   return clean;
-}
-
-export function contextKey(prefix: string, text: string): string {
-  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
-  return `${prefix}:${createHash("sha256").update(normalized).digest("hex").slice(0, 32)}`;
 }

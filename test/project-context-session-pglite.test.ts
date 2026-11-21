@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   getContextSession,
+  type ContextClassification,
   type ContextNamespace,
   type ContextRestriction,
   type Db,
@@ -11,9 +12,9 @@ import {
   checkContextDelivery,
   correctContext,
   createFakeContextAccess,
+  ingestContext,
   inspectSessionContext,
   prepareSessionContext,
-  recordWorkItemContext,
   type ContextBudgetSettings,
   type ContextConsumerRequest,
   type ContextRequester,
@@ -50,7 +51,7 @@ const SMALL: Partial<ContextBudgetSettings> = {
   compactionRetryMs: 60_000,
 };
 
-const project = { audience: "project_members" } as const;
+const project = { audience: "channel_members", channelId: "C-project" } as const;
 
 const DECISION = "Exports stay CSV-only for the first release";
 const REASON = "finance imports CSV and nothing else";
@@ -59,16 +60,53 @@ const QUESTION = "Should exports include archived invoices";
 function fixture() {
   seq++;
   const workspaceId = `org-${seq}`;
-  const projectId = `project-${seq}`;
+  const projectId = "C-project";
   const namespace: ContextNamespace = {
     workspaceId,
-    scopeKind: "linear_project",
+    scopeKind: "slack_channel",
     scopeId: projectId,
   };
   const alice: ContextRequester = { workspaceId, userId: `alice-${seq}` };
   const access = createFakeContextAccess();
   access.grant(alice, { teamIds: ["team-a"], repositories: [], channelIds: [] });
   return { workspaceId, projectId, namespace, alice, access };
+}
+
+function remember(
+  access: FakeContextAccess,
+  request: {
+    namespace: ContextNamespace;
+    requester: ContextRequester;
+    sourceId: string;
+    url?: string;
+    revision: string;
+    revisionAt: number;
+    restriction: ContextRestriction;
+    entries: readonly { classification: ContextClassification; body: string }[];
+    now: number;
+  },
+) {
+  return ingestContext(db, access, {
+    namespace: request.namespace,
+    requester: request.requester,
+    source: {
+      kind: "slack_channel_message",
+      id: request.sourceId,
+      url: request.url ?? null,
+      revision: request.revision,
+      revisionAt: request.revisionAt,
+      actorId: request.requester.userId,
+      restriction: request.restriction,
+    },
+    claims: request.entries.map((entry, i) => ({
+      key: `entry-${i}`,
+      layer: "observation" as const,
+      classification: entry.classification,
+      importance: entry.classification === "decision" ? 3 : 2,
+      body: entry.body,
+    })),
+    now: request.now,
+  });
 }
 
 async function sessionA(
@@ -78,15 +116,15 @@ async function sessionA(
   options: { workItemId?: string; restriction?: ContextRestriction; at?: number } = {},
 ) {
   const at = options.at ?? T0;
-  const outcome = await recordWorkItemContext(db, access, {
+  const outcome = await remember(access, {
     namespace,
     requester,
-    workItemId: options.workItemId ?? `item-a-${seq}`,
+    sourceId: options.workItemId ?? `item-a-${seq}`,
     revision: `rev-${at}`,
     revisionAt: at,
     restriction: options.restriction ?? { teamIds: ["team-a"] },
     entries: [
-      { classification: "decision", body: DECISION, reason: REASON },
+      { classification: "decision", body: `${DECISION} Reason: ${REASON}` },
       { classification: "unresolved_question", body: QUESTION },
     ],
     now: at,
@@ -130,7 +168,7 @@ test("a fresh session receives the decision, its reason and the open question wi
   expect(b.text).toContain(DECISION);
   expect(b.text).toContain(REASON);
   expect(b.text).toContain(QUESTION);
-  expect(b.text).toContain(`source: paws_work_item item-a-${seq}@rev-${T0}`);
+  expect(b.text).toContain(`source: slack_channel_message item-a-${seq}@rev-${T0}`);
   expect(b.text).toContain(CONTEXT_SESSION_NOTICE);
   expect(b.manifest.tokens.total).toBeLessThanOrEqual(b.manifest.tokens.hardCap);
   expect(b.manifest.sources.map((source) => source.classification).sort()).toEqual([
@@ -196,10 +234,10 @@ test("other projects, workspaces, narrower sources and Slack-shaped consumers ne
   await sessionA(access, namespace, alice);
   const bob: ContextRequester = { workspaceId, userId: `bob-${seq}` };
   access.grant(bob, { teamIds: ["team-a"], repositories: [], channelIds: ["C1"] });
-  const narrow = await recordWorkItemContext(db, access, {
+  const narrow = await remember(access, {
     namespace,
     requester: bob,
-    workItemId: privateSource,
+    sourceId: privateSource,
     url: `https://paws.example/private/${privateSource}`,
     revision: "r1",
     revisionAt: T0,
@@ -209,10 +247,10 @@ test("other projects, workspaces, narrower sources and Slack-shaped consumers ne
   });
   expect(narrow.status).toBe("stored");
   const otherProject: ContextNamespace = { ...namespace, scopeId: `other-${seq}` };
-  await recordWorkItemContext(db, access, {
+  await remember(access, {
     namespace: otherProject,
     requester: alice,
-    workItemId: `other-item-${seq}`,
+    sourceId: `other-item-${seq}`,
     revision: "r1",
     revisionAt: T0,
     restriction: { teamIds: ["team-a"] },
@@ -222,10 +260,10 @@ test("other projects, workspaces, narrower sources and Slack-shaped consumers ne
   const otherWorkspace: ContextNamespace = { ...namespace, workspaceId: `${workspaceId}-b` };
   const mallory: ContextRequester = { workspaceId: otherWorkspace.workspaceId, userId: "mallory" };
   access.grant(mallory, { teamIds: ["team-a"], repositories: [], channelIds: [] });
-  await recordWorkItemContext(db, access, {
+  await remember(access, {
     namespace: otherWorkspace,
     requester: mallory,
-    workItemId: `ws-item-${seq}`,
+    sourceId: `ws-item-${seq}`,
     revision: "r1",
     revisionAt: T0,
     restriction: { teamIds: ["team-a"] },
@@ -289,7 +327,7 @@ test("other projects, workspaces, narrower sources and Slack-shaped consumers ne
       consumerKey: `work_item:b-${seq}`,
       namespace: otherProject,
       requester: alice,
-      destination: project,
+      destination: { audience: "channel_members", channelId: otherProject.scopeId },
       now: T0 + MINUTE,
     }),
   ).toBeNull();

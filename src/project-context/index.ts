@@ -14,7 +14,6 @@ export {
   CONTEXT_RETENTION,
   correctContext,
   disconnectContext,
-  forgetContextRecord,
   forgetContextSource,
   ingestContext,
   inspectContext,
@@ -24,7 +23,6 @@ export {
   reconnectContext,
   sweepContext,
   type ContextCorrectionOutcome,
-  type ContextEntryForgetOutcome,
   type ContextForgetOutcome,
   type ContextIngestOutcome,
   type ContextIngestRequest,
@@ -87,11 +85,9 @@ export {
   checkContextDelivery,
   inspectSessionContext,
   prepareSessionContext,
-  recordWorkItemContext,
   type ContextConsumerRequest,
   type ContextDeliveryCheck,
   type SessionContext,
   type SessionContextInspection,
-  type WorkItemContextEntry,
 } from "./session";
 export { sanitizedContextText } from "./sanitize";

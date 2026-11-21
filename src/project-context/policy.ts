@@ -6,7 +6,6 @@ import type {
 } from "../db";
 
 export const CONTEXT_AUDIENCES = {
-  project_members: { version: 1, scopeKind: "linear_project" },
   channel_members: { version: 1, scopeKind: "slack_channel" },
   private_user: { version: 1, scopeKind: "user_private" },
 } as const satisfies Record<string, { version: number; scopeKind: ContextScopeKind }>;
@@ -14,7 +13,6 @@ export const CONTEXT_AUDIENCES = {
 export type ContextAudience = keyof typeof CONTEXT_AUDIENCES;
 
 const SOURCE_KINDS: Record<ContextScopeKind, readonly string[]> = {
-  linear_project: ["linear_project_description", "linear_project_document", "paws_work_item"],
   slack_channel: ["slack_channel_message"],
   user_private: ["slack_direct_message"],
 };
