@@ -38,6 +38,11 @@ export const PAGES = {
     title: "Questions",
     description: "Review blocked work and answer questions in Linear.",
   },
+  notebooks: {
+    title: "Notebooks",
+    description:
+      "What agents wrote down for your projects, channels and repositories, and your own notebook. Correct an entry or undo a change.",
+  },
   runners: {
     title: "Runners",
     description: "Manage the runners that execute work delegated in Linear.",
@@ -55,7 +60,15 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "questions", "mergeQueue", "findings", "improvements"],
+    views: [
+      "overview",
+      "issues",
+      "questions",
+      "notebooks",
+      "mergeQueue",
+      "findings",
+      "improvements",
+    ],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

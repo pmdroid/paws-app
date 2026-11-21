@@ -55,7 +55,7 @@ const ICONS = {
   improvements: Lightbulb,
   questions: CircleHelp,
   runners: Server,
-  context: BookOpen,
+  notebooks: BookOpen,
 };
 const ControllerRegions = memo(function ControllerRegions() {
   return (
