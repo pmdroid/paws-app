@@ -10,7 +10,7 @@ import { tempHome } from "./helpers";
 import { sqlRows, sqlRun } from "./pglite";
 import journal from "../src/db/drizzle-pg/meta/_journal.json";
 
-const KINDS = ["linear_project", "slack_channel"] as const;
+const KINDS = ["linear_project", "slack_channel", "user_private"] as const;
 const SCOPED_TABLES = [
   "context_scope",
   "context_source",
@@ -79,13 +79,13 @@ const summarySources = (store: Db) =>
     "SELECT summary_id FROM context_summary_source ORDER BY summary_id",
   );
 
-test("migrating deletes the Linear-project context rows and keeps the Slack channel rows", async () => {
+test("migrating deletes the Linear-project and Slack channel context rows and keeps the private rows", async () => {
   const dir = join(tempHome(), "pglite");
   const old = await migratedBefore(dir, "0019_delete_linear_project_context");
   for (const kind of KINDS) await seed(old.store, kind);
   const before = new Map<string, Record<string, unknown>[]>();
   for (const table of SCOPED_TABLES) {
-    const rows = await snapshot(old.store, table, "slack_channel");
+    const rows = await snapshot(old.store, table, "user_private");
     expect(rows).toHaveLength(1);
     before.set(
       table,
@@ -98,9 +98,10 @@ test("migrating deletes the Linear-project context rows and keeps the Slack chan
   try {
     for (const table of SCOPED_TABLES) {
       expect(await snapshot(migrated.store, table, "linear_project")).toEqual([]);
-      expect(await snapshot(migrated.store, table, "slack_channel")).toEqual(before.get(table)!);
+      expect(await snapshot(migrated.store, table, "slack_channel")).toEqual([]);
+      expect(await snapshot(migrated.store, table, "user_private")).toEqual(before.get(table)!);
     }
-    expect(await summarySources(migrated.store)).toEqual([{ summary_id: "summary-slack_channel" }]);
+    expect(await summarySources(migrated.store)).toEqual([{ summary_id: "summary-user_private" }]);
     expect(
       await sqlRows(
         migrated.store,

@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SlackNote } from "../db";
 import { estimateContextTokens } from "../project-context";
-import { SLACK_CONTEXT_TOKENS } from "./memory";
-import { slackNotesText, slackPrompt, splitSlackNotes } from "./notes";
+import { SLACK_CONTEXT_TOKENS, slackNotesText, slackPrompt, splitSlackNotes } from "./notes";
 
 const note = (id: number, text: string, extra: Partial<SlackNote> = {}): SlackNote => ({
   id: String(id).padStart(26, "0"),

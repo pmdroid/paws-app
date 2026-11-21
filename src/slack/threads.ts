@@ -62,7 +62,6 @@ import {
   type QuestionAnswer,
 } from "../questions";
 import type { GitHubSnapshotReader } from "../github";
-import type { ContextAccess } from "../project-context";
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, workspaceTokenHash } from "../workspace";
 import {
   SlackApiError,
@@ -77,12 +76,6 @@ import { slackSourceDisclosableSteps } from "./disclosure";
 import { slackRunTools, type SlackToolProvider, type SlackTools } from "./tools";
 import { slackRunRepositories, type SlackRunRepositories } from "./repositories";
 import { slackCapabilities } from "./manifest";
-import {
-  createSlackChannelMemory,
-  slackMemoryCommand,
-  slackMemoryScopeId,
-  type SlackMemoryOptions,
-} from "./memory";
 import {
   readableSlackNotesSteps,
   SLACK_NOTES_INSTRUCTIONS,
@@ -229,19 +222,16 @@ type Reply = Place & {
   mentionTs: string;
   question: string;
   text: string;
-  contexts?: MemoryRef[];
   sources?: SlackSourceRef[];
   repositories?: string[];
   linearTeamIds?: string[];
   followUp?: { id: string; expiresAt: number };
   proposals?: string;
 };
-type MemoryRef = { key: string; version: number };
 type Notice = Place & {
   kind: "notice";
   text: string;
   member?: { userId: string; linkId: string };
-  listing?: boolean;
   safe?: boolean;
   blocks?: unknown[];
   dm?: boolean;
@@ -251,16 +241,12 @@ type Notice = Place & {
 };
 type Payload = Reply | Notice | SlackTaskPost | SlackStatusPost;
 
-const refId = (ref: MemoryRef) => `${ref.key}@${ref.version}`;
 const sourceId = (ref: SlackSourceRef) => `${ref.repository.toLowerCase()}@${ref.commit}`;
 
 function uniqueSources(refs: readonly SlackSourceRef[]): SlackSourceRef[] {
   return [...new Map(refs.map((ref) => [sourceId(ref), ref])).values()];
 }
 
-function uniqueRefs(refs: readonly MemoryRef[]): MemoryRef[] {
-  return [...new Map(refs.map((ref) => [refId(ref), ref])).values()];
-}
 type Bound = { teamId: string; channelId: string; generation: number };
 type Linked = Bound & { workspaceId: string; userId: string; id?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
@@ -299,8 +285,6 @@ const NOTICES = {
   other_channel: "Paws already answers in another channel of this workspace.",
   stopped: "Stopped. Paws won't answer your earlier mentions in this thread.",
   stoppedAnswering: "Stopped answering in this thread.",
-  memory_changed:
-    "Paws's channel memory or your access changed while it was answering, so it didn't post that answer. Mention @Paws again to ask.",
   source_withheld:
     "Paws didn't post its answer here because it drew on code, and Paws couldn't confirm that everyone who can read this channel may see that code. A Paws workspace admin can allow answers from that code in Slack, or Paws answers once everyone who can read this channel is linked to Paws and can read the code.",
   unlinked: "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
@@ -405,22 +389,6 @@ export function* currentSlackLinksSteps(
       link.generation === current.generation &&
       same(channel, link),
   );
-}
-
-export function slackContextAccess(store: Db, home: string): ContextAccess {
-  return {
-    currentAccess: (requester) =>
-      store.run(function* (q) {
-        const { workspaceId, userId } = requester;
-        const links = yield* currentSlackLinksSteps(q, home, workspaceId);
-        const link = links.find((candidate) => candidate.userId === userId);
-        if (!link) return null;
-        const member = yield* workspaceMemberSteps(q, workspaceId, userId);
-        if (!workspaceMemberUsable(member)) return null;
-        const channelIds = [slackMemoryScopeId(link)];
-        return { userId, teamIds: [], repositories: [], channelIds };
-      }),
-  };
 }
 
 export function* unlinkSlackMemberSteps(
@@ -768,7 +736,6 @@ export function createSlackThreads<Profile>(options: {
   profile: () => Profile;
   fetch?: SlackFetch;
   now?: () => number;
-  memory?: SlackMemoryOptions;
   source?: GitHubSnapshotReader;
   work?: () => SlackWorkTracker | null;
   answer?: QuestionAnswer;
@@ -776,11 +743,6 @@ export function createSlackThreads<Profile>(options: {
   tools?: SlackToolProvider[];
 }) {
   const { store, home, env } = options;
-  const memory = createSlackChannelMemory({
-    ...options.memory,
-    store,
-    access: slackContextAccess(store, home),
-  });
   const sources = createSlackSource({ store, reader: options.source ?? null });
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
@@ -1136,7 +1098,6 @@ export function createSlackThreads<Profile>(options: {
     const { workspaceId, teamId, channelId, threadTs, slackUserId, generation } = place;
     const question = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
     const scope = { workspaceId, teamId, channelId, generation };
-    const command = slackMemoryCommand(question);
     const asker = { userId: gate.userId, linkId: gate.linkId };
     const attach = slackSourceCommand(question);
     if (attach) {
@@ -1146,26 +1107,7 @@ export function createSlackThreads<Profile>(options: {
       return void (await notice(place, dedupeKey!, text, { member: asker }));
     }
     const start = work.slackStartCommand(question);
-    if (!woken && !start && !command && (await answerTask(place, asker, question, mention.ts)))
-      return;
-    if (command?.kind === "memory")
-      return void (await notice(place, dedupeKey!, "", { member: asker, listing: true }));
-    if (command) {
-      const text = await memory.command({
-        scope,
-        userId: gate.userId,
-        admin: () =>
-          store.run(function* (q) {
-            const member = yield* workspaceMemberSteps(q, workspaceId, gate.userId);
-            return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
-          }),
-        command,
-        sourceId: `${channelId}:${threadTs}:${mention.ts}`,
-        revision: mention.ts,
-        now: now(),
-      });
-      return void (await notice(place, dedupeKey!, text, { member: asker }));
-    }
+    if (!woken && !start && (await answerTask(place, asker, question, mention.ts))) return;
     let team: SlackIssueTeam | null = null;
     let revising: Draft | null = null;
     if (start) {
@@ -1248,9 +1190,7 @@ export function createSlackThreads<Profile>(options: {
       journal(`slack ${dedupeKey}: no answer (no reply lane)`);
       return void (await unanswered(place, asker, mention.ts, context));
     }
-    const kept = new Map<string, MemoryRef>();
     const keptSources = new Map<string, SlackSourceRef>();
-    const checked = new Map<string, boolean>();
     const sourceChecked = new Map<string, boolean>();
     const turns: { slackUserId: string; question: string; text: string | null }[] = [];
     const keptTeams = new Set<string>();
@@ -1258,17 +1198,10 @@ export function createSlackThreads<Profile>(options: {
       (await store.run((q) => workspaceMemberSteps(q, workspaceId, gate.userId)))?.teamIds ?? [],
     );
     for (const turn of recentTurns) {
-      const refs = uniqueRefs(turn.contexts ?? []);
       const linearTeams = turn.linearTeamIds ?? [];
       let valid =
         (turn.sources ?? []).every((ref) => shareable.has(ref.repository.toLowerCase())) &&
         linearTeams.every((id) => askerTeams.has(id));
-      for (const ref of refs) {
-        const id = refId(ref);
-        if (!checked.has(id))
-          checked.set(id, await memory.current({ scope, userId: gate.userId, ...ref, now: now() }));
-        if (!checked.get(id)) valid = false;
-      }
       const used = uniqueSources(turn.sources ?? []);
       for (const ref of used) {
         const id = sourceId(ref);
@@ -1284,8 +1217,7 @@ export function createSlackThreads<Profile>(options: {
           );
         if (!sourceChecked.get(id)) valid = false;
       }
-      const usable = valid && !(team && (refs.length || used.length || linearTeams.length));
-      if (usable) for (const ref of refs) kept.set(refId(ref), ref);
+      const usable = valid && !(team && (used.length || linearTeams.length));
       if (usable) for (const ref of used) keptSources.set(sourceId(ref), ref);
       if (usable) for (const id of linearTeams) keptTeams.add(id);
       turns.push({ ...turn, text: usable && turn.text ? turn.text : null });
@@ -1375,22 +1307,9 @@ export function createSlackThreads<Profile>(options: {
     });
     const instructionsFor = (source: Excerpts | null) =>
       `${team ? (revising ? work.reviseInstructions(revising) : work.DRAFT_INSTRUCTIONS) : `${lead(source)}${tail}`}${filedLine}`;
-    const instructions = instructionsFor(null);
-    const consumerKey = `slack:${workspaceId}:${teamId}:${channelId}:${mention.ts}${wokenKey}`;
-    const prepare = team ? async () => ({ text: "", version: 0 }) : memory.prepare;
-    const remembered = await prepare({
-      scope,
-      userId: gate.userId,
-      consumerKey,
-      instructions,
-      request: question,
-      now: now(),
-      signal: context.signal,
-    });
-    const background = remembered.text ? `${remembered.text}\n\n` : "";
     const promptFor = (source: Excerpts | null) =>
       slackPrompt({
-        head: `${instructionsFor(source)}\n\n${background}${source ? `Repository excerpts:\n${source.text}\n\n` : ""}`,
+        head: `${instructionsFor(source)}\n\n${source ? `Repository excerpts:\n${source.text}\n\n` : ""}`,
         notes: noted,
         question,
         commits: new Map(
@@ -1500,12 +1419,6 @@ export function createSlackThreads<Profile>(options: {
     const text = used.length
       ? `${addressed}${answer}\n_Read from ${read}._`
       : `${addressed}${answer}`;
-    const contexts = uniqueRefs([
-      ...kept.values(),
-      ...(remembered.text ? [{ key: consumerKey, version: remembered.version }] : []),
-    ]);
-    if (!(await currentMemory(scope, gate.userId, contexts)))
-      return tell(place, replyKey, NOTICES.memory_changed);
     const dependencies = uniqueSources([
       ...keptSources.values(),
       ...used,
@@ -1556,7 +1469,6 @@ export function createSlackThreads<Profile>(options: {
         text: scheduled?.ok
           ? `${text}\n${slackFollowUpLine(scheduled.followUp, scheduled.followUp.createdAt)}`
           : text,
-        ...(contexts.length ? { contexts } : {}),
         ...(dependencies.length ? { sources: dependencies } : {}),
         ...(tasks.length ? { repositories: tasks } : {}),
         ...(linearTeamIds.length ? { linearTeamIds } : {}),
@@ -1986,16 +1898,6 @@ export function createSlackThreads<Profile>(options: {
     return slackChannelReaders(call, { teamId, channelId, botUserId: install.botUserId }, signal);
   }
 
-  async function currentMemory(
-    scope: Bound & { workspaceId: string },
-    userId: string,
-    refs: readonly MemoryRef[],
-  ) {
-    for (const ref of uniqueRefs(refs))
-      if (!(await memory.current({ scope, userId, ...ref, now: now() }))) return false;
-    return true;
-  }
-
   async function deliver(
     row: OutboxRow,
     context: { signal: AbortSignal; isCurrent(): Promise<boolean> },
@@ -2173,14 +2075,10 @@ export function createSlackThreads<Profile>(options: {
       }
       return true;
     }
-    const refs = payload.kind === "reply" ? (payload.contexts ?? []) : [];
     const sourceCurrent = () =>
       payload.kind !== "reply" ||
       currentSources(payload, payload.userId, payload.sources ?? [], context.signal);
-    const allowed =
-      (await store.run(allowedSteps)) &&
-      (payload.kind !== "reply" || (await currentMemory(payload, payload.userId, refs))) &&
-      (await sourceCurrent());
+    const allowed = (await store.run(allowedSteps)) && (await sourceCurrent());
     const call = allowed ? await slackFor(payload.workspaceId) : null;
     const audience = call
       ? await slackChannelAudience(call, payload, context.signal, {
@@ -2197,17 +2095,13 @@ export function createSlackThreads<Profile>(options: {
       return withhold("access or channel changed before delivery");
     }
     if (!(await context.isCurrent())) return;
-    if (payload.kind === "reply" && !(await currentMemory(payload, payload.userId, refs)))
-      return withhold("memory changed before delivery");
     if (!(await sourceCurrent())) return withhold("repository access changed before delivery");
     const text =
-      payload.kind === "notice" && payload.listing && payload.member
-        ? await memory.list({ scope: payload, userId: payload.member.userId, now: now() })
-        : payload.kind === "task" && (payload.paws || repositories.length === 0)
-          ? pawsLink(payload)
-          : payload.kind === "status"
-            ? ""
-            : payload.text;
+      payload.kind === "task" && (payload.paws || repositories.length === 0)
+        ? pawsLink(payload)
+        : payload.kind === "status"
+          ? ""
+          : payload.text;
     const byPolicy = await store.run(function* (q) {
       for (const repository of repositories)
         if (!(yield* byPolicySteps(q, audience, repository))) return false;
@@ -2232,7 +2126,6 @@ export function createSlackThreads<Profile>(options: {
       const channel = payload.channelId;
       const stillAllowed = async () =>
         (await context.isCurrent()) &&
-        (await currentMemory(payload, payload.userId, refs)) &&
         (await sourceCurrent()) &&
         (await store.transaction(function* (q) {
           if (!(yield* allowedSteps(q))) return false;
