@@ -1,10 +1,10 @@
 # Project context
 
-Paws keeps short, sourced context for each Linear project in its own Postgres database: the project description, its documents, and the decisions, constraints and open questions found in them. Linear stays the place where you edit project documentation. Paws never writes this context back to Linear. Each new agent session on an issue in the project receives a small, sourced selection of it in its brief.
+Each agent session on a Linear issue receives the issue's Linear project overview and the shared notebooks in its brief ([what a session receives](#what-a-session-receives)). Separately, Paws keeps short, sourced context records in its own Postgres database. [Slack channel memory](slack.md#channel-memory) stores its records there. Paws never writes this context back to Linear.
 
 ## What Paws stores
 
-Each record names its source (project description, project document or Paws task), the source's link and revision, who wrote it, when Paws read it, and one of five classifications: decision, verified fact, reported fact, inference or unresolved question. The source text itself is kept apart from what Paws derives from it. A correction by a person replaces the record with a new version and keeps its classification: an inference corrected by a person stays an inference.
+Each record names its source, the source's link and revision, who wrote it, when Paws read it, and one of five classifications: decision, verified fact, reported fact, inference or unresolved question. The source text itself is kept apart from what Paws derives from it. A correction by a person replaces the record with a new version and keeps its classification: an inference corrected by a person stays an inference.
 
 Paws removes secrets such as tokens, private keys and credentials in URLs, and code blocks, before it stores anything. Records name people by their Linear user id only.
 
@@ -14,15 +14,12 @@ Context belongs to one Paws workspace and one Linear project. Two projects or tw
 
 ## Forgetting and expiry
 
-| Event                                                       | What happens                                                                                                                                                                                                                           |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A person forgets a source                                   | Its records are cleared. Later revisions stay out until someone with access to the source re-adds it.                                                                                                                                  |
-| A source is edited                                          | New text replaces old records; lines that left the source are cleared.                                                                                                                                                                 |
-| A document is no longer among the ten most recently updated | Its records stay. On each read, Paws checks up to 20 such documents by id and keeps those still in the project. A document that hasn't been confirmed for an hour, or whose check failed, is left out until a later check confirms it. |
-| A document is deleted, emptied or moved to another project  | Its records are cleared the next time Paws reads the project.                                                                                                                                                                          |
-| A read of the project fails                                 | Paws leaves out the project's context until a later read succeeds. Nothing is cleared.                                                                                                                                                 |
-| A source is deleted or revoked                              | Its records are cleared, and replaying the same or an older revision does not bring them back.                                                                                                                                         |
-| A project is disconnected                                   | Every record in it is cleared, and Paws stores nothing new until it is reconnected.                                                                                                                                                    |
+| Event                          | What happens                                                                                          |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| A person forgets a source      | Its records are cleared. Later revisions stay out until someone with access to the source re-adds it. |
+| A source is edited             | New text replaces old records; lines that left the source are cleared.                                |
+| A source is deleted or revoked | Its records are cleared, and replaying the same or an older revision does not bring them back.        |
+| A project is disconnected      | Every record in it is cleared, and Paws stores nothing new until it is reconnected.                   |
 
 Retention defaults:
 
@@ -83,7 +80,7 @@ Before the notebooks, one line tells the agent that agents left these notes for 
 
 Paws keeps the Linear overview it read for the issue and reads it again at the start of a turn when that copy is more than ten minutes old. When the read fails, or the issue is no longer in a project with text, the brief says `Project context from Linear is not available right now.` instead of the old copy, so a document that was removed or made private in Linear doesn't come back. Notebooks are read at the start of every turn, so a restart sees entries other agents added or changed since.
 
-Work items don't get a project memory index and don't use `recall`; Paws stores no selection for them. A brief template that uses `{{project_overview}}` more than once gets the text only the first time.
+Paws stores no context selection for work items. A brief template that uses `{{project_overview}}` more than once gets the text only the first time.
 
 ## What agents may save
 
@@ -97,16 +94,6 @@ The tool reads or edits one of two notebooks, chosen by the agent with `notebook
 | `project`    | Facts for the issue's Linear project (none without) | 4,000 characters  |
 
 Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. An agent may patch or remove any entry, including one another agent wrote. Each change records the issue and the person who delegated it, and people can inspect and undo changes.
-
-## Decisions from people's answers
-
-With **Save answers as decisions** turned on (`[project_memory] decisions`, off by default), a person's answer to an agent's `ask_team` question on an issue in a Linear project is stored as a decision: the question, the answer, and who answered on which issue. This includes questions from answer, plan and artifact sessions. Question and answer are each cut to 300 characters. The person who answered is the record's actor, and their access to the project is checked when it's stored.
-
-When the agent asks the same question again on the same issue, the new answer corrects that decision and keeps the earlier version in its history. A different question gets its own decision, even when it starts with the same words. Paws's own questions, like repository, runner or time-limit questions, and answers Paws rejects record nothing.
-
-Recording is best effort. If the person's access can't be checked, they can't read the project, project context hasn't read the project yet (work items no longer read it; another consumer has to), or storing fails, Paws writes one journal line and stores nothing. The answer still reaches the agent and the task carries on. Paws doesn't retry later, and if it stops between saving the answer and storing the decision, that decision is not stored.
-
-Entries an agent saved are labelled "Agent on" the issue, and answered decisions "Work item memory on" the issue. Each keeps its own label when the other kind is saved for the same issue later.
 
 Preparing a selection, compacting it, inspecting what a session received, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
 

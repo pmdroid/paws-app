@@ -20,7 +20,6 @@ import {
   type ContextRequester,
   type ContextRequesterAccess,
 } from "./policy";
-import { AGENT_REVISION } from "./remember";
 import {
   disclosable,
   forgetContextRecord,
@@ -132,7 +131,7 @@ async function sourceLabels(
     if (source.kind !== WORK_ITEM_SOURCE) return SOURCE_LABELS[source.kind] ?? "Source";
     const identifier = identifiers.get(source.id);
     if (!identifier) return "Work item memory";
-    return source.revision.startsWith(AGENT_REVISION)
+    return source.revision.startsWith("remember-")
       ? `Agent on ${identifier}`
       : `Work item memory on ${identifier}`;
   };

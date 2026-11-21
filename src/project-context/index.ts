@@ -33,12 +33,6 @@ export {
   type ContextQueryResult,
   type ContextRecordView,
 } from "./store";
-export {
-  ingestLinearProjectContext,
-  projectContextClaims,
-  type LinearProjectContextIngest,
-  type ProjectContextReads,
-} from "./linear";
 export type {
   ContextClaim,
   ContextClassification,
@@ -51,14 +45,8 @@ export type {
   ContextSourceRevision,
 } from "../db";
 export {
-  createFakeContextDreamHelper,
   createFakeContextSummarizer,
-  createFakeProjectContextReads,
-  type FakeContextDreamHelper,
-  type FakeDreamEntry,
   type FakeContextSummarizer,
-  type FakeProjectContextReads,
-  type FakeProjectDocument,
 } from "./fake";
 export {
   CONTEXT_BUDGET_DEFAULTS,
@@ -99,17 +87,13 @@ export {
 export {
   CONTEXT_SESSION_NOTICE,
   CONTEXT_SESSION_UNAVAILABLE,
-  PROJECT_SESSION_DEFAULTS,
   checkContextDelivery,
   createLinearContextAccess,
-  createProjectSessionContext,
   inspectSessionContext,
   prepareSessionContext,
   recordWorkItemContext,
   type ContextConsumerRequest,
   type ContextDeliveryCheck,
-  type ProjectSessionContext,
-  type ProjectSessionInput,
   type SessionContext,
   type SessionContextInspection,
   type WorkItemContextEntry,
@@ -132,30 +116,3 @@ export {
 } from "./view";
 export { createProjectContextHttp } from "./http";
 export { sanitizedContextText } from "./sanitize";
-export { MEMORY_INDEX_HEADER, MEMORY_INDEX_LIMITS } from "./memory-index";
-export {
-  recordAnsweredDecision,
-  type AnsweredDecision,
-  type AnsweredDecisionOutcome,
-} from "./decision";
-export {
-  PROJECT_MEMORY_UNAVAILABLE,
-  REMEMBER_ENTRIES_PER_ITEM,
-  rememberWorkItemContext,
-  type RememberRequest,
-} from "./remember";
-export {
-  RECALL_LIMITS,
-  RECALL_NO_ENTRY,
-  RECALL_NO_MATCH,
-  recallProjectContext,
-  type RecallEntry,
-  type RecallRequest,
-} from "./recall";
-export {
-  CONTEXT_DREAM_JOB,
-  CONTEXT_DREAM_LIMITS,
-  CONTEXT_DREAM_PROMPT,
-  dreamProjectContexts,
-  type ContextDreamHelper,
-} from "./dream";

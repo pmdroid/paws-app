@@ -3,7 +3,6 @@ import { expect, test } from "bun:test";
 import { asc, count, eq, sql } from "drizzle-orm";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { useMemorySettings } from "../src/config";
 import { parentTaskKeySql, systemClock } from "../src/core";
 import type { FakeStep } from "../src/acp/testing/script";
 import {
@@ -28,7 +27,6 @@ import {
   type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import type { ProjectSessionContext } from "../src/project-context";
 import { elicitationBody, findOpenQuestion, getQuestion } from "../src/questions";
 import { answerPg as answerAsked } from "./questions";
 import { seed } from "./pglite-fixtures";
@@ -75,7 +73,6 @@ async function setup(
   hangResponse = false,
   toolUpdates: readonly SessionUpdate[] = [],
   responseSteps: readonly FakeStep[] = [],
-  projectContext?: ProjectSessionContext,
 ) {
   const opened = database === undefined ? await tempStore() : null;
   const db = database ?? opened!.db;
@@ -211,7 +208,6 @@ async function setup(
     tracker,
     launch,
     linearTaskModes: true,
-    ...(projectContext ? { projectContext } : {}),
     files,
     secretsDir: join(root, "secrets"),
   });
@@ -269,30 +265,8 @@ test("a parent discussion classifies before fanout and completes without Git, is
   }
 });
 
-test("an answer turn on a project item gets neither remember, recall, the memory index nor the project memory note", async () => {
-  const prepared: string[] = [];
-  const projectContext: ProjectSessionContext = {
-    async prepare(input) {
-      prepared.push(input.projectId);
-      return { status: "injected", text: "Project facts.", recent: "", version: 1, manifest: null };
-    },
-    recordDecision: async () => "outside_project",
-    remember: async () => "Saved.",
-    recall: async () => "[]",
-  };
-  const f = await setup(
-    "answer",
-    undefined,
-    false,
-    "ok",
-    undefined,
-    undefined,
-    false,
-    false,
-    [],
-    [],
-    projectContext,
-  );
+test("an answer turn on a project item gets neither remember, recall nor the project memory note", async () => {
+  const f = await setup("answer");
   f.tracker.mergeContexts.set("parent", { projectId: "project-1", labels: [] });
   try {
     const created = event();
@@ -302,90 +276,17 @@ test("an answer turn on a project item gets neither remember, recall, the memory
     });
     await f.jobs.tick();
     expect(f.launches).toEqual(["classify", "answer"]);
-    expect(prepared).toEqual([]);
     const trace = JSON.parse(readFileSync(f.traces[1]!, "utf8")) as {
       mcpServers: { env: { name: string; value: string }[] }[];
       prompts: unknown[];
     };
     const prompt = JSON.stringify(trace.prompts);
-    expect(prompt).not.toContain("Project facts.");
     expect(prompt).not.toContain("Project memory:");
     const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
     expect(tools.value.split(",")).toContain("ask_team");
     expect(tools.value.split(",")).not.toContain("remember");
     expect(tools.value.split(",")).not.toContain("recall");
   } finally {
-    await f.close();
-  }
-});
-
-test("a person's answer to an answer turn's ask_team question records a decision on the redirect path", async () => {
-  const decisions: { question: string; answer: string; answererId: string }[] = [];
-  const projectContext: ProjectSessionContext = {
-    prepare: async () => ({
-      status: "injected",
-      text: "Project facts.",
-      recent: "",
-      version: 1,
-      manifest: null,
-    }),
-    recordDecision: async (input) => {
-      decisions.push({
-        question: input.question,
-        answer: input.answer,
-        answererId: input.answererId,
-      });
-      return "stored";
-    },
-    remember: async () => "Saved.",
-    recall: async () => "[]",
-  };
-  const f = await setup(
-    "answer",
-    undefined,
-    false,
-    "ok",
-    undefined,
-    undefined,
-    false,
-    false,
-    [],
-    [{ type: "ask_team", question: "Which screenshot?" }],
-    projectContext,
-  );
-  useMemorySettings(join(f.root, "config.toml"), "[project_memory]\ndecisions = true\n");
-  f.tracker.mergeContexts.set("parent", { projectId: "project-1", labels: [] });
-  try {
-    const created = event();
-    await f.orchestrator.onLinearEvent({
-      ...created,
-      payload: JSON.stringify({ ...JSON.parse(created.payload), organizationId: "org" }),
-    });
-    await f.jobs.tick();
-    const question = (await findOpenQuestion(f.db, "session"))!;
-    expect(question.body).toBe("Which screenshot?");
-    const itemId = question.itemId;
-    expect((await getWorkItem(f.db, itemId))?.state).toBe("awaiting_input");
-    await f.orchestrator.onLinearEvent({
-      ...event(),
-      action: "prompted",
-      dedupeKey: "activity:human-answer",
-      activityId: "human-answer",
-      body: "The login page.",
-      updatedAtMs: question.createdAt + 1,
-      payload: JSON.stringify({ activityCreatedAtMs: question.createdAt + 1 }),
-    });
-    expect((await getQuestion(f.db, question.id))?.answer).toBe("The login page.");
-    expect(decisions).toEqual([
-      { question: "Which screenshot?", answer: "The login page.", answererId: "human" },
-    ]);
-    const trace = JSON.parse(readFileSync(f.traces[1]!, "utf8")) as {
-      mcpServers: { env: { name: string; value: string }[] }[];
-    };
-    const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
-    expect(tools.value.split(",")).not.toContain("remember");
-  } finally {
-    await f.orchestrator.shutdown();
     await f.close();
   }
 });

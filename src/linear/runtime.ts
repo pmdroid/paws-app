@@ -46,7 +46,6 @@ import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-l
 import type { IssueStartReads } from "./issue-start";
 import { createLinearMembershipReads, type LinearMembershipReads } from "./membership";
 import { createLinearIssueDelegation } from "./issue-delegation";
-import { createLinearProjectContextReads } from "./project-scope";
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
@@ -60,7 +59,6 @@ export type OpenLinear = {
   issueDelegation: ReturnType<typeof createLinearIssueDelegation> | null;
   improvementDelivery: ImprovementLinear | null;
   memberships: LinearMembershipReads | null;
-  projectContext: ReturnType<typeof createLinearProjectContextReads> | null;
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
   startSession: ReturnType<typeof createSessionStarter> | null;
@@ -165,10 +163,6 @@ export async function openLinear(options: {
         ? null
         : createLinearImprovementDelivery(defaultCallerClient(client, "finding-groups")),
     memberships: client === null ? null : createLinearMembershipReads(callerClient(client, "auth")),
-    projectContext:
-      client === null
-        ? null
-        : createLinearProjectContextReads(defaultCallerClient(client, "project-overview")),
     webhook: { store, onEvent, intake: intake?.queue },
     tracker,
     startSession:

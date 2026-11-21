@@ -18,7 +18,6 @@ import {
   createContextCapacity,
   createFakeContextAccess,
   createFakeContextSummarizer,
-  createFakeProjectContextReads,
   disconnectContext,
   estimateContextTokens,
   forgetContextSource,
@@ -237,7 +236,6 @@ test("invalid budgets are rejected by selection and compaction, and a too-small 
 
 test("10,000 records across workspaces, projects and repositories stay inside every bound", async () => {
   const access = createFakeContextAccess();
-  const reads = createFakeProjectContextReads();
   const workspaces = [`ws-big-a-${seq}`, `ws-big-b-${seq}`];
   seq++;
   let total = 0;
@@ -308,7 +306,6 @@ test("10,000 records across workspaces, projects and repositories stay inside ev
   expect(result.pack).not.toMatch(/ p-[1-4] /);
   expect(result.manifest.counts.suppressed).toBeGreaterThan(0);
   expect(result.manifest.compaction).toBe("requested");
-  expect(reads.calls).toEqual([]);
   for (const contextTokens of [2_400, 2_600, 3_000, 4_000, 200_000]) {
     const again = ok(
       await selectContext(
@@ -833,7 +830,6 @@ test("a failed, hung or oversized summarizer leaves a bounded extractive pack wi
 
 test("with every lightweight slot busy, selection still works and compaction waits without a runner", async () => {
   const { namespace, alice, access } = fixture();
-  const reads = createFakeProjectContextReads();
   await put(
     access,
     namespace,
@@ -855,7 +851,6 @@ test("with every lightweight slot busy, selection still works and compaction wai
   const done = await compact(access, namespace, alice, summarizer, T0 + 3 * MINUTE, capacity);
   expect(done.status === "ok" && done.outcomes[0]!.status).toBe("published");
   expect(capacity.inUse()).toBe(0);
-  expect(reads.calls).toEqual([]);
   const forbidden = /from "\.\.\/(runner-[a-z-]+|scheduler|github|loop|questions|intake|slack)/;
   for (const file of ["budget", "select", "compact", "store", "policy"])
     expect(
