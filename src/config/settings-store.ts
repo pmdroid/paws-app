@@ -92,7 +92,7 @@ async function saveSettings(
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(github_access|closeout|merge|queue|project_memory|findings|agents|member_vm|brief|linear_comments|time_limits|skills)$/.test(
+    /^(github_access|closeout|merge|queue|findings|agents|member_vm|brief|linear_comments|time_limits|skills)$/.test(
       section,
     ) ||
     /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||
@@ -146,7 +146,6 @@ function isSettingsSection(section: string): boolean {
     within("agents.presets") ||
     within("merge") ||
     name === "queue" ||
-    name === "project_memory" ||
     within("time_limits") ||
     within("checkout.projects") ||
     within("closeout.projects") ||
