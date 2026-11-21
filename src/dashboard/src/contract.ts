@@ -804,6 +804,23 @@ export interface IssueDetailResponse {
   mergeQueue: StatusMergeEntry[];
   mergeHistory: StatusMergeOutcome[];
   dead: StatusDeadDelivery[];
+  followUps: StatusFollowUp[];
+  filedFrom?: StatusFiledFrom;
+}
+
+export interface StatusFollowUp {
+  identifier: string;
+  title?: string;
+  url?: string | null;
+  started?: boolean;
+  state?: ItemState;
+  path?: string;
+}
+
+export interface StatusFiledFrom {
+  identifier: string;
+  title?: string;
+  path?: string;
 }
 
 /**
@@ -917,6 +934,10 @@ export function parseIssueDetailResponse(input: unknown): IssueDetailParseResult
           readMergeOutcome(entry, at, head.project.repo),
         ),
         dead: list("dead", readDeadDelivery),
+        followUps: body.followUps === undefined ? [] : list("followUps", readFollowUp),
+        ...(body.filedFrom === undefined
+          ? {}
+          : { filedFrom: readFiledFrom(body.filedFrom, `${path}.filedFrom`) }),
       };
     },
     "contract.parseIssueDetailResponse",
@@ -1615,6 +1636,29 @@ function readDeadDelivery(input: unknown, path: string): StatusDeadDelivery {
     at: dateString(body, "at", path),
     ...(body.retryable === undefined ? {} : { retryable: boolean(body, "retryable", path) }),
   };
+}
+
+function readFollowUp(input: unknown, path: string): StatusFollowUp {
+  const body = object(input, path);
+  const identifier = text(body, "identifier", path);
+  if (body.title === undefined) return { identifier };
+  return {
+    identifier,
+    title: text(body, "title", path),
+    url: body.url === null || body.url === undefined ? null : string(body, "url", path),
+    started: boolean(body, "started", path),
+    ...(body.state === undefined
+      ? {}
+      : { state: oneOf(string(body, "state", path), ITEM_STATES, `${path}.state`) }),
+    ...(body.path === undefined ? {} : { path: text(body, "path", path) }),
+  };
+}
+
+function readFiledFrom(input: unknown, path: string): StatusFiledFrom {
+  const body = object(input, path);
+  const identifier = text(body, "identifier", path);
+  if (body.title === undefined) return { identifier };
+  return { identifier, title: text(body, "title", path), path: text(body, "path", path) };
 }
 
 function readLinearBudget(input: unknown, path: string): StatusLinearBudget {

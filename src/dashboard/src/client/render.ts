@@ -46,6 +46,7 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { renderRuleResults } from "./rules";
+import { filedFromLine, followUpsSection } from "./follow-ups";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { reviewFindingsSection } from "./review-findings";
 import {
@@ -559,7 +560,7 @@ function issuePage(
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="issue-heading flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div class="flex min-w-0 flex-col gap-2"><div class="flex flex-wrap gap-2 items-center"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, item.state)}${item.project ? `<span class="tag">project: ${esc(item.project.name)}</span>` : ""}<span class="tag">agent: ${esc(run?.agent ?? item.agent)}</span>${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
-      <h1 class="issue-title text-xl font-semibold">${esc(item.title)}</h1>
+      <h1 class="issue-title text-xl font-semibold">${esc(item.title)}</h1>${filedFromLine(snapshot)}
       ${factLine([...issueFacts(snapshot, item, run, blocked), ["Repository", `<span${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>`]])}</div>
       ${issueActions(item, run)}
     </header>
@@ -591,6 +592,7 @@ function issuePage(
       )
       .join("")}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
+    ${followUpsSection(snapshot)}
     <div class="issue-folds">
     ${fold(
       closeout,
