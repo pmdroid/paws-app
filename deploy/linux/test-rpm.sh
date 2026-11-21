@@ -195,7 +195,11 @@ case $1 in
     sha256sum /etc/paws/control-plane.env > /root/environment.sha256
     ;;
   refuse)
-    if dnf upgrade -y --refresh paws-control-plane; then exit 1; fi
+    # Fedora's dnf skips a repository whose metadata fails its signature check and still exits 0, so make the Paws
+    # repository required here: a refused index or package must then fail the command.
+    if dnf upgrade -y --refresh --setopt=paws.skip_if_unavailable=False paws-control-plane > /tmp/refuse.out 2>&1; then cat /tmp/refuse.out; exit 1; fi
+    cat /tmp/refuse.out
+    grep -Eiq 'signature|not signed|gpg|openpgp' /tmp/refuse.out
     test "$(rpm -q --qf '%{VERSION}' paws-control-plane)" = 1.0.0
     ;;
   upgrade)
