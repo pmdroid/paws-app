@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Q, Steps } from "./db";
 import type { notebookChange, notebookEntry } from "./schema-pg";
@@ -139,4 +139,76 @@ export function* writeNotebookSteps(
       .where(scoped(notebook, scope)),
   );
   return changes;
+}
+
+export function* workspaceNotebooksSteps(
+  q: Q,
+  workspaceId: string,
+): Steps<{ kind: NotebookScopeKind; id: string; size: number }[]> {
+  const { notebook, notebookEntry: entry } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ kind: notebook.scopeKind, id: notebook.scopeId })
+      .from(notebook)
+      .where(eq(notebook.workspaceId, workspaceId))
+      .orderBy(asc(notebook.scopeKind), asc(notebook.scopeId)),
+  );
+  const bodies = yield* q.all(
+    q.orm
+      .select({ kind: entry.scopeKind, id: entry.scopeId, body: entry.body })
+      .from(entry)
+      .where(eq(entry.workspaceId, workspaceId)),
+  );
+  const sizes = new Map<string, number>();
+  for (const row of bodies) {
+    const key = `${row.kind}:${row.id}`;
+    sizes.set(key, (sizes.get(key) ?? 0) + row.body.length);
+  }
+  return rows.map((row) => ({
+    kind: row.kind as NotebookScopeKind,
+    id: row.id,
+    size: sizes.get(`${row.kind}:${row.id}`) ?? 0,
+  }));
+}
+
+export function* workItemProjectsSteps(
+  q: Q,
+  input: { readonly projectIds: readonly string[]; readonly ownerUserId?: string },
+): Steps<{ id: string; name: string | null }[]> {
+  if (input.projectIds.length === 0) return [];
+  const { workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ id: workItem.linearProjectId, name: workItem.linearProjectName })
+      .from(workItem)
+      .where(
+        and(
+          inArray(workItem.linearProjectId, [...input.projectIds]),
+          input.ownerUserId === undefined ? undefined : eq(workItem.ownerUserId, input.ownerUserId),
+        ),
+      ),
+  );
+  return rows.flatMap((row) => (row.id === null ? [] : [{ id: row.id, name: row.name }]));
+}
+
+export function* notebookChangeLabelsSteps(
+  q: Q,
+  input: { readonly actorIds: string[]; readonly itemIds: string[] },
+): Steps<{ actors: Map<string, string>; items: Map<string, string> }> {
+  const { workspaceUser: user, workItem: item } = q.t;
+  const actors = input.actorIds.length
+    ? yield* q.all(q.orm.select().from(user).where(inArray(user.id, input.actorIds)))
+    : [];
+  const items = input.itemIds.length
+    ? yield* q.all(
+        q.orm
+          .select({ id: item.id, linearIdentifier: item.linearIdentifier })
+          .from(item)
+          .where(inArray(item.id, input.itemIds)),
+      )
+    : [];
+  return {
+    actors: new Map(actors.map((row) => [row.id, row.name])),
+    items: new Map(items.map((row) => [row.id, row.linearIdentifier])),
+  };
 }

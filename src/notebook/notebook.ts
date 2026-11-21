@@ -194,6 +194,44 @@ export function editNotebook(
   });
 }
 
+function undoWrite(
+  scope: NotebookScope,
+  entries: readonly NotebookEntryRow[],
+  change: NotebookChangeRow,
+): NotebookWrite {
+  const entry = entries.find((candidate) => candidate.id === change.entryId);
+  if (change.action === "remove") {
+    const body = change.before!;
+    if (entry) throw new Refusal("the entry is already in the notebook");
+    if (duplicateOf(entries, body)) throw new Refusal("the same text is in the notebook again");
+    checkLimit(scope, [...entries, { body }]);
+    return { action: "add", entryId: change.entryId, body };
+  }
+  if (!entry) throw new Refusal("the entry is no longer in the notebook");
+  if (entry.body !== change.after) throw new Refusal("the entry has changed since");
+  const body = change.before;
+  if (body === null) return { action: "remove", entryId: entry.id, before: entry.body };
+  checkLimit(
+    scope,
+    entries.map((other) => (other === entry ? { body } : other)),
+  );
+  return { action: "patch", entryId: entry.id, before: entry.body, body };
+}
+
+export function undoableChange(
+  scope: NotebookScope,
+  entries: readonly NotebookEntryRow[],
+  change: NotebookChangeRow,
+): boolean {
+  try {
+    undoWrite(scope, entries, change);
+    return true;
+  } catch (error) {
+    if (error instanceof Refusal) return false;
+    throw error;
+  }
+}
+
 export function undoNotebookChange(
   db: Db,
   scope: NotebookScope,
@@ -205,27 +243,7 @@ export function undoNotebookChange(
     const [change] = yield* notebookChangesSteps(q, scope, { id: changeId });
     if (!change) throw new Refusal("no such change in this notebook");
     const { entries } = yield* notebookStateSteps(q, scope);
-    const entry = entries.find((candidate) => candidate.id === change.entryId);
-    let write: NotebookWrite;
-    if (change.action === "remove") {
-      const body = change.before!;
-      if (entry) throw new Refusal("the entry is already in the notebook");
-      if (duplicateOf(entries, body)) throw new Refusal("the same text is in the notebook again");
-      checkLimit(scope, [...entries, { body }]);
-      write = { action: "add", entryId: change.entryId, body };
-    } else {
-      if (!entry) throw new Refusal("the entry is no longer in the notebook");
-      if (entry.body !== change.after) throw new Refusal("the entry has changed since");
-      const body = change.before;
-      if (body === null) write = { action: "remove", entryId: entry.id, before: entry.body };
-      else {
-        checkLimit(
-          scope,
-          entries.map((candidate) => (candidate === entry ? { body } : candidate)),
-        );
-        write = { action: "patch", entryId: entry.id, before: entry.body, body };
-      }
-    }
+    const write = undoWrite(scope, entries, change);
     const changes = yield* writeNotebookSteps(q, scope, { writes: [write], ...actor });
     return { ok: true as const, changes, ...(yield* stateSteps(q, scope)) };
   });

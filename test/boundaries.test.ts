@@ -170,6 +170,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "deployment",
     "dashboard-links",
+    "notebook",
   ],
   settings: [
     "journal",
@@ -187,7 +188,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
   "project-context": ["db", "linear"],
-  notebook: ["db", "project-context"],
+  notebook: ["db", "improvements", "project-context"],
   retros: [
     "journal",
     "db",
