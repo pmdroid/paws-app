@@ -173,3 +173,92 @@ test("deleting a covered file makes the check stale", async () => {
   expect(now["a-test"]).toBe("stale");
   expect(now["b-test"]).toBe("passed");
 });
+
+function lintPolicy(root: string): void {
+  write(
+    root,
+    ".agents/closeout.yaml",
+    [
+      'specVersion: "0.1"',
+      "setup:",
+      "  - id: install",
+      '    exec: ["sh", "-c", "test ! -e setup-broken"]',
+      "    timeoutSeconds: 30",
+      "items:",
+      "  - id: lint",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["sh", "-c", "echo lint says no; test ! -e broken"]',
+      "    timeoutSeconds: 30",
+      check("test"),
+    ].join("\n") + "\n",
+  );
+}
+
+async function attempts(session: ReturnType<typeof createCloseoutSession>, id: string) {
+  const report = JSON.parse(await session.report()) as {
+    required: { id: string; failed_attempts: number }[];
+  };
+  return report.required.find((item) => item.id === id)?.failed_attempts;
+}
+
+function failingLint() {
+  const root = repo();
+  lintPolicy(root);
+  write(root, "broken", "1\n");
+  const session = createCloseoutSession(root, { policy: async () => workspacePolicyFiles(root) });
+  return { root, session };
+}
+
+test("a check that failed on the unchanged workspace is not run again for another check", async () => {
+  const { session } = failingLint();
+  expect(await session.run("lint")).toStartWith("lint failed (exit 1).");
+  for (let index = 0; index < 3; index += 1) {
+    const answer = await session.run("test");
+    expect(answer).toStartWith("test not run: fix lint first.\nlint failed (exit 1).");
+    expect(answer).toContain("lint says no");
+  }
+  expect(await attempts(session, "lint")).toBe(1);
+  expect(await attempts(session, "test")).toBe(0);
+});
+
+test("checks asked for at the same time do not count another failed attempt", async () => {
+  const { session } = failingLint();
+  await session.run("lint");
+  const answers = await Promise.all([session.run("test"), session.run("test")]);
+  for (const answer of answers) expect(answer).toStartWith("test not run: fix lint first.");
+  expect(await attempts(session, "lint")).toBe(1);
+});
+
+test("an edit that changes the fingerprint runs the failed check again", async () => {
+  const { root, session } = failingLint();
+  await session.run("lint");
+  write(root, "broken", "2\n");
+  expect(await session.run("test")).toStartWith("test not run: fix lint first.");
+  expect(await attempts(session, "lint")).toBe(2);
+  rmSync(join(root, "broken"));
+  expect(await session.run("test")).toBe("test passed.");
+});
+
+test("asking for the failed check itself counts each attempt", async () => {
+  const { session } = failingLint();
+  for (let index = 0; index < 3; index += 1) await session.run("lint");
+  expect(await attempts(session, "lint")).toBe(3);
+  expect(await session.run("lint")).toBe(
+    "Check lint is exhausted. Stop retrying and report the blocker.",
+  );
+});
+
+test("a setup check that failed on the unchanged workspace is not run again", async () => {
+  const root = repo();
+  lintPolicy(root);
+  write(root, "setup-broken", "1\n");
+  const session = createCloseoutSession(root, { policy: async () => workspacePolicyFiles(root) });
+  expect(await session.run("install")).toStartWith("install failed (exit 1).");
+  expect(await session.run("test")).toStartWith("test not run: fix install first.\ninstall failed");
+  expect(await session.run("lint")).toStartWith("lint not run: fix install first.");
+  expect(await attempts(session, "install")).toBe(1);
+  write(root, "setup-broken", "2\n");
+  expect(await session.run("test")).toStartWith("install failed (exit 1).");
+  expect(await attempts(session, "install")).toBe(2);
+});
