@@ -2,7 +2,7 @@ import { repositoryDescriptionsSteps, type Db } from "../db";
 import type { GitHubSnapshotReader } from "../github";
 import { memberRepositoriesSteps } from "../improvements";
 import { readsSteps, type SlackSourceRef } from "./source";
-import type { SlackToolProvider } from "./tools";
+import type { SlackSyncToolProvider } from "./tools";
 
 export const SLACK_REPOSITORY_PAGE = 100;
 export const SLACK_REPOSITORY_LIST_BYTES = 16_384;
@@ -15,7 +15,7 @@ export type SlackRunRepositories = {
   attached: string[];
   instructions: string;
   sources: SlackSourceRef[];
-  tools: SlackToolProvider;
+  tools: SlackSyncToolProvider;
   grant(name: string): Promise<{ commit: string } | null>;
 };
 
@@ -93,7 +93,7 @@ export async function slackRunRepositories(input: {
     return { commit: snapshot.commit };
   }
 
-  const tools: SlackToolProvider = () => ({
+  const tools: SlackSyncToolProvider = () => ({
     definitions: [
       {
         name: "list_repositories",

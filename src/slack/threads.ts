@@ -1355,10 +1355,12 @@ export function createSlackThreads<Profile>(options: {
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
     };
-    const provided = (options.tools ?? []).map((provider) => {
-      const made = provider(run);
-      return () => made;
-    });
+    const provided = await Promise.all(
+      (options.tools ?? []).map(async (provider) => {
+        const made = await provider(run);
+        return () => made;
+      }),
+    );
     const tools = team ? undefined : slackRunTools(provided, run);
     const folderTools = folder && slackRunTools([...provided, folder.tools], run);
     const tail = `${

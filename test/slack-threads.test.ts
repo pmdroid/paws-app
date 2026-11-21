@@ -41,9 +41,11 @@ import {
   SLACK_THREAD_JOB,
   slackHandoffSteps,
   slackLinearTools,
+  slackNotebookTools,
   slackReplyAllowedSteps,
   slackTaskUpdateSteps,
 } from "../src/slack";
+import { notebookChanges, readNotebook } from "../src/notebook";
 import {
   agentIssueId,
   createFakeTracker,
@@ -4697,4 +4699,35 @@ test("a change Linear doesn't confirm is dropped with a notice and never shown o
   expect(calls).toBe(1);
   f.agent.updateAgentIssue = update;
   expect(writes()).toEqual([]);
+});
+
+test("a channel thread's notebook add lands in that channel's notebook, names the asker and reaches the next turn", async () => {
+  let provider: SlackToolProvider | null = null;
+  const add = { notebook: "channel", operations: [{ action: "add", content: "canary-notebook" }] };
+  const f = await linkedWith(
+    { tools: [(run) => provider?.(run) ?? null], toolCalls: [["notebook", add]] },
+    ["um", "SMEMBER"],
+  );
+  provider = slackNotebookTools({ store: f.db, now: f.now });
+  await f.say("SMEMBER", "what do we know?");
+  expect(f.sent[0]!.tools).toEqual([
+    expect.objectContaining({
+      name: "notebook",
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          notebook: expect.objectContaining({ enum: ["channel"] }),
+        }),
+      }),
+    }),
+  ]);
+  expect(lastPrompt(f)).toContain("Channel notebook:\nNo entries yet.");
+  expect(lastPrompt(f)).toContain("every channel member can read it");
+  expect(f.toolAnswers).toEqual([{ text: "Saved. Channel notebook: 15 of 4,000 characters." }]);
+  const scope = { workspaceId: "W1", kind: "channel", id: "T0ONE:C0ONE" } as const;
+  expect((await readNotebook(f.db, scope)).entries.map((entry) => entry.body)).toEqual([
+    "canary-notebook",
+  ]);
+  expect((await notebookChanges(f.db, scope)).map((change) => change.actorId)).toEqual(["um"]);
+  await f.say("SADMIN", "and now?");
+  expect(lastPrompt(f)).toContain("Channel notebook:\n- canary-notebook");
 });

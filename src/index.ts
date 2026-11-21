@@ -34,6 +34,7 @@ import {
 import {
   createSlackThreads,
   slackLinearTools,
+  slackNotebookTools,
   loginSlack,
   SLACK_STATUS_EVERY_MS,
   SLACK_STATUS_JOB,
@@ -1862,6 +1863,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             tracker: () => linear?.tracker,
             checkWrite: checkAgentIssueWrite,
           }),
+          slackNotebookTools({ store }),
         ],
       });
       created.jobs.register(SLACK_THREAD_JOB, (job, context) => slackThreads.handle(job, context));

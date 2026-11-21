@@ -35,3 +35,4 @@ export { slackHandoffSteps, slackTaskUpdateSteps } from "./delivery";
 export type { SlackTaskUpdateKind } from "./delivery";
 export { SLACK_STATUS_EVERY_MS, SLACK_STATUS_JOB } from "./status";
 export { createSlackChannelAccess } from "./notebook-access";
+export { slackNotebookTools } from "./notebook";
