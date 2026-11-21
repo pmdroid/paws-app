@@ -12,7 +12,6 @@ import {
   type Steps,
 } from "../db";
 import { memberRepositoriesSteps } from "../improvements";
-import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 import {
   NOTEBOOK_LIMITS,
   editNotebook,
@@ -38,6 +37,8 @@ const EDIT = z.object({
 });
 const UNDO = z.object({ changeId: z.string().min(1).max(64) });
 
+type Principal = { readonly workspaceId: string; readonly userId: string };
+
 type Viewer = {
   admin: boolean;
   repositories: ReadonlySet<string>;
@@ -47,13 +48,13 @@ type Viewer = {
 
 const answer = (body: unknown, status = 200) => Response.json(body, { status, headers: NO_STORE });
 
-function* viewerSteps(q: Q, principal: WorkspacePrincipal): Steps<Viewer | null> {
+function* viewerSteps(q: Q, principal: Principal): Steps<Viewer | null> {
   const { workspaceId, userId } = principal;
   const member = yield* workspaceMemberSteps(q, workspaceId, userId);
   if (!workspaceMemberUsable(member)) return null;
   const repositories = yield* memberRepositoriesSteps(q, workspaceId, userId);
   return {
-    admin: isWorkspaceAdmin(member.role),
+    admin: member.role === "admin",
     repositories: new Set(repositories.map((name) => name.toLowerCase())),
     userId,
     workspaceId,
@@ -72,7 +73,7 @@ function* projectsSteps(q: Q, viewer: Viewer, ids: readonly string[]) {
   return names;
 }
 
-function* listSteps(q: Q, principal: WorkspacePrincipal) {
+function* listSteps(q: Q, principal: Principal) {
   const viewer = yield* viewerSteps(q, principal);
   if (viewer === null) return [];
   const stored = yield* workspaceNotebooksSteps(q, viewer.workspaceId);
@@ -94,7 +95,7 @@ function* listSteps(q: Q, principal: WorkspacePrincipal) {
   });
 }
 
-function* visibleSteps(q: Q, principal: WorkspacePrincipal, scope: NotebookScope) {
+function* visibleSteps(q: Q, principal: Principal, scope: NotebookScope) {
   const viewer = yield* viewerSteps(q, principal);
   if (viewer === null) return false;
   if (viewer.admin) return true;
@@ -138,7 +139,7 @@ async function json(request: Request): Promise<unknown> {
 export function createNotebookHttp(options: { db: Db; now?: () => number }) {
   const { db } = options;
   const now = options.now ?? Date.now;
-  return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
+  return async (request: Request, principal: Principal): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (path === PATH) {
       if (request.method !== "GET") return answer({ error: "List notebooks with GET." }, 405);

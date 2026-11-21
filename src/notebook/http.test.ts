@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { putWorkspaceUserSteps, syncWorkspaceMemberSteps, type Db } from "../db";
-import type { WorkspacePrincipal } from "../workspace";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { createNotebookHttp, notebookChanges } from "./index";
@@ -53,14 +52,13 @@ type Reply = {
   notebooks: ({ name: string } & Record<string, unknown>)[];
 };
 
-async function call(userId: string, path: string, body?: unknown, role?: "admin") {
+async function call(userId: string, path: string, body?: unknown) {
   const request = new Request(`http://paws.test${path}`, {
     method: body === undefined ? "GET" : "POST",
     body: body === undefined ? null : JSON.stringify(body),
   });
-  const principal = { workspaceId: "ws", userId, role: role ?? "member", authenticatedAt: 0 };
   const http = createNotebookHttp({ db, now: () => ++clock });
-  const response = await http(request, { ...principal, teamIds: [] } as WorkspacePrincipal);
+  const response = await http(request, { workspaceId: "ws", userId });
   return { status: response!.status, body: (await response!.json()) as Reply };
 }
 
@@ -86,7 +84,7 @@ test("a member with the repository sees its notebook and others get 404", async 
   expect((await call("bob", REPO)).status).toBe(404);
   expect((await call("bob", `${REPO}/edits`, { operations: [] })).status).toBe(404);
   expect((await call("bob", "/api/notebooks")).body.notebooks).toEqual([]);
-  expect((await call("root", REPO, undefined, "admin")).status).toBe(200);
+  expect((await call("root", REPO)).status).toBe(200);
   expect((await call("nobody", REPO)).status).toBe(404);
 });
 
@@ -103,9 +101,7 @@ test("a member who owns an item in the project sees the project notebook", async
   expect((await call("bob", PROJECT)).status).toBe(404);
   expect((await call("bob", "/api/notebooks")).body.notebooks).toEqual([]);
   expect(
-    (await call("root", "/api/notebooks", undefined, "admin")).body.notebooks.map(
-      (notebook) => notebook.name,
-    ),
+    (await call("root", "/api/notebooks")).body.notebooks.map((notebook) => notebook.name),
   ).toEqual(["Launch"]);
 });
 
