@@ -240,6 +240,7 @@ export function createCloseoutSession(
     return run;
   };
   const inFlight = new Set<Promise<string>>();
+  const failedOn: FailedOn = new Map();
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -363,10 +364,17 @@ export function createCloseoutSession(
           if (prepared.kind === "blocked") return prepared.message;
           if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
           if (options.rulesFirst) await judgeRules(prepared);
-          return ruleBreak(prepared) ?? prepared;
+          return ruleBreak(prepared) ?? { prepared, fingerprint: fingerprint! };
         });
         if (typeof ready === "string") return ready;
-        return runId(workspace, ready, memory, id, options, once, { halt, since, keepGoing });
+        return runId(workspace, ready.prepared, memory, id, options, once, {
+          halt,
+          since,
+          keepGoing,
+          failedOn,
+          fingerprint: ready.fingerprint,
+          busy: (check) => running.has(check),
+        });
       })();
       inFlight.add(run);
       return run.finally(() => inFlight.delete(run));
@@ -809,10 +817,11 @@ function runnable(state: ItemMemory | undefined, max: number | null): boolean {
   return status !== "passed" && status !== "exhausted";
 }
 
-type Once = (
-  id: string,
-  work: () => Promise<{ ok: boolean; text: string }>,
-) => Promise<{ ok: boolean; text: string }>;
+type Outcome = { ok: boolean; text: string; failed?: boolean };
+
+type Once = (id: string, work: () => Promise<Outcome>) => Promise<Outcome>;
+
+type FailedOn = Map<string, { fingerprint: string; text: string }>;
 
 type Halt = {
   controller: AbortController;
@@ -900,7 +909,21 @@ async function runId(
   id: string,
   options: CloseoutSessionOptions,
   once: Once,
-  { halt, since, keepGoing }: { halt: Halt; since: number; keepGoing: boolean },
+  {
+    halt,
+    since,
+    keepGoing,
+    failedOn,
+    fingerprint,
+    busy,
+  }: {
+    halt: Halt;
+    since: number;
+    keepGoing: boolean;
+    failedOn: FailedOn;
+    fingerprint: string;
+    busy: (id: string) => boolean;
+  },
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -927,6 +950,17 @@ async function runId(
     return `Check ${id} is exhausted. Stop retrying and report the blocker.`;
   }
   const digest = policy.digest;
+  const tracked = (step: Listed, limit: number | null, stop?: Halt) =>
+    once(step.id, async () => {
+      const result = await execute(workspace, step, memory, options, limit, digest, stop);
+      if (result.ok) failedOn.delete(step.id);
+      else if (result.failed) failedOn.set(step.id, { fingerprint, text: result.text });
+      return result;
+    });
+  const blocker = (step: Listed) => {
+    const failure = failedOn.get(step.id);
+    return failure?.fingerprint === fingerprint && !busy(step.id) ? failure.text : undefined;
+  };
   if (item.kind === "command" || item.kind === "setup") {
     const before = item.kind === "setup" ? required.indexOf(item) : required.length;
     for (const step of required.slice(0, before)) {
@@ -935,16 +969,18 @@ async function runId(
       if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await once(step.id, () => execute(workspace, step, memory, options, 2, digest));
+      const earlier = blocker(step);
+      if (earlier !== undefined) return `${id} not run: fix ${step.id} first.\n${earlier}`;
+      const setup = await tracked(step, 2);
       if (!setup.ok) return setup.text;
     }
   }
-  const command = async (step: Listed) => {
+  const command = async (step: Listed, prerequisite = false) => {
+    const failure = prerequisite ? blocker(step) : undefined;
+    if (failure !== undefined) return { ok: false, text: failure };
     const recent = halt.last.get(step.id);
     if (recent !== undefined && recent.at > since) return recent.result;
-    const result = await once(step.id, () =>
-      execute(workspace, step, memory, options, max, digest, halt),
-    );
+    const result = await tracked(step, max, halt);
     halt.last.set(step.id, { at: ++halt.finished, result });
     return result;
   };
@@ -957,7 +993,7 @@ async function runId(
       const results = await Promise.all(
         phase
           .filter((step) => runnable(memory.get(step.id), max))
-          .map(async (step) => ({ step, result: await command(step) })),
+          .map(async (step) => ({ step, result: await command(step, true) })),
       );
       const failed =
         results.find(
@@ -968,8 +1004,7 @@ async function runId(
     }
     return (await command(item)).text;
   }
-  const result = await once(item.id, () => execute(workspace, item, memory, options, 2, digest));
-  return result.text;
+  return (await tracked(item, 2)).text;
 }
 
 async function execute(
@@ -980,7 +1015,7 @@ async function execute(
   max: number | null,
   policyDigest: string,
   halt?: Halt,
-): Promise<{ ok: boolean; text: string }> {
+): Promise<Outcome> {
   const argv = item.exec ?? [];
   const stop = halt?.controller.signal;
   try {
@@ -1101,7 +1136,7 @@ async function execute(
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
   const tail = result.output.trim();
-  return { ok: false, text: tail.length > 0 ? `${failed}\n${tail}` : failed };
+  return { ok: false, failed: true, text: tail.length > 0 ? `${failed}\n${tail}` : failed };
 }
 
 async function deferredOf(
