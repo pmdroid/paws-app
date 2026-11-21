@@ -494,13 +494,13 @@ try {
     await visit(admin, width, "notebook-list", "/dashboard/workspace/notebook", "Notebook");
     await admin.getByRole("button", { name: "acme/app" }).click();
     await expect(admin.locator("#content")).toContainText("11,890 of 12,000 characters");
+    await admin.getByRole("button", { name: "Remove" }).first().click();
+    await expect(admin.locator("#content")).toContainText("Remove this entry?");
     await admin.getByLabel("New entry").fill("Tailscale serves the live preview.");
     await admin.getByRole("button", { name: "Add", exact: true }).click();
     await expect(admin.getByRole("alert")).toHaveText(
       "This notebook is full. Remove or shorten an entry first.",
     );
-    await admin.getByRole("button", { name: "Remove" }).first().click();
-    await expect(admin.locator("#content")).toContainText("Remove this entry?");
     if (width <= 390)
       for (const control of await admin.locator("#notebook-settings button, textarea").all())
         expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
