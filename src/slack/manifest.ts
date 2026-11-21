@@ -9,6 +9,7 @@ const CAPABILITIES = {
   agent: ["assistant:write"],
   members: ["users:read", "users:read.email"],
   reactions: ["reactions:write"],
+  notebooks: ["channels:read", "groups:read"],
 };
 
 export const SLACK_INSTALL_SCOPES = [...new Set(Object.values(CAPABILITIES).flat())];

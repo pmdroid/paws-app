@@ -12,7 +12,7 @@ export const notebook = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.scopeKind, table.scopeId] }),
-    check("notebook_scope_kind", sql`scope_kind IN ('repository', 'project')`),
+    check("notebook_scope_kind", sql`scope_kind IN ('repository', 'project', 'channel', 'user')`),
   ],
 );
 

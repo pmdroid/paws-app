@@ -1,0 +1,2 @@
+ALTER TABLE "notebook" DROP CONSTRAINT "notebook_scope_kind";--> statement-breakpoint
+ALTER TABLE "notebook" ADD CONSTRAINT "notebook_scope_kind" CHECK (scope_kind IN ('repository', 'project', 'channel', 'user'));

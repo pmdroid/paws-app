@@ -14,6 +14,7 @@ import {
   acceptSlackInteraction,
   acceptSlackMention,
   acceptSlackSessionStop,
+  createSlackChannelAccess,
   createSlackConnect,
   createSlackLinkPage,
   createSlackLinks,
@@ -115,7 +116,7 @@ import {
   type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
-import { createNotebookHttp } from "../notebook";
+import { createNotebookHttp, type NotebookChannelAccess } from "../notebook";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 
@@ -265,6 +266,13 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   });
   const statusEnv = options.statusEnv;
   const githubStatus = createGitHubStatusCache();
+  const notebookChannels = store
+    ? createSlackChannelAccess({
+        store,
+        home: () => loadRuntime(statusEnv ?? process.env).env.home,
+        env: statusEnv ?? process.env,
+      })
+    : undefined;
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
   const csrfToken = crypto.randomUUID();
@@ -333,6 +341,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(statusEnv ? { statusEnv } : {}),
           githubStatus,
           installations,
+          ...(notebookChannels ? { notebookChannels } : {}),
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
@@ -400,6 +409,7 @@ type Secrets = {
   statusEnv?: Record<string, string | undefined>;
   githubStatus?: GitHubStatusCache;
   installations?: InstallationRepositoryCache;
+  notebookChannels?: NotebookChannelAccess;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
@@ -598,7 +608,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
       if (path === "/api/notebooks" || path.startsWith("/api/notebooks/")) {
-        const response = await createNotebookHttp({ db: store })(request, access.principal);
+        const response = await createNotebookHttp({
+          db: store,
+          ...(secrets.notebookChannels ? { channelAccess: secrets.notebookChannels } : {}),
+        })(request, access.principal);
         if (response !== null) return response;
       }
       if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {

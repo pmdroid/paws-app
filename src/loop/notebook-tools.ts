@@ -70,10 +70,10 @@ export type NotebookToolsInput = {
 
 const TITLES = { repository: "Repository notebook", project: "Project notebook" } as const;
 
-const size = (kind: NotebookScope["kind"], notebook: Notebook) =>
+const size = (kind: keyof typeof TITLES, notebook: Notebook) =>
   `${TITLES[kind]}: ${notebook.size.toLocaleString("en-US")} of ${notebook.limit.toLocaleString("en-US")} characters.`;
 
-const shown = (kind: NotebookScope["kind"], notebook: Notebook) =>
+const shown = (kind: keyof typeof TITLES, notebook: Notebook) =>
   [size(kind, notebook), renderNotebook(notebook.entries) || "No entries yet."].join("\n");
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
