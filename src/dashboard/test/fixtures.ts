@@ -551,6 +551,7 @@ export function issueResource(full: FullStatus, id: string): IssueDetailResponse
     mergeQueue: mine(full.mergeQueue),
     mergeHistory: mine(full.mergeHistory),
     dead: mine(full.dead),
+    followUps: [],
   };
 }
 

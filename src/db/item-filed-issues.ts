@@ -18,3 +18,14 @@ export function* itemFiledIssuesSteps(q: Q, itemId: string): Steps<ItemFiledIssu
       .orderBy(asc(table.filedAt), asc(table.identifier)),
   );
 }
+
+export function* filedIssueOriginsSteps(q: Q, linearIssueId: string): Steps<ItemFiledIssue[]> {
+  const table = q.t.itemFiledIssue;
+  return yield* q.all(
+    q.orm
+      .select()
+      .from(table)
+      .where(eq(table.linearIssueId, linearIssueId))
+      .orderBy(asc(table.filedAt), asc(table.itemId)),
+  );
+}

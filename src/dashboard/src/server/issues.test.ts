@@ -45,6 +45,7 @@ function detailOf(id: string, generatedAt = new Date().toISOString()): IssueDeta
     mergeQueue: [],
     mergeHistory: [],
     dead: [],
+    followUps: [],
   };
 }
 

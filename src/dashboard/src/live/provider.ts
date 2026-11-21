@@ -122,6 +122,7 @@ import {
   type CloseoutStepRecord,
   type CloseoutOutputPointer,
 } from "../../../db";
+import { followUpsFor } from "./follow-ups";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
@@ -186,7 +187,7 @@ import {
 import type { AliasKind } from "../aliases";
 
 /** Keep aligned with `WORK_ITEM_STATES` / the `work_item.state` check. */
-const WORK_ITEM_STATES = [
+export const WORK_ITEM_STATES = [
   "planning",
   "queued",
   "running",
@@ -346,7 +347,12 @@ type IssueScope = {
 };
 
 /** One issue's sessions with `blocks` and the Risk card, before `toIssueDetail` names them. */
-type ItemDetail = IssueScope & { id: string; blocks: string[]; risk: StatusItemRisk | null };
+type ItemDetail = IssueScope &
+  Pick<IssueDetailResponse, "followUps" | "filedFrom"> & {
+    id: string;
+    blocks: string[];
+    risk: StatusItemRisk | null;
+  };
 
 async function readIssueList(store: Db, options: LiveStatusOptions): Promise<IssueListResponse> {
   const { scope } = await readIssueScope(store, options);
@@ -568,6 +574,8 @@ function toIssueDetail(detail: ItemDetail): IssueDetailResponse {
     mergeQueue: detail.mergeQueue,
     mergeHistory: detail.mergeHistory ?? [],
     dead: detail.dead ?? [],
+    followUps: detail.followUps,
+    ...(detail.filedFrom === undefined ? {} : { filedFrom: detail.filedFrom }),
   };
 }
 
@@ -627,7 +635,7 @@ async function readItemDetail(
       automaticApproval: "Manual approval required",
     };
   }
-  const detail = withoutOutputs(scope);
+  const detail = { ...withoutOutputs(scope), ...(await followUpsFor(store, options, records)) };
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
