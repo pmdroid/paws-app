@@ -22,6 +22,7 @@ import {
   failWorkItem,
   getWorkItemRepository,
   listWorkItems,
+  recordItemFiledIssueSteps,
   OutboxDispatcher,
   getWorkItem,
   getConfirmedRemoteMerge,
@@ -3499,6 +3500,7 @@ async function runCiFix(options: {
   publicUrl?: string;
   config?: string;
   liveLineMs?: number;
+  filed?: { identifier: string; title: string; url: string | null; started: boolean };
   implement?: (
     run: number,
     worktree: string,
@@ -3713,6 +3715,16 @@ async function runCiFix(options: {
     await acknowledgeNewSession(tracker, linearEvent("created", null, null, "ci-rounds"), (event) =>
       orchestrator.onLinearEvent(event),
     );
+    const filed = options.filed;
+    if (filed) {
+      const item = (await listWorkItems(db)).find((row) => row.linearIdentifier === "ENG-94")!;
+      await db.run((q) =>
+        recordItemFiledIssueSteps(q, {
+          ...{ ...filed, itemId: item.id, linearIssueId: `lin-${filed.identifier}` },
+          ...{ runId: "run", filedAt: Date.now() },
+        }),
+      );
+    }
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       const state = (await stateOf(db, "ENG-94")) ?? "";
@@ -5207,6 +5219,18 @@ test("no open findings and normal risk add no section and no line", async () => 
   const responses = result.activities.filter((activity) => activity.kind === "response");
   expect(responses[0]!.body).toEndWith("Risk: normal — no high-risk path changed");
   expect(responses[1]!.body).toMatch(/^Merged #\d+ into main at [0-9a-f]+\. ENG-94 is Done\.$/);
+}, 120_000);
+
+test("the PR response lists the follow-ups the item's agent filed", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    filed: { identifier: "ENG-95", title: "Tidy ok.txt", url: null, started: true },
+  });
+  expect(result.state, result.detail).toBe("merged");
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses[0]!.body, result.detail).toContain(
+    "Follow-ups filed from this work:\n- ENG-95: Tidy ok.txt (handed to Paws)",
+  );
 }, 120_000);
 
 test("a PR session stays quiet through a CI fix and rebase re-verification until its merged response", async () => {

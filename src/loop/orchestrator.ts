@@ -374,6 +374,7 @@ import {
   saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
+  itemFiledIssuesSteps,
   type StoredLinearSession,
   type Job,
   type JobLoop,
@@ -6650,6 +6651,7 @@ export class Orchestrator {
         pull: published.pull,
         risk,
         openLine,
+        filed: await this.store.run((q) => itemFiledIssuesSteps(q, item.id)),
         summary: runs.findLast((stored) => stored.checkpoint?.resultBody?.trim())?.checkpoint
           ?.resultBody,
         riskApproval: async () =>

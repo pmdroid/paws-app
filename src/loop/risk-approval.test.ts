@@ -1292,6 +1292,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
         risk: await getCandidateRisk(f.db, f.itemId, heads.s),
         openLine: "",
+        filed: [],
       });
       expect(body).toContain(expected);
       // Deliver the production PR response through canReportProgress, then try a later thought.
@@ -1358,6 +1359,7 @@ test("an unreadable risk row cannot prevent the sole pull-request response", asy
       pull: { number: 1 },
       risk: { tier: "high", paths: ["session.ts"] },
       openLine: "",
+      filed: [],
       riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
     });
     expect(body).toStartWith("Opened pull request #1.");
@@ -1369,6 +1371,7 @@ test("an unreadable risk row cannot prevent the sole pull-request response", asy
         pull: { number: 1 },
         risk: { tier: "high", paths: [] },
         openLine: "",
+        filed: [],
         riskApproval: async () => {
           throw new Error("unreadable display");
         },
