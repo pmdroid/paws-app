@@ -13,7 +13,7 @@ import {
 import { createEvidenceStore } from "../src/evidence";
 import type { LinearUsage } from "../src/linear";
 import { handleQuestionAnswer, type QuestionAnswer } from "../src/questions";
-import { startServer, type ServerOptions } from "../src/server";
+import { startServer } from "../src/server";
 import { seed } from "./pglite-fixtures";
 import { pgliteDb } from "./pglite";
 import { screenshotPng } from "./png";
@@ -26,7 +26,6 @@ export type DashboardFixture = Awaited<ReturnType<typeof startDashboardFixture>>
 export async function startDashboardFixture(
   options: {
     linearUsage?: () => Promise<LinearUsage>;
-    projectContext?: ServerOptions["projectContext"];
   } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "paws-dashboard-fixture-"));

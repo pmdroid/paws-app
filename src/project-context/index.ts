@@ -85,7 +85,6 @@ export {
   CONTEXT_SESSION_NOTICE,
   CONTEXT_SESSION_UNAVAILABLE,
   checkContextDelivery,
-  createLinearContextAccess,
   inspectSessionContext,
   prepareSessionContext,
   recordWorkItemContext,
@@ -95,21 +94,4 @@ export {
   type SessionContextInspection,
   type WorkItemContextEntry,
 } from "./session";
-export {
-  CONTEXT_VIEW_LIMITS,
-  CONTEXT_VIEW_SCOPES,
-  contextViewSupported,
-  listContextProjects,
-  readContextRecord,
-  readContextView,
-  type ContextProject,
-  type ContextView,
-  type ContextViewDetail,
-  type ContextViewPage,
-  type ContextViewRecord,
-  type ContextViewScopeKind,
-  type ContextViewSource,
-  type ContextViewSummary,
-} from "./view";
-export { createProjectContextHttp } from "./http";
 export { sanitizedContextText } from "./sanitize";

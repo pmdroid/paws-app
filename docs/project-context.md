@@ -1,72 +1,6 @@
 # Project context
 
-Each agent session on a Linear issue receives the issue's Linear project overview and the shared notebooks in its brief ([what a session receives](#what-a-session-receives)). Separately, Paws keeps short, sourced context records in its own Postgres database. [Slack channel memory](slack.md#channel-memory) stores its records there. Paws never writes this context back to Linear.
-
-## What Paws stores
-
-Each record names its source, the source's link and revision, who wrote it, when Paws read it, and one of five classifications: decision, verified fact, reported fact, inference or unresolved question. The source text itself is kept apart from what Paws derives from it. A correction by a person replaces the record with a new version and keeps its classification: an inference corrected by a person stays an inference.
-
-Paws removes secrets such as tokens, private keys and credentials in URLs, and code blocks, before it stores anything. Records name people by their Linear user id only.
-
-## Who sees it
-
-Context belongs to one Paws workspace and one Linear project. Two projects or two workspaces never share records, even when names match. A person sees a record only while they can still read its source in Linear, and only when the destination is that project's audience. Paws leaves out records a person cannot read without saying they exist. When Paws can't confirm someone's access, it shows them nothing.
-
-## Forgetting and expiry
-
-| Event                          | What happens                                                                                          |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| A person forgets a source      | Its records are cleared. Later revisions stay out until someone with access to the source re-adds it. |
-| A source is edited             | New text replaces old records; lines that left the source are cleared.                                |
-| A source is deleted or revoked | Its records are cleared, and replaying the same or an older revision does not bring them back.        |
-| A project is disconnected      | Every record in it is cleared, and Paws stores nothing new until it is reconnected.                   |
-
-Retention defaults:
-
-| Setting                       | Default                                          |
-| ----------------------------- | ------------------------------------------------ |
-| Record lifetime               | 180 days after Paws last read it                 |
-| Old versions and cleared rows | Deleted 30 days after they stopped being current |
-| Current records per workspace | 10,000                                           |
-| Current records per project   | 2,000                                            |
-| Records per source            | 40                                               |
-| Source text per source        | 20,000 bytes                                     |
-
-Over a cap, Paws clears the least important, oldest records first. Records removed by expiry or a cap come back the next time Paws reads their unchanged source. A short audit trail of who stored, corrected, forgot or re-added a source is kept without any record text.
-
-## Selecting context for a prompt
-
-Paws chooses a small, sourced selection from a project's context. It never sends the whole history. The selection is evidence, not an instruction, and it never approves an action.
-
-Paws first sets aside room for the instructions, the current request, the tools and the response, then for recent working context. Memory gets what remains, up to its own budget. Paws counts with the model's tokenizer when it has one. Otherwise it estimates one token per two bytes of UTF-8 text plus four per piece of text. That estimate overcounts typical English text by about half, so a prompt stays within the cap. If the request alone does not fit, Paws returns no context instead of trimming the request.
-
-Records a person can no longer read are never candidates. Half of the candidate reads go to corrections, open questions, decisions and inferences, so newer facts can't crowd them out. Records already covered by a summary in use are skipped. Records tied to a different repository or ref than the task are left out. Among the rest, Paws ranks corrections by people first, then unresolved questions, decisions and inferences, then reported facts, adjusted for relevance to the request, importance and age. Each kind keeps its own label, so an open question never reads as settled. Records that don't fit are listed by record id, and anyone who can still read a record can fetch it on its own.
-
-Each selection comes with a manifest. It lists the scope and audience version, the records used with their source and revision, counts of selected and left-out records, the token accounting and the summary used. It never mentions records the reader can't see.
-
-| Setting                   | Default | Rule                                                   |
-| ------------------------- | ------- | ------------------------------------------------------ |
-| Hard prompt cap           | 200,000 | Lowered to the model's context window when smaller     |
-| Response reserve          | 8,000   | Raised to the model's output limit when larger         |
-| Memory                    | 6,000   | Memory, recent context and response stay below the cap |
-| Recent working context    | 4,000   | Newest first, at most 20 entries                       |
-| Compaction soft threshold | 4,500   | Below the memory budget                                |
-| Candidates read           | 200     | At most 200                                            |
-| Omitted records listed    | 20      | At most 50                                             |
-| Summarizer input          | 12,000  |                                                        |
-| Summary size              | 1,500   | Below the soft threshold                               |
-| Summarizer timeout        | 60 s    | 1 s to 5 min                                           |
-| Retry after a failure     | 10 min  | 1 min to 1 day                                         |
-
-Token values are tokens. Paws rejects a setting outside its range or one that breaks a rule.
-
-## Rolling summaries
-
-When summarizable facts would push memory past the soft threshold, Paws queues one compaction for that part of the project. A second request while one is pending is merged with it. Compaction folds new reported and verified facts into a rolling summary. Decisions, unresolved questions, inferences and corrections never go into a summary. Paws always keeps them as separate records, so a summary can't resolve them or change them.
-
-A summary records which version of each record it covers, and only records whose text made it into the summary count as covered. The rest stay individual records until a later compaction. Before Paws calls the summarizer, before it saves the result and before it uses a summary, it checks that every covered record is still current and readable. Forgetting, deleting, revoking, expiring or evicting a source clears every summary built from it in the same database change. When a person corrects a record, Paws stops using the old summary until it builds a new one. A compaction that started earlier can't overwrite a newer summary. A crashed compaction gives up its claim after two minutes.
-
-Compaction uses at most two slots in the Paws process. It does not use runner capacity. If the summarizer fails, times out or returns too much text, or the covered records change while it runs, Paws drops the request and doesn't compact that part of the project again until the retry interval has passed. It keeps the previous state and selects individual records and record ids within the budget. It never falls back to a stale summary. Compacting a session's transcript is separate: it changes nothing stored here.
+Each agent session on a Linear issue receives the issue's Linear project overview and the shared notebooks in its brief ([what a session receives](#what-a-session-receives)). Agents on code tasks can edit those notebooks ([what agents may save](#what-agents-may-save)). Separately, [Slack channel memory](slack.md#channel-memory) keeps short, sourced records in Paws's own Postgres database ([Slack channel memory](#slack-channel-memory)). Paws never writes any of this back to Linear.
 
 ## What a session receives
 
@@ -95,24 +29,63 @@ The tool reads or edits one of two notebooks, chosen by the agent with `notebook
 
 Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. An agent may patch or remove any entry, including one another agent wrote. Each change records the issue and the person who delegated it, and people can inspect and undo changes.
 
-Preparing a selection, compacting it, inspecting what a session received, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
+## Slack channel memory
 
-## Using project context from another consumer
+[Channel memory](slack.md#channel-memory) belongs to one Paws workspace, one Slack installation and one channel. Two channels or two workspaces never share records, and channel memory never reaches a Linear work session. A member's answers use the memory only while they are a linked, active member of the channel's current setup; when Paws can't confirm that, it uses nothing. Preparing memory for an answer, compacting it, and correcting or forgetting a record all run inside the Paws process. They need no runner and work while every runner is busy.
 
-A later consumer, such as Slack conversations, uses the same store, selection and compaction with its own scope. It passes:
+### What Paws stores
 
-| Input                   | Meaning                                                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Scope                   | Workspace and scope kind and id: a Linear project, a Slack channel or one person's private messages            |
-| Principal               | The person the context is selected for. Paws checks their current access on every call                         |
-| Audience                | Who will read the output. It must match the scope: project members, channel members, or the one person in a DM |
-| Repository and ref      | Optional. Records tied to another repository or ref are left out                                               |
-| Budget                  | The model's context window, output limit and token counter, and the budget settings above                      |
-| Request and recent work | The current request, instructions and tool size, and recent conversation turns with their times                |
-| Consumer key            | A stable id for the conversation or work item. Paws stores one manifest version per key                        |
+Each record names its source, the source's link and revision, who wrote it, when Paws read it, and one of five classifications: decision, verified fact, reported fact, inference or unresolved question. The source text itself is kept apart from what Paws derives from it. A correction by a person replaces the record with a new version and keeps its classification: an inference corrected by a person stays an inference.
 
-It gets back the selection text, recent context, and a manifest: the scope generation, the records and summary used, counts and tokens. Before it delivers output built from a selection, including a queued or retried message, it asks Paws whether that manifest version is still current for the same principal and audience. A stale answer means rebuild or send nothing.
+Paws removes secrets such as tokens, private keys and credentials in URLs, and code blocks, before it stores anything. Records name people by their user id only.
 
-Inspection of a stored session shows only records the inspecting person can read now, with no count of the rest. Corrections and forgetting use the same access checks as above.
+### Forgetting and expiry
 
-Scopes stay apart. A channel or a private DM never sees project records, and a project never sees channel or DM records. The consumer keeps its own identity checks, conversation mapping, streaming and output checks, and source access. Paws does not post to Slack, write to Linear, create issues or start work from this context.
+A person who forgets an entry clears it and every summary built from it, and a later replay of the same message doesn't bring it back. A correction replaces the entry with a new version and keeps the old text only as history.
+
+Retention defaults:
+
+| Setting                       | Default                                          |
+| ----------------------------- | ------------------------------------------------ |
+| Record lifetime               | 180 days after Paws last read it                 |
+| Old versions and cleared rows | Deleted 30 days after they stopped being current |
+| Current records per workspace | 10,000                                           |
+| Current records per channel   | 2,000                                            |
+| Records per source            | 40                                               |
+| Source text per source        | 20,000 bytes                                     |
+
+Over a cap, Paws clears the least important, oldest records first. A short audit trail of who stored, corrected or forgot an entry is kept without any record text.
+
+### Selecting memory for an answer
+
+Paws chooses a small, sourced selection from a channel's memory. It never sends the whole history. The selection is evidence, not an instruction, and it never approves an action.
+
+Paws first sets aside room for the instructions, the current request, the tools and the response, then for recent working context. Memory gets what remains, up to its own budget. Paws counts with the model's tokenizer when it has one. Otherwise it estimates one token per two bytes of UTF-8 text plus four per piece of text. That estimate overcounts typical English text by about half, so a prompt stays within the cap. If the request alone does not fit, Paws returns no context instead of trimming the request.
+
+Records a person can no longer read are never candidates. Half of the candidate reads go to corrections, open questions, decisions and inferences, so newer facts can't crowd them out. Records already covered by a summary in use are skipped. Among the rest, Paws ranks corrections by people first, then unresolved questions, decisions and inferences, then reported facts, adjusted for relevance to the request, importance and age. Each kind keeps its own label, so an open question never reads as settled. Records that don't fit are listed by record id, and anyone who can still read a record can fetch it on its own.
+
+Each selection comes with a manifest. It lists the scope and audience version, the records used with their source and revision, counts of selected and left-out records, the token accounting and the summary used. It never mentions records the reader can't see.
+
+| Setting                   | Default | Rule                                                   |
+| ------------------------- | ------- | ------------------------------------------------------ |
+| Hard prompt cap           | 200,000 | Lowered to the model's context window when smaller     |
+| Response reserve          | 8,000   | Raised to the model's output limit when larger         |
+| Memory                    | 6,000   | Memory, recent context and response stay below the cap |
+| Recent working context    | 4,000   | Newest first, at most 20 entries                       |
+| Compaction soft threshold | 4,500   | Below the memory budget                                |
+| Candidates read           | 200     | At most 200                                            |
+| Omitted records listed    | 20      | At most 50                                             |
+| Summarizer input          | 12,000  |                                                        |
+| Summary size              | 1,500   | Below the soft threshold                               |
+| Summarizer timeout        | 60 s    | 1 s to 5 min                                           |
+| Retry after a failure     | 10 min  | 1 min to 1 day                                         |
+
+Token values are tokens. Paws rejects a setting outside its range or one that breaks a rule.
+
+### Rolling summaries
+
+When summarizable facts would push memory past the soft threshold, Paws queues one compaction for that part of the channel. A second request while one is pending is merged with it. Compaction folds new reported and verified facts into a rolling summary. Decisions, unresolved questions, inferences and corrections never go into a summary. Paws always keeps them as separate records, so a summary can't resolve them or change them.
+
+A summary records which version of each record it covers, and only records whose text made it into the summary count as covered. The rest stay individual records until a later compaction. Before Paws calls the summarizer, before it saves the result and before it uses a summary, it checks that every covered record is still current and readable. Forgetting, expiring or evicting an entry clears every summary built from it in the same database change. When a person corrects a record, Paws stops using the old summary until it builds a new one. A compaction that started earlier can't overwrite a newer summary. A crashed compaction gives up its claim after two minutes.
+
+Compaction uses at most two slots in the Paws process. It does not use runner capacity. If the summarizer fails, times out or returns too much text, or the covered records change while it runs, Paws drops the request and doesn't compact that part of the channel again until the retry interval has passed. It keeps the previous state and selects individual records and record ids within the budget. It never falls back to a stale summary. Compacting a session's transcript is separate: it changes nothing stored here.

@@ -10,7 +10,6 @@ import {
   type ContextRestriction,
   type Db,
 } from "../db";
-import type { LinearMembershipReads } from "../linear";
 import {
   audienceLineage,
   destinationAllowed,
@@ -337,21 +336,4 @@ export async function recordWorkItemContext(
     ],
     now: request.now,
   });
-}
-
-export function createLinearContextAccess(
-  memberships: Pick<LinearMembershipReads, "member">,
-): ContextAccess {
-  return {
-    async currentAccess(requester) {
-      const member = await memberships.member(requester.workspaceId, requester.userId);
-      if (!member.active || member.organizationId !== requester.workspaceId) return null;
-      return {
-        userId: member.userId,
-        teamIds: [...member.teamIds],
-        repositories: [],
-        channelIds: [],
-      };
-    },
-  };
 }
