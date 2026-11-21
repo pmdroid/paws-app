@@ -42,57 +42,97 @@ export const LINEAR_TOOLS_NOTE = [
 
 export const NOT_YOURS = "You can change only your own issue and the ones you filed.";
 
-const string = { type: "string" };
-const strings = { type: "array", items: string };
+const string = (description: string) => ({ type: "string", description });
+const strings = (description: string) => ({
+  type: "array",
+  items: { type: "string" },
+  description,
+});
 const schema = (properties: Args, required: string[] = []) => ({
   type: "object",
   properties,
   required,
   additionalProperties: false,
 });
-const list = (name: string, what: string) => ({
+const list = (name: string, what: string, description?: string) => ({
   name,
-  description: `List the ${what} of the delegating person's Linear teams.`,
+  description: description ?? `List the ${what} of the delegating person's Linear teams.`,
   inputSchema: schema({}),
 });
+const filedId = string(
+  "The current issue or one you filed for this item: its identifier, such as ENG-123, or its Linear id.",
+);
 
 const DEFINITIONS = [
   {
     name: "search_issues",
-    description: "Search Linear issues by text or identifier in the delegating person's teams.",
-    inputSchema: schema({ query: string, limit: { type: "integer" } }, ["query"]),
+    description:
+      "Search Linear issues by text or issue identifier within the delegating person's teams.",
+    inputSchema: schema(
+      {
+        query: string("Search text or a Linear issue identifier, such as ENG-123."),
+        limit: {
+          type: "integer",
+          description: "Maximum number of results: 10 by default, at most 25.",
+        },
+      },
+      ["query"],
+    ),
   },
   {
     name: "get_issue",
-    description: "Read one Linear issue by identifier or id, with relations and recent comments.",
-    inputSchema: schema({ id: string }, ["id"]),
+    description: "Read a Linear issue, including its relations and recent comments.",
+    inputSchema: schema(
+      { id: string("The issue's identifier, such as ENG-123, or its Linear id.") },
+      ["id"],
+    ),
   },
-  list("list_teams", "teams"),
+  list("list_teams", "teams", "List the Linear teams the delegating person belongs to."),
   list("list_projects", "projects"),
   list("list_labels", "labels"),
   list("list_states", "workflow states"),
   {
     name: "create_issue",
     description:
-      "File a follow-up Linear issue in this issue's team, related to this issue. At most 3 per run. labels are names; start: true hands it to Paws.",
+      "Immediately create a follow-up Linear issue in the current issue's team and relate it to the current issue. At most 3 per run. Set start to true to delegate the new issue to Paws.",
     inputSchema: schema(
-      { title: string, description: string, labels: strings, start: { type: "boolean" } },
+      {
+        title: string(
+          "A concise title naming the problem or requested outcome, at most 256 characters.",
+        ),
+        description: string(
+          "A self-contained Markdown brief: problem and evidence, decided change, relevant files and constraints, and acceptance checks.",
+        ),
+        labels: strings("Existing label names to apply, not label IDs; at most 10."),
+        start: {
+          type: "boolean",
+          description:
+            "Set true to delegate the new issue to Paws; false creates it without delegation.",
+        },
+      },
       ["title", "description"],
     ),
   },
   {
     name: "update_issue",
     description:
-      "Change this issue or one you filed: title, description, state (name) or labels (names).",
+      "Immediately update the current Linear issue or an issue you filed for this item. Supply only the fields you intend to change.",
     inputSchema: schema(
-      { id: string, title: string, description: string, state: string, labels: strings },
+      {
+        id: filedId,
+        title: string("The new issue title."),
+        description: string("The new issue description in Markdown."),
+        state: string("The target workflow state name, not its ID."),
+        labels: strings("Label names, not IDs. They replace the issue's whole label set."),
+      },
       ["id"],
     ),
   },
   {
     name: "assign_issue",
-    description: "Hand this issue or one you filed to Paws.",
-    inputSchema: schema({ id: string }, ["id"]),
+    description:
+      "Immediately delegate the current Linear issue or an issue you filed for this item to Paws.",
+    inputSchema: schema({ id: filedId }, ["id"]),
   },
 ];
 

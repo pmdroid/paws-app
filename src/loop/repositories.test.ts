@@ -12,6 +12,7 @@ import {
 import { createFakeSnapshotReader } from "../github";
 import { repositoryGrant, repositoryNote, repositoryTools } from "./repositories";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
+import { validHostToolDefinitions } from "../../test/host-tool-definitions";
 import { tempStore } from "../../test/pglite";
 
 const stores: { close(): Promise<void> }[] = [];
@@ -109,6 +110,21 @@ test("a code-mode item's brief lists the delegator's other repositories with des
   const tools = (await repositoryTools(db, item))!;
   expect(tools.definitions.map((tool) => tool.name)).toEqual(["list_repositories"]);
   expect((await tools.call("list_repositories", { after: "acme/web" })).text).toBe("ops/infra");
+});
+
+test("list_repositories and its parameter are described, within the host tool limits", async () => {
+  const { db, item } = await setup();
+  const definitions = (await repositoryTools(db, item))!.definitions;
+  expect(validHostToolDefinitions(definitions)).toBe(true);
+  expect(definitions[0]!.description).toBe(
+    "List up to 100 repositories available to add_repository. Use after to request the next page.",
+  );
+  expect(definitions[0]!.inputSchema["properties"]).toEqual({
+    after: {
+      type: "string",
+      description: "The last owner/name returned on the previous page. Omit for the first page.",
+    },
+  });
 });
 
 test("an item that is not in code mode or has no other repository gets no list", async () => {

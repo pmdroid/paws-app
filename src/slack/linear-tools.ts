@@ -48,46 +48,77 @@ export const SLACK_LINEAR_INSTRUCTIONS = [
   `create_issue, update_issue and assign_issue only propose a change, at most ${work.SLACK_PROPOSALS} per answer: nothing changes in Linear until the asking person confirms it in Slack, so say it is proposed, not done.`,
 ].join("\n");
 
-const string = { type: "string" };
-const strings = { type: "array", items: string };
-const schema = (
-  properties: Record<string, { type: string; items?: { type: string } }>,
-  required: string[] = [],
-) => ({
+type Property = { type: string; items?: { type: string }; description: string };
+const string = (description: string): Property => ({ type: "string", description });
+const strings = (description: string): Property => ({
+  type: "array",
+  items: { type: "string" },
+  description,
+});
+const schema = (properties: Record<string, Property>, required: string[] = []) => ({
   type: "object",
   properties,
   required,
   additionalProperties: false,
 });
-const list = (name: string, what: string) => ({
+const list = (name: string, what: string, description?: string) => ({
   name,
-  description: `List the ${what} of the asking person's Linear teams. Read only.`,
+  description: description ?? `List the ${what} of the asking person's Linear teams. Read only.`,
   inputSchema: schema({}),
 });
+const issueRef = string("The issue's identifier, such as ENG-123, or its Linear id.");
 
 const DEFINITIONS = [
   {
     name: "search_issues",
-    description: "Search Linear issues by text or identifier in the asking person's teams.",
-    inputSchema: schema({ query: string, limit: { type: "integer" } }, ["query"]),
+    description:
+      "Search Linear issues by text or issue identifier within the asking person's teams.",
+    inputSchema: schema(
+      {
+        query: string("Search text or a Linear issue identifier, such as ENG-123."),
+        limit: {
+          type: "integer",
+          description: "Maximum number of results: 10 by default, at most 25.",
+        },
+      },
+      ["query"],
+    ),
   },
   {
     name: "get_issue",
-    description: "Read one Linear issue by identifier or id, with relations and recent comments.",
-    inputSchema: schema({ id: string }, ["id"]),
+    description: "Read a Linear issue, including its relations and recent comments.",
+    inputSchema: schema({ id: issueRef }, ["id"]),
   },
-  list("list_teams", "teams"),
+  list("list_teams", "teams", "List the Linear teams the asking person belongs to. Read only."),
   list("list_projects", "projects"),
   list("list_labels", "labels"),
   list("list_states", "workflow states"),
   {
     name: "create_issue",
     description:
-      "Propose a new Linear issue in one of the asking person's teams (team key). Names of the project and labels must exist in that team. start (default true) delegates it to Paws. Nothing changes until the person confirms.",
+      "Propose creating a Linear issue; nothing changes until the person confirms. Choose one of the asking person's teams. Project and label names must exist in that team. By default, confirmation also delegates the issue to Paws.",
     inputSchema: schema(
       {
-        ...{ team: string, title: string, description: string, project: string },
-        ...{ labels: strings, parent: string, related_to: string, start: { type: "boolean" } },
+        team: string("The destination team key, such as ENG, from list_teams."),
+        title: string(
+          "A concise title naming the problem or requested outcome, at most 256 characters.",
+        ),
+        description: string(
+          "A self-contained Markdown brief: problem and evidence, decided change, relevant files and constraints, and acceptance checks.",
+        ),
+        project: string("An existing project name in the destination team, not a project ID."),
+        labels: strings("Existing label names in the destination team, not label IDs; at most 10."),
+        parent: string(
+          "The parent issue for a sub-issue: its identifier, such as ENG-123, or its Linear id.",
+        ),
+        related_to: string(
+          "One issue to link as related: its identifier, such as ENG-123, or its Linear id.",
+        ),
+        start: {
+          type: "boolean",
+          description:
+            "Whether confirmation also delegates the new issue to Paws. Defaults to true; set false to propose creation without delegation.",
+        },
       },
       ["team", "title", "description"],
     ),
@@ -95,15 +126,15 @@ const DEFINITIONS = [
   {
     name: "update_issue",
     description:
-      "Propose changes to a Linear issue in the asking person's teams; state, labels and project are names. Nothing changes until the person confirms.",
+      "Propose changes to a Linear issue in the asking person's teams; nothing changes until the person confirms. Supply only the fields you intend to change.",
     inputSchema: schema(
       {
-        id: string,
-        title: string,
-        description: string,
-        state: string,
-        labels: strings,
-        project: string,
+        id: issueRef,
+        title: string("The proposed issue title."),
+        description: string("The proposed issue description in Markdown."),
+        state: string("The proposed workflow state name, not its ID."),
+        labels: strings("Label names, not IDs. They replace the issue's whole label set."),
+        project: string("The proposed project name, not its ID."),
       },
       ["id"],
     ),
@@ -112,7 +143,7 @@ const DEFINITIONS = [
     name: "assign_issue",
     description:
       "Propose delegating a Linear issue in the asking person's teams to Paws. Nothing changes until the person confirms.",
-    inputSchema: schema({ id: string }, ["id"]),
+    inputSchema: schema({ id: issueRef }, ["id"]),
   },
 ];
 
