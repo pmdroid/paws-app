@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  contextSourceRestriction,
   currentContextRecords,
   getContextSession,
   listContextSummaries,
@@ -12,43 +11,16 @@ import {
   type Db,
 } from "../db";
 import type { LinearMembershipReads } from "../linear";
-import { tokenCounter, type ContextBudgetSettings, type ContextModelBudget } from "./budget";
-import {
-  compactContext,
-  createContextCapacity,
-  extractiveContextSummarizer,
-  type ContextCapacity,
-  type ContextSummarizer,
-} from "./compact";
-import {
-  recordAnsweredDecision,
-  type AnsweredDecision,
-  type AnsweredDecisionOutcome,
-} from "./decision";
-import { visibleContextTopics } from "./dream";
-import { MEMORY_INDEX_LIMITS, renderMemoryIndex } from "./memory-index";
-import { ingestLinearProjectContext, type ProjectContextReads } from "./linear";
 import {
   audienceLineage,
-  canSee,
   destinationAllowed,
   requesterAccess,
   type ContextAccess,
-  type ContextAudience,
   type ContextDestination,
   type ContextRequester,
 } from "./policy";
-import { recallProjectContext, type RecallRequest } from "./recall";
-import { rememberWorkItemContext, type RememberRequest } from "./remember";
 import { contextKey } from "./sanitize";
-import { recordWorkSummary, type WorkSummary } from "./work-summary";
-import {
-  rankContextRecords,
-  selectContext,
-  type ContextManifest,
-  type ContextRecentEntry,
-  type ContextSelectionRequest,
-} from "./select";
+import { selectContext, type ContextManifest, type ContextSelectionRequest } from "./select";
 import { disclosable, ingestContext, view, type ContextRecordView } from "./store";
 
 export const CONTEXT_SESSION_NOTICE =
@@ -59,7 +31,6 @@ export const CONTEXT_SESSION_UNAVAILABLE =
 
 export type ContextConsumerRequest = ContextSelectionRequest & {
   readonly consumerKey: string;
-  readonly index?: { readonly tokens: number; readonly appendix?: string };
 };
 
 export type SessionContext = {
@@ -117,7 +88,6 @@ async function selectAndSave(
   access: ContextAccess,
   request: ContextConsumerRequest,
 ): Promise<SessionContext> {
-  if (request.index) return indexAndSave(db, access, request, request.index);
   const selection = await selectContext(db, access, request);
   if (selection.status === "invalid_budget") return withhold(db, request, "invalid_budget");
   if (selection.status === "unavailable") return withhold(db, request, selection.reason);
@@ -129,43 +99,6 @@ async function selectAndSave(
     `${selection.pack}\n\n${CONTEXT_SESSION_NOTICE}`,
     selection.manifest,
   );
-}
-
-/**
- * Builds the startup memory index straight from the requester's authorized records. It reads no
- * rolling summary, leaves out nothing a summary covers, and requests no compaction.
- */
-async function indexAndSave(
-  db: Db,
-  access: ContextAccess,
-  request: ContextConsumerRequest,
-  options: NonNullable<ContextConsumerRequest["index"]>,
-): Promise<SessionContext> {
-  const ranking = await rankContextRecords(db, access, request);
-  if (ranking.status === "invalid_budget") return withhold(db, request, "invalid_budget");
-  if (ranking.status === "unavailable") return withhold(db, request, ranking.reason);
-  if (ranking.ranked.length === 0) return withhold(db, request, "empty");
-  const current = await requesterAccess(access, request.requester);
-  if (!current) return withhold(db, request, "refused");
-  const topics = await visibleContextTopics(db, current, {
-    namespace: request.namespace,
-    audience: request.destination.audience as ContextAudience,
-    ...(request.repository ? { repository: request.repository } : {}),
-    ...(request.ref ? { ref: request.ref } : {}),
-    now: request.now,
-  });
-  const index = renderMemoryIndex(
-    ranking,
-    {
-      tokens: options.tokens,
-      trailer: CONTEXT_SESSION_NOTICE,
-      topics,
-      ...(options.appendix ? { appendix: options.appendix } : {}),
-    },
-    tokenCounter(request.model),
-  );
-  if (!index) return withhold(db, request, "over_budget");
-  return saveInjected(db, request, ranking.recent, index.text, index.manifest);
 }
 
 async function saveInjected(
@@ -419,138 +352,6 @@ export function createLinearContextAccess(
         repositories: [],
         channelIds: [],
       };
-    },
-  };
-}
-
-export type ProjectSessionInput = {
-  readonly consumerKey: string;
-  readonly organizationId: string;
-  readonly projectId: string;
-  readonly requesterId: string;
-  readonly instructions: string;
-  readonly request: string;
-  readonly toolsTokens?: number;
-  readonly recent?: readonly ContextRecentEntry[];
-  readonly repository?: string;
-  readonly ref?: string;
-  readonly model?: ContextModelBudget;
-  readonly appendix?: string;
-  readonly signal?: AbortSignal;
-};
-
-export type ProjectSessionContext = {
-  prepare(input: ProjectSessionInput): Promise<SessionContext>;
-  recordDecision(input: AnsweredDecision): Promise<AnsweredDecisionOutcome>;
-  remember?(request: RememberRequest): Promise<string>;
-  recall?(request: RecallRequest): Promise<string>;
-  recordWorkSummary?(input: WorkSummary): Promise<void>;
-};
-
-export const PROJECT_SESSION_DEFAULTS = {
-  model: { contextTokens: 200_000 },
-  refreshMs: 10 * 60_000,
-  projectsRemembered: 500,
-} as const;
-
-export function createProjectSessionContext(options: {
-  db: Db;
-  access: ContextAccess;
-  reads?: ProjectContextReads | null;
-  summarizer?: ContextSummarizer;
-  capacity?: ContextCapacity;
-  settings?: Partial<ContextBudgetSettings>;
-  model?: ContextModelBudget;
-  refreshMs?: number;
-  memoryIndex?: boolean;
-  now?: () => number;
-}): ProjectSessionContext {
-  const now = options.now ?? Date.now;
-  const capacity = options.capacity ?? createContextCapacity();
-  const summarizer = options.summarizer ?? extractiveContextSummarizer;
-  const refreshMs = options.refreshMs ?? PROJECT_SESSION_DEFAULTS.refreshMs;
-  const refreshed = new Map<string, number>();
-  async function refresh(input: ProjectSessionInput, requester: ContextRequester) {
-    if (!options.reads) return;
-    const key = `${input.organizationId}\0${input.projectId}`;
-    const last = refreshed.get(key);
-    if (last !== undefined && now() - last < refreshMs) return;
-    const started = now();
-    const result = await ingestLinearProjectContext(options.db, options.access, options.reads, {
-      workspaceId: input.organizationId,
-      projectId: input.projectId,
-      requester,
-      now: started,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-    const first = result.sources[0]?.outcome;
-    if (result.status !== "read" || first === "refused" || first === "disconnected") return;
-    refreshed.delete(key);
-    refreshed.set(key, started);
-    while (refreshed.size > PROJECT_SESSION_DEFAULTS.projectsRemembered)
-      refreshed.delete(refreshed.keys().next().value!);
-  }
-  async function projectVisible(namespace: ContextNamespace, requester: ContextRequester) {
-    const state = await contextSourceRestriction(options.db, namespace, {
-      kind: "linear_project_description",
-      id: namespace.scopeId,
-    });
-    if (!state) return false;
-    const current = await requesterAccess(options.access, requester);
-    return current !== null && canSee(current, state.restriction);
-  }
-  return {
-    recordDecision: (input) => recordAnsweredDecision(options.db, options.access, input),
-    remember: (request) => rememberWorkItemContext(options.db, options.access, request),
-    recall: (request) => recallProjectContext(options.db, options.access, request),
-    recordWorkSummary: (input) => recordWorkSummary(options.db, options.access, input),
-    async prepare(input) {
-      const namespace: ContextNamespace = {
-        workspaceId: input.organizationId,
-        scopeKind: "linear_project",
-        scopeId: input.projectId,
-      };
-      const requester = { workspaceId: input.organizationId, userId: input.requesterId };
-      const destination = { audience: "project_members" };
-      await refresh(input, requester);
-      input.signal?.throwIfAborted();
-      const request: ContextConsumerRequest = {
-        consumerKey: input.consumerKey,
-        namespace,
-        requester,
-        destination,
-        instructions: input.instructions,
-        request: input.request,
-        toolsTokens: input.toolsTokens ?? 0,
-        ...(input.recent ? { recent: input.recent } : {}),
-        ...(input.repository ? { repository: input.repository } : {}),
-        ...(input.ref ? { ref: input.ref } : {}),
-        model: input.model ?? options.model ?? PROJECT_SESSION_DEFAULTS.model,
-        ...(options.settings ? { settings: options.settings } : {}),
-        ...(options.memoryIndex
-          ? {
-              index: {
-                tokens: MEMORY_INDEX_LIMITS.tokens,
-                ...(input.appendix ? { appendix: input.appendix } : {}),
-              },
-            }
-          : {}),
-        now: now(),
-      };
-      let prepared = await prepareSessionContext(options.db, options.access, request);
-      if (prepared.reason === "empty" && !(await projectVisible(namespace, requester)))
-        prepared = { ...prepared, reason: "refused", text: CONTEXT_SESSION_UNAVAILABLE };
-      const compaction = prepared.manifest?.compaction;
-      if (compaction === "requested" || compaction === "coalesced")
-        await compactContext(options.db, options.access, summarizer, capacity, {
-          namespace,
-          requester,
-          destination,
-          ...(options.settings ? { settings: options.settings } : {}),
-          now: now(),
-          ...(input.signal ? { signal: input.signal } : {}),
-        }).catch(() => undefined);
-      return prepared;
     },
   };
 }

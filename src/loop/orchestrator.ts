@@ -178,7 +178,6 @@ import {
   agentReadAllowed,
   githubMirrorsOn,
   loadConfigFile,
-  readProjectMemorySettings,
   mergeLaneKey,
   parallelFiles,
   readMergeSettings,
@@ -430,7 +429,6 @@ import {
   moveDelegationSessionSteps,
   openTaskDependentsSteps,
   workspaceUserIdForLinearUserSteps,
-  workspaceUserContactSteps,
 } from "../db";
 import {
   publishAccepted,
@@ -528,7 +526,6 @@ import {
 } from "../linear";
 import {
   ASK_TEAM_REASON,
-  askedThroughAskTeam,
   answerSteps,
   type AnswerEffects,
   type QuestionReply,
@@ -703,7 +700,6 @@ import {
   type LinearSessionProgress,
 } from "./session-progress";
 import { renderWorkContext, withLeftForLater } from "../core";
-import type { ProjectSessionContext } from "../project-context";
 import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -723,7 +719,6 @@ import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./p
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { applyPullRequestDraft } from "./pull-request-text";
-import { recordPullRequestSummary } from "./work-summary";
 import {
   askAboutPushOutage,
   holdPush,
@@ -801,7 +796,6 @@ export type OrchestratorOptions = {
   /** How often a merge-queue re-check reads CI while it waits for it, and for how long. */
   ciRecheckWait?: { pollMs: number; maxWaitMs: number };
   tracker?: TrackerAdapter | null;
-  projectContext?: ProjectSessionContext | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
@@ -6627,7 +6621,6 @@ export class Orchestrator {
         this.now(),
       ),
     );
-    await this.recordWorkSummary(item, title, draft?.body ?? "");
     if (risk?.tier === "high")
       await this.riskDisplayReader.remember(
         item.id,
@@ -7686,7 +7679,6 @@ export class Orchestrator {
           );
           live.controller.abort(FOLLOW_UP_INTERRUPTION);
         }
-    if (outcome !== "rejected" && askedThroughAskTeam(open)) await this.recordDecision(open.id);
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (item?.state === "completed")
@@ -8850,7 +8842,7 @@ export class Orchestrator {
         await this.store.run((q) => savePullRequestDraftSteps(q, item.id, description, this.now()));
         const repository = await this.repositoryForItem(item);
         const signal = await this.signalForItem(item.id);
-        const applied = await applyPullRequestDraft({
+        await applyPullRequestDraft({
           store: this.store,
           itemId: item.id,
           issue: item.linearIdentifier,
@@ -8867,8 +8859,6 @@ export class Orchestrator {
           },
           ...(this.options.journal ? { journal: this.options.journal } : {}),
         });
-        if (applied === "updated")
-          await this.recordWorkSummary(item, description.title, description.body);
       },
     };
   }
@@ -10251,94 +10241,11 @@ export class Orchestrator {
     return { brief, work: notes.filter(Boolean).join("\n\n") };
   }
 
-  private async projectScope(
-    item: WorkItemRecord,
-  ): Promise<
-    { organizationId: string; projectId: string; requesterId: string } | "none" | "withheld"
-  > {
-    const resolved = (await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id)))?.resolved[
-      "projectId"
-    ];
-    const projectId = item.linearProjectId ?? (typeof resolved === "string" ? resolved : null);
-    if (!projectId) return "none";
-    const session = item.sessionKey
-      ? await this.store.run((q) => getLinearSessionSteps(q, item.sessionKey!))
-      : null;
-    if (!session?.organizationId || !session.creatorId) return "withheld";
-    return { organizationId: session.organizationId, projectId, requesterId: session.creatorId };
-  }
-
   private async notebookToolsFor(item: WorkItemRecord) {
     const repository = await this.repositoryForItem(item);
     return repository
       ? notebookToolsFor({ store: this.store, item, repository, now: () => this.now() })
       : undefined;
-  }
-
-  private async recordDecision(questionId: string): Promise<void> {
-    const service = this.options.projectContext;
-    if (!service) return;
-    let itemId: string | undefined;
-    try {
-      const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-      if (!readProjectMemorySettings(config).decisions) return;
-      const found = await this.store.run(function* (q) {
-        const question = yield* getQuestionSteps(q, questionId);
-        const item = question ? yield* getWorkItemSteps(q, question.itemId) : null;
-        if (!question?.answer || !question.answeredBy || !item) return null;
-        const resolved = (yield* getTaskMergeSettingsSteps(q, item.id))?.resolved["projectId"];
-        const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
-        const userId = yield* workspaceUserIdForLinearUserSteps(q, question.answeredBy);
-        const contact = userId === null ? null : yield* workspaceUserContactSteps(q, userId);
-        return {
-          question: question.body,
-          answer: question.answer,
-          answeredBy: question.answeredBy,
-          item,
-          projectId: item.linearProjectId ?? (typeof resolved === "string" ? resolved : null),
-          organizationId: session?.organizationId ?? null,
-          name: contact?.name || question.answeredBy,
-        };
-      });
-      if (!found?.projectId) return;
-      itemId = found.item.id;
-      if (!found.organizationId) throw new Error("the item's Linear workspace is unknown");
-      await service.recordDecision({
-        organizationId: found.organizationId,
-        projectId: found.projectId,
-        workItemId: found.item.id,
-        issueIdentifier: found.item.linearIdentifier,
-        questionId,
-        question: found.question,
-        answer: found.answer,
-        answererId: found.answeredBy,
-        answererName: found.name,
-        now: this.now(),
-      });
-    } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.recordDecision",
-        itemId ?? questionId,
-        undefined,
-        this.options.journal,
-      );
-    }
-  }
-
-  private recordWorkSummary(item: WorkItemRecord, title: string, description: string) {
-    return recordPullRequestSummary({
-      service: this.options.projectContext,
-      pawsRoot: this.options.pawsRoot,
-      workItemId: item.id,
-      scope: () => this.projectScope(item),
-      pullUrl: async () =>
-        (await this.store.run((q) => getItemPullRequestSteps(q, item.id)))?.pullUrl ?? null,
-      title,
-      description,
-      now: this.now(),
-      ...(this.options.journal ? { journal: this.options.journal } : {}),
-    });
   }
 
   private async projectOverviewFor(item: WorkItemRecord): Promise<string> {

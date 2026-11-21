@@ -39,7 +39,6 @@ import {
   type AgentLaunch,
 } from "../../src/loop";
 import type { FakeResult, FakeScript, FakeStep } from "../../src/acp/testing/script";
-import type { ProjectSessionContext } from "../../src/project-context";
 import { workspaceAdmission } from "../fake-workspace";
 
 export type LaunchInput = Parameters<AgentLaunch>[0];
@@ -463,7 +462,6 @@ export type Proof = {
   closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   member?: { login: string; token: string; refused?: number };
   runnerSignIn?: { runner: string; signedIn: boolean };
-  projectContext?: (store: Db) => ProjectSessionContext;
   secondIssue?: boolean;
   linearProject?: { id: string; name: string };
   delegatePayload?: Record<string, unknown>;
@@ -603,7 +601,6 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       githubMirrors: proof.forbidRepos ? false : undefined,
       ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
       ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),
-      ...(proof.projectContext ? { projectContext: proof.projectContext(db) } : {}),
     });
     return { jobs, outbox, orchestrator };
   };

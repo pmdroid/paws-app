@@ -107,7 +107,6 @@ import {
   loadRunnerControl,
   pawsPaths,
   readMergeSettings,
-  readProjectMemorySettings,
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   describeRetiredSections,
@@ -264,14 +263,7 @@ import {
   POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
-import {
-  createLinearContextAccess,
-  createProjectContextHttp,
-  CONTEXT_DREAM_JOB,
-  CONTEXT_DREAM_LIMITS,
-  createProjectSessionContext,
-  dreamProjectContexts,
-} from "./project-context";
+import { createLinearContextAccess, createProjectContextHttp } from "./project-context";
 import {
   acceptGitHubDelivery,
   type PullCommentFilter,
@@ -1919,15 +1911,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         closeoutPolicyRoot: ({ owner, repo }) =>
           closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
         tracker,
-        projectContext:
-          members && linear?.projectContext
-            ? createProjectSessionContext({
-                db: store,
-                access: createLinearContextAccess(members),
-                reads: linear.projectContext,
-                memoryIndex: true,
-              })
-            : null,
         linearTaskModes: true,
         appLogin: (repository) => commentFilter.appLogin(repository),
         remoteExecution,
@@ -2377,24 +2360,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
-      if (members && linear?.projectContext) {
-        const dreamAccess = createLinearContextAccess(members);
-        created.jobs.register(CONTEXT_DREAM_JOB, async (_job, context) => {
-          await dreamProjectContexts(store, dreamAccess, {
-            enabled: readProjectMemorySettings(loadConfigFile(paths.configFile)).dream,
-            helper: readOnlyHelper,
-            now: Date.now(),
-            signal: AbortSignal.any([context.signal, abort.signal]),
-            journal,
-          });
-        });
-        await enqueueJobOnce(store, {
-          queue: CONTEXT_DREAM_JOB,
-          jobKey: CONTEXT_DREAM_JOB,
-          recurringEveryMs: CONTEXT_DREAM_LIMITS.checkEveryMs,
-          now: Date.now(),
-        });
-      }
       await registerScheduler(created.jobs, () => attached.reconcileExecution());
       await enqueueRunnerSetupChecks(store, Date.now());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
