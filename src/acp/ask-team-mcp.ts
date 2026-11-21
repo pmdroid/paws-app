@@ -10,11 +10,15 @@ import { connect } from "node:net";
 const TOOL = {
   name: "ask_team",
   description:
-    "Ask the engineering team a question. Posting it ends your turn, and their answer arrives as your next message, so state the question completely. Use this when a product or scope decision is needed.",
+    "Ask for a product or scope decision you cannot resolve from the issue, code, or available tools. Include enough context to answer without reading this session. Posting ends your turn; the answer arrives as your next message.",
   inputSchema: {
     type: "object",
     properties: {
-      question: { type: "string", description: "Question for the team." },
+      question: {
+        type: "string",
+        description:
+          "The decision needed, relevant facts, and your recommendation with its main tradeoff. Make the question understandable on its own.",
+      },
       options: {
         type: "array",
         maxItems: 3,
@@ -33,9 +37,13 @@ const TOOL = {
           ],
         },
         description:
-          'Optional answer buttons: at most 3, each label at most 24 characters, like "Retry" or "Open the PR". Explain each option in context.',
+          "Optional answer buttons: at most 3 labels, each at most 24 characters. Explain what each choice means in the question.",
       },
-      context: { type: "string", description: "Extra context the team should see." },
+      context: {
+        type: "string",
+        description:
+          "Optional supporting details or links. Keep facts needed to understand the decision in question.",
+      },
     },
     required: ["question"],
     additionalProperties: false,
@@ -45,7 +53,7 @@ const TOOL = {
 const PLAN_TOOL = {
   name: "update_plan",
   description:
-    "Replace the working checklist for this session. Send every step and its current status.",
+    "Replace this session's working checklist. Include every step you want to retain, with its current status; omitted steps disappear.",
   inputSchema: {
     type: "object",
     properties: {
@@ -53,13 +61,20 @@ const PLAN_TOOL = {
         type: "array",
         minItems: 1,
         maxItems: 16,
+        description: "The complete updated checklist, in execution order.",
         items: {
           type: "object",
           properties: {
-            content: { type: "string", minLength: 1, maxLength: 200 },
+            content: {
+              type: "string",
+              minLength: 1,
+              maxLength: 200,
+              description: "A concrete action or outcome whose completion can be checked.",
+            },
             status: {
               type: "string",
               enum: ["pending", "inProgress", "completed", "canceled"],
+              description: "The step's current status.",
             },
           },
           required: ["content", "status"],
@@ -143,11 +158,17 @@ const PULL_REQUEST_TOOL = {
 const POST_UPDATE_TOOL = {
   name: "post_update",
   description:
-    "Post a short progress update to the Linear session. At most one update per minute; a call within the window posts nothing and says when the next one is allowed.",
+    "Post progress to the Linear session when a plan step completes or changes, you find something consequential, or you are blocked. Use reply for answers to a person. At most one update per minute; an early call posts nothing and returns the next allowed time.",
   inputSchema: {
     type: "object",
     properties: {
-      text: { type: "string", minLength: 1, maxLength: 500, description: "The update." },
+      text: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description:
+          "At most 500 characters: what changed or what is blocked, why it matters, and the next step.",
+      },
     },
     required: ["text"],
     additionalProperties: false,
@@ -157,7 +178,7 @@ const POST_UPDATE_TOOL = {
 const REPLY_TOOL = {
   name: "reply",
   description:
-    "Answer a person in the Linear conversation, such as a question or a follow-up they sent. Posts your text as a reply where they wrote. Use it for answers, not for progress; post_update is for progress.",
+    "Answer a person where they wrote in the Linear conversation. Use post_update for progress. At most 5 replies per turn; combine related points into one reply.",
   inputSchema: {
     type: "object",
     properties: {
@@ -165,7 +186,7 @@ const REPLY_TOOL = {
         type: "string",
         minLength: 1,
         maxLength: 4000,
-        description: "The reply, in Markdown.",
+        description: "The answer in Markdown, including the context needed to understand it.",
       },
     },
     required: ["text"],
@@ -195,7 +216,7 @@ const START_WORK_TOOL = {
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
-    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. The running array lists executing checks and their start times. Poll get_closeout while a check is running. This tool does not run checks. A failed command check holds back the others: run it first, and detail says which check to fix before the rest run. Once every command check passed, it runs each listed rule's probe once per change and returns its result in rules: a nonzero exitCode means the change breaks that rule. Rule results do not change pending or blocked. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
+    "Refresh Closeout after edits and before finishing; edits can invalidate passed checks. Run command checks one at a time in pending order. A failed command blocks other commands; detail identifies what to fix. blocked lists exhausted retries; null remaining_attempts means unlimited retries. While running is nonempty, poll this tool for completion. Results include check hints, matched paths, statuses, failed attempts remaining, running start times, and different_model requirements. Reviews are listed separately, never in pending. This tool does not execute checks. After all command checks pass, it executes each listed rule's probe once per change; a nonzero rules exitCode reports a rule violation without changing pending or blocked.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -206,14 +227,18 @@ const GET_CLOSEOUT_TOOL = {
 const RUN_CLOSEOUT_TOOL = {
   name: "run_closeout",
   description:
-    'Run a pending closeout check by id, including matching setup steps, and return its result. Waits at most 240 seconds, then returns { status: "running", check, started_at } while the check continues. Duplicate calls return the same running status. Poll get_closeout until it finishes. Review checks are not run by this tool. Call get_closeout again after edits because passed checks can go stale.',
+    "Execute one pending command check with its matching setup steps. Call get_closeout first and run the first pending id; run checks one at a time, not as a batch. While a check is failing, a request for another check answers `not run: fix <id> first` without running anything: fix the failure, then run the failed check again. Each failed execution uses one of that check's attempts. Waits up to 240 seconds, then returns running with check and started_at while execution continues; poll get_closeout until it finishes. Duplicate calls during execution return the running status. Refresh get_closeout after edits. Reviews run independently and cannot be started here.",
   inputSchema: {
     type: "object",
     properties: {
-      id: { type: "string", description: "Closeout check id from get_closeout." },
+      id: {
+        type: "string",
+        description: "The first pending command-check id from the latest get_closeout result.",
+      },
       model: {
         type: "string",
-        description: "Unused for command checks. Reviews run in an independent session.",
+        description:
+          "Unused. Omit it; command checks do not select a model, and reviews run independently.",
       },
     },
     required: ["id"],
