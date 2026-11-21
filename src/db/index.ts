@@ -190,3 +190,4 @@ export * from "./agent-auth";
 export * from "./account-provider-usage";
 export * from "./notebook";
 export * from "./item-filed-issues";
+export * from "./linear-project-team";

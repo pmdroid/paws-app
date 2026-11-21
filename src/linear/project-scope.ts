@@ -7,14 +7,31 @@ export type ProjectDocument = { title: string; content: string };
 /** A Linear project's description and documents. Linear holds them; Paws only reads them. */
 export type ProjectOverview = { name: string; content: string; documents?: ProjectDocument[] };
 
+export type LinearProject = { id: string; teamIds: string[] };
+
+export type ProjectOverviewRead = {
+  overview: ProjectOverview | null;
+  project: LinearProject | null;
+};
+
 export const PROJECT_OVERVIEW_MAX = 12_000;
 const PROJECT_OVERVIEW_DOCUMENT_MIN = 200;
 const PROJECT_OVERVIEW_OMITTED_RESERVE = 64;
 
 /** Every query that feeds `projectOverviewFrom` selects these same project fields. */
 const OVERVIEW_QUERY = `query PawsIssueProjectOverview($id: String!) {
-  issue(id: $id) { project { name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } } }
+  issue(id: $id) { project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } teams(first: 50) { nodes { id } } } }
 }`;
+
+export function linearProjectFrom(project: unknown): LinearProject | null {
+  if (!isRecord(project)) return null;
+  const id = readString(project, "id");
+  if (!id) return null;
+  const connection = project["teams"];
+  const nodes =
+    isRecord(connection) && Array.isArray(connection["nodes"]) ? connection["nodes"] : [];
+  return { id, teamIds: nodes.filter(isRecord).flatMap((node) => readString(node, "id") ?? []) };
+}
 
 /** Null when the project has neither a description nor a document with text. */
 export function projectOverviewFrom(project: unknown): ProjectOverview | null {
@@ -76,11 +93,12 @@ export function createLinearProjectScopeReads(client: LinearClient) {
     async projectOverview(
       issueId: string,
       options?: TrackerRequestOptions,
-    ): Promise<ProjectOverview | null> {
+    ): Promise<ProjectOverviewRead> {
       options?.signal?.throwIfAborted();
       const data = await client.query(OVERVIEW_QUERY, { id: issueId }, options);
       const issue = isRecord(data) ? data["issue"] : null;
-      return projectOverviewFrom(isRecord(issue) ? issue["project"] : null);
+      const project = isRecord(issue) ? issue["project"] : null;
+      return { overview: projectOverviewFrom(project), project: linearProjectFrom(project) };
     },
   };
 }

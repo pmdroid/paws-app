@@ -1,8 +1,8 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { takeIssueStart, type IssueStartReads } from "./issue-start";
-import { projectOverviewFrom } from "./project-scope";
-import type { ProjectOverview } from "./project-scope";
+import { linearProjectFrom, projectOverviewFrom } from "./project-scope";
+import type { LinearProject, ProjectOverview } from "./project-scope";
 import { isRecord, readString } from "./read";
 
 /** What Merging settings match on: the issue's Linear project and label names. */
@@ -10,11 +10,12 @@ export type LinearMergeContext = {
   projectId: string | null;
   labels: string[];
   overview?: ProjectOverview | null;
+  project?: LinearProject | null;
 };
 
 const ISSUE_QUERY = `query PawsMergeContext($id: String!) {
   issue(id: $id) {
-    project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } }
+    project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } teams(first: 50) { nodes { id } } }
     labels(first: 100) { nodes { name } }
   }
 }`;
@@ -43,6 +44,7 @@ export function createLinearMergeReads(client: LinearClient, starts?: IssueStart
         projectId: project ? readString(project, "id") : null,
         labels: nodes(issue["labels"]).flatMap((label) => readString(label, "name") ?? []),
         overview: projectOverviewFrom(project),
+        project: linearProjectFrom(project),
       };
     },
   };
