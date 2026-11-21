@@ -43,7 +43,7 @@ sudoedit /etc/paws/control-plane.env
 sudo systemctl restart paws.service
 ```
 
-The RPM installs the same files and service as the `.deb`, and upgrades the same way: `sudo dnf upgrade ./paws-control-plane-<version>-1.x86_64.rpm` keeps your environment file and backs up local PGlite data first. Removing the package keeps your edited environment file as `/etc/paws/control-plane.env.rpmsave`.
+To get updates through `dnf upgrade` instead, install from the [Paws dnf repository](#install-from-the-paws-package-repositories). The RPM installs the same files and service as the `.deb`, and upgrades the same way: `sudo dnf upgrade ./paws-control-plane-<version>-1.x86_64.rpm` keeps your environment file and backs up local PGlite data first. Removing the package keeps your edited environment file as `/etc/paws/control-plane.env.rpmsave`.
 
 Each release package has a build provenance attestation. Check one with `gh attestation verify <package> --repo pmdroid/paws-app`.
 
@@ -82,7 +82,7 @@ systemctl --user restart paws.service
 
 The dashboard shows issues, runs, questions, evidence, runners and settings. Use it to answer questions, manage access and follow pull requests through verification and merging.
 
-## Install from the Paws apt repository
+## Install from the Paws package repositories
 
 The one-line installer adds the signed repository and installs the control plane; add `--runner` to install a runner instead:
 
@@ -91,7 +91,9 @@ curl -fsSL https://get.paws.boo | sudo sh
 curl -fsSL https://get.paws.boo | sudo sh -s -- --runner
 ```
 
-Or set up the repository by hand:
+On Debian and Ubuntu it uses apt. On Fedora, RHEL, Rocky Linux and AlmaLinux (hosts with `dnf` and without `apt-get`) it writes `/etc/yum.repos.d/paws.repo` and runs `dnf install paws-control-plane`, or `paws-control-plane-<version>` when you pass a version. There is no runner RPM, so `--runner` stops with an error on those hosts: install runners on Debian or Ubuntu.
+
+Or set up the apt repository by hand:
 
 ```sh
 curl -fsSL https://get.paws.boo/apt/paws.gpg | sudo tee /usr/share/keyrings/paws.gpg >/dev/null
@@ -101,8 +103,25 @@ sudo apt-get update && sudo apt-get install paws-runner
 
 The repository serves `amd64` and `arm64` packages in `stable main`, retaining the newest 10 versions per package. Pin an available version with `apt-get install paws-runner=0.1.83`. Runner installation procedures are unchanged.
 
-For publishing, Pascal creates the GitHub `release` environment with required reviewer Pascal and deployment tags `v*`. Store these only as environment secrets: `PAWS_APT_R2_ACCOUNT_ID`, `PAWS_APT_R2_ACCESS_KEY_ID`, `PAWS_APT_R2_SECRET_ACCESS_KEY`, `PAWS_APT_R2_BUCKET`, `PAWS_APT_SIGNING_KEY`, and `PAWS_APT_SIGNING_PASSPHRASE`. Scope the R2 token to the apt bucket. Without all six secrets, publication prints a skip message and succeeds. With secrets configured, publication requires runner packages for both architectures and fails before writing R2 if either is missing.
+To set up the dnf repository by hand, create `/etc/yum.repos.d/paws.repo`:
+
+```ini
+[paws]
+name=Paws
+baseurl=https://get.paws.boo/apt/rpm
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://get.paws.boo/apt/rpm/paws.asc
+metadata_expire=6h
+```
+
+Then run `sudo dnf install paws-control-plane`. dnf asks to import the Paws key from `gpgkey` the first time. The repository serves `x86_64` and `aarch64` packages, lists the newest 10 versions, and `sudo dnf upgrade paws-control-plane` picks up each new release. dnf checks both the signature on the repository metadata (`repomd.xml.asc`) and the signature on each package. The packages in the repository are signed with `rpmsign` when they are published, so their checksums differ from the unsigned `.rpm` release assets and their `.rpm.sha256` files; the attestations cover the release assets.
+
+For publishing, Pascal creates the GitHub `release` environment with required reviewer Pascal and deployment tags `v*`. Store these only as environment secrets: `PAWS_APT_R2_ACCOUNT_ID`, `PAWS_APT_R2_ACCESS_KEY_ID`, `PAWS_APT_R2_SECRET_ACCESS_KEY`, `PAWS_APT_R2_BUCKET`, `PAWS_APT_SIGNING_KEY`, and `PAWS_APT_SIGNING_PASSPHRASE`. Scope the R2 token to the apt bucket; the dnf repository lives in the same bucket under `rpm/`, signed with the same key. Without all six secrets, publication prints a skip message and succeeds. With secrets configured, apt publication requires runner packages for both architectures and dnf publication requires control-plane RPMs for both, and each fails before writing R2 if one is missing.
 
 Keep the OpenPGP primary key offline. Create a signing subkey with a one-year expiry using `gpg --edit-key <primary-fingerprint>`, then `addkey` and the signing-only option. Export only the secret subkey with `gpg --armor --export-secret-subkeys <signing-subkey-fingerprint>!` for `PAWS_APT_SIGNING_KEY`. Upload the public key exports once as `paws.gpg` from `gpg --export <primary-fingerprint>` and `paws.asc` from `gpg --armor --export <primary-fingerprint>` at the bucket root. Serve the bucket read-only at `https://get.paws.boo/apt`, with the requested object versioning configured before publishing.
 
 Publication uploads packages, immutable by-hash indexes, canonical indexes, then the signed `InRelease` object in separate phases. Only `InRelease` is published; there is no `Release` or `Release.gpg` fallback. After success, cleanup keeps three by-hash copies per index. Indexes list the newest ten versions in Debian version order; older package objects remain available for clients with cached indexes. Metadata expires after 90 days; every release renews its validity and signatures. For longer gaps between releases, manually run the `runner release` workflow, select the latest `v*` tag as the run ref, and set `resign_only=true`. After Pascal approves the `release` environment deployment, this verifies the existing `InRelease` and replaces only that signed object, leaving packages and package indexes unchanged. Dispatches on branches or with `resign_only=false` do not publish. There is no scheduled renewal.
+
+dnf publication runs on each release, after the same tag gate and `release` environment approval. It signs each new RPM, rebuilds the metadata from the retained packages with `createrepo_c`, then uploads packages, metadata files, `rpm/paws.asc` (`gpg --armor --export` of the imported key), `repomd.xml.asc` and finally `repomd.xml`. It never deletes objects, so clients holding older metadata can still download what it lists, and it refuses to replace a published package with a different build of the same version. dnf metadata does not expire, so `resign_only` dispatches leave it alone; dry runs publish neither repository.
