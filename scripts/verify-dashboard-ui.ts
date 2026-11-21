@@ -426,7 +426,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(14);
+    await expect(submenu).toHaveCount(13);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -475,13 +475,16 @@ try {
         ...{ undoable: index === 0, ...change },
       })),
     };
-    await admin.route("**/api/notebooks**", (route) => {
+    const member = await open(width);
+    await member.route("**/api/notebooks**", (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/notebooks")
         return route.fulfill({
           json: {
             notebooks: [
+              { kind: "user", id: "u1", name: "Your notebook", size: 0, limit: 4_000 },
               { kind: "project", id: "p1", name: "Launch", size: 0, limit: 4_000 },
+              { kind: "channel", id: "C1", name: "#launch", size: 310, limit: 4_000 },
               { kind: "repository", id: "acme/app", name: "acme/app", size: 11_890, limit: 12_000 },
             ],
           },
@@ -498,24 +501,36 @@ try {
         });
       return route.fulfill({ json: notebook });
     });
-    await visit(admin, width, "notebook-list", "/dashboard/workspace/notebook", "Notebook");
-    await admin.getByRole("button", { name: "acme/app" }).click();
-    await expect(admin.locator("#content")).toContainText("11,890 of 12,000 characters");
-    await admin.getByRole("button", { name: "Remove" }).first().click();
-    await expect(admin.locator("#content")).toContainText("Remove this entry?");
-    await admin.getByLabel("New entry").fill("Tailscale serves the live preview.");
-    await admin.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(admin.getByRole("alert")).toHaveText(
+    await follow(member, "/dashboard/workspace/notebook", "/dashboard/notebooks", "Your notebook");
+    if (width > 390) await expect(member.getByRole("link", { name: "Notebooks" })).toBeVisible();
+    await visit(member, width, "notebook-list", "/dashboard/notebooks", "Notebooks");
+    await expect(member.locator("#notebooks-page h2")).toHaveText([
+      "Your notebook",
+      "Projects",
+      "Slack channels",
+      "Repositories",
+    ]);
+    await expect(member.locator("#notebooks-page")).toContainText(
+      "Paws writes here when you talk to it in a direct message. Only you can see it.",
+    );
+    await member.getByRole("button", { name: "acme/app" }).click();
+    await expect(member.locator("#content")).toContainText("11,890 of 12,000 characters");
+    await member.getByRole("button", { name: "Remove" }).first().click();
+    await expect(member.locator("#content")).toContainText("Remove this entry?");
+    await member.getByLabel("New entry").fill("Tailscale serves the live preview.");
+    await member.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(member.getByRole("alert")).toHaveText(
       "This notebook is full. Remove or shorten an entry first.",
     );
     if (width <= 390)
-      for (const control of await admin.locator("#notebook-settings button, textarea").all())
+      for (const control of await member.locator("#notebooks-page button, textarea").all())
         expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+    expect(await member.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await admin.screenshot({ path: join(out, `notebook-${width}.png`), fullPage: true });
-    await admin.unroute("**/api/notebooks**");
+    await member.screenshot({ path: join(out, `notebook-${width}.png`), fullPage: true });
+    await member.unroute("**/api/notebooks**");
+    await member.close();
     await page.route("**/api/runners", (route) =>
       route.fulfill({
         json: {
