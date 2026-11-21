@@ -7,7 +7,9 @@ import {
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
   readSessionDone,
+  replaceLinearProjectTeamsSteps,
   saveCandidateRiskSteps,
+  workspaceForOrganizationSteps,
 } from "../db";
 import { queueWaitingFor } from "./queue-waiting-for";
 import {
@@ -507,6 +509,7 @@ import type {
   RepositoryHints,
   RepositorySuggestion,
   LinearMergeContext,
+  LinearProject,
   IntakeDecision,
   LinearComment,
 } from "../linear";
@@ -7168,7 +7171,7 @@ export class Orchestrator {
     if (context?.overview !== undefined) {
       const overview = projectOverviewText(context.overview);
       await this.store.run((q) =>
-        keepTaskLinearReadSteps(q, item.id, "project_overview", overview, this.now()),
+        this.keepProjectReadSteps(q, item, overview, this.now(), context.project),
       );
     }
     const settings: TaskMergeSettings = {
@@ -10204,14 +10207,14 @@ export class Orchestrator {
     }
     if (!tracker?.projectOverview) return;
     try {
-      const overview = await tracker.projectOverview(item.linearIssueId, { signal });
+      const read = await tracker.projectOverview(item.linearIssueId, { signal });
       await this.store.run((q) =>
-        keepTaskLinearReadSteps(
+        this.keepProjectReadSteps(
           q,
-          itemId,
-          "project_overview",
-          projectOverviewText(overview),
+          item,
+          projectOverviewText(read.overview),
           this.now(),
+          read.project,
         ),
       );
     } catch (caughtError16) {
@@ -10274,8 +10277,11 @@ export class Orchestrator {
           : LINEAR_OVERVIEW_UNAVAILABLE
         : "";
     let text: string | null;
+    let project: LinearProject | null = null;
     try {
-      text = projectOverviewText(await tracker.projectOverview(item.linearIssueId));
+      const read = await tracker.projectOverview(item.linearIssueId);
+      project = read.project;
+      text = projectOverviewText(read.overview);
       if (!text && stored && stored.value !== "") text = null;
     } catch (error) {
       journalCaught(
@@ -10288,9 +10294,31 @@ export class Orchestrator {
       text = null;
     }
     await this.store.run((q) =>
-      keepTaskLinearReadSteps(q, item.id, "project_overview", text, text === null ? 0 : this.now()),
+      this.keepProjectReadSteps(q, item, text, text === null ? 0 : this.now(), project),
     );
     return text ?? LINEAR_OVERVIEW_UNAVAILABLE;
+  }
+
+  private *keepProjectReadSteps(
+    q: Q,
+    item: WorkItemRecord,
+    overview: string | null,
+    readAt: number,
+    project: LinearProject | null | undefined,
+  ): Steps<void> {
+    yield* keepTaskLinearReadSteps(q, item.id, "project_overview", overview, readAt);
+    if (!project || !item.sessionKey) return;
+    const session = yield* getLinearSessionSteps(q, item.sessionKey);
+    const workspace = session?.organizationId
+      ? yield* workspaceForOrganizationSteps(q, session.organizationId)
+      : null;
+    if (!workspace) return;
+    yield* replaceLinearProjectTeamsSteps(q, {
+      workspaceId: workspace.id,
+      projectId: project.id,
+      teamIds: project.teamIds,
+      now: this.now(),
+    });
   }
 
   private *workContextSteps(

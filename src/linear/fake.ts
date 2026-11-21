@@ -6,7 +6,7 @@ import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
 import type { FiledSubIssue } from "../core";
 import { projectOverviewText } from "./project-scope";
-import type { ProjectOverview } from "./project-scope";
+import type { LinearProject, ProjectOverview, ProjectOverviewRead } from "./project-scope";
 import { subIssueId, validateSubIssueRequest, type SubIssueRequest } from "./sub-issues";
 import {
   findingIssueId,
@@ -59,10 +59,8 @@ export type FakeTracker = LinearSessionAdapter &
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
     repositoryHints: Map<string, RepositoryHints>;
     projectOverviews: Map<string, ProjectOverview>;
-    projectOverview(
-      issueId: string,
-      options?: TrackerRequestOptions,
-    ): Promise<ProjectOverview | null>;
+    projects: Map<string, LinearProject>;
+    projectOverview(issueId: string, options?: TrackerRequestOptions): Promise<ProjectOverviewRead>;
     repositoryLabels: { issueId: string; repository: string }[];
     /** Every createSubIssues call, including retries, in order. */
     subIssueRequests: SubIssueRequest[];
@@ -148,6 +146,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const repositorySuggestions = new Map<string, readonly RepositorySuggestion[]>();
   const repositoryHints = new Map<string, RepositoryHints>();
   const projectOverviews = new Map<string, ProjectOverview>();
+  const projects = new Map<string, LinearProject>();
   const repositoryLabels: { issueId: string; repository: string }[] = [];
   const mergeContexts = new Map<string, LinearMergeContext>();
   const subIssueRequests: SubIssueRequest[] = [];
@@ -254,13 +253,18 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
         projectId: null,
         labels: [],
         overview: projectOverviews.get(issueId) ?? null,
+        project: projects.get(issueId) ?? null,
         ...mergeContexts.get(issueId),
       });
     },
     projectOverviews,
+    projects,
     async projectOverview(issueId, options) {
       options?.signal?.throwIfAborted();
-      return projectOverviews.get(issueId) ?? null;
+      return structuredClone({
+        overview: projectOverviews.get(issueId) ?? null,
+        project: projects.get(issueId) ?? null,
+      });
     },
     async addRepositoryLabel(input, options) {
       options?.signal?.throwIfAborted();

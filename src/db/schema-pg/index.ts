@@ -18,3 +18,4 @@ export * from "./project-context";
 export * from "./slack";
 export * from "./notebook";
 export * from "./item-filed-issues";
+export * from "./linear-project-team";

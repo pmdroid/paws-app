@@ -13,7 +13,7 @@ import type {
   SessionOnIssue,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
-import type { ProjectOverview } from "./project-scope";
+import type { ProjectOverviewRead } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeContext } from "./merge-context";
 import type { SubIssueRequest } from "./sub-issues";
@@ -53,10 +53,7 @@ export interface TrackerAdapter extends Partial<ReturnType<typeof createLinearAg
   ): Promise<readonly LinearActivitySnapshot[]>;
   issueRepositorySuggestions?: LinearRepositoryAdapter["issueRepositorySuggestions"];
   issueRepositoryHints?: LinearRepositoryAdapter["issueRepositoryHints"];
-  projectOverview?(
-    issueId: string,
-    options?: TrackerRequestOptions,
-  ): Promise<ProjectOverview | null>;
+  projectOverview?(issueId: string, options?: TrackerRequestOptions): Promise<ProjectOverviewRead>;
   addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
   /**
    * File approved drafts under the parent with `blocks` relations and the repository label.

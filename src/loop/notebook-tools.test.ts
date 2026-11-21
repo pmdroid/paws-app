@@ -10,6 +10,7 @@ import {
   bindWorkItemRepository,
   ensureLinearSessionSteps,
   getWorkItem,
+  linearProjectTeamsSteps,
   putWorkspaceUserSteps,
   syncWorkspaceMemberSteps,
   type Db,
@@ -185,6 +186,7 @@ async function orchestratorFor(
   db: Db,
   tracker = createFakeTracker(),
   clock = new FakeClock(1_000),
+  journal: string[] = [],
 ) {
   const orchestrator = new Orchestrator({
     store: db,
@@ -194,9 +196,11 @@ async function orchestratorFor(
     pawsRoot: mkdtempSync(join(tmpdir(), "paws-notebook-tools-")),
     tracker,
     repositories: [repository],
+    journal: (line) => journal.push(line),
   });
   return orchestrator as unknown as {
     shutdown(): Promise<void>;
+    loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void>;
     workContext(item: WorkItemRecord, work: boolean): Promise<string>;
     trustedRunInputs(
       item: WorkItemRecord,
@@ -307,7 +311,7 @@ test("a stored overview older than ten minutes is read again, and a failed read 
     const failed = await orchestrator.workContext(item, false);
     expect(failed).toContain("Project context from Linear is not available right now.");
     expect(failed).not.toContain("plan.");
-    tracker.projectOverview = async () => null;
+    tracker.projectOverview = async () => ({ overview: null, project: null });
     clock.advance(11 * 60_000);
     const removed = await orchestrator.workContext(item, false);
     expect(removed).toContain("Project context from Linear is not available right now.");
@@ -331,6 +335,98 @@ test("an entry another item adds between two turns is in the second turn's brief
     expect(await orchestrator.workContext(item, false)).toContain(
       `${NOTE}\n\nProject notebook:\n- Exports use cents.`,
     );
+  } finally {
+    await orchestrator.shutdown();
+  }
+});
+
+async function secondItem(db: Db) {
+  await db.run(function* (q) {
+    yield* insertWorkItemSteps(q, "item-2");
+    yield* q.exec(
+      q.orm
+        .update(q.t.workItem)
+        .set({ sessionKey: "session", linearProjectId: "project-1" })
+        .where(eq(q.t.workItem.id, "item-2")),
+    );
+  });
+}
+
+const storedTeams = (db: Db) => db.run((q) => linearProjectTeamsSteps(q, "ws", "project-1"));
+
+test("starting an item replaces its Linear project's stored teams with the ones Linear returns", async () => {
+  const { db, item } = await setup({ project: "project-1" });
+  await secondItem(db);
+  const tracker = createFakeTracker();
+  tracker.projectOverviews.set("issue-item", { name: "Shelves", content: "Count every shelf." });
+  tracker.projects.set("issue-item", { id: "project-1", teamIds: ["team-b", "team-a"] });
+  tracker.projects.set("issue-item-2", { id: "project-1", teamIds: ["team-b"] });
+  const orchestrator = await orchestratorFor(db, tracker);
+  try {
+    await orchestrator.loadProjectOverview("item", new AbortController().signal);
+    expect(await storedTeams(db)).toEqual(["team-a", "team-b"]);
+    expect(await orchestrator.workContext(item, false)).toContain(
+      "Project overview: Shelves\n\nCount every shelf.",
+    );
+    await orchestrator.loadProjectOverview("item-2", new AbortController().signal);
+    expect(await storedTeams(db)).toEqual(["team-b"]);
+  } finally {
+    await orchestrator.shutdown();
+  }
+});
+
+test("a failed project read keeps the stored teams and journals the error", async () => {
+  const { db } = await setup({ project: "project-1" });
+  await secondItem(db);
+  const tracker = createFakeTracker();
+  tracker.projects.set("issue-item", { id: "project-1", teamIds: ["team-a"] });
+  const journal: string[] = [];
+  const orchestrator = await orchestratorFor(db, tracker, new FakeClock(1_000), journal);
+  try {
+    await orchestrator.loadProjectOverview("item", new AbortController().signal);
+    tracker.issueMergeContext = async () => {
+      throw new Error("Linear is down");
+    };
+    await orchestrator.loadProjectOverview("item-2", new AbortController().signal);
+    expect(await storedTeams(db)).toEqual(["team-a"]);
+    expect(journal.join("\n")).toContain("orchestrator.mergeSettingsFor.issueMergeContext");
+  } finally {
+    await orchestrator.shutdown();
+  }
+});
+
+test("a project overview read without merge context stores the teams, and a failed one keeps them", async () => {
+  const { db } = await setup({ project: "project-1" });
+  await secondItem(db);
+  const tracker = createFakeTracker();
+  const untracked = tracker as { issueMergeContext?: unknown };
+  delete untracked.issueMergeContext;
+  tracker.projects.set("issue-item", { id: "project-1", teamIds: ["team-a", "team-b"] });
+  const journal: string[] = [];
+  const orchestrator = await orchestratorFor(db, tracker, new FakeClock(1_000), journal);
+  try {
+    await orchestrator.loadProjectOverview("item", new AbortController().signal);
+    expect(await storedTeams(db)).toEqual(["team-a", "team-b"]);
+    tracker.projectOverview = async () => {
+      throw new Error("Linear is down");
+    };
+    await orchestrator.loadProjectOverview("item-2", new AbortController().signal);
+    expect(await storedTeams(db)).toEqual(["team-a", "team-b"]);
+    expect(journal.join("\n")).toContain("orchestrator.loadProjectOverview.projectOverview");
+  } finally {
+    await orchestrator.shutdown();
+  }
+});
+
+test("an issue without a project stores no teams", async () => {
+  const { db, item } = await setup();
+  const tracker = createFakeTracker();
+  const orchestrator = await orchestratorFor(db, tracker);
+  try {
+    const before = await orchestrator.workContext(item, false);
+    await orchestrator.loadProjectOverview("item", new AbortController().signal);
+    expect(await db.run((q) => q.all(q.orm.select().from(q.t.linearProjectTeam)))).toEqual([]);
+    expect(await orchestrator.workContext(item, false)).toBe(before);
   } finally {
     await orchestrator.shutdown();
   }

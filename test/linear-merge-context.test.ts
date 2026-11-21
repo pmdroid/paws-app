@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { createLinearMergeReads, projectOverviewText } from "../src/linear";
+import {
+  createLinearMergeReads,
+  createLinearProjectScopeReads,
+  projectOverviewText,
+} from "../src/linear";
 
 test("one issue read returns the merge labels and the project overview", async () => {
   const queries: string[] = [];
@@ -8,7 +12,12 @@ test("one issue read returns the merge labels and the project overview", async (
       queries.push(query);
       return {
         issue: {
-          project: { id: "project", name: "Exports", content: "Rows leave as files." },
+          project: {
+            id: "project",
+            name: "Exports",
+            content: "Rows leave as files.",
+            teams: { nodes: [{ id: "team-a" }, { id: "team-b" }] },
+          },
           labels: { nodes: [{ name: "frontend" }] },
         },
       };
@@ -18,8 +27,10 @@ test("one issue read returns the merge labels and the project overview", async (
     projectId: "project",
     labels: ["frontend"],
     overview: { name: "Exports", content: "Rows leave as files." },
+    project: { id: "project", teamIds: ["team-a", "team-b"] },
   });
   expect(queries).toHaveLength(1);
+  expect(queries[0]).toContain("teams(first: 50) { nodes { id } }");
 });
 
 test("an issue without a project has no overview", async () => {
@@ -32,6 +43,7 @@ test("an issue without a project has no overview", async () => {
     projectId: null,
     labels: [],
     overview: null,
+    project: null,
   });
 });
 
@@ -104,4 +116,21 @@ test("a long description stays within the overview cap and names the documents l
   expect(text.length).toBeLessThanOrEqual(12_000);
   expect(text).toContain("The rest is in Linear.]");
   expect(text).toEndWith("[2 more project documents are in Linear.]");
+});
+
+test("the project overview read returns the project's id and teams even without text", async () => {
+  const projects: unknown[] = [
+    { id: "project", name: "Exports", content: "", teams: { nodes: [{ id: "team-a" }] } },
+    null,
+  ];
+  const reads = createLinearProjectScopeReads({
+    async query() {
+      return { issue: { project: projects.shift() } };
+    },
+  });
+  expect(await reads.projectOverview("issue")).toEqual({
+    overview: null,
+    project: { id: "project", teamIds: ["team-a"] },
+  });
+  expect(await reads.projectOverview("issue")).toEqual({ overview: null, project: null });
 });

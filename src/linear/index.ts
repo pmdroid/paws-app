@@ -175,7 +175,12 @@ export {
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
 export { createSessionStarter } from "./start-session";
 export { createLinearProjectScopeReads, projectOverviewText } from "./project-scope";
-export type { ProjectDocument, ProjectOverview } from "./project-scope";
+export type {
+  LinearProject,
+  ProjectDocument,
+  ProjectOverview,
+  ProjectOverviewRead,
+} from "./project-scope";
 export type { LinearSessionTarget, StartedLinearSession } from "./start-session";
 
 export { parseLinearSessionContext, renderLinearSessionContext } from "./context";
