@@ -155,6 +155,13 @@
       "when": 1795294102121,
       "tag": "0021_linear_project_team",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795296132532,
+      "tag": "0022_widen_notebook_scope_kind",
+      "breakpoints": true
     }
   ]
 }

@@ -13,7 +13,13 @@ import {
 } from "../db";
 import { sanitizedContextText } from "../project-context";
 
-export const NOTEBOOK_LIMITS = { repository: 12_000, project: 4_000, entry: 1_000 } as const;
+export const NOTEBOOK_LIMITS = {
+  repository: 12_000,
+  project: 4_000,
+  channel: 4_000,
+  user: 4_000,
+  entry: 1_000,
+} as const;
 
 const OPERATIONS = 8;
 
