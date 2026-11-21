@@ -403,7 +403,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(14);
+    await expect(submenu).toHaveCount(15);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -452,6 +452,63 @@ try {
       path: join(out, `project-memory-saved-${width}.png`),
       fullPage: true,
     });
+    const at = Date.UTC(2026, 10, 20, 12);
+    const latest = "Run bun run check before pushing; Closeout runs only the affected tests.";
+    const notebook = {
+      ...{ kind: "repository", id: "acme/app", revision: 3, size: 11_890, limit: 12_000 },
+      entries: [
+        latest,
+        "Migrations are append-only. Change the schema in src/db/schema-pg, then generate.",
+      ].map((text, index) => ({ id: `e${index}`, body: text, updatedAt: at })),
+      changes: [
+        { id: "c2", action: "patch", before: "Run bun run check.", after: latest, actor: "Ann" },
+        { id: "c1", action: "add", before: null, after: "Run bun run check.", item: "PAS-12" },
+      ].map((change, index) => ({
+        ...{ entryId: "e0", item: null, actor: null, at: at - index * 3_600_000 },
+        ...{ undoable: index === 0, ...change },
+      })),
+    };
+    await admin.route("**/api/notebooks**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/notebooks")
+        return route.fulfill({
+          json: {
+            notebooks: [
+              { kind: "project", id: "p1", name: "Launch", size: 0, limit: 4_000 },
+              { kind: "repository", id: "acme/app", name: "acme/app", size: 11_890, limit: 12_000 },
+            ],
+          },
+        });
+      if (path.endsWith("/edits"))
+        return route.fulfill({
+          status: 409,
+          json: {
+            error:
+              "the notebook would hold 12040 characters, over its 12000 limit; remove or shorten entries in the same call",
+            operation: null,
+            notebook,
+          },
+        });
+      return route.fulfill({ json: notebook });
+    });
+    await visit(admin, width, "notebook-list", "/dashboard/workspace/notebook", "Notebook");
+    await admin.getByRole("button", { name: "acme/app" }).click();
+    await expect(admin.locator("#content")).toContainText("11,890 of 12,000 characters");
+    await admin.getByLabel("New entry").fill("Tailscale serves the live preview.");
+    await admin.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(admin.getByRole("alert")).toHaveText(
+      "This notebook is full. Remove or shorten an entry first.",
+    );
+    await admin.getByRole("button", { name: "Remove" }).first().click();
+    await expect(admin.locator("#content")).toContainText("Remove this entry?");
+    if (width <= 390)
+      for (const control of await admin.locator("#notebook-settings button, textarea").all())
+        expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await admin.screenshot({ path: join(out, `notebook-${width}.png`), fullPage: true });
+    await admin.unroute("**/api/notebooks**");
     await page.route("**/api/runners", (route) =>
       route.fulfill({
         json: {
