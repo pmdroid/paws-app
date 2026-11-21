@@ -32,12 +32,12 @@ test("Slack calls are form-encoded, so read methods like conversations.info get 
   });
 });
 
-test("channel members page through conversations.members and keep private channels", async () => {
+test("channel members page through conversations.members and keep private and archived channels", async () => {
   const calls: [string, Record<string, unknown>][] = [];
   const call: SlackCall = async (method, body) => {
     calls.push([method, body]);
     if (method === "conversations.info")
-      return { ok: true, channel: { id: "C1", name: "ops", is_private: true } };
+      return { ok: true, channel: { id: "C1", name: "ops", is_private: true, is_archived: true } };
     return body.cursor === "next"
       ? { ok: true, members: ["U2"] }
       : { ok: true, members: ["U1"], response_metadata: { next_cursor: "next" } };

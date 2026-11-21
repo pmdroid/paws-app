@@ -262,7 +262,7 @@ export async function slackChannelMembers(
   try {
     const info = await call("conversations.info", { channel: channelId }, signal);
     const c = (info.channel ?? null) as Record<string, unknown> | null;
-    if (c?.id !== channelId || c.is_archived === true) return null;
+    if (c?.id !== channelId) return null;
     const members = await pages<unknown>(
       call,
       "conversations.members",

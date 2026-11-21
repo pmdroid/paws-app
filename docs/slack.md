@@ -12,7 +12,7 @@ The quickest way is the manifest in [`deploy/slack/manifest.yaml`](../deploy/sla
 
 ## Scopes
 
-Channel threads need `app_mentions:read`, `channels:history`, `channels:read` and `chat:write`. App messages need `im:history` and `im:write`. Agent status needs `assistant:write`. Member checks need `users:read` and `users:read.email`. Reacting to messages needs `reactions:write`, which is optional: a connection without it works the same, without the reaction. The Integrations card shows each capability as ready, or names the scopes a reconnect adds. Slack Code is shown as not available yet.
+Channel threads need `app_mentions:read`, `channels:history`, `channels:read` and `chat:write`. App messages need `im:history` and `im:write`. Agent status needs `assistant:write`. Member checks need `users:read` and `users:read.email`. Channel notebooks need `channels:read` and `groups:read`, so Paws can list the members of public and private channels; a connection made before Paws asked for `groups:read` shows only public-channel notebooks until an admin reconnects Slack. Reacting to messages needs `reactions:write`, which is optional: a connection without it works the same, without the reaction. The Integrations card shows each capability as ready, or names the scopes a reconnect adds. Slack Code is shown as not available yet.
 
 ## Connect, reconnect and disconnect
 

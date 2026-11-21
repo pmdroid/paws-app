@@ -12,7 +12,8 @@ import {
 import { readSettingSteps, updateSettingSteps, type Db, type Q, type Steps } from "../db";
 import { authorizeSlack } from "./authorize";
 
-export const SLACK_BOT_SCOPES = "chat:write,im:write,users:read,users:read.email,channels:read";
+export const SLACK_BOT_SCOPES =
+  "chat:write,im:write,users:read,users:read.email,channels:read,groups:read";
 export type SlackApp = { clientId: string; clientSecret: string; signingSecret: string };
 export type SlackToken = {
   accessToken: string;
