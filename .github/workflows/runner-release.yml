@@ -270,3 +270,68 @@ jobs:
           mode=build
           if [[ "$EVENT" == workflow_dispatch ]]; then mode=resign_only; fi
           bash deploy/linux/publish-apt.sh "$mode" "$RUNNER_TEMP/apt-packages"
+
+  publish-rpm:
+    name: Publish signed dnf repository
+    needs: build
+    if: ${{ always() && github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: rpm-repository
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Gate tag on main and successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == v* ]]
+          # Resolve annotated tags through git, rather than trusting the event's target_commitish.
+          git init "$RUNNER_TEMP/release-gate"
+          cd "$RUNNER_TEMP/release-gate"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" refs/heads/main:refs/remotes/origin/main
+          commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=push&per_page=100" --jq '[.workflow_runs[] | select(.head_branch == "main")] | sort_by(.run_number) | last | .conclusion == "success"' | grep -qx true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install repository tools
+        run: sudo apt-get update && sudo apt-get install -y rpm createrepo-c gnupg && aws --version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: paws-runner-*
+          path: ${{ runner.temp }}/rpm-packages
+          merge-multiple: true
+          digest-mismatch: warn
+      - name: Verify packages before repository signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/rpm-packages"
+          mapfile -d '' packages < <(find . -type f -name '*.rpm' -print0)
+          test "${#packages[@]}" -eq 2
+          for arch in x86_64 aarch64; do
+            packages=(paws-control-plane-*."${arch}".rpm)
+            test "${#packages[@]}" -eq 1
+            package="${packages[0]}"
+            sha256sum --check "$package.sha256"
+            gh attestation verify "$package" --bundle "$package.sigstore.json" --repo pmdroid/paws-app --signer-workflow pmdroid/paws-app/.github/workflows/runner-release.yml
+          done
+      - name: Publish packages and metadata
+        env:
+          PAWS_APT_R2_ACCOUNT_ID: ${{ secrets.PAWS_APT_R2_ACCOUNT_ID }}
+          PAWS_APT_R2_ACCESS_KEY_ID: ${{ secrets.PAWS_APT_R2_ACCESS_KEY_ID }}
+          PAWS_APT_R2_SECRET_ACCESS_KEY: ${{ secrets.PAWS_APT_R2_SECRET_ACCESS_KEY }}
+          PAWS_APT_R2_BUCKET: ${{ secrets.PAWS_APT_R2_BUCKET }}
+          PAWS_APT_SIGNING_KEY: ${{ secrets.PAWS_APT_SIGNING_KEY }}
+          PAWS_APT_SIGNING_PASSPHRASE: ${{ secrets.PAWS_APT_SIGNING_PASSPHRASE }}
+        run: bash deploy/linux/publish-rpm.sh build "$RUNNER_TEMP/rpm-packages"

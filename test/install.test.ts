@@ -427,7 +427,7 @@ function dnfHost(directory: string, aptLog: string) {
   writeExecutable(
     bin,
     "id",
-    "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then printf '%s\\n' \"${FAKE_UID:-0}\"; exit 0; fi\nexit 1\n",
+    '#!/bin/sh\nif [ "$1" = "-u" ]; then printf \'%s\\n\' "${FAKE_UID:-0}"; exit 0; fi\nexit 1\n',
   );
   writeExecutable(bin, "dnf", `#!/bin/sh\nprintf '%s\\n' "$*" >> "${aptLog}.dnf"\n`);
   return bin;
@@ -470,18 +470,22 @@ test("installer installs the control plane through dnf on a host without apt-get
 });
 
 test("installer refuses a runner on a dnf host and an empty dnf repository key", async () => {
-  await withRelease({ "/rpm/paws.asc": "" }, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
-    const bin = dnfHost(directory, aptLog);
-    const env = { ...envFor(origin, directory, aptLog, installed), PATH: bin };
-    const runner = await install(["--runner"], env);
-    expect(runner.code).not.toBe(0);
-    expect(runner.stderr).toContain("There is no paws-runner RPM yet");
-    const empty = await install([], env);
-    expect(empty.code).not.toBe(0);
-    expect(empty.stderr).toContain("Empty repository key");
-    expect(existsSync(`${aptLog}.dnf`)).toBe(false);
-    expect(existsSync(join(directory, "yum.repos.d/paws.repo"))).toBe(false);
-  });
+  await withRelease(
+    { "/rpm/paws.asc": "" },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const bin = dnfHost(directory, aptLog);
+      const env = { ...envFor(origin, directory, aptLog, installed), PATH: bin };
+      const runner = await install(["--runner"], env);
+      expect(runner.code).not.toBe(0);
+      expect(runner.stderr).toContain("There is no paws-runner RPM yet");
+      const empty = await install([], env);
+      expect(empty.code).not.toBe(0);
+      expect(empty.stderr).toContain("Empty repository key");
+      expect(existsSync(`${aptLog}.dnf`)).toBe(false);
+      expect(existsSync(join(directory, "yum.repos.d/paws.repo"))).toBe(false);
+    },
+  );
 });
 
 test("installer prefers apt when a host has both apt-get and dnf", async () => {
