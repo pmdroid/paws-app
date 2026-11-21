@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,8 @@ async function install(args: string[], env: Record<string, string>) {
     copy,
     readFileSync(script, "utf8")
       .replaceAll("/usr/share/keyrings", join(env.HOME!, "keyrings"))
-      .replaceAll("/etc/apt/sources.list.d", join(env.HOME!, "sources")),
+      .replaceAll("/etc/apt/sources.list.d", join(env.HOME!, "sources"))
+      .replaceAll("/etc/yum.repos.d", join(env.HOME!, "yum.repos.d")),
   );
   const child = Bun.spawn(["/bin/sh", copy, ...args], {
     env,
@@ -410,5 +412,88 @@ test("installer asks a non-root caller to rerun with --runner for a runner", asy
     );
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("curl -fsSL https://get.paws.boo | sudo sh -s -- --runner");
+  });
+});
+
+// A host with dnf and without apt-get: PATH holds only the tools the installer runs, plus fakes.
+function dnfHost(directory: string, aptLog: string) {
+  const bin = join(directory, "dnf-bin");
+  mkdirSync(bin);
+  for (const tool of ["curl", "mktemp", "rm", "install", "chmod", "uname", "cat"]) {
+    const path = ["/usr/bin", "/bin"].map((prefix) => join(prefix, tool)).find(existsSync);
+    if (!path) throw new Error(`Missing ${tool}`);
+    symlinkSync(path, join(bin, tool));
+  }
+  writeExecutable(
+    bin,
+    "id",
+    '#!/bin/sh\nif [ "$1" = "-u" ]; then printf \'%s\\n\' "${FAKE_UID:-0}"; exit 0; fi\nexit 1\n',
+  );
+  writeExecutable(bin, "dnf", `#!/bin/sh\nprintf '%s\\n' "$*" >> "${aptLog}.dnf"\n`);
+  return bin;
+}
+
+test("installer installs the control plane through dnf on a host without apt-get", async () => {
+  await withRelease(
+    { "/rpm/paws.asc": "armored-key" },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const bin = dnfHost(directory, aptLog);
+      const env = { ...envFor(origin, directory, aptLog, installed), PATH: bin };
+      const latest = await install([], env);
+      expect(latest.stderr).toBe("");
+      expect(latest.code).toBe(0);
+      expect(readFileSync(join(directory, "yum.repos.d/paws.repo"), "utf8")).toBe(
+        [
+          "[paws]",
+          "name=Paws",
+          `baseurl=${origin}/rpm`,
+          "enabled=1",
+          "gpgcheck=1",
+          "repo_gpgcheck=1",
+          `gpgkey=${origin}/rpm/paws.asc`,
+          "metadata_expire=6h",
+          "",
+        ].join("\n"),
+      );
+      expect(latest.stdout).toContain(
+        "Set the public URL and TLS paths in /etc/paws/control-plane.env, then run: sudo systemctl restart paws.service",
+      );
+      expect((await install(["v1.2.3"], env)).code).toBe(0);
+      expect(readFileSync(`${aptLog}.dnf`, "utf8")).toBe(
+        "install -y --refresh paws-control-plane\ninstall -y --refresh paws-control-plane-1.2.3\n",
+      );
+      expect(existsSync(aptLog)).toBe(false);
+      expect(existsSync(join(directory, "sources/paws.list"))).toBe(false);
+    },
+  );
+});
+
+test("installer refuses a runner on a dnf host and an empty dnf repository key", async () => {
+  await withRelease(
+    { "/rpm/paws.asc": "" },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const bin = dnfHost(directory, aptLog);
+      const env = { ...envFor(origin, directory, aptLog, installed), PATH: bin };
+      const runner = await install(["--runner"], env);
+      expect(runner.code).not.toBe(0);
+      expect(runner.stderr).toContain("There is no paws-runner RPM yet");
+      const empty = await install([], env);
+      expect(empty.code).not.toBe(0);
+      expect(empty.stderr).toContain("Empty repository key");
+      expect(existsSync(`${aptLog}.dnf`)).toBe(false);
+      expect(existsSync(join(directory, "yum.repos.d/paws.repo"))).toBe(false);
+    },
+  );
+});
+
+test("installer prefers apt when a host has both apt-get and dnf", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    writeExecutable(join(directory, "bin"), "dnf", "#!/bin/sh\nexit 1\n");
+    const result = await install([], envFor(origin, directory, aptLog, installed));
+    expect(result.code).toBe(0);
+    expect(readFileSync(aptLog, "utf8")).toBe("update\ninstall -y paws-control-plane\n");
+    expect(existsSync(join(directory, "yum.repos.d/paws.repo"))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 # Enroll a remote Linux runner
 
-The apt installer, `deploy/linux/install.sh`, served at `https://get.paws.boo`, installs the runner with `--runner` (without it, it installs the control plane). It adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror.
+The apt installer, `deploy/linux/install.sh`, served at `https://get.paws.boo`, installs the runner with `--runner` (without it, it installs the control plane). It adds the Paws apt keyring at `/usr/share/keyrings/paws.gpg` and the `https://get.paws.boo/apt stable main` source. It installs `paws-runner` through apt, or pins `paws-runner=<version>` when a version is supplied. Set `PAWS_RUNNER_DOWNLOAD_BASE` to an HTTPS apt repository base URL to use a mirror. On a host with `dnf` and without `apt-get`, `--runner` stops with an error: there is no runner RPM. Without `--runner`, such a host gets the control plane from the dnf repository at `<base>/rpm`.
 
 The **Add a runner** command installs from the GitHub release instead: see [Add the host](#add-the-host). Paws does not upgrade runners through the control plane. To upgrade a runner, wait for active work to finish and install the latest release's `.deb` by hand as shown there.
 

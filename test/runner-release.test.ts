@@ -381,9 +381,21 @@ test("dry-run dispatch builds but never publishes, and publications retain their
     expect(evaluate(workflow.jobs.publish.if, true, resign)).toBe(false);
     expect(evaluate(workflow.jobs["publish-apt"].if, true, resign)).toBe(false);
   }
+  for (const [dry_run, resign] of [
+    [true, false],
+    [true, true],
+    [false, true],
+    [false, false],
+  ] as const) {
+    expect(evaluate(workflow.jobs["publish-rpm"].if, dry_run, resign)).toBe(false);
+  }
   expect(evaluate(workflow.jobs.build.if, false, true)).toBe(false);
   expect(evaluate(workflow.jobs["publish-apt"].if, false, true)).toBe(true);
-  for (const concurrency of [workflow.concurrency, workflow.jobs["publish-apt"].concurrency]) {
+  for (const concurrency of [
+    workflow.concurrency,
+    workflow.jobs["publish-apt"].concurrency,
+    workflow.jobs["publish-rpm"].concurrency,
+  ]) {
     expect(concurrency.queue).toBe("max");
     expect(concurrency["cancel-in-progress"]).toBe(false);
   }
@@ -479,4 +491,79 @@ test("runner packages use apt trust without a manifest signing job", () => {
   expect(workflow.jobs.build.needs).toBe("prepare");
   expect(JSON.stringify(workflow.jobs.build)).not.toContain("--signature");
   expect(JSON.stringify(workflow.jobs.prepare)).not.toContain("secrets.");
+});
+
+test("the dnf repository publishes only from a release, behind the same gate and environment as apt", () => {
+  const job = workflow.jobs["publish-rpm"];
+  const release = (tag: string, result: string) =>
+    new Function(
+      "github",
+      "needs",
+      "startsWith",
+      "always",
+      `return (${job.if.replace(/^\$\{\{ | \}\}$/g, "")})`,
+    )(
+      { event_name: "release", event: { release: { tag_name: tag } } },
+      { build: { result } },
+      (value: string, prefix: string) => value.startsWith(prefix),
+      () => true,
+    );
+  expect(release("v1.2.3", "success")).toBe(true);
+  expect(release("v1.2.3", "failure")).toBe(false);
+  expect(release("1.2.3", "success")).toBe(false);
+  expect(job.needs).toBe("build");
+  expect(job.environment).toBe("release");
+  expect(job.permissions).toEqual({ contents: "read", actions: "read" });
+  expect(job.steps[0]).toEqual(workflow.jobs["publish-apt"].steps[0]);
+  const publish = job.steps.find(
+    (step: { name?: string }) => step.name === "Publish packages and metadata",
+  );
+  expect(publish.run).toBe('bash deploy/linux/publish-rpm.sh build "$RUNNER_TEMP/rpm-packages"');
+  expect(Object.keys(publish.env).sort()).toEqual(
+    Object.keys(
+      workflow.jobs["publish-apt"].steps.find(
+        (step: { name?: string }) => step.name === "Publish or renew metadata",
+      ).env,
+    )
+      .filter((name) => name !== "EVENT")
+      .sort(),
+  );
+});
+
+test("dnf verification requires exactly one control-plane RPM per architecture", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-extra-rpm-"));
+  const script = workflow.jobs["publish-rpm"].steps.find(
+    (step: { name?: string }) => step.name === "Verify packages before repository signing",
+  ).run;
+  const run = async (setup: string) => {
+    const child = Bun.spawn(["bash", "-e", "-c", `${setup}\n${script}`], {
+      env: { ...process.env, RUNNER_TEMP: root, PATH: `${join(root, "bin")}:${process.env.PATH}` },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    return { code: await child.exited, stderr: await new Response(child.stderr).text() };
+  };
+  try {
+    const fixture = `
+      rm -rf "$RUNNER_TEMP/rpm-packages" && mkdir -p "$RUNNER_TEMP/rpm-packages/nested" "$RUNNER_TEMP/bin"
+      printf '#!/bin/sh\\nexit 0\\n' > "$RUNNER_TEMP/bin/gh" && chmod +x "$RUNNER_TEMP/bin/gh"
+      cd "$RUNNER_TEMP/rpm-packages"
+      for arch in x86_64 aarch64; do
+        name=paws-control-plane-1.2.3-1.$arch.rpm
+        printf '%s' "$arch" > "$name" && sha256sum "$name" > "$name.sha256"
+      done
+      cd - >/dev/null
+    `;
+    const accepted = await run(fixture);
+    expect(accepted.stderr).toBe("");
+    expect(accepted.code).toBe(0);
+    expect(
+      (await run(`${fixture}\ntouch "$RUNNER_TEMP/rpm-packages/nested/extra.rpm"`)).code,
+    ).not.toBe(0);
+    expect((await run(`${fixture}\nrm "$RUNNER_TEMP/rpm-packages/"*aarch64.rpm*`)).code).not.toBe(
+      0,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
