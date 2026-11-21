@@ -1354,7 +1354,6 @@ export function createSlackThreads<Profile>(options: {
       mentionTs: mention.ts,
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
-      ...(mention.direct ? { direct: true } : {}),
     };
     const provided = await Promise.all(
       (options.tools ?? []).map(async (provider) => {
