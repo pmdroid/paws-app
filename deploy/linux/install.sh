@@ -151,7 +151,13 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 need curl
-need apt-get
+if ! command -v apt-get >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
+  [ "$target" = control-plane ] || die "There is no paws-runner RPM yet: install the runner on a Debian or Ubuntu host"
+  manager=dnf
+else
+  need apt-get
+  manager=apt
+fi
 arch=$(architecture)
 base=${base%/}
 case $base in
@@ -159,6 +165,25 @@ case $base in
 esac
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
+
+if [ "$manager" = dnf ]; then
+  # The dnf repository sits under rpm/ beside the apt repository. dnf checks the repomd.xml signature and each
+  # package's signature against the key at gpgkey, which it imports on first use.
+  fetch -o "$workdir/paws.asc" "$base/rpm/paws.asc"
+  [ -s "$workdir/paws.asc" ] || die "Empty repository key"
+  install -d -m 0755 /etc/yum.repos.d
+  printf '%s\n' "[paws]" "name=Paws" "baseurl=$base/rpm" "enabled=1" "gpgcheck=1" "repo_gpgcheck=1" \
+    "gpgkey=$base/rpm/paws.asc" "metadata_expire=6h" > /etc/yum.repos.d/paws.repo
+  chmod 0644 /etc/yum.repos.d/paws.repo
+  printf '%s\n' "Installing paws-control-plane ${version} (${arch})"
+  package=paws-control-plane
+  [ -z "$version" ] || package="paws-control-plane-$version"
+  dnf install -y --refresh "$package"
+  printf '%s\n' "Installed paws-control-plane ${version}" \
+    "Set the public URL and TLS paths in /etc/paws/control-plane.env, then run: sudo systemctl restart paws.service"
+  exit 0
+fi
+
 fetch -o "$workdir/paws.gpg" "$base/paws.gpg"
 [ -s "$workdir/paws.gpg" ] || die "Empty repository keyring"
 install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
