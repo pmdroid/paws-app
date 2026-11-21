@@ -1,15 +1,21 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { putWorkspaceUserSteps, syncWorkspaceMemberSteps, type Db } from "../db";
+import {
+  putWorkspaceUserSteps,
+  replaceLinearProjectTeamsSteps,
+  syncWorkspaceMemberSteps,
+  type Db,
+} from "../db";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
-import { createNotebookHttp, notebookChanges } from "./index";
+import { createNotebookHttp, notebookChanges, type NotebookChannelAccess } from "./index";
 
 let db: Db;
 let close: () => Promise<void>;
 let clock = 1_000;
 
 beforeEach(async () => {
+  channel = null;
   ({ db, close } = await tempStore());
   await withoutForeignKeys(db);
   await db.run(function* (q) {
@@ -22,6 +28,7 @@ beforeEach(async () => {
       ["ann", "member", "eng"],
       ["bob", "member", "ops"],
       ["root", "admin", "ops"],
+      ["cid", "member", "eng"],
     ] as const) {
       yield* putWorkspaceUserSteps(q, { id, linearUserId: id, name: id.toUpperCase(), email: "" });
       yield* syncWorkspaceMemberSteps(q, {
@@ -52,24 +59,36 @@ type Reply = {
   notebooks: ({ name: string } & Record<string, unknown>)[];
 };
 
+const SLACK: Record<string, string> = { ann: "U-ANN", bob: "U-BOB", root: "U-ROOT" };
+let channel: { slackUserIds: ReadonlySet<string>; name: string | null } | null = null;
+const channelAccess: NotebookChannelAccess = {
+  members: async (workspaceId, id) => (workspaceId === "ws" && id === "T1:C1" ? channel : null),
+  slackUserId: async (_workspaceId, userId) => SLACK[userId] ?? null,
+};
+
 async function call(userId: string, path: string, body?: unknown) {
   const request = new Request(`http://paws.test${path}`, {
     method: body === undefined ? "GET" : "POST",
     body: body === undefined ? null : JSON.stringify(body),
   });
-  const http = createNotebookHttp({ db, now: () => ++clock });
+  const http = createNotebookHttp({ db, now: () => ++clock, channelAccess });
   const response = await http(request, { workspaceId: "ws", userId });
   return { status: response!.status, body: (await response!.json()) as Reply };
 }
 
 const REPO = "/api/notebooks/repository/acme%2Fapp";
 const PROJECT = "/api/notebooks/project/p1";
+const CHANNEL = "/api/notebooks/channel/T1%3AC1";
+const ADD = (content: string) => ({ operations: [{ action: "add", content }] });
+const names = async (userId: string) =>
+  (await call(userId, "/api/notebooks")).body.notebooks.map((notebook) => notebook.name);
+const projectTeams = (teamIds: string[]) =>
+  db.run((q) =>
+    replaceLinearProjectTeamsSteps(q, { workspaceId: "ws", projectId: "p1", teamIds, now: 1 }),
+  );
 
-test("a member with the repository sees its notebook and others get 404", async () => {
-  expect(
-    (await call("ann", `${REPO}/edits`, { operations: [{ action: "add", content: "use bun" }] }))
-      .status,
-  ).toBe(200);
+test("a member with the repository sees its notebook and others, admins included, get 404", async () => {
+  expect((await call("ann", `${REPO}/edits`, ADD("use bun"))).status).toBe(200);
   const read = await call("ann", REPO);
   expect(read).toMatchObject({ status: 200, body: { size: 7, limit: 12_000 } });
   expect(read.body.entries.map((entry) => entry.body)).toEqual(["use bun"]);
@@ -83,13 +102,19 @@ test("a member with the repository sees its notebook and others get 404", async 
   });
   expect((await call("bob", REPO)).status).toBe(404);
   expect((await call("bob", `${REPO}/edits`, { operations: [] })).status).toBe(404);
-  expect((await call("bob", "/api/notebooks")).body.notebooks).toEqual([]);
-  expect((await call("root", REPO)).status).toBe(200);
+  expect(await names("bob")).toEqual(["Your notebook"]);
+  expect((await call("root", REPO)).status).toBe(404);
+  expect((await call("root", `${REPO}/edits`, ADD("x"))).status).toBe(404);
+  expect(await names("root")).toEqual(["Your notebook"]);
   expect((await call("nobody", REPO)).status).toBe(404);
+  expect((await call("nobody", "/api/notebooks")).body.notebooks).toEqual([]);
 });
 
-test("a member who owns an item in the project sees the project notebook", async () => {
-  await call("ann", `${PROJECT}/edits`, { operations: [{ action: "add", content: "ship it" }] });
+test("a project notebook belongs to members who share a Linear team with the project", async () => {
+  expect((await call("ann", PROJECT)).status).toBe(404);
+  expect((await call("ann", `${PROJECT}/edits`, ADD("early"))).status).toBe(404);
+  await projectTeams(["eng", "design"]);
+  expect((await call("ann", `${PROJECT}/edits`, ADD("ship it"))).status).toBe(200);
   expect((await call("ann", PROJECT)).body).toMatchObject({ size: 7, limit: 4_000 });
   expect((await call("ann", "/api/notebooks")).body.notebooks).toContainEqual({
     kind: "project",
@@ -98,11 +123,62 @@ test("a member who owns an item in the project sees the project notebook", async
     size: 7,
     limit: 4_000,
   });
+  expect((await call("cid", PROJECT)).status).toBe(200);
   expect((await call("bob", PROJECT)).status).toBe(404);
-  expect((await call("bob", "/api/notebooks")).body.notebooks).toEqual([]);
-  expect(
-    (await call("root", "/api/notebooks")).body.notebooks.map((notebook) => notebook.name),
-  ).toEqual(["Launch"]);
+  expect((await call("bob", `${PROJECT}/edits`, ADD("x"))).status).toBe(404);
+  expect((await call("root", PROJECT)).status).toBe(404);
+  expect(await names("root")).toEqual(["Your notebook"]);
+  await projectTeams([]);
+  expect((await call("ann", PROJECT)).status).toBe(404);
+  expect(await names("ann")).toEqual(["Your notebook"]);
+});
+
+test("a channel notebook belongs to the members whose Slack user is in the channel", async () => {
+  channel = { slackUserIds: new Set(["U-ANN"]), name: "ops" };
+  expect((await call("ann", `${CHANNEL}/edits`, ADD("standup at 9"))).status).toBe(200);
+  expect((await call("ann", CHANNEL)).body).toMatchObject({ size: 12, limit: 4_000 });
+  expect((await call("ann", "/api/notebooks")).body.notebooks).toContainEqual({
+    kind: "channel",
+    id: "T1:C1",
+    name: "#ops",
+    size: 12,
+    limit: 4_000,
+  });
+  expect((await call("bob", CHANNEL)).status).toBe(404);
+  expect((await call("bob", `${CHANNEL}/edits`, ADD("x"))).status).toBe(404);
+  expect(await names("bob")).toEqual(["Your notebook"]);
+  expect((await call("cid", CHANNEL)).status).toBe(404);
+  channel = { slackUserIds: new Set(["U-ANN"]), name: null };
+  expect(await names("ann")).toEqual(["Your notebook", "#T1:C1"]);
+  channel = null;
+  expect((await call("ann", CHANNEL)).status).toBe(404);
+  expect((await call("ann", `${CHANNEL}/edits`, ADD("x"))).status).toBe(404);
+  expect(await names("ann")).toEqual(["Your notebook"]);
+});
+
+test("a personal notebook is its owner's alone and always listed first", async () => {
+  expect((await call("ann", "/api/notebooks")).body.notebooks).toEqual([
+    { kind: "user", id: "ann", name: "Your notebook", size: 0, limit: 4_000 },
+  ]);
+  expect((await call("ann", "/api/notebooks/user/ann")).body).toMatchObject({
+    kind: "user",
+    size: 0,
+    limit: 4_000,
+    entries: [],
+  });
+  await call("ann", `${REPO}/edits`, ADD("use bun"));
+  expect((await call("ann", "/api/notebooks/user/ann/edits", ADD("mine"))).status).toBe(200);
+  expect((await call("ann", "/api/notebooks")).body.notebooks).toEqual([
+    { kind: "user", id: "ann", name: "Your notebook", size: 4, limit: 4_000 },
+    { kind: "repository", id: "acme/app", name: "acme/app", size: 7, limit: 12_000 },
+  ]);
+  expect((await call("root", "/api/notebooks/user/ann")).status).toBe(404);
+  expect((await call("root", "/api/notebooks/user/ann/edits", ADD("x"))).status).toBe(404);
+  expect((await call("bob", "/api/notebooks/user/ann")).status).toBe(404);
+  expect((await call("root", "/api/notebooks")).body.notebooks).toEqual([
+    { kind: "user", id: "root", name: "Your notebook", size: 0, limit: 4_000 },
+  ]);
+  expect((await call("ann", "/api/notebooks/team/ann")).status).toBe(404);
 });
 
 test("a member's edit records them as the actor, and undo restores a patch", async () => {

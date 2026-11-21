@@ -13,4 +13,4 @@ export {
   type NotebookUndoResult,
 } from "./notebook";
 export type { NotebookChangeRow, NotebookEntryRow, NotebookScope, NotebookScopeKind } from "../db";
-export { createNotebookHttp } from "./http";
+export { createNotebookHttp, type NotebookChannelAccess } from "./http";

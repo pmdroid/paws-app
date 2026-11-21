@@ -4,7 +4,7 @@ import type { Q, Steps } from "./db";
 import type { notebookChange, notebookEntry } from "./schema-pg";
 import { ulid } from "./ulid";
 
-export type NotebookScopeKind = "repository" | "project";
+export type NotebookScopeKind = "repository" | "project" | "channel" | "user";
 
 export type NotebookScope = {
   readonly workspaceId: string;
@@ -173,20 +173,15 @@ export function* workspaceNotebooksSteps(
 
 export function* workItemProjectsSteps(
   q: Q,
-  input: { readonly projectIds: readonly string[]; readonly ownerUserId?: string },
+  projectIds: readonly string[],
 ): Steps<{ id: string; name: string | null }[]> {
-  if (input.projectIds.length === 0) return [];
+  if (projectIds.length === 0) return [];
   const { workItem } = q.t;
   const rows = yield* q.all(
     q.orm
       .selectDistinct({ id: workItem.linearProjectId, name: workItem.linearProjectName })
       .from(workItem)
-      .where(
-        and(
-          inArray(workItem.linearProjectId, [...input.projectIds]),
-          input.ownerUserId === undefined ? undefined : eq(workItem.ownerUserId, input.ownerUserId),
-        ),
-      ),
+      .where(inArray(workItem.linearProjectId, [...projectIds])),
   );
   return rows.flatMap((row) => (row.id === null ? [] : [{ id: row.id, name: row.name }]));
 }

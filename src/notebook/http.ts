@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  linearProjectTeamsSteps,
+  listWorkspaceRepositoriesSteps,
   notebookChangeLabelsSteps,
   workItemProjectsSteps,
   workspaceMemberSteps,
@@ -8,10 +10,7 @@ import {
   type Db,
   type NotebookScope,
   type NotebookScopeKind,
-  type Q,
-  type Steps,
 } from "../db";
-import { memberRepositoriesSteps } from "../improvements";
 import {
   NOTEBOOK_LIMITS,
   editNotebook,
@@ -39,68 +38,109 @@ const UNDO = z.object({ changeId: z.string().min(1).max(64) });
 
 type Principal = { readonly workspaceId: string; readonly userId: string };
 
+export type NotebookChannelAccess = {
+  members(
+    workspaceId: string,
+    channelScopeId: string,
+  ): Promise<{ slackUserIds: ReadonlySet<string>; name: string | null } | null>;
+  slackUserId(workspaceId: string, userId: string): Promise<string | null>;
+};
+
 type Viewer = {
-  admin: boolean;
   repositories: ReadonlySet<string>;
+  teamIds: ReadonlySet<string>;
   userId: string;
   workspaceId: string;
+  slackUserId: () => Promise<string | null>;
 };
+
+type Access = { db: Db; channels: NotebookChannelAccess | undefined };
+
+const KINDS = new Set<string>(["repository", "project", "channel", "user"]);
+const OWN_NAME = "Your notebook";
 
 const answer = (body: unknown, status = 200) => Response.json(body, { status, headers: NO_STORE });
 
-function* viewerSteps(q: Q, principal: Principal): Steps<Viewer | null> {
+async function viewerFor(access: Access, principal: Principal): Promise<Viewer | null> {
   const { workspaceId, userId } = principal;
-  const member = yield* workspaceMemberSteps(q, workspaceId, userId);
-  if (!workspaceMemberUsable(member)) return null;
-  const repositories = yield* memberRepositoriesSteps(q, workspaceId, userId);
+  const found = await access.db.run(function* (q) {
+    const member = yield* workspaceMemberSteps(q, workspaceId, userId);
+    if (!workspaceMemberUsable(member)) return null;
+    const repositories = (yield* listWorkspaceRepositoriesSteps(q, workspaceId))
+      .filter((entry) => member.teamIds.includes(entry.teamId))
+      .map((entry) => entry.repository);
+    return { teamIds: member.teamIds, repositories };
+  });
+  if (found === null) return null;
+  let slack: Promise<string | null> | undefined;
   return {
-    admin: member.role === "admin",
-    repositories: new Set(repositories.map((name) => name.toLowerCase())),
+    repositories: new Set(found.repositories.map((name) => name.toLowerCase())),
+    teamIds: new Set(found.teamIds),
     userId,
     workspaceId,
+    slackUserId: () =>
+      (slack ??= access.channels?.slackUserId(workspaceId, userId) ?? Promise.resolve(null)),
   };
 }
 
-function* projectsSteps(q: Q, viewer: Viewer, ids: readonly string[]) {
-  const projects = yield* workItemProjectsSteps(q, {
-    projectIds: ids,
-    ...(viewer.admin ? {} : { ownerUserId: viewer.userId }),
-  });
-  const names = new Map<string, string>();
-  for (const project of projects)
-    if (project.name !== null || !names.has(project.id))
-      names.set(project.id, project.name ?? project.id);
-  return names;
+async function channelName(access: Access, viewer: Viewer, id: string) {
+  if (access.channels === undefined) return null;
+  try {
+    const [members, slackUserId] = await Promise.all([
+      access.channels.members(viewer.workspaceId, id),
+      viewer.slackUserId(),
+    ]);
+    if (members === null || slackUserId === null || !members.slackUserIds.has(slackUserId))
+      return null;
+    return `#${members.name ?? id}`;
+  } catch {
+    return null;
+  }
 }
 
-function* listSteps(q: Q, principal: Principal) {
-  const viewer = yield* viewerSteps(q, principal);
+async function notebookAccess(
+  access: Access,
+  viewer: Viewer,
+  scope: NotebookScope,
+): Promise<string | null> {
+  if (scope.workspaceId !== viewer.workspaceId) return null;
+  if (scope.kind === "user") return scope.id === viewer.userId ? OWN_NAME : null;
+  if (scope.kind === "repository")
+    return viewer.repositories.has(scope.id.toLowerCase()) ? scope.id : null;
+  if (scope.kind === "channel") return channelName(access, viewer, scope.id);
+  return access.db.run(function* (q) {
+    const teams = yield* linearProjectTeamsSteps(q, scope.workspaceId, scope.id);
+    if (!teams.some((team) => viewer.teamIds.has(team))) return null;
+    const names = yield* workItemProjectsSteps(q, [scope.id]);
+    return names.find((row) => row.name !== null)?.name ?? scope.id;
+  });
+}
+
+async function list(access: Access, principal: Principal) {
+  const viewer = await viewerFor(access, principal);
   if (viewer === null) return [];
-  const stored = yield* workspaceNotebooksSteps(q, viewer.workspaceId);
-  const projects = yield* projectsSteps(
-    q,
-    viewer,
-    stored.filter((notebook) => notebook.kind === "project").map((notebook) => notebook.id),
+  const stored = await access.db.run((q) => workspaceNotebooksSteps(q, viewer.workspaceId));
+  const own =
+    stored.find((notebook) => notebook.kind === "user" && notebook.id === viewer.userId) ??
+    ({ kind: "user", id: viewer.userId, size: 0 } as const);
+  const others = stored.filter((notebook) => notebook !== own);
+  const names = await Promise.all(
+    others.map((notebook) =>
+      notebookAccess(access, viewer, { workspaceId: viewer.workspaceId, ...notebook }),
+    ),
   );
-  return stored.flatMap((notebook) => {
-    const name = notebook.kind === "project" ? projects.get(notebook.id) : notebook.id;
-    const visible =
-      viewer.admin ||
-      (notebook.kind === "project"
-        ? name !== undefined
-        : viewer.repositories.has(notebook.id.toLowerCase()));
-    return visible
-      ? [{ ...notebook, name: name ?? notebook.id, limit: NOTEBOOK_LIMITS[notebook.kind] }]
-      : [];
-  });
+  return [
+    { ...own, name: OWN_NAME, limit: NOTEBOOK_LIMITS.user },
+    ...others.flatMap((notebook, index) => {
+      const name = names[index];
+      return name == null ? [] : [{ ...notebook, name, limit: NOTEBOOK_LIMITS[notebook.kind] }];
+    }),
+  ];
 }
 
-function* visibleSteps(q: Q, principal: Principal, scope: NotebookScope) {
-  const viewer = yield* viewerSteps(q, principal);
-  if (viewer === null) return false;
-  if (viewer.admin) return true;
-  if (scope.kind === "repository") return viewer.repositories.has(scope.id.toLowerCase());
-  return (yield* projectsSteps(q, viewer, [scope.id])).has(scope.id);
+async function visible(access: Access, principal: Principal, scope: NotebookScope) {
+  const viewer = await viewerFor(access, principal);
+  return viewer !== null && (await notebookAccess(access, viewer, scope)) !== null;
 }
 
 async function view(db: Db, scope: NotebookScope) {
@@ -144,20 +184,25 @@ async function json(request: Request): Promise<unknown> {
   return text.length > BODY_LIMIT ? undefined : new Response(text).json().catch(() => undefined);
 }
 
-export function createNotebookHttp(options: { db: Db; now?: () => number }) {
+export function createNotebookHttp(options: {
+  db: Db;
+  now?: () => number;
+  channelAccess?: NotebookChannelAccess;
+}) {
   const { db } = options;
+  const access: Access = { db, channels: options.channelAccess };
   const now = options.now ?? Date.now;
   return async (request: Request, principal: Principal): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (path === PATH) {
       if (request.method !== "GET") return answer({ error: "List notebooks with GET." }, 405);
-      return answer({ notebooks: await db.run((q) => listSteps(q, principal)) });
+      return answer({ notebooks: await list(access, principal) });
     }
     if (!path.startsWith(`${PATH}/`)) return null;
     const [kind = "", encoded = "", action, ...rest] = path.slice(PATH.length + 1).split("/");
     const id = decoded(encoded);
     if (
-      (kind !== "repository" && kind !== "project") ||
+      !KINDS.has(kind) ||
       id.length === 0 ||
       rest.length > 0 ||
       (action !== undefined && action !== "edits" && action !== "undo")
@@ -168,7 +213,7 @@ export function createNotebookHttp(options: { db: Db; now?: () => number }) {
       kind: kind as NotebookScopeKind,
       id,
     };
-    if (!(await db.run((q) => visibleSteps(q, principal, scope)))) return answer(NOT_FOUND, 404);
+    if (!(await visible(access, principal, scope))) return answer(NOT_FOUND, 404);
     if (request.method !== (action === undefined ? "GET" : "POST"))
       return answer({ error: "Read with GET and change with POST." }, 405);
     if (action === undefined) return answer(await view(db, scope));

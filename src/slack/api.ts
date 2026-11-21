@@ -253,3 +253,28 @@ export async function slackChannelReaders(
 }
 
 const emptyList = (value: unknown) => Array.isArray(value) && value.length === 0;
+
+export async function slackChannelMembers(
+  call: SlackCall,
+  channelId: string,
+  signal: AbortSignal,
+): Promise<{ slackUserIds: ReadonlySet<string>; name: string | null } | null> {
+  try {
+    const info = await call("conversations.info", { channel: channelId }, signal);
+    const c = (info.channel ?? null) as Record<string, unknown> | null;
+    if (c?.id !== channelId || c.is_archived === true) return null;
+    const members = await pages<unknown>(
+      call,
+      "conversations.members",
+      { channel: channelId },
+      "members",
+      signal,
+    );
+    if (!members || !members.every((id) => typeof id === "string")) return null;
+    const name = typeof c.name === "string" && c.name !== "" ? c.name : null;
+    return { slackUserIds: new Set(members as string[]), name };
+  } catch (caught) {
+    if (caught instanceof SlackApiError) return null;
+    throw caught;
+  }
+}
