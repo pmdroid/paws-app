@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startDashboardFixture } from "../test/dashboard-fixture";
-import { replaceWorkspaceRepositories } from "../src/db";
+import { recordItemFiledIssueSteps, replaceWorkspaceRepositories } from "../src/db";
 
 const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-dashboard-ui-${Date.now()}`);
@@ -148,6 +148,23 @@ try {
     repositories: [{ repository: "acme/app", teamId: "team" }],
     now: Date.now(),
   });
+  for (const [index, [identifier, title, linearIssueId]] of [
+    ["PAS-3", "Fixture PAS-3", "lin-item-PAS-3"],
+    ["PAS-4", "Fixture PAS-4", "lin-item-PAS-4"],
+    ["PAS-9", "Document the follow-up flag in the settings guide", "lin-9"],
+  ].entries())
+    await f.db.run((q) =>
+      recordItemFiledIssueSteps(q, {
+        itemId: "PAS-1",
+        linearIssueId,
+        identifier,
+        title,
+        url: `https://linear.app/acme/issue/${identifier}`,
+        started: index < 2,
+        runId: f.runs["PAS-1"]!,
+        filedAt: Date.now() + index,
+      }),
+    );
   for (const width of [1440, 390]) {
     const page = await open(width);
     const resources = (seen: Request[]) => [
@@ -170,6 +187,12 @@ try {
     ];
     for (const [name, path, heading, expected] of pages) {
       const seen = await visit(page, width, name, path, heading);
+      if (name === "issue")
+        await expect(page.locator("[data-follow-up]")).toHaveText([
+          /PAS-3\s*Fixture PAS-3\s*In merge queue/,
+          "PAS-4",
+          /PAS-9.*In Linear, not handed to Paws/,
+        ]);
       const read = resources(seen).filter((resource) => PAGE_RESOURCE.test(resource));
       expect([name, read]).toEqual([name, expected]);
       const loads = seen.filter((request) => request.path === expected[0]).length;
