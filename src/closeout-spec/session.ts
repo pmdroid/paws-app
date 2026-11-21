@@ -373,6 +373,7 @@ export function createCloseoutSession(
           keepGoing,
           failedOn,
           fingerprint: ready.fingerprint,
+          busy: (check) => running.has(check),
         });
       })();
       inFlight.add(run);
@@ -914,7 +915,15 @@ async function runId(
     keepGoing,
     failedOn,
     fingerprint,
-  }: { halt: Halt; since: number; keepGoing: boolean; failedOn: FailedOn; fingerprint: string },
+    busy,
+  }: {
+    halt: Halt;
+    since: number;
+    keepGoing: boolean;
+    failedOn: FailedOn;
+    fingerprint: string;
+    busy: (id: string) => boolean;
+  },
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -950,7 +959,7 @@ async function runId(
     });
   const blocker = (step: Listed) => {
     const failure = failedOn.get(step.id);
-    return failure?.fingerprint === fingerprint ? failure.text : undefined;
+    return failure?.fingerprint === fingerprint && !busy(step.id) ? failure.text : undefined;
   };
   if (item.kind === "command" || item.kind === "setup") {
     const before = item.kind === "setup" ? required.indexOf(item) : required.length;
