@@ -44,10 +44,7 @@ export type {
   ContextSourceRef,
   ContextSourceRevision,
 } from "../db";
-export {
-  createFakeContextSummarizer,
-  type FakeContextSummarizer,
-} from "./fake";
+export { createFakeContextSummarizer, type FakeContextSummarizer } from "./fake";
 export {
   CONTEXT_BUDGET_DEFAULTS,
   CONTEXT_TOKEN_ESTIMATE,

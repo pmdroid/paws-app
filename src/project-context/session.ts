@@ -20,11 +20,7 @@ import {
   type ContextRequester,
 } from "./policy";
 import { contextKey } from "./sanitize";
-import {
-  selectContext,
-  type ContextManifest,
-  type ContextSelectionRequest,
-} from "./select";
+import { selectContext, type ContextManifest, type ContextSelectionRequest } from "./select";
 import { disclosable, ingestContext, view, type ContextRecordView } from "./store";
 
 export const CONTEXT_SESSION_NOTICE =

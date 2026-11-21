@@ -263,10 +263,7 @@ import {
   POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
-import {
-  createLinearContextAccess,
-  createProjectContextHttp,
-} from "./project-context";
+import { createLinearContextAccess, createProjectContextHttp } from "./project-context";
 import {
   acceptGitHubDelivery,
   type PullCommentFilter,

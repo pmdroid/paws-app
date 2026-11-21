@@ -340,4 +340,3 @@ test("concurrent prepares for one session are serialized and each stays delivera
   expect(results.map((result) => result.version).sort()).toEqual([1, 2, 3]);
   expect((await getContextSession(db, `work_item:b-${seq}`))?.version).toBe(3);
 });
-
