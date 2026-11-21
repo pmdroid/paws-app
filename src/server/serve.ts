@@ -115,6 +115,7 @@ import {
   type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
+import { createNotebookHttp } from "../notebook";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 
@@ -601,6 +602,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (path.startsWith("/api/context/") && secrets.projectContext !== undefined) {
         const response = await secrets.projectContext(request, access.principal);
+        if (response !== null) return response;
+      }
+      if (path === "/api/notebooks" || path.startsWith("/api/notebooks/")) {
+        const response = await createNotebookHttp({ db: store })(request, access.principal);
         if (response !== null) return response;
       }
       if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {

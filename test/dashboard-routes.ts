@@ -205,6 +205,26 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     sample: "/api/context/project/{project}/records/{record}/forget",
     member: 403,
   }),
+  api("GET", "/api/notebooks", "canonical", "PAS-2278", {
+    sample: "/api/notebooks",
+    member: 200,
+  }),
+  api("*", "/api/notebooks/*", "canonical", "PAS-2278"),
+  api("GET", "/api/notebooks/:kind/:id", "canonical", "PAS-2278", {
+    via: "/api/notebooks/*",
+    sample: "/api/notebooks/repository/other%2Fsecret",
+    member: 404,
+  }),
+  api("POST", "/api/notebooks/:kind/:id/edits", "canonical", "PAS-2278", {
+    via: "/api/notebooks/*",
+    sample: "/api/notebooks/repository/other%2Fsecret/edits",
+    member: 403,
+  }),
+  api("POST", "/api/notebooks/:kind/:id/undo", "canonical", "PAS-2278", {
+    via: "/api/notebooks/*",
+    sample: "/api/notebooks/repository/other%2Fsecret/undo",
+    member: 403,
+  }),
   api("GET", "/api/aliases/:kind/:id", "canonical", "PAS-902", {
     via: "/api/aliases",
     sample: "/api/aliases/runs/{run}",
