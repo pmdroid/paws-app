@@ -157,7 +157,7 @@ Workspace › Linear › **Comment agents** › **Agents**: Linear app user IDs,
 
 ### Project memory
 
-Workspace › Project memory. All three are off by default.
+Saved settings under `[project_memory]`: `decisions`, `work_summary` and `dream`. The dashboard has no page for them. All three are off by default.
 
 - **Save answers as decisions**: a person's answer to an agent's question on an issue in a Linear project is saved as a project decision ([project context](project-context.md)).
 - **Summarize finished work**: when Paws opens a pull request, it saves a short summary of the change to the project's memory.

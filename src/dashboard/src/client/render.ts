@@ -107,7 +107,6 @@ export interface Rendered {
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
 const PAGE_ROOTS: Partial<Record<Route["view"], string>> = {
   improvements: `${pageHeading("improvements")}<div id="improvements-page"></div>`,
-  context: `${pageHeading("context")}<div id="context-page"></div>`,
 };
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
@@ -692,12 +691,7 @@ function issueFacts(
   blocked: readonly string[],
 ): Array<[string, string]> {
   const facts: Array<[string, string]> = [
-    [
-      "Project",
-      item.project
-        ? `<a href="${routeHref({ view: "context", kind: "project", id: item.project.id })}" title="Read the context Paws keeps for this project">${esc(item.project.name)}</a>`
-        : "No project",
-    ],
+    ["Project", item.project ? esc(item.project.name) : "No project"],
     ["Runner", esc(run?.runner ?? "Not placed yet")],
     ["Agent", esc(run?.agent ?? item.agent)],
   ];

@@ -51,7 +51,6 @@ import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
-import { createProjectMemorySettings } from "./project-memory-settings";
 import { createNotebookSettings } from "./notebook-settings";
 import { createQueueSettings } from "./queue-settings";
 import { createAgentAccountSettings } from "./agent-account-settings";
@@ -59,8 +58,6 @@ import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
 import { createImprovements } from "./improvements-page";
-import { createProjectContext } from "./project-context";
-import { createContextProjects } from "./context-projects";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -92,16 +89,11 @@ const memberVmSettings = createMemberVmSettings();
 const runnerVmKeys = createRunnerVmKeys();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
-const projectMemorySettings = createProjectMemorySettings(() => settings.stale());
 const notebookSettings = createNotebookSettings();
 const agentAccountSettings = createAgentAccountSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
-const projectContext = createProjectContext({
-  go: (search) => void router.navigate(`${routePath(currentRoute())}${search}`),
-});
-const contextProjects = createContextProjects();
 const improvements = createImprovements({
   counted: (total) => shell.setCounts({ improvements: total }),
   go: (route) => void router.navigate(routePath(route)),
@@ -483,8 +475,6 @@ function paint(): void {
   if (accountsRoot) agentAccountSettings.mount(accountsRoot, currentEngine());
   const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
-  const projectMemoryRoot = document.querySelector<HTMLElement>("#project-memory-settings");
-  if (projectMemoryRoot) projectMemorySettings.mount(projectMemoryRoot, currentEngine());
   const notebookRoot = document.querySelector<HTMLElement>("#notebook-settings");
   if (notebookRoot) notebookSettings.mount(notebookRoot, currentEngine());
   const storageRoot = document.querySelector<HTMLElement>("#storage-settings");
@@ -523,13 +513,6 @@ function paint(): void {
   if (improvementsRoot && model.route.view === "improvements")
     improvements.mount(improvementsRoot, currentEngine(), model.route, workspaceReader());
   else improvements.leave();
-  const contextRoot = document.querySelector<HTMLElement>("#context-page");
-  if (contextRoot && model.route.view === "context" && model.route.kind === "project")
-    projectContext.mount(contextRoot, currentEngine(), model.route);
-  else projectContext.leave();
-  if (contextRoot && model.route.view === "context" && model.route.kind === "projects")
-    contextProjects.mount(contextRoot, currentEngine());
-  else contextProjects.leave();
   if (loadOpenLogs()) paint();
 }
 
