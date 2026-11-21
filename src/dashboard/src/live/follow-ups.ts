@@ -1,4 +1,5 @@
 import {
+  filedIssueOriginsSteps,
   itemFiledIssuesSteps,
   listWorkItemFactsSteps,
   listWorkItemsByStatesSteps,
@@ -53,7 +54,9 @@ export async function followUpsFor(
         : { state: itemState(item.state), path: dashboardIssuePath(publicId(item)) }),
     });
   }
-  const filedFrom = await originOf(store, records, all, own, facts);
+  const origins = await store.run((q) => filedIssueOriginsSteps(q, records[0]!.linearIssueId));
+  const originId = origins.find((row) => !own.has(row.itemId))?.itemId;
+  const filedFrom = all.find((record) => record.id === originId);
   if (filedFrom === undefined) return { followUps };
   return {
     followUps,
@@ -65,23 +68,4 @@ export async function followUpsFor(
         }
       : { identifier: publicId(filedFrom) },
   };
-}
-
-async function originOf(
-  store: Db,
-  records: readonly WorkItemRecord[],
-  all: readonly WorkItemRecord[],
-  own: ReadonlySet<string>,
-  facts: ReadonlyMap<string, { createdAt: number }>,
-): Promise<WorkItemRecord | undefined> {
-  const createdAt = (record: WorkItemRecord) => facts.get(record.id)?.createdAt ?? 0;
-  const before = Math.min(...records.map(createdAt));
-  const candidates = all
-    .filter((record) => !own.has(record.id) && createdAt(record) <= before)
-    .sort((left, right) => createdAt(right) - createdAt(left));
-  for (const candidate of candidates) {
-    const rows = await store.run((q) => itemFiledIssuesSteps(q, candidate.id));
-    if (rows.some((row) => row.linearIssueId === records[0]!.linearIssueId)) return candidate;
-  }
-  return undefined;
 }
