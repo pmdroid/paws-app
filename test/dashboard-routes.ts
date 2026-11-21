@@ -46,6 +46,7 @@ const WORKSPACE_PAGE_IDS = [
   "member-vm",
   "runner-vms",
   "brief",
+  "notebook",
   "integrations",
   "members",
   "workspace",
