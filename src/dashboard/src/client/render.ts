@@ -108,6 +108,7 @@ export interface Rendered {
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
 const PAGE_ROOTS: Partial<Record<Route["view"], string>> = {
   improvements: `${pageHeading("improvements")}<div id="improvements-page"></div>`,
+  notebooks: `<h1>${PAGES.notebooks.title}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${PAGES.notebooks.description}</p><div id="notebooks-page" class="agent-settings"></div></div>`,
 };
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);

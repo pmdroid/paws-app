@@ -19,6 +19,7 @@ export type Route =
   | { view: "improvements"; tab: ImprovementTab; id: string | null }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
+  | { view: "notebooks" }
   | { view: "settings"; page?: UserSettingsPage }
   | { view: "workspace"; page?: WorkspacePage };
 
@@ -71,6 +72,8 @@ export function matchRoute(path: string): Route | null {
       return { view: "evidence", id };
     case "questions":
       return { view: "questions", id };
+    case "notebooks":
+      return { view: "notebooks" };
     case "settings":
       if (id === "findings") return { view: "findings" };
       return isUserSettingsPage(id) ? { view: "settings", page: id } : { view: "settings" };
@@ -87,6 +90,7 @@ export function routePath(route: Route): string {
     return route.page ? `/${route.view}/${route.page}` : `/${route.view}`;
   if (route.view === "mergeQueue") return "/merge-queue";
   if (route.view === "findings") return "/findings";
+  if (route.view === "notebooks") return "/notebooks";
   if (route.view === "improvements") {
     if (route.tab === "history" || route.tab === "settings") return `/improvements/${route.tab}`;
     if (route.id === null) return "/improvements";

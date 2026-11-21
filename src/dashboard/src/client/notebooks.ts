@@ -3,7 +3,7 @@ import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
-type Kind = "repository" | "project";
+type Kind = "user" | "project" | "channel" | "repository";
 type Summary = { kind: Kind; id: string; name: string; size: number; limit: number };
 type Entry = { id: string; body: string; updatedAt: number };
 type Change = {
@@ -38,7 +38,17 @@ export type NotebookView = {
 };
 
 export const NOTEBOOK_EMPTY = "Nothing here yet. Agents add what the next agent should know.";
+export const NOTEBOOK_OWN_EMPTY =
+  "Paws writes here when you talk to it in a direct message. Only you can see it.";
 export const NOTEBOOK_FULL = "This notebook is full. Remove or shorten an entry first.";
+
+const GROUPS: [Kind, string][] = [
+  ["user", "Your notebook"],
+  ["project", "Projects"],
+  ["channel", "Slack channels"],
+  ["repository", "Repositories"],
+];
+const order = (kind: Kind) => GROUPS.findIndex(([candidate]) => candidate === kind);
 
 const VERBS = { add: "added", patch: "changed", remove: "removed" } as const;
 
@@ -62,19 +72,23 @@ function failure(view: NotebookView, at: string): string {
 }
 
 function renderList(view: NotebookView, list: Summary[]): string {
-  if (list.length === 0) return `<p class="empty">${NOTEBOOK_EMPTY}</p>${failure(view, "list")}`;
-  const group = (kind: Kind, title: string) => {
+  const group = ([kind, title]: [Kind, string]) => {
     const rows = list.filter((notebook) => notebook.kind === kind);
-    if (rows.length === 0) return "";
+    const empty =
+      kind === "user" && rows.every((notebook) => notebook.size === 0)
+        ? `<p class="empty">${NOTEBOOK_OWN_EMPTY}</p>`
+        : "";
+    if (rows.length === 0 && !empty) return "";
     const items = rows
       .map(
         (notebook) =>
           `<li class="between"><button class="btn" type="button" data-notebook-open="${esc(`${notebook.kind}:${notebook.id}`)}" ${view.busy ? "disabled" : ""}>${esc(notebook.name)}</button><span class="sub">${characters(notebook.size, notebook.limit)}</span></li>`,
       )
       .join("");
-    return `<div class="col"><h2>${title}</h2><ul role="list" aria-label="${title}">${items}</ul></div>`;
+    const listed = items ? `<ul role="list" aria-label="${title}">${items}</ul>` : "";
+    return `<div class="col"><h2>${title}</h2>${listed}${empty}</div>`;
   };
-  return `${group("repository", "Repositories")}${group("project", "Projects")}${failure(view, "list")}${failure(view, "open")}`;
+  return `${GROUPS.map(group).join("")}${failure(view, "list")}${failure(view, "open")}`;
 }
 
 function renderEntry(view: NotebookView, entry: Entry): string {
@@ -124,7 +138,7 @@ ${failure(view, "open")}${entries}
 <div class="col"><h2>History</h2>${history}</div>`;
 }
 
-export function renderNotebookSettings(view: NotebookView): string {
+export function renderNotebooks(view: NotebookView): string {
   const body = view.open
     ? renderOpen(view, view.open)
     : view.list
@@ -145,14 +159,14 @@ const blank = (): NotebookView => ({
   error: null,
 });
 
-export function createNotebookSettings(): {
+export function createNotebooks(): {
   mount(root: HTMLElement, engine: string | null): void;
 } {
   let root: HTMLElement | null = null;
   let engine: string | null = null;
   let view = blank();
   const paint = () => {
-    if (root) renderMarkup(root, renderNotebookSettings(view));
+    if (root) renderMarkup(root, renderNotebooks(view));
   };
   const request = async (at: string, path: string, body?: unknown) => {
     if (!engine) return;
@@ -181,7 +195,6 @@ export function createNotebookSettings(): {
           text: reason ? notebookError(reason) : `Request failed (${response.status}).`,
         };
       } else if (Array.isArray(data.notebooks)) {
-        const order = (kind: Kind) => (kind === "repository" ? 0 : 1);
         view.list = [...(data.notebooks as Summary[])].sort(
           (a, b) => order(a.kind) - order(b.kind) || a.name.localeCompare(b.name),
         );
@@ -192,7 +205,7 @@ export function createNotebookSettings(): {
         view.drafts = drafts;
       }
     } catch (error) {
-      journalCaught(error, "notebook-settings.createNotebookSettings.request", null);
+      journalCaught(error, "notebooks.createNotebooks.request", null);
       if (current !== engine) return;
       view.error = { at, text: error instanceof Error ? error.message : "Could not load." };
     }

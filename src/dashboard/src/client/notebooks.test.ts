@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { WORKSPACE_PAGES, renderSettingsPage, setSettingsAdmin } from "./settings-pages";
-import { NOTEBOOK_EMPTY, NOTEBOOK_FULL, createNotebookSettings } from "./notebook-settings";
+import { NAVIGATION } from "./navigation";
+import { render } from "./render";
+import { matchRoute } from "./route";
+import { WORKSPACE_PAGES, setSettingsAdmin, settingsRedirect } from "./settings-pages";
+import { NOTEBOOK_EMPTY, NOTEBOOK_FULL, NOTEBOOK_OWN_EMPTY, createNotebooks } from "./notebooks";
 import { settleReactWork } from "./settle-react";
 
 const ENGINE = "http://127.0.0.1:8787";
 const LIST = [
+  { kind: "user", id: "u1", name: "Your notebook", size: 120, limit: 4000 },
+  { kind: "repository", id: "acme/web", name: "acme/web", size: 5, limit: 12000 },
+  { kind: "channel", id: "C1", name: "#launch", size: 9, limit: 4000 },
   { kind: "project", id: "p1", name: "Launch", size: 40, limit: 4000 },
   { kind: "repository", id: "acme/app", name: "acme/app", size: 812, limit: 12000 },
 ];
@@ -44,8 +50,8 @@ const settle = async () => {
 };
 
 beforeEach(() => {
-  setSettingsAdmin(true);
-  window = new Window({ url: `${ENGINE}/workspace/notebook` });
+  setSettingsAdmin(false);
+  window = new Window({ url: `${ENGINE}/notebooks` });
   for (const name of GLOBALS) {
     saved.set(name, (globalThis as Record<string, unknown>)[name]);
     (globalThis as Record<string, unknown>)[name] =
@@ -94,25 +100,62 @@ const entryItem = (root: HTMLElement, text: string) =>
 
 async function opened() {
   const root = window.document.createElement("div") as unknown as HTMLElement;
-  createNotebookSettings().mount(root, ENGINE);
+  createNotebooks().mount(root, ENGINE);
   await settle();
   await click(button(root, "acme/app"));
   return root;
 }
 
-test("Notebook is a Workspace page", () => {
-  expect(WORKSPACE_PAGES.find((page) => page.id === "notebook")?.name).toBe("Notebook");
-  expect(renderSettingsPage("notebook")).toContain('id="notebook-settings"');
+test("Notebooks is in the main navigation after Questions for every member", () => {
+  const work = NAVIGATION.find((group) => group.label === "Work")!.views as readonly string[];
+  expect(work.indexOf("notebooks")).toBe(work.indexOf("questions") + 1);
+  expect(WORKSPACE_PAGES.map((page) => page.id)).not.toContain("notebook" as never);
+  expect(matchRoute("/notebooks")).toEqual({ view: "notebooks" });
+  const page = render({
+    route: { view: "notebooks" },
+    ...{ phase: "ready", overview: null, issues: null, error: null, engineUrl: null },
+  } as never);
+  expect(page.title).toBe("Paws status · Notebooks");
+  expect(page.content).toContain('id="notebooks-page"');
+  expect(page.content).toContain(
+    "What agents wrote down for your projects, channels and repositories, and your own notebook. Correct an entry or undo a change.",
+  );
 });
 
-test("the list shows repositories first, then projects, with their size", async () => {
+test("the old settings page redirects to Notebooks", () => {
+  expect(settingsRedirect("/workspace/notebook")).toBe("/notebooks");
+  expect(settingsRedirect("/settings/notebook")).toBe("/notebooks");
+  setSettingsAdmin(true);
+  expect(settingsRedirect("/workspace/notebook")).toBe("/notebooks");
+});
+
+test("the list groups your notebook, projects, channels and repositories with their size", async () => {
   const root = window.document.createElement("div") as unknown as HTMLElement;
-  createNotebookSettings().mount(root, ENGINE);
+  createNotebooks().mount(root, ENGINE);
   await settle();
   const headings = [...root.querySelectorAll("h2")].map((heading) => heading.textContent);
-  expect(headings).toEqual(["Repositories", "Projects"]);
+  expect(headings).toEqual(["Your notebook", "Projects", "Slack channels", "Repositories"]);
+  const names = [...root.querySelectorAll("[data-notebook-open]")].map((item) => item.textContent);
+  expect(names).toEqual(["Your notebook", "Launch", "#launch", "acme/app", "acme/web"]);
   expect(root.textContent).toContain("acme/app812 of 12,000 characters");
   expect(root.textContent).toContain("Launch40 of 4,000 characters");
+  expect(root.textContent).not.toContain(NOTEBOOK_OWN_EMPTY);
+});
+
+test("an empty personal notebook says so and groups without notebooks are hidden", async () => {
+  reply = () =>
+    Response.json({
+      notebooks: [{ kind: "user", id: "u1", name: "Your notebook", size: 0, limit: 4000 }],
+    });
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  createNotebooks().mount(root, ENGINE);
+  await settle();
+  expect([...root.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+    "Your notebook",
+  ]);
+  expect(root.textContent).toContain(NOTEBOOK_OWN_EMPTY);
+  await click(button(root, "Your notebook"));
+  expect(requests.at(-1)!.url).toBe(`${ENGINE}/api/notebooks/user/u1`);
 });
 
 test("opening a notebook shows its size, entries and history newest first", async () => {

@@ -27,7 +27,7 @@ The tool reads or edits one of two notebooks, chosen by the agent with `notebook
 | `repository` | Codebase facts for the item's repository            | 12,000 characters |
 | `project`    | Facts for the issue's Linear project (none without) | 4,000 characters  |
 
-Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. An agent may patch or remove any entry, including one another agent wrote. Each change records the issue and the person who delegated it, and people can inspect and undo changes.
+Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. An agent may patch or remove any entry, including one another agent wrote. Each change records the issue and the person who delegated it, and people can inspect and undo changes on the dashboard's **Notebooks** page, which lists every notebook they may read, their own first.
 
 ## Slack channel memory
 
