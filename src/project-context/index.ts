@@ -131,6 +131,7 @@ export {
   type ContextViewSummary,
 } from "./view";
 export { createProjectContextHttp } from "./http";
+export { sanitizedContextText } from "./sanitize";
 export { MEMORY_INDEX_HEADER, MEMORY_INDEX_LIMITS } from "./memory-index";
 export {
   recordAnsweredDecision,
