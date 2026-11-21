@@ -7,7 +7,6 @@ import {
   createProjectSessionContext,
   forgetContextSource,
   recordWorkItemContext,
-  type ContextManifest,
   type ProjectSessionContext,
 } from "../../src/project-context";
 import { ACME, type Proof } from "./harness";
@@ -62,7 +61,7 @@ export default {
     "src/linear/project-scope.ts",
   ],
   summary:
-    "An earlier project session records a decision, its reason and an open question; after a restart, a new session in the same project receives them before its first turn, within budget, without other projects' or private canaries, without runner capacity and without writing to Linear.",
+    "An earlier project session records a decision, its reason and an open question, and context preparation still works without runner capacity; a work item in the same project then gets Linear's project overview in its brief instead of a memory pack or index, stores no context session, and writes nothing to Linear.",
   delegatePayload: { organizationId: ORG, agentSession: { creatorId: CREATOR } },
   projectContext: (store) => {
     const service = createProjectSessionContext({ db: store, access, reads });
@@ -191,23 +190,16 @@ export default {
     const first = proof.launches.find((launch) => launch.purpose === "implement");
     const prompt = first?.prompt ?? "";
     proof.expect(
-      "session B's first turn received the decision, its reason and the open question with provenance",
-      prompt.includes(DECISION) &&
-        prompt.includes(REASON) &&
-        prompt.includes(QUESTION) &&
-        prompt.includes("source: paws_work_item work-item-session-a@a1") &&
-        prompt.includes("Counts are whole numbers"),
-      prompt.slice(
-        prompt.indexOf(CONTEXT_PACK_HEADER),
-        prompt.indexOf(CONTEXT_PACK_HEADER) + 1_500,
-      ),
-    );
-    proof.expect(
-      "the pack appears once, after the task requirements",
-      prompt.split(CONTEXT_PACK_HEADER).length === 2 &&
+      "session B's first turn gets Linear's project overview and no memory pack, index or decision",
+      prompt.includes("Project overview: Warehouse\n\nRequirement: Counts are whole numbers.") &&
         prompt.indexOf("Write the shelf count to widgets.txt.") <
-          prompt.indexOf(CONTEXT_PACK_HEADER),
-      null,
+          prompt.indexOf("Project overview: Warehouse") &&
+        !prompt.includes(CONTEXT_PACK_HEADER) &&
+        !prompt.includes("Project memory index") &&
+        !prompt.includes("recall(") &&
+        !prompt.includes(DECISION) &&
+        !prompt.includes(QUESTION),
+      prompt.slice(0, 1_500),
     );
     proof.expect(
       "no turn gets remember or recall, and the work turn's prompt never asks for `remember`",
@@ -226,22 +218,11 @@ export default {
       leaked.length === 0 && !prompt.includes("canary-private-source"),
       leaked,
     );
-    proof.expect(
-      "the forgotten document stays out of the prompt, even though Linear's raw overview still has it",
-      !prompt.includes("FORGOTTEN-DOC") && !prompt.includes("Project document: Old plan"),
-      leaked,
-    );
     const [item] = await listWorkItemsByStates(proof.store, ["merged"]);
     const session = item ? await getContextSession(proof.store, `work_item:${item.id}`) : null;
-    const manifest = session?.manifest as ContextManifest | undefined;
-    proof.expect(
-      "the session's manifest is stored within the hard cap",
-      session?.status === "injected" &&
-        manifest !== undefined &&
-        manifest.tokens.total <= manifest.tokens.hardCap &&
-        manifest.tokens.memoryUsed <= manifest.tokens.memoryBudget,
-      { version: session?.version, tokens: manifest?.tokens },
-    );
+    proof.expect("no context session is stored for the work item", !!item && session === null, {
+      status: session?.status,
+    });
     const posted = JSON.stringify([
       proof.linear.progress,
       proof.linear.questions,

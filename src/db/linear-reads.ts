@@ -46,6 +46,16 @@ export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearRe
   return row.valueJson;
 }
 
+export function* getTaskLinearReadEntrySteps(q: Q, itemId: string, kind: TaskLinearReadKind) {
+  const { workItemLinearRead } = q.t;
+  return yield* q.one(
+    q.orm
+      .select({ value: workItemLinearRead.valueJson, readAt: workItemLinearRead.readAt })
+      .from(workItemLinearRead)
+      .where(and(eq(workItemLinearRead.itemId, itemId), eq(workItemLinearRead.kind, kind))),
+  );
+}
+
 export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {
   const { linearSession } = q.t;
   const row = yield* q.one(

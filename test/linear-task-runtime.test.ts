@@ -269,7 +269,7 @@ test("a parent discussion classifies before fanout and completes without Git, is
   }
 });
 
-test("an answer turn on a project item gets neither remember, recall nor the project memory note", async () => {
+test("an answer turn on a project item gets neither remember, recall, the memory index nor the project memory note", async () => {
   const prepared: string[] = [];
   const projectContext: ProjectSessionContext = {
     async prepare(input) {
@@ -302,13 +302,13 @@ test("an answer turn on a project item gets neither remember, recall nor the pro
     });
     await f.jobs.tick();
     expect(f.launches).toEqual(["classify", "answer"]);
-    expect(prepared).toContain("project-1");
+    expect(prepared).toEqual([]);
     const trace = JSON.parse(readFileSync(f.traces[1]!, "utf8")) as {
       mcpServers: { env: { name: string; value: string }[] }[];
       prompts: unknown[];
     };
     const prompt = JSON.stringify(trace.prompts);
-    expect(prompt).toContain("Project facts.");
+    expect(prompt).not.toContain("Project facts.");
     expect(prompt).not.toContain("Project memory:");
     const tools = trace.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!;
     expect(tools.value.split(",")).toContain("ask_team");

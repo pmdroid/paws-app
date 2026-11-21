@@ -129,6 +129,14 @@ export default {
       );
 
       access.grant({ workspaceId: ORG, userId: ANSWERER }, TEAM);
+      await service.prepare({
+        consumerKey: "preview:project",
+        organizationId: ORG,
+        projectId: PROJECT,
+        requesterId: ANSWERER,
+        instructions: "",
+        request: "Read the project",
+      });
       await proof.answerInLinear(ANSWERS[2]!);
       await asked(4);
       const first = await decisions();
