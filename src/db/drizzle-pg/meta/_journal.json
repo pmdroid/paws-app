@@ -134,6 +134,20 @@
       "when": 1795244523436,
       "tag": "0018_item_filed_issue",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795279743136,
+      "tag": "0019_delete_linear_project_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795279754751,
+      "tag": "0020_narrow_context_scope_kind",
+      "breakpoints": true
     }
   ]
 }

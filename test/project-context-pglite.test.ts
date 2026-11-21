@@ -40,17 +40,17 @@ afterAll(async () => {
 function ids() {
   seq++;
   const workspaceId = `ws-${seq}`;
-  const projectId = `project-${seq}`;
+  const projectId = "C-project";
   const namespace: ContextNamespace = {
     workspaceId,
-    scopeKind: "linear_project",
+    scopeKind: "slack_channel",
     scopeId: projectId,
   };
   const alice: ContextRequester = { workspaceId, userId: `alice-${seq}` };
   return { workspaceId, projectId, namespace, alice };
 }
 
-const project = { audience: "project_members" } as const;
+const project = { audience: "channel_members", channelId: "C-project" } as const;
 
 function source(
   id: string,
@@ -58,7 +58,7 @@ function source(
   overrides: Partial<ContextSourceRevision> = {},
 ): ContextSourceRevision {
   return {
-    kind: "linear_project_document",
+    kind: "slack_channel_message",
     id,
     url: `https://linear.app/d/${id}`,
     revision: new Date(revisionAt).toISOString(),
@@ -90,7 +90,7 @@ async function bodies(
   const result = await queryContext(db, access, {
     namespace,
     requester,
-    destination: project,
+    destination: { audience: "channel_members", channelId: namespace.scopeId },
     limit: 50,
     maxBytes: 32_000,
     now,
@@ -238,7 +238,6 @@ test("a project member without access to a narrower source sees nothing about it
     namespace,
     requester: alice,
     source: source("item-1", T0, {
-      kind: "paws_work_item",
       url: "https://linear.app/i/CANARY-URL",
       restriction: { teamIds: ["team-private"], repository: "o/secret" },
     }),
@@ -250,7 +249,6 @@ test("a project member without access to a narrower source sees nothing about it
     namespace,
     requester: bob,
     source: source("item-2", T0, {
-      kind: "paws_work_item",
       restriction: { teamIds: ["team-private"] },
     }),
     claims: [observation("narrow", "bob cannot store this")],
@@ -281,9 +279,7 @@ test("a project member without access to a narrower source sees nothing about it
     now: T0,
   });
   const privateId =
-    aliceView.status === "ok"
-      ? aliceView.records.find((r) => r.source.kind === "paws_work_item")!.id
-      : "";
+    aliceView.status === "ok" ? aliceView.records.find((r) => r.source.id === "item-1")!.id : "";
   const destination = project;
   expect(
     await inspectContext(db, access, {
@@ -307,7 +303,7 @@ test("a project member without access to a narrower source sees nothing about it
     await forgetContextSource(db, access, {
       namespace,
       requester: bob,
-      source: { kind: "paws_work_item", id: "item-1" },
+      source: { kind: "slack_channel_message", id: "item-1" },
       now: T0,
     }),
   ).toEqual({ status: "refused" });
@@ -435,7 +431,7 @@ test("forget is a tombstone that new revisions and replays respect until an auth
   const forgotten = await forgetContextSource(db, access, {
     namespace,
     requester: alice,
-    source: { kind: "linear_project_document", id: "doc-f" },
+    source: { kind: "slack_channel_message", id: "doc-f" },
     now: T0 + 1,
   });
   expect(forgotten.status).toBe("forgotten");
@@ -456,7 +452,7 @@ test("forget is a tombstone that new revisions and replays respect until an auth
     await readdContext(db, access, {
       namespace,
       requester: bob,
-      source: { kind: "linear_project_document", id: "doc-f" },
+      source: { kind: "slack_channel_message", id: "doc-f" },
       now: T0 + DAY,
     }),
   ).toBe(false);
@@ -464,7 +460,7 @@ test("forget is a tombstone that new revisions and replays respect until an auth
     await readdContext(db, access, {
       namespace,
       requester: alice,
-      source: { kind: "linear_project_document", id: "doc-f" },
+      source: { kind: "slack_channel_message", id: "doc-f" },
       now: T0 + DAY,
     }),
   ).toBe(true);
@@ -500,7 +496,7 @@ test("source edits, deletion, revocation and expiry invalidate records and repla
   await ingest("doc-d", T0, [observation("x", "DELETED-DOC")]);
   const deleted = await invalidateContext(db, {
     namespace,
-    source: { kind: "linear_project_document", id: "doc-d" },
+    source: { kind: "slack_channel_message", id: "doc-d" },
     reason: "deleted",
     now: T0 + 20,
   });
@@ -510,7 +506,7 @@ test("source edits, deletion, revocation and expiry invalidate records and repla
   await ingest("doc-r", T0, [observation("x", "REVOKED-DOC")]);
   await invalidateContext(db, {
     namespace,
-    source: { kind: "linear_project_document", id: "doc-r" },
+    source: { kind: "slack_channel_message", id: "doc-r" },
     reason: "revoked",
     now: T0 + 20,
   });

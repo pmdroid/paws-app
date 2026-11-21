@@ -20,17 +20,13 @@ export const contextScope = pgTable(
     status: text().notNull(),
     generation: bigint({ mode: "number" }).notNull(),
     changedAt: bigint("changed_at", { mode: "number" }).notNull(),
-    dreamedAt: bigint("dreamed_at", { mode: "number" }),
   },
   (table) => [
     primaryKey({
       columns: [table.workspaceId, table.scopeKind, table.scopeId],
       name: "context_scope_pk",
     }),
-    check(
-      "context_scope_kind",
-      sql`scope_kind IN ('linear_project','slack_channel','user_private')`,
-    ),
+    check("context_scope_kind", sql`scope_kind IN ('slack_channel','user_private')`),
     check("context_scope_status", sql`status IN ('connected','disconnected')`),
   ],
 );
@@ -228,32 +224,5 @@ export const contextSession = pgTable(
     index("context_session_scope").on(table.workspaceId, table.scopeKind, table.scopeId),
     check("context_session_status", sql`status IN ('injected','withheld')`),
     check("context_session_version", sql`version > 0`),
-  ],
-);
-
-export const contextForgottenEntry = pgTable(
-  "context_forgotten_entry",
-  {
-    workspaceId: text("workspace_id").notNull(),
-    scopeKind: text("scope_kind").notNull(),
-    scopeId: text("scope_id").notNull(),
-    sourceKind: text("source_kind").notNull(),
-    sourceId: text("source_id").notNull(),
-    recordKey: text("record_key").notNull(),
-    forgottenBy: text("forgotten_by").notNull(),
-    forgottenAt: bigint("forgotten_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [
-        table.workspaceId,
-        table.scopeKind,
-        table.scopeId,
-        table.sourceKind,
-        table.sourceId,
-        table.recordKey,
-      ],
-      name: "context_forgotten_entry_pk",
-    }),
   ],
 );
