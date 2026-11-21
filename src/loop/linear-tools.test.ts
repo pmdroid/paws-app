@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import {
   ensureLinearSessionSteps,
   getWorkItemSteps,
+  itemFiledIssuesSteps,
   insertRunSteps,
   putWorkspaceUserSteps,
   requireLinearTaskDelegationSteps,
@@ -85,7 +86,7 @@ async function setup(options: { mode?: string | null; creator?: string | null } 
   const item = (await db.run((q) => getWorkItemSteps(q, "item")))!;
   const tools = (runId = run.id, filed = new Map<string, number>()) =>
     linearToolsFor({ store: db, tracker, item, runId, filed });
-  return { tracker, tools };
+  return { db, run, tracker, tools };
 }
 
 test("a code-mode item gets the tools; answer, plan and an unresolved delegator get none", async () => {
@@ -190,6 +191,23 @@ test("create_issue files in the item's team with a relation, three per run, once
   const restarted = (await tools())!;
   await restarted.call("create_issue", { title: "Follow-up", description: "Do it." });
   expect(tracker.agentIssues.length).toBe(count);
+});
+
+test("create_issue records the filed issue once, also when the same call is retried", async () => {
+  const { db, run, tracker, tools } = await setup();
+  const create = tracker.createAgentIssue.bind(tracker);
+  const url = "https://linear.app/x/issue/PAS-5";
+  tracker.createAgentIssue = async (request) => ({ ...(await create(request)), url });
+  const call = { title: "Follow-up", description: "Do it.", start: true };
+  await (await tools())!.call("create_issue", call);
+  await (await tools())!.call("create_issue", call);
+  const filed = tracker.agentIssues.at(-1)!;
+  expect(await db.run((q) => itemFiledIssuesSteps(q, "item"))).toEqual([
+    expect.objectContaining({
+      ...{ itemId: "item", linearIssueId: filed.id, identifier: filed.identifier },
+      ...{ title: "Follow-up", url, started: true, runId: run.id },
+    }),
+  ]);
 });
 
 test("update_issue applies to the item's own issue and one it filed, not to another", async () => {

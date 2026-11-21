@@ -84,6 +84,7 @@ test("the pull request response starts with the agent's capped summary and ends 
       pull: { number: 7, url: "https://github.com/o/r/pull/7" },
       risk: null,
       openLine: "Open findings: none.",
+      filed: [],
       summary,
     });
   const short = await response("Added the turn summary.\n\nVerified with bun test.");

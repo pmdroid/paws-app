@@ -4,6 +4,7 @@ import {
   getLinearTaskDelegationSteps,
   getTaskModeSteps,
   listRunsSteps,
+  recordItemFiledIssueSteps,
   workspaceForOrganizationSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
@@ -206,15 +207,30 @@ export async function linearToolsFor(input: LinearToolsInput): Promise<HostTools
     filed.set(runId, n);
     try {
       const description = `${text(args["description"]).trim()}\n\nFiled from ${item.linearIdentifier}.`;
-      return await linear.createAgentIssue({
+      const title = text(args["title"]);
+      const started = args["start"] === true;
+      const issue = await linear.createAgentIssue({
         key: `${item.id}:${runId}:${n}`,
         teamId,
-        title: text(args["title"]),
+        title,
         description,
         ...(await labels(args["labels"])),
         relation: { issueId: item.linearIssueId, type: "related" },
-        delegate: args["start"] === true,
+        delegate: started,
       });
+      await store.run((q) =>
+        recordItemFiledIssueSteps(q, {
+          itemId: item.id,
+          linearIssueId: issue.id,
+          identifier: issue.identifier,
+          title,
+          url: issue.url,
+          started,
+          runId,
+          filedAt: Date.now(),
+        }),
+      );
+      return issue;
     } catch (error) {
       if (filed.get(runId) === n) filed.set(runId, n - 1);
       throw error;
