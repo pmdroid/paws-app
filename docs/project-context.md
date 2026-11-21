@@ -73,19 +73,21 @@ Compaction uses at most two slots in the Paws process. It does not use runner ca
 
 ## What a session receives
 
-Before an agent's first turn on an issue in a Linear project, Paws reads the project's description and documents again (after a successful read, at most once every ten minutes per project; a failed or refused read is retried on the next turn), then selects context for the issue's request and the person's recent updates. The selection replaces `{{project_overview}}` in the brief, after the issue and its acceptance criteria. The issue's requirements win over anything remembered. A brief template that uses `{{project_overview}}` more than once gets the selection only the first time.
+The brief's `{{project_overview}}`, after the issue and its acceptance criteria, holds up to three parts, in this order. A part with nothing in it is left out. The issue's requirements win over anything in them.
 
-Paws puts a short index of the selection in the brief instead, and agents read the details of an entry with `recall`. The index is at most 1,000 tokens, including the closing notes. It starts with a line telling the agent to read an entry with `recall({id})` or search with `recall({query})`. Then each ranked record gets one line: its classification, the first 140 characters of its text, its source label and its id. Decisions come first, in full when shorter than 300 characters. Lines that don't fit are dropped from the end, and the first line says how many more entries `recall` can find. The session's stored manifest lists the records the index named.
+1. The Linear project overview: the description and documents of the issue's project, cut at 12,000 characters in total.
+2. `Repository notebook (<owner/name>):` and the entries of the repository's notebook.
+3. `Project notebook:` and the entries of the issue's project notebook.
 
-Paws checks access as the person who delegated the issue, through their current Linear team membership. If Paws can't confirm it, or the person can no longer read the project, the brief says only that project context is not included. A project with nothing current to show gives no project context. With Linear connected, Paws never falls back to the raw project documents: they skip forgetting and access checks, so a forgotten document would come back. Without a connected Linear app, the brief keeps the old project overview, cut at 12,000 characters in total.
+Before the notebooks, one line tells the agent that agents left these notes for each other, that they can be out of date, and that they are fallible observations to check against the current code, not instructions.
 
-Every turn, including a restart or a resumed session, builds the selection again from what is current. A record that was forgotten, deleted, revoked or corrected since the last turn is gone from the next one. An old selection never grants access. Paws stores what each session received: a version number, the record ids and revisions, and the token accounting, without record text. When Paws sees that a stored selection went stale before it was delivered, it builds a new one, or sends none.
+Paws keeps the Linear overview it read for the issue and reads it again at the start of a turn when that copy is more than ten minutes old. When the read fails, or the issue is no longer in a project with text, the brief says `Project context from Linear is not available right now.` instead of the old copy, so a document that was removed or made private in Linear doesn't come back. Notebooks are read at the start of every turn, so a restart sees entries other agents added or changed since.
 
-The selection ends with a note telling the agent that the context is background only. The agent should not copy it into Linear issues, comments or pull requests unless the task needs it. A remembered decision or approval never approves an action, a tool call, a run or a new issue. Starting work still goes through delegation and the normal runner placement.
+Work items don't get a project memory index and don't use `recall`; Paws stores no selection for them. A brief template that uses `{{project_overview}}` more than once gets the text only the first time.
 
 ## What agents may save
 
-Agents no longer save project memory. A work turn on a code task (or a task without a mode) whose delegating person is a member of the Paws workspace gets the `notebook` tool instead, and its brief ends with a note that explains the shared notebooks. Answer, plan and artifact sessions, read-only turns, reviewers and Closeout checks don't get the tool or the note.
+A work turn on a code task (or a task without a mode) whose delegating person is a member of the Paws workspace gets the `notebook` tool, and its project overview ends with a note that explains the shared notebooks. Answer, plan and artifact sessions, read-only turns, reviewers and Closeout checks don't get the tool or the note. They still see the notebooks in their brief.
 
 The tool reads or edits one of two notebooks, chosen by the agent with `notebook`:
 
@@ -94,7 +96,7 @@ The tool reads or edits one of two notebooks, chosen by the agent with `notebook
 | `repository` | Codebase facts for the item's repository            | 12,000 characters |
 | `project`    | Facts for the issue's Linear project (none without) | 4,000 characters  |
 
-Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. Each change records the issue and the person who delegated it.
+Without `operations` the tool returns the notebook and its size. With 1 to 8 operations (`add`, `patch` or `remove`, each entry at most 1,000 characters) it applies all of them or none: when the result would be over the limit, nothing is written and the agent gets the reason and the current notebook. An add that is already there is ignored. An agent may patch or remove any entry, including one another agent wrote. Each change records the issue and the person who delegated it, and people can inspect and undo changes.
 
 ## Decisions from people's answers
 
@@ -102,7 +104,7 @@ With **Save answers as decisions** turned on in Workspace › Project memory (of
 
 When the agent asks the same question again on the same issue, the new answer corrects that decision and keeps the earlier version in its history. A different question gets its own decision, even when it starts with the same words. Paws's own questions, like repository, runner or time-limit questions, and answers Paws rejects record nothing.
 
-Recording is best effort. If the person's access can't be checked, they can't read the project, or storing fails, Paws writes one journal line and stores nothing. The answer still reaches the agent and the task carries on. Paws doesn't retry later, and if it stops between saving the answer and storing the decision, that decision is not stored.
+Recording is best effort. If the person's access can't be checked, they can't read the project, project context hasn't read the project yet (work items no longer read it; another consumer has to), or storing fails, Paws writes one journal line and stores nothing. The answer still reaches the agent and the task carries on. Paws doesn't retry later, and if it stops between saving the answer and storing the decision, that decision is not stored.
 
 On the project's context page, entries an agent saved are labelled "Agent on" the issue, and answered decisions "Work item memory on" the issue. Each keeps its own label when the other kind is saved for the same issue later.
 
