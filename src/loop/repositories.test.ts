@@ -10,9 +10,9 @@ import {
   type Db,
 } from "../db";
 import { createFakeSnapshotReader } from "../github";
-import { HostToolDefinitionsSchema } from "../runner-protocol";
 import { repositoryGrant, repositoryNote, repositoryTools } from "./repositories";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
+import { validHostToolDefinitions } from "../../test/host-tool-definitions";
 import { tempStore } from "../../test/pglite";
 
 const stores: { close(): Promise<void> }[] = [];
@@ -115,7 +115,7 @@ test("a code-mode item's brief lists the delegator's other repositories with des
 test("list_repositories and its parameter are described, within the host tool limits", async () => {
   const { db, item } = await setup();
   const definitions = (await repositoryTools(db, item))!.definitions;
-  expect(HostToolDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  expect(validHostToolDefinitions(definitions)).toBe(true);
   expect(definitions[0]!.description).toBe(
     "List up to 100 repositories available to add_repository. Use after to request the next page.",
   );

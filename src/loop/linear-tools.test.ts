@@ -10,9 +10,9 @@ import {
   type Db,
 } from "../db";
 import { createFakeTracker, type AgentIssue } from "../linear";
-import { HostToolDefinitionsSchema } from "../runner-protocol";
 import { linearToolsFor, NOT_YOURS } from "./linear-tools";
 import { insertWorkItemSteps, withoutForeignKeys } from "../../test/pglite-fixtures";
+import { validHostToolDefinitions } from "../../test/host-tool-definitions";
 import { tempStore } from "../../test/pglite";
 
 const stores: { close(): Promise<void> }[] = [];
@@ -114,7 +114,7 @@ const described = (
 
 test("each tool and every parameter is described, within the host tool limits", async () => {
   const definitions = (await (await setup()).tools())!.definitions;
-  expect(HostToolDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  expect(validHostToolDefinitions(definitions)).toBe(true);
   const id = "The issue's identifier, such as ENG-123, or its Linear id.";
   const filed =
     "The current issue or one you filed for this item: its identifier, such as ENG-123, or its Linear id.";
