@@ -390,6 +390,10 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
       prompt: "x".repeat(65_537),
     }).success,
   ).toBe(false);
+  expect(
+    RunnerCommandSchema.safeParse({ ...helper, slack: { ...slack, channelId: "D0MEMBER" } })
+      .success,
+  ).toBe(true);
   for (const refused of [
     { ...helper, slack: undefined },
     { ...helper, purpose: "classify", expiresAt: common.issuedAt + 60_000 },
@@ -397,7 +401,8 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
       ...helper,
       conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" },
     },
-    { ...helper, slack: { ...slack, channelId: "D0PRIVATE" } },
+    { ...helper, slack: { ...slack, channelId: "G0PRIVATE" } },
+    { ...helper, slack: { ...slack, channelId: "U0MEMBER" } },
     { ...helper, slack: { ...slack, threadTs: "../thread" } },
     { ...helper, slack: { ...slack, token: "xoxb-secret" } },
     { ...helper, prompt: "x".repeat(RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES + 1) },

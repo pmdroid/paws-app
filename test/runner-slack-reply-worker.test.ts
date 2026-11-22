@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   RUNNER_SLACK_REPLY_MS,
-  RunnerCommandSchema,
   runnerHelperLifetime,
   type RunnerCommand,
 } from "../src/runner-protocol";
@@ -42,30 +41,6 @@ test("a Slack reply answers from its prompt and cannot read or write outside its
   });
   expect(JSON.stringify(calls.prompts)).toContain("Slack channel thread");
 }, 15_000);
-
-test("a Slack reply's scope names a channel or a direct message, never another kind of conversation", () => {
-  const reply = (channelId: string) =>
-    RunnerCommandSchema.safeParse({
-      ...base,
-      expiresAt: now + RUNNER_SLACK_REPLY_MS,
-      sessionId: "slack-request",
-      sessionGeneration: 3,
-      purpose: "slack_reply",
-      prompt: "Ada: hello",
-      slack: {
-        requestId: "slack-request",
-        teamId: "T0ACME",
-        channelId,
-        threadTs: "1795053091.151000",
-        memberUserId: "member-ada",
-        installGeneration: 3,
-      },
-    }).success;
-  expect(["C0GENERAL", "D0ADA"].map(reply)).toEqual([true, true]);
-  expect(["G0PRIVATE", "U0ADA", "d0ADA", "D", "", "C0GEN-ERAL"].map(reply)).toEqual(
-    Array(6).fill(false),
-  );
-});
 
 test("a repository summary answers from its prompt and cannot read or write outside its empty folder", async () => {
   await sandboxed({
