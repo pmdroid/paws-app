@@ -77,4 +77,4 @@ A command check can have `select` to let the runner read each failed test from t
 
 With `rerun.ci.run: failed`, the fix after failed GitHub CI on a commit Closeout accepted runs only what the failure needs. Each command check whose `ci:` pattern matches a failed CI check runs its `since` command with `{since}` set to that commit, or its `exec` without `since`. The other command checks that passed there are carried when the fix changes none of the files in their `paths`; reviews, evidence and rules run as before. This applies only when Paws recorded the failed CI checks for that commit, every one of them matches a `ci:` pattern, main's policy is the one the commit was verified with, and the checks the turn ran used the same policy. Otherwise every check runs. GitHub CI must still pass on the fixed commit before the merge.
 
-Runners need version 0.1.99 or newer for these keys; Paws places work only on such runners.
+Runners need version 0.1.100 or newer for these keys; Paws places work only on such runners.
