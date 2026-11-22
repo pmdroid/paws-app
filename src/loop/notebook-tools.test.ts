@@ -17,6 +17,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { createFakeTracker } from "../linear";
+import { validHostToolDefinitions } from "../../test/host-tool-definitions";
 import { editNotebook, notebookChanges, readNotebook } from "../notebook";
 import {
   NOTEBOOK_PARAMETER_DESCRIPTIONS,
@@ -166,6 +167,7 @@ test("the tool's description and parameter descriptions are the reviewed texts",
   };
   const items = schema.properties["operations"]!.items!.properties;
   expect(definition!.description).toBe(NOTEBOOK_TOOL_DESCRIPTION);
+  expect(validHostToolDefinitions(tools!.definitions)).toBe(true);
   expect(NOTEBOOK_TOOL_DESCRIPTION).toStartWith(
     "Leave a note for later agents in a shared notebook that is included in their briefs.",
   );
