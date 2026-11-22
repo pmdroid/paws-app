@@ -53,6 +53,7 @@ import {
   type CiResult,
   type TurnPass,
   type CarriedPass,
+  type SinceRun,
   type PullRequestDraft,
 } from "../closeout-spec";
 
@@ -83,6 +84,7 @@ export type EvaluateInput = {
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
   carried?: readonly CarriedPass[];
+  since?: SinceRun;
   pullRequest?: () => Promise<PullRequestDraft | undefined>;
 };
 
@@ -127,6 +129,7 @@ export type GateInput = {
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
   carried?: readonly CarriedPass[];
+  since?: SinceRun;
   pullRequest?: () => Promise<PullRequestDraft | undefined>;
 };
 
@@ -259,6 +262,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.fromCi ? { fromCi: input.fromCi } : {}),
       ...(input.fromTurn ? { fromTurn: input.fromTurn } : {}),
       ...(input.carried ? { carried: input.carried } : {}),
+      ...(input.since ? { since: input.since } : {}),
       ...(await pullRequestOf(input)),
     });
   } catch (error) {
@@ -395,7 +399,14 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     const evaluation = await evaluateCandidate({
       ...input,
       head,
-      ...(head === firstHead ? {} : { fromCi: undefined, fromTurn: undefined, carried: undefined }),
+      ...(head === firstHead
+        ? {}
+        : {
+            fromCi: undefined,
+            fromTurn: undefined,
+            carried: undefined,
+            since: undefined,
+          }),
     });
     if (input.reportDir) {
       await appendDecisionHistory(input.reportDir, {

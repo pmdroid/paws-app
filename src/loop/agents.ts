@@ -106,7 +106,7 @@ export function closeoutChecksPrompt(
       : []),
     ...(carried.length > 0
       ? [
-          `Skip these pending ids too: ${carried.join(", ")}. They passed before the conflict fix and Paws does not run them again.`,
+          `Skip these pending ids too: ${carried.join(", ")}. They passed before this fix and Paws does not run them again.`,
         ]
       : []),
     "Keep going when a check fails, so every pending check has a result.",
@@ -117,10 +117,24 @@ export function closeoutChecksPrompt(
 
 export { GITHUB_READ_PROMPT } from "../acp";
 
-export function closeoutFocusPrompt(focus: CloseoutFocus, conflictRun?: readonly string[]): string {
+export function closeoutFocusPrompt(
+  focus: CloseoutFocus,
+  conflictRun?: readonly string[],
+  ciFailed?: readonly string[],
+): string {
   const head = focus.head.slice(0, 12);
   if (conflictRun?.length)
     return `This restart only resolves a merge conflict with main. get_closeout lists only ${conflictRun.join(", ")} as pending. The other checks passed on ${head} and Paws does not run them again for this fix. Resolve the conflict and change nothing else.`;
+  if (ciFailed?.length)
+    return [
+      `CI failed on ${head} in ${ciFailed.join(", ")}. Run the failing tests yourself before you end your turn.`,
+      ...(focus.since?.length
+        ? [
+            `Closeout runs ${focus.since.join(", ")} only for what changed after ${head}; GitHub CI runs the full suite before the merge.`,
+          ]
+        : []),
+      `get_closeout lists as pending the checks CI failed and those whose paths include files you change after ${head}. The others passed on ${head}, and Paws keeps them.`,
+    ].join("\n");
   return focus.scope === "failed"
     ? `Closeout failed on ${head}. get_closeout lists only the checks that did not pass there as pending; fix them and rerun only those. The others passed on ${head}, and Closeout reruns them at the end.`
     : `get_closeout lists as pending only the checks whose paths include files you change after ${head}. The others passed on ${head}, and Closeout reruns them at the end.`;
@@ -148,6 +162,7 @@ export function implementPrompt(input: {
   continuesBranch?: string;
   closeoutFocus?: CloseoutFocus;
   conflictRun?: readonly string[];
+  ciFailed?: readonly string[];
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
@@ -164,7 +179,9 @@ export function implementPrompt(input: {
     "People and other agents may push to this branch. Keep their commits; never force-push or reset the branch to drop them.",
     REPLY_PROMPT,
     closeoutPrompt(),
-    ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus, input.conflictRun)] : []),
+    ...(input.closeoutFocus
+      ? [closeoutFocusPrompt(input.closeoutFocus, input.conflictRun, input.ciFailed)]
+      : []),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
     "This item ends when its pull request merges. When you split the work into several pull requests, ship one and list the rest in open_pull_request's `remaining` (at most 3 parts, each a title and a scope naming the files and what is left); Paws files each part as a sub-issue delegated to Paws after the merge. For more than 3 parts, call ask_team.",
     "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",

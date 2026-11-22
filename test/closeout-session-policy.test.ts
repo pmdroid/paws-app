@@ -377,3 +377,34 @@ test("retry reuse excludes command and setup paths matched by except", async () 
   const listed = await report(session);
   expect(listed.pending).toEqual(["failed"]);
 });
+
+test("a CI fix focus runs a check's since argv with the failed head", async () => {
+  const text = [
+    'specVersion: "0.1"',
+    "items:",
+    "  - id: unit",
+    "    kind: command",
+    "    gate: beforePR",
+    '    exec: ["false"]',
+    '    since: ["test", "-n", "{since}"]',
+    "    timeoutSeconds: 30",
+  ].join("\n");
+  const root = workspace(text);
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "candidate");
+  const head = git(root, "rev-parse", "HEAD");
+  const loaded = await workspacePolicyFiles(root);
+  if (!loaded.ok || loaded.absent) throw new Error("missing policy");
+  const focus = { scope: "changed" as const, head, policyDigest: loaded.digest, passed: [] };
+  const focused = createCloseoutSession(root, {
+    policy: async () => loaded,
+    focus: { ...focus, since: ["unit"] },
+  });
+  expect(JSON.parse(await focused.report()).required[0].hint).toBe(`Run test -n ${head}`);
+  expect(await focused.run("unit")).toContain("unit passed");
+  const other = createCloseoutSession(root, {
+    policy: async () => loaded,
+    focus: { ...focus, policyDigest: "sha256:other", since: ["unit"] },
+  });
+  expect(await other.run("unit")).toContain("unit failed");
+});

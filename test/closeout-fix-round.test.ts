@@ -268,13 +268,26 @@ test("a conflict-only restart lists only the configured checks; Closeout carries
   );
 }, 60_000);
 
+test("a CI fix brief names the failed CI checks and asks for the failing tests", () => {
+  const head = "f".repeat(40);
+  const prompt = closeoutFocusPrompt(
+    { scope: "changed", head, policyDigest: "policy", passed: ["lint"], since: ["test"] },
+    undefined,
+    ["test (ubuntu)"],
+  );
+  expect(prompt).toContain(
+    `CI failed on ${head.slice(0, 12)} in test (ubuntu). Run the failing tests yourself before you end your turn.`,
+  );
+  expect(prompt).toContain(`Closeout runs test only for what changed after ${head.slice(0, 12)}`);
+});
+
 test("the checks turn skips the carried ids and their missing results are not incomplete", () => {
   const prompt = closeoutChecksPrompt("a".repeat(40), ["test"], ["proof", "knip"]);
   expect(prompt).toContain(
     "Skip these pending ids: test. Paws took their results from green CI on this commit.",
   );
   expect(prompt).toContain(
-    "Skip these pending ids too: proof, knip. They passed before the conflict fix and Paws does not run them again.",
+    "Skip these pending ids too: proof, knip. They passed before this fix and Paws does not run them again.",
   );
   expect(closeoutChecksPrompt("a".repeat(40))).not.toContain("Skip these");
   const report = JSON.stringify({

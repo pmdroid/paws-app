@@ -36,6 +36,7 @@ import {
 } from "../index";
 import { evidenceAttemptKey } from "../retry";
 import { probeArgv, probeArtifactPath } from "../rule-result";
+import { isSinceArgv } from "../since";
 import { isPreExisting, type ChangedLines } from "../review/changed";
 import { POLICY_SCHEMA_SUMMARY } from "../policy/schema-summary";
 import { anyPathMatches } from "./paths";
@@ -593,7 +594,10 @@ function judgeCommand(
   if (!producerTrusted(record.producer.name, record.producer.version, trust)) {
     return row(item, "untrusted", "command evidence producer is not trusted", attempt);
   }
-  if (!argvEquals(record.exec.argv, exec)) {
+  if (
+    !argvEquals(record.exec.argv, exec) &&
+    !(item.kind === "command" && "since" in item && isSinceArgv(record.exec.argv, item.since))
+  ) {
     return row(item, "invalid", "command evidence does not match the policy argv", attempt);
   }
   const judged = applyExec(item, record.exec, allowDirty, attempt);
