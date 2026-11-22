@@ -71,6 +71,22 @@ describe("issue page", () => {
     expect(html.match(/<article /g)).toHaveLength(1);
   });
 
+  test("a running item and a finished one show only Paws's Closeout", () => {
+    const snapshot = fullStatusFixture();
+    const agents = snapshot.agentCloseout!;
+    agents.push({
+      ...agents[0]!,
+      itemId: "ENG-101",
+      runId: "r-101",
+    });
+    for (const id of ["ENG-102", "ENG-101"]) {
+      const html = page(snapshot, id);
+      expect(html).not.toMatch(/Agent Closeout/i);
+      expect(html).toContain("Implementing");
+    }
+    expect(page(snapshot, "ENG-101")).toContain('aria-label="Closeout"');
+  });
+
   test("390 px: facts and merge steps wrap instead of widening the page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(page(redelegated()))),
