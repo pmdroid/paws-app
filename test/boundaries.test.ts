@@ -174,6 +174,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "notebook",
   ],
   settings: [
+    "acp",
+    "closeout-spec",
     "journal",
     "config",
     "credentials",

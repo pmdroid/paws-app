@@ -281,6 +281,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       },
     ),
   ),
+  api("GET", "/api/settings/closeout-summary", "preserved", "src/settings", {
+    sample: "/api/settings/closeout-summary",
+  }),
   api("GET PUT DELETE", "/api/settings/repository-descriptions", "preserved", "src/settings", {
     sample: "/api/settings/repository-descriptions",
   }),

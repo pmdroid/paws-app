@@ -85,6 +85,7 @@ import {
   type ReviewResult,
   type Reviewer,
   type Severity,
+  type TestSelect,
 } from "./types";
 
 const FETCH_TIMEOUT_MS = 120_000;
@@ -360,6 +361,59 @@ export async function validate(
   const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
+}
+
+export type PolicySummaryCheck = {
+  id: string;
+  ci?: string;
+  since?: string[];
+  select?: TestSelect;
+};
+
+export type PolicySummary =
+  | { ok: true; commit: string; rerun: RerunPolicy | null; checks: PolicySummaryCheck[] }
+  | { ok: false; commit?: string; message: string };
+
+export const NOT_FETCHED_MESSAGE = "Paws hasn't fetched this repository yet";
+
+export async function policySummary(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): Promise<PolicySummary> {
+  const main = trustedMirrorMain(repo);
+  if (!main.ok) return { ok: false, message: NOT_FETCHED_MESSAGE };
+  const { commit } = main;
+  const { fill: _fill, ...mirror } = gitReader;
+  const loaded = await loadPolicy({
+    repo,
+    git: {
+      ...mirror,
+      fetchOriginMain: async () => ({ ok: true, commit }),
+      lsRemoteOriginMain: async () => ({ ok: true, stdout: `${commit}\trefs/heads/main\n` }),
+    },
+    ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
+  });
+  if (!loaded.ok) return { ok: false, commit, message: loaded.message };
+  const policy = loaded.policy;
+  return {
+    ok: true,
+    commit,
+    rerun: policy.source === "none" ? null : (policy.rerun ?? null),
+    checks: policy.items.flatMap((item) =>
+      item.kind === "command" && !("supported" in item)
+        ? [
+            {
+              id: item.id,
+              ...(item.ci !== undefined ? { ci: item.ci } : {}),
+              ...(item.since !== undefined ? { since: item.since } : {}),
+              ...(item.select !== undefined ? { select: item.select } : {}),
+            },
+          ]
+        : [],
+    ),
+  };
 }
 
 export async function reviewRequirements(

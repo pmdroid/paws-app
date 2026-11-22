@@ -80,6 +80,8 @@ import {
   GITHUB_ACCESS_SETTINGS_PATH,
   handleCloseoutSettingsRequest,
   CLOSEOUT_SETTINGS_PATH,
+  handleCloseoutSummaryRequest,
+  CLOSEOUT_SUMMARY_PATH,
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
@@ -776,6 +778,19 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           subject,
           now: Date.now(),
         }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === CLOSEOUT_SUMMARY_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    return (await handleCloseoutSummaryRequest(request, {
+      store,
+      workspaceId,
+      pawsHome: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+      configPath: secrets.agentSettings.configPath,
+      ...(principal === undefined ? {} : { role: principal.role }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
