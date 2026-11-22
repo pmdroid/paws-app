@@ -214,13 +214,13 @@ describe("closeout checks", () => {
     expect(html).not.toContain("Waiting for output.");
   });
 
-  test("a run without Closeout has no Closeout section", () => {
+  test("a run without Closeout says Closeout hasn't run yet", () => {
     const snapshot = fullStatusFixture();
     snapshot.verdicts = snapshot.verdicts.filter((entry) => entry.itemId !== "ENG-100");
     const html = runPage(snapshot);
-    expect(html).not.toContain('aria-label="Closeout"');
-    expect(html).not.toContain("<h3>Checks</h3>");
-    expect(runPage()).toContain('aria-label="Closeout"');
+    expect(html).toContain("Closeout hasn't run yet.");
+    expect(html).not.toContain('data-action="toggle-check"');
+    expect(runPage()).not.toContain("Closeout hasn't run yet.");
   });
 
   test("copied links round-trip the attempt and check id", () => {

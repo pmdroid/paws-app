@@ -141,8 +141,7 @@ try {
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-100`);
       const card = page.locator("section.review-findings");
-      // The issue page folds Review findings closed until it is opened.
-      const open = () => page.getByRole("button", { name: /^Review findings/ }).click();
+      const open = () => page.getByRole("button", { name: /View verification details/ }).click();
       await open();
       await expect(card.getByRole("heading", { name: "Review findings" })).toBeVisible();
       const buttons = card.getByRole("button", { name: "File an issue" });

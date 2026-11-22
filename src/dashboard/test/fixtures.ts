@@ -549,6 +549,23 @@ export const FIXTURE_PROBE_SHA = `sha256:${"3f9a1c27e4b0".repeat(5)}d2c4`;
  * ENG-100's last Closeout attempt with repository rules: a pass, a probe failure, a rule waiting
  * for approval, an approval, a bypass, and a rule whose paths matched none of the change.
  */
+export function withOpenP1(full: FullStatus): FullStatus {
+  const finding = {
+    severity: "P1" as const,
+    location: "src/retention/job.ts:44",
+    explanation: "Rows under legal hold are deleted.",
+    evidence: "job.ts:44 deletes before it reads the hold flag.",
+    preExisting: false,
+    blocking: true,
+    since: null,
+  };
+  const round = { attempt: 3, baseSha: "a1c9e07", headSha: "91fd0c4", failOn: "P1" as const };
+  full.verdicts.find((entry) => entry.itemId === "ENG-100")!.reviews = [
+    { id: "independent-review", rounds: [{ ...round, findings: [finding], fixed: [] }] },
+  ];
+  return full;
+}
+
 export function withRuleResults(full: FullStatus): FullStatus {
   const head = "91fd0c4";
   const rule = (id: string, state: StatusCheck["state"], exitCode: number, elapsedMs: number) =>
@@ -806,7 +823,7 @@ export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
   };
 }
 
-const ISSUE_FOLDS = /^section\n(closeout|findings|rules|risk|fixes|pr|timeline):/;
+const ISSUE_FOLDS = /^section\n(closeout|fixes|pr|timeline):/;
 
 /** A Closeout view with the issue page's folded sections open, as after a person opens them. */
 export function openedView(given: Record<string, boolean> = {}): CloseoutView {

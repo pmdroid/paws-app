@@ -11,6 +11,7 @@ import type {
   StatusItem,
   StatusItemEvent,
   StatusLink,
+  StatusQuestion,
   QuestionDetailResponse,
   QuestionListResponse,
   StatusRun,
@@ -45,6 +46,7 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { renderRuleResults } from "./rules";
+import { closeoutOverview } from "./closeout-section";
 import { filedFromLine } from "./follow-ups";
 import { resultsSection } from "./results";
 import { reviewFindingsSection } from "./review-findings";
@@ -542,11 +544,12 @@ function issuePage(
   const blocked = snapshot.blocks;
   const now = journey(item, run, verdict);
   const time = issueTimeLine(item, Date.parse(snapshot.generatedAt));
-  const checks = verdict?.checks ?? [];
-  const passed = checks.filter((check) => check.state === "passed").length;
-  const rules = checks.filter((check) => check.kind === "rule");
-  const brokenRules = rules.filter((check) => check.state === "failed").length;
-  const reviews = (verdict as { reviews?: { rounds: unknown[] }[] } | undefined)?.reviews ?? [];
+  const asked = snapshot.questions.filter(
+    (question) =>
+      question.itemId === item.id &&
+      (run === undefined || question.runId === null || inRun(run, question.runId)) &&
+      !item.visualReviews?.some((review) => review.questionId === question.id),
+  );
   const activity = run?.activity?.length ?? 0;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
@@ -568,13 +571,7 @@ function issuePage(
     ${queueNotice(item, snapshot.generatedAt)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run?.usagePause ? usagePauseSection(item, run, run.usagePause) : ""}
-    ${snapshot.questions
-      .filter(
-        (question) =>
-          question.itemId === item.id &&
-          (run === undefined || question.runId === null || inRun(run, question.runId)) &&
-          !item.visualReviews?.some((review) => review.questionId === question.id),
-      )
+    ${asked
       .map((question) =>
         question.linkAsk
           ? linkAskCard(question)
@@ -584,45 +581,8 @@ function issuePage(
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
     ${resultsSection(snapshot, item)}
     <div class="issue-folds">
-    ${fold(
-      closeout,
-      `closeout:${item.id}`,
-      "Closeout",
-      verdict
-        ? `${verdict.decision[0]!.toUpperCase()}${verdict.decision.slice(1)} · attempt ${verdict.attempt} of ${verdict.maxAttempts} · ${passed} of ${checks.length} checks passed`
-        : "",
-      verdict
-        ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>${run ? evidenceSlot(snapshot, run.id) : ""}`
-        : "",
-    )}
+    ${closeoutSection(snapshot, item, verdict, run, closeout, engineUrl, asked)}
     ${verdict || !run ? "" : evidenceSlot(snapshot, run.id)}
-    ${fold(
-      closeout,
-      `findings:${item.id}`,
-      "Review findings",
-      `${reviews.length} review${reviews.length === 1 ? "" : "s"}`,
-      verdict ? reviewFindingsSection(verdict, closeout) : "",
-    )}
-    ${fold(
-      closeout,
-      `rules:${item.id}`,
-      "Rules",
-      brokenRules ? `${brokenRules} broke` : `${rules.length} checked`,
-      verdict ? renderRuleResults(verdict, closeout, engineUrl) : "",
-      snapshot.questions.some(
-        (question) => question.itemId === item.id && question.linkAsk?.kind === "rule",
-      ),
-    )}
-    ${fold(
-      closeout,
-      `risk:${item.id}`,
-      "Risk",
-      "",
-      `${riskCarryOverSection(snapshot, item)}${riskCard(snapshot.risk)}`,
-      snapshot.questions.some(
-        (question) => question.itemId === item.id && question.linkAsk?.kind === "risk",
-      ),
-    )}
     ${fold(
       closeout,
       `fixes:${item.id}`,
@@ -663,6 +623,38 @@ function fold(
   const open = sectionOpen(view, key, pending);
   const heading = `<h2${headingId ? ` id="${headingId}"` : ""}>${esc(title)}</h2>`;
   return `<section class="issue-fold" aria-label="${esc(title)}">${sectionToggle(key, open, heading, summary)}${open ? `<div class="issue-fold-body">${body}</div>` : ""}</section>`;
+}
+
+function closeoutSection(
+  snapshot: IssueDetailResponse,
+  item: StatusItem,
+  verdict: StatusVerdict | undefined,
+  run: StatusRun | undefined,
+  view: CloseoutView,
+  engineUrl: string | null,
+  asked: readonly StatusQuestion[],
+): string {
+  const key = `closeout:${item.id}`;
+  const details = [
+    verdict
+      ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, view, engineUrl, item.pr, item.state, { heading: "Checks" })}</section>${run ? evidenceSlot(snapshot, run.id) : ""}${reviewFindingsSection(verdict, view)}${renderRuleResults(verdict, view, engineUrl)}`
+      : "",
+    riskCarryOverSection(snapshot, item),
+    riskCard(snapshot.risk),
+  ].join("");
+  const open = sectionOpen(
+    view,
+    key,
+    snapshot.questions.some(
+      (question) =>
+        question.itemId === item.id &&
+        (question.linkAsk?.kind === "rule" || question.linkAsk?.kind === "risk"),
+    ),
+  );
+  const disclosure = details
+    ? `${sectionToggle(key, open, "<b>View verification details</b>", "")}${open ? `<div class="issue-fold-body">${details}</div>` : ""}`
+    : "";
+  return `<section class="issue-fold closeout-overview flex min-w-0 flex-col gap-3" aria-label="Closeout"><h2>Closeout</h2>${closeoutOverview(verdict, snapshot.risk, asked)}${disclosure}</section>`;
 }
 
 /** The kept approval, unless a risk ask on the item is open again. */

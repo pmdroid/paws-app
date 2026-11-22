@@ -508,6 +508,18 @@ a.evidence-thumb:focus-visible {
   padding: 1rem;
   background: var(--secondary-background);
 }
+.closeout-blockers > li {
+  min-width: 0;
+  border-left: 3px solid var(--state-failed);
+  border-radius: 4px;
+  padding: 0.4rem 0.75rem;
+  background: color-mix(in srgb, var(--state-failed) 10%, transparent);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.closeout-blockers > li > b {
+  color: var(--state-failed);
+}
 .link-ask :is(.review-rounds, .review-open) {
   margin: 0.25rem 0 0.75rem;
   padding-left: 1.25rem;
