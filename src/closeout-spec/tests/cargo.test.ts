@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createPolicyParser } from "../policy/document";
+import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import { cargoAdapter, runTestCheck, selectExecError, type CargoMetadata } from "./index";
 
 const roots: string[] = [];
@@ -231,4 +233,13 @@ test("select refuses package selection and positional arguments in cargo and nex
   expect(selectExecError("nextest", ["cargo", "nextest", "run", "--profile=ci"])).toContain(
     "--profile",
   );
+});
+
+test("a runner parser from before select keeps a cargo policy and runs exec unselected", () => {
+  const schema = structuredClone(policySchema);
+  delete (schema.$defs.command.properties as Record<string, unknown>).select;
+  const policy = `specVersion: "0.1"\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ["cargo", "nextest", "run"]\n    timeoutSeconds: 60\n    select: { runner: nextest }\n`;
+  const parsed = createPolicyParser(schema)(policy);
+  expect(parsed).toMatchObject({ ok: true, unknownKeys: ["/items/0/select"] });
+  if (parsed.ok) expect(parsed.document.items?.[0]).not.toHaveProperty("select");
 });

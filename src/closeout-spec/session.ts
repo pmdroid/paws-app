@@ -1082,7 +1082,11 @@ async function execute(
           execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
         })
       : undefined;
-  const result = tests?.results.at(-1) ?? (await spawnIn(workspace, argv, timeoutSeconds));
+  const result =
+    tests?.results.at(-1) ??
+    (tests !== undefined && tests.problem === undefined
+      ? { ...NOT_STARTED, timedOut: true }
+      : await spawnIn(workspace, argv, timeoutSeconds));
   const code = tests && !tests.ok && result.code === 0 ? 1 : result.code;
   const failedTests = scrubFailures(tests?.failures ?? [], (text) =>
     scrubText(text, credentialSecrets()),
@@ -1435,6 +1439,17 @@ function commandEnv({ runtimeBinPaths = [], basePath, bail, env: extra }: CheckP
 const OUTPUT_DRAIN_MS = 1_000;
 
 type CommandOutcome = Awaited<ReturnType<typeof spawnCommand>>;
+
+const NOT_STARTED: CommandOutcome = {
+  code: 1,
+  timedOut: false,
+  cancelled: false,
+  output: "",
+  full: "",
+  stdout: "",
+  stderr: "",
+  truncated: false,
+};
 
 async function runCommand(
   workspace: string,
