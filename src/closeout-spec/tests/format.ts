@@ -14,3 +14,15 @@ export function failedTestsText(failures: readonly FailedTest[]): string {
   if (rest > 0) lines.push(`- and ${rest} more`);
   return [`Failed tests (${failures.length}):`, ...lines].join("\n");
 }
+
+export function scrubFailures(
+  failures: readonly FailedTest[],
+  scrub: (text: string) => string,
+): FailedTest[] {
+  return failures.map(({ file, name, message, kind }) => ({
+    ...(file !== undefined ? { file: scrub(file) } : {}),
+    ...(name !== undefined ? { name: scrub(name) } : {}),
+    message: scrub(message),
+    kind,
+  }));
+}

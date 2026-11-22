@@ -85,6 +85,19 @@ describe("closeout command runner", () => {
     }
   });
 
+  test("a select check fails when bun exits 0 without its JUnit report", async () => {
+    const fx = await fixture();
+    try {
+      fx.head = await commit(fx.repo, "test/exit.test.ts", "process.exit(0);\n");
+      const check = { ...command("test", ["bun", "test"]), select: { runner: "bun" as const } };
+      const result = await run(fx, { items: [check] });
+      expect(result.dispositions[0]?.message).toBe("command exited 1");
+      expect(onlyRecord(fx.store).exec).toMatchObject({ argv: ["bun", "test"], exitCode: 1 });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   test("detached commands use configured exclusions despite source pattern tampering", async () => {
     const fx = await fixture();
     try {

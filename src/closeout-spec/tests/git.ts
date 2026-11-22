@@ -14,11 +14,8 @@ export async function testChanges(
   for (let index = 0; index < parts.length;) {
     const status = parts[index++];
     if (!status) continue;
-    if (status.startsWith("R") || status.startsWith("C")) {
-      changes.push({ status, oldPath: parts[index++]!, path: parts[index++]! });
-    } else {
-      changes.push({ status, path: parts[index++]! });
-    }
+    const oldPath = /^[RC]/.test(status) ? parts[index++]! : undefined;
+    changes.push({ status, path: parts[index++]!, ...(oldPath ? { oldPath } : {}) });
   }
   return changes;
 }

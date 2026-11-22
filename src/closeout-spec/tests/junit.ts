@@ -15,11 +15,7 @@ const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   processEntities: false,
-  htmlEntities: false,
-  ignoreDeclaration: true,
-  ignorePiTags: true,
   parseTagValue: false,
-  parseAttributeValue: false,
   isArray: (name) => LISTS.has(name),
 });
 
@@ -34,10 +30,8 @@ export function parseJunit(text: string): JunitReport {
   if (valid !== true) return { ok: false, message: `is not valid XML: ${valid.err.msg}` };
   const document = parser.parse(text) as Node;
   const root = document.testsuites;
-  const suites = isNode(root) ? lists(root.testsuite) : lists(document.testsuite);
-  if (!("testsuites" in document) && suites.length === 0) {
-    return { ok: false, message: "has no testsuites or testsuite element" };
-  }
+  const suites = lists(isNode(root) ? root.testsuite : document.testsuite);
+  if (root === undefined && suites.length === 0) return { ok: false, message: "has no testsuite" };
   const found = { cases: 0, failures: [] as FailedTest[] };
   for (const suite of suites) walk(suite, undefined, found);
   return { ok: true, ...found };
@@ -47,11 +41,10 @@ function walk(
   suite: Node,
   parentFile: string | undefined,
   found: { cases: number; failures: FailedTest[] },
-): void {
+): number {
   const file = decoded(suite.file) ?? parentFile;
-  const cases = lists(suite.testcase);
-  const children = lists(suite.testsuite);
-  for (const testcase of cases) {
+  let errors = 0;
+  for (const testcase of lists(suite.testcase)) {
     found.cases += 1;
     const caseFile = decoded(testcase.file) ?? file;
     const name = [decoded(testcase.classname), decoded(testcase.name)].filter(Boolean).join(" > ");
@@ -60,6 +53,7 @@ function walk(
       ["error", "error"],
     ] as const) {
       for (const entry of lists(testcase[key])) {
+        if (kind === "error") errors += 1;
         found.failures.push({
           ...(caseFile ? { file: caseFile } : {}),
           ...(name ? { name } : {}),
@@ -69,15 +63,16 @@ function walk(
       }
     }
   }
-  const errors = Number(decoded(suite.errors) ?? 0);
-  if (cases.length === 0 && children.length === 0 && errors > 0) {
+  for (const child of lists(suite.testsuite)) errors += walk(child, file, found);
+  const missing = Number(decoded(suite.errors) ?? 0) - errors;
+  if (missing > 0) {
     found.failures.push({
       ...(file ? { file } : {}),
-      message: `${errors} error${errors === 1 ? "" : "s"} before any test ran`,
+      message: `${missing} error${missing === 1 ? "" : "s"} outside any test`,
       kind: "skipped-crash",
     });
   }
-  for (const child of children) walk(child, file, found);
+  return Math.max(errors, errors + missing);
 }
 
 function lists(value: unknown): Node[] {

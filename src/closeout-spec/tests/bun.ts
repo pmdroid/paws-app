@@ -18,10 +18,6 @@ function fullPlan(context: TestContext): TestPlan {
 
 export const bunTestAdapter: TestAdapter = { plan: fullPlan, full: fullPlan };
 
-export function testAdapter(_runner: TestSelect["runner"]): TestAdapter {
-  return bunTestAdapter;
-}
-
 export function selectExecError(
   runner: TestSelect["runner"],
   exec: readonly string[],

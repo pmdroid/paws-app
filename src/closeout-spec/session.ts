@@ -37,15 +37,7 @@ import type {
   ResolvedSetup,
   TestSelect,
 } from "./types";
-import {
-  failedTestsText,
-  readAt,
-  runTestCheck,
-  testAdapter,
-  testChanges,
-  type FailedTest,
-  type TestCheckResult,
-} from "./tests";
+import { failedTestsText, runTestCheck, scrubFailures, type FailedTest } from "./tests";
 
 export type SessionCommandResult = {
   argv: string[];
@@ -1070,18 +1062,31 @@ async function execute(
       }),
     );
   const tests =
-    item.select !== undefined && item.kind === "command" && before.ok
-      ? await runSelected(workspace, item, item.select, {
+    item.select !== undefined && before.ok
+      ? await runTestCheck({
+          item: {
+            ...item,
+            kind: "command",
+            gate: "beforePR",
+            exec: argv,
+            timeoutSeconds,
+            select: item.select,
+          },
+          cwd: workspace,
           head: before.stdout.toString("utf8").trim(),
           base:
             (options.focus?.since !== undefined && options.focus.policyDigest === policyDigest
               ? options.focus.head
               : base) ?? "",
+          env: commandEnv(),
           execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
         })
       : undefined;
-  const result = tests ?? (await spawnIn(workspace, argv, timeoutSeconds));
+  const result = tests?.results.at(-1) ?? (await spawnIn(workspace, argv, timeoutSeconds));
   const code = tests && !tests.ok && result.code === 0 ? 1 : result.code;
+  const failedTests = scrubFailures(tests?.failures ?? [], (text) =>
+    scrubText(text, credentialSecrets()),
+  );
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
   if (result.cancelled) {
@@ -1119,7 +1124,7 @@ async function execute(
     stdout: scrubText(result.stdout, credentialSecrets()),
     stderr: scrubText(result.stderr, credentialSecrets()),
     truncated: result.truncated,
-    ...(tests && tests.failures.length > 0 ? { failedTests: tests.failures } : {}),
+    ...(failedTests.length > 0 ? { failedTests } : {}),
   };
   state.kind = item.kind;
   const finished = (outcome: "passed" | "failed" | "exhausted") => {
@@ -1167,43 +1172,9 @@ async function execute(
       : `exit ${result.code}`;
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
-  const parts = [
-    failed,
-    tests?.problem !== undefined && result.code !== 0 ? tests.problem : "",
-    failedTestsText(tests?.failures ?? []),
-    result.output.trim(),
-  ];
-  return { ok: false, failed: true, text: parts.filter((part) => part.length > 0).join("\n") };
-}
-
-async function runSelected(
-  workspace: string,
-  item: Listed,
-  choice: TestSelect,
-  run: { head: string; base: string; execute: Parameters<typeof runTestCheck>[0]["execute"] },
-): Promise<TestCheckResult> {
-  const env = commandEnv();
-  return runTestCheck({
-    adapter: testAdapter(choice.runner),
-    timeoutSeconds: item.timeoutSeconds ?? 30,
-    execute: run.execute,
-    context: {
-      item: {
-        id: item.id,
-        kind: "command",
-        gate: "beforePR",
-        exec: item.exec ?? [],
-        timeoutSeconds: item.timeoutSeconds ?? 30,
-        select: choice,
-      },
-      cwd: workspace,
-      base: run.base,
-      head: run.head,
-      changes: () => testChanges(workspace, run.base, run.head, env),
-      readAtBase: (path) => readAt(workspace, run.base, path, env),
-      readAtHead: (path) => readAt(workspace, run.head, path, env),
-    },
-  });
+  const problem = result.code !== 0 ? (tests?.problem ?? "") : "";
+  const parts = [failed, problem, failedTestsText(failedTests), result.output.trim()];
+  return { ok: false, failed: true, text: parts.filter(Boolean).join("\n") };
 }
 
 async function deferredOf(

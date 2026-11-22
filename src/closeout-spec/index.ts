@@ -56,7 +56,6 @@ export type {
   ProducerIdentity,
   PublishedEvidence,
   ResolvedCommand,
-  TestSelect,
   ResolvedEvidence,
   ResolvedPreview,
   ResolvedItem,
@@ -221,14 +220,4 @@ export {
 } from "./session";
 export { useEvidenceRecordObjects } from "./evidence/index";
 export type { EvidenceRecordObjects } from "./evidence/index";
-export {
-  bunTestAdapter,
-  failedTestsText,
-  parseJunit,
-  runTestCheck,
-  type FailedTest,
-  type TestAdapter,
-  type TestCheckResult,
-  type TestContext,
-  type TestPlan,
-} from "./tests";
+export { runTestCheck, type FailedTest, type TestAdapter, type TestPlan } from "./tests";

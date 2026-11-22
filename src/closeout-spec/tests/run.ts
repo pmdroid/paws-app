@@ -2,9 +2,12 @@ import { journalCaught } from "../../journal";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bunTestAdapter } from "./bun";
+import { readAt, testChanges } from "./git";
 import { MAX_REPORT_BYTES, parseJunit } from "./junit";
 import type {
   FailedTest,
+  SelectedCommand,
   TestAdapter,
   TestContext,
   TestInvocation,
@@ -12,83 +15,59 @@ import type {
   TestSelection,
 } from "./types";
 
-export type TestExecution = {
-  code: number;
-  timedOut: boolean;
-  cancelled: boolean;
-  output: string;
-  full: string;
-  stdout: string;
-  stderr: string;
-  truncated: boolean;
-};
+export type TestExecuted = { code: number; timedOut: boolean; cancelled?: boolean };
 
-export type TestExecute = (
-  invocation: TestInvocation,
-  timeoutSeconds: number,
-) => Promise<TestExecution>;
-
-export type TestCheckResult = TestExecution & {
+export type TestCheckResult<R> = {
   ok: boolean;
+  results: R[];
   selection: TestSelection;
-  invocations: TestInvocation[];
   failures: FailedTest[];
   problem?: string;
 };
 
-export async function runTestCheck(input: {
-  adapter: TestAdapter;
-  context: Omit<TestContext, "reportDir">;
-  execute: TestExecute;
-  timeoutSeconds: number;
+export async function runTestCheck<R extends TestExecuted>(input: {
+  item: SelectedCommand;
+  cwd: string;
+  base: string;
+  head: string;
+  env: Record<string, string>;
+  execute: (invocation: TestInvocation, timeoutSeconds: number) => Promise<R>;
+  adapter?: TestAdapter;
   reportRoot?: string;
-}): Promise<TestCheckResult> {
+}): Promise<TestCheckResult<R>> {
+  const { item, cwd, base, head, env } = input;
   const reportDir = mkdtempSync(join(input.reportRoot ?? tmpdir(), "paws-test-report-"));
   try {
-    const context: TestContext = { ...input.context, reportDir };
-    const plan = await planOf(input.adapter, context);
-    const deadline = Date.now() + input.timeoutSeconds * 1000;
-    const ran: TestExecution = {
-      code: 0,
-      timedOut: false,
-      cancelled: false,
-      output: "",
-      full: "",
-      stdout: "",
-      stderr: "",
-      truncated: false,
+    const context: TestContext = {
+      item,
+      cwd,
+      base,
+      head,
+      reportDir,
+      changes: () => testChanges(cwd, base, head, env),
+      readAtBase: (path) => readAt(cwd, base, path, env),
+      readAtHead: (path) => readAt(cwd, head, path, env),
     };
+    const plan = await planOf(input.adapter ?? bunTestAdapter, context);
+    const deadline = Date.now() + item.timeoutSeconds * 1000;
+    const results: R[] = [];
+    let ran = true;
     for (const invocation of plan.invocations) {
       const left = (deadline - Date.now()) / 1000;
-      const result =
-        left > 0 ? await input.execute(invocation, left) : { ...ran, code: 1, timedOut: true };
-      if (ran.code === 0) ran.code = result.code;
-      ran.timedOut ||= result.timedOut;
-      ran.cancelled ||= result.cancelled;
-      ran.truncated ||= result.truncated;
-      ran.output = (ran.output + result.output).slice(-6_000);
-      ran.full += result.full;
-      ran.stdout = (ran.stdout + result.stdout).slice(-24_000);
-      ran.stderr = (ran.stderr + result.stderr).slice(-24_000);
-      if (ran.timedOut || ran.cancelled) break;
+      const result = left > 0 ? await input.execute(invocation, left) : undefined;
+      if (result) results.push(result);
+      if (!result || result.timedOut || result.cancelled) {
+        ran = false;
+        break;
+      }
     }
-    const read = ran.cancelled || ran.timedOut ? { failures: [] } : readReport(plan);
-    const failures = read.failures;
-    const problem = "problem" in read ? read.problem : undefined;
+    const read = ran ? readReport(plan) : { failures: [] };
     const ok =
-      ran.code === 0 &&
-      !ran.timedOut &&
-      !ran.cancelled &&
-      problem === undefined &&
-      failures.length === 0;
-    return {
-      ...ran,
-      ok,
-      selection: plan.selection,
-      invocations: plan.invocations,
-      failures,
-      ...(problem !== undefined ? { problem } : {}),
-    };
+      ran &&
+      results.every((result) => result.code === 0) &&
+      read.problem === undefined &&
+      read.failures.length === 0;
+    return { ok, results, selection: plan.selection, ...read };
   } finally {
     rmSync(reportDir, { recursive: true, force: true });
   }
