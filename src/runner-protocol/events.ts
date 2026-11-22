@@ -103,6 +103,30 @@ const closeoutAttempt = {
   maxAttempts: z.number().int().min(0).max(1000).nullable(),
 };
 
+const closeoutTestText = z.string().max(1_000);
+
+const closeoutFailedTests = z.strictObject({
+  total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  shown: z
+    .array(
+      z.strictObject({
+        file: closeoutTestText.optional(),
+        name: closeoutTestText.optional(),
+        message: z.string().max(4_000),
+        kind: z.enum(["failed", "error", "skipped-crash"]),
+      }),
+    )
+    .max(200),
+});
+
+const closeoutTestSelection = z.strictObject({
+  mode: z.enum(["full", "selected"]),
+  reasons: z.array(closeoutTestText).max(200),
+  selected: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  base: closeoutHead,
+});
+
 export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("report"),
@@ -135,6 +159,8 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
     base: closeoutHead.optional(),
     policyDigest: z.string().max(128).optional(),
     clean: z.boolean().optional(),
+    failedTests: closeoutFailedTests.optional(),
+    testSelection: closeoutTestSelection.optional(),
   }),
 ]);
 

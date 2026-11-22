@@ -103,7 +103,7 @@ export type PolicyCommand = {
 };
 
 export type { FailedTest } from "./tests/types";
-import type { FailedTest } from "./tests/types";
+import type { FailedTest, StoredTestSelection } from "./tests/types";
 
 export type TestSelect = {
   runner: "bun" | "vitest" | "jest" | "go" | "cargo" | "nextest";
@@ -783,6 +783,7 @@ export type CommandRunResult = CommandExec & {
   artifacts: Artifact[];
   failedTests?: FailedTest[];
   testNote?: string;
+  testSelection?: StoredTestSelection;
 };
 
 /**

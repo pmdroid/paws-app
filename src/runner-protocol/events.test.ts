@@ -69,3 +69,36 @@ test("a tool event round-trips and refuses built-in names and oversized argument
   ])
     expect(RunnerEventSchema.safeParse(bad).success).toBe(false);
 });
+
+test("a finished closeout event carries failed tests and the test selection, or neither", () => {
+  const finished = {
+    type: "finished",
+    head: "a".repeat(40),
+    id: "test",
+    kind: "command",
+    command: "bun test",
+    attempt: 1,
+    maxAttempts: 3,
+    state: "failed",
+    exitCode: 1,
+    timedOut: false,
+    durationMs: 5,
+    stdout: "",
+    stderr: "",
+    truncated: false,
+  };
+  const tests = {
+    failedTests: { total: 1, shown: [{ file: "a.test.ts", message: "boom", kind: "failed" }] },
+    testSelection: { mode: "selected", reasons: ["a.test.ts changed"], selected: 1, base: "" },
+  };
+  for (const progress of [finished, { ...finished, ...tests }]) {
+    const event = { type: "closeout", progress };
+    expect(RunnerEventSchema.parse(event)).toEqual(event as never);
+  }
+  const long = { ...tests.failedTests.shown[0], message: "x".repeat(4_001) };
+  const event = {
+    type: "closeout",
+    progress: { ...finished, failedTests: { total: 1, shown: [long] } },
+  };
+  expect(RunnerEventSchema.safeParse(event).success).toBe(false);
+});

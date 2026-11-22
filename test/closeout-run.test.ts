@@ -19,6 +19,8 @@ import {
   PAWS_CLOSEOUT_PRODUCER,
   matchPaths,
   runCloseoutCommands,
+  type CloseoutProgress,
+  type CloseoutProgressStep,
   type CloseoutRunResult,
 } from "../src/closeout-spec/run";
 
@@ -93,6 +95,51 @@ describe("closeout command runner", () => {
       const result = await run(fx, { items: [check] });
       expect(result.dispositions[0]?.message).toBe("command exited 1");
       expect(onlyRecord(fx.store).exec).toMatchObject({ argv: ["bun", "test"], exitCode: 1 });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test("a failed select check stores its failed tests and selection, a plain check neither", async () => {
+    const fx = await fixture();
+    try {
+      const long = "x".repeat(5_000);
+      fx.head = await commit(
+        fx.repo,
+        "test/math.test.ts",
+        `import { expect, test } from "bun:test";\ntest("adds", () => { throw new Error("${long}"); });\n`,
+      );
+      const steps: CloseoutProgressStep[] = [];
+      const progress: CloseoutProgress = {
+        begin: async () => {},
+        step: async (_identity, step) => void steps.push(step),
+        output: async () => {},
+        finish: async () => {},
+      };
+      const check = { ...command("test", ["bun", "test"]), select: { runner: "bun" as const } };
+      const plain = command("plain", [process.execPath, "-e", "process.exit(0)"]);
+      await run(fx, { items: [check, plain] }, { progress });
+      const tested = steps.findLast((step) => step.id === "test")!;
+      expect(tested.state).toBe("failed");
+      expect(tested.detail).toContain("Failed tests (1):");
+      expect(tested.failedTests?.total).toBe(1);
+      expect(tested.failedTests?.shown[0]).toMatchObject({
+        file: "test/math.test.ts",
+        name: "adds",
+        kind: "failed",
+      });
+      expect(tested.failedTests?.shown[0]?.message).toContain("x".repeat(3_000));
+      expect(tested.failedTests?.shown[0]?.message.length).toBe(4_000);
+      expect(tested.testSelection).toEqual({
+        mode: "selected",
+        reasons: ["test/math.test.ts reaches a changed path"],
+        selected: 1,
+        base: fx.base,
+      });
+      const plainStep = steps.findLast((step) => step.id === "plain")!;
+      expect(plainStep.state).toBe("passed");
+      expect(plainStep.failedTests).toBeNull();
+      expect(plainStep.testSelection).toBeNull();
     } finally {
       await fx.cleanup();
     }
@@ -765,7 +812,11 @@ function setupStep(
 function run(
   fx: Fixture,
   spec: { setup?: ResolvedSetup[]; items?: ResolvedPolicyPresent["items"]; retry?: RetryPolicy },
-  extra?: { env?: NodeJS.ProcessEnv; checkoutExclusions?: readonly string[] },
+  extra?: {
+    env?: NodeJS.ProcessEnv;
+    checkoutExclusions?: readonly string[];
+    progress?: CloseoutProgress;
+  },
 ): Promise<CloseoutRunResult> {
   return runCloseoutCommands({
     repo: fx.repo,
@@ -778,6 +829,7 @@ function run(
     home: fx.home,
     checkoutExclusions: extra?.checkoutExclusions,
     ...(extra?.env ? { env: extra.env } : {}),
+    ...(extra?.progress ? { progress: extra.progress } : {}),
   });
 }
 

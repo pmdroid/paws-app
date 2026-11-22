@@ -170,3 +170,48 @@ test("a missing result names why it is missing", () => {
   );
   expect(missingResultReason(undefined, request)).toBe("the checks run returned no report");
 });
+
+test("a remote command result carries a well-formed test selection and drops a malformed one", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-session-selection-"));
+  roots.push(root);
+  const testSelection = {
+    mode: "selected",
+    reasons: ["a.test.ts changed"],
+    selected: 1,
+    base: head,
+  };
+  const logged = (selection: unknown) =>
+    loggedSessionCloseout(
+      JSON.stringify({
+        required: [
+          {
+            id: "test",
+            status: "failed",
+            result: {
+              argv: ["bun", "test"],
+              head,
+              exitCode: 1,
+              timedOut: false,
+              durationMs: 5,
+              timeoutSeconds: 30,
+              stdout: "",
+              stderr: "",
+              truncated: false,
+              testSelection: selection,
+            },
+          },
+        ],
+      }),
+      {
+        cwd: root,
+        itemId: "test",
+        argv: ["bun", "test"],
+        timeoutSeconds: 30,
+        logFile: join(root, "test.log"),
+        artifactPath: "test.log",
+        expectedHead: head,
+      },
+    );
+  expect(logged(testSelection).testSelection).toEqual(testSelection as never);
+  expect(logged({ ...testSelection, mode: "some" })).not.toHaveProperty("testSelection");
+});

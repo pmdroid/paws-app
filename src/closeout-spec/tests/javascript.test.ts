@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspacePolicyFiles } from "../facade";
-import { createCloseoutSession } from "../session";
+import { createCloseoutSession, type CloseoutSessionEvent } from "../session";
 import type { TestSelect } from "../types";
 import { snapshotAt, testChanges } from "./git";
 import {
@@ -57,10 +57,12 @@ test("the bun runner runs the full exec with the JUnit flags and names the faile
   spawnSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: root });
   commit(root, "test/ok.test.ts", 'import { test } from "bun:test";\ntest("fine", () => {});\n');
   const ran: string[][] = [];
+  const events: CloseoutSessionEvent[] = [];
   const session = () =>
     createCloseoutSession(root, {
       policy: async () => workspacePolicyFiles(root),
       allowCommand: (argv) => void ran.push([...argv]),
+      onProgress: (event) => void events.push(event),
     });
   expect(await session().run("test")).toBe("test passed.");
   commit(root, "test/math.test.ts", FAILING);
@@ -71,6 +73,22 @@ test("the bun runner runs the full exec with the JUnit flags and names the faile
     "Failed tests (1):\n- test/math.test.ts: math > adds: expect(received).toBe(expected)",
   );
   expect(text.indexOf("Failed tests")).toBeLessThan(text.indexOf("(fail) math > adds"));
+  expect(events.at(-1)).toMatchObject({
+    type: "finished",
+    state: "failed",
+    failedTests: {
+      total: 1,
+      shown: [{ file: "test/math.test.ts", name: "math > adds", kind: "failed" }],
+    },
+    testSelection: {
+      mode: "selected",
+      reasons: [
+        "test/math.test.ts reaches a changed path",
+        "test/ok.test.ts reaches a changed path",
+      ],
+      selected: 2,
+    },
+  });
   expect(ran.at(-1)).toEqual(["bun", "test", "--timeout=20000"]);
   const report = JSON.parse(await failing.report()) as { required: { result?: unknown }[] };
   expect(report.required[0]?.result).toMatchObject({
@@ -321,4 +339,29 @@ test("jest fails the check when jest-junit can't be resolved from the root", asy
   expect(jestTestAdapter.full(context as unknown as TestContext).problem).toBe(
     "jest-junit is not installed",
   );
+});
+test("a report problem is a failed test in the session result and the finished event", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-bun-problem-"));
+  roots.push(root);
+  spawnSync("git", ["init", "-b", "main"], { cwd: root });
+  commit(
+    root,
+    ".agents/closeout.yaml",
+    POLICY.replace("runner: bun", 'runner: bun, always: ["test/gone.test.ts"]'),
+  );
+  spawnSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: root });
+  commit(root, "test/ok.test.ts", 'import { test } from "bun:test";\ntest("fine", () => {});\n');
+  const events: CloseoutSessionEvent[] = [];
+  const session = createCloseoutSession(root, {
+    policy: async () => workspacePolicyFiles(root),
+    onProgress: (event) => void events.push(event),
+  });
+  await session.run("test");
+  const problem = {
+    message: "select.always names test/gone.test.ts, which the head doesn't have",
+    kind: "error",
+  };
+  const report = JSON.parse(await session.report()) as { required: { result?: unknown }[] };
+  expect(report.required[0]?.result).toMatchObject({ failedTests: [problem] });
+  expect(events.at(-1)).toMatchObject({ failedTests: { total: 1, shown: [problem] } });
 });

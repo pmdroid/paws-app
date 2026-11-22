@@ -260,5 +260,22 @@ export function loggedSessionCloseout(
       { path: request.artifactPath, sha256: createHash("sha256").update(bytes).digest("hex") },
     ],
     ...(Array.isArray(result.failedTests) ? { failedTests: result.failedTests } : {}),
+    ...testSelectionOf(result.testSelection),
   };
+}
+
+function testSelectionOf(value: unknown): Pick<CommandRunResult, "testSelection"> {
+  if (typeof value !== "object" || value === null) return {};
+  const selection = value as Record<string, unknown>;
+  const { mode, reasons, selected, base } = selection;
+  if (
+    (mode !== "full" && mode !== "selected") ||
+    !Array.isArray(reasons) ||
+    !reasons.every((reason) => typeof reason === "string") ||
+    typeof selected !== "number" ||
+    !Number.isSafeInteger(selected) ||
+    typeof base !== "string"
+  )
+    return {};
+  return { testSelection: { mode, reasons, selected, base } };
 }

@@ -2291,6 +2291,18 @@ function toLiveCheck(
     evidencePath: step.evidencePath,
     active: step.state === "running",
     tokens: step.tokens ?? null,
+    ...(step.failedTests
+      ? {
+          failedTests: {
+            total: step.failedTests.total,
+            shown: step.failedTests.shown.map((test) => ({
+              ...test,
+              message: redactCloseoutText(test.message, env),
+            })),
+          },
+        }
+      : {}),
+    ...(step.testSelection ? { testSelection: step.testSelection } : {}),
   };
 }
 

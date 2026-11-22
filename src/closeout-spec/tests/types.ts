@@ -51,3 +51,13 @@ export type FailedTest = {
   message: string;
   kind: "failed" | "error" | "skipped-crash";
 };
+
+export type StoredFailedTests = { total: number; shown: FailedTest[] };
+
+export type StoredTestSelection = {
+  mode: "full" | "selected";
+  reasons: string[];
+  selected: number;
+  total?: number;
+  base: string;
+};

@@ -1,3 +1,5 @@
+import type { StoredFailedTests, StoredTestSelection } from "../tests";
+
 export const CLOSEOUT_STEP_STATES = [
   "pending",
   "running",
@@ -50,6 +52,8 @@ export type CloseoutProgressStep = {
   failOn?: "P0" | "P1" | "P2" | "P3" | null;
   /** Indexes of the review record's findings that are in pre-existing code. */
   preExisting?: readonly number[] | null;
+  failedTests?: StoredFailedTests | null;
+  testSelection?: StoredTestSelection | null;
 };
 
 export interface CloseoutProgress {

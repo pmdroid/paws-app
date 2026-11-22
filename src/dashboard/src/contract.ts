@@ -475,6 +475,26 @@ export interface StatusCheck {
   probeSha256?: string | null;
   /** On a failed `rule`: the decision a person made or is asked to make. */
   approval?: StatusRuleApproval;
+  failedTests?: StatusFailedTests | null;
+  testSelection?: StatusTestSelection | null;
+}
+
+export interface StatusFailedTests {
+  total: number;
+  shown: {
+    file?: string;
+    name?: string;
+    message: string;
+    kind: "failed" | "error" | "skipped-crash";
+  }[];
+}
+
+export interface StatusTestSelection {
+  mode: "full" | "selected";
+  reasons: string[];
+  selected: number;
+  total?: number;
+  base: string;
 }
 
 /** Who decided a failed rule, why, and the commit the decision covers. */
@@ -2286,6 +2306,43 @@ function readCheck(input: unknown, path: string): StatusCheck {
     ...(body.approval === undefined
       ? {}
       : { approval: readRuleApproval(body.approval, `${path}.approval`) }),
+    ...(body.failedTests == null
+      ? {}
+      : { failedTests: readFailedTests(body.failedTests, `${path}.failedTests`) }),
+    ...(body.testSelection == null
+      ? {}
+      : { testSelection: readTestSelection(body.testSelection, `${path}.testSelection`) }),
+  };
+}
+
+const FAILED_TEST_KINDS = ["failed", "error", "skipped-crash"] as const;
+
+function readFailedTests(input: unknown, path: string): StatusFailedTests {
+  const body = object(input, path);
+  return {
+    total: count(body, "total", path),
+    shown: array(body, "shown", path).map((entry, index) => {
+      const at = `${path}.shown[${index}]`;
+      const test = object(entry, at);
+      return {
+        ...(typeof test.file === "string" ? { file: test.file } : {}),
+        ...(typeof test.name === "string" ? { name: test.name } : {}),
+        message: string(test, "message", at),
+        kind: oneOf(string(test, "kind", at), FAILED_TEST_KINDS, `${at}.kind`),
+      };
+    }),
+  };
+}
+
+function readTestSelection(input: unknown, path: string): StatusTestSelection {
+  const body = object(input, path);
+  const total = optionalCount(body, "total", path);
+  return {
+    mode: oneOf(string(body, "mode", path), ["full", "selected"] as const, `${path}.mode`),
+    reasons: array(body, "reasons", path).filter((reason) => typeof reason === "string"),
+    selected: count(body, "selected", path),
+    ...(total === null ? {} : { total }),
+    base: string(body, "base", path),
   };
 }
 
