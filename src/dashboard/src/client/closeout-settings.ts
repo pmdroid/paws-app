@@ -106,7 +106,7 @@ function selection(checks: Check[]): string {
       return `<tr><td>${code(check.id)}</td><td>${esc(select.runner)}</td><td>${SELECTS_BY[select.runner] ?? "Test file"}</td><td>${list(select.always)}</td><td>${list(select.full_on)}</td><td>${select.max_selected ?? '<span class="sub">None</span>'}</td></tr>`;
     })
     .join("");
-  return `<h3>Test selection</h3><div class="min-w-0 overflow-x-auto"><table data-select><thead><tr><th>Check</th><th>Runner</th><th>Selects by</th><th>Always runs</th><th>Full suite on</th><th>Max selected</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<h3>Test selection</h3><div class="min-w-0 overflow-x-auto [overflow-wrap:normal] [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap"><table data-select><thead><tr><th>Check</th><th>Runner</th><th>Selects by</th><th>Always runs</th><th>Full suite on</th><th>Max selected</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 export function renderCloseoutEntry(entry: CloseoutSummaryEntry): string {
