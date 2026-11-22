@@ -321,6 +321,12 @@ export function trustedMirrorMain(
     const commit = gitReader.mainCommit(repo);
     return commit ? { ok: true, commit } : { ok: false, message: `${repo} has no main read yet` };
   }
+  return diskMirrorMain(repo);
+}
+
+export function diskMirrorMain(
+  repo: string,
+): { ok: true; commit: string } | { ok: false; message: string; absent?: true } {
   if (!statSync(repo, { throwIfNoEntry: false })?.isDirectory())
     return { ok: false, message: `${repo} is not cloned`, absent: true };
   const head = gitSync(
@@ -381,14 +387,13 @@ export async function policySummary(
   home?: string,
   policyRoot?: string,
 ): Promise<PolicySummary> {
-  const main = trustedMirrorMain(repo);
+  const main = diskMirrorMain(repo);
   if (!main.ok) return { ok: false, message: NOT_FETCHED_MESSAGE };
   const { commit } = main;
-  const { fill: _fill, ...mirror } = gitReader;
   const loaded = await loadPolicy({
     repo,
     git: {
-      ...mirror,
+      ...localGitReader,
       fetchOriginMain: async () => ({ ok: true, commit }),
       lsRemoteOriginMain: async () => ({ ok: true, stdout: `${commit}\trefs/heads/main\n` }),
     },

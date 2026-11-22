@@ -1,8 +1,8 @@
 import { mirrorPath } from "../acp";
 import {
+  diskMirrorMain,
   NOT_FETCHED_MESSAGE,
   policySummary,
-  trustedMirrorMain,
   type PolicySummary,
 } from "../closeout-spec";
 import { closeoutPolicyRoot, loadConfigFile } from "../config";
@@ -86,10 +86,10 @@ async function summarize(
     journalCaught(error, "closeout-summary.mirrorPath", null);
     return { repository, readAt: now, error: NOT_FETCHED_MESSAGE };
   }
-  const main = trustedMirrorMain(path);
-  const key = JSON.stringify([repository, main.ok ? main.commit : null, policyRoot ?? null]);
+  const main = diskMirrorMain(path);
+  const key = JSON.stringify([path, main.ok ? main.commit : null, policyRoot ?? null]);
   const cached = cache.get(key);
-  if (cached && now - cached.readAt < CACHE_MS) return cached;
+  if (cached && now >= cached.readAt && now - cached.readAt < CACHE_MS) return cached;
   const summary = await policySummary(path, undefined, policyRoot);
   const entry: SummaryEntry = summary.ok
     ? {
