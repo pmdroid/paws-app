@@ -660,6 +660,68 @@ function fileJob(draft: Draft, retry: string) {
   return { queue: SLACK_THREAD_JOB, jobKey, payload: { file: work.draftKey(draft) } };
 }
 
+function* slackCommandSteps(
+  q: Q,
+  home: string,
+  input: { place: Place; conversationId: string; text: string; ts: string; dedupeKey: string },
+  at: number,
+  author: Gate | null = null,
+): Steps<boolean | null> {
+  const { place, conversationId, ts, dedupeKey } = input;
+  const { workspaceId, slackUserId } = place;
+  const command = input.text.replace(/<@[A-Z0-9]+>/g, "").trim();
+  const target = STOP_ISSUE.exec(command)?.[1]?.toUpperCase();
+  if (target) {
+    const filed = yield* work.filedTasksSteps(q, place);
+    if (filed.some((task) => task.identifier.toUpperCase() === target))
+      return yield* stopIssueSteps(q, home, place, conversationId, ts, target, at);
+  }
+  const stopped = STOP.test(command)
+    ? yield* stopSteps(q, home, place, conversationId, ts, at)
+    : false;
+  if (stopped) return stopped === "task";
+  const cancelling = CANCEL.exec(command)?.[1]?.toLowerCase();
+  const listing = FOLLOW_UPS.test(command);
+  const unlinking = UNLINK.test(command);
+  const gate =
+    unlinking || listing || cancelling ? (author ?? (yield* gateSteps(q, home, place))) : null;
+  if (gate?.kind === "member" && (listing || cancelling)) {
+    const own = yield* listSlackFollowUpsSteps(q, place, gate.userId);
+    const found = own.find((row) => slackFollowUpShortId(row.id) === cancelling);
+    const cancelled = found && (yield* cancelSlackFollowUpSteps(q, found.id, gate.userId, at));
+    const text = listing
+      ? slackFollowUpsText(own, at)
+      : cancelled
+        ? `Cancelled follow-up ${cancelling}.`
+        : `No follow-up ${cancelling} of yours here.`;
+    const member = { userId: gate.userId, linkId: gate.linkId };
+    const payload: Payload = { ...place, kind: "notice", text, member };
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "slack",
+      op: "chat.postEphemeral",
+      idempotencyKey: `slack:notice:${dedupeKey}`,
+      payload,
+      now: at,
+    });
+    return false;
+  }
+  if (gate?.kind === "member") {
+    const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
+    const action = "slack.member_unlinked" as const;
+    yield* unlinkSlackMemberSteps(q, { workspaceId, ...actor, action, now: at });
+    const payload: Payload = { ...place, kind: "notice", text: NOTICES.unlinked, dm: true };
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "slack",
+      op: "chat.postEphemeral",
+      idempotencyKey: `slack:notice:${dedupeKey}`,
+      payload,
+      now: at,
+    });
+    return false;
+  }
+  return null;
+}
+
 export async function acceptSlackMention(
   store: Db,
   home: string,
@@ -701,56 +763,15 @@ export async function acceptSlackMention(
     };
     if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
     if (yield* stoppedSteps(q, place, mention.ts)) return false;
-    const command = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
-    const target = STOP_ISSUE.exec(command)?.[1]?.toUpperCase();
-    if (target) {
-      const filed = yield* work.filedTasksSteps(q, place);
-      if (filed.some((task) => task.identifier.toUpperCase() === target))
-        return yield* stopIssueSteps(q, home, place, conversation.id, mention.ts, target, at);
-    }
-    const stopped = STOP.test(command)
-      ? yield* stopSteps(q, home, place, conversation.id, mention.ts, at)
-      : false;
-    if (stopped) return stopped === "task";
-    const cancelling = CANCEL.exec(command)?.[1]?.toLowerCase();
-    const listing = FOLLOW_UPS.test(command);
-    const unlinking = UNLINK.test(command);
-    const gate =
-      unlinking || listing || cancelling ? (author ?? (yield* gateSteps(q, home, place))) : null;
-    if (gate?.kind === "member" && (listing || cancelling)) {
-      const own = yield* listSlackFollowUpsSteps(q, place, gate.userId);
-      const found = own.find((row) => slackFollowUpShortId(row.id) === cancelling);
-      const cancelled = found && (yield* cancelSlackFollowUpSteps(q, found.id, gate.userId, at));
-      const text = listing
-        ? slackFollowUpsText(own, at)
-        : cancelled
-          ? `Cancelled follow-up ${cancelling}.`
-          : `No follow-up ${cancelling} of yours here.`;
-      const member = { userId: gate.userId, linkId: gate.linkId };
-      const payload: Payload = { ...place, kind: "notice", text, member };
-      yield* enqueueOutboxOnceSteps(q, {
-        target: "slack",
-        op: "chat.postEphemeral",
-        idempotencyKey: `slack:notice:${dedupeKey}`,
-        payload,
-        now: at,
-      });
-      return false;
-    }
-    if (gate?.kind === "member") {
-      const actor = { userId: gate.userId, actorId: gate.userId, slackUserId };
-      const action = "slack.member_unlinked" as const;
-      yield* unlinkSlackMemberSteps(q, { workspaceId, ...actor, action, now: at });
-      const payload: Payload = { ...place, kind: "notice", text: NOTICES.unlinked, dm: true };
-      yield* enqueueOutboxOnceSteps(q, {
-        target: "slack",
-        op: "chat.postEphemeral",
-        idempotencyKey: `slack:notice:${dedupeKey}`,
-        payload,
-        now: at,
-      });
-      return false;
-    }
+    const text = mention.text;
+    const handled = yield* slackCommandSteps(
+      q,
+      home,
+      { place, conversationId: conversation.id, text, ts: mention.ts, dedupeKey },
+      at,
+      author,
+    );
+    if (handled !== null) return handled;
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
@@ -978,19 +999,21 @@ export function createSlackThreads<Profile>(options: {
     return slackChannelAudience(call, place, signal, extra);
   }
 
-  async function verifyDirect(place: Place, signal: AbortSignal): Promise<void> {
+  async function verifyDirect(place: Place, signal: AbortSignal): Promise<boolean> {
     const key = memberKey(place.teamId, place.slackUserId);
     const stored = await store.run(function* (q) {
       if (!(yield* installedSteps(q, home, place))) return null;
       return parsed<Linked>(yield* readSettingSteps(q, key));
     });
-    if (stored?.workspaceId !== place.workspaceId || stored.generation !== place.generation) return;
-    if (stored.dmChannelId !== undefined || !(await ownDirect(place, signal))) return;
-    await store.transaction(function* (q) {
+    if (stored?.workspaceId !== place.workspaceId || stored.generation !== place.generation)
+      return false;
+    if (stored.dmChannelId !== undefined || !(await ownDirect(place, signal))) return false;
+    return store.transaction(function* (q) {
       const link = parsed<Linked>(yield* readSettingSteps(q, key));
-      if (!link || link.id !== stored.id || link.dmChannelId !== undefined) return;
+      if (!link || link.id !== stored.id || link.dmChannelId !== undefined) return false;
       const verified = { ...link, dmChannelId: place.channelId };
       yield* updateSettingSteps(q, key, () => JSON.stringify(verified), now());
+      return true;
     });
   }
 
@@ -1021,16 +1044,22 @@ export function createSlackThreads<Profile>(options: {
     const event =
       typeof dedupeKey === "string" && (await store.run((q) => inboxEventByKeySteps(q, dedupeKey)));
     if (!event) return;
-    const { workspaceId, generation, mention } = JSON.parse(event.payload) as {
+    const { workspaceId, generation, mention, conversationId } = JSON.parse(event.payload) as {
       workspaceId: string;
       generation: number;
       mention: SlackMention;
+      conversationId?: string;
     };
     const { teamId, channelId, threadTs, slackUserId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
     if (mention.direct && DIRECT_LINK.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim()))
       return pair({ ...place, threadTs: "" }, mention, dedupeKey!, context);
-    if (mention.direct) await verifyDirect(place, context.signal);
+    if (mention.direct && (await verifyDirect(place, context.signal)) && conversationId) {
+      const input = { place, conversationId, text: mention.text, ts: mention.ts, dedupeKey };
+      const handled = await store.transaction((q) => slackCommandSteps(q, home, input, now()));
+      if (handled) emitJobReady(store);
+      if (handled !== null) return;
+    }
     const gate = await store.run(function* (q): Steps<Gate> {
       if (yield* stoppedSteps(q, place, mention.ts)) return { kind: "ignore" };
       const unlinkedAt = yield* readSettingSteps(q, unlinkedKey(workspaceId, teamId, slackUserId));

@@ -4600,3 +4600,18 @@ test("a DM and a channel thread never see each other's turns", async () => {
   expect(lastPrompt(f)).toContain("dm-question-canary\n[Paws]: dm-answer-canary");
   expect(lastPrompt(f)).not.toContain("channel-");
 });
+
+test("a legacy link's first DM command runs as a command once its DM is verified, not as a question", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await forgetDirect(f, "SMEMBER");
+  await f.pair("SMEMBER", "follow-ups");
+  expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBe("DSMEMBER");
+  expect(f.notice()).toBe("No follow-ups pending here.");
+  await forgetDirect(f, "SMEMBER");
+  await f.pair("SMEMBER", "unlink");
+  expect(f.notice()).toBe(
+    "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
+  );
+  expect(await storedLink(f, "SMEMBER")).toBeNull();
+  expect(f.prompts).toEqual([]);
+});
