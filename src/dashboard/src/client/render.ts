@@ -26,7 +26,6 @@ import {
   linkButtons,
   safeHref,
   linkList,
-  mergeQueueLine,
   queueLine,
   queueHeading,
   capLine,
@@ -46,7 +45,8 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { renderRuleResults } from "./rules";
-import { filedFromLine, followUpsSection } from "./follow-ups";
+import { filedFromLine } from "./follow-ups";
+import { resultsSection } from "./results";
 import { reviewFindingsSection } from "./review-findings";
 import {
   evidenceSlot,
@@ -582,7 +582,7 @@ function issuePage(
       )
       .join("")}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
-    ${followUpsSection(snapshot)}
+    ${resultsSection(snapshot, item)}
     <div class="issue-folds">
     ${fold(
       closeout,
@@ -630,7 +630,6 @@ function issuePage(
       `${now.fixRounds} round${now.fixRounds === 1 ? "" : "s"}`,
       fixRounds(snapshot, item, run),
     )}
-    ${fold(closeout, `pr:${item.id}`, "Pull request and merge", item.pr ? `#${item.pr.number}` : "", pullRequestSection(snapshot, item))}
     ${fold(
       closeout,
       `timeline:${item.id}`,
@@ -882,37 +881,6 @@ function itemTimelineEntry(entry: StatusItemEvent): string {
   ]);
 }
 
-/** The pull request and where its merge stands. */
-function pullRequestSection(snapshot: IssueDetailResponse, item: StatusItem): string {
-  const entry = snapshot.mergeQueue.find((candidate) => candidate.itemId === item.id);
-  const outcome = snapshot.mergeHistory.findLast((candidate) => candidate.itemId === item.id);
-  const state =
-    item.state === "merged"
-      ? "Merged."
-      : outcome?.outcome === "merged"
-        ? `Merged at ${clock24(outcome.at)}.`
-        : outcome?.outcome === "back_with_agent" && item.state !== "merge_queue"
-          ? `Back with the agent after ${outcome.reason === "conflict" ? "a branch update conflicted" : "CI failed"}.`
-          : item.state === "merge_queue"
-            ? "Waiting to merge."
-            : item.mergeQueue?.rechecking
-              ? "Re-checking, keeps its place in the merge queue."
-              : item.pr
-                ? "Not in the merge queue yet."
-                : "";
-  const pr = item.pr
-    ? `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a>`
-    : "";
-  const steps = entry?.steps.length
-    ? `<ol class="merge-steps" role="list">${entry.steps.map((step) => `<li>${statePill(step.state, step.name)}${step.detail ? `<span class="muted">${esc(step.detail)}</span>` : ""}</li>`).join("")}</ol>`
-    : "";
-  const notices = mergeQueueNotice(item) + githubQueueNotice(item) + steps;
-  if (!notices && (item.state === "merged" || !item.pr)) return "";
-  return `<section class="issue-merge" aria-labelledby="merge-heading"><div class="flex flex-wrap items-center gap-2"><h2 id="merge-heading">Pull request and merge</h2>${item.pr ? `<span class="lin-id">#${item.pr.number}</span>` : ""}</div>
-    ${pr || state ? `<p>${pr}${pr && state ? " · " : ""}${esc(state)}</p>` : ""}
-    ${notices}</section>`;
-}
-
 /** CI reads that failed on the pull request, and what Paws did next. */
 function fixRounds(
   snapshot: IssueDetailResponse,
@@ -1052,28 +1020,6 @@ function blockerCheck(item: StatusItem, generatedAt: string): string {
     ? `Blockers last checked ${ago(item.held.checkedAt, generatedAt)}`
     : "Blockers not checked yet";
   return `<div id="blocker-check" class="row wrap"><span class="muted" data-blocker-checked>${esc(`${checked}; checked every minute while blocked, every 5 minutes while Linear's request budget is low.`)}</span><button class="btn sm" type="button" data-check-blockers="${esc(item.id)}" hidden>Check blockers now</button><span class="muted" role="status" data-blocker-message></span></div>`;
-}
-
-/** Where an item stands in its repository's merge queue. Only the first ready one moves. */
-function mergeQueueNotice(item: StatusItem): string {
-  const queue =
-    item.state === "merge_queue" || (item.state === "verifying" && item.mergeQueue?.rechecking)
-      ? item.mergeQueue
-      : undefined;
-  if (!queue) return "";
-  const detail = queue.rechecking
-    ? "Re-checking, keeps its place. Closeout runs again on this pull request; the ready ones behind it merge meanwhile, and it merges next once Closeout accepts it."
-    : queue.position === 1 || queue.ahead === null
-      ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
-      : `${queue.ahead} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
-  return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
-}
-
-/** Where the item's pull request stands in its repository's GitHub merge queue. */
-function githubQueueNotice(item: StatusItem): string {
-  if (item.state !== "merge_queue" || !item.githubQueue) return "";
-  const queue = item.githubQueue;
-  return `<section class="closeout-result queue-notice" aria-labelledby="github-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position ?? "–"}</span><div><h3 id="github-queue-${esc(item.id)}">${esc(queue.line)}</h3><p>GitHub updates, batches and tests this pull request with the others in its merge queue. Paws does not rebase it or run Closeout again.</p></div></section>`;
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */

@@ -147,7 +147,6 @@ try {
     });
 
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/${queuedItem.id}`);
-    await page.getByRole("button", { name: "Pull request and merge" }).click();
     await expect(
       page.getByRole("heading", {
         name: "Second in the acme/platform GitHub merge queue, waiting for checks.",

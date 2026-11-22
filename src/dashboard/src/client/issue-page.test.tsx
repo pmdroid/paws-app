@@ -8,7 +8,7 @@ import {
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseIssueDetailResponse, statusIntegrity } from "../contract";
+import { parseIssueDetailResponse, statusIntegrity, type IssueDetailResponse } from "../contract";
 import { plainTask, render, timelineGroups } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -66,7 +66,7 @@ describe("issue page", () => {
     for (const term of ["project", "runner", "agent", "session", "repository"])
       expect(html).toContain(`<span class="min-w-0">${term} <span class="text-foreground">`);
     expect(html).toContain('id="activity-heading">Timeline</h2>');
-    expect(html).toContain('id="merge-heading">Pull request and merge</h2>');
+    expect(html).toContain('id="results-heading" class="text-base font-semibold">Results</h2>');
     expect(html).toContain('shared with <a class="lin-id" href="/issues/ENG-102">ENG-102</a>');
     expect(html.match(/<article /g)).toHaveLength(1);
   });
@@ -127,7 +127,9 @@ describe("issue page", () => {
     expect(section).toContain(
       'closeout_accepted <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> merge_queue</span>',
     );
-    expect(html.indexOf('id="merge-heading"')).toBeLessThan(html.indexOf("item-timeline-heading"));
+    expect(html.indexOf('id="results-heading"')).toBeLessThan(
+      html.indexOf("item-timeline-heading"),
+    );
   });
 
   test("open run details lay out facts, a dotted state timeline and the run setup as panels", () => {
@@ -203,7 +205,7 @@ describe("issue page", () => {
     );
     expect(header).toContain(">Docs</a>");
     expect(html).toMatch(
-      /id="merge-heading">Pull request and merge<\/h2><span class="lin-id">#479</,
+      /<a href="https:\/\/github\.com\/acme\/platform\/pull\/479"[^>]*><span class="lin-id">#479<\/span> /,
     );
 
     item.links = [{ label: "Docs", href: "https://docs.example.com/exports" }];
@@ -279,6 +281,89 @@ describe("issue page", () => {
     expect(html).toContain("data-host-disk-full");
     expect(html).toContain("Paws&#39;s host is out of disk space (/tmp, 12 MB left)");
     expect(page(fullStatusFixture())).not.toContain("data-host-disk-full");
+  });
+
+  test("Results: absent before a pull request or follow-up, then both cards and the merge notices", () => {
+    const detailPage = (
+      id: string,
+      followUps: IssueDetailResponse["followUps"] = [],
+      issue: Partial<IssueDetailResponse["issue"]> = {},
+    ) => {
+      const detail = issueResource(fullStatusFixture(), id);
+      return render({
+        route: { view: "issues", id },
+        phase: "ready",
+        issue: { ...detail, issue: { ...detail.issue, ...issue }, followUps },
+        error: null,
+        engineUrl: null,
+        closeout: openedView(),
+      }).content;
+    };
+    expect(detailPage("ENG-104")).not.toContain("results-heading");
+
+    const open = detailPage(
+      "ENG-101",
+      [
+        {
+          identifier: "ENG-120",
+          title: "Retry exports",
+          path: "/dashboard/issues/ENG-120",
+          state: "running",
+          started: true,
+          url: null,
+          pull: { number: 481, url: "https://github.com/acme/platform/pull/481", state: "open" },
+        },
+        {
+          identifier: "ENG-121",
+          title: "Document exports",
+          url: "https://linear.app/acme/issue/ENG-121",
+          started: false,
+        },
+      ],
+      {
+        mergeQueue: { repository: "acme/platform", position: 2, total: 2, ahead: "ENG-99" },
+        githubQueue: {
+          position: 2,
+          state: "AWAITING_CHECKS",
+          line: "Second in the acme/platform GitHub merge queue, waiting for checks.",
+        },
+      },
+    );
+    const results = open.slice(
+      open.indexOf('id="results-heading"'),
+      open.indexOf('class="issue-folds"'),
+    );
+    expect(results).toContain("md:grid-cols-2");
+    expect(results).toMatch(
+      /<a href="https:\/\/github\.com\/acme\/platform\/pull\/479"[^>]*><span class="lin-id">#479<\/span> Export job worker<\/a><span class="st open">open<\/span>/,
+    );
+    expect(results).toContain("CI running");
+    expect(results).toContain("Waiting to merge.");
+    expect(results).toContain('class="merge-steps"');
+    expect(results).toContain("Second in the acme/platform queue");
+    expect(results).toContain(
+      "Second in the acme/platform GitHub merge queue, waiting for checks.",
+    );
+    const rows = results.match(/<li[^>]*data-follow-up>.*?<\/li>/g)!;
+    expect(rows[0]).toContain(
+      '<a href="/issues/ENG-120"><span class="lin-id">ENG-120</span> Retry exports</a>',
+    );
+    expect(rows[0]).toMatch(
+      /href="https:\/\/github\.com\/acme\/platform\/pull\/481"[^>]*data-follow-up-pull><span class="lin-id">#481<\/span><\/a><span class="st open">open<\/span>/,
+    );
+    expect(rows[1]).toContain("In Linear, not handed to Paws");
+    expect(rows[1]).not.toContain("data-follow-up-pull");
+    expect(open).not.toContain('aria-label="Pull request and merge"');
+
+    const merged = detailPage("ENG-99");
+    expect(merged).toContain('<span class="st merged">merged</span>');
+    expect(merged).toContain("Merged.");
+    expect(merged).not.toContain("data-result-follow-ups");
+    expect(merged).not.toContain("md:grid-cols-2");
+
+    const followUpsOnly = detailPage("ENG-104", [{ identifier: "ENG-122" }]);
+    expect(followUpsOnly).toContain("results-heading");
+    expect(followUpsOnly).not.toContain("data-result-pull");
   });
 
   test("an internal path id reads as the issue identifier", () => {
