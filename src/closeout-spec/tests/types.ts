@@ -11,7 +11,7 @@ export type TestSelection =
 export type TestInvocation = { cwd: string; argv: string[] };
 
 export type TestReport =
-  | { kind: "junit"; paths: string[] }
+  | { kind: "junit"; paths: string[]; missing?: string }
   | { kind: "go-json"; path: string }
   | { kind: "none" };
 
@@ -21,6 +21,7 @@ export type TestPlan = {
   report: TestReport;
   intentionallyEmpty?: boolean;
   problem?: string;
+  note?: string;
 };
 
 export type Snapshot = { paths: ReadonlySet<string>; read(path: string): string | undefined };
@@ -32,6 +33,7 @@ export type TestContext = {
   head: string;
   reportDir: string;
   env: Record<string, string>;
+  deadline: number;
   changes(): Promise<TestChange[]>;
   readAtBase(path: string): Promise<string | undefined>;
   readAtHead(path: string): Promise<string | undefined>;

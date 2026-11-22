@@ -1,6 +1,5 @@
 import { basename, join, normalize } from "node:path/posix";
 import { anyPathMatches, pathMatches } from "../evaluate/paths";
-import type { TestSelect } from "../types";
 import { affectedTests, knownType } from "./graph";
 import type { Snapshot, TestAdapter, TestContext, TestPlan } from "./types";
 
@@ -101,13 +100,10 @@ function preloadsOf(snapshot: Snapshot): string[] {
 
 export const bunTestAdapter: TestAdapter = { plan, full: (context) => fullPlan(context) };
 
-export function selectExecError(
-  runner: TestSelect["runner"],
-  exec: readonly string[],
-): string | undefined {
+export function bunExecError(exec: readonly string[]): string | undefined {
   const [command, verb, ...rest] = exec;
   if (command === "bun" && verb === "test" && rest.every((part) => part.startsWith("-"))) {
     return undefined;
   }
-  return `select runner ${runner} needs exec to start with "bun", "test" and pass only flags, as --flag=value`;
+  return `select runner bun needs exec to start with "bun", "test" and pass only flags, as --flag=value`;
 }

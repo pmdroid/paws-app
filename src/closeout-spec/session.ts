@@ -1152,7 +1152,7 @@ async function execute(
     else state.covered = covered;
     memory.set(item.id, state);
     finished("passed");
-    return { ok: true, text: `${item.id} passed.` };
+    return { ok: true, text: [`${item.id} passed.`, tests?.note].filter(Boolean).join(" ") };
   }
   state.failures += 1;
   delete state.covered;
@@ -1173,7 +1173,7 @@ async function execute(
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
   const problem = result.code !== 0 ? (tests?.problem ?? "") : "";
-  const parts = [failed, problem, failedTestsText(failedTests), result.output.trim()];
+  const parts = [failed, tests?.note, problem, failedTestsText(failedTests), result.output.trim()];
   return { ok: false, failed: true, text: parts.filter(Boolean).join("\n") };
 }
 

@@ -138,6 +138,7 @@ async function planned(
     head,
     reportDir: "/r",
     env,
+    deadline: Date.now() + 60_000,
     changes: () => testChanges(root, base, head, env),
     readAtBase: async () => undefined,
     readAtHead: async () => undefined,
