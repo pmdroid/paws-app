@@ -61,6 +61,10 @@ export type FakeTracker = LinearSessionAdapter &
     projectOverviews: Map<string, ProjectOverview>;
     projects: Map<string, LinearProject>;
     projectOverview(issueId: string, options?: TrackerRequestOptions): Promise<ProjectOverviewRead>;
+    projectTeamsById: Map<string, LinearProject>;
+    projectTeamsReads: string[];
+    projectTeamsFailures: Error[];
+    projectTeams(projectId: string, options?: TrackerRequestOptions): Promise<LinearProject | null>;
     repositoryLabels: { issueId: string; repository: string }[];
     /** Every createSubIssues call, including retries, in order. */
     subIssueRequests: SubIssueRequest[];
@@ -147,6 +151,9 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const repositoryHints = new Map<string, RepositoryHints>();
   const projectOverviews = new Map<string, ProjectOverview>();
   const projects = new Map<string, LinearProject>();
+  const projectTeamsById = new Map<string, LinearProject>();
+  const projectTeamsReads: string[] = [];
+  const projectTeamsFailures: Error[] = [];
   const repositoryLabels: { issueId: string; repository: string }[] = [];
   const mergeContexts = new Map<string, LinearMergeContext>();
   const subIssueRequests: SubIssueRequest[] = [];
@@ -265,6 +272,16 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
         overview: projectOverviews.get(issueId) ?? null,
         project: projects.get(issueId) ?? null,
       });
+    },
+    projectTeamsById,
+    projectTeamsReads,
+    projectTeamsFailures,
+    async projectTeams(projectId, options) {
+      options?.signal?.throwIfAborted();
+      projectTeamsReads.push(projectId);
+      const failure = projectTeamsFailures.shift();
+      if (failure) throw failure;
+      return structuredClone(projectTeamsById.get(projectId) ?? null);
     },
     async addRepositoryLabel(input, options) {
       options?.signal?.throwIfAborted();
