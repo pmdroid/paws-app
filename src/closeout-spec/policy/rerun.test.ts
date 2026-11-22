@@ -179,7 +179,7 @@ describe("rerun and since", () => {
     expect(failure(`${BASE}${TEST}${SINCE.replace("affected-tests.ts", "x")}${select}`)).toBe(
       `${prefix}item test: select cannot be used with since`,
     );
-    const shape = `${prefix}item test: select runner bun needs exec to start with "bun", "test" and pass only flags, as --flag=value`;
+    const shape = `${prefix}item test: select runner bun needs exec to start with "bun test" and pass only flags, as --flag=value`;
     for (const exec of ['["bun", "run", "test"]', '["bun", "test", "test/a.test.ts"]']) {
       expect(failure(`${BASE}${TEST.replace('["bun", "test"]', exec)}${select}`)).toBe(shape);
     }

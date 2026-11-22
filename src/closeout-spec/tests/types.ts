@@ -11,7 +11,7 @@ export type TestSelection =
 export type TestInvocation = { cwd: string; argv: string[] };
 
 export type TestReport =
-  | { kind: "junit"; paths: string[]; missing?: string }
+  | { kind: "junit"; paths: string[]; missing?: string; classnameIsFile?: boolean }
   | { kind: "go-json"; path: string }
   | { kind: "none" };
 

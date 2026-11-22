@@ -143,7 +143,7 @@ function readReport(plan: TestPlan): { failures: FailedTest[]; problem?: string 
       const why = plan.report.missing ? `: ${plan.report.missing}` : "";
       return { failures, problem: `test report ${path} is missing${why}` };
     }
-    const parsed = parseJunit(text);
+    const parsed = parseJunit(text, plan.report.classnameIsFile);
     if (!parsed.ok) return { failures, problem: `test report ${path} ${parsed.message}` };
     cases += parsed.cases;
     failures.push(...parsed.failures);

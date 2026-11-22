@@ -19,7 +19,7 @@ const parser = new XMLParser({
   isArray: (name) => LISTS.has(name),
 });
 
-export function parseJunit(text: string): JunitReport {
+export function parseJunit(text: string, classnameIsFile = false): JunitReport {
   if (Buffer.byteLength(text, "utf8") > MAX_REPORT_BYTES) {
     return { ok: false, message: "is larger than 8 MB" };
   }
@@ -33,7 +33,7 @@ export function parseJunit(text: string): JunitReport {
   const suites = lists(isNode(root) ? root.testsuite : document.testsuite);
   if (root === undefined && suites.length === 0) return { ok: false, message: "has no testsuite" };
   const found = { cases: 0, failures: [] as FailedTest[] };
-  for (const suite of suites) walk(suite, undefined, found);
+  for (const suite of suites) walk(suite, undefined, found, classnameIsFile);
   return { ok: true, ...found };
 }
 
@@ -41,13 +41,17 @@ function walk(
   suite: Node,
   parentFile: string | undefined,
   found: { cases: number; failures: FailedTest[] },
+  classnameIsFile: boolean,
 ): number {
   const file = decoded(suite.file) ?? parentFile;
   let errors = 0;
   for (const testcase of lists(suite.testcase)) {
     found.cases += 1;
-    const caseFile = decoded(testcase.file) ?? file;
-    const name = [decoded(testcase.classname), decoded(testcase.name)].filter(Boolean).join(" > ");
+    const classname = decoded(testcase.classname);
+    const caseFile = decoded(testcase.file) ?? (classnameIsFile ? classname : undefined) ?? file;
+    const name = [classnameIsFile ? undefined : classname, decoded(testcase.name)]
+      .filter(Boolean)
+      .join(" > ");
     for (const [key, kind] of [
       ["failure", "failed"],
       ["error", "error"],
@@ -63,7 +67,7 @@ function walk(
       }
     }
   }
-  for (const child of lists(suite.testsuite)) errors += walk(child, file, found);
+  for (const child of lists(suite.testsuite)) errors += walk(child, file, found, classnameIsFile);
   const missing = Number(decoded(suite.errors) ?? 0) - errors;
   if (missing > 0) {
     found.failures.push({
