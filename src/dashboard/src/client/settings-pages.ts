@@ -30,6 +30,12 @@ export const WORKSPACE_PAGES = [
     name: "Repositories",
     description: "Repository access and local Closeout policies.",
   },
+  {
+    id: "closeout",
+    name: "Closeout",
+    description:
+      "What Closeout runs again after a conflict fix or a failed CI check, and how each repository's test checks pick their tests. Each repository sets this in its .agents/closeout.yaml; change it there in a pull request. GitHub CI always runs the full suite before a merge.",
+  },
   { id: "linear", name: "Linear", description: "Choose which Linear agents may comment." },
   {
     id: "storage",
@@ -125,5 +131,5 @@ export function settingsRedirect(path: string): string | null {
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
   const page = settingsAdmin || isUserSettingsPage(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }
