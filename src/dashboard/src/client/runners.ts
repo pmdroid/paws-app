@@ -1676,10 +1676,6 @@ export function createRunners() {
     const active = document.activeElement;
     const focused =
       active instanceof HTMLElement && root.contains(active) ? active.dataset.focus : undefined;
-    const caret =
-      active instanceof HTMLInputElement && active.type !== "checkbox"
-        ? { start: active.selectionStart, end: active.selectionEnd }
-        : null;
     const key = focused ?? pendingFocus;
     painted = html;
     renderMarkup(root, html);
@@ -1690,9 +1686,7 @@ export function createRunners() {
         )
       : undefined;
     if (target && !(target as HTMLButtonElement).disabled) {
-      target.focus({ preventScroll: true });
-      if (caret && target instanceof HTMLInputElement)
-        target.setSelectionRange(caret.start, caret.end);
+      if (document.activeElement !== target) target.focus({ preventScroll: true });
       pendingFocus = null;
     } else pendingFocus = busy ? (key ?? null) : null;
   }

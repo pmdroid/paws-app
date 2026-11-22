@@ -117,14 +117,14 @@ function accountUsage(account: CentralAccount): string {
 }
 
 function tokenForm(account: CentralAccount, busy: string): string {
-  const fields = `<form class="acct-token-form" data-account-token><label class="field"><span>Setup token</span><input type="password" name="token" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…"></label><button class="btn primary" type="submit"${busy}>Save token</button></form><p class="sub">Run <code>claude setup-token</code> on your own machine and paste the token. No runner needed.</p>`;
+  const fields = `<form class="acct-token-form" data-account-token="${esc(account.id)}"><label class="field"><span>Setup token</span><input type="password" name="token" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…"></label><button class="btn primary" type="submit"${busy}>Save token</button></form><p class="sub">Run <code>claude setup-token</code> on your own machine and paste the token. No runner needed.</p>`;
   return account.credential
     ? `<details class="acct-token"><summary>Replace setup token</summary>${fields}</details>`
     : `<div class="acct-token">${fields}</div>`;
 }
 
 function apiKeyForm(account: CentralAccount, busy: string): string {
-  return `<div class="acct-token"><form class="acct-token-form" data-account-api-key><label class="field"><span>API key</span><input type="password" name="key" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="${KEY_PROVIDERS[account.agent]} API key"></label><button class="btn primary" type="submit"${busy}>Save key</button></form></div>`;
+  return `<div class="acct-token"><form class="acct-token-form" data-account-api-key="${esc(account.id)}"><label class="field"><span>API key</span><input type="password" name="key" required maxlength="512" autocomplete="off" spellcheck="false" placeholder="${KEY_PROVIDERS[account.agent]} API key"></label><button class="btn primary" type="submit"${busy}>Save key</button></form></div>`;
 }
 
 function accountCard(account: CentralAccount, index: number, count: number, view: AccountsView) {
