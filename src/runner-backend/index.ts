@@ -1623,7 +1623,9 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.closeoutFocus
                         ? {
                             closeoutFocus: {
-                              ...input.closeoutFocus,
+                              scope: input.closeoutFocus.scope,
+                              head: input.closeoutFocus.head,
+                              policyDigest: input.closeoutFocus.policyDigest,
                               passed: [...input.closeoutFocus.passed],
                             },
                           }

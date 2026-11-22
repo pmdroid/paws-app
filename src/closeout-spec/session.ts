@@ -27,6 +27,7 @@ import {
   VISUAL_REVIEW_HINT,
 } from "./evaluate/evaluate";
 import { publishedAtHead } from "./published";
+import { withSince } from "./since";
 import type {
   PublishedEvidence,
   ResolvedEvidence,
@@ -117,6 +118,7 @@ export type CloseoutFocus = {
   head: string;
   policyDigest: string;
   passed: readonly string[];
+  since?: readonly string[];
 };
 
 export type CloseoutSessionCheck = {
@@ -268,7 +270,11 @@ export function createCloseoutSession(
     if (!loaded.ok) return { kind: "blocked", message: loaded.message };
     if (loaded.absent || loaded.policy.digest !== source.digest)
       return { kind: "blocked", message: "The Closeout policy does not match its digest" };
-    const policy = loaded.policy;
+    const focus = options.focus;
+    const policy =
+      focus?.since && focus.policyDigest === loaded.policy.digest
+        ? withSince(loaded.policy, { head: focus.head, ids: focus.since })
+        : loaded.policy;
     const current = await candidateOf(workspace, policy);
     if (!current.ok) return { kind: "blocked", message: current.message };
     const { head, paths, fingerprint: next } = current;

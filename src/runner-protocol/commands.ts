@@ -254,6 +254,7 @@ export const RunnerCommandSchema = z
           head: z.string().regex(/^[0-9a-f]{40,64}$/),
           policyDigest: z.string().min(1).max(200),
           passed: z.array(z.string().min(1).max(200)).max(200),
+          since: z.array(z.string().min(1).max(200)).max(200).optional(),
         })
         .optional(),
       pullRequestDraft: z

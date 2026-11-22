@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { sql, type SQL } from "drizzle-orm";
 import type { AcpEvent } from "../src/acp";
+import type { CloseoutFocus } from "../src/closeout-spec";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -53,6 +54,21 @@ test("a head already on GitHub starts on its bound account with no push and no l
   expect(result.thoughts, result.detail).toEqual([]);
   expect(result.account?.bindingId, result.detail).toBeString();
   expect(result.received, result.detail).not.toContain("login");
+});
+
+test("the run command carries the Closeout focus without since", async () => {
+  const focus = {
+    scope: "failed",
+    head: "c".repeat(40),
+    policyDigest: "d",
+    passed: ["lint"],
+  } as const;
+  const result = await startScenario({
+    local: [],
+    push: "works",
+    closeoutFocus: { ...focus, since: ["test"] },
+  });
+  expect(result.closeoutFocus, result.detail).toEqual({ ...focus, passed: ["lint"] });
 });
 
 test("a head missing on GitHub is pushed before the run when the push works", async () => {
@@ -371,6 +387,7 @@ async function startScenario(input: {
   failFirstDispatch?: true;
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
+  closeoutFocus?: CloseoutFocus;
   hiddenCheckpoint?: {
     rebasedOnEarlierMain?: true;
     lookup?: "fails";
@@ -716,6 +733,7 @@ async function startScenario(input: {
           itemId: item.id,
           runId: run.id,
           prompt: "Write output",
+          ...(input.closeoutFocus ? { closeoutFocus: input.closeoutFocus } : {}),
           worktreePath: join(root, "workspace"),
           pawsRoot: root,
           profile: { agent: "claude", model: null },
@@ -754,6 +772,7 @@ async function startScenario(input: {
       earlierMain,
       movedMain,
       prompt: assigned?.prompt,
+      closeoutFocus: assigned?.closeoutFocus,
       account: assigned?.account,
       received: [...received],
       remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]).catch(
