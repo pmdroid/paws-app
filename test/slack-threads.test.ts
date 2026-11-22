@@ -4528,3 +4528,75 @@ test("a channel thread's notebook add lands in that channel's notebook, names th
   await f.say("SADMIN", "and now?");
   expect(lastPrompt(f)).toContain("Channel notebook:\n- canary-notebook");
 });
+
+test("a DM answer reads a repository the asker can read without the admin's policy, and withholds it once they can't", async () => {
+  const f = await withSource([]);
+  const root = f.dm("SMEMBER", "repo acme/app");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.notice()).toContain("This thread now reads `acme/app`");
+  await f.pair("SMEMBER", "how does billing work?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("canary-main");
+  expect(lastPrompt(f)).toContain("answering in a Slack direct message");
+  expect(f.posts("chat.postMessage").map((post) => [post.body.channel, post.body.text])).toEqual([
+    ["DSMEMBER", "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._"],
+  ]);
+  expect(f.posts("conversations.info")).toEqual([]);
+  await f.teams([]);
+  const asked = f.prompts.length;
+  await f.pair("SMEMBER", "and billing now?", { thread_ts: root.ts });
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(f.posts("chat.postEphemeral").at(-1)!.body).toMatchObject({
+    channel: "DSMEMBER",
+    user: "SMEMBER",
+  });
+  expect(f.prompts).toHaveLength(asked);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+});
+
+test("a follow-up promised in a DM wakes and posts in that DM without mentioning the member", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.answers.push(
+    `I'll check the deploy in 20 minutes.\n${followUpBlock({ purpose: "check the deploy", after_minutes: 20 })}`,
+  );
+  const root = f.dm("SMEMBER", "tell me in 20 minutes");
+  await f.deliver(root);
+  await f.settle();
+  expect(await followUpRows(f)).toEqual([
+    expect.objectContaining({ status: "pending", channelId: "DSMEMBER", threadTs: root.ts }),
+  ]);
+  f.posted.length = 0;
+  f.answers.push("The deploy finished.");
+  await wakeAfter(f, 20 * MIN);
+  expect(lastPrompt(f)).toContain("Follow-up you promised: check the deploy.");
+  expect(f.posts("chat.postMessage").map((post) => post.body)).toEqual([
+    expect.objectContaining({
+      channel: "DSMEMBER",
+      thread_ts: root.ts,
+      text: "The deploy finished.",
+    }),
+  ]);
+  expect(await followUpStatus(f)).toEqual(["done"]);
+});
+
+test("a DM and a channel thread never see each other's turns", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.answers.push("channel-answer-canary", "dm-answer-canary");
+  const root = f.mention("SMEMBER", "channel-question-canary");
+  await f.deliver(root);
+  await f.settle();
+  const direct = f.dm("SMEMBER", "dm-question-canary");
+  await f.deliver(direct);
+  await f.settle();
+  const dmPrompt = lastPrompt(f);
+  expect(dmPrompt).toContain("dm-question-canary");
+  expect(dmPrompt).not.toContain("channel-");
+  await f.say("SMEMBER", "and in the channel?", { thread_ts: root.ts });
+  const channelPrompt = lastPrompt(f);
+  expect(channelPrompt).toContain("channel-question-canary\n[Paws]: channel-answer-canary");
+  expect(channelPrompt).toContain("Slack channel thread");
+  expect(channelPrompt).not.toContain("dm-");
+  await f.pair("SMEMBER", "and here?", { thread_ts: direct.ts });
+  expect(lastPrompt(f)).toContain("dm-question-canary\n[Paws]: dm-answer-canary");
+  expect(lastPrompt(f)).not.toContain("channel-");
+});
