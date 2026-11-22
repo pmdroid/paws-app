@@ -43,6 +43,11 @@ import { answerQuestionPg } from "../questions";
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
 export async function probeWorkspaceLinearActions(root: string, observe: Observe) {
+  await probeWorkspaceLinearDirect(root, observe);
+  await probeWorkspaceLinearHttps(join(root, "https"), observe);
+}
+
+export async function probeWorkspaceLinearDirect(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true });
   const { db, close } = await tempStore();
   let now = Date.now();
@@ -413,10 +418,9 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await access.stop();
     await close();
   }
-  await probeWorkspaceLinearHttps(join(root, "https"), observe);
 }
 
-async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
+export async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const key = join(root, "local.key"),
     cert = join(root, "local.crt");
