@@ -22,6 +22,7 @@ import {
   saveTaskMode,
   saveHook,
   deleteHook,
+  listAgentCloseout,
   recordAgentCloseout,
   resumeUsagePauseNow,
   usagePause,
@@ -32,8 +33,6 @@ import {
   type Db,
   type Q,
 } from "../../src/db";
-import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
-import { issueRecords } from "../../src/dashboard/test/issue-records";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
 import { initializeRunnerAuthority, createRunnerKey } from "../../src/runner-identity";
@@ -735,25 +734,11 @@ export async function probeRunnerBackend(
     assert.deepEqual(replies, [
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
     ]);
-    const status = createLiveStatusProvider(db);
-    const listed = (await issueRecords(status)).agentCloseout.find(
-      (entry) => entry.runId === first.run.id,
+    const remoteChecks = (await listAgentCloseout(db, [first.run.id])).flatMap((event) =>
+      event.progress.type === "finished"
+        ? [[event.progress.id, event.progress.state, event.progress.stdout]]
+        : [],
     );
-    assert.ok(listed);
-    const remoteCloseout = (await status.issue(listed!.itemId))?.agentCloseout.find(
-      (entry) => entry.runId === first.run.id,
-    );
-    const remoteAttempt = remoteCloseout?.attempts.at(-1);
-    const remoteChecks: unknown[] = [];
-    for (const check of remoteAttempt?.checks ?? []) {
-      const log = await status.checkLog({
-        itemId: remoteCloseout!.itemId,
-        attempt: remoteAttempt!.number,
-        checkId: check.id,
-        run: first.run.id,
-      });
-      remoteChecks.push([check.id, check.state, log?.stdout]);
-    }
     assert.deepEqual(remoteChecks, [["test", "failed", "1 fail on the runner"]]);
     observe(
       "signed remote implementation imports the exact candidate while canonical verification remains pending",

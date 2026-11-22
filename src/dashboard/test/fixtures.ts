@@ -9,7 +9,6 @@ import {
   type IssueDetailResponse,
   type IssueListResponse,
   type MergeQueueResponse,
-  type StatusAgentCloseout,
   type StatusCheck,
   type StatusCiRound,
   type StatusDeadDelivery,
@@ -45,7 +44,6 @@ export interface FullStatus {
   runs: StatusRun[];
   questions: StatusQuestion[];
   verdicts: StatusVerdict[];
-  agentCloseout?: StatusAgentCloseout[];
   mergeQueue: StatusMergeEntry[];
   mergeHistory?: StatusMergeOutcome[];
   evidence?: StatusEvidence[];
@@ -378,7 +376,6 @@ const FIXTURE: FullStatus = {
       links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
     },
   ],
-  agentCloseout: [agentCloseout()],
   mergeQueue: [
     {
       position: 1,
@@ -409,114 +406,6 @@ const FIXTURE: FullStatus = {
   ],
 };
 
-function agentCloseout(): StatusAgentCloseout {
-  const passed = (
-    id: string,
-    kind: "setup" | "command",
-    command: string,
-    elapsedMs: number,
-    stdout: string,
-  ) =>
-    ran(check(id, kind, "passed", command, null), { attempt: 1, elapsedMs, exitCode: 0, stdout });
-  const setup = [
-    passed(
-      "install",
-      "setup",
-      "bun install --frozen-lockfile",
-      4_200,
-      "bun install v1.4.2\n\nChecked 230 installs across 241 packages (no changes) [412.00ms]\n",
-    ),
-    passed("lint", "command", "bun run lint", 6_100, "$ oxlint\nFound 0 warnings and 0 errors.\n"),
-    passed(
-      "format",
-      "command",
-      "bun run fmt:check",
-      2_300,
-      "$ oxfmt --check\nAll matched files use the correct format.\n",
-    ),
-    passed("typecheck", "command", "bun run typecheck", 31_000, "$ tsc --noEmit\n"),
-  ];
-  const later = [
-    check("build-dashboard", "command", "pending", "bun run build:dashboard", null),
-    check("links", "command", "pending", "bun run links", null),
-  ];
-  const failed = ran(check("test", "command", "failed", "bun test", null), {
-    attempt: 1,
-    elapsedMs: 72_400,
-    exitCode: 1,
-    stdout:
-      "bun test v1.4.2\n\npackages/audit/format/csv.test.ts:\n\u001b[32m✓\u001b[0m streams rows without buffering \u001b[2m[2.95ms]\u001b[0m\n\u001b[31m✗\u001b[0m escapes quotes inside quoted fields \u001b[2m[1.02ms]\u001b[0m\n\n \u001b[1m\u001b[32m211 pass\u001b[0m\n \u001b[1m\u001b[31m1 fail\u001b[0m\n",
-    stderr: `\u001b[1m\u001b[31merror\u001b[0m: expect(received).toBe(expected)\n\n  Expected: \u001b[32m'"a""b"'\u001b[0m\n  Received: \u001b[31m'"a"b"'\u001b[0m\n\n      at packages/audit/format/csv.test.ts:41:27\n`,
-  });
-  const running = {
-    ...check("test", "command", "running", "bun test", null),
-    attempt: 2,
-    elapsedMs: 74_000,
-    active: true,
-  };
-  return {
-    itemId: "ENG-102",
-    runId: "r-102",
-    maxAttempts: 3,
-    blocked: null,
-    updatedAt: "2026-10-09T22:13:46.000Z",
-    attempts: [
-      {
-        number: 1,
-        decision: "rejected",
-        startedAt: "2026-10-09T22:05:10.000Z",
-        baseSha: null,
-        headSha: "2c41f9a",
-        policyDigest: null,
-        checks: [...setup, failed, ...later],
-      },
-      {
-        number: 2,
-        decision: "running",
-        startedAt: "2026-10-09T22:13:46.000Z",
-        baseSha: null,
-        headSha: "4be81d0",
-        policyDigest: null,
-        checks: [...setup, running, ...later],
-      },
-    ],
-    steps: [
-      {
-        at: "2026-10-09T22:05:02.000Z",
-        tool: "get_closeout",
-        checkId: null,
-        state: "reported",
-        attempt: null,
-        headSha: "2c41f9a",
-      },
-      ...["install", "lint", "format", "typecheck"].map((checkId) => ({
-        at: "2026-10-09T22:06:00.000Z",
-        tool: "run_closeout" as const,
-        checkId,
-        state: "passed" as const,
-        attempt: 1,
-        headSha: "2c41f9a",
-      })),
-      {
-        at: "2026-10-09T22:07:20.000Z",
-        tool: "run_closeout",
-        checkId: "test",
-        state: "failed",
-        attempt: 1,
-        headSha: "2c41f9a",
-      },
-      {
-        at: "2026-10-09T22:13:46.000Z",
-        tool: "run_closeout",
-        checkId: "test",
-        state: "running",
-        attempt: 2,
-        headSha: "4be81d0",
-      },
-    ],
-  };
-}
-
 /** The fixture with every Closeout attempt, check and finding, before the list trims them. */
 export function fullStatusFixture(): FullStatus {
   return structuredClone(FIXTURE);
@@ -545,7 +434,6 @@ export function issueResource(full: FullStatus, id: string): IssueDetailResponse
     runs: mine(full.runs),
     questions: mine(full.questions),
     verdicts: mine(full.verdicts),
-    agentCloseout: mine(full.agentCloseout),
     evidence: mine(full.evidence),
     ciRounds: mine(full.ciRounds),
     mergeQueue: mine(full.mergeQueue),
@@ -900,19 +788,16 @@ export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
     mergeQueue: () => mergeQueueOf(read()),
     questions: () => questionReaders(read()).questions(),
     question: (id) => questionReaders(read()).question(id),
-    checkLog: ({ itemId, attempt, checkId, run }) => {
+    checkLog: ({ itemId, attempt, checkId }) => {
       const status = read();
       // A verdict without recorded attempts is one attempt, as the issue page shows it.
-      const attempts =
-        run === null
-          ? status.verdicts
-              .filter((verdict) => verdict.itemId === itemId)
-              .flatMap((verdict) =>
-                verdict.attempts?.length
-                  ? verdict.attempts
-                  : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }],
-              )
-          : (status.agentCloseout?.find((entry) => entry.runId === run)?.attempts ?? []);
+      const attempts = status.verdicts
+        .filter((verdict) => verdict.itemId === itemId)
+        .flatMap((verdict) =>
+          verdict.attempts?.length
+            ? verdict.attempts
+            : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }],
+        );
       const found = attempts
         .find((entry) => entry.number === attempt)
         ?.checks.find((entry) => entry.id === checkId);

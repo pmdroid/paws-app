@@ -73,12 +73,6 @@ describe("issue page", () => {
 
   test("a running item and a finished one show only Paws's Closeout", () => {
     const snapshot = fullStatusFixture();
-    const agents = snapshot.agentCloseout!;
-    agents.push({
-      ...agents[0]!,
-      itemId: "ENG-101",
-      runId: "r-101",
-    });
     for (const id of ["ENG-102", "ENG-101"]) {
       const html = page(snapshot, id);
       expect(html).not.toMatch(/Agent Closeout/i);

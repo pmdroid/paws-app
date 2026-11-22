@@ -74,7 +74,6 @@ function twoRepositories(): FullStatus {
   snapshot.questions = [];
   snapshot.verdicts = [];
   snapshot.evidence = [];
-  snapshot.agentCloseout = [];
   snapshot.mergeQueue = [
     entry(
       "ENG-101",

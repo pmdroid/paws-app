@@ -26,9 +26,5 @@ export async function issueRecords(provider: IssueReader) {
       details.flatMap((detail) => detail.verdicts),
       (verdict) => `${verdict.itemId}:${verdict.runId ?? ""}`,
     ),
-    agentCloseout: unique(
-      details.flatMap((detail) => detail.agentCloseout),
-      (entry) => entry.runId,
-    ),
   };
 }

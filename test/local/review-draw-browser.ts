@@ -42,7 +42,6 @@ function fixture() {
   item.owner = "Ada Reviewer";
   run.state = "awaiting_input";
   snapshot.verdicts = snapshot.verdicts.filter((verdict) => verdict.itemId !== item.id);
-  snapshot.agentCloseout = [];
   snapshot.evidence = ["shot-1", "shot-2"].map((id) => ({
     id,
     itemId: item.id,

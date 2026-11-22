@@ -214,7 +214,7 @@ describe("rule results in the issue resources", () => {
     const { db, home } = await seed();
     const provider = createLiveStatusProvider(db, { pawsHome: home });
     expect(
-      await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
+      await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract" }),
     ).toEqual({ stdout: "", stderr: "" });
   });
 

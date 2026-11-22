@@ -177,7 +177,7 @@ async function snapshotOf(db: Db, now: number, env: NodeJS.ProcessEnv = {}): Pro
     for (const check of checks)
       logged.push({
         ...check,
-        ...(await provider.checkLog({ itemId, attempt, checkId: check.id, run: null })),
+        ...(await provider.checkLog({ itemId, attempt, checkId: check.id })),
       });
     return logged;
   };

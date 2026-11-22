@@ -30,7 +30,6 @@ import { journalCaught } from "../journal";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
-  AgentCloseoutEvent,
   CiRerun,
   ItemActivityFacts,
   Job,
@@ -89,7 +88,6 @@ import {
   linearConversationUrlAsync,
   linearRequestsByItemSteps,
   linearWebhookWarningSteps,
-  listAgentCloseoutSteps,
   listCiRerunsSteps,
   listCiRoundsSteps,
   listCloseoutBypassChecksSteps,
@@ -125,7 +123,6 @@ import {
 import { followUpsFor } from "./follow-ups";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
-import { agentCloseoutOf } from "./agent-closeout";
 import { doingOf } from "./doing";
 import { readOverview } from "./overview";
 import { itemReviews } from "./reviews";
@@ -152,7 +149,6 @@ import {
   type OverviewResponse,
   type RunState,
   type StatusActivity,
-  type StatusAgentCloseout,
   type StatusCiRound,
   type StatusCheck,
   type StatusCloseoutAttempt,
@@ -307,13 +303,12 @@ export function createLiveStatusProvider(
   };
 }
 
-/** One check of one Closeout attempt of a visible issue. `run` picks that run's agent Closeout. */
+/** One check of one Closeout attempt of a visible issue. */
 export interface CheckLogRequest {
   ci?: boolean;
   itemId: string;
   attempt: number;
   checkId: string;
-  run: string | null;
 }
 
 export interface CheckOutput {
@@ -337,7 +332,6 @@ type IssueScope = {
   runs: StatusRun[];
   questions: StatusQuestion[];
   verdicts: StatusVerdict[];
-  agentCloseout: StatusAgentCloseout[];
   mergeQueue: StatusMergeEntry[];
   mergeHistory?: StatusMergeOutcome[];
   evidence: StatusEvidence[];
@@ -568,7 +562,6 @@ function toIssueDetail(detail: ItemDetail): IssueDetailResponse {
     runs: detail.runs,
     questions: detail.questions,
     verdicts: detail.verdicts,
-    agentCloseout: detail.agentCloseout,
     evidence: detail.evidence,
     ciRounds: detail.ciRounds,
     mergeQueue: detail.mergeQueue,
@@ -721,16 +714,11 @@ async function readCheckLog(
     return check?.logTail == null ? null : { stdout: check.logTail, stderr: "" };
   }
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
-  let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
-  if (request.run === null) {
-    const verdict = scope.verdicts.find((entry) => entry.itemId === request.itemId);
-    if (!verdict) return null;
-    attempts = verdict.attempts?.length
-      ? verdict.attempts
-      : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }];
-  } else {
-    attempts = scope.agentCloseout.find((entry) => entry.runId === request.run)?.attempts ?? [];
-  }
+  const verdict = scope.verdicts.find((entry) => entry.itemId === request.itemId);
+  if (!verdict) return null;
+  const attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">> = verdict.attempts?.length
+    ? verdict.attempts
+    : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }];
   const check = attempts
     .find((entry) => entry.number === request.attempt)
     ?.checks.find((entry) => entry.id === request.checkId);
@@ -766,10 +754,6 @@ function withoutOutputs(scope: IssueScope): IssueScope {
       ...verdict,
       checks: verdict.checks.map(withoutOutput),
       ...(verdict.attempts ? { attempts: verdict.attempts.map(attemptWithoutOutput) } : {}),
-    })),
-    agentCloseout: scope.agentCloseout.map((entry) => ({
-      ...entry,
-      attempts: entry.attempts.map(attemptWithoutOutput),
     })),
   };
 }
@@ -828,7 +812,6 @@ function emptyScope(now: Date, project: LiveStatusOptions["project"]): IssueScop
     runs: [],
     questions: [],
     verdicts: [],
-    agentCloseout: [],
     mergeQueue: [],
     evidence: [],
     ciRounds: [],
@@ -1132,7 +1115,6 @@ async function readIssueScope(
       ? {}
       : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
     evidence: issuesOnly ? [] : await evidenceFor(store, records),
-    agentCloseout: await agentCloseoutFor(store, records, now.getTime(), env, read),
     ciRounds: issuesOnly ? [] : await ciRoundsFor(store, records, env),
     dead: issuesOnly ? [] : await deadFor(store, records),
     ...(only === undefined ? await mergedTimesFor(store, visible, facts, now.getTime()) : {}),
@@ -1240,53 +1222,6 @@ async function withStepOutputs(
       items.has(row.itemId) ? { ...row, steps: await Promise.all(row.steps.map(read)) } : row,
     ),
   );
-}
-
-async function agentCloseoutFor(
-  store: Db,
-  records: readonly WorkItemRecord[],
-  nowMs: number,
-  env: NodeJS.ProcessEnv,
-  read?: CloseoutOutputReader,
-): Promise<StatusAgentCloseout[]> {
-  const stored = new Map<string, StoredRun[]>();
-  for (const run of await store.run((q) => listRunsSteps(q)))
-    stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
-  const shown = records.flatMap((record) => {
-    const runs = stored.get(record.id) ?? [];
-    const current = runs.find((run) => run.id === record.currentRunId);
-    if (current === undefined) return [];
-    return [...new Set([runs[0]!, current])].map((run) => ({ record, run, current }));
-  });
-  const byRun = new Map<string, AgentCloseoutEvent[]>();
-  const runIds = shown.map(({ run }) => run.id);
-  for (let event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
-    if (read && event.progress.type === "finished" && event.progress.output)
-      event = { ...event, progress: await read(event.progress) };
-    const events = byRun.get(event.runId) ?? [];
-    events.push(event);
-    byRun.set(event.runId, events);
-  }
-  return shown.flatMap(({ record, run, current }) => {
-    const endedAt = run.status === "ended" || run.status === "lost" ? run.updatedAt : null;
-    const folded = agentCloseoutOf(
-      publicId(record),
-      run.id,
-      byRun.get(run.id) ?? [],
-      nowMs,
-      env,
-      endedAt,
-    );
-    if (folded === null) return [];
-    if (endedAt === null) return [folded];
-    return [
-      {
-        ...folded,
-        endedAt: iso(endedAt),
-        ...(current === run ? {} : { continuesIn: current.id }),
-      },
-    ];
-  });
 }
 
 /** CI rounds of the visible items, numbered per item. Log tails are redacted like Closeout output. */

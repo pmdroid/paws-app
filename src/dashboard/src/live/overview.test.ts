@@ -246,7 +246,7 @@ describe("overview resource", () => {
     for (const pattern of unrelated)
       expect(overview.filter((sql) => pattern.test(sql))).toEqual([]);
     expect(detail.some((sql) => wholeStep.test(sql))).toBe(true);
-    expect(detail.some((sql) => /FROM "?agent_closeout_event\b/i.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM "?agent_closeout_event\b/i.test(sql))).toBe(false);
     expect(detail.some((sql) => /FROM "?work_item_merge_settings\b/i.test(sql))).toBe(true);
     expect(detail.some((sql) => /"setup_recorded_at"/.test(sql))).toBe(true);
     expect(overview.length).toBeLessThan(detail.length);

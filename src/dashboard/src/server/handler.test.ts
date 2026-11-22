@@ -78,11 +78,11 @@ describe("status HTTP stub", () => {
     const { generatedAt: _generatedAt, ...fullBody } = full.body;
     expect(fullBody).toEqual({ stdout, stderr: "short", truncated: false, fullPath: null });
 
-    await get("/api/issues/PAS-1/attempts/1/checks/lint/log?run=run-7");
+    await get("/api/issues/PAS-1/attempts/1/checks/lint/log");
     expect(requests).toEqual([
-      { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
-      { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
-      { itemId: "PAS-1", attempt: 1, checkId: "lint", run: "run-7" },
+      { itemId: "PAS-1", attempt: 2, checkId: "unit tests" },
+      { itemId: "PAS-1", attempt: 2, checkId: "unit tests" },
+      { itemId: "PAS-1", attempt: 1, checkId: "lint" },
     ]);
     for (const path of [
       "/api/issues/PAS-1/attempts/0/checks/lint/log",

@@ -141,7 +141,7 @@ describe("status payload budget", () => {
     const live = createLiveStatusProvider(db, { env: {} });
     const detail = await live.issue("PAS-2000");
     expect(JSON.stringify(detail)).not.toContain("finding ".repeat(600));
-    const log = await live.checkLog({ itemId: "PAS-2000", attempt: 3, checkId: "test", run: null });
+    const log = await live.checkLog({ itemId: "PAS-2000", attempt: 3, checkId: "test" });
     expect(log?.findings).toBe(`test failed ${"finding ".repeat(600)}`);
     const calls: string[] = [];
     const provider = {

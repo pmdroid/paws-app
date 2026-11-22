@@ -167,7 +167,6 @@ test("remote session output survives result transport, persistence and the live 
       itemId: verdict.itemId,
       attempt: 1,
       checkId: check.id,
-      run: null,
     }))!;
     expect(log.stdout).toContain("actual remote stdout");
     expect(log.stderr).toContain("actual remote stderr");
