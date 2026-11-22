@@ -83,6 +83,7 @@ async function fixture(
   setup: {
     source?: FakeSnapshotReader;
     outcomes?: ({ status: string; text?: string } | null)[];
+    hostLane?: boolean;
     scope?: string;
     tools?: SlackToolProvider[];
     toolCalls?: (string | [string, Record<string, unknown>])[];
@@ -355,6 +356,19 @@ async function fixture(
       interruptItem: async (itemId) => void interrupted.push(itemId),
     }),
   });
+  const hostLane = {
+    reply: async (request: {
+      scope: { memberUserId: string };
+      prompt: string;
+      tools?: { definitions: unknown };
+      attached?: string[];
+    }) => {
+      if (request.attached) return { status: "failed" };
+      prompts.push({ userId: request.scope.memberUserId, prompt: request.prompt });
+      sent.push({ expiresAt: 0, issuedAt: 0, tools: request.tools?.definitions });
+      return { status: "answered", text: answers.shift() ?? `answer ${prompts.length}` };
+    },
+  };
   const start = () =>
     createSlackThreads({
       store: db,
@@ -366,7 +380,8 @@ async function fixture(
       replies: async () => {
         const scripted = setup.outcomes?.shift();
         if (scripted === null) return null;
-        return scripted ? { reply: async () => scripted } : lane;
+        if (scripted) return { reply: async () => scripted };
+        return setup.hostLane ? hostLane : lane;
       },
       profile: () => ({ agent: "codex" as const, model: null }),
       work,
@@ -1533,7 +1548,7 @@ test("a redeemed link code stores the verified direct message, and only that DM 
 });
 
 test("a linked member's first ordinary DM verifies its channel once and is answered there, and a DM Slack doesn't confirm stores nothing", async () => {
-  const f = await linked(["um", "SMEMBER"]);
+  const f = await linkedWith({ hostLane: true }, ["um", "SMEMBER"]);
   await forgetDirect(f, "SMEMBER");
   const elsewhere = f.dm("SMEMBER", "hello", { channel: "DELSEWHERE" });
   await f.deliver(elsewhere);
@@ -4530,7 +4545,7 @@ test("a channel thread's notebook add lands in that channel's notebook, names th
 });
 
 test("a DM answer reads a repository the asker can read without the admin's policy, and withholds it once they can't", async () => {
-  const f = await withSource([]);
+  const f = await withSource([], { hostLane: true });
   const root = f.dm("SMEMBER", "repo acme/app");
   await f.deliver(root);
   await f.settle();
@@ -4555,7 +4570,7 @@ test("a DM answer reads a repository the asker can read without the admin's poli
 });
 
 test("a follow-up promised in a DM wakes and posts in that DM without mentioning the member", async () => {
-  const f = await linked(["um", "SMEMBER"]);
+  const f = await linkedWith({ hostLane: true }, ["um", "SMEMBER"]);
   f.answers.push(
     `I'll check the deploy in 20 minutes.\n${followUpBlock({ purpose: "check the deploy", after_minutes: 20 })}`,
   );
@@ -4580,7 +4595,7 @@ test("a follow-up promised in a DM wakes and posts in that DM without mentioning
 });
 
 test("a DM and a channel thread never see each other's turns", async () => {
-  const f = await linked(["um", "SMEMBER"]);
+  const f = await linkedWith({ hostLane: true }, ["um", "SMEMBER"]);
   f.answers.push("channel-answer-canary", "dm-answer-canary");
   const root = f.mention("SMEMBER", "channel-question-canary");
   await f.deliver(root);
@@ -4614,4 +4629,16 @@ test("a legacy link's first DM command runs as a command once its DM is verified
   );
   expect(await storedLink(f, "SMEMBER")).toBeNull();
   expect(f.prompts).toEqual([]);
+});
+
+test("until the runner protocol takes a DM channel, a DM placed on a runner gets the couldn't-answer note in the DM", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const root = f.dm("SMEMBER", "what is a monad?");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.prompts).toEqual([]);
+  expect(f.posts("chat.postMessage").map((post) => post.body)).toEqual([]);
+  expect(f.dms().map((post) => [post.body.channel, post.body.thread_ts, post.body.text])).toEqual([
+    ["DSMEMBER", root.ts, UNANSWERED],
+  ]);
 });
