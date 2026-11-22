@@ -51,7 +51,7 @@ async function setup() {
     { id: "ops", key: "OPS", name: "Operations", private: false },
   );
   tracker.agentIssues.push(issue("ENG-1", "eng"), issue("SEC-1", "sec"), issue("OPS-1", "ops"));
-  const tools = (channelId = "C0ONE", linear: TrackerAdapter | null = tracker) =>
+  const tools = (channelId = "C0ONE", linear: TrackerAdapter | null = tracker, direct = false) =>
     slackLinearTools({ store: db, tracker: () => linear, checkWrite: checkAgentIssueWrite })({
       workspaceId: "W1",
       member: { userId: "um", linkId: "link" },
@@ -59,6 +59,7 @@ async function setup() {
       mentionTs: "1.000002",
       thread: { teamId: "T0ONE", channelId, threadTs: "1.000001", installGeneration: 1 },
       requestId: "r1",
+      direct,
     });
   return { db, tracker, teams, tools };
 }
@@ -144,6 +145,11 @@ test("each tool and every parameter is described, within the host tool limits", 
       { id },
     ],
   });
+});
+
+test("a direct message run gets no Linear tools", async () => {
+  const { tools } = await setup();
+  expect(tools("DSMEMBER", undefined, true)).toBeNull();
 });
 
 test("private teams are left out", async () => {
