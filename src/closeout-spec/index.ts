@@ -67,6 +67,8 @@ export type {
   ResolvedRule,
   ResolvedSetup,
   ResolvedUnsupported,
+  RerunCiMode,
+  RerunPolicy,
   RetryPolicy,
   RetryScope,
   RuleOnFail,

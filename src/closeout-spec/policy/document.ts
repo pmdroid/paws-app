@@ -16,6 +16,7 @@ import type {
   PolicyReview,
   PolicyRule,
   PolicySetupStep,
+  RerunPolicy,
   RetryPolicy,
   RetryScope,
   RuleOnFail,
@@ -42,6 +43,7 @@ export type PolicyParser = (text: string) => ParsedPolicy;
  */
 export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
   const schema = readSchema(schemaDocument);
+  const knowsSince = commandKnows(schema, "since");
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addSchema(schema);
   const validators: Validators = {
@@ -64,6 +66,12 @@ export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
     }
     const unknownKeys: string[] = [];
     const known = knownKeys(value, schema, schema, "", unknownKeys);
+    const misplaced = knowsSince
+      ? unknownKeys.find((key) => /^\/items\/\d+\/since$/.test(key))
+      : undefined;
+    if (misplaced !== undefined) {
+      return { ok: false, message: `${misplaced} is only allowed on kind: command items` };
+    }
     const schemaError = schemaMessage(validators, known);
     if (schemaError !== undefined) return { ok: false, message: schemaError };
     try {
@@ -128,6 +136,13 @@ function knownKeys(
     out[key] = knownKeys(entry, properties[key], root, `${path}/${key}`, unknown);
   }
   return out;
+}
+
+function commandKnows(schema: Record<string, unknown>, key: string): boolean {
+  const defs = schema.$defs;
+  if (!isRecord(defs) || !isRecord(defs.command)) return false;
+  const properties = defs.command.properties;
+  return isRecord(properties) && key in properties;
 }
 
 function resolveRef(node: unknown, root: Record<string, unknown>): unknown {
@@ -225,6 +240,11 @@ function errorDetail(error: ErrorObject): string {
       return `must NOT have additional properties ('${property}' was unexpected)`;
     }
   }
+  if (error.keyword === "unevaluatedProperties") {
+    const params = error.params;
+    const property = "unevaluatedProperty" in params ? params.unevaluatedProperty : undefined;
+    if (typeof property === "string") return `has unknown key '${property}'`;
+  }
   return error.message ?? "document does not match the schema";
 }
 
@@ -250,6 +270,7 @@ function decodeDocument(value: unknown): PolicyDocument {
     document.description = value.description;
   }
   if (value.retry !== undefined) document.retry = decodeRetry(value.retry);
+  if (value.rerun !== undefined) document.rerun = decodeRerun(value.rerun);
   if (value.setup !== undefined) document.setup = decodeSetup(value.setup);
   if (value.rules !== undefined) document.rules = decodeRules(value.rules);
   return document;
@@ -302,6 +323,26 @@ function decodeRetry(value: unknown): RetryPolicy {
   return retry;
 }
 
+function decodeRerun(value: unknown): RerunPolicy {
+  if (!isRecord(value)) throw new Error("document does not match the schema");
+  const rerun: RerunPolicy = {};
+  if (value.conflict !== undefined) {
+    if (!isRecord(value.conflict)) throw new Error("document does not match the schema");
+    const conflict: NonNullable<RerunPolicy["conflict"]> = {
+      reviews: value.conflict.reviews === undefined ? true : expectBoolean(value.conflict.reviews),
+    };
+    if (value.conflict.run !== undefined) conflict.run = expectStrings(value.conflict.run);
+    rerun.conflict = conflict;
+  }
+  if (value.ci !== undefined) {
+    if (!isRecord(value.ci)) throw new Error("document does not match the schema");
+    const run = value.ci.run ?? "all";
+    if (run !== "all" && run !== "failed") throw new Error("document does not match the schema");
+    rerun.ci = { run };
+  }
+  return rerun;
+}
+
 function decodeImports(value: unknown): PolicyImport[] {
   if (!Array.isArray(value)) throw new Error("document does not match the schema");
   return value.map((entry) => {
@@ -335,6 +376,13 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.except !== undefined) item.except = expectStrings(value.except);
     if (value.ci !== undefined) item.ci = expectString(value.ci);
     if (recheck !== undefined) item.recheck = recheck;
+    if (value.since !== undefined) {
+      const since = expectStrings(value.since);
+      if (since.filter((entry) => entry === "{since}").length !== 1) {
+        throw new Error(`item ${value.id}: since must contain exactly one "{since}" element`);
+      }
+      item.since = since;
+    }
     return item;
   }
   if (value.kind === "review") {
