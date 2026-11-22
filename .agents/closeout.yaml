@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, affected tests, the dashboard build, documentation, dead-code and dependency checks, covering proof scenarios, screenshots of changed screens, an independent review and a security review of high-risk paths must pass before a pull request. After a conflict fix only lint, format, typecheck and the affected tests run, with no reviews. After a failed CI check only the tests changed since that commit run. GitHub CI always runs the full suite before a merge.
+description: Lint, format, typecheck, affected tests, the dashboard build, documentation, dead-code and dependency checks, covering proof scenarios, screenshots of changed screens, an independent review and a security review of high-risk paths must pass before a pull request. After a conflict fix only lint, format, typecheck and the affected tests run, with no reviews. After a failed CI check only the checks that CI check maps to run. GitHub CI always runs the full suite before a merge.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -42,8 +42,17 @@ items:
   - id: test
     kind: command
     gate: beforePR
-    exec: ["bun", "scripts/affected-tests.ts"]
-    since: ["bun", "scripts/affected-tests.ts", "{since}"]
+    exec: ["bun", "test", "--parallel=4", "--timeout=20000", "--no-orphans"]
+    select:
+      runner: bun
+      always: [test/boundaries.test.ts, test/empty-catches.test.ts]
+      full_on:
+        - "package.json"
+        - "bun.lock"
+        - "bunfig.toml"
+        - "**/tsconfig*.json"
+        - "scripts/**"
+      max_selected: 120
     timeoutSeconds: 1800
     ci: "test (*)"
   - id: links
