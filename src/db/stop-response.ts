@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -88,6 +88,25 @@ export function* getItemPullRequestSteps(q: Q, itemId: string): Steps<ItemPullRe
       .where(eq(itemPullRequest.itemId, itemId)),
   );
   return row ?? null;
+}
+
+export function* listItemPullRequestsSteps(
+  q: Q,
+  itemIds: readonly string[],
+): Steps<ItemPullRequest[]> {
+  if (itemIds.length === 0) return [];
+  const { itemPullRequest } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        itemId: itemPullRequest.itemId,
+        pullNumber: itemPullRequest.pullNumber,
+        pullUrl: itemPullRequest.pullUrl,
+        openedAt: itemPullRequest.openedAt,
+      })
+      .from(itemPullRequest)
+      .where(inArray(itemPullRequest.itemId, [...itemIds])),
+  );
 }
 
 export async function getItemPullRequest(

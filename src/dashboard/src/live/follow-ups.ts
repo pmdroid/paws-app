@@ -2,8 +2,10 @@ import {
   filedIssueOriginsSteps,
   itemFiledIssuesSteps,
   listWorkItemFactsSteps,
+  listItemPullRequestsSteps,
   listWorkItemsByStatesSteps,
   type Db,
+  type ItemPullRequest,
   type WorkItemRecord,
 } from "../../../db";
 import { dashboardIssuePath } from "../../../dashboard-links";
@@ -34,6 +36,16 @@ export async function followUpsFor(
   const rows = [];
   for (const record of records)
     rows.push(...(await store.run((q) => itemFiledIssuesSteps(q, record.id))));
+  const shown = rows.flatMap((row) => {
+    const item = byIssue.get(row.linearIssueId);
+    return item !== undefined && visible(item) ? [item.id] : [];
+  });
+  const pulls = new Map(
+    (await store.run((q) => listItemPullRequestsSteps(q, shown))).map((pull) => [
+      pull.itemId,
+      pull,
+    ]),
+  );
   const seen = new Set<string>();
   const followUps: StatusFollowUp[] = [];
   for (const row of rows.sort((left, right) => left.filedAt - right.filedAt)) {
@@ -52,6 +64,7 @@ export async function followUpsFor(
       ...(item === undefined
         ? {}
         : { state: itemState(item.state), path: dashboardIssuePath(publicId(item)) }),
+      ...pullFor(item === undefined ? undefined : pulls.get(item.id), item?.state),
     });
   }
   const origins = await store.run((q) => filedIssueOriginsSteps(q, records[0]!.linearIssueId));
@@ -67,5 +80,19 @@ export async function followUpsFor(
           path: dashboardIssuePath(publicId(filedFrom)),
         }
       : { identifier: publicId(filedFrom) },
+  };
+}
+
+function pullFor(
+  pull: ItemPullRequest | undefined,
+  state: WorkItemRecord["state"] | undefined,
+): Pick<StatusFollowUp, "pull"> {
+  if (pull?.pullUrl == null) return {};
+  return {
+    pull: {
+      number: pull.pullNumber,
+      url: pull.pullUrl,
+      state: state === "merged" ? "merged" : state === "cancelled" ? "closed" : "open",
+    },
   };
 }

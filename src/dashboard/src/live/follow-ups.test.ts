@@ -3,6 +3,7 @@ import {
   beginImplementRun,
   insertQueuedItem,
   recordItemFiledIssueSteps,
+  recordItemPullRequest,
   type Db,
 } from "../../../db";
 import { parseIssueDetailResponse, type IssueDetailResponse } from "../contract";
@@ -138,5 +139,24 @@ describe("follow-ups on the issue page", () => {
     expect(line).not.toContain("href");
     expect(line).not.toContain("Fix the cache");
     expect(line).not.toContain("Running");
+  });
+
+  test("a follow-up carries its own item's pull request only when the viewer may see it", async () => {
+    const db = await filed();
+    expect((await detail(db, "ENG-1")).followUps[0]!.pull).toBeUndefined();
+    await recordItemPullRequest(db, {
+      itemId: "ENG-2",
+      pullNumber: 41,
+      pullUrl: "https://github.com/acme/app/pull/41",
+      openedAt: NOW + 7,
+    });
+    const origin = await detail(db, "ENG-1");
+    expect(origin.followUps[0]!.pull).toEqual({
+      number: 41,
+      url: "https://github.com/acme/app/pull/41",
+      state: "open",
+    });
+    expect(origin.followUps[1]!.pull).toBeUndefined();
+    expect((await detail(db, "ENG-1", ["s1"])).followUps[0]).toEqual({ identifier: "ENG-2" });
   });
 });
