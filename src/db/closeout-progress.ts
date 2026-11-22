@@ -14,6 +14,23 @@ export type CloseoutProgressIdentity = {
   recheckDigest?: string;
 };
 
+export type CloseoutFailedTest = {
+  file?: string;
+  name?: string;
+  message: string;
+  kind: "failed" | "error" | "skipped-crash";
+};
+
+export type CloseoutFailedTests = { total: number; shown: CloseoutFailedTest[] };
+
+export type CloseoutTestSelection = {
+  mode: "full" | "selected";
+  reasons: string[];
+  selected: number;
+  total?: number;
+  base: string;
+};
+
 export type CloseoutStepWrite = {
   id: string;
   kind: "setup" | "command" | "review";
@@ -39,6 +56,8 @@ export type CloseoutStepWrite = {
   failOn?: "P0" | "P1" | "P2" | "P3" | null;
   /** Indexes of the review record's findings that are in pre-existing code. */
   preExisting?: readonly number[] | null;
+  failedTests?: CloseoutFailedTests | null;
+  testSelection?: CloseoutTestSelection | null;
 };
 
 export type CloseoutOutputPointer = { key: string; bytes: number; sha256: string };
@@ -209,6 +228,8 @@ export function* upsertCloseoutStepSteps(
     tokens,
     reviewFailOn: failOn,
     reviewPreExisting: preExisting,
+    failedTests: step.failedTests ?? null,
+    testSelection: step.testSelection ?? null,
   };
   yield* q.exec(
     q.orm
@@ -678,6 +699,10 @@ function mapStep(row: StepRow): CloseoutStepRecord {
     tokens: row.tokens,
     failOn: row.reviewFailOn as CloseoutStepRecord["failOn"],
     preExisting: indexes(row.reviewPreExisting),
+    ...(row.failedTests != null ? { failedTests: row.failedTests as CloseoutFailedTests } : {}),
+    ...(row.testSelection != null
+      ? { testSelection: row.testSelection as CloseoutTestSelection }
+      : {}),
     stdout: row.stdout,
     stderr: row.stderr,
     output: pointerOf(row),
@@ -891,6 +916,8 @@ export type RunnerCloseoutStep =
       exitCode: number | null;
       timedOut: boolean;
       durationMs: number;
+      failedTests?: CloseoutFailedTests;
+      testSelection?: CloseoutTestSelection;
     };
 
 export function* applyRunnerCloseoutStepSteps(
@@ -934,6 +961,8 @@ export function* applyRunnerCloseoutStepSteps(
           timedOut: 0,
           durationMs: null,
           detail: null,
+          failedTests: null,
+          testSelection: null,
         }
       : {
           state: step.state,
@@ -941,6 +970,8 @@ export function* applyRunnerCloseoutStepSteps(
           exitCode: step.exitCode,
           timedOut: step.timedOut ? 1 : 0,
           durationMs: step.durationMs,
+          failedTests: step.failedTests ?? null,
+          testSelection: step.testSelection ?? null,
         };
   yield* q.exec(
     q.orm

@@ -145,6 +145,35 @@ test("a new Closeout run's log reads back through the check-log route from the s
   expect(hydrated).toBeGreaterThan(0);
 });
 
+test("the issue resource carries a check's failed tests and test selection", async () => {
+  const { db, storage } = await setup();
+  const item = await seedFailedCheck(db, "ENG-1");
+  const progress = createDbCloseoutProgress(db, item.id, () => NOW, storage);
+  const failedTests = {
+    total: 1,
+    shown: [
+      { file: "a.test.ts", name: "adds", message: "z".repeat(3_000), kind: "failed" as const },
+    ],
+  };
+  const testSelection = {
+    mode: "selected" as const,
+    reasons: ["a.test.ts reaches a changed path"],
+    selected: 1,
+    base: "d".repeat(40),
+  };
+  await progress.begin(identity(item.id));
+  await progress.step(identity(item.id), { ...step("failed"), failedTests, testSelection });
+  await progress.finish(identity(item.id), "rejected");
+  const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-1"), {
+    store: db,
+    sessionIds: ["ses_1"],
+  });
+  const body = (await response!.json()) as { verdicts: { checks: unknown[] }[] };
+  expect(body.verdicts[0]?.checks).toEqual([
+    expect.objectContaining({ id: "unit", failedTests, testSelection }),
+  ]);
+});
+
 async function endedItem(
   db: Db,
   storage: EvidenceStorage,

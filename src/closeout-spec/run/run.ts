@@ -61,7 +61,13 @@ import type {
   CloseoutProgressStep,
 } from "./progress";
 import { scrubText } from "./scrub";
-import { failedTestsText, runTestCheck, scrubFailures } from "../tests";
+import {
+  failedTestsText,
+  runTestCheck,
+  scrubFailures,
+  storedFailedTests,
+  storedTestSelection,
+} from "../tests";
 
 /** Identity written on every command record this runner stores. */
 export const PAWS_CLOSEOUT_PRODUCER = {
@@ -670,6 +676,8 @@ async function runOne(
     truncated: record.exec.truncated,
     logPath: relative,
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
+    failedTests: exec.failedTests ? storedFailedTests(exec.failedTests) : null,
+    testSelection: exec.testSelection ?? null,
   });
   return record.exec;
 }
@@ -714,6 +722,7 @@ async function runSelected(
     exitCode: tests.ok ? 0 : last.exitCode || 1,
     failedTests: tests.problem ? [{ message: tests.problem, kind: "error" }, ...failed] : failed,
     ...(tests.note ? { testNote: tests.note } : {}),
+    testSelection: storedTestSelection(tests.selection, base),
   };
 }
 

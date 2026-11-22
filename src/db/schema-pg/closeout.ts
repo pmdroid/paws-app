@@ -66,6 +66,8 @@ export const closeoutStep = pgTable(
     tokens: bigint({ mode: "number" }),
     reviewFailOn: text("review_fail_on"),
     reviewPreExisting: text("review_pre_existing"),
+    failedTests: jsonb("failed_tests"),
+    testSelection: jsonb("test_selection"),
   },
   (table) => [
     primaryKey({

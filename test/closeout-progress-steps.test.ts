@@ -4,6 +4,7 @@ import {
   acceptedCloseoutReviewsSteps,
   acceptedCloseoutRunsSteps,
   appendCloseoutOutputSteps,
+  applyRunnerCloseoutStepSteps,
   closeoutHeadsStartedSteps,
   closeoutPolicyDigestsSteps,
   ensureCloseoutProgressSteps,
@@ -322,6 +323,62 @@ describePglite((open) => {
       expect(await acceptedHead()).toBe("h1");
       await finish(db, "h2", "exhausted", 4);
       expect(await acceptedHead()).toBeNull();
+    } finally {
+      await close();
+    }
+  });
+
+  test("a step stores its failed tests and test selection, and a rerun clears them", async () => {
+    const { db, close } = await open();
+    try {
+      const failedTests = {
+        total: 2,
+        shown: [
+          { file: "a.test.ts", name: "adds", message: "y".repeat(4_000), kind: "failed" as const },
+        ],
+      };
+      const testSelection = {
+        mode: "selected" as const,
+        reasons: ["a.test.ts reaches a changed path"],
+        selected: 1,
+        base: "b".repeat(40),
+      };
+      await upsert(db, "h1", step("test", { state: "failed", failedTests, testSelection }), 1);
+      await upsert(db, "h1", step("lint", { state: "passed", ordinal: 1 }), 1);
+      const [tested, lint] = (await progress(db, "h1"))!.steps;
+      expect(tested).toMatchObject({ failedTests, testSelection });
+      expect(lint).not.toHaveProperty("failedTests");
+      expect(lint).not.toHaveProperty("testSelection");
+      const runner = (extra: object) =>
+        db.transaction((q) =>
+          applyRunnerCloseoutStepSteps(
+            q,
+            "item",
+            "h1",
+            {
+              type: "finished",
+              head: "h1",
+              id: "test",
+              kind: "command",
+              command: "bun test",
+              attempt: 2,
+              state: "failed",
+              exitCode: 1,
+              timedOut: false,
+              durationMs: 1,
+              ...extra,
+            },
+            2,
+          ),
+        );
+      await runner({ failedTests: { total: 0, shown: [] }, testSelection });
+      expect((await progress(db, "h1"))!.steps[0]).toMatchObject({
+        failedTests: { total: 0, shown: [] },
+        testSelection,
+      });
+      await runner({});
+      expect((await progress(db, "h1"))!.steps[0]).not.toHaveProperty("failedTests");
+      expect((await progress(db, "h1"))!.steps[0]).not.toHaveProperty("testSelection");
     } finally {
       await close();
     }

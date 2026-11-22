@@ -37,7 +37,17 @@ import type {
   ResolvedSetup,
   TestSelect,
 } from "./types";
-import { failedTestsText, runTestCheck, scrubFailures, type FailedTest } from "./tests";
+import {
+  failedTestsText,
+  fittedTests,
+  runTestCheck,
+  scrubFailures,
+  storedFailedTests,
+  storedTestSelection,
+  type FailedTest,
+  type StoredFailedTests,
+  type StoredTestSelection,
+} from "./tests";
 
 export type SessionCommandResult = {
   argv: string[];
@@ -50,6 +60,7 @@ export type SessionCommandResult = {
   stderr: string;
   truncated: boolean;
   failedTests?: FailedTest[];
+  testSelection?: StoredTestSelection;
 };
 
 /**
@@ -167,9 +178,12 @@ export type CloseoutSessionEvent =
       base?: string;
       policyDigest?: string;
       clean?: boolean;
+      failedTests?: StoredFailedTests;
+      testSelection?: StoredTestSelection;
     };
 
 const PROGRESS_OUTPUT_CHARS = 16_000;
+const FINISHED_EVENT_BYTES = 200_000;
 const LOG_DIR = ".paws-closeout";
 const MAX_LOG_CHARS = 16_000_000;
 
@@ -1061,6 +1075,10 @@ async function execute(
         env,
       }),
     );
+  const testBase =
+    (options.focus?.since !== undefined && options.focus.policyDigest === policyDigest
+      ? options.focus.head
+      : base) ?? "";
   const tests =
     item.select !== undefined && before.ok
       ? await runTestCheck({
@@ -1074,10 +1092,7 @@ async function execute(
           },
           cwd: workspace,
           head: before.stdout.toString("utf8").trim(),
-          base:
-            (options.focus?.since !== undefined && options.focus.policyDigest === policyDigest
-              ? options.focus.head
-              : base) ?? "",
+          base: testBase,
           env: commandEnv({ runtimeBinPaths: options.runtimeBinPaths, basePath: options.basePath }),
           execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
         })
@@ -1129,13 +1144,14 @@ async function execute(
     stderr: scrubText(result.stderr, credentialSecrets()),
     truncated: result.truncated,
     ...(failedTests.length > 0 ? { failedTests } : {}),
+    ...(tests ? { testSelection: storedTestSelection(tests.selection, testBase) } : {}),
   };
   state.kind = item.kind;
   const finished = (outcome: "passed" | "failed" | "exhausted") => {
     const stdout = lastChars(state.result!.stdout);
     const stderr = lastChars(state.result!.stderr);
-    notify(options, {
-      type: "finished",
+    const event = {
+      type: "finished" as const,
       ...progress,
       state: outcome,
       exitCode: code,
@@ -1147,7 +1163,24 @@ async function execute(
       base: base ?? "",
       policyDigest,
       clean: cleanBefore && cleanAfter && state.result!.head !== "",
-    });
+    };
+    notify(
+      options,
+      tests
+        ? {
+            ...event,
+            ...fittedTests(
+              storedFailedTests(
+                tests.problem
+                  ? [{ message: tests.problem, kind: "error" }, ...failedTests]
+                  : failedTests,
+              ),
+              state.result!.testSelection!,
+              FINISHED_EVENT_BYTES - Buffer.byteLength(JSON.stringify(event)),
+            ),
+          }
+        : event,
+    );
   };
   if (code === 0 && !result.timedOut) {
     state.passed = true;
