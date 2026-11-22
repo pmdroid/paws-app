@@ -47,7 +47,6 @@ import {
 } from "./closeout";
 import { renderRuleResults } from "./rules";
 import { filedFromLine, followUpsSection } from "./follow-ups";
-import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { reviewFindingsSection } from "./review-findings";
 import {
   evidenceSlot,
@@ -110,8 +109,6 @@ const PAGE_ROOTS: Partial<Record<Route["view"], string>> = {
   improvements: `${pageHeading("improvements")}<div id="improvements-page"></div>`,
   notebooks: `<h1>${PAGES.notebooks.title}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${PAGES.notebooks.description}</p><div id="notebooks-page" class="agent-settings"></div></div>`,
 };
-
-const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
   const route = model.route;
@@ -533,12 +530,6 @@ function issuePage(
   const earlier = snapshot.earlierSessions;
   const run = itemRun(snapshot, item, earlier);
   const verdict = attemptVerdict(snapshot, item, run);
-  const engineRun = run?.attempts?.at(-1) ?? run?.id;
-  const agent =
-    run === undefined
-      ? undefined
-      : (findAgentCloseout(snapshot.agentCloseout, engineRun ?? run.id) ??
-        findAgentCloseout(snapshot.agentCloseout, run.id));
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath =
     run === undefined ? null : dashboardPath(`/runs/${encodeURIComponent(run.id)}/transcript`);
@@ -568,9 +559,7 @@ function issuePage(
     ${journeyStepper(now, {
       ...(item.doing?.phase === "preparing"
         ? { implementing: doingLabel(item) ?? PREPARING_LABEL }
-        : agent?.attempts.at(-1)?.checks.length
-          ? { implementing: `Agent Closeout ${agentProgress(agent)}` }
-          : {}),
+        : {}),
       ...(item.state === "merge_queue" && item.mergeQueue
         ? { queue: item.mergeQueue.position }
         : {}),
@@ -603,10 +592,10 @@ function issuePage(
         ? `${verdict.decision[0]!.toUpperCase()}${verdict.decision.slice(1)} · attempt ${verdict.attempt} of ${verdict.maxAttempts} · ${passed} of ${checks.length} checks passed`
         : "",
       verdict
-        ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>${agent ? renderAgentCloseout(agent, closeout, engineUrl, !IMPLEMENTING.has(item.state)) : ""}${run ? evidenceSlot(snapshot, run.id) : ""}`
+        ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>${run ? evidenceSlot(snapshot, run.id) : ""}`
         : "",
     )}
-    ${verdict ? "" : `${agent ? renderAgentCloseout(agent, closeout, engineUrl, false) : ""}${run ? evidenceSlot(snapshot, run.id) : ""}`}
+    ${verdict || !run ? "" : evidenceSlot(snapshot, run.id)}
     ${fold(
       closeout,
       `findings:${item.id}`,

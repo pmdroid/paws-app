@@ -26,7 +26,6 @@ import {
   type CheckLogView,
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
-import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
 import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
@@ -822,7 +821,7 @@ async function loadLog(
   logs[key] = loading;
   let next: CheckLogView;
   try {
-    const log = await fetchLog(itemId, attempt, checkId, full);
+    const log = await fetchLog(attempt, checkId, full);
     if (log === null) return;
     next = {
       status: "loaded",
@@ -850,7 +849,6 @@ async function loadLog(
 
 /** One check's log from the open issue page's item. Null when the reader is signed out. */
 async function fetchLog(
-  itemId: string,
   attempt: number,
   checkId: string,
   full: boolean,
@@ -858,10 +856,7 @@ async function fetchLog(
   const issue = openIssue(currentRoute());
   if (issue === null) throw new Error("No issue page is open");
   const reader = workspaceReader();
-  const path = issueCheckLogPath(issue, attempt, checkId, {
-    run: agentCloseoutRun(itemId),
-    full,
-  });
+  const path = issueCheckLogPath(issue, attempt, checkId, { full });
   const response = await fetch(path, {
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -876,10 +871,7 @@ async function fetchLog(
 /** Closeout attempts and checks are only in the open issue page's detail, not in the list. */
 function closeoutVerdict(itemId: string) {
   const data = openDetail({ route: currentRoute(), issue: page.issue }) ? page.issue : null;
-  const runId = agentCloseoutRun(itemId);
-  if (runId === null) return data?.verdicts.find((entry) => entry.itemId === itemId);
-  const agent = findAgentCloseout(data?.agentCloseout, runId);
-  return agent ? agentVerdict(agent) : undefined;
+  return data?.verdicts.find((entry) => entry.itemId === itemId);
 }
 
 function closeoutChecks(itemId: string, attempt: number) {
@@ -914,7 +906,7 @@ function openLinkedCheck(): boolean {
     return true;
   }
   const sections = document.querySelectorAll(
-    '#page-content section[aria-label="Closeout"] [data-item], #page-content section[aria-label="Agent Closeout"] [data-item]',
+    '#page-content section[aria-label="Closeout"] [data-item]',
   );
   const found = [
     ...new Set([...sections].map((element) => element.getAttribute("data-item") ?? "")),
@@ -929,7 +921,6 @@ function openLinkedCheck(): boolean {
   linkedHash = hash;
   const itemId = found.key;
   const attempt = found.attempt;
-  if (agentCloseoutRun(itemId) !== null) closeout.open[`section\n${itemId}`] = true;
   closeout.attempt[itemId] = attempt.number;
   closeout.open[checkKey(itemId, attempt.number, linked.checkId)] = true;
   paint();
@@ -979,7 +970,7 @@ async function downloadOutput(itemId: string, attempt: number, checkId: string):
   if (!check) return;
   let streams = { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
   try {
-    const log = await fetchLog(itemId, attempt, checkId, true);
+    const log = await fetchLog(attempt, checkId, true);
     if (log === null) return;
     streams = log;
   } catch (caught) {
