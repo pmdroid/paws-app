@@ -35,7 +35,7 @@ export function parseJunit(text: string): JunitReport {
   const document = parser.parse(text) as Node;
   const root = document.testsuites;
   const suites = isNode(root) ? lists(root.testsuite) : lists(document.testsuite);
-  if (!isNode(root) && suites.length === 0) {
+  if (!("testsuites" in document) && suites.length === 0) {
     return { ok: false, message: "has no testsuites or testsuite element" };
   }
   const found = { cases: 0, failures: [] as FailedTest[] };
