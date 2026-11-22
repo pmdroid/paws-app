@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bunTestAdapter } from "./bun";
-import { readAt, testChanges } from "./git";
+import { readAt, snapshotAt, testChanges } from "./git";
 import { MAX_REPORT_BYTES, parseJunit } from "./junit";
 import type {
   FailedTest,
@@ -47,8 +47,18 @@ export async function runTestCheck<R extends TestExecuted>(input: {
       changes: () => testChanges(cwd, base, head, env),
       readAtBase: (path) => readAt(cwd, base, path, env),
       readAtHead: (path) => readAt(cwd, head, path, env),
+      snapshot: (commit) => snapshotAt(cwd, commit, env),
     };
     const plan = await planOf(input.adapter ?? bunTestAdapter, context);
+    if (plan.problem !== undefined) {
+      return {
+        ok: false,
+        results: [],
+        selection: plan.selection,
+        failures: [],
+        problem: plan.problem,
+      };
+    }
     const deadline = Date.now() + item.timeoutSeconds * 1000;
     const results: R[] = [];
     let ran = true;

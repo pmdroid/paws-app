@@ -703,7 +703,7 @@ async function runSelected(
       return { ...ran, code: ran.exitCode ?? 127 };
     },
   });
-  const last = tests.results.at(-1) ?? NOT_RUN;
+  const last = tests.results.at(-1) ?? { ...NOT_RUN, timedOut: tests.problem === undefined };
   const failed = scrubFailures(tests.failures, (text) =>
     scrubText(text, credentialSecrets(input.env)),
   );
