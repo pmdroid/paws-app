@@ -144,3 +144,4 @@ export {
 } from "./linear-comments";
 
 export { repositoryAtPath } from "./repository-location";
+export { recordMissingProjectTeams } from "./project-teams";

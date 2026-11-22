@@ -208,7 +208,7 @@ export const REVIEW_EXPLANATION_LIMIT = 1_024;
 const RunnerSlackReplyScopeSchema = z.strictObject({
   requestId: id,
   teamId: z.string().regex(/^T[A-Z0-9]{2,31}$/),
-  channelId: z.string().regex(/^C[A-Z0-9]{2,31}$/),
+  channelId: z.string().regex(/^[CD][A-Z0-9]{2,31}$/),
   threadTs: z.string().regex(/^\d{1,12}\.\d{1,8}$/),
   memberUserId: id,
   installGeneration: generation,

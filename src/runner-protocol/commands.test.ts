@@ -355,6 +355,7 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
   const tools = [{ name: "linear_issue", description: "Read an issue.", inputSchema: {} }];
   for (const accepted of [
     { ...helper, tools },
+    { ...helper, slack: { ...slack, channelId: "D0PRIVATE" } },
     {
       ...helper,
       expiresAt: common.issuedAt + RUNNER_SLACK_REPLY_ACCEPTED_MS,
@@ -397,7 +398,9 @@ test("a Slack reply helper carries one channel thread and nothing of a work item
       ...helper,
       conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" },
     },
-    { ...helper, slack: { ...slack, channelId: "D0PRIVATE" } },
+    { ...helper, slack: { ...slack, channelId: "G0PRIVATE" } },
+    { ...helper, slack: { ...slack, channelId: "c0general" } },
+    { ...helper, slack: { ...slack, channelId: "" } },
     { ...helper, slack: { ...slack, threadTs: "../thread" } },
     { ...helper, slack: { ...slack, token: "xoxb-secret" } },
     { ...helper, prompt: "x".repeat(RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES + 1) },
