@@ -35,6 +35,7 @@ import {
   createSlackLinkPage,
   createSlackLinks,
   createSlackThreads,
+  directGateSteps,
   handleSlackWebhook,
   markSlackInstallationSteps,
   type SlackToolProvider,
@@ -746,7 +747,7 @@ test("the sign-in link and the pairing happen in a direct message, and the held 
   await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
   expect(f.dms().at(-1)!.body).toMatchObject({
     channel: "DSMEMBER",
-    text: "Linked. Mention @Paws in the channel to ask it something.",
+    text: "Linked. Mention @Paws in the channel or send Paws a direct message to ask it something.",
   });
   expect(f.posts("chat.postEphemeral")).toEqual([]);
 });
@@ -1213,7 +1214,9 @@ test("an unlinked member's question is held and answered once, in its thread, af
   expect(f.notice()).toContain("answering the question you asked before linking");
   await f.deliver(question);
   await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
+  expect(f.notice()).toBe(
+    "Linked. Mention @Paws in the channel or send Paws a direct message to ask it something.",
+  );
   expect(f.prompts.map((turn) => turn.userId)).toEqual(["um"]);
   expect(f.prompts[0]!.prompt).toContain("what is a monad?");
   const sent = f.posts("chat.postMessage").map((post) => [post.body.thread_ts, post.body.text]);
@@ -1226,7 +1229,9 @@ test("a held question lapses with its link, and a revoked member's code links an
   await f.say("SMEMBER", "first");
   f.advance(11 * 60_000);
   await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
+  expect(f.notice()).toBe(
+    "Linked. Mention @Paws in the channel or send Paws a direct message to ask it something.",
+  );
   await f.revoke("um");
   await f.say("SMEMBER", "second");
   expect(f.prompts).toEqual([]);
@@ -1430,7 +1435,9 @@ test("work from before an unlink stays fenced after the same accounts link again
   expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
   f.advance(1);
   await f.pair("SMEMBER", `link ${(await f.code("um", "SMEMBER")).code}`);
-  expect(f.notice()).toBe("Linked. Mention @Paws in the channel to ask it something.");
+  expect(f.notice()).toBe(
+    "Linked. Mention @Paws in the channel or send Paws a direct message to ask it something.",
+  );
   f.runner.hold = false;
   await f.settle();
   expect(f.posts("chat.postMessage")).toEqual([]);
@@ -1478,6 +1485,107 @@ test("a runner helper issued before an unlink is refused after the same accounts
   expect(f.notice()).toContain("Linked");
   expect(await allowed(before)).toBe(false);
   expect(await allowed(f.advance(1))).toBe(true);
+});
+
+type StoredLink = { generation: number; dmChannelId?: string };
+const storedLink = async (f: Awaited<ReturnType<typeof fixture>>, slackUser: string) => {
+  const rows = await sqlRows<{ value: string }>(f.db, "SELECT value FROM setting WHERE key = ?", [
+    `slack.member:T0ONE:${slackUser}`,
+  ]);
+  return rows[0] ? (JSON.parse(rows[0].value) as StoredLink) : null;
+};
+const forgetDirect = async (f: Awaited<ReturnType<typeof fixture>>, slackUser: string) => {
+  const { dmChannelId: _, ...rest } = (await storedLink(f, slackUser))!;
+  await sqlRun(f.db, "UPDATE setting SET value = ? WHERE key = ?", [
+    JSON.stringify(rest),
+    `slack.member:T0ONE:${slackUser}`,
+  ]);
+};
+
+test("a redeemed link code stores the verified direct message, and only that DM passes the direct gate", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const link = (await storedLink(f, "SMEMBER"))!;
+  expect(link.dmChannelId).toBe("DSMEMBER");
+  const place = {
+    workspaceId: "W1",
+    teamId: "T0ONE",
+    channelId: "DSMEMBER",
+    threadTs: "1.000100",
+    slackUserId: "SMEMBER",
+    generation: link.generation,
+  };
+  const gate = (extra: Partial<typeof place> = {}) =>
+    f.db.run((q) => directGateSteps(q, f.home, { ...place, ...extra }));
+  expect(await gate()).toMatchObject({ kind: "member", userId: "um" });
+  expect(await gate({ channelId: "DSADMIN" })).toEqual({ kind: "ignore" });
+  expect(await gate({ channelId: "C0ONE" })).toEqual({ kind: "ignore" });
+  expect(await gate({ generation: link.generation + 1 })).toEqual({ kind: "ignore" });
+  expect(await gate({ slackUserId: "SOTHER", channelId: "DSOTHER" })).toEqual({ kind: "ignore" });
+  await f.reconnect();
+  expect(await gate()).toEqual({ kind: "ignore" });
+  const g = await linked(["um", "SMEMBER"]);
+  await g.revoke("um");
+  const revoked = (await storedLink(g, "SMEMBER"))!;
+  const gone = await g.db.run((q) =>
+    directGateSteps(q, g.home, { ...place, generation: revoked.generation }),
+  );
+  expect(gone).toEqual({ kind: "ignore" });
+});
+
+test("a linked member's first ordinary DM verifies its channel once, and a DM Slack doesn't confirm stores nothing", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await forgetDirect(f, "SMEMBER");
+  const elsewhere = f.dm("SMEMBER", "hello", { channel: "DELSEWHERE" });
+  await f.deliver(elsewhere);
+  await f.settle();
+  expect(f.posted.map((post) => post.body)).toEqual([{ users: "SMEMBER" }]);
+  expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBeUndefined();
+  f.posted.length = 0;
+  const first = f.dm("SMEMBER", "what is a monad?");
+  await f.deliver(first);
+  await f.settle();
+  expect(f.posted.map((post) => post.body)).toEqual([{ users: "SMEMBER" }]);
+  expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBe("DSMEMBER");
+  expect(await conversations(f, first.ts)).toEqual([
+    expect.objectContaining({ channelId: "DSMEMBER", threadTs: first.ts }),
+  ]);
+  f.posted.length = 0;
+  await f.pair("SMEMBER", "and a functor?", { thread_ts: first.ts });
+  await f.pair("SOTHER", "hello there");
+  expect(f.posted).toEqual([]);
+  expect(f.prompts).toEqual([]);
+  expect(await conversations(f, first.ts)).toHaveLength(1);
+  expect(await f.sideEffects()).toEqual(NONE);
+});
+
+test("a Slack reply may go to the member's own DM, never to another DM, an unlinked member or a stale installation", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  const { generation } = (await storedLink(f, "SMEMBER"))!;
+  const allowed = (channelId: string, extra: { generation?: number; user?: string } = {}) => {
+    const scope = {
+      teamId: "T0ONE",
+      channelId,
+      memberUserId: extra.user ?? "um",
+      installGeneration: extra.generation ?? generation,
+    };
+    const issuedAt = f.now();
+    return f.db.run((q) =>
+      slackReplyAllowedSteps(q, f.home, { workspaceId: "W1", scope, issuedAt }),
+    );
+  };
+  expect(await allowed("C0ONE")).toBe(true);
+  expect(await allowed("DSMEMBER")).toBe(true);
+  expect(await allowed("DSADMIN")).toBe(false);
+  expect(await allowed("DSADMIN", { user: "ua" })).toBe(true);
+  expect(await allowed("DSMEMBER", { user: "ua" })).toBe(false);
+  expect(await allowed("DELSEWHERE")).toBe(false);
+  expect(await allowed("DSMEMBER", { generation: generation + 1 })).toBe(false);
+  expect((await f.api("um", "DELETE", OWN)).body).toEqual({ removed: 1 });
+  expect(await storedLink(f, "SMEMBER")).toBeNull();
+  f.advance(1);
+  expect(await allowed("DSMEMBER")).toBe(false);
+  await f.reconnect();
+  expect(await allowed("DSADMIN", { user: "ua" })).toBe(false);
 });
 
 const lastPrompt = (f: { prompts: { prompt: string }[] }) => f.prompts.at(-1)?.prompt ?? "";
