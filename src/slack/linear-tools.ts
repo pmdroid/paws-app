@@ -158,7 +158,7 @@ export function slackLinearTools(options: {
   const now = options.now ?? Date.now;
   return (run) => {
     const linear = options.tracker();
-    if (!usable(linear)) return null;
+    if (run.direct || !usable(linear)) return null;
     const read = new Set<string>();
     const readable = async (): Promise<AgentTeam[]> => {
       const member = await options.store.run((q) =>

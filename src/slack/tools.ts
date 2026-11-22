@@ -14,6 +14,7 @@ export type SlackToolRun = {
   mentionTs: string;
   thread: { teamId: string; channelId: string; threadTs: string; installGeneration: number };
   requestId: string;
+  direct: boolean;
 };
 
 export type SlackTools = {

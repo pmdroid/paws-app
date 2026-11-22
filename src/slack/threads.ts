@@ -1407,9 +1407,10 @@ export function createSlackThreads<Profile>(options: {
       mentionTs: mention.ts,
       thread: { teamId, channelId, threadTs, installGeneration: generation },
       requestId: replyScope.requestId,
+      direct,
     };
     const provided = await Promise.all(
-      (direct ? [] : (options.tools ?? [])).map(async (provider) => {
+      (options.tools ?? []).map(async (provider) => {
         const made = await provider(run);
         return () => made;
       }),

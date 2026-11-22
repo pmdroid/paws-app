@@ -4088,6 +4088,7 @@ test("a Slack reply runs for ten minutes and carries tools only when a provider 
         installGeneration: expect.any(Number),
       },
       requestId: `slack-T0ONE-C0ONE-${mention.ts.replace(".", "-")}`,
+      direct: false,
     },
   ]);
   expect(calls).toEqual(["look_up:look_up"]);
@@ -4527,6 +4528,50 @@ test("a channel thread's notebook add lands in that channel's notebook, names th
   expect((await notebookChanges(f.db, scope)).map((change) => change.actorId)).toEqual(["um"]);
   await f.say("SADMIN", "and now?");
   expect(lastPrompt(f)).toContain("Channel notebook:\n- canary-notebook");
+});
+
+test("a direct message turn gets only its member's own notebook, never Linear tools or a channel notebook", async () => {
+  const tracker = createFakeTracker();
+  let providers: SlackToolProvider[] = [];
+  const add = { notebook: "user", operations: [{ action: "add", content: "canary-own" }] };
+  const f = await linkedWith(
+    {
+      tools: [(run) => providers[0]?.(run) ?? null, (run) => providers[1]?.(run) ?? null],
+      toolCalls: [["notebook", add]],
+    },
+    ["um", "SMEMBER"],
+  );
+  providers = [
+    slackNotebookTools({ store: f.db, now: f.now }),
+    slackLinearTools({ store: f.db, tracker: () => tracker }),
+  ];
+  await f.pair("SMEMBER", "remember I like tabs");
+  expect(f.sent.at(-1)!.tools).toEqual([
+    expect.objectContaining({
+      name: "notebook",
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          notebook: expect.objectContaining({ enum: ["user"] }),
+        }),
+      }),
+    }),
+  ]);
+  expect(lastPrompt(f)).toContain("Your notebook:\nNo entries yet.");
+  expect(lastPrompt(f)).toContain("only they can read it");
+  expect(lastPrompt(f)).not.toContain("Channel notebook");
+  expect(f.toolAnswers).toEqual([{ text: "Saved. Your notebook: 10 of 4,000 characters." }]);
+  const own = { workspaceId: "W1", kind: "user", id: "um" } as const;
+  expect((await readNotebook(f.db, own)).entries.map((entry) => entry.body)).toEqual([
+    "canary-own",
+  ]);
+  expect((await notebookChanges(f.db, own)).map((change) => change.actorId)).toEqual(["um"]);
+  await f.pair("SMEMBER", "and now?");
+  expect(lastPrompt(f)).toContain("Your notebook:\n- canary-own");
+  await f.pair("SADMIN", "what do you know?");
+  expect(lastPrompt(f)).toContain("Your notebook:\nNo entries yet.");
+  await f.say("SMEMBER", "in the channel?");
+  expect(lastPrompt(f)).toContain("Channel notebook:\nNo entries yet.");
+  expect(lastPrompt(f)).not.toContain("canary-own");
 });
 
 test("a DM answer reads a repository the asker can read without the admin's policy, and withholds it once they can't", async () => {
