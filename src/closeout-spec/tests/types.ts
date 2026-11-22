@@ -20,7 +20,10 @@ export type TestPlan = {
   invocations: TestInvocation[];
   report: TestReport;
   intentionallyEmpty?: boolean;
+  problem?: string;
 };
+
+export type Snapshot = { paths: ReadonlySet<string>; read(path: string): string | undefined };
 
 export type TestContext = {
   item: SelectedCommand;
@@ -31,6 +34,7 @@ export type TestContext = {
   changes(): Promise<TestChange[]>;
   readAtBase(path: string): Promise<string | undefined>;
   readAtHead(path: string): Promise<string | undefined>;
+  snapshot(commit: string): Promise<Snapshot>;
 };
 
 export type TestAdapter = {
