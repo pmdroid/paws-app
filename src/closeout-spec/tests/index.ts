@@ -1,4 +1,4 @@
-export { bunTestAdapter } from "./bun";
+export { bunTestAdapter, jestTestAdapter, vitestTestAdapter } from "./runners";
 export { cargoAdapter, type CargoMetadata } from "./cargo";
 export { goExecError, goTestAdapter } from "./go";
 export { parseGoJson } from "./go-json";

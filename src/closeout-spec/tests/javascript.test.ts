@@ -7,7 +7,15 @@ import { workspacePolicyFiles } from "../facade";
 import { createCloseoutSession } from "../session";
 import type { TestSelect } from "../types";
 import { snapshotAt, testChanges } from "./git";
-import { bunTestAdapter, type TestContext, type TestPlan } from "./index";
+import {
+  bunTestAdapter,
+  jestTestAdapter,
+  runTestCheck,
+  vitestTestAdapter,
+  type TestAdapter,
+  type TestContext,
+  type TestPlan,
+} from "./index";
 
 const roots: string[] = [];
 
@@ -102,6 +110,9 @@ async function planned(
   edits: Record<string, string | null>,
   select: Partial<TestSelect> = {},
   paths?: string[],
+  adapter: TestAdapter = bunTestAdapter,
+  exec = ["bun", "test"],
+  setup: (root: string) => void = () => {},
 ): Promise<TestPlan> {
   const root = mkdtempSync(join(tmpdir(), "paws-bun-graph-"));
   roots.push(root);
@@ -110,6 +121,7 @@ async function planned(
     mkdirSync(join(root, path, ".."), { recursive: true });
     writeFileSync(join(root, path), text);
   }
+  setup(root);
   commit(root, "package.json", FILES["package.json"]!);
   const base = git(root, "rev-parse", "HEAD");
   for (const [path, text] of Object.entries(edits)) {
@@ -123,12 +135,12 @@ async function planned(
   git(root, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-m", "head");
   const head = git(root, "rev-parse", "HEAD");
   const env = { PATH: process.env.PATH ?? "" };
-  return bunTestAdapter.plan({
+  return adapter.plan({
     item: {
       id: "test",
       kind: "command",
       gate: "beforePR",
-      exec: ["bun", "test"],
+      exec,
       timeoutSeconds: 60,
       select: { runner: "bun", ...select },
       ...(paths ? { paths } : {}),
@@ -226,4 +238,87 @@ test("the bun runner runs the full suite when it can't prove the selection", asy
     [],
     "select.always names test/gone.test.ts, which the head doesn't have",
   ]);
+});
+
+const JEST_JUNIT = (root: string) => {
+  mkdirSync(join(root, "node_modules/jest-junit"), { recursive: true });
+  writeFileSync(join(root, "node_modules/jest-junit/package.json"), '{"name":"jest-junit"}');
+  writeFileSync(join(root, "node_modules/jest-junit/index.js"), "");
+  writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+};
+
+const VITEST_FAILING = `<testsuites name="vitest tests"><testsuite name="test/math.test.ts" tests="2" failures="1">
+<testcase classname="test/math.test.ts" name="math &gt; adds"><failure message="expected 2 to be 3" /></testcase>
+<testcase classname="test/math.test.ts" name="top" /></testsuite></testsuites>`;
+const JEST_FAILING = `<testsuites name="jest tests"><testsuite name="math" tests="2" failures="1">
+<testcase classname="math" name="adds" file="test/math.test.ts"><failure>Error: expect(received).toBe(expected)</failure></testcase>
+<testcase classname="" name="top" file="test/math.test.ts" /></testsuite></testsuites>`;
+
+test("vitest and jest select what the bun runner selects and name the failed test", async () => {
+  const change = { "lib/math.ts": "export const add = (a: number, b: number) => b + a;\n" };
+  const bun = await planned(change);
+  const vitest = await planned(change, {}, undefined, vitestTestAdapter, ["npx", "vitest", "run"]);
+  const jest = await planned(change, {}, undefined, jestTestAdapter, ["jest"], JEST_JUNIT);
+  expect(targets(vitest)).toEqual(targets(bun));
+  expect(targets(jest)).toEqual(targets(bun));
+  expect(vitest.invocations[0]?.argv).toEqual([
+    ...["npx", "vitest", "run", "--reporter=default", "--reporter=junit"],
+    "--outputFile=/r/junit.xml",
+    ...targets(bun).map((path) => `./${path}`),
+  ]);
+  const argv = jest.invocations[0]?.argv ?? [];
+  expect(argv.slice(0, 2)).toEqual(["env", "JEST_JUNIT_OUTPUT_DIR=/r"]);
+  expect(argv.slice(argv.indexOf("jest"))).toEqual([
+    ...["jest", "--reporters=default", "--reporters=jest-junit", "--runTestsByPath"],
+    ...targets(bun),
+  ]);
+  const config = (adapter: TestAdapter, exec: string[], path: string) =>
+    planned({ [path]: "export default {};\n" }, {}, undefined, adapter, exec, JEST_JUNIT);
+  for (const path of ["vitest.config.ts", "vite.config.mjs"]) {
+    const plan = await config(vitestTestAdapter, ["vitest", "run"], path);
+    expect(plan.selection.reasons).toContain(`${path} changed`);
+  }
+  for (const path of ["jest.config.js", "babel.config.cjs"]) {
+    const plan = await config(jestTestAdapter, ["bunx", "jest"], path);
+    expect(plan.selection.reasons).toContain(`${path} changed`);
+  }
+  for (const [adapter, report] of [
+    [vitestTestAdapter, VITEST_FAILING],
+    [jestTestAdapter, JEST_FAILING],
+  ] as const) {
+    const root = mkdtempSync(join(tmpdir(), "paws-js-runner-"));
+    roots.push(root);
+    JEST_JUNIT(root);
+    const result = await runTestCheck({
+      item: {
+        ...{ id: "t", kind: "command", gate: "beforePR", exec: ["jest"], timeoutSeconds: 60 },
+        select: { runner: "jest" },
+      },
+      cwd: root,
+      base: "HEAD",
+      head: "HEAD",
+      env: {},
+      adapter: { plan: (context) => adapter.full(context), full: adapter.full },
+      execute: async (invocation) => {
+        const out = invocation.argv.find((part) => part.startsWith("--outputFile="));
+        const dir = invocation.argv.find((part) => part.startsWith("JEST_JUNIT_OUTPUT_DIR="));
+        const path = out?.slice(13) ?? join(dir!.slice(22), "junit.xml");
+        writeFileSync(path, report);
+        return { code: 1, timedOut: false };
+      },
+    });
+    expect(result.failures).toMatchObject([
+      { file: "test/math.test.ts", name: "math > adds", kind: "failed" },
+    ]);
+  }
+});
+
+test("jest fails the check when jest-junit can't be resolved from the root", async () => {
+  const change = { "lib/math.ts": "export const add = 2;\n" };
+  const plan = await planned(change, {}, undefined, jestTestAdapter, ["jest"]);
+  expect([plan.invocations, plan.problem]).toEqual([[], "jest-junit is not installed"]);
+  const context = { cwd: "/nowhere", reportDir: "/r", item: { exec: ["jest"] } };
+  expect(jestTestAdapter.full(context as unknown as TestContext).problem).toBe(
+    "jest-junit is not installed",
+  );
 });

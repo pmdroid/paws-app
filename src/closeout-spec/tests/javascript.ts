@@ -1,37 +1,32 @@
-import { basename, join, normalize } from "node:path/posix";
+import { basename } from "node:path/posix";
 import { anyPathMatches, pathMatches } from "../evaluate/paths";
+import type { TestSelect } from "../types";
 import { affectedTests, knownType } from "./graph";
 import type { Snapshot, TestAdapter, TestContext, TestPlan } from "./types";
 
 const SHARED =
-  /^(package\.json|bun\.lockb?|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bunfig\.toml|tsconfig[^/]*\.json)$/;
+  /^(package\.json|bun\.lockb?|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|tsconfig[^/]*\.json)$/;
 
-function invocation(context: TestContext, files: readonly string[] = []) {
-  const outfile = join(context.reportDir, "junit.xml");
-  return {
-    invocations: [
-      {
-        cwd: context.cwd,
-        argv: [
-          ...context.item.exec,
-          "--reporter=junit",
-          `--reporter-outfile=${outfile}`,
-          ...files.map((file) => `./${file}`),
-        ],
-      },
-    ],
-    report: { kind: "junit" as const, paths: [outfile] },
-  };
-}
+export type JavaScriptRunner = {
+  name: TestSelect["runner"];
+  commands: readonly (readonly string[])[];
+  config: RegExp;
+  preloads?: (snapshot: Snapshot) => string[];
+  invocation(
+    context: TestContext,
+    files: readonly string[] | undefined,
+  ): Pick<TestPlan, "invocations" | "report" | "problem">;
+};
 
 function fullPlan(
+  runner: JavaScriptRunner,
   context: TestContext,
-  reasons = ["the bun runner runs the full suite"],
+  reasons = [`the ${runner.name} runner runs the full suite`],
 ): TestPlan {
-  return { selection: { mode: "full", reasons }, ...invocation(context) };
+  return { selection: { mode: "full", reasons }, ...runner.invocation(context, undefined) };
 }
 
-async function plan(context: TestContext): Promise<TestPlan> {
+async function plan(runner: JavaScriptRunner, context: TestContext): Promise<TestPlan> {
   const { item } = context;
   const always = item.select.always ?? [];
   const [changes, base, head] = await Promise.all([
@@ -49,14 +44,16 @@ async function plan(context: TestContext): Promise<TestPlan> {
     };
   }
   const changed = new Set(changes.flatMap((change) => [change.path, change.oldPath ?? []].flat()));
-  const preloads = new Set([...preloadsOf(base), ...preloadsOf(head)]);
+  const preloads = new Set([base, head].flatMap((snapshot) => runner.preloads?.(snapshot) ?? []));
   const full: string[] = [];
   for (const path of [...changed].sort()) {
-    if (SHARED.test(basename(path)) || preloads.has(path)) full.push(`${path} changed`);
-    else if (item.select.full_on?.some((pattern) => pathMatches(pattern, path))) {
+    const name = basename(path);
+    if (SHARED.test(name) || runner.config.test(name) || preloads.has(path)) {
+      full.push(`${path} changed`);
+    } else if (item.select.full_on?.some((pattern) => pathMatches(pattern, path))) {
       full.push(`${path} matches select.full_on`);
     } else if (!knownType(path) && anyPathMatches(item.paths ?? ["**"], [path], item.except)) {
-      full.push(`${path} changed, and the bun runner doesn't know its file type`);
+      full.push(`${path} changed, and the ${runner.name} runner doesn't know its file type`);
     }
   }
   const atBase = affectedTests(base, changed);
@@ -74,7 +71,7 @@ async function plan(context: TestContext): Promise<TestPlan> {
   if (max !== undefined && targets.length > max) {
     full.push(`${targets.length} test files are selected, more than max_selected ${max}`);
   }
-  if (full.length > 0) return fullPlan(context, full);
+  if (full.length > 0) return fullPlan(runner, context, full);
   return {
     selection: {
       mode: "selected",
@@ -84,26 +81,31 @@ async function plan(context: TestContext): Promise<TestPlan> {
         ...always.map((path) => `${path} is in select.always`),
       ],
     },
-    ...invocation(context, targets),
+    ...runner.invocation(context, targets),
   };
 }
 
-function preloadsOf(snapshot: Snapshot): string[] {
-  const text = snapshot.read("bunfig.toml");
-  if (text === undefined) return [];
-  const config = Bun.TOML.parse(text) as { preload?: unknown; test?: { preload?: unknown } };
-  return [config.preload, config.test?.preload]
-    .flat()
-    .filter((path): path is string => typeof path === "string")
-    .map((path) => normalize(path));
+export function javascriptAdapter(runner: JavaScriptRunner): TestAdapter {
+  return {
+    plan: (context) => plan(runner, context),
+    full: (context) => fullPlan(runner, context),
+  };
 }
 
-export const bunTestAdapter: TestAdapter = { plan, full: (context) => fullPlan(context) };
-
-export function bunExecError(exec: readonly string[]): string | undefined {
-  const [command, verb, ...rest] = exec;
-  if (command === "bun" && verb === "test" && rest.every((part) => part.startsWith("-"))) {
-    return undefined;
+export function javascriptExecError(
+  runner: JavaScriptRunner,
+  exec: readonly string[],
+): string | undefined {
+  for (const command of runner.commands) {
+    const rest = exec.slice(command.length);
+    if (command.every((part, index) => exec[index] === part) && rest.every(isFlag)) {
+      return undefined;
+    }
   }
-  return `select runner bun needs exec to start with "bun", "test" and pass only flags, as --flag=value`;
+  const named = runner.commands.map((command) => `"${command.join(" ")}"`).join(", ");
+  return `select runner ${runner.name} needs exec to start with ${named} and pass only flags, as --flag=value`;
+}
+
+function isFlag(part: string): boolean {
+  return part.startsWith("-");
 }
