@@ -111,6 +111,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   createSessionOnIssue: "session-create",
   createSessionOnComment: "session-create",
   projectOverview: "project-overview",
+  projectTeams: "project-teams",
   issueRepositorySuggestions: "repository-suggestions",
   issueRepositoryHints: "repository-hints",
   addRepositoryLabel: "repository-label",

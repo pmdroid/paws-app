@@ -295,6 +295,7 @@ import {
   POLICY_BLOCK_CHECK_JOB,
   POLICY_BLOCK_CHECK_MS,
   repositoryGrant,
+  recordMissingProjectTeams,
 } from "./loop";
 import {
   formatReviewScore,
@@ -1711,6 +1712,26 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     .catch((caughtError) => {
       journalCaught(caughtError, "index.commentAccess", null);
     });
+  const teamMemberships = members;
+  if (workspace && tracker && teamMemberships)
+    void workspace.access
+      .then(async () => {
+        const organization = await teamMemberships.installation(
+          AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]),
+        );
+        const current = await store.run((q) => workspaceForOrganizationSteps(q, organization.id));
+        if (current)
+          await recordMissingProjectTeams({
+            store,
+            tracker,
+            workspaceId: current.id,
+            now: Date.now,
+            signal: abort.signal,
+          });
+      })
+      .catch((caughtError) => {
+        journalCaught(caughtError, "index.recordMissingProjectTeams", null);
+      });
   const improvementDelivery = linear?.improvementDelivery;
   if (improvementDelivery && workspace) {
     const access = workspace.access;

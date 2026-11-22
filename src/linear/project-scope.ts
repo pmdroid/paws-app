@@ -23,6 +23,10 @@ const OVERVIEW_QUERY = `query PawsIssueProjectOverview($id: String!) {
   issue(id: $id) { project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } teams(first: 50) { nodes { id } } } }
 }`;
 
+const PROJECT_TEAMS_QUERY = `query PawsProjectTeams($id: String!) {
+  project(id: $id) { id teams(first: 50) { nodes { id } } }
+}`;
+
 export function linearProjectFrom(project: unknown): LinearProject | null {
   if (!isRecord(project)) return null;
   const id = readString(project, "id");
@@ -99,6 +103,14 @@ export function createLinearProjectScopeReads(client: LinearClient) {
       const issue = isRecord(data) ? data["issue"] : null;
       const project = isRecord(issue) ? issue["project"] : null;
       return { overview: projectOverviewFrom(project), project: linearProjectFrom(project) };
+    },
+    async projectTeams(
+      projectId: string,
+      options?: TrackerRequestOptions,
+    ): Promise<LinearProject | null> {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(PROJECT_TEAMS_QUERY, { id: projectId }, options);
+      return linearProjectFrom(isRecord(data) ? data["project"] : null);
     },
   };
 }

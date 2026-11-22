@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 
 export type LinearProjectTeams = {
@@ -40,4 +40,27 @@ export function* linearProjectTeamsSteps(
       .orderBy(asc(table.teamId)),
   );
   return rows.map((row) => row.teamId);
+}
+
+export function* projectNotebooksWithoutTeamsSteps(q: Q, workspaceId: string): Steps<string[]> {
+  const notebook = q.t.notebook;
+  const teams = q.t.linearProjectTeam;
+  const rows = yield* q.all(
+    q.orm
+      .select({ projectId: notebook.scopeId })
+      .from(notebook)
+      .leftJoin(
+        teams,
+        and(eq(teams.workspaceId, notebook.workspaceId), eq(teams.projectId, notebook.scopeId)),
+      )
+      .where(
+        and(
+          eq(notebook.workspaceId, workspaceId),
+          eq(notebook.scopeKind, "project"),
+          isNull(teams.projectId),
+        ),
+      )
+      .orderBy(asc(notebook.scopeId)),
+  );
+  return rows.map((row) => row.projectId);
 }
