@@ -69,6 +69,8 @@ rerun:
 
 `rerun.conflict.run` lists the command checks to run after a conflict fix. Each id must name a `kind: command` check in the policy, and an imported check uses its prefixed id, such as `team/test`. `rerun.conflict.reviews` defaults to `true`. `rerun.ci.run` is `all` (the default) or `failed`. Any other key under `rerun` makes the policy invalid.
 
+After a restart that only resolves a merge conflict, the fixed commit runs only the `rerun.conflict.run` checks, and the other command checks that passed on the accepted commit are carried from it. With `reviews: false`, the reviews that passed there are carried too. Carried checks show "carried from <commit>: passed there, not run again after the conflict fix". This applies only when the accepted, not high-risk pull request came back from the merge queue to rebase with nothing else to fix, **When main moved before the merge** is not Closeout, main's policy is the one the accepted commit was verified with, every listed id ran on the accepted commit, CI is green on the fixed commit, the checks the turn ran there used the same policy, and the fix changes no file the accepted commit did not. Otherwise every check and review runs. GitHub CI must still pass on the fixed commit before the merge.
+
 A command check can also have `since`, the command to run when the check only has to cover changes made after an earlier commit. It is an argv like `exec` and needs exactly one element that is `{since}`, for example `since: ["bun", "scripts/affected-tests.ts", "{since}"]`. Only command checks accept `since`.
 
 Runners need a release that knows these keys. An older runner skips them and warns about unknown policy keys.

@@ -199,6 +199,7 @@ import {
   fixAttemptLimit,
   mainFixBudget,
   mainNarrowAfterLines,
+  mainRerun,
   DEFAULT_NARROW_AFTER_LINES,
   approvalsAtHead,
   awaitsVisualReview,
@@ -4023,8 +4024,13 @@ export class Orchestrator {
       const conflict = await conflictChecksFor(this.store, {
         itemId: item.id,
         reason: returned?.reason,
-        settings: readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
-        repository: `${repository.owner}/${repository.repo}`,
+        policy:
+          returned?.reason === "conflict"
+            ? mainRerun(
+                (await this.itemHead(item)).repo,
+                (await this.closeoutHome(item)).policyRoot,
+              )
+            : null,
         briefs: Boolean(comments?.text || suggestions),
       });
       const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict);
