@@ -3,7 +3,16 @@ import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startDashboardFixture } from "../test/dashboard-fixture";
-import { recordItemFiledIssueSteps, replaceWorkspaceRepositories } from "../src/db";
+import {
+  applyWorkItemEvent,
+  beginImplementRun,
+  enqueueOutbox,
+  enterMergeQueue,
+  insertQueuedItem,
+  recordItemFiledIssueSteps,
+  recordItemPullRequest,
+  replaceWorkspaceRepositories,
+} from "../src/db";
 
 const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-dashboard-ui-${Date.now()}`);
@@ -165,6 +174,37 @@ try {
         filedAt: Date.now() + index,
       }),
     );
+  const pull = async (itemId: string, pullNumber: number) => {
+    const pullUrl = `https://github.com/acme/app/pull/${pullNumber}`;
+    await recordItemPullRequest(f.db, { itemId, pullNumber, pullUrl, openedAt: Date.now() });
+    await enqueueOutbox(f.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session-mine",
+      idempotencyKey: `${itemId}:pr:${pullNumber}`,
+      payload: { sessionId: "session-mine", kind: "response", body: `Opened ${pullUrl}.` },
+      now: Date.now(),
+    });
+  };
+  await pull("PAS-1", 12);
+  await pull("PAS-3", 13);
+  for (const id of ["PAS-5", "PAS-6"])
+    await insertQueuedItem(f.db, {
+      id,
+      sessionKey: "session-mine",
+      title: `Fixture ${id}`,
+      now: Date.now(),
+    });
+  const mergedHead = (await beginImplementRun(f.db, "PAS-6", Date.now())).run.id
+    .padEnd(40, "0")
+    .slice(0, 40);
+  await enterMergeQueue(f.db, "PAS-6", {
+    phase: "merge_queue",
+    baseSha: mergedHead,
+    wipCommit: mergedHead,
+  });
+  await applyWorkItemEvent(f.db, "PAS-6", "merge_accepted");
+  await pull("PAS-6", 14);
   for (const width of [1440, 390]) {
     const page = await open(width);
     const resources = (seen: Request[]) => [
@@ -199,6 +239,14 @@ try {
       if (name.startsWith("evidence")) expect([name, loads]).toEqual([name, 1]);
       else expect([name, loads > 1]).toEqual([name, true]);
     }
+    await visit(page, width, "results-queued", "/dashboard/issues/PAS-5", "Issues");
+    await expect(page.locator("#results-heading")).toHaveCount(0);
+    await visit(page, width, "results-open", "/dashboard/issues/PAS-1", "Issues");
+    await expect(page.locator("[data-result-pull]")).toContainText(/#12\s*Fixture PAS-1\s*open/);
+    await expect(page.locator("[data-follow-up-pull]")).toHaveText(["#13"]);
+    await visit(page, width, "results-merged", "/dashboard/issues/PAS-6", "Issues");
+    await expect(page.locator("[data-result-pull]")).toContainText(/#14\s*Fixture PAS-6\s*merged/);
+    await expect(page.locator("[data-result-follow-ups]")).toHaveCount(0);
     const admin = await open(width, f.adminCookie);
     let groupingTime = "06:00";
     await admin.route("**/api/settings/findings", async (route) => {

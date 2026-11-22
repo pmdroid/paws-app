@@ -476,6 +476,16 @@ a.evidence-thumb:focus-visible {
 .journey-failed h2 {
   color: var(--state-failed);
 }
+.results-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  background: var(--secondary-background);
+}
 .issue-folds {
   display: flex;
   min-width: 0;
@@ -879,7 +889,7 @@ dialog.review-draw {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.issue-merge,
+.issue-results,
 .item-timeline,
 .fix-rounds,
 .issue-relations {

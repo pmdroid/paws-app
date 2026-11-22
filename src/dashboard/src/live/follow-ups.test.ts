@@ -99,7 +99,7 @@ describe("follow-ups on the issue page", () => {
     ]);
     expect(origin.filedFrom).toBeUndefined();
     const html = page(origin);
-    expect(html).toContain("Follow-ups");
+    expect(html).toContain("Follow-up issues");
     const lines = html.match(/<li[^>]*data-follow-up>.*?<\/li>/g)!;
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('href="/issues/ENG-2"');
@@ -123,7 +123,7 @@ describe("follow-ups on the issue page", () => {
     expect(html).toContain(
       'Filed from <a href="/issues/ENG-1"><span class="lin-id">ENG-1</span>: Origin work</a>',
     );
-    expect(html).not.toContain("follow-ups-heading");
+    expect(html).not.toContain("results-follow-ups");
   });
 
   test("a member who may not see the other item sees its identifier only", async () => {
