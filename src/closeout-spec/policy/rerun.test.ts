@@ -23,7 +23,7 @@ items:
     failOn: P1
 `;
 
-const SINCE = `    since: ["bun", "scripts/test-since.ts", "{since}"]\n`;
+const SINCE = `    since: ["bun", "scripts/affected-tests.ts", "{since}"]\n`;
 
 const RERUN = `rerun:
   conflict:
@@ -72,7 +72,7 @@ describe("rerun and since", () => {
     });
     expect(loaded.policy.items.find((item) => item.id === "test")).toMatchObject({
       kind: "command",
-      since: ["bun", "scripts/test-since.ts", "{since}"],
+      since: ["bun", "scripts/affected-tests.ts", "{since}"],
     });
     const git = createFakeGitReader(
       Object.fromEntries([
@@ -176,7 +176,7 @@ describe("rerun and since", () => {
     expect(failure(`${BASE}${TEST}    select: { runner: pytest }\n`)).toBe(
       `${prefix}/items/2/select/runner must be equal to one of the allowed values`,
     );
-    expect(failure(`${BASE}${TEST}${SINCE.replace("test-since.ts", "x")}${select}`)).toBe(
+    expect(failure(`${BASE}${TEST}${SINCE.replace("affected-tests.ts", "x")}${select}`)).toBe(
       `${prefix}item test: select cannot be used with since`,
     );
     const shape = `${prefix}item test: select runner bun needs exec to start with "bun", "test" and pass only flags, as --flag=value`;

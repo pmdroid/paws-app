@@ -15,9 +15,9 @@ const detail: ImprovementDetail = {
     lifecycle: "needs_review",
     reviewState: "needs_review",
     proposal: {
-      title: "Agents skip the test-since script",
+      title: "Agents skip the affected-tests script",
       problem: "4 of 11 runs ran the full suite inside Closeout.",
-      proposedChange: "Point the agent brief at scripts/test-since.ts.",
+      proposedChange: "Point the agent brief at scripts/affected-tests.ts.",
       actionStep: "convention",
       verificationCriterion: "No Closeout time-outs on test next week.",
       evidence: ["retro:r1:e0", "retro:r1:e1"],
@@ -102,7 +102,7 @@ test("a retro review card shows its four fields in one grid and its decision but
   const header = card.querySelector(".improvement-head")!;
   expect(header.querySelector(".st.verifying")?.textContent).toBe("weekly retro");
   expect(header.querySelector("#improvement-heading")?.textContent).toBe(
-    "Agents skip the test-since script",
+    "Agents skip the affected-tests script",
   );
   expect(header.querySelector(".improvement-period")?.textContent).toBe("2026-11-03 – 2026-11-09");
 

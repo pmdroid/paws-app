@@ -8,8 +8,8 @@ const items: ResolvedRequirement[] = [
     id: "test",
     kind: "command",
     gate: "beforePR",
-    exec: ["bun", "scripts/test-since.ts"],
-    since: ["bun", "scripts/test-since.ts", "{since}"],
+    exec: ["bun", "scripts/affected-tests.ts"],
+    since: ["bun", "scripts/affected-tests.ts", "{since}"],
     timeoutSeconds: 60,
   },
   {
@@ -24,7 +24,7 @@ const items: ResolvedRequirement[] = [
 test("withSince swaps in the since argv only for the listed commands that have one", () => {
   const swapped = withSince({ items }, { head: F, ids: ["test", "lint"] }).items;
   expect(swapped.map((item) => ("exec" in item ? item.exec : []))).toEqual([
-    ["bun", "scripts/test-since.ts", F],
+    ["bun", "scripts/affected-tests.ts", F],
     ["bun", "run", "lint"],
   ]);
   expect(withSince({ items }, { head: "main", ids: ["test"] }).items).toBe(items);
@@ -32,11 +32,11 @@ test("withSince swaps in the since argv only for the listed commands that have o
 });
 
 test("isSinceArgv accepts the since argv with a commit in place of {since}", () => {
-  const since = ["bun", "scripts/test-since.ts", "{since}"];
-  expect(isSinceArgv(["bun", "scripts/test-since.ts", F], since)).toBe(true);
-  expect(isSinceArgv(["bun", "scripts/test-since.ts", "origin/main"], since)).toBe(false);
-  expect(isSinceArgv(["bun", "scripts/test-since.ts"], since)).toBe(false);
-  expect(isSinceArgv(["bun", "scripts/test-since.ts", F], undefined)).toBe(false);
+  const since = ["bun", "scripts/affected-tests.ts", "{since}"];
+  expect(isSinceArgv(["bun", "scripts/affected-tests.ts", F], since)).toBe(true);
+  expect(isSinceArgv(["bun", "scripts/affected-tests.ts", "origin/main"], since)).toBe(false);
+  expect(isSinceArgv(["bun", "scripts/affected-tests.ts"], since)).toBe(false);
+  expect(isSinceArgv(["bun", "scripts/affected-tests.ts", F], undefined)).toBe(false);
 });
 
 test("coversAnyPath follows paths and except", () => {

@@ -325,6 +325,7 @@
     "test/improvements.test.ts": 3003,
     "test/runner-public-activity.test.ts": 2959,
     "test/runner-runtime.test.ts": 2920,
+    "scripts/affected-tests.test.ts": 2919,
     "test/publication-readiness.test.ts": 2919,
     "src/dashboard/src/live/payload-budget.test.ts": 2901,
     "test/runner-checkout-cleanup.test.ts": 2898,

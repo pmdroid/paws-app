@@ -1,15 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-const TEST_FILE = /(\.|_)(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
-const SKIPPED = /(^|\/)(node_modules|dist|\.git)\//;
-
-function testFiles(root: string): string[] {
-  return [...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true })]
-    .filter((path) => TEST_FILE.test(path) && !SKIPPED.test(path))
-    .sort();
-}
+import { testFiles } from "./affected-tests";
 
 export function stressMatrix(root: string, base: string) {
   const diff = spawnSync(
