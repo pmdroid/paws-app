@@ -115,6 +115,9 @@ export {
   retryBaseline,
   reviewRecordsSince,
   reviewRequirements,
+  policySummary,
+  diskMirrorMain,
+  NOT_FETCHED_MESSAGE,
   reviewRoundFindings,
   run,
   setAsideUnreadableReviews,
@@ -153,6 +156,8 @@ export type {
   ReviewIntake,
   RunRequest,
   ValidateResult,
+  PolicySummary,
+  PolicySummaryCheck,
 } from "./facade";
 
 export {
