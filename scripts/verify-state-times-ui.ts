@@ -108,8 +108,8 @@ try {
       await page.emulateMedia({ colorScheme: scheme });
 
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-101`);
-      // The bar sits in the Timeline section, folded until opened.
-      const timeline = page.getByRole("button", { name: /^Timeline/ });
+      // The bar sits in the History section, folded until opened.
+      const timeline = page.getByRole("button", { name: /^Every event/ });
       if ((await timeline.getAttribute("aria-expanded")) === "false") await timeline.click();
       const bar = page.locator("section.state-times");
       await expect(bar).toBeVisible();

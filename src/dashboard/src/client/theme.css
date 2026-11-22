@@ -911,6 +911,16 @@ dialog.review-draw {
   gap: 0.75rem;
   overflow-wrap: anywhere;
 }
+.history-list li {
+  display: flex;
+  gap: 0.75rem;
+  padding-block: 0.375rem;
+}
+.history-list time {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
 /* The issue page's time in each state: a bar sized by time, then the same as a list. */
 .state-times {
   display: flex;

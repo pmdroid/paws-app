@@ -550,7 +550,6 @@ function issuePage(
       (run === undefined || question.runId === null || inRun(run, question.runId)) &&
       !item.visualReviews?.some((review) => review.questionId === question.id),
   );
-  const activity = run?.activity?.length ?? 0;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="issue-heading flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -583,27 +582,7 @@ function issuePage(
     <div class="issue-folds">
     ${closeoutSection(snapshot, item, verdict, run, closeout, engineUrl, asked)}
     ${verdict || !run ? "" : evidenceSlot(snapshot, run.id)}
-    ${fold(
-      closeout,
-      `fixes:${item.id}`,
-      "Fix rounds",
-      `${now.fixRounds} round${now.fixRounds === 1 ? "" : "s"}`,
-      fixRounds(snapshot, item, run),
-    )}
-    ${fold(
-      closeout,
-      `timeline:${item.id}`,
-      "Timeline",
-      `${activity} event${activity === 1 ? "" : "s"}`,
-      run
-        ? `${stateTimeBar(item.stateTimes)}${activityActions(
-            transcriptHref,
-            run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
-          )}${activityLog(`activity-${run.id}`, run)}`
-        : "",
-      false,
-      "activity-heading",
-    )}
+    ${historySection(snapshot, item, run, closeout, transcriptHref)}
     ${runDetails(item, run, closeout)}
     </div>
   </article>`;
@@ -871,6 +850,89 @@ function itemTimelineEntry(entry: StatusItemEvent): string {
     why,
     entry.actor ? `by ${esc(entry.actor)}` : "",
   ]);
+}
+
+const HISTORY_ENDS: Record<string, string> = {
+  merged: "Merged",
+  completed: "Completed",
+  failed: "Stopped",
+  cancelled: "Cancelled",
+  manual: "Taken over",
+};
+
+function historyEvents(item: StatusItem, run: StatusRun | undefined): [string, string][] {
+  const timeline = (item.timeline ?? []).filter((entry) => entry.kind !== "ci_rerun");
+  const events: [string, string][] = [];
+  const start = timeline.find((entry) => entry.event === "dispatched")?.at ?? run?.startedAt;
+  if (start) events.push([start, "Started"]);
+  let round = 0;
+  let opened = false;
+  timeline.forEach((entry, at) => {
+    const reason = RESTART_REASON_LABELS[entry.reason ?? ""] ?? plainWords(entry.reason ?? "");
+    if (
+      entry.event === "closeout_accepted" ||
+      (entry.from === "verifying" && (entry.event === "restart" || entry.kind === "ask"))
+    ) {
+      round += 1;
+      const outcome =
+        entry.event === "closeout_accepted"
+          ? "accepted"
+          : entry.event === "restart"
+            ? `sent back for ${reason || "a restart"}`
+            : "asked a person";
+      events.push([entry.at, `Closeout round ${round}: ${outcome}`]);
+    } else if (entry.event === "restart" && entry.from !== "awaiting_input") {
+      events.push([entry.at, `Sent back to the agent for ${reason || "a restart"}`]);
+    }
+    if (entry.kind === "ask") {
+      const answer = timeline
+        .slice(at + 1)
+        .find((next) => next.from === "awaiting_input" && next.kind !== "ask");
+      events.push([
+        entry.at,
+        `Asked: ${plainWords(entry.reason ?? "a question")} · ${answer ? `answered ${clock24(answer.at)}` : "waiting"}`,
+      ]);
+    }
+    if (entry.event === "closeout_accepted" && item.pr && !opened) {
+      opened = true;
+      events.push([
+        run?.activity.find((line) => line.text.includes(item.pr!.url))?.at ?? entry.at,
+        `Opened pull request #${item.pr.number}`,
+      ]);
+    }
+    if (HISTORY_ENDS[entry.to]) events.push([entry.at, HISTORY_ENDS[entry.to]!]);
+  });
+  return events;
+}
+
+function historySection(
+  snapshot: IssueDetailResponse,
+  item: StatusItem,
+  run: StatusRun | undefined,
+  view: CloseoutView,
+  transcriptHref: string | null,
+): string {
+  const rounds = fixRounds(snapshot, item, run);
+  if (!run && !rounds) return "";
+  const events = historyEvents(item, run);
+  const key = `history:${item.id}`;
+  const open = sectionOpen(view, key, false);
+  const transcript =
+    transcriptHref === null
+      ? ""
+      : `<a class="btn sm" href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>`;
+  const list = events.length
+    ? `<ol class="history-list" role="list">${events.map(([at, text]) => `<li>${timelineTime(at)}<span>${text}</span></li>`).join("")}</ol>`
+    : "";
+  const details = `${
+    run
+      ? `${stateTimeBar(item.stateTimes)}${activityActions(
+          null,
+          run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
+        )}${activityLog(`activity-${run.id}`, run)}`
+      : ""
+  }${rounds}`;
+  return `<section class="issue-fold history-section flex min-w-0 flex-col gap-3" aria-label="History"><div class="between"><h2 id="activity-heading">History</h2>${transcript}</div>${list}${sectionToggle(key, open, `<b>Every event (${run?.activity.length ?? 0})</b>`, "")}${open ? `<div class="issue-fold-body">${details}</div>` : ""}</section>`;
 }
 
 /** CI reads that failed on the pull request, and what Paws did next. */

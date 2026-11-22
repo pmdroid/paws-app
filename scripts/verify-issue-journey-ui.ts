@@ -91,7 +91,7 @@ try {
         "aria-expanded",
         "false",
       );
-      await expect(page.getByRole("button", { name: /Timeline/ })).toHaveAttribute(
+      await expect(page.getByRole("button", { name: /Every event/ })).toHaveAttribute(
         "aria-expanded",
         "false",
       );
