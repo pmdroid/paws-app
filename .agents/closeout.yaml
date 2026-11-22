@@ -1,9 +1,15 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, the tests the change affects, the dashboard build, the documentation checks, dead-code and dependency checks, the proof scenarios that cover a loop change, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
+description: Lint, format, typecheck, affected tests, the dashboard build, documentation, dead-code and dependency checks, covering proof scenarios, screenshots of changed screens, an independent review and a security review of high-risk paths must pass before a pull request. After a conflict fix only lint, format, typecheck and the affected tests run, with no reviews. After a failed CI check only the tests changed since that commit run. GitHub CI always runs the full suite before a merge.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
   maxFailedReviewAttempts: 4
+rerun:
+  conflict:
+    run: [lint, format, typecheck, test]
+    reviews: false
+  ci:
+    run: failed
 setup:
   - id: install
     exec: ["bun", "install", "--frozen-lockfile"]
@@ -37,6 +43,7 @@ items:
     kind: command
     gate: beforePR
     exec: ["bun", "scripts/affected-tests.ts"]
+    since: ["bun", "scripts/affected-tests.ts", "{since}"]
     timeoutSeconds: 1800
     ci: "test (*)"
   - id: links
