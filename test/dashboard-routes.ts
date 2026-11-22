@@ -39,6 +39,7 @@ const WORKSPACE_PAGE_IDS = [
   "agents",
   "merging",
   "repositories",
+  "closeout",
   "linear",
   "storage",
   "limits",

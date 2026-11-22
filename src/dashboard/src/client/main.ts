@@ -1,6 +1,7 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
 import { createMemberVmSettings } from "./member-vm-settings";
+import { createCloseoutSettings } from "./closeout-settings";
 import { createRunnerVmKeys } from "./runner-vm-keys";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
@@ -85,6 +86,7 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
 const memberVmSettings = createMemberVmSettings();
+const closeoutSettings = createCloseoutSettings();
 const runnerVmKeys = createRunnerVmKeys();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
@@ -480,6 +482,8 @@ function paint(): void {
   if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
   const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
   if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
+  const closeoutRoot = document.querySelector<HTMLElement>("#closeout-settings");
+  if (closeoutRoot) closeoutSettings.mount(closeoutRoot, currentEngine());
   const runnerVmKeysRoot = document.querySelector<HTMLElement>("#runner-vm-keys");
   if (runnerVmKeysRoot) runnerVmKeys.mount(runnerVmKeysRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");

@@ -474,7 +474,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(13);
+    await expect(submenu).toHaveCount(14);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -690,6 +690,70 @@ try {
       );
       await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     }
+    const commit = "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345";
+    await admin.route("**/api/settings/closeout-summary", (route) =>
+      route.fulfill({
+        json: {
+          repositories: [
+            {
+              repository: "pmdroid/paws-app",
+              commit,
+              rerun: {
+                conflict: { run: ["lint", "typecheck"], reviews: false },
+                ci: { run: "failed" },
+              },
+              checks: [
+                { id: "lint", ci: "lint*" },
+                { id: "typecheck", ci: "lint*" },
+                {
+                  id: "test",
+                  ci: "test (*",
+                  since: ["bun", "scripts/affected-tests.ts", "{since}"],
+                  select: {
+                    runner: "bun",
+                    always: ["test/boundaries.test.ts"],
+                    full_on: ["bun.lock", "package.json"],
+                    max_selected: 120,
+                  },
+                },
+              ],
+            },
+            {
+              repository: "pmdroid/docs",
+              commit,
+              rerun: null,
+              checks: [{ id: "lint" }, { id: "test", since: ["bun", "test", "{since}"] }],
+            },
+            {
+              repository: "pmdroid/raspair",
+              commit,
+              error: "/rerun/ci/run must be equal to one of the allowed values",
+            },
+          ],
+        },
+      }),
+    );
+    const closeoutSeen = await visit(
+      admin,
+      width,
+      "settings-closeout",
+      "/dashboard/workspace/closeout",
+      "Closeout",
+    );
+    await expect(admin.locator("[data-closeout-repo], [data-closeout-error]")).toHaveCount(3);
+    await expect(admin.locator("[data-reviews-skipped]")).toBeVisible();
+    await expect(admin.getByText("Closeout reruns everything until it's fixed.")).toBeVisible();
+    expect(
+      closeoutSeen.filter((r) => r.path.startsWith("/api/settings")).map((r) => r.path),
+    ).toEqual(["/api/settings/closeout-summary"]);
+    await visit(
+      page,
+      width,
+      "settings-closeout-member",
+      "/dashboard/workspace/closeout",
+      "Your account",
+    );
+    await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/workspace/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/workspace/workspace", "Workspace access"],
