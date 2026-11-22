@@ -2,8 +2,7 @@ import { journalCaught } from "../../journal";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import { parse, YAMLParseError } from "yaml";
-import { selectExecError } from "../tests/bun";
-import { goExecError } from "../tests/go";
+import { selectExecError } from "../tests/select";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
@@ -347,14 +346,15 @@ function decodeRerun(value: unknown): RerunPolicy {
 }
 
 function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
-  if (!isRecord(value) || (value.runner !== "bun" && value.runner !== "go"))
+  const runners: unknown[] = ["bun", "go", "cargo", "nextest"];
+  if (!isRecord(value) || !runners.includes(value.runner))
     throw new Error("document does not match the schema");
   if (item.since !== undefined)
     throw new Error(`item ${item.id}: select cannot be used with since`);
-  const shape =
-    value.runner === "go" ? goExecError(item.exec) : selectExecError(value.runner, item.exec);
+  const runner = value.runner as TestSelect["runner"];
+  const shape = selectExecError(runner, item.exec);
   if (shape !== undefined) throw new Error(`item ${item.id}: ${shape}`);
-  const select: TestSelect = { runner: value.runner };
+  const select: TestSelect = { runner };
   if (value.always !== undefined) select.always = expectStrings(value.always);
   if (value.full_on !== undefined) select.full_on = expectStrings(value.full_on);
   if (value.max_selected !== undefined) select.max_selected = expectInt(value.max_selected);

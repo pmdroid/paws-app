@@ -2,11 +2,10 @@ import { journalCaught } from "../../journal";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bunTestAdapter } from "./bun";
 import { readAt, snapshotAt, testChanges } from "./git";
-import { goTestAdapter } from "./go";
 import { MAX_GO_REPORT_BYTES, parseGoJson } from "./go-json";
 import { MAX_REPORT_BYTES, parseJunit } from "./junit";
+import { adapterFor } from "./select";
 import type {
   FailedTest,
   SelectedCommand,
@@ -25,6 +24,7 @@ export type TestCheckResult<R> = {
   selection: TestSelection;
   failures: FailedTest[];
   problem?: string;
+  note?: string;
 };
 
 export async function runTestCheck<R extends TestExecuted>(input: {
@@ -39,6 +39,7 @@ export async function runTestCheck<R extends TestExecuted>(input: {
 }): Promise<TestCheckResult<R>> {
   const { item, cwd, base, head, env } = input;
   const reportDir = mkdtempSync(join(input.reportRoot ?? tmpdir(), "paws-test-report-"));
+  const deadline = Date.now() + item.timeoutSeconds * 1000;
   try {
     const context: TestContext = {
       item,
@@ -47,12 +48,13 @@ export async function runTestCheck<R extends TestExecuted>(input: {
       head,
       reportDir,
       env,
+      deadline,
       changes: () => testChanges(cwd, base, head, env),
       readAtBase: (path) => readAt(cwd, base, path, env),
       readAtHead: (path) => readAt(cwd, head, path, env),
       snapshot: (commit) => snapshotAt(cwd, commit, env),
     };
-    const adapter = input.adapter ?? (item.select.runner === "go" ? goTestAdapter : bunTestAdapter);
+    const adapter = input.adapter ?? adapterFor(item.select.runner);
     const plan = await planOf(adapter, context);
     if (plan.problem !== undefined) {
       return {
@@ -63,7 +65,6 @@ export async function runTestCheck<R extends TestExecuted>(input: {
         problem: plan.problem,
       };
     }
-    const deadline = Date.now() + item.timeoutSeconds * 1000;
     const results: R[] = [];
     let ran = true;
     for (const invocation of plan.invocations) {
@@ -81,7 +82,13 @@ export async function runTestCheck<R extends TestExecuted>(input: {
       results.every((result) => result.code === 0) &&
       read.problem === undefined &&
       read.failures.length === 0;
-    return { ok, results, selection: plan.selection, ...read };
+    return {
+      ok,
+      results,
+      selection: plan.selection,
+      ...read,
+      ...(plan.note ? { note: plan.note } : {}),
+    };
   } finally {
     rmSync(reportDir, { recursive: true, force: true });
   }
@@ -133,7 +140,8 @@ function readReport(plan: TestPlan): { failures: FailedTest[]; problem?: string 
       text = readFileSync(path, "utf8");
     } catch (error) {
       journalCaught(error, "tests.readReport.readFileSync", null, "the report may be absent");
-      return { failures, problem: `test report ${path} is missing` };
+      const why = plan.report.missing ? `: ${plan.report.missing}` : "";
+      return { failures, problem: `test report ${path} is missing${why}` };
     }
     const parsed = parseJunit(text);
     if (!parsed.ok) return { failures, problem: `test report ${path} ${parsed.message}` };

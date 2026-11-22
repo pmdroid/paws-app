@@ -1082,7 +1082,11 @@ async function execute(
           execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
         })
       : undefined;
-  const result = tests?.results.at(-1) ?? (await spawnIn(workspace, argv, timeoutSeconds));
+  const result =
+    tests?.results.at(-1) ??
+    (tests !== undefined && tests.problem === undefined
+      ? { ...NOT_STARTED, timedOut: true }
+      : await spawnIn(workspace, argv, timeoutSeconds));
   const code = tests && !tests.ok && result.code === 0 ? 1 : result.code;
   const failedTests = scrubFailures(tests?.failures ?? [], (text) =>
     scrubText(text, credentialSecrets()),
@@ -1152,7 +1156,7 @@ async function execute(
     else state.covered = covered;
     memory.set(item.id, state);
     finished("passed");
-    return { ok: true, text: `${item.id} passed.` };
+    return { ok: true, text: [`${item.id} passed.`, tests?.note].filter(Boolean).join(" ") };
   }
   state.failures += 1;
   delete state.covered;
@@ -1173,7 +1177,7 @@ async function execute(
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
   const problem = result.code !== 0 ? (tests?.problem ?? "") : "";
-  const parts = [failed, problem, failedTestsText(failedTests), result.output.trim()];
+  const parts = [failed, tests?.note, problem, failedTestsText(failedTests), result.output.trim()];
   return { ok: false, failed: true, text: parts.filter(Boolean).join("\n") };
 }
 
@@ -1435,6 +1439,17 @@ function commandEnv({ runtimeBinPaths = [], basePath, bail, env: extra }: CheckP
 const OUTPUT_DRAIN_MS = 1_000;
 
 type CommandOutcome = Awaited<ReturnType<typeof spawnCommand>>;
+
+const NOT_STARTED: CommandOutcome = {
+  code: 1,
+  timedOut: false,
+  cancelled: false,
+  output: "",
+  full: "",
+  stdout: "",
+  stderr: "",
+  truncated: false,
+};
 
 async function runCommand(
   workspace: string,

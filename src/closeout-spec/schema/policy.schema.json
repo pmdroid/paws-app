@@ -121,7 +121,7 @@
           "additionalProperties": false,
           "required": ["runner"],
           "properties": {
-            "runner": { "enum": ["bun", "go"] },
+            "runner": { "enum": ["bun", "go", "cargo", "nextest"] },
             "always": {
               "type": "array",
               "maxItems": 256,

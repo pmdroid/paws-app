@@ -656,6 +656,7 @@ async function runOne(
     state: failed ? "failed" : "passed",
     detail: [
       execMessage(record.exec, item.kind === "setup"),
+      exec.testNote ?? "",
       failedTestsText(exec.failedTests ?? []),
     ]
       .filter((part) => part.length > 0)
@@ -712,6 +713,7 @@ async function runSelected(
     argv: item.exec,
     exitCode: tests.ok ? 0 : last.exitCode || 1,
     failedTests: tests.problem ? [{ message: tests.problem, kind: "error" }, ...failed] : failed,
+    ...(tests.note ? { testNote: tests.note } : {}),
   };
 }
 

@@ -106,7 +106,7 @@ export type { FailedTest } from "./tests/types";
 import type { FailedTest } from "./tests/types";
 
 export type TestSelect = {
-  runner: "bun" | "go";
+  runner: "bun" | "go" | "cargo" | "nextest";
   always?: string[];
   full_on?: string[];
   max_selected?: number;
@@ -782,6 +782,7 @@ export type CommandRunRequest = {
 export type CommandRunResult = CommandExec & {
   artifacts: Artifact[];
   failedTests?: FailedTest[];
+  testNote?: string;
 };
 
 /**
