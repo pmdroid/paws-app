@@ -99,6 +99,14 @@ export type PolicyCommand = {
    */
   recheck?: boolean;
   since?: string[];
+  select?: TestSelect;
+};
+
+export type TestSelect = {
+  runner: "bun";
+  always?: string[];
+  full_on?: string[];
+  max_selected?: number;
 };
 
 export type PolicyReview = {
@@ -281,6 +289,7 @@ export type ResolvedCommand = {
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
   since?: string[];
+  select?: TestSelect;
 };
 
 /** Resolved review, in canonical form. `independence` has both flags. */

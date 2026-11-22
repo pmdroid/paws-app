@@ -35,7 +35,17 @@ import type {
   ResolvedRequirement,
   ResolvedRule,
   ResolvedSetup,
+  TestSelect,
 } from "./types";
+import {
+  failedTestsText,
+  readAt,
+  runTestCheck,
+  testAdapter,
+  testChanges,
+  type FailedTest,
+  type TestCheckResult,
+} from "./tests";
 
 export type SessionCommandResult = {
   argv: string[];
@@ -47,6 +57,7 @@ export type SessionCommandResult = {
   stdout: string;
   stderr: string;
   truncated: boolean;
+  failedTests?: FailedTest[];
 };
 
 /**
@@ -192,6 +203,7 @@ type Listed = {
   differentModel: boolean;
   matched: string[];
   evidence?: ResolvedEvidence;
+  select?: TestSelect;
 };
 
 type Prepared =
@@ -1047,20 +1059,29 @@ async function execute(
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
   const signals = [options.signal, stop].filter((signal) => signal !== undefined);
-  const result = await withPullRequestDraft({}, await options.pullRequest?.(), (draft) =>
-    runCommand(
-      workspace,
-      argv,
-      timeoutSeconds,
-      signals.length > 0 ? AbortSignal.any(signals) : undefined,
-      {
+  const draft = await options.pullRequest?.();
+  const spawnIn = (cwd: string, args: readonly string[], seconds: number) =>
+    withPullRequestDraft({}, draft, (env) =>
+      runCommand(cwd, args, seconds, signals.length > 0 ? AbortSignal.any(signals) : undefined, {
         runtimeBinPaths: options.runtimeBinPaths,
         basePath: options.basePath,
         bail: item.kind === "command",
-        env: draft,
-      },
-    ),
-  );
+        env,
+      }),
+    );
+  const tests =
+    item.select !== undefined && item.kind === "command" && before.ok
+      ? await runSelected(workspace, item, item.select, {
+          head: before.stdout.toString("utf8").trim(),
+          base:
+            (options.focus?.since !== undefined && options.focus.policyDigest === policyDigest
+              ? options.focus.head
+              : base) ?? "",
+          execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
+        })
+      : undefined;
+  const result = tests ?? (await spawnIn(workspace, argv, timeoutSeconds));
+  const code = tests && !tests.ok && result.code === 0 ? 1 : result.code;
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
   if (result.cancelled) {
@@ -1091,13 +1112,14 @@ async function execute(
       before.ok && after.ok && before.stdout.equals(after.stdout)
         ? after.stdout.toString("utf8").trim()
         : "",
-    exitCode: result.code,
+    exitCode: code,
     timedOut: result.timedOut,
     durationMs: Math.max(1, Date.now() - started),
     timeoutSeconds,
     stdout: scrubText(result.stdout, credentialSecrets()),
     stderr: scrubText(result.stderr, credentialSecrets()),
     truncated: result.truncated,
+    ...(tests && tests.failures.length > 0 ? { failedTests: tests.failures } : {}),
   };
   state.kind = item.kind;
   const finished = (outcome: "passed" | "failed" | "exhausted") => {
@@ -1107,7 +1129,7 @@ async function execute(
       type: "finished",
       ...progress,
       state: outcome,
-      exitCode: result.code,
+      exitCode: code,
       timedOut: result.timedOut,
       durationMs: state.result!.durationMs,
       stdout: stdout.text,
@@ -1118,7 +1140,7 @@ async function execute(
       clean: cleanBefore && cleanAfter && state.result!.head !== "",
     });
   };
-  if (result.code === 0 && !result.timedOut) {
+  if (code === 0 && !result.timedOut) {
     state.passed = true;
     state.stale = false;
     if (covered === undefined) delete state.covered;
@@ -1138,11 +1160,50 @@ async function execute(
     running.abort(item.id);
   }
   finished(max !== null && state.failures >= max ? "exhausted" : "failed");
-  const why = result.timedOut ? "timed out" : `exit ${result.code}`;
+  const why = result.timedOut
+    ? "timed out"
+    : result.code === 0
+      ? (tests?.problem ?? "the test report lists failures")
+      : `exit ${result.code}`;
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
-  const tail = result.output.trim();
-  return { ok: false, failed: true, text: tail.length > 0 ? `${failed}\n${tail}` : failed };
+  const parts = [
+    failed,
+    tests?.problem !== undefined && result.code !== 0 ? tests.problem : "",
+    failedTestsText(tests?.failures ?? []),
+    result.output.trim(),
+  ];
+  return { ok: false, failed: true, text: parts.filter((part) => part.length > 0).join("\n") };
+}
+
+async function runSelected(
+  workspace: string,
+  item: Listed,
+  choice: TestSelect,
+  run: { head: string; base: string; execute: Parameters<typeof runTestCheck>[0]["execute"] },
+): Promise<TestCheckResult> {
+  const env = commandEnv();
+  return runTestCheck({
+    adapter: testAdapter(choice.runner),
+    timeoutSeconds: item.timeoutSeconds ?? 30,
+    execute: run.execute,
+    context: {
+      item: {
+        id: item.id,
+        kind: "command",
+        gate: "beforePR",
+        exec: item.exec ?? [],
+        timeoutSeconds: item.timeoutSeconds ?? 30,
+        select: choice,
+      },
+      cwd: workspace,
+      base: run.base,
+      head: run.head,
+      changes: () => testChanges(workspace, run.base, run.head, env),
+      readAtBase: (path) => readAt(workspace, run.base, path, env),
+      readAtHead: (path) => readAt(workspace, run.head, path, env),
+    },
+  });
 }
 
 async function deferredOf(
@@ -1249,6 +1310,7 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
     hint: `Run ${item.exec.join(" ")}`,
     exec: item.exec,
     timeoutSeconds: item.timeoutSeconds,
+    ...("select" in item && item.select !== undefined ? { select: item.select } : {}),
     differentModel: false,
     ...(item.paths !== undefined ? { paths: item.paths } : {}),
     ...(item.except !== undefined ? { except: item.except } : {}),

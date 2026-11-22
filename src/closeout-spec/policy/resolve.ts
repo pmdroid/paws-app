@@ -247,6 +247,11 @@ function walk(
       if (raw.ci !== undefined) item.ci = raw.ci;
       if (raw.recheck === true) item.recheck = true;
       if (raw.since !== undefined) item.since = raw.since;
+      if (raw.select !== undefined) {
+        const fullOn = checkPathPatterns(raw.select.full_on ?? []);
+        if (!fullOn.ok) return fullOn.message;
+        item.select = raw.select;
+      }
       state.items.push(item);
       continue;
     }
