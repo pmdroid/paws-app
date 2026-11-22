@@ -21,6 +21,7 @@ export {
   createSlackLinkPage,
   createSlackThreads,
   SLACK_THREAD_JOB,
+  directGateSteps,
   slackReplyAllowedSteps,
 } from "./threads";
 export type { SlackToolProvider } from "./tools";

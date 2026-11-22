@@ -248,7 +248,7 @@ function uniqueSources(refs: readonly SlackSourceRef[]): SlackSourceRef[] {
 }
 
 type Bound = { teamId: string; channelId: string; generation: number };
-type Linked = Bound & { workspaceId: string; userId: string; id?: string };
+type Linked = Bound & { workspaceId: string; userId: string; id?: string; dmChannelId?: string };
 type Code = Bound & { hash: string; userId: string; slackUserId: string; expiresAt: number };
 type Held = Bound & { dedupeKey: string; expiresAt: number };
 type Gate =
@@ -276,7 +276,7 @@ const keepsRunning = (identifier: string) =>
   `${identifier} keeps running. Reply stop ${identifier} to stop it.`;
 
 const NOTICES = {
-  linked: "Linked. Mention @Paws in the channel to ask it something.",
+  linked: "Linked. Mention @Paws in the channel or send Paws a direct message to ask it something.",
   released: "Linked. Paws is answering the question you asked before linking, in its thread.",
   already_linked:
     "That Slack account or Paws account is already linked to another account here. Paws doesn't move links.",
@@ -339,6 +339,24 @@ function* gateSteps(q: Q, home: string, place: Place): Steps<Gate> {
   );
   if (!admitted || link?.workspaceId !== place.workspaceId || !same(link, place))
     return { kind: "guide", setup: !admitted };
+  const member = yield* workspaceMemberSteps(q, place.workspaceId, link.userId);
+  return workspaceMemberUsable(member)
+    ? { kind: "member", userId: link.userId, linkId: link.id ?? "" }
+    : { kind: "ignore" };
+}
+
+export function* directGateSteps(q: Q, home: string, place: Place): Steps<Gate> {
+  if (!(yield* installedSteps(q, home, place))) return { kind: "ignore" };
+  const link = parsed<Linked>(
+    yield* readSettingSteps(q, memberKey(place.teamId, place.slackUserId)),
+  );
+  if (
+    link?.workspaceId !== place.workspaceId ||
+    link.teamId !== place.teamId ||
+    link.generation !== place.generation ||
+    link.dmChannelId !== place.channelId
+  )
+    return { kind: "ignore" };
   const member = yield* workspaceMemberSteps(q, place.workspaceId, link.userId);
   return workspaceMemberUsable(member)
     ? { kind: "member", userId: link.userId, linkId: link.id ?? "" }
@@ -441,13 +459,16 @@ export function* slackReplyAllowedSteps(
   const place = { ...scope, generation: scope.installGeneration };
   const install = yield* installationSteps(q, home, scope.teamId);
   if (install?.workspaceId !== workspaceId || install.generation !== place.generation) return false;
-  if (!same(parsed<Bound>(yield* readSettingSteps(q, channelKey(workspaceId))), place))
-    return false;
+  const bound = same(parsed<Bound>(yield* readSettingSteps(q, channelKey(workspaceId))), place);
   const links = yield* settingsWithPrefixSteps(q, `slack.member:${scope.teamId}:`);
   const linked = links.some((row) => {
     const link = parsed<Linked>(row.value);
+    if (link?.workspaceId !== workspaceId || link.userId !== scope.memberUserId) return false;
+    if (bound) return same(link, place);
     return (
-      link?.workspaceId === workspaceId && link.userId === scope.memberUserId && same(link, place)
+      link.teamId === scope.teamId &&
+      link.generation === place.generation &&
+      link.dmChannelId === scope.channelId
     );
   });
   const member = yield* workspaceMemberSteps(q, workspaceId, scope.memberUserId);
@@ -711,15 +732,26 @@ export async function acceptSlackMention(
 }
 
 async function acceptSlackDirect(store: Db, home: string, mention: SlackMention, at: number) {
-  const command = mention.text.replace(/<@[A-Z0-9]+>/g, "").trim();
-  if (!DIRECT_LINK.test(command)) return;
   const dedupeKey = `slack:${mention.teamId}:dm:${mention.channelId}:${mention.ts}`;
   const queued = await store.transaction(function* (q) {
     const install = yield* installationSteps(q, home, mention.teamId);
     if (!install || (mention.appId && install.appId && mention.appId !== install.appId))
       return false;
     const { workspaceId, generation } = install;
-    const event = { type: "SlackDirectMessage", workspaceId, generation, mention };
+    const { teamId, channelId, threadTs, slackUserId, eventId } = mention;
+    const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
+    const conversation = yield* recordSlackConversationSteps(
+      q,
+      { ...threadOf(place), appId: mention.appId ?? install.appId ?? null, slackUserId, eventId },
+      at,
+    );
+    const event = {
+      type: "SlackDirectMessage",
+      workspaceId,
+      generation,
+      conversationId: conversation.id,
+      mention,
+    };
     if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
@@ -864,6 +896,7 @@ export function createSlackThreads<Profile>(options: {
         workspaceId: place.workspaceId,
         userId: issued.userId,
         id: randomBytes(12).toString("hex"),
+        dmChannelId: direct.channelId,
       };
       const key = memberKey(place.teamId, place.slackUserId);
       const links = yield* settingsWithPrefixSteps(q, `slack.member:${place.teamId}:`);
@@ -892,17 +925,42 @@ export function createSlackThreads<Profile>(options: {
     const current = await store.run((q) => installedSteps(q, home, direct));
     const code = DIRECT_LINK.exec(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim())?.[1];
     if (!current || !code) return;
+    if (!(await ownDirect(direct, context.signal))) return;
+    const outcome = await claim(direct, code);
+    if (outcome === "released") emitJobReady(store);
+    await notice(direct, dedupeKey, NOTICES[outcome], { dm: true });
+  }
+
+  async function ownDirect(direct: Place, signal: AbortSignal): Promise<boolean> {
     const call = await slackFor(direct.workspaceId);
-    const opened = await call("conversations.open", { users: direct.slackUserId }, context.signal)
+    const opened = await call("conversations.open", { users: direct.slackUserId }, signal)
       .then((result) => (result.channel as { id?: unknown } | undefined)?.id)
       .catch((caught: unknown) => {
         if (caught instanceof SlackApiError) return null;
         throw caught;
       });
-    if (opened !== direct.channelId) return;
-    const outcome = await claim(direct, code);
-    if (outcome === "released") emitJobReady(store);
-    await notice(direct, dedupeKey, NOTICES[outcome], { dm: true });
+    return opened === direct.channelId;
+  }
+
+  async function directMessage(place: Place, dedupeKey: string, signal: AbortSignal) {
+    const key = memberKey(place.teamId, place.slackUserId);
+    const stored = await store.run(function* (q) {
+      if (!(yield* installedSteps(q, home, place))) return null;
+      return parsed<Linked>(yield* readSettingSteps(q, key));
+    });
+    if (stored?.workspaceId !== place.workspaceId || stored.generation !== place.generation) return;
+    if (stored.dmChannelId === undefined) {
+      if (!(await ownDirect(place, signal))) return;
+      await store.transaction(function* (q) {
+        const link = parsed<Linked>(yield* readSettingSteps(q, key));
+        if (!link || link.id !== stored.id || link.dmChannelId !== undefined) return;
+        const verified = { ...link, dmChannelId: place.channelId };
+        yield* updateSettingSteps(q, key, () => JSON.stringify(verified), now());
+      });
+    }
+    const gate = await store.run((q) => directGateSteps(q, home, place));
+    if (gate.kind !== "member") return;
+    journal(`slack ${dedupeKey}: direct message (answers come with the next change)`);
   }
 
   async function react(call: SlackCall, place: Place, ts: string, signal: AbortSignal) {
@@ -939,7 +997,9 @@ export function createSlackThreads<Profile>(options: {
     };
     const { teamId, channelId, threadTs, slackUserId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
-    if (mention.direct) return pair({ ...place, threadTs: "" }, mention, dedupeKey!, context);
+    if (mention.direct && DIRECT_LINK.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim()))
+      return pair({ ...place, threadTs: "" }, mention, dedupeKey!, context);
+    if (mention.direct) return directMessage(place, dedupeKey!, context.signal);
     const gate = await store.run(function* (q): Steps<Gate> {
       if (yield* stoppedSteps(q, place, mention.ts)) return { kind: "ignore" };
       const unlinkedAt = yield* readSettingSteps(q, unlinkedKey(workspaceId, teamId, slackUserId));
