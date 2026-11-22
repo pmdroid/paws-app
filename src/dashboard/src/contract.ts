@@ -815,6 +815,7 @@ export interface StatusFollowUp {
   started?: boolean;
   state?: ItemState;
   path?: string;
+  pull?: { number: number; url: string; state: "open" | "merged" | "closed" };
 }
 
 export interface StatusFiledFrom {
@@ -1651,6 +1652,20 @@ function readFollowUp(input: unknown, path: string): StatusFollowUp {
       ? {}
       : { state: oneOf(string(body, "state", path), ITEM_STATES, `${path}.state`) }),
     ...(body.path === undefined ? {} : { path: text(body, "path", path) }),
+    ...(body.pull === undefined ? {} : { pull: readFollowUpPull(body.pull, `${path}.pull`) }),
+  };
+}
+
+function readFollowUpPull(input: unknown, path: string): NonNullable<StatusFollowUp["pull"]> {
+  const body = object(input, path);
+  return {
+    number: positiveInteger(body, "number", path),
+    url: text(body, "url", path),
+    state: oneOf(
+      string(body, "state", path),
+      ["open", "merged", "closed"] as const,
+      `${path}.state`,
+    ),
   };
 }
 
