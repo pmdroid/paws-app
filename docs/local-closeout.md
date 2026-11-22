@@ -73,4 +73,4 @@ After a restart that only resolves a merge conflict, the fixed commit runs only 
 
 A command check can also have `since`, the command to run when the check only has to cover changes made after an earlier commit. It is an argv like `exec` and needs exactly one element that is `{since}`, for example `since: ["bun", "scripts/affected-tests.ts", "{since}"]`. Only command checks accept `since`.
 
-Runners need a release that knows these keys. An older runner skips them and warns about unknown policy keys.
+Runners need version 0.1.98 or newer for these keys; Paws places work only on such runners.
