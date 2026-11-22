@@ -157,4 +157,34 @@ describe("rerun and since", () => {
       conflict: { run: ["team/test"], reviews: true },
     });
   });
+
+  test("select parses on a bun test command and every misuse is a policy error", () => {
+    const select = `    select:\n      runner: bun\n      always: [test/a.test.ts]\n      full_on: [bun.lock]\n      max_selected: 120\n`;
+    const loaded = load(`${BASE}${TEST}${select}`);
+    if (!loaded.ok || loaded.absent) throw new Error("expected a policy");
+    expect(loaded.policy.items[2]).toMatchObject({
+      select: {
+        runner: "bun",
+        always: ["test/a.test.ts"],
+        full_on: ["bun.lock"],
+        max_selected: 120,
+      },
+    });
+    const plain = load(`${BASE}${TEST}`);
+    expect(plain.ok && !plain.absent && plain.policy.digest).not.toBe(loaded.policy.digest);
+    const prefix = `${PUBLIC_POLICY_PATH}: `;
+    expect(failure(`${BASE}${TEST}    select: { runner: pytest }\n`)).toBe(
+      `${prefix}/items/2/select/runner must be equal to one of the allowed values`,
+    );
+    expect(failure(`${BASE}${TEST}${SINCE.replace("affected-tests.ts", "x")}${select}`)).toBe(
+      `${prefix}item test: select cannot be used with since`,
+    );
+    const shape = `${prefix}item test: select runner bun needs exec to start with "bun", "test" and pass only flags, as --flag=value`;
+    for (const exec of ['["bun", "run", "test"]', '["bun", "test", "test/a.test.ts"]']) {
+      expect(failure(`${BASE}${TEST.replace('["bun", "test"]', exec)}${select}`)).toBe(shape);
+    }
+    expect(failure(`${BASE}    select: { runner: bun }\n`)).toBe(
+      `${prefix}/items/1/select is only allowed on kind: command items`,
+    );
+  });
 });

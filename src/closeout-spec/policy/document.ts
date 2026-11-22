@@ -2,6 +2,7 @@ import { journalCaught } from "../../journal";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import { parse, YAMLParseError } from "yaml";
+import { selectExecError } from "../tests/bun";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
@@ -21,6 +22,7 @@ import type {
   RetryScope,
   RuleOnFail,
   Severity,
+  TestSelect,
 } from "../types";
 
 const YAML_OPTIONS = { uniqueKeys: true, version: "1.2" } as const;
@@ -43,7 +45,7 @@ export type PolicyParser = (text: string) => ParsedPolicy;
  */
 export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
   const schema = readSchema(schemaDocument);
-  const knowsSince = commandKnows(schema, "since");
+  const commandOnly = ["since", "select"].filter((key) => commandKnows(schema, key));
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addSchema(schema);
   const validators: Validators = {
@@ -66,9 +68,9 @@ export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
     }
     const unknownKeys: string[] = [];
     const known = knownKeys(value, schema, schema, "", unknownKeys);
-    const misplaced = knowsSince
-      ? unknownKeys.find((key) => /^\/items\/\d+\/since$/.test(key))
-      : undefined;
+    const misplaced = unknownKeys.find((key) =>
+      commandOnly.some((name) => new RegExp(`^/items/\\d+/${name}$`).test(key)),
+    );
     if (misplaced !== undefined) {
       return { ok: false, message: `${misplaced} is only allowed on kind: command items` };
     }
@@ -343,6 +345,20 @@ function decodeRerun(value: unknown): RerunPolicy {
   return rerun;
 }
 
+function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
+  if (!isRecord(value) || value.runner !== "bun")
+    throw new Error("document does not match the schema");
+  if (item.since !== undefined)
+    throw new Error(`item ${item.id}: select cannot be used with since`);
+  const shape = selectExecError(value.runner, item.exec);
+  if (shape !== undefined) throw new Error(`item ${item.id}: ${shape}`);
+  const select: TestSelect = { runner: "bun" };
+  if (value.always !== undefined) select.always = expectStrings(value.always);
+  if (value.full_on !== undefined) select.full_on = expectStrings(value.full_on);
+  if (value.max_selected !== undefined) select.max_selected = expectInt(value.max_selected);
+  return select;
+}
+
 function decodeImports(value: unknown): PolicyImport[] {
   if (!Array.isArray(value)) throw new Error("document does not match the schema");
   return value.map((entry) => {
@@ -383,6 +399,7 @@ function decodeItem(value: unknown): PolicyItem {
       }
       item.since = since;
     }
+    if (value.select !== undefined) item.select = decodeSelect(item, value.select);
     return item;
   }
   if (value.kind === "review") {

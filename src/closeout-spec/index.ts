@@ -220,3 +220,4 @@ export {
 } from "./session";
 export { useEvidenceRecordObjects } from "./evidence/index";
 export type { EvidenceRecordObjects } from "./evidence/index";
+export { runTestCheck, type FailedTest, type TestAdapter, type TestPlan } from "./tests";

@@ -141,6 +141,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         ...(item.ci !== undefined ? { ci: item.ci } : {}),
         ...(item.recheck === true ? { recheck: true } : {}),
         ...(item.since !== undefined ? { since: item.since } : {}),
+        ...(item.select !== undefined ? { select: item.select } : {}),
       },
       item.paths,
       item.except,

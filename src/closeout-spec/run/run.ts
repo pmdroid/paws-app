@@ -8,6 +8,7 @@ import type {
   CiResult,
   CommandExec,
   CommandRecord,
+  CommandRunResult,
   EvidenceRecord,
   EvidenceStore,
   Gate,
@@ -17,6 +18,7 @@ import type {
   ResolvedRule,
   ResolvedSetup,
   ReviewRecord,
+  TestSelect,
   TurnPass,
   CarriedPass,
 } from "../types";
@@ -59,6 +61,7 @@ import type {
   CloseoutProgressStep,
 } from "./progress";
 import { scrubText } from "./scrub";
+import { failedTestsText, runTestCheck, scrubFailures } from "../tests";
 
 /** Identity written on every command record this runner stores. */
 export const PAWS_CLOSEOUT_PRODUCER = {
@@ -602,18 +605,23 @@ async function runOne(
   });
   const outputs = outputWriter(input.progress, identity, item.id);
   let exec: Awaited<ReturnType<typeof runner.runLogged>>;
-  try {
-    exec = await runner.runLogged({
+  const run = (argv: string[], timeoutSeconds: number) =>
+    runner.runLogged({
       cwd,
       itemId: item.id,
-      argv: item.exec,
-      timeoutSeconds: item.timeoutSeconds,
+      argv,
+      timeoutSeconds,
       logFile: join(input.evidenceDir, ...relative.split("/")),
       artifactPath: relative,
       expectedHead: head,
       onOutput: outputs.write,
       ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
     });
+  try {
+    exec =
+      item.kind === "command" && item.select && !input.commandRunner
+        ? await runSelected({ ...item, select: item.select }, cwd, base, head, input, run)
+        : await run(item.exec, item.timeoutSeconds);
   } finally {
     await outputs.drained();
   }
@@ -646,7 +654,12 @@ async function runOne(
   await input.progress?.step(identity, {
     ...blankStep(item, ordinal),
     state: failed ? "failed" : "passed",
-    detail: execMessage(record.exec, item.kind === "setup"),
+    detail: [
+      execMessage(record.exec, item.kind === "setup"),
+      failedTestsText(exec.failedTests ?? []),
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n"),
     attempt,
     startedAt,
     finishedAt: startedAt + exec.durationMs,
@@ -658,6 +671,48 @@ async function runOne(
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
   return record.exec;
+}
+
+const NOT_RUN: CommandRunResult = {
+  argv: [],
+  exitCode: null,
+  timedOut: true,
+  dirty: false,
+  headMoved: false,
+  durationMs: 0,
+  truncated: false,
+  artifacts: [],
+};
+
+async function runSelected(
+  item: ResolvedCommand & { select: TestSelect },
+  cwd: string,
+  base: string,
+  head: string,
+  input: CloseoutRunInput,
+  run: (argv: string[], timeoutSeconds: number) => Promise<CommandRunResult>,
+): Promise<CommandRunResult> {
+  const tests = await runTestCheck({
+    item,
+    cwd,
+    base,
+    head,
+    env: scrubCommandEnv(input.env),
+    execute: async (invocation, seconds) => {
+      const ran = await run(invocation.argv, Math.max(1, Math.floor(seconds)));
+      return { ...ran, code: ran.exitCode ?? 127 };
+    },
+  });
+  const last = tests.results.at(-1) ?? NOT_RUN;
+  const failed = scrubFailures(tests.failures, (text) =>
+    scrubText(text, credentialSecrets(input.env)),
+  );
+  return {
+    ...last,
+    argv: item.exec,
+    exitCode: tests.ok ? 0 : last.exitCode || 1,
+    failedTests: tests.problem ? [{ message: tests.problem, kind: "error" }, ...failed] : failed,
+  };
 }
 
 /**

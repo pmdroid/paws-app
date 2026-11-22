@@ -259,5 +259,6 @@ export function loggedSessionCloseout(
     artifacts: [
       { path: request.artifactPath, sha256: createHash("sha256").update(bytes).digest("hex") },
     ],
+    ...(Array.isArray(result.failedTests) ? { failedTests: result.failedTests } : {}),
   };
 }

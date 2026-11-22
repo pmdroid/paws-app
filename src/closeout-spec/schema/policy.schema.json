@@ -115,6 +115,21 @@
           "minItems": 1,
           "maxItems": 32,
           "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "select": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runner"],
+          "properties": {
+            "runner": { "enum": ["bun"] },
+            "always": {
+              "type": "array",
+              "maxItems": 256,
+              "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            },
+            "full_on": { "$ref": "#/$defs/paths" },
+            "max_selected": { "type": "integer", "minimum": 1, "maximum": 100000 }
+          }
         }
       }
     },
