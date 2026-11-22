@@ -238,7 +238,6 @@ import {
   type CandidateIdentity,
   type CiResult,
   type CarriedPass,
-  type SinceRun,
   type TurnPass,
   candidatePolicyDigests,
   ciMappings,
@@ -639,7 +638,7 @@ import { turnPasses } from "./turn-passes";
 import { closeoutFocus } from "./closeout-focus";
 import { incompleteReport } from "./incomplete-report";
 import { conflictCarried, conflictChecksFor, type ConflictChecks } from "./conflict-checks";
-import { ciCarried, ciChecksFor, type CiChecks } from "./ci-checks";
+import { ciCarried, ciChecksFor, type CiChecks, type CiSince } from "./ci-checks";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -4035,7 +4034,7 @@ export class Orchestrator {
             : null,
         briefs: Boolean(comments?.text || suggestions),
       });
-      const found = await ciChecksFor(this.store, {
+      const ci = await ciChecksFor(this.store, {
         itemId: item.id,
         reason: returned?.reason,
         policy:
@@ -4046,7 +4045,6 @@ export class Orchestrator {
               )
             : null,
       });
-      const ci = found && this.options.remoteExecution ? { ...found, since: [] } : found;
       const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict, ci);
       const draft = await this.savedDraft(item.id);
       let prompt = implementPrompt({
@@ -4817,7 +4815,7 @@ export class Orchestrator {
     fromCi: readonly CiResult[] = [],
     fromTurn: readonly TurnPass[] = [],
     carried: readonly CarriedPass[] = [],
-    since?: SinceRun,
+    since?: CiSince,
   ): Promise<CloseoutVerdict> {
     const repository = await this.repositoryForItem(item);
     const mirror =
@@ -4915,6 +4913,7 @@ export class Orchestrator {
           // CI's results are for the head it ran on; a fixed head runs every check.
           fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
           carried: commit === head ? carried.map((entry) => entry.id) : [],
+          ...(commit === head && since ? { since } : {}),
         });
         runnerChecks.set(commit, checks);
       }
@@ -5091,6 +5090,7 @@ export class Orchestrator {
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
       carried?: readonly string[];
+      since?: CiSince;
       rulesFirst: boolean;
     },
   ): Promise<void> {
@@ -5137,6 +5137,17 @@ export class Orchestrator {
             if (activity) activity.since = this.now();
           },
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
+          ...(input.since
+            ? {
+                closeoutFocus: {
+                  scope: "failed" as const,
+                  head: input.since.head,
+                  policyDigest: input.since.policyDigest,
+                  passed: [],
+                  since: input.since.ids,
+                },
+              }
+            : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
@@ -6831,7 +6842,7 @@ export class Orchestrator {
     head: string,
     ci: CiChecks,
     fromTurn: readonly TurnPass[],
-  ): Promise<{ carried?: CarriedPass[]; since?: SinceRun } | undefined> {
+  ): Promise<{ carried?: CarriedPass[]; since: CiSince } | undefined> {
     const repository = await this.repositoryForItem(item);
     if (!repository) return undefined;
     const policy = mainRerun(
@@ -6855,7 +6866,7 @@ export class Orchestrator {
     );
     return {
       ...(carried.length > 0 ? { carried } : {}),
-      ...(ci.since.length > 0 ? { since: { head: ci.head, ids: ci.since } } : {}),
+      since: { head: ci.head, ids: ci.since, policyDigest: ci.policyDigest },
     };
   }
 

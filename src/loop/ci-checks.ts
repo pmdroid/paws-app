@@ -3,6 +3,7 @@ import {
   type CarriedPass,
   type RerunCommand,
   type RerunPolicy,
+  type SinceRun,
   type TurnPass,
 } from "../closeout";
 import {
@@ -12,6 +13,8 @@ import {
   type Db,
 } from "../db";
 import { ciPattern } from "./ci-recheck";
+
+export type CiSince = SinceRun & { policyDigest: string };
 
 export type CiChecks = {
   head: string;
