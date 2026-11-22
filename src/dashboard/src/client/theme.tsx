@@ -66,13 +66,21 @@ function fieldValue(field: HTMLElement): [string, string] {
   return [text, editableInitial.get(field) ?? text];
 }
 
+function uniqueFields(fields: HTMLElement[]): Map<string, HTMLElement> {
+  const byKey = new Map<string, HTMLElement | null>();
+  for (const field of fields) {
+    const key = fieldKey(field);
+    if (key) byKey.set(key, byKey.has(key) ? null : field);
+  }
+  return new Map([...byKey].filter((entry): entry is [string, HTMLElement] => entry[1] !== null));
+}
+
 function captureFields(root: globalThis.Element): HeldField[] {
   const active = document.activeElement;
-  return editableFields(root).flatMap((field) => {
-    const key = fieldKey(field);
+  return [...uniqueFields(editableFields(root))].flatMap(([key, field]) => {
     const [value, initial] = fieldValue(field);
     const focused = field === active;
-    if (!key || (!focused && value === initial)) return [];
+    if (!focused && value === initial) return [];
     let selection: HeldField["selection"] = null;
     try {
       if (focused && textField(field))
@@ -89,11 +97,7 @@ function restoreFields(root: globalThis.Element, held: HeldField[]): void {
   for (const field of fields)
     if (!textField(field)) editableInitial.set(field, field.textContent ?? "");
   if (held.length === 0) return;
-  const byKey = new Map<string, HTMLElement>();
-  for (const field of fields) {
-    const key = fieldKey(field);
-    if (key && !byKey.has(key)) byKey.set(key, field);
-  }
+  const byKey = uniqueFields(fields);
   for (const entry of held) {
     const field = byKey.get(entry.key);
     if (!field) continue;

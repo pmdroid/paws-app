@@ -103,3 +103,29 @@ test("a focused field whose default follows the draft keeps its caret", () => {
   expect(window.document.activeElement as unknown).toBe(next);
   expect([next.value, next.selectionStart, next.selectionEnd]).toEqual(["hello world", 5, 5]);
 });
+
+test("fields that share an identity are left alone", () => {
+  const forms = '<form data-account-token><input name="token"></form>'.repeat(2);
+  renderMarkup(root, forms);
+  const second = root.querySelectorAll<HTMLInputElement>('[name="token"]')[1]!;
+  second.focus();
+  second.value = "secret";
+  renderMarkup(root, forms);
+  const fields = [...root.querySelectorAll<HTMLInputElement>('[name="token"]')];
+  expect(fields.map((input) => input.value)).toEqual(["", ""]);
+  expect(fields).not.toContain(window.document.activeElement as unknown as HTMLInputElement);
+});
+
+test("account forms keyed by account keep each account's typed token", () => {
+  const forms = ["A1", "A2"]
+    .map((id) => `<form data-account-token="${id}"><input name="token"></form>`)
+    .join("");
+  renderMarkup(root, forms);
+  const second = root.querySelectorAll<HTMLInputElement>('[name="token"]')[1]!;
+  second.focus();
+  second.value = "secret";
+  renderMarkup(root, forms);
+  const fields = [...root.querySelectorAll<HTMLInputElement>('[name="token"]')];
+  expect(fields.map((input) => input.value)).toEqual(["", "secret"]);
+  expect(window.document.activeElement as unknown).toBe(fields[1]);
+});
