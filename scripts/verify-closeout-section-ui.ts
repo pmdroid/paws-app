@@ -6,6 +6,7 @@ import type { StatusCheck } from "../src/dashboard/src/contract";
 import {
   fixtureProvider,
   fullStatusFixture,
+  withOpenP1,
   withRuleResults,
 } from "../src/dashboard/test/fixtures";
 
@@ -13,7 +14,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const full = withRuleResults(fullStatusFixture());
+const full = withOpenP1(withRuleResults(fullStatusFixture()));
 full.source = "live";
 full.risk = {
   tier: "normal",
@@ -23,32 +24,6 @@ full.risk = {
   paths: [],
   securityReview: null,
 };
-const failed = full.verdicts.find((entry) => entry.itemId === "ENG-100")!;
-failed.reviews = [
-  {
-    id: "independent-review",
-    rounds: [
-      {
-        attempt: 3,
-        baseSha: "a1c9e07",
-        headSha: "91fd0c4",
-        failOn: "P1",
-        findings: [
-          {
-            severity: "P1",
-            location: "src/retention/job.ts:44",
-            explanation: "Rows under legal hold are deleted by the nightly job.",
-            evidence: "job.ts:44 deletes before it reads the hold flag.",
-            preExisting: false,
-            blocking: true,
-            since: null,
-          },
-        ],
-        fixed: [],
-      },
-    ],
-  },
-];
 const running = structuredClone(full.verdicts.find((entry) => entry.itemId === "ENG-101")!);
 running.itemId = "ENG-102";
 running.runId = full.runs.find((entry) => entry.itemId === "ENG-102")?.id;

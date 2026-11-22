@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { StatusCheck } from "../contract";
-import { fullStatusFixture, openedView, pageData, withRuleResults } from "../../test/fixtures";
+import {
+  fullStatusFixture,
+  openedView,
+  pageData,
+  withOpenP1,
+  withRuleResults,
+} from "../../test/fixtures";
 import { emptyCloseoutView, type CloseoutView } from "./closeout";
 import { render } from "./render";
 
@@ -50,34 +56,7 @@ describe("the issue page's Closeout section", () => {
   });
 
   test("a failing check, an open P1 finding and a broken rule show above the folded details", () => {
-    const full = withRuleResults(fullStatusFixture());
-    const verdict = full.verdicts.find((entry) => entry.itemId === "ENG-100")!;
-    verdict.reviews = [
-      {
-        id: "independent-review",
-        rounds: [
-          {
-            attempt: 3,
-            baseSha: "a1c9e07",
-            headSha: "91fd0c4",
-            failOn: "P1",
-            findings: [
-              {
-                severity: "P1",
-                location: "src/retention/job.ts:44",
-                explanation: "Rows under legal hold are deleted.",
-                evidence: "job.ts:44 skips the hold check.",
-                preExisting: false,
-                blocking: true,
-                since: null,
-              },
-            ],
-            fixed: [],
-          },
-        ],
-      },
-    ];
-    const html = section(issuePage(full, "ENG-100"));
+    const html = section(issuePage(withOpenP1(withRuleResults(fullStatusFixture())), "ENG-100"));
     const blockers = [...html.matchAll(/<li data-closeout-blocker>(.*?)<\/li>/g)].map((match) =>
       text(match[1]!),
     );
