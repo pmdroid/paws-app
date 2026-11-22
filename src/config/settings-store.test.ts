@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { loadConfigFile, parseConfigToml } from "./file";
 import {
   readConfigText,
-  retiredConfigSections,
   updateConfigText,
   useMemorySettings,
   useMemorySettingsByDefault,
@@ -79,7 +78,6 @@ test("every section the settings writer emits parses again", async () => {
   for (const name of WRITER_SECTIONS) expect(saved).toContain(`[${name}]`);
   expect(saved).not.toContain("[agents.grok]");
   expect(() => parseConfigToml(saved)).not.toThrow();
-  expect(retiredConfigSections(configPath)).toEqual([]);
 });
 
 test("a config.toml on disk is never read or written", async () => {
@@ -122,21 +120,13 @@ test("with no store and no default store, a save rejects and nothing is kept", a
   }
 });
 
-test("stored [project_memory] settings are a retired section", async () => {
-  const { configPath } = await storedSettings(
+test("a stored unknown section is not read and is gone after any save", async () => {
+  const { configPath, stored } = await storedSettings(
     "[merge]\nci_fix_attempts = 4\n\n[project_memory]\nwork_summary = true\n",
   );
   expect(readConfigText(configPath)).toBe("[merge]\nci_fix_attempts = 4\n");
-  expect(retiredConfigSections(configPath)).toEqual(["project_memory"]);
-});
-
-test("a save drops a retired section the stored settings still hold", async () => {
-  const { configPath, stored } = await storedSettings(
-    '[agents]\nimplementer = "codex"\n\n[agents.grok]\npath = "/usr/bin/grok"\n',
-  );
-  expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
   await updateConfigText(configPath, (current) => current);
-  expect(stored()).toBe('[agents]\nimplementer = "codex"\n');
+  expect(stored()).toBe("[merge]\nci_fix_attempts = 4\n");
 });
 
 test("memory settings seed loadConfigFile with no file on disk and keep a save", async () => {

@@ -110,8 +110,6 @@ import {
   readMergeSettings,
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
-  describeRetiredSections,
-  retiredConfigSections,
   useSettingsStore,
   type EnvSource,
   type PawsEnv,
@@ -638,8 +636,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     clearInterval(settingsTimer);
     savedSettings.release();
   };
-  const retiredSections = retiredConfigSections(paths.configFile);
-  if (retiredSections.length > 0) journal(describeRetiredSections(retiredSections));
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
   } catch (error) {

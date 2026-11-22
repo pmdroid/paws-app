@@ -272,7 +272,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "storage",
   ].map((page) =>
     api(
-      page === "brief/preview" ? "POST" : page === "agents" ? "GET PUT DELETE" : "GET PUT",
+      page === "brief/preview" ? "POST" : "GET PUT",
       `/api/settings/${page}`,
       "preserved",
       "src/settings",
