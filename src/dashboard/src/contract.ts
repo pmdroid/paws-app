@@ -578,39 +578,6 @@ export interface StatusCloseoutAttempt {
   skippedRules?: string[];
 }
 
-export interface StatusAgentCloseout {
-  itemId: string;
-  runId: string;
-  maxAttempts: number | null;
-  blocked: string | null;
-  updatedAt: string;
-  attempts: StatusCloseoutAttempt[];
-  steps: StatusAgentCloseoutStep[];
-  endedAt?: string;
-  continuesIn?: string;
-}
-
-export const AGENT_CLOSEOUT_TOOLS = ["get_closeout", "run_closeout"] as const;
-export const AGENT_CLOSEOUT_STEP_STATES = [
-  "reported",
-  "running",
-  "passed",
-  "failed",
-  "exhausted",
-  "cancelled",
-] as const;
-export type AgentCloseoutTool = (typeof AGENT_CLOSEOUT_TOOLS)[number];
-export type AgentCloseoutStepState = (typeof AGENT_CLOSEOUT_STEP_STATES)[number];
-
-export interface StatusAgentCloseoutStep {
-  at: string;
-  tool: AgentCloseoutTool;
-  checkId: string | null;
-  state: AgentCloseoutStepState;
-  attempt: number | null;
-  headSha: string | null;
-}
-
 export const CI_CHECK_STATES = ["passed", "failed", "running", "skipped"] as const;
 export const CI_LOG_SOURCES = ["actions", "summary"] as const;
 /** What Paws did after a failed CI read: sent it back to the agent, asked in Linear, or stopped. */
@@ -798,7 +765,6 @@ export interface IssueDetailResponse {
   runs: StatusRun[];
   questions: StatusQuestion[];
   verdicts: StatusVerdict[];
-  agentCloseout: StatusAgentCloseout[];
   evidence: StatusEvidence[];
   ciRounds: StatusCiRound[];
   mergeQueue: StatusMergeEntry[];
@@ -853,18 +819,14 @@ export function issuePath(id: string): string {
   return `${ISSUES_API_PATH}/${encodeURIComponent(id)}`;
 }
 
-/**
- * The log path of check `checkId` in Closeout attempt `attempt` of the issue `issueId`. `run`
- * names the run whose agent Closeout holds the check; without it the check is Paws' Closeout.
- */
+/** The log path of check `checkId` in Closeout attempt `attempt` of the issue `issueId`. */
 export function issueCheckLogPath(
   issueId: string,
   attempt: number,
   checkId: string,
-  options: { run?: string | null; full?: boolean; ci?: boolean } = {},
+  options: { full?: boolean; ci?: boolean } = {},
 ): string {
   const query = new URLSearchParams();
-  if (options.run) query.set("run", options.run);
   if (options.ci) query.set("ci", "1");
   if (options.full) query.set("full", "1");
   const search = query.toString() ? `?${query.toString()}` : "";
@@ -925,7 +887,6 @@ export function parseIssueDetailResponse(input: unknown): IssueDetailParseResult
         runs: array(body, "runs", path).map((entry, index) => readRun(entry, index)),
         questions: array(body, "questions", path).map((entry, index) => readQuestion(entry, index)),
         verdicts: array(body, "verdicts", path).map((entry, index) => readVerdict(entry, index)),
-        agentCloseout: list("agentCloseout", readAgentCloseout),
         evidence: list("evidence", readEvidence),
         ciRounds: list("ciRounds", readCiRound),
         mergeQueue: array(body, "mergeQueue", path).map((entry, index) =>
@@ -1712,34 +1673,6 @@ function readCiRound(input: unknown, path: string): StatusCiRound {
         logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
       };
     }),
-  };
-}
-
-function readAgentCloseout(input: unknown, path: string): StatusAgentCloseout {
-  const body = object(input, path);
-  return {
-    itemId: text(body, "itemId", path),
-    runId: text(body, "runId", path),
-    maxAttempts: optionalCount(body, "maxAttempts", path),
-    blocked: optionalText(body, "blocked"),
-    updatedAt: dateString(body, "updatedAt", path),
-    attempts: array(body, "attempts", path).map((entry, attempt) =>
-      readAttempt(entry, `${path}.attempts[${attempt}]`),
-    ),
-    steps: array(body, "steps", path).map((entry, step) => {
-      const at = `${path}.steps[${step}]`;
-      const row = object(entry, at);
-      return {
-        at: dateString(row, "at", at),
-        tool: oneOf(string(row, "tool", at), AGENT_CLOSEOUT_TOOLS, `${at}.tool`),
-        checkId: optionalText(row, "checkId"),
-        state: oneOf(string(row, "state", at), AGENT_CLOSEOUT_STEP_STATES, `${at}.state`),
-        attempt: optionalCount(row, "attempt", at),
-        headSha: optionalText(row, "headSha"),
-      };
-    }),
-    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
-    ...(body.continuesIn === undefined ? {} : { continuesIn: text(body, "continuesIn", path) }),
   };
 }
 

@@ -615,7 +615,7 @@ async function issueCheckLogResponse(
 ): Promise<Response> {
   const read = await readCheckLog(request, provider, segments);
   if (read === null) return json({ error: "Not found" }, 404);
-  const { id, attempt, checkId, run, output, full, ci } = read;
+  const { id, attempt, checkId, output, full, ci } = read;
   const stdout = full ? output.stdout : tail(output.stdout);
   const stderr = full ? output.stderr : tail(output.stderr);
   const truncated = stdout !== output.stdout || stderr !== output.stderr;
@@ -626,7 +626,7 @@ async function issueCheckLogResponse(
     ...(output.findings !== undefined ? { findings: output.findings } : {}),
     ...(output.detail !== undefined ? { detail: output.detail } : {}),
     truncated,
-    fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { run, full: true, ci }) : null,
+    fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { full: true, ci }) : null,
   } satisfies IssueCheckLogResponse);
   if (!parsed.ok) return json({ error: parsed.error }, 500);
   return conditional(sizes, request, parsed.response);
@@ -640,7 +640,6 @@ async function readCheckLog(
   id: string;
   attempt: number;
   checkId: string;
-  run: string | null;
   full: boolean;
   ci: boolean;
   output: CheckOutput;
@@ -650,7 +649,6 @@ async function readCheckLog(
   const checkId = itemId(rawCheck ?? "");
   const attempt = /^[1-9]\d{0,5}$/.test(rawAttempt ?? "") ? Number(rawAttempt) : null;
   const query = new URL(request.url).searchParams;
-  const run = query.get("run");
   if (
     segments.length !== 6 ||
     attempts !== "attempts" ||
@@ -659,21 +657,19 @@ async function readCheckLog(
     id === null ||
     checkId === null ||
     attempt === null ||
-    (run !== null && !/^[^/\\\0]{1,128}$/.test(run)) ||
     provider.checkLog === undefined
   )
     return null;
   const ci = query.get("ci") === "1";
-  if (query.has("ci") && (!ci || run !== null)) return null;
+  if (query.has("ci") && !ci) return null;
   const output = await provider.checkLog({
     itemId: id,
     attempt,
     checkId,
-    run,
     ...(ci ? { ci } : {}),
   });
   if (output === null) return null;
-  return { id, attempt, checkId, run, ci, full: query.get("full") === "1", output };
+  return { id, attempt, checkId, ci, full: query.get("full") === "1", output };
 }
 
 /** The last `CHECK_LOG_TAIL_BYTES` of `output`, starting on a whole UTF-8 character. */

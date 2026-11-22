@@ -7,14 +7,9 @@ import type { FakeScript } from "../src/acp/testing/script";
 import {
   beginImplementRun,
   insertQueuedItem,
-  insertRun,
   listAgentCloseout,
   recordAgentCloseout,
-  releaseRunCapacity,
-  setCurrentRun,
 } from "../src/db";
-import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
-import { parseIssueDetailResponse } from "../src/dashboard/src/contract";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
@@ -37,7 +32,7 @@ afterEach(() => {
 
 const TOKEN = `ghp_${"x".repeat(36)}`;
 
-test("the agent's get_closeout, failed run_closeout, fix and passing run_closeout reach the status API in order", async () => {
+test("the agent's get_closeout, failed run_closeout, fix and passing run_closeout are recorded in order", async () => {
   const home = tempHome();
   homes.push(home);
   const workspace = join(home, "workspace");
@@ -81,7 +76,6 @@ if (!text.includes("fixed")) {
   git(workspace, ["add", "."]);
   git(workspace, ["commit", "-m", "init"]);
   git(workspace, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
-  const head = git(workspace, ["rev-parse", "HEAD"]);
 
   const db = await openStore();
   await insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
@@ -127,261 +121,7 @@ if (!text.includes("fixed")) {
   expect((await listAgentCloseout(db, [run.id])).map((event) => event.sequence)).toEqual([
     1, 2, 3, 4, 5, 6, 7, 8,
   ]);
-
-  const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
-  const body = JSON.stringify(await provider.issue("ENG-7"));
-  expect(body).not.toContain(TOKEN);
-  const detail = parseIssueDetailResponse(JSON.parse(body));
-  if (!detail.ok) throw new Error(detail.error);
-  const agent = detail.response.agentCloseout.find((entry) => entry.runId === run.id);
-  expect(agent).toMatchObject({ itemId: "ENG-7", runId: run.id, blocked: null });
-  expect(agent!.attempts.at(-1)).toMatchObject({ decision: "accepted", headSha: head });
-  expect(agent!.maxAttempts).toBe(3);
-  expect(agent!.steps.map((step) => [step.tool, step.checkId, step.state, step.attempt])).toEqual([
-    ["get_closeout", null, "reported", null],
-    ["run_closeout", "install", "running", 1],
-    ["run_closeout", "install", "passed", 1],
-    ["run_closeout", "test", "running", 1],
-    ["run_closeout", "test", "failed", 1],
-    ["run_closeout", "test", "running", 2],
-    ["run_closeout", "test", "passed", 2],
-    ["get_closeout", null, "reported", null],
-  ]);
-  expect(agent!.steps.every((step) => step.headSha === head)).toBe(true);
-
-  expect(agent!.attempts.map((attempt) => attempt.decision)).toEqual(["rejected", "accepted"]);
-  const [first, second] = agent!.attempts;
-  const failed = first!.checks.find((check) => check.id === "test")!;
-  expect(failed).toMatchObject({ state: "failed", attempt: 1, exitCode: 1 });
-  expect(failed.stdout ?? null).toBeNull();
-  expect(failed.stderr ?? null).toBeNull();
-  const log = (await provider.checkLog({
-    itemId: "ENG-7",
-    attempt: first!.number,
-    checkId: "test",
-    run: run.id,
-  }))!;
-  expect(log.stderr).toContain("expected fixed, received broken");
-  expect(log.stdout).toContain("checking main.ts");
-  expect(log.stdout).not.toContain(TOKEN);
-  expect(second!.checks.map((check) => [check.id, check.state, check.attempt])).toEqual([
-    ["install", "passed", 1],
-    ["test", "passed", 2],
-  ]);
 }, 30_000);
-
-test("a running check reports how long it has run and a later stale report sends it back to pending", async () => {
-  const db = await openStore();
-  await insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
-  const { run } = await beginImplementRun(db, "ENG-8", 2);
-  const head = "a".repeat(40);
-  const attempt = {
-    head,
-    id: "lint",
-    kind: "command",
-    command: "bun run lint",
-    attempt: 1,
-    maxAttempts: null,
-  };
-  await recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
-  const running = (await createLiveStatusProvider(db, {
-    now: () => new Date(25_000),
-  }).issue("ENG-8"))!.agentCloseout.find((entry) => entry.runId === run.id)!;
-  expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
-    state: "running",
-    elapsedMs: 15_000,
-    active: true,
-  });
-  await recordAgentCloseout(
-    db,
-    run.id,
-    "ENG-8",
-    {
-      type: "finished",
-      ...attempt,
-      state: "passed",
-      exitCode: 0,
-      timedOut: false,
-      durationMs: 900,
-      stdout: "x".repeat(70_000),
-      stderr: "",
-      truncated: false,
-    },
-    26_000,
-  );
-  await recordAgentCloseout(
-    db,
-    run.id,
-    "ENG-8",
-    {
-      type: "report",
-      head: "b".repeat(40),
-      maxAttempts: null,
-      checks: [
-        {
-          id: "lint",
-          kind: "command",
-          command: "bun run lint",
-          status: "stale",
-          failedAttempts: 0,
-        },
-      ],
-      blocked: null,
-    },
-    27_000,
-  );
-  const stale = (await createLiveStatusProvider(db).issue("ENG-8"))!.agentCloseout.find(
-    (entry) => entry.runId === run.id,
-  )!;
-  expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
-  const stored = (await listAgentCloseout(db, [run.id]))[1]!.progress;
-  expect(stored.type === "finished" && stored.truncated).toBe(true);
-  expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
-});
-
-test("a check still running when its run ended stops at the run's end and points to the task's newer run", async () => {
-  const db = await openStore();
-  await insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
-  const { run } = await beginImplementRun(db, "ENG-10", 2);
-  await recordAgentCloseout(
-    db,
-    run.id,
-    "ENG-10",
-    {
-      type: "started",
-      head: "a".repeat(40),
-      id: "test",
-      kind: "command",
-      command: "bun test",
-      attempt: 1,
-      maxAttempts: 3,
-    },
-    10_000,
-  );
-  await releaseRunCapacity(db, run.id, 575_000);
-  const next = await insertRun(db, { itemId: "ENG-10", now: 600_000 });
-  await setCurrentRun(db, "ENG-10", next.id);
-  await recordAgentCloseout(
-    db,
-    next.id,
-    "ENG-10",
-    {
-      type: "started",
-      head: "b".repeat(40),
-      id: "lint",
-      kind: "command",
-      command: "bun run lint",
-      attempt: 1,
-      maxAttempts: 3,
-    },
-    610_000,
-  );
-  const parsed = parseIssueDetailResponse(
-    JSON.parse(
-      JSON.stringify(
-        await createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).issue("ENG-10"),
-      ),
-    ),
-  );
-  if (!parsed.ok) throw new Error(parsed.error);
-  const ended = parsed.response.agentCloseout.find((entry) => entry.runId === run.id)!;
-  expect(ended.endedAt).toBe(new Date(575_000).toISOString());
-  expect(ended.continuesIn).toBe(next.id);
-  expect(ended.attempts.at(-1)!.checks[0]).toMatchObject({
-    state: "stopped",
-    elapsedMs: 565_000,
-    active: false,
-    detail: "Stopped: the run ended before this check finished.",
-  });
-  const current = parsed.response.agentCloseout.find((entry) => entry.runId === next.id)!;
-  expect(current.endedAt).toBeUndefined();
-  expect(current.continuesIn).toBeUndefined();
-  expect(current.attempts.at(-1)!.checks[0]).toMatchObject({
-    state: "running",
-    elapsedMs: 2_990_000,
-  });
-});
-
-test("an evidence check takes its state from the report and lets the round finish", async () => {
-  const db = await openStore();
-  await insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
-  const { run } = await beginImplementRun(db, "ENG-9", 2);
-  const head = "c".repeat(40);
-  const proof = {
-    id: "visual-proof",
-    kind: "evidence",
-    command: "Screenshot each changed screen.",
-    failedAttempts: 0,
-  };
-  const lint = { head, id: "lint", kind: "command", command: "bun run lint", attempt: 1 };
-  const report = async (lintStatus: string, status: string, at: number) =>
-    await recordAgentCloseout(
-      db,
-      run.id,
-      "ENG-9",
-      {
-        type: "report",
-        head,
-        maxAttempts: null,
-        checks: [
-          {
-            id: "lint",
-            kind: "command",
-            command: "bun run lint",
-            status: lintStatus,
-            failedAttempts: 0,
-          },
-          { ...proof, status },
-        ],
-        blocked: null,
-      },
-      at,
-    );
-  await report("missing", "missing", 10_000);
-  await recordAgentCloseout(
-    db,
-    run.id,
-    "ENG-9",
-    { type: "started", ...lint, maxAttempts: null },
-    11_000,
-  );
-  await recordAgentCloseout(
-    db,
-    run.id,
-    "ENG-9",
-    {
-      type: "finished",
-      ...lint,
-      maxAttempts: null,
-      state: "passed",
-      exitCode: 0,
-      timedOut: false,
-      durationMs: 900,
-      stdout: "",
-      stderr: "",
-      truncated: false,
-    },
-    12_000,
-  );
-  const attemptOf = async () => {
-    const parsed = parseIssueDetailResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issue("ENG-9"))),
-    );
-    if (!parsed.ok) throw new Error(parsed.error);
-    return parsed.response.agentCloseout.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;
-  };
-  expect((await attemptOf()).checks.find((check) => check.id === "visual-proof")).toMatchObject({
-    kind: "evidence",
-    state: "pending",
-  });
-  expect((await attemptOf()).decision).toBe("running");
-  await report("passed", "passed", 13_000);
-  expect((await attemptOf()).checks.find((check) => check.id === "visual-proof")).toMatchObject({
-    kind: "evidence",
-    state: "passed",
-  });
-  expect((await attemptOf()).decision).toBe("accepted");
-});
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });

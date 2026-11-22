@@ -62,7 +62,6 @@ function fixture(
   item.visualReviews = reviews;
   run.state = state === "awaiting_input" ? "awaiting_input" : "running";
   snapshot.verdicts = snapshot.verdicts.filter((verdict) => verdict.itemId !== item.id);
-  snapshot.agentCloseout = [];
   snapshot.evidence = [shot("shot-1", "a".repeat(40)), shot("shot-2", "b".repeat(40))].map(
     (entry) => ({ ...entry, itemId: item.id, runId: run.id }),
   );

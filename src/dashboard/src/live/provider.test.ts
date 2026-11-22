@@ -1600,7 +1600,6 @@ describe("live status provider", () => {
       itemId,
       attempt,
       checkId,
-      run: null,
     });
     expect(await provider.checkLog(request("ENG-11", "unit"))).toEqual({
       stdout: "ENG-11 out",
@@ -1609,7 +1608,6 @@ describe("live status provider", () => {
     // `lint` is a check of ENG-12, not of ENG-11.
     expect(await provider.checkLog(request("ENG-11", "lint"))).toBeNull();
     expect(await provider.checkLog(request("ENG-11", "unit", 2))).toBeNull();
-    expect(await provider.checkLog({ ...request("ENG-11", "unit"), run: "other-run" })).toBeNull();
     // Outside the reader's sessions, as if the issue did not exist.
     expect(await provider.checkLog(request("ENG-13", "unit"))).toBeNull();
 
@@ -1828,7 +1826,7 @@ describe("live status provider", () => {
     expect(body.fullPath).toBe(check.logPath!);
     const restricted = createLiveStatusProvider(db, { sessionIds: ["other"] });
     expect(
-      await restricted.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "1", run: null, ci: true }),
+      await restricted.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "1", ci: true }),
     ).toBeNull();
   });
 

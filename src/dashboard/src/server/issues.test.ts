@@ -39,7 +39,6 @@ function detailOf(id: string, generatedAt = new Date().toISOString()): IssueDeta
     runs: [],
     questions: [],
     verdicts: [],
-    agentCloseout: [],
     evidence: [],
     ciRounds: [],
     mergeQueue: [],
@@ -144,11 +143,11 @@ describe("issue resource routes", () => {
     expect(calls).toEqual([]);
   });
 
-  test("a check log is the last 64 KiB of each stream, with the run selector and full=1", async () => {
+  test("a check log is the last 64 KiB of each stream, with full=1", async () => {
     const stdout = `${"o".repeat(CHECK_LOG_TAIL_BYTES)}tail-out`;
     const stderr = "short";
     const { logs, provider } = recording({ test: { stdout, stderr } });
-    const path = "/api/issues/PAS-1/attempts/2/checks/test/log?run=run-9";
+    const path = "/api/issues/PAS-1/attempts/2/checks/test/log";
     const tailed = (await handleStatusRequest(get(path), { provider, responseSizes: NO_SIZES }))!;
     expect(tailed.status).toBe(200);
     expect(tailed.headers.get("ETag")).toMatch(/^W\//);
@@ -158,9 +157,7 @@ describe("issue resource routes", () => {
     expect(parsed.response.stdout.endsWith("tail-out")).toBe(true);
     expect(parsed.response.stderr).toBe("short");
     expect(parsed.response.truncated).toBe(true);
-    expect(parsed.response.fullPath).toBe(
-      "/api/issues/PAS-1/attempts/2/checks/test/log?run=run-9&full=1",
-    );
+    expect(parsed.response.fullPath).toBe("/api/issues/PAS-1/attempts/2/checks/test/log?full=1");
     const full = (await handleStatusRequest(get(parsed.response.fullPath!), {
       provider,
       responseSizes: NO_SIZES,
@@ -170,8 +167,8 @@ describe("issue resource routes", () => {
     expect(whole.response.stdout).toBe(stdout);
     expect(whole.response.truncated).toBe(false);
     expect(logs).toEqual([
-      { itemId: "PAS-1", attempt: 2, checkId: "test", run: "run-9" },
-      { itemId: "PAS-1", attempt: 2, checkId: "test", run: "run-9" },
+      { itemId: "PAS-1", attempt: 2, checkId: "test" },
+      { itemId: "PAS-1", attempt: 2, checkId: "test" },
     ]);
     const unknown = (await handleStatusRequest(
       get("/api/issues/PAS-1/attempts/2/checks/lint/log"),
