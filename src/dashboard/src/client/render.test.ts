@@ -390,7 +390,7 @@ describe("status views", () => {
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
     expect(detail).toContain("Jonas Berg");
     expect(detail).toContain("Audit log export");
-    expect(detail).toContain('id="activity-heading">Timeline</h2>');
+    expect(detail).toContain('id="activity-heading">History</h2>');
     expect(detail).toContain("PR #479");
     expect(detail).not.toContain('href="/issues/ENG-99"');
     expect(detail).toContain('href="/issues/ENG-104"');
@@ -649,7 +649,7 @@ describe("status views", () => {
       const section = activitySection(html);
       expect(html).not.toContain('<details class="run-activity"');
       expect(section).toContain("<h2");
-      expect(section).toContain(">Timeline</h2>");
+      expect(section).toContain(">History</h2>");
       expect(section).not.toContain(esc(run.summary));
       expect(section).toContain("bun test");
       expect(section).toContain("data-follow");
@@ -804,7 +804,7 @@ function issueRow(html: string, id: string): string {
 }
 
 function activitySection(html: string): string {
-  const start = html.indexOf('<section class="issue-fold" aria-label="Timeline"');
+  const start = html.indexOf('<section class="issue-fold history-section');
   if (start < 0) throw new Error("missing item activity");
   return html.slice(start, html.indexOf("</section>", start));
 }

@@ -205,6 +205,24 @@ try {
   });
   await applyWorkItemEvent(f.db, "PAS-6", "merge_accepted");
   await pull("PAS-6", 14);
+  await insertQueuedItem(f.db, {
+    id: "PAS-7",
+    sessionKey: "session-mine",
+    title: "Fixture PAS-7",
+    now: Date.now(),
+  });
+  await beginImplementRun(f.db, "PAS-7", Date.now());
+  const rounds = [
+    ["turn_ended", {}],
+    ["restart", { kind: "restart", reason: "findings" }],
+    ["dispatched", {}],
+    ["turn_ended", {}],
+    ["blocking_question", { kind: "ask", reason: "rule_approval" }],
+    ["reverify_requested", {}],
+    ["closeout_accepted", {}],
+  ] as const;
+  for (const [event, record] of rounds) await applyWorkItemEvent(f.db, "PAS-7", event, record);
+  await pull("PAS-7", 15);
   for (const width of [1440, 390]) {
     const page = await open(width);
     const resources = (seen: Request[]) => [
@@ -247,6 +265,22 @@ try {
     await visit(page, width, "results-merged", "/dashboard/issues/PAS-6", "Issues");
     await expect(page.locator("[data-result-pull]")).toContainText(/#14\s*Fixture PAS-6\s*merged/);
     await expect(page.locator("[data-result-follow-ups]")).toHaveCount(0);
+    await visit(page, width, "history", "/dashboard/issues/PAS-7", "Issues");
+    const history = page.locator('section[aria-label="History"]');
+    await expect(history.locator(".history-list li")).toHaveText([
+      /Started$/,
+      /Closeout round 1: sent back for Closeout findings$/,
+      /Closeout round 2: asked a person$/,
+      /Asked: rule approval · answered \d\d:\d\d$/,
+      /Closeout round 3: accepted$/,
+      /Opened pull request #15$/,
+    ]);
+    await expect(page.locator('section.issue-fold[aria-label="Timeline"]')).toHaveCount(0);
+    await expect(page.locator('section.issue-fold[aria-label="Fix rounds"]')).toHaveCount(0);
+    await history.screenshot({ path: join(out, `history-${width}.png`) });
+    await history.getByRole("button", { name: /^Every event \(\d+\)/ }).click();
+    await expect(history.locator('[data-log^="activity-"]')).toBeVisible();
+    await history.screenshot({ path: join(out, `history-every-event-${width}.png`) });
     const admin = await open(width, f.adminCookie);
     let groupingTime = "06:00";
     await admin.route("**/api/settings/findings", async (route) => {

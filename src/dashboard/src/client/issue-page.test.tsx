@@ -65,10 +65,60 @@ describe("issue page", () => {
     const html = page(redelegated());
     for (const term of ["project", "runner", "agent", "session", "repository"])
       expect(html).toContain(`<span class="min-w-0">${term} <span class="text-foreground">`);
-    expect(html).toContain('id="activity-heading">Timeline</h2>');
+    expect(html).toContain('id="activity-heading">History</h2>');
     expect(html).toContain('id="results-heading" class="text-base font-semibold">Results</h2>');
     expect(html).toContain('shared with <a class="lin-id" href="/issues/ENG-102">ENG-102</a>');
     expect(html.match(/<article /g)).toHaveLength(1);
+  });
+
+  test("History lists the events that matter and folds every event behind one disclosure", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.ciRounds = [
+      {
+        itemId: "ENG-101",
+        runId: null,
+        round: 1,
+        head: "a".repeat(40),
+        next: "agent",
+        fix: 1,
+        fixLimit: 3,
+        recordedAt: snapshot.generatedAt,
+        checks: [
+          {
+            name: "lint",
+            state: "failed",
+            url: "https://github.com/acme/app/runs/1",
+            startedAt: null,
+            completedAt: null,
+            logTail: null,
+            logSource: null,
+          },
+        ],
+      },
+    ];
+    const html = page(snapshot);
+    const history = html.slice(html.indexOf('aria-label="History"'), html.indexOf("Run details"));
+    const list = history.slice(0, history.indexOf("data-action"));
+    const text = list.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    expect(text).toContain("Started");
+    expect(text).toContain("Closeout round 1: sent back for Closeout findings");
+    expect(text).toContain("Closeout round 2: accepted");
+    expect(text).toContain("Opened pull request #479");
+    expect(list).toContain("Open full agent transcript");
+    expect(history).toMatch(/<b>Every event \(\d+\)<\/b>/);
+    expect(history).toContain('data-log="activity-r-101"');
+    expect(history).toContain('href="https://github.com/acme/app/runs/1"');
+    expect(html).not.toContain('aria-label="Fix rounds"');
+    expect(html).not.toContain('aria-label="Timeline"');
+    const closed = render({
+      phase: "ready",
+      error: null,
+      engineUrl: null,
+      closeout: openedView({ "section\nhistory:ENG-101": false }),
+      ...pageData(snapshot, { view: "issues", id: "ENG-101" }),
+    }).content;
+    expect(closed).toContain("Closeout round 2: accepted");
+    expect(closed).not.toContain('data-log="activity-r-101"');
   });
 
   test("a running item and a finished one show only Paws's Closeout", () => {
@@ -257,7 +307,7 @@ describe("issue page", () => {
       closeout: openedView(),
     }).content;
     expect(html).toContain('<article class="run-page issue-page">');
-    expect(html).toContain('id="activity-heading">Timeline</h2>');
+    expect(html).toContain('id="activity-heading">History</h2>');
     expect(html).not.toContain("Earlier attempt");
     expect(html).toContain(
       'blocks <span class="text-foreground"><a href="/issues/ENG-105">ENG-105</a>',

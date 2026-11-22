@@ -27,10 +27,7 @@ function issuePage(full: Full, id: string, closeout: CloseoutView = emptyCloseou
 
 function section(html: string): string {
   const start = html.indexOf('<section class="issue-fold closeout-overview');
-  return html.slice(
-    start,
-    html.indexOf('<section class="issue-fold" aria-label="Timeline"', start),
-  );
+  return html.slice(start, html.indexOf('<section class="issue-fold history-section', start));
 }
 
 function text(html: string): string {
