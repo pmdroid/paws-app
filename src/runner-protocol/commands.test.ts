@@ -534,3 +534,22 @@ test("a repository summary helper names one repository and carries no tools or S
   ])
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
 });
+
+test("run commands parse a Closeout focus with and without since", () => {
+  const closeoutFocus = {
+    scope: "failed" as const,
+    head: "b".repeat(40),
+    policyDigest: "digest",
+    passed: ["lint"],
+  };
+  for (const focus of [closeoutFocus, { ...closeoutFocus, since: ["test"] }]) {
+    expect(RunnerCommandSchema.parse({ ...run, closeoutFocus: focus })).toEqual({
+      ...run,
+      closeoutFocus: focus,
+    });
+  }
+  expect(
+    RunnerCommandSchema.safeParse({ ...run, closeoutFocus: { ...closeoutFocus, since: [""] } })
+      .success,
+  ).toBe(false);
+});

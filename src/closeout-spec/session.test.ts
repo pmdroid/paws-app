@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspacePolicyFiles } from "./facade";
-import { createCloseoutSession } from "./session";
+import { createCloseoutSession, type CloseoutFocus } from "./session";
 
 const roots: string[] = [];
 
@@ -261,4 +261,60 @@ test("a setup check that failed on the unchanged workspace is not run again", as
   write(root, "setup-broken", "2\n");
   expect(await session.run("test")).toStartWith("install failed (exit 1).");
   expect(await attempts(session, "install")).toBe(2);
+});
+
+function sincePolicy(root: string): string {
+  write(
+    root,
+    ".agents/closeout.yaml",
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: test",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["true", "all"]',
+      '    since: ["true", "--since", "{since}"]',
+      "    timeoutSeconds: 30",
+      check("lint"),
+    ].join("\n") + "\n",
+  );
+  const files = workspacePolicyFiles(root);
+  if (!files.ok || files.absent) throw new Error("policy did not load");
+  return files.digest;
+}
+
+async function ranArgv(root: string, focus: CloseoutFocus): Promise<Record<string, string[]>> {
+  const ran: string[][] = [];
+  const session = createCloseoutSession(root, {
+    policy: async () => workspacePolicyFiles(root),
+    allowCommand: (argv) => void ran.push([...argv]),
+    focus,
+  });
+  expect(await session.run("test")).toBe("test passed.");
+  expect(await session.run("lint")).toBe("lint passed.");
+  return { test: ran[0]!, lint: ran[1]! };
+}
+
+test("a focus with since runs the listed check's since argv when the digest matches", async () => {
+  const root = repo();
+  const digest = sincePolicy(root);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).stdout.trim();
+  const focus = { scope: "failed" as const, head, policyDigest: digest, passed: [] };
+  expect(await ranArgv(root, { ...focus, since: ["test", "lint"] })).toEqual({
+    test: ["true", "--since", head],
+    lint: ["true"],
+  });
+  expect(await ranArgv(root, { ...focus, policyDigest: "other", since: ["test"] })).toEqual({
+    test: ["true", "all"],
+    lint: ["true"],
+  });
+  expect(await ranArgv(root, { ...focus, head: "main", since: ["test"] })).toEqual({
+    test: ["true", "all"],
+    lint: ["true"],
+  });
+  expect(await ranArgv(root, focus)).toEqual({ test: ["true", "all"], lint: ["true"] });
 });
