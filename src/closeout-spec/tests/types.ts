@@ -31,6 +31,7 @@ export type TestContext = {
   base: string;
   head: string;
   reportDir: string;
+  env: Record<string, string>;
   changes(): Promise<TestChange[]>;
   readAtBase(path: string): Promise<string | undefined>;
   readAtHead(path: string): Promise<string | undefined>;

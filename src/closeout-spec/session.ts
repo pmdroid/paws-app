@@ -1078,7 +1078,7 @@ async function execute(
             (options.focus?.since !== undefined && options.focus.policyDigest === policyDigest
               ? options.focus.head
               : base) ?? "",
-          env: commandEnv(),
+          env: commandEnv({ runtimeBinPaths: options.runtimeBinPaths, basePath: options.basePath }),
           execute: (invocation, seconds) => spawnIn(invocation.cwd, invocation.argv, seconds),
         })
       : undefined;

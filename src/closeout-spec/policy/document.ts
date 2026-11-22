@@ -3,6 +3,7 @@ import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import { parse, YAMLParseError } from "yaml";
 import { selectExecError } from "../tests/bun";
+import { goExecError } from "../tests/go";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
@@ -346,13 +347,14 @@ function decodeRerun(value: unknown): RerunPolicy {
 }
 
 function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
-  if (!isRecord(value) || value.runner !== "bun")
+  if (!isRecord(value) || (value.runner !== "bun" && value.runner !== "go"))
     throw new Error("document does not match the schema");
   if (item.since !== undefined)
     throw new Error(`item ${item.id}: select cannot be used with since`);
-  const shape = selectExecError(value.runner, item.exec);
+  const shape =
+    value.runner === "go" ? goExecError(item.exec) : selectExecError(value.runner, item.exec);
   if (shape !== undefined) throw new Error(`item ${item.id}: ${shape}`);
-  const select: TestSelect = { runner: "bun" };
+  const select: TestSelect = { runner: value.runner };
   if (value.always !== undefined) select.always = expectStrings(value.always);
   if (value.full_on !== undefined) select.full_on = expectStrings(value.full_on);
   if (value.max_selected !== undefined) select.max_selected = expectInt(value.max_selected);

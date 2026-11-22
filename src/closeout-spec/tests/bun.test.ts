@@ -137,6 +137,7 @@ async function planned(
     base,
     head,
     reportDir: "/r",
+    env,
     changes: () => testChanges(root, base, head, env),
     readAtBase: async () => undefined,
     readAtHead: async () => undefined,

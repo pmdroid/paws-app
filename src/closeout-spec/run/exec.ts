@@ -303,6 +303,7 @@ export function spawnArgv(
   env: Record<string, string>,
   timeoutSeconds: number,
   tap?: StreamTap,
+  stdoutCap = OUTPUT_CAP_BYTES,
 ): Promise<Spawned> {
   const program = argv[0];
   if (program === undefined || program.length === 0) {
@@ -330,7 +331,7 @@ export function spawnArgv(
       ? collectText(child.stdout, OUTPUT_CAP_BYTES, tap.secrets, (text, truncated) => {
           tap.onText?.("stdout", text, truncated);
         })
-      : collect(child.stdout, OUTPUT_CAP_BYTES);
+      : collect(child.stdout, stdoutCap);
     const stderr = tap
       ? collectText(child.stderr, OUTPUT_CAP_BYTES, tap.secrets, (text, truncated) => {
           tap.onText?.("stderr", text, truncated);
