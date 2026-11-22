@@ -1532,7 +1532,7 @@ test("a redeemed link code stores the verified direct message, and only that DM 
   expect(gone).toEqual({ kind: "ignore" });
 });
 
-test("a linked member's first ordinary DM verifies its channel once, and a DM Slack doesn't confirm stores nothing", async () => {
+test("a linked member's first ordinary DM verifies its channel once and is answered there, and a DM Slack doesn't confirm stores nothing", async () => {
   const f = await linked(["um", "SMEMBER"]);
   await forgetDirect(f, "SMEMBER");
   const elsewhere = f.dm("SMEMBER", "hello", { channel: "DELSEWHERE" });
@@ -1544,17 +1544,31 @@ test("a linked member's first ordinary DM verifies its channel once, and a DM Sl
   const first = f.dm("SMEMBER", "what is a monad?");
   await f.deliver(first);
   await f.settle();
-  expect(f.posted.map((post) => post.body)).toEqual([{ users: "SMEMBER" }]);
+  expect(f.posted[0]!.body).toEqual({ users: "SMEMBER" });
   expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBe("DSMEMBER");
   expect(await conversations(f, first.ts)).toEqual([
     expect.objectContaining({ channelId: "DSMEMBER", threadTs: first.ts }),
   ]);
-  f.posted.length = 0;
   await f.pair("SMEMBER", "and a functor?", { thread_ts: first.ts });
-  await f.pair("SOTHER", "hello there");
-  expect(f.posted).toEqual([]);
-  expect(f.prompts).toEqual([]);
+  expect(f.posts("conversations.open")).toHaveLength(1);
+  expect(f.posts("conversations.info")).toEqual([]);
+  expect(f.posts("chat.postMessage").map((post) => post.body)).toEqual([
+    expect.objectContaining({ channel: "DSMEMBER", thread_ts: first.ts, text: "answer 1" }),
+    expect.objectContaining({ channel: "DSMEMBER", thread_ts: first.ts, text: "answer 2" }),
+  ]);
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["um", "um"]);
+  const prompt = lastPrompt(f);
+  expect(prompt).toContain("You are Paws, answering in a Slack direct message.");
+  expect(prompt).not.toContain("Slack channel thread");
+  expect(prompt).toContain("what is a monad?\n[Paws]: answer 1");
+  expect(f.sent.at(-1)!.tools).toBeUndefined();
   expect(await conversations(f, first.ts)).toHaveLength(1);
+  f.posted.length = 0;
+  await f.pair("SOTHER", "hello there");
+  await f.pair("SMEMBER", "from elsewhere", { channel: "DELSEWHERE" });
+  await f.pair("SADMIN", "and from the admin", { channel: "DSMEMBER" });
+  expect(f.posted).toEqual([]);
+  expect(f.prompts).toHaveLength(2);
   expect(await f.sideEffects()).toEqual(NONE);
 });
 
@@ -4513,4 +4527,91 @@ test("a channel thread's notebook add lands in that channel's notebook, names th
   expect((await notebookChanges(f.db, scope)).map((change) => change.actorId)).toEqual(["um"]);
   await f.say("SADMIN", "and now?");
   expect(lastPrompt(f)).toContain("Channel notebook:\n- canary-notebook");
+});
+
+test("a DM answer reads a repository the asker can read without the admin's policy, and withholds it once they can't", async () => {
+  const f = await withSource([]);
+  const root = f.dm("SMEMBER", "repo acme/app");
+  await f.deliver(root);
+  await f.settle();
+  expect(f.notice()).toContain("This thread now reads `acme/app`");
+  await f.pair("SMEMBER", "how does billing work?", { thread_ts: root.ts });
+  expect(lastPrompt(f)).toContain("canary-main");
+  expect(lastPrompt(f)).toContain("answering in a Slack direct message");
+  expect(f.posts("chat.postMessage").map((post) => [post.body.channel, post.body.text])).toEqual([
+    ["DSMEMBER", "answer 1\n_Read from `acme/app` at `aaaaaaaaaaaa` (main)._"],
+  ]);
+  expect(f.posts("conversations.info")).toEqual([]);
+  await f.teams([]);
+  const asked = f.prompts.length;
+  await f.pair("SMEMBER", "and billing now?", { thread_ts: root.ts });
+  expect(f.notice()).toMatch(SOURCE_WITHHELD);
+  expect(f.posts("chat.postEphemeral").at(-1)!.body).toMatchObject({
+    channel: "DSMEMBER",
+    user: "SMEMBER",
+  });
+  expect(f.prompts).toHaveLength(asked);
+  expect(f.posts("chat.postMessage")).toHaveLength(1);
+});
+
+test("a follow-up promised in a DM wakes and posts in that DM without mentioning the member", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.answers.push(
+    `I'll check the deploy in 20 minutes.\n${followUpBlock({ purpose: "check the deploy", after_minutes: 20 })}`,
+  );
+  const root = f.dm("SMEMBER", "tell me in 20 minutes");
+  await f.deliver(root);
+  await f.settle();
+  expect(await followUpRows(f)).toEqual([
+    expect.objectContaining({ status: "pending", channelId: "DSMEMBER", threadTs: root.ts }),
+  ]);
+  f.posted.length = 0;
+  f.answers.push("The deploy finished.");
+  await wakeAfter(f, 20 * MIN);
+  expect(lastPrompt(f)).toContain("Follow-up you promised: check the deploy.");
+  expect(f.posts("chat.postMessage").map((post) => post.body)).toEqual([
+    expect.objectContaining({
+      channel: "DSMEMBER",
+      thread_ts: root.ts,
+      text: "The deploy finished.",
+    }),
+  ]);
+  expect(await followUpStatus(f)).toEqual(["done"]);
+});
+
+test("a DM and a channel thread never see each other's turns", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  f.answers.push("channel-answer-canary", "dm-answer-canary");
+  const root = f.mention("SMEMBER", "channel-question-canary");
+  await f.deliver(root);
+  await f.settle();
+  const direct = f.dm("SMEMBER", "dm-question-canary");
+  await f.deliver(direct);
+  await f.settle();
+  const dmPrompt = lastPrompt(f);
+  expect(dmPrompt).toContain("dm-question-canary");
+  expect(dmPrompt).not.toContain("channel-");
+  await f.say("SMEMBER", "and in the channel?", { thread_ts: root.ts });
+  const channelPrompt = lastPrompt(f);
+  expect(channelPrompt).toContain("channel-question-canary\n[Paws]: channel-answer-canary");
+  expect(channelPrompt).toContain("Slack channel thread");
+  expect(channelPrompt).not.toContain("dm-");
+  await f.pair("SMEMBER", "and here?", { thread_ts: direct.ts });
+  expect(lastPrompt(f)).toContain("dm-question-canary\n[Paws]: dm-answer-canary");
+  expect(lastPrompt(f)).not.toContain("channel-");
+});
+
+test("a legacy link's first DM command runs as a command once its DM is verified, not as a question", async () => {
+  const f = await linked(["um", "SMEMBER"]);
+  await forgetDirect(f, "SMEMBER");
+  await f.pair("SMEMBER", "follow-ups");
+  expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBe("DSMEMBER");
+  expect(f.notice()).toBe("No follow-ups pending here.");
+  await forgetDirect(f, "SMEMBER");
+  await f.pair("SMEMBER", "unlink");
+  expect(f.notice()).toBe(
+    "Unlinked. Paws no longer answers this Slack account; mention @Paws to link it again.",
+  );
+  expect(await storedLink(f, "SMEMBER")).toBeNull();
+  expect(f.prompts).toEqual([]);
 });
