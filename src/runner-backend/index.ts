@@ -1627,9 +1627,6 @@ export function createRemoteAgentRunner(options: {
                               head: input.closeoutFocus.head,
                               policyDigest: input.closeoutFocus.policyDigest,
                               passed: [...input.closeoutFocus.passed],
-                              ...(input.closeoutFocus.since
-                                ? { since: [...input.closeoutFocus.since] }
-                                : {}),
                             },
                           }
                         : {}),
