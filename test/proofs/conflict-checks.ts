@@ -26,16 +26,16 @@ export default {
     "src/loop/conflict-checks.ts",
     "src/loop/closeout-focus.ts",
     "src/loop/automatic-risk-approval.ts",
+    "src/closeout-spec/run/run.ts",
   ],
   summary:
-    "A pull request conflicts with main in the merge queue; the rebase turn lists only lint and typecheck, Closeout keeps proof's pass from the accepted commit, both reviews run again and the pull request merges after green CI.",
+    "A pull request conflicts with main in the merge queue; closeout.yaml's rerun.conflict lists lint and typecheck with reviews: false, so the rebase turn lists only those, Closeout keeps proof's and both reviews' passes from the accepted commit, and the pull request merges after green CI.",
   ciPending: true,
-  config: '[merge.repositories."acme/widgets"]\nconflict_checks = ["lint", "typecheck"]\n',
   files: {
     ".agents/skills/acme-review/SKILL.md":
       "---\nname: acme-review\ndescription: Acme review\n---\nReview the change.",
   },
-  policy: `specVersion: "0.1"\nitems:\n${command("lint", true)}${command("typecheck", true)}${command("proof")}${review("independent-review")}${review("security-review")}`,
+  policy: `specVersion: "0.1"\nrerun:\n  conflict:\n    run: [lint, typecheck]\n    reviews: false\nitems:\n${command("lint", true)}${command("typecheck", true)}${command("proof")}${review("independent-review")}${review("security-review")}`,
   reviewer: {
     async review(request) {
       reviews.push(request.itemId ?? "review");
@@ -113,11 +113,16 @@ export default {
       run?.steps.map((entry) => [entry.id, entry.state, entry.detail]),
     );
     proof.expect(
-      "both reviews run again on the fixed commit",
-      reviews.length - reviewsBefore === 2 &&
-        step("independent-review")?.state === "passed" &&
-        step("security-review")?.state === "passed",
-      { reviews: reviews.length - reviewsBefore, steps: run?.steps.map((entry) => entry.id) },
+      "both reviews are carried from the accepted commit, not run again",
+      reviews.length === reviewsBefore &&
+        ["independent-review", "security-review"].every(
+          (id) =>
+            step(id)?.state === "passed" && (step(id)?.detail ?? "").startsWith(CARRIED_PREFIX),
+        ),
+      {
+        reviews: reviews.length - reviewsBefore,
+        steps: run?.steps.map((entry) => [entry.id, entry.state, entry.detail]),
+      },
     );
     proof.expect(
       "the pull request merges after green CI",

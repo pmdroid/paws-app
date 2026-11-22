@@ -677,7 +677,7 @@ function judgeReview(
   const attempt = record.attempt;
   const blocking = blockingFindings(record, request);
   const preExisting = preExistingNote(record.findings.length - blocking.length);
-  const finding = failingFinding(blocking, item.failOn);
+  const finding = record.carried ? undefined : failingFinding(blocking, item.failOn);
   if (finding) {
     return row(
       item,
@@ -688,6 +688,7 @@ function judgeReview(
   }
   const independence = independenceFailure(item, record, request.candidate);
   if (independence !== undefined) return row(item, "independence", independence, attempt);
+  if (record.carried) return row(item, "passed", carriedMessage(record.carried.head), attempt);
   return row(item, "passed", `review findings satisfy the policy${preExisting}`, attempt);
 }
 

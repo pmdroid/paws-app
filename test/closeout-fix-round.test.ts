@@ -248,6 +248,7 @@ test("a conflict-only restart lists only the configured checks; Closeout carries
     policyDigest: (await getCloseoutProgress(repo.db, "acme-1", accepted.head))!.policyDigest,
     run: ["lint"],
     carried: ["engine-test", "web-test"],
+    reviews: [],
   };
   const focus = (await closeoutFocus(repo.db, "acme-1", "conflict", conflict))!;
   expect(focus).toEqual({

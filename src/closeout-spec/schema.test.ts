@@ -138,6 +138,12 @@ describe("closeout spec schemas", () => {
       artifacts: [],
     };
     expectValid(validateEvidence, review, "evidence.schema.json");
+    expectValid(
+      validateEvidence,
+      { ...review, carried: { head: "d".repeat(40) } },
+      "evidence.schema.json",
+    );
+    expect(validateEvidence?.({ ...review, carried: { head: "abc123" } })).toBe(false);
 
     const decision: DecisionDocument = {
       specVersion: "0.1",

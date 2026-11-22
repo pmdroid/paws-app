@@ -16,6 +16,7 @@ import type {
   ResolvedReview,
   ResolvedRule,
   ResolvedSetup,
+  ReviewRecord,
   TurnPass,
   CarriedPass,
 } from "../types";
@@ -181,6 +182,12 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     ];
     const identity = progressIdentity(input, base, head);
     await publishPlan(input.progress, identity, actions, reviews);
+    for (const review of reviews) {
+      const state = evaluated.items.find((item) => item.id === review.id)?.state;
+      const pass = input.carried?.find((entry) => entry.id === review.id);
+      if (pass && state !== "skipped" && state !== "passed")
+        await carryReview(input, review, pass, base, head, records);
+    }
     const taken: CommandDisposition[] = [];
     for (const action of actions) {
       if (action.kind === "turn") {
@@ -757,6 +764,40 @@ async function recordCarried(
     exitCode: 0,
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
+}
+
+async function carryReview(
+  input: CloseoutRunInput,
+  review: ResolvedReview,
+  pass: CarriedPass,
+  base: string,
+  head: string,
+  records: EvidenceRecord[],
+): Promise<void> {
+  const digest = input.policy.digest ?? "";
+  const source = records
+    .filter(
+      (record): record is ReviewRecord =>
+        record.recordType === "review" &&
+        record.itemId === review.id &&
+        record.head === pass.head &&
+        record.policyDigest === digest,
+    )
+    .reduce<ReviewRecord | undefined>(
+      (latest, record) => (latest && latest.attempt > record.attempt ? latest : record),
+      undefined,
+    );
+  if (!source) return;
+  const record: ReviewRecord = {
+    ...source,
+    base,
+    head,
+    attempt: nextAttempt(records, review.id, head, digest),
+    artifacts: [],
+    carried: { head: pass.head },
+  };
+  await input.evidence.add(record);
+  records.push(record);
 }
 
 async function recordFromTurn(

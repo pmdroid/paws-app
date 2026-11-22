@@ -1,5 +1,4 @@
-import type { CarriedPass, CiResult, TurnPass } from "../closeout";
-import { conflictChecks, type MergeSettings } from "../config";
+import type { CarriedPass, CiResult, RerunPolicy, TurnPass } from "../closeout";
 import {
   getCandidateRiskSteps,
   getCloseoutProgressSteps,
@@ -15,6 +14,7 @@ export type ConflictChecks = {
   policyDigest: string;
   run: string[];
   carried: string[];
+  reviews: string[];
 };
 
 export async function conflictChecksFor(
@@ -22,13 +22,13 @@ export async function conflictChecksFor(
   input: {
     itemId: string;
     reason: string | undefined;
-    settings: MergeSettings;
-    repository: string;
+    policy: { digest: string; rerun?: RerunPolicy } | null;
     briefs: boolean;
   },
 ): Promise<ConflictChecks | undefined> {
-  const run = conflictChecks(input.settings, input.repository);
-  if (run.length === 0 || input.reason !== "conflict" || input.briefs) return undefined;
+  const policy = input.policy;
+  const run = policy?.rerun?.conflict?.run ?? [];
+  if (!policy || run.length === 0 || input.reason !== "conflict" || input.briefs) return undefined;
   try {
     return await store.run(function* (q) {
       const item = yield* getWorkItemSteps(q, input.itemId);
@@ -43,6 +43,7 @@ export async function conflictChecksFor(
       if (record.headBefore !== item.acceptedHead) return;
       const accepted = yield* getCloseoutProgressSteps(q, item.id, item.acceptedHead);
       if (accepted?.decision !== "accepted" || accepted.finishedAt === null) return;
+      if (accepted.policyDigest !== policy.digest) return;
       const risk = yield* getCandidateRiskSteps(q, item.id, item.acceptedHead);
       if (!risk || risk.tier === "high") return;
       const kept = yield* getTaskMergeSettingsSteps(q, item.id);
@@ -53,8 +54,14 @@ export async function conflictChecksFor(
         .filter((step) => step.kind === "command" && step.state === "passed")
         .map((step) => step.id)
         .filter((id) => !run.includes(id));
-      if (carried.length === 0) return;
-      return { head: accepted.head, policyDigest: accepted.policyDigest, run, carried };
+      const reviews =
+        policy.rerun?.conflict?.reviews === false
+          ? accepted.steps
+              .filter((step) => step.kind === "review" && step.state === "passed")
+              .map((step) => step.id)
+          : [];
+      if (carried.length === 0 && reviews.length === 0) return;
+      return { head: accepted.head, policyDigest: accepted.policyDigest, run, carried, reviews };
     });
   } catch {
     return undefined;
@@ -81,5 +88,5 @@ export function conflictCarried(
     input.paths.some((path) => !input.acceptedPaths!.includes(path))
   )
     return undefined;
-  return conflict.carried.map((id) => ({ id, head: conflict.head }));
+  return [...conflict.carried, ...conflict.reviews].map((id) => ({ id, head: conflict.head }));
 }

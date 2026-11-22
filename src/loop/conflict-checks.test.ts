@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import type { CiResult, TurnPass } from "../closeout";
-import type { MergeSettings } from "../config";
+import type { CiResult, RerunPolicy, TurnPass } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
   enqueueJob,
@@ -21,8 +20,10 @@ import { conflictCarried, conflictChecksFor, type ConflictChecks } from "./confl
 
 const ITEM = "ENG-1";
 const ACCEPTED = "a".repeat(40);
-const settings = (ids: string[]): MergeSettings =>
-  ({ repositories: { "acme/widgets": { conflictChecks: ids } } }) as unknown as MergeSettings;
+const policy = (run: string[], reviews = true, digest = "policy") => ({
+  digest,
+  rerun: { conflict: { run, reviews } } as RerunPolicy,
+});
 
 type Setup = {
   triggers?: FixTriggers;
@@ -137,8 +138,7 @@ const read = (db: Db, over: Partial<Parameters<typeof conflictChecksFor>[1]> = {
   conflictChecksFor(db, {
     itemId: ITEM,
     reason: "conflict",
-    settings: settings(["lint", "typecheck"]),
-    repository: "Acme/Widgets",
+    policy: policy(["lint", "typecheck"]),
     briefs: false,
     ...over,
   });
@@ -149,11 +149,46 @@ test("a merge-queue conflict of an accepted normal-risk head runs the listed che
     policyDigest: "policy",
     run: ["lint", "typecheck"],
     carried: ["test", "proof"],
+    reviews: [],
   });
 });
 
+test("reviews: false carries the reviews that passed on the accepted head", async () => {
+  expect(await read(await setup(), { policy: policy(["lint"], false) })).toEqual({
+    head: ACCEPTED,
+    policyDigest: "policy",
+    run: ["lint"],
+    carried: ["typecheck", "test", "proof"],
+    reviews: ["independent-review"],
+  });
+});
+
+test("reviews: false carries the reviews when every passed command runs again", async () => {
+  const all = ["lint", "typecheck", "test", "proof"];
+  expect(await read(await setup(), { policy: policy(all, false) })).toEqual({
+    head: ACCEPTED,
+    policyDigest: "policy",
+    run: all,
+    carried: [],
+    reviews: ["independent-review"],
+  });
+});
+
+test("nothing is returned when every passed command runs again and reviews run", async () => {
+  expect(
+    await read(await setup(), { policy: policy(["lint", "typecheck", "test", "proof"]) }),
+  ).toBeUndefined();
+});
+
 const refused: [string, Setup, Partial<Parameters<typeof conflictChecksFor>[1]>][] = [
-  ["the repository lists no checks", {}, { settings: settings([]) }],
+  ["the repository lists no checks", {}, { policy: policy([]) }],
+  ["the policy has no rerun", {}, { policy: { digest: "policy" } }],
+  ["main's policy is unreadable", {}, { policy: null }],
+  [
+    "the policy digest changed since the acceptance",
+    {},
+    { policy: policy(["lint"], false, "new") },
+  ],
   ["the restart is not a conflict", {}, { reason: "ci" }],
   ["two fix records are open", { records: 2 }, {}],
   [
@@ -171,7 +206,7 @@ const refused: [string, Setup, Partial<Parameters<typeof conflictChecksFor>[1]>]
   ["the accepted head is high risk", { tier: "high" }, {}],
   ["the task merges with main_moved closeout", { mainMoved: "closeout" }, {}],
   ["the task has no kept merge settings", { mainMoved: null }, {}],
-  ["a listed id is not a step of the run", {}, { settings: settings(["lint", "format"]) }],
+  ["a listed id is not a step of the run", {}, { policy: policy(["lint", "format"]) }],
 ];
 for (const [name, input, over] of refused)
   test(`nothing is returned when ${name}`, async () => {
@@ -183,6 +218,7 @@ const conflict: ConflictChecks = {
   policyDigest: "policy",
   run: ["lint"],
   carried: ["proof"],
+  reviews: ["independent-review"],
 };
 const NEW = "d".repeat(40);
 const pass = (head: string, policyDigest = "policy"): TurnPass => ({
@@ -207,7 +243,10 @@ const carriedInput = {
 };
 
 test("green CI, a turn pass at the new head and no new path carry the passes", () => {
-  expect(conflictCarried(conflict, carriedInput)).toEqual([{ id: "proof", head: ACCEPTED }]);
+  expect(conflictCarried(conflict, carriedInput)).toEqual([
+    { id: "proof", head: ACCEPTED },
+    { id: "independent-review", head: ACCEPTED },
+  ]);
 });
 
 for (const [name, over] of [

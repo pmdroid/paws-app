@@ -243,9 +243,42 @@ test("checks that are all carried or skipped create no worktree", async () => {
   expect(listed.split("\n")).toHaveLength(1);
 }, 60_000);
 
+test("a carried review is recorded at the new head from its record at the carried head", async () => {
+  const repo = await seed();
+  const first = await runCloseoutGate(repo.input);
+  expect(first.outcome).toBe("accepted");
+  expect(repo.reviews()).toBe(1);
+  await writeFile(path.join(repo.dir, "ok"), "acme widgets\n");
+  const head = await commit(repo.dir, "resolve conflict");
+  const result = await runCloseoutGate({
+    ...repo.input,
+    head,
+    carried: [
+      { id: "test", head: first.head },
+      { id: "review", head: first.head },
+    ],
+  });
+  expect(result.outcome).toBe("accepted");
+  expect(repo.reviews()).toBe(1);
+  const review = result.decision?.items.find((item) => item.id === "review");
+  expect(review).toMatchObject({ state: "passed", message: carriedMessage(first.head) });
+  const records = await recordsAt(evidencePath(repo.input.taskId, repo.pawsHome), head, "review");
+  expect(records).toEqual([
+    expect.objectContaining({ itemId: "review", head, carried: { head: first.head } }),
+  ]);
+}, 60_000);
+
+test("a carried review with no record at the carried head runs", async () => {
+  const repo = await seed();
+  const result = await runCloseoutGate({ ...repo.input, carried: carry("review") });
+  expect(result.outcome).toBe("accepted");
+  expect(repo.reviews()).toBe(1);
+  expect(result.decision?.items.find((item) => item.id === "review")?.message).not.toBe(CARRIED);
+}, 60_000);
+
 type Stored = { itemId: string; head: string; ci?: unknown; carried?: unknown };
 
-async function recordsAt(dir: string, head: string): Promise<Stored[]> {
+async function recordsAt(dir: string, head: string, type = "command"): Promise<Stored[]> {
   const found: Stored[] = [];
   const walk = async (at: string): Promise<void> => {
     for (const entry of await readdir(at, { withFileTypes: true })) {
@@ -253,7 +286,7 @@ async function recordsAt(dir: string, head: string): Promise<Stored[]> {
       if (entry.isDirectory()) await walk(file);
       else if (entry.name.endsWith(".json")) {
         const record = JSON.parse(await readFile(file, "utf8"));
-        if (record.head === head && record.recordType === "command") found.push(record);
+        if (record.head === head && record.recordType === type) found.push(record);
       }
     }
   };

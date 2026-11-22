@@ -12,10 +12,11 @@ type Variant = {
   extraPath?: boolean;
   commitAfterChecks?: boolean;
   policyOnMain?: boolean;
+  reviews?: boolean;
 };
 
 type Gate = { head: string; carried: readonly CarriedPass[] | undefined };
-type Outcome = { gates: Gate[]; failed: string[]; focused: boolean };
+type Outcome = { gates: Gate[]; failed: string[]; focused: boolean; reviewed: string[] };
 
 const roots: string[] = [];
 const saved = { ...process.env };
@@ -28,8 +29,8 @@ afterEach(() => {
 
 const command = (id: string, ci: boolean) =>
   `  - id: ${id}\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 10\n${ci ? '    ci: "ci"\n' : ""}`;
-const policy = (mapped: boolean, timeout = 10) =>
-  `specVersion: "0.1"\nitems:\n${command("lint", mapped)}${command("typecheck", mapped)}${command("proof", false).replace("timeoutSeconds: 10", `timeoutSeconds: ${timeout}`)}  - id: independent-review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/acme-review/SKILL.md\n    failOn: P1\n    independence:\n      differentSession: true\n      differentModel: true\n`;
+const policy = (mapped: boolean, timeout = 10, reviews = true) =>
+  `specVersion: "0.1"\nrerun:\n  conflict:\n    run: [lint, typecheck]\n    reviews: ${reviews}\nitems:\n${command("lint", mapped)}${command("typecheck", mapped)}${command("proof", false).replace("timeoutSeconds: 10", `timeoutSeconds: ${timeout}`)}  - id: independent-review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/acme-review/SKILL.md\n    failOn: P1\n    independence:\n      differentSession: true\n      differentModel: true\n`;
 
 const git = (worktree: string, ...args: string[]): FakeStep => ({
   type: "terminal",
@@ -56,18 +57,19 @@ async function conflictFix(variant: Variant = {}): Promise<Outcome> {
   let context: ProofContext | undefined;
   let rebased = false;
   let focused = false;
+  const reviewed: string[] = [];
   const proof: Proof = {
     covers: [],
     summary: "",
     ciPending: true,
-    config: '[merge.repositories."acme/widgets"]\nconflict_checks = ["lint", "typecheck"]\n',
     files: {
       ".agents/skills/acme-review/SKILL.md":
         "---\nname: acme-review\ndescription: Acme review\n---\nReview the change.",
     },
-    policy: policy(variant.mapped ?? true),
+    policy: policy(variant.mapped ?? true, 10, variant.reviews ?? true),
     reviewer: {
-      async review() {
+      async review(request) {
+        reviewed.push(request.head);
         return {
           session: "acme-review",
           model: "acme-review-model",
@@ -123,7 +125,7 @@ async function conflictFix(variant: Variant = {}): Promise<Outcome> {
       if (variant.policyOnMain)
         await run.pushToMain(
           ".agents/closeout.yaml",
-          policy(variant.mapped ?? true, 20),
+          policy(variant.mapped ?? true, 20, variant.reviews ?? true),
           "Give proof more time",
         );
       await run.pushToMain("widgets.txt", "99\n", "Set the acme widget count");
@@ -144,13 +146,14 @@ async function conflictFix(variant: Variant = {}): Promise<Outcome> {
   return {
     gates,
     focused,
+    reviewed,
     failed: result.assertions.filter((entry) => !entry.passed).map((entry) => entry.name),
   };
 }
 
-function rebasedGate({ gates, failed, focused }: Outcome): Gate {
+function rebasedGate({ gates, failed, focused }: Outcome, focus = true): Gate {
   expect(failed).toEqual([]);
-  expect(focused).toBe(true);
+  expect(focused).toBe(focus);
   expect(gates.length).toBeGreaterThanOrEqual(2);
   const [accepted, ...later] = gates;
   expect(accepted!.carried).toBeUndefined();
@@ -163,6 +166,25 @@ test("a conflict-only fix with green CI, a pass at the new head and the same pat
   const gates = await conflictFix();
   const rebased = rebasedGate(gates);
   expect(rebased.carried).toEqual([{ id: "proof", head: gates.gates[0]!.head }]);
+  expect(gates.reviewed).toContain(rebased.head);
+}, 150_000);
+
+test("reviews: false carries the review from the accepted head too", async () => {
+  const outcome = await conflictFix({ reviews: false });
+  const rebased = rebasedGate(outcome);
+  const accepted = outcome.gates[0]!.head;
+  expect(rebased.carried).toEqual([
+    { id: "proof", head: accepted },
+    { id: "independent-review", head: accepted },
+  ]);
+  expect(outcome.reviewed).not.toContain(rebased.head);
+}, 150_000);
+
+test("reviews: false with a new path reviews the fixed head again", async () => {
+  const outcome = await conflictFix({ reviews: false, extraPath: true });
+  const rebased = rebasedGate(outcome);
+  expect(rebased.carried).toBeUndefined();
+  expect(outcome.reviewed).toContain(rebased.head);
 }, 150_000);
 
 test("CI that GitHub cannot report carries nothing", async () => {
@@ -181,6 +203,9 @@ test("a turn with no pass at the new head carries nothing", async () => {
   expect(rebasedGate(await conflictFix({ commitAfterChecks: true })).carried).toBeUndefined();
 }, 150_000);
 
-test("a turn pass under another policy digest carries nothing", async () => {
-  expect(rebasedGate(await conflictFix({ policyOnMain: true })).carried).toBeUndefined();
+test("a policy changed on main since the acceptance narrows nothing", async () => {
+  const outcome = await conflictFix({ policyOnMain: true, reviews: false });
+  const rebased = rebasedGate(outcome, false);
+  expect(rebased.carried).toBeUndefined();
+  expect(outcome.reviewed).toContain(rebased.head);
 }, 150_000);
