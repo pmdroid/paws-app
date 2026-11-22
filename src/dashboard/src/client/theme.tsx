@@ -24,7 +24,101 @@ const SETTINGS_SECTION_LAYOUT =
 const roots = new WeakMap<globalThis.Element, Root>();
 let revision = 0;
 
+type TextField = HTMLInputElement | HTMLTextAreaElement;
+
+type HeldField = {
+  key: string;
+  value: string;
+  initial: string;
+  focused: boolean;
+  selection: [number | null, number | null, "forward" | "backward" | "none" | null] | null;
+};
+
+const SKIPPED_INPUTS = new Set(["checkbox", "radio", "file", "hidden", "submit", "button"]);
+const editableInitial = new WeakMap<globalThis.Element, string>();
+
+function textField(field: HTMLElement): field is TextField {
+  return field.tagName === "INPUT" || field.tagName === "TEXTAREA";
+}
+
+function editableFields(root: globalThis.Element): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>("input, textarea, [contenteditable]")].filter(
+    (field) =>
+      field.tagName === "INPUT"
+        ? !SKIPPED_INPUTS.has((field as HTMLInputElement).type)
+        : field.tagName === "TEXTAREA" || field.isContentEditable === true,
+  );
+}
+
+function fieldKey(field: HTMLElement): string | null {
+  if (field.id) return `#${field.id}`;
+  const name = field.getAttribute("name");
+  const form = field.closest("form");
+  if (!name || !form) return null;
+  if (form.id) return `${form.id}|${name}`;
+  const data = [...form.attributes].find((attribute) => attribute.name.startsWith("data-"));
+  return data ? `${data.name}=${data.value}|${name}` : null;
+}
+
+function fieldValue(field: HTMLElement): [string, string] {
+  if (textField(field)) return [field.value, field.defaultValue];
+  const text = field.textContent ?? "";
+  return [text, editableInitial.get(field) ?? text];
+}
+
+function captureFields(root: globalThis.Element): HeldField[] {
+  const active = document.activeElement;
+  return editableFields(root).flatMap((field) => {
+    const key = fieldKey(field);
+    const [value, initial] = fieldValue(field);
+    const focused = field === active;
+    if (!key || (!focused && value === initial)) return [];
+    let selection: HeldField["selection"] = null;
+    try {
+      if (focused && textField(field))
+        selection = [field.selectionStart, field.selectionEnd, field.selectionDirection];
+    } catch {
+      selection = null;
+    }
+    return [{ key, value, initial, focused, selection }];
+  });
+}
+
+function restoreFields(root: globalThis.Element, held: HeldField[]): void {
+  const fields = editableFields(root);
+  for (const field of fields)
+    if (!textField(field)) editableInitial.set(field, field.textContent ?? "");
+  if (held.length === 0) return;
+  const byKey = new Map<string, HTMLElement>();
+  for (const field of fields) {
+    const key = fieldKey(field);
+    if (key && !byKey.has(key)) byKey.set(key, field);
+  }
+  for (const entry of held) {
+    const field = byKey.get(entry.key);
+    if (!field) continue;
+    const [value, initial] = fieldValue(field);
+    if (initial === entry.initial && value !== entry.value) {
+      if (textField(field)) field.value = entry.value;
+      else field.textContent = entry.value;
+    }
+    if (!entry.focused) continue;
+    field.focus({ preventScroll: true });
+    if (!entry.selection || !textField(field) || field.value !== entry.value) continue;
+    try {
+      field.setSelectionRange(
+        entry.selection[0],
+        entry.selection[1],
+        entry.selection[2] ?? undefined,
+      );
+    } catch {
+      continue;
+    }
+  }
+}
+
 export function renderMarkup(root: globalThis.Element, html: string): void {
+  const held = typeof document === "undefined" ? [] : captureFields(root);
   for (const child of root.querySelectorAll("*")) {
     const mounted = roots.get(child);
     if (!mounted) continue;
@@ -59,6 +153,7 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
       ),
     ),
   );
+  restoreFields(root, held);
 }
 
 export function themedMarkup(html: string): ReactNode {
