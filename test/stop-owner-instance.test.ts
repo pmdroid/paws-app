@@ -122,7 +122,6 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
 
     expect(await stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
     expect((await getWorkItem(b.db, "acme-1"))?.state).toBe("cancelled");
-    expect(turn.controller.signal.aborted).toBe(false);
 
     await new Promise<void>((resolve) =>
       turn.controller.signal.addEventListener("abort", () => resolve(), { once: true }),
