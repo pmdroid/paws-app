@@ -1106,6 +1106,9 @@ async function execute(
   const failedTests = scrubFailures(tests?.failures ?? [], (text) =>
     scrubText(text, credentialSecrets()),
   );
+  const reported: FailedTest[] = tests?.problem
+    ? [{ message: tests.problem, kind: "error" }, ...failedTests]
+    : failedTests;
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
   if (result.cancelled) {
@@ -1143,7 +1146,7 @@ async function execute(
     stdout: scrubText(result.stdout, credentialSecrets()),
     stderr: scrubText(result.stderr, credentialSecrets()),
     truncated: result.truncated,
-    ...(failedTests.length > 0 ? { failedTests } : {}),
+    ...(reported.length > 0 ? { failedTests: reported } : {}),
     ...(tests ? { testSelection: storedTestSelection(tests.selection, testBase) } : {}),
   };
   state.kind = item.kind;
@@ -1170,11 +1173,7 @@ async function execute(
         ? {
             ...event,
             ...fittedTests(
-              storedFailedTests(
-                tests.problem
-                  ? [{ message: tests.problem, kind: "error" }, ...failedTests]
-                  : failedTests,
-              ),
+              storedFailedTests(reported),
               state.result!.testSelection!,
               FINISHED_EVENT_BYTES - Buffer.byteLength(JSON.stringify(event)),
             ),

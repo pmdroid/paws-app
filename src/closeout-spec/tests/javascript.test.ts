@@ -340,3 +340,28 @@ test("jest fails the check when jest-junit can't be resolved from the root", asy
     "jest-junit is not installed",
   );
 });
+test("a report problem is a failed test in the session result and the finished event", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-bun-problem-"));
+  roots.push(root);
+  spawnSync("git", ["init", "-b", "main"], { cwd: root });
+  commit(
+    root,
+    ".agents/closeout.yaml",
+    POLICY.replace("runner: bun", 'runner: bun, always: ["test/gone.test.ts"]'),
+  );
+  spawnSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: root });
+  commit(root, "test/ok.test.ts", 'import { test } from "bun:test";\ntest("fine", () => {});\n');
+  const events: CloseoutSessionEvent[] = [];
+  const session = createCloseoutSession(root, {
+    policy: async () => workspacePolicyFiles(root),
+    onProgress: (event) => void events.push(event),
+  });
+  await session.run("test");
+  const problem = {
+    message: "select.always names test/gone.test.ts, which the head doesn't have",
+    kind: "error",
+  };
+  const report = JSON.parse(await session.report()) as { required: { result?: unknown }[] };
+  expect(report.required[0]?.result).toMatchObject({ failedTests: [problem] });
+  expect(events.at(-1)).toMatchObject({ failedTests: { total: 1, shown: [problem] } });
+});
