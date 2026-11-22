@@ -972,10 +972,10 @@ export function createSlackThreads<Profile>(options: {
     call: SlackCall,
     place: Place,
     signal: AbortSignal,
-    options: { guests?: boolean } = {},
+    extra: { guests?: boolean } = {},
   ): Promise<PlaceAudience> {
     if ((await store.run((q) => directUserSteps(q, place))) !== null) return { kind: "direct" };
-    return slackChannelAudience(call, place, signal, options);
+    return slackChannelAudience(call, place, signal, extra);
   }
 
   async function verifyDirect(place: Place, signal: AbortSignal): Promise<void> {
