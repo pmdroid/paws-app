@@ -104,6 +104,7 @@ export {
   policyFixBudget,
   mainFixBudget,
   mainNarrowAfterLines,
+  mainRerun,
   DEFAULT_NARROW_AFTER_LINES,
   preExistingFindings,
   fixAttemptLimit,

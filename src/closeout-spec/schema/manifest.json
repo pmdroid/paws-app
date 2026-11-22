@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
-    "evidence.schema.json": "8dd15a0f562ca1b80b5337b8ea400ab16165c14b5ea26abac572c694503c6a44",
+    "evidence.schema.json": "4930ac747f9bc042eac55244af171b26978aee7dfe4e3d9df79bc85149bd7bdb",
     "policy.schema.json": "9bee6486265b8a62546841b19be8065397ea5bc1f09bce3a6a039b3a922dfebb"
   },
   "pawsExtensions": [

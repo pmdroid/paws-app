@@ -870,7 +870,9 @@ async function startParallelReviews(
     journalCaught(caughtError3, "run.startParallelReviews.toGateDecision", input.taskId);
     return undefined;
   }
-  const gaps = reviewGaps(before).filter((item) => parallel.has(item.id));
+  const gaps = reviewGaps(before).filter(
+    (item) => parallel.has(item.id) && !input.carried?.some((entry) => entry.id === item.id),
+  );
   if (gaps.length === 0) return undefined;
   const done = addReviewEvidence(
     input,

@@ -631,6 +631,7 @@ export type ReviewRecord = {
   /** At most 200 findings. */
   findings: Finding[];
   artifacts: Artifact[];
+  carried?: { head: string };
 };
 
 export type EvidenceRecord = CommandRecord | ReviewRecord;

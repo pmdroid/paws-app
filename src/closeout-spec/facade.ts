@@ -76,6 +76,7 @@ import {
   type ResolvedPolicyAbsent,
   type ResolvedReview,
   type ResolvedRule,
+  type RerunPolicy,
   type RetryPolicy,
   type ReviewRecord,
   type ReviewRequest,
@@ -512,16 +513,33 @@ export function mainNarrowAfterLines(repo: string, policyRoot?: string): number 
 }
 
 function mainRetry(repo: string, policyRoot?: string): RetryPolicy | undefined | null {
+  const policy = mainPolicy(repo, policyRoot);
+  return policy === null ? null : policy?.retry;
+}
+
+export function mainRerun(
+  repo: string,
+  policyRoot?: string,
+): { digest: string; rerun?: RerunPolicy } | null {
+  const policy = mainPolicy(repo, policyRoot);
+  if (!policy) return null;
+  return { digest: policy.digest, ...(policy.rerun ? { rerun: policy.rerun } : {}) };
+}
+
+function mainPolicy(
+  repo: string,
+  policyRoot?: string,
+): { digest: string; retry?: RetryPolicy; rerun?: RerunPolicy } | undefined | null {
   if (policyRoot !== undefined) {
     const local = loadLocalPolicy(policyRoot);
     if (!local.ok) return null;
-    return local.policy.source === "none" ? undefined : local.policy.retry;
+    return local.policy.source === "none" ? undefined : local.policy;
   }
   const main = trustedMirrorMain(repo);
   if (!main.ok) return null;
   const loaded = loadCommitPolicy({ repo, git: gitReader }, main.commit);
   if (!loaded.ok) return null;
-  return loaded.policy?.retry;
+  return loaded.policy ?? undefined;
 }
 
 /**
