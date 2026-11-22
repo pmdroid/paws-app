@@ -806,7 +806,7 @@ export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
   };
 }
 
-const ISSUE_FOLDS = /^section\n(closeout|findings|rules|risk|fixes|pr|timeline):/;
+const ISSUE_FOLDS = /^section\n(closeout|fixes|pr|timeline):/;
 
 /** A Closeout view with the issue page's folded sections open, as after a person opens them. */
 export function openedView(given: Record<string, boolean> = {}): CloseoutView {

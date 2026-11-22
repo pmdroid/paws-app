@@ -159,7 +159,7 @@ describe("issue page sections", () => {
       closeout: emptyCloseoutView(),
       ...pageData(snapshot, { view: "issues", id: "ENG-100" }),
     }).content;
-    const rules = html.slice(html.indexOf('aria-label="Rules"'));
+    const rules = html.slice(html.indexOf('class="issue-fold closeout-overview'));
     expect(rules).toContain('aria-expanded="true"');
     expect(rules).toContain("api-contract");
   });

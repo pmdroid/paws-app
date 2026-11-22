@@ -87,7 +87,7 @@ try {
       const stepper = page.getByRole("list", { name: "Issue progress" });
       await expect(stepper.locator('[aria-current="step"]')).toHaveText(/Fixing merge conflicts/);
       await expect(page.getByText(/Main moved under this pull request/)).toBeVisible();
-      await expect(page.getByRole("button", { name: /^Closeout/ })).toHaveAttribute(
+      await expect(page.getByRole("button", { name: /View verification details/ })).toHaveAttribute(
         "aria-expanded",
         "false",
       );
@@ -112,12 +112,9 @@ try {
         await expect(
           page.getByRole("heading", { level: 2, name: "Closeout exhausted" }),
         ).toBeVisible();
-        const rules = page.getByRole("button", { name: /^Rules/ });
+        const rules = page.getByRole("button", { name: /View verification details/ });
         if ((await rules.getAttribute("aria-expanded")) === "false") await rules.click();
-        await expect(page.getByRole("button", { name: /^Rules/ })).toHaveAttribute(
-          "aria-expanded",
-          "true",
-        );
+        await expect(rules).toHaveAttribute("aria-expanded", "true");
       }
       await page.screenshot({
         path: join(directory, `${prefix}-needs-you-${width}.png`),

@@ -22,13 +22,7 @@ export function riskCard(risk: StatusItemRisk | null | undefined): string {
       : risk.tier === "normal"
         ? '<span class="tag passed">Normal</span>'
         : '<span class="tag">Not classified</span>';
-  const commit = risk.head ? ` <span class="mono">${esc(risk.head.slice(0, 7))}</span>` : "";
-  const summary =
-    risk.tier === null
-      ? "Paws classifies the risk when Closeout accepts a commit."
-      : risk.tier === "high"
-        ? `Commit${commit} changes ${risk.paths.length} high-risk ${risk.paths.length === 1 ? "path" : "paths"}.`
-        : `Commit${commit} changes no high-risk path.`;
+  const summary = riskReason(risk);
   const paths = risk.paths.length
     ? `<ul class="risk-paths">${risk.paths
         .map(
@@ -42,6 +36,15 @@ export function riskCard(risk: StatusItemRisk | null | undefined): string {
         .join("")}</ul>`
     : "";
   return `<section id="risk-tier" class="card risk-card" aria-labelledby="risk-heading"><div class="row wrap"><h2 id="risk-heading">Risk</h2>${tier}</div><p>${summary}</p>${paths}${risk.automaticApproval || risk.tier === "high" ? `<p>${esc(risk.automaticApproval ?? "Manual approval required")}</p>` : ""}<p class="risk-review">${securityReviewLine(risk)}</p><p class="muted">A path is high-risk when a glob in ${LISTS.settings} or in the repository's ${LISTS.file} matches it.</p></section>`;
+}
+
+export function riskReason(risk: StatusItemRisk): string {
+  const commit = risk.head ? ` <span class="mono">${esc(risk.head.slice(0, 7))}</span>` : "";
+  return risk.tier === null
+    ? "Paws classifies the risk when Closeout accepts a commit."
+    : risk.tier === "high"
+      ? `Commit${commit} changes ${risk.paths.length} high-risk ${risk.paths.length === 1 ? "path" : "paths"}.`
+      : `Commit${commit} changes no high-risk path.`;
 }
 
 /** "Security review skipped: no high-risk path", or what the review did. */
