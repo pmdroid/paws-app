@@ -14,6 +14,7 @@ import type {
   ResolvedReview,
   ResolvedRule,
   ResolvedSetup,
+  RerunPolicy,
   RetryPolicy,
 } from "../types";
 
@@ -69,6 +70,7 @@ export type TreePolicy = {
   rules: ResolvedRule[];
   files: PolicyFile[];
   retry?: RetryPolicy;
+  rerun?: RerunPolicy;
   /** Keys the parser does not know, as `<file>:<JSON pointer>`. They were left out of the policy. */
   unknownKeys: string[];
 };
@@ -94,6 +96,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
   const state: WalkState = {
     tree,
     retry: undefined,
+    rerun: undefined,
     setup: [],
     items: [],
     rules: [],
@@ -106,6 +109,8 @@ function loadTree(tree: PolicyTree): TreeLoad {
   };
   const walked = walk(state, PUBLIC_POLICY_PATH, "", []);
   if (walked !== undefined) return { ok: false, message: walked };
+  const rerun = checkRerun(state);
+  if (rerun !== undefined) return { ok: false, message: `${PUBLIC_POLICY_PATH}: ${rerun}` };
   const skills = hashSkills(state);
   if (skills !== undefined) return { ok: false, message: skills };
   const files = sortPolicyFiles(state.files);
@@ -115,6 +120,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     setup: state.setup,
     rules: state.rules,
     ...(state.retry !== undefined ? { retry: state.retry } : {}),
+    ...(state.rerun !== undefined ? { rerun: state.rerun } : {}),
   });
   const policy: TreePolicy = {
     skillFiles: state.skillFiles,
@@ -128,6 +134,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     unknownKeys: state.unknownKeys,
   };
   if (state.retry !== undefined) policy.retry = state.retry;
+  if (state.rerun !== undefined) policy.rerun = state.rerun;
   if (state.unknownKeys.length > 0 && !journaledUnknownKeys.has(policy.digest)) {
     journaledUnknownKeys.add(policy.digest);
     journal(
@@ -142,6 +149,7 @@ type WalkState = {
   probeFiles: Map<string, Uint8Array>;
   tree: PolicyTree;
   retry: RetryPolicy | undefined;
+  rerun: RerunPolicy | undefined;
   setup: ResolvedSetup[];
   items: ResolvedRequirement[];
   rules: ResolvedRule[];
@@ -173,6 +181,10 @@ function walk(
     return "retry is only allowed on the entry policy";
   }
   if (prefix.length === 0) state.retry = document.retry;
+  if (prefix.length > 0 && document.rerun !== undefined) {
+    return "rerun is only allowed on the entry policy";
+  }
+  if (prefix.length === 0) state.rerun = document.rerun;
   if (prefix.length > 0 && document.setup !== undefined && document.setup.length > 0) {
     return "setup is only allowed on the entry policy";
   }
@@ -234,6 +246,7 @@ function walk(
       if (except.paths.length > 0) item.except = except.paths;
       if (raw.ci !== undefined) item.ci = raw.ci;
       if (raw.recheck === true) item.recheck = true;
+      if (raw.since !== undefined) item.since = raw.since;
       state.items.push(item);
       continue;
     }
@@ -308,6 +321,17 @@ function walk(
     const rule = resolveRule(state, raw);
     if (typeof rule === "string") return rule;
     state.rules.push(rule);
+  }
+  return undefined;
+}
+
+function checkRerun(state: WalkState): string | undefined {
+  for (const id of state.rerun?.conflict?.run ?? []) {
+    const item = state.items.find((entry) => entry.id === id);
+    if (item === undefined) return `rerun.conflict.run names ${id}, which is not a check`;
+    if (item.kind !== "command" || "supported" in item) {
+      return `rerun.conflict.run names ${id}, which is a ${item.kind} check, not a command`;
+    }
   }
   return undefined;
 }

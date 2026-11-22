@@ -55,3 +55,20 @@ The local policy replaces the repository policy for that project. Paws blocks ve
 Changing the policy or its review instructions requires fresh verification. Review results identify the selected local policy. Paired runners use the same policy, with commands executed against the candidate checkout.
 
 Checks, rules and setup steps can use `paths` to limit which changed files trigger them. The optional `except` list requires `paths` and excludes matching files from that scope. Both lists use repository-relative patterns: `*` and `?` match within a segment, `**` matches across segments, and a trailing `/` matches a prefix. For example, `paths: ["src/dashboard/**"]` with `except: ["**/*.test.ts"]` requires visual proof for dashboard source changes but skips test-only changes.
+
+The entry policy can say what a restart runs again with an optional `rerun` key. An imported file that contains `rerun` does not load.
+
+```yaml
+rerun:
+  conflict:
+    run: [lint, typecheck, test]
+    reviews: false
+  ci:
+    run: failed
+```
+
+`rerun.conflict.run` lists the command checks to run after a conflict fix. Each id must name a `kind: command` check in the policy, and an imported check uses its prefixed id, such as `team/test`. `rerun.conflict.reviews` defaults to `true`. `rerun.ci.run` is `all` (the default) or `failed`. Any other key under `rerun` makes the policy invalid.
+
+A command check can also have `since`, the command to run when the check only has to cover changes made after an earlier commit. It is an argv like `exec` and needs exactly one element that is `{since}`, for example `since: ["bun", "scripts/affected-tests.ts", "{since}"]`. Only command checks accept `since`.
+
+Runners need a release that knows these keys. An older runner skips them and warns about unknown policy keys.

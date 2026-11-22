@@ -98,6 +98,7 @@ export type PolicyCommand = {
    * a change to any other check leaves the acceptance standing.
    */
   recheck?: boolean;
+  since?: string[];
 };
 
 export type PolicyReview = {
@@ -219,6 +220,7 @@ export type PolicyDocument = {
    */
   description?: string;
   retry?: RetryPolicy;
+  rerun?: RerunPolicy;
   /** At most 64 imports. */
   imports?: PolicyImport[];
   /** At most 128 items. */
@@ -255,6 +257,13 @@ export type PolicyFile = {
  */
 export type PolicySource = "repo" | "global" | "local" | "none";
 
+export type RerunCiMode = "all" | "failed";
+
+export type RerunPolicy = {
+  conflict?: { run?: string[]; reviews: boolean };
+  ci?: { run: RerunCiMode };
+};
+
 /**
  * Resolved command, in canonical form. `paths` is omitted when the item has none.
  * `specVersion` section 6.
@@ -271,6 +280,7 @@ export type ResolvedCommand = {
   ci?: string;
   /** See {@link PolicyCommand.recheck}. */
   recheck?: boolean;
+  since?: string[];
 };
 
 /** Resolved review, in canonical form. `independence` has both flags. */
@@ -440,6 +450,7 @@ export type ResolvedPolicyPresent = {
   /** In file order. Empty or omitted when the entry has no `rules`. */
   rules?: ResolvedRule[];
   retry?: RetryPolicy;
+  rerun?: RerunPolicy;
   /**
    * Each policy file that was read, every regular file under each referenced skill, and each
    * rule's probe, once.
@@ -472,6 +483,7 @@ export type PolicyIdentity = {
   /** Omitted when there are no rules, so a policy without rules keeps its digest. */
   rules?: ResolvedRule[];
   retry?: RetryPolicy;
+  rerun?: RerunPolicy;
 };
 
 /**

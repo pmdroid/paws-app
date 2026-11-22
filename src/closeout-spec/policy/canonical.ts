@@ -5,6 +5,7 @@ import {
   type ResolvedRequirement,
   type ResolvedRule,
   type ResolvedSetup,
+  type RerunPolicy,
   type RetryPolicy,
 } from "../types";
 
@@ -33,6 +34,7 @@ export function policyCanonicalJson(policy: {
   setup: readonly ResolvedSetup[];
   rules?: readonly ResolvedRule[];
   retry?: RetryPolicy;
+  rerun?: RerunPolicy;
 }): string {
   const body: Record<string, unknown> = {
     specVersion: SPEC_VERSION,
@@ -54,6 +56,7 @@ export function policyCanonicalJson(policy: {
         : {}),
     };
   }
+  if (policy.rerun !== undefined) body.rerun = policy.rerun;
   if (policy.setup.length > 0) body.setup = policy.setup.map(setupJson);
   if (policy.rules !== undefined && policy.rules.length > 0)
     body.rules = policy.rules.map(ruleJson);
@@ -137,6 +140,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         timeoutSeconds: item.timeoutSeconds,
         ...(item.ci !== undefined ? { ci: item.ci } : {}),
         ...(item.recheck === true ? { recheck: true } : {}),
+        ...(item.since !== undefined ? { since: item.since } : {}),
       },
       item.paths,
       item.except,

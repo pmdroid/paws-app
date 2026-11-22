@@ -260,6 +260,7 @@ function present(
   };
   if (policy.rules.length > 0) resolved.probeFiles = policy.probeFiles;
   if (policy.retry !== undefined) resolved.retry = policy.retry;
+  if (policy.rerun !== undefined) resolved.rerun = policy.rerun;
   return resolved;
 }
 
