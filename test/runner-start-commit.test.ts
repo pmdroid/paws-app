@@ -56,7 +56,7 @@ test("a head already on GitHub starts on its bound account with no push and no l
   expect(result.received, result.detail).not.toContain("login");
 });
 
-test("the run command carries the Closeout focus without since", async () => {
+test("the run command carries the Closeout focus with since", async () => {
   const focus = {
     scope: "failed",
     head: "c".repeat(40),
@@ -68,7 +68,11 @@ test("the run command carries the Closeout focus without since", async () => {
     push: "works",
     closeoutFocus: { ...focus, since: ["test"] },
   });
-  expect(result.closeoutFocus, result.detail).toEqual({ ...focus, passed: ["lint"] });
+  expect(result.closeoutFocus, result.detail).toEqual({
+    ...focus,
+    passed: ["lint"],
+    since: ["test"],
+  });
 });
 
 test("a head missing on GitHub is pushed before the run when the push works", async () => {

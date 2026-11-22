@@ -638,6 +638,7 @@ import { turnPasses } from "./turn-passes";
 import { closeoutFocus } from "./closeout-focus";
 import { incompleteReport } from "./incomplete-report";
 import { conflictCarried, conflictChecksFor, type ConflictChecks } from "./conflict-checks";
+import { ciCarried, ciChecksFor, type CiChecks, type CiSince } from "./ci-checks";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -4033,7 +4034,18 @@ export class Orchestrator {
             : null,
         briefs: Boolean(comments?.text || suggestions),
       });
-      const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict);
+      const ci = await ciChecksFor(this.store, {
+        itemId: item.id,
+        reason: returned?.reason,
+        policy:
+          returned?.reason === "ci"
+            ? mainRerun(
+                (await this.itemHead(item)).repo,
+                (await this.closeoutHome(item)).policyRoot,
+              )
+            : null,
+      });
+      const focus = await closeoutFocus(this.store, item.id, returned?.reason, conflict, ci);
       const draft = await this.savedDraft(item.id);
       let prompt = implementPrompt({
         identifier: item.linearIdentifier,
@@ -4044,6 +4056,7 @@ export class Orchestrator {
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
         ...(focus ? { closeoutFocus: focus } : {}),
         ...(conflict ? { conflictRun: conflict.run } : {}),
+        ...(ci ? { ciFailed: ci.failed } : {}),
       });
       await this.flush();
       if (await this.stopped(item.id)) return;
@@ -4329,6 +4342,7 @@ export class Orchestrator {
           await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
         ),
         conflict,
+        ci,
       );
     } catch (error) {
       const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
@@ -4425,6 +4439,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     fromTurn: readonly TurnPass[],
     conflict?: ConflictChecks,
+    ci?: CiChecks,
   ): Promise<void> {
     const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (current === null || current.state !== "running") return;
@@ -4438,6 +4453,7 @@ export class Orchestrator {
     await this.evaluateHead(verifying, worktree, base, head, candidate, {
       fromTurn,
       ...(conflict ? { conflict } : {}),
+      ...(ci ? { ci } : {}),
     });
   }
 
@@ -4459,6 +4475,7 @@ export class Orchestrator {
       onOwned?: () => Promise<void>;
       fromTurn?: readonly TurnPass[];
       conflict?: ConflictChecks;
+      ci?: CiChecks;
     } = {},
   ): Promise<void> {
     const startRound =
@@ -4496,6 +4513,7 @@ export class Orchestrator {
       startRound: boolean;
       fromTurn?: readonly TurnPass[];
       conflict?: ConflictChecks;
+      ci?: CiChecks;
     },
     assertCurrent: () => Promise<void>,
     assertOwned: () => Promise<void>,
@@ -4523,9 +4541,12 @@ export class Orchestrator {
       return;
     }
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
+    const fromCiFix = options.ci
+      ? await this.ciFixCarried(item, worktree, head, options.ci, options.fromTurn ?? [])
+      : undefined;
     const carried = options.conflict
       ? await this.conflictCarried(item, worktree, base, head, fromCi, options)
-      : undefined;
+      : fromCiFix?.carried;
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
       const before = (await this.store.run((q) => getWorkItemSteps(q, item.id))) ?? item;
@@ -4540,6 +4561,7 @@ export class Orchestrator {
         fromCi,
         options.fromTurn,
         carried,
+        fromCiFix?.since,
       );
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
       await assertOwned();
@@ -4793,6 +4815,7 @@ export class Orchestrator {
     fromCi: readonly CiResult[] = [],
     fromTurn: readonly TurnPass[] = [],
     carried: readonly CarriedPass[] = [],
+    since?: CiSince,
   ): Promise<CloseoutVerdict> {
     const repository = await this.repositoryForItem(item);
     const mirror =
@@ -4890,6 +4913,7 @@ export class Orchestrator {
           // CI's results are for the head it ran on; a fixed head runs every check.
           fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
           carried: commit === head ? carried.map((entry) => entry.id) : [],
+          ...(commit === head && since ? { since } : {}),
         });
         runnerChecks.set(commit, checks);
       }
@@ -4973,6 +4997,7 @@ export class Orchestrator {
       ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(fromTurn.length > 0 ? { fromTurn } : {}),
       ...(carried.length > 0 ? { carried } : {}),
+      ...(since ? { since } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       pullRequest: () => this.savedDraft(item.id),
       reviewer: {
@@ -5065,6 +5090,7 @@ export class Orchestrator {
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
       carried?: readonly string[];
+      since?: CiSince;
       rulesFirst: boolean;
     },
   ): Promise<void> {
@@ -5111,6 +5137,17 @@ export class Orchestrator {
             if (activity) activity.since = this.now();
           },
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
+          ...(input.since
+            ? {
+                closeoutFocus: {
+                  scope: "failed" as const,
+                  head: input.since.head,
+                  policyDigest: input.since.policyDigest,
+                  passed: [],
+                  since: input.since.ids,
+                },
+              }
+            : {}),
           ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
@@ -6797,6 +6834,40 @@ export class Orchestrator {
     const listed = await trustedChangedPaths(worktree, base, head);
     if (!listed.ok) throw new Error(listed.message);
     return { changed: listed.paths };
+  }
+
+  private async ciFixCarried(
+    item: WorkItemRecord,
+    worktree: string,
+    head: string,
+    ci: CiChecks,
+    fromTurn: readonly TurnPass[],
+  ): Promise<{ carried?: CarriedPass[]; since: CiSince } | undefined> {
+    const repository = await this.repositoryForItem(item);
+    if (!repository) return undefined;
+    const policy = mainRerun(
+      (await this.itemHead(item)).repo,
+      (await this.closeoutHome(item)).policyRoot,
+    );
+    if (!policy || policy.digest !== ci.policyDigest) return undefined;
+    const changed = await this.riskPaths(
+      worktree,
+      repository,
+      ci.head,
+      head,
+      this.storedCandidates(),
+    )
+      .then((read) => read.changed)
+      .catch(() => null);
+    const carried = ciCarried(ci, { head, commands: policy.commands, fromTurn, changed });
+    if (!carried) return undefined;
+    this.options.journal?.(
+      `item ${item.linearIdentifier} CI fix at ${head.slice(0, 7)}: Closeout runs ${ci.since.join(", ") || "no check"} since ${ci.head.slice(0, 7)} and keeps ${carried.map((entry) => entry.id).join(", ") || "no check"}`,
+    );
+    return {
+      ...(carried.length > 0 ? { carried } : {}),
+      since: { head: ci.head, ids: ci.since, policyDigest: ci.policyDigest },
+    };
   }
 
   private async conflictCarried(

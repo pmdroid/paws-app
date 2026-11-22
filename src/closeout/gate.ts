@@ -62,6 +62,7 @@ export type CloseoutGateOptions = {
   fromCi?: GateInput["fromCi"];
   fromTurn?: GateInput["fromTurn"];
   carried?: GateInput["carried"];
+  since?: GateInput["since"];
   pullRequest?: GateInput["pullRequest"];
 };
 
@@ -109,6 +110,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.fromCi ? { fromCi: options.fromCi } : {}),
         ...(options.fromTurn ? { fromTurn: options.fromTurn } : {}),
         ...(options.carried ? { carried: options.carried } : {}),
+        ...(options.since ? { since: options.since } : {}),
         ...(options.pullRequest ? { pullRequest: options.pullRequest } : {}),
       });
       return toVerdict(result, input.attempt);

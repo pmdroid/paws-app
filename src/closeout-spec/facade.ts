@@ -56,6 +56,7 @@ import {
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
 import { runCloseoutCommands, type CloseoutCommandPort } from "./run/run";
+import { withSince, type SinceRun } from "./since";
 import {
   SPEC_VERSION,
   type CandidateIdentity,
@@ -74,6 +75,7 @@ import {
   type ResolvedPolicy,
   type ResolvedEvidence,
   type ResolvedPolicyAbsent,
+  type ResolvedRequirement,
   type ResolvedReview,
   type ResolvedRule,
   type RerunPolicy,
@@ -158,6 +160,7 @@ export type RunRequest = {
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
   carried?: readonly CarriedPass[];
+  since?: SinceRun;
   pullRequest?: PullRequestDraft;
 };
 
@@ -517,19 +520,46 @@ function mainRetry(repo: string, policyRoot?: string): RetryPolicy | undefined |
   return policy === null ? null : policy?.retry;
 }
 
+export type RerunCommand = {
+  id: string;
+  ci?: string;
+  since?: string[];
+  paths?: string[];
+  except?: string[];
+};
+
 export function mainRerun(
   repo: string,
   policyRoot?: string,
-): { digest: string; rerun?: RerunPolicy } | null {
+): { digest: string; rerun?: RerunPolicy; commands: RerunCommand[] } | null {
   const policy = mainPolicy(repo, policyRoot);
   if (!policy) return null;
-  return { digest: policy.digest, ...(policy.rerun ? { rerun: policy.rerun } : {}) };
+  return {
+    digest: policy.digest,
+    ...(policy.rerun ? { rerun: policy.rerun } : {}),
+    commands: policy.items.flatMap((item) =>
+      item.kind === "command" && !("supported" in item)
+        ? [
+            {
+              id: item.id,
+              ...(item.ci !== undefined ? { ci: item.ci } : {}),
+              ...(item.since !== undefined ? { since: item.since } : {}),
+              ...(item.paths !== undefined ? { paths: item.paths } : {}),
+              ...(item.except !== undefined ? { except: item.except } : {}),
+            },
+          ]
+        : [],
+    ),
+  };
 }
 
 function mainPolicy(
   repo: string,
   policyRoot?: string,
-): { digest: string; retry?: RetryPolicy; rerun?: RerunPolicy } | undefined | null {
+):
+  | { digest: string; retry?: RetryPolicy; rerun?: RerunPolicy; items: ResolvedRequirement[] }
+  | undefined
+  | null {
   if (policyRoot !== undefined) {
     const local = loadLocalPolicy(policyRoot);
     if (!local.ok) return null;
@@ -786,6 +816,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     input.policyRoot,
     input.checkoutExclusions,
   );
+  if (loaded.ok && input.since) loaded.policy = withSince(loaded.policy, input.since);
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(

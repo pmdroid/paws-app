@@ -1,6 +1,7 @@
 export {
   CARRIED_PREFIX,
   carriedMessage,
+  coversAnyPath,
   candidatePolicyDigest,
   candidatePolicyDigests,
   credentialSecrets,
@@ -20,6 +21,7 @@ export {
   mainFixBudget,
   mainNarrowAfterLines,
   mainRerun,
+  type RerunCommand,
   DEFAULT_NARROW_AFTER_LINES,
   policyCheckPaths,
   approvalsAtHead,
@@ -77,6 +79,7 @@ export type {
   TurnPass,
   CarriedPass,
   RerunPolicy,
+  SinceRun,
   CloseoutFocus,
   CloseoutOutputStream,
   CloseoutProgress,

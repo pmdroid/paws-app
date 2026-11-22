@@ -105,6 +105,7 @@ export {
   mainFixBudget,
   mainNarrowAfterLines,
   mainRerun,
+  type RerunCommand,
   DEFAULT_NARROW_AFTER_LINES,
   preExistingFindings,
   fixAttemptLimit,
@@ -129,6 +130,7 @@ export {
   visualReviewRequirements,
   workspacePolicyFiles,
 } from "./facade";
+export { coversAnyPath, type SinceRun } from "./since";
 export { CARRIED_PREFIX, carriedMessage, POLICY_VALID_ID } from "./evaluate/evaluate";
 export { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
 export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
