@@ -106,7 +106,7 @@ export type { FailedTest } from "./tests/types";
 import type { FailedTest } from "./tests/types";
 
 export type TestSelect = {
-  runner: "bun";
+  runner: "bun" | "go";
   always?: string[];
   full_on?: string[];
   max_selected?: number;

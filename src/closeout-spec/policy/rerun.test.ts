@@ -187,4 +187,16 @@ describe("rerun and since", () => {
       `${prefix}/items/1/select is only allowed on kind: command items`,
     );
   });
+
+  test("select runner go needs go test with flags and exactly one ./... pattern", () => {
+    const go = (exec: string) =>
+      `${BASE}${TEST.replace('["bun", "test"]', exec)}    select: { runner: go, max_selected: 20 }\n`;
+    const loaded = load(go('["go", "test", "-tags=integration", "./..."]'));
+    if (!loaded.ok || loaded.absent) throw new Error("expected a policy");
+    expect(loaded.policy.items[2]).toMatchObject({ select: { runner: "go", max_selected: 20 } });
+    const shape = `${PUBLIC_POLICY_PATH}: item test: select runner go needs exec to start with "go", "test" and pass only flags, as -flag=value, and exactly one package pattern, ./..., without -args`;
+    for (const exec of ['["go", "test", "./a/..."]', '["go", "test", "./...", "./b"]']) {
+      expect(failure(go(exec))).toBe(shape);
+    }
+  });
 });

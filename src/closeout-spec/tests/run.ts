@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bunTestAdapter } from "./bun";
 import { readAt, snapshotAt, testChanges } from "./git";
+import { goTestAdapter } from "./go";
+import { MAX_GO_REPORT_BYTES, parseGoJson } from "./go-json";
 import { MAX_REPORT_BYTES, parseJunit } from "./junit";
 import type {
   FailedTest,
@@ -44,12 +46,14 @@ export async function runTestCheck<R extends TestExecuted>(input: {
       base,
       head,
       reportDir,
+      env,
       changes: () => testChanges(cwd, base, head, env),
       readAtBase: (path) => readAt(cwd, base, path, env),
       readAtHead: (path) => readAt(cwd, head, path, env),
       snapshot: (commit) => snapshotAt(cwd, commit, env),
     };
-    const plan = await planOf(input.adapter ?? bunTestAdapter, context);
+    const adapter = input.adapter ?? (item.select.runner === "go" ? goTestAdapter : bunTestAdapter);
+    const plan = await planOf(adapter, context);
     if (plan.problem !== undefined) {
       return {
         ok: false,
@@ -100,7 +104,23 @@ async function planOf(adapter: TestAdapter, context: TestContext): Promise<TestP
 function readReport(plan: TestPlan): { failures: FailedTest[]; problem?: string } {
   if (plan.report.kind === "none") return { failures: [] };
   if (plan.report.kind === "go-json") {
-    return { failures: [], problem: "go-json test reports are not read yet" };
+    const { path } = plan.report;
+    let text: string;
+    try {
+      if (statSync(path).size > MAX_GO_REPORT_BYTES) {
+        return { failures: [], problem: `test report ${path} is larger than 64 MB` };
+      }
+      text = readFileSync(path, "utf8");
+    } catch (error) {
+      journalCaught(error, "tests.readReport.goJson", null, "the report may be absent");
+      return { failures: [], problem: `test report ${path} is missing` };
+    }
+    const parsed = parseGoJson(text);
+    if (!parsed.ok) return { failures: [], problem: `test report ${path} ${parsed.message}` };
+    if (parsed.cases === 0 && !plan.intentionallyEmpty) {
+      return { failures: parsed.failures, problem: "the test report lists no tests" };
+    }
+    return { failures: parsed.failures };
   }
   const failures: FailedTest[] = [];
   let cases = 0;
