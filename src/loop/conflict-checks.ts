@@ -54,13 +54,13 @@ export async function conflictChecksFor(
         .filter((step) => step.kind === "command" && step.state === "passed")
         .map((step) => step.id)
         .filter((id) => !run.includes(id));
-      if (carried.length === 0) return;
       const reviews =
         policy.rerun?.conflict?.reviews === false
           ? accepted.steps
               .filter((step) => step.kind === "review" && step.state === "passed")
               .map((step) => step.id)
           : [];
+      if (carried.length === 0 && reviews.length === 0) return;
       return { head: accepted.head, policyDigest: accepted.policyDigest, run, carried, reviews };
     });
   } catch {

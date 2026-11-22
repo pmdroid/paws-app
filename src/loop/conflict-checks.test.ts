@@ -163,6 +163,23 @@ test("reviews: false carries the reviews that passed on the accepted head", asyn
   });
 });
 
+test("reviews: false carries the reviews when every passed command runs again", async () => {
+  const all = ["lint", "typecheck", "test", "proof"];
+  expect(await read(await setup(), { policy: policy(all, false) })).toEqual({
+    head: ACCEPTED,
+    policyDigest: "policy",
+    run: all,
+    carried: [],
+    reviews: ["independent-review"],
+  });
+});
+
+test("nothing is returned when every passed command runs again and reviews run", async () => {
+  expect(
+    await read(await setup(), { policy: policy(["lint", "typecheck", "test", "proof"]) }),
+  ).toBeUndefined();
+});
+
 const refused: [string, Setup, Partial<Parameters<typeof conflictChecksFor>[1]>][] = [
   ["the repository lists no checks", {}, { policy: policy([]) }],
   ["the policy has no rerun", {}, { policy: { digest: "policy" } }],
