@@ -26,10 +26,7 @@ export type {
   TrackerKind,
 } from "./file";
 export {
-  describeRetiredSections,
   readConfigText,
-  removeRetiredConfigSection,
-  retiredConfigSections,
   useMemorySettings,
   useMemorySettingsByDefault,
   useSettingsStore,

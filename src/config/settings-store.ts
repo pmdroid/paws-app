@@ -107,35 +107,6 @@ function knownSections(text: string): string {
   );
 }
 
-export function retiredConfigSections(configPath: string): string[] {
-  const stored = snapshotOf(configPath)?.stored ?? null;
-  const sections = new Set<string>();
-  splitSections(stored ?? "", (_settings, heading) => {
-    if (heading !== undefined && !knownConfigSection(heading.toLowerCase()))
-      sections.add(heading.toLowerCase());
-    return false;
-  });
-  return [...sections];
-}
-
-export function describeRetiredSections(sections: readonly string[]): string {
-  return `Saved settings ${sections.map((name) => `[${name}]`).join(", ")} ${sections.length === 1 ? "is" : "are"} not known to this Paws and ${sections.length === 1 ? "is" : "are"} ignored: remove ${sections.length === 1 ? "it" : "them"} in Settings`;
-}
-
-export async function removeRetiredConfigSection(configPath: string, name: string): Promise<void> {
-  const snapshot = snapshotOf(configPath);
-  const section = name.toLowerCase();
-  if (snapshot === undefined || !retiredConfigSections(configPath).includes(section)) return;
-  let saved = "";
-  await snapshot.store.update((stored) => {
-    const kept = withoutConfigSection(stored ?? "", section);
-    saved = kept === "" ? "" : `${kept}\n`;
-    return saved;
-  });
-  snapshot.stored = saved;
-  snapshot.ticket = ++tickets;
-}
-
 function isSettingsSection(section: string): boolean {
   const name = section.toLowerCase();
   const within = (prefix: string) => name === prefix || name.startsWith(`${prefix}.`);
