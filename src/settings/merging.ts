@@ -12,7 +12,6 @@ import {
   MAX_MERGE_PARALLEL,
   MERGE_NO_PROJECT,
   parseCommentWait,
-  parseConflictCheckSettings,
   parseHighRiskPathSettings,
   parseIgnoredCommentSettings,
   parseMergeLanes,
@@ -165,7 +164,6 @@ export async function handleMergeSettingsRequest(
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
       parallelFiles: parallelFilesView(policy),
-      conflictChecks: conflictChecksView(policy),
       ...(options.hotFiles
         ? await hotFileView(
             () =>
@@ -199,7 +197,6 @@ export async function handleMergeSettingsRequest(
   let overlapHold: boolean | undefined;
   let ignoredComments: Record<string, IgnoredComments> | undefined;
   let parallelFiles: Record<string, string[]> | undefined;
-  let conflictChecks: Record<string, string[]> | undefined;
   let lanes: MergeLaneSplit[] | undefined;
   let noProject: MergeNoProject | undefined;
   let parallel: number | undefined;
@@ -214,11 +211,6 @@ export async function handleMergeSettingsRequest(
     if (isRecord(body) && "parallelFiles" in body) {
       const { parallelFiles: files, ...rest } = body;
       parallelFiles = parseParallelFileSettings(files);
-      body = rest;
-    }
-    if (isRecord(body) && "conflictChecks" in body) {
-      const { conflictChecks: checks, ...rest } = body;
-      conflictChecks = parseConflictCheckSettings(checks);
       body = rest;
     }
     if (isRecord(body) && "parallel" in body) {
@@ -365,7 +357,6 @@ export async function handleMergeSettingsRequest(
       commentWait,
       ignoredComments,
       parallelFiles,
-      conflictChecks,
     );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
@@ -473,9 +464,6 @@ export async function handleMergeSettingsRequest(
       "settings.merging",
       `Conflict-prone files not held: ${listed(parallelFilesView(before))} → ${listed(parallelAfter)}`,
     );
-  if (conflictChecks !== undefined)
-    for (const change of conflictCheckChanges(before, after))
-      await options.audit?.("settings.merging", change);
   if (ignoredComments !== undefined)
     for (const change of ignoredCommentChanges(
       before ? ignoredCommentsView(before, options) : [],
@@ -501,36 +489,7 @@ export async function handleMergeSettingsRequest(
     highRiskRepositories: await highRiskRepositoriesView(saved, options),
     ignoredComments: ignoredAfter,
     parallelFiles: parallelAfter,
-    conflictChecks: conflictChecksView(after),
   });
-}
-
-function conflictChecksView(
-  settings: MergeSettings | null,
-): { repository: string; ids: string[] }[] {
-  return Object.entries(settings?.repositories ?? {})
-    .filter(([, value]) => value.conflictChecks?.length)
-    .map(([repository, value]) => ({ repository, ids: value.conflictChecks! }));
-}
-
-function conflictCheckChanges(before: MergeSettings | null, after: MergeSettings | null): string[] {
-  const lists = new Map<string, { repository: string; before: string; after: string }>();
-  for (const [side, settings] of [
-    ["before", before],
-    ["after", after],
-  ] as const)
-    for (const entry of conflictChecksView(settings)) {
-      const key = entry.repository.toLowerCase();
-      const row = lists.get(key) ?? { repository: entry.repository, before: "", after: "" };
-      row[side] = entry.ids.join(", ");
-      lists.set(key, row);
-    }
-  return [...lists.values()]
-    .filter((row) => row.before !== row.after)
-    .map(
-      (row) =>
-        `Checks after a conflict fix: ${row.repository} ${row.before || "all"} → ${row.after || "all"}`,
-    );
 }
 
 function parallelFilesView(

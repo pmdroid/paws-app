@@ -129,27 +129,6 @@ try {
       path: join(directory, `merging-ignored-comments-${width}.png`),
     });
 
-    const checks = page.locator("#merge-conflict-checks");
-    await expect(
-      checks.getByRole("heading", { name: "Checks after a conflict fix" }),
-    ).toBeVisible();
-    await expect(page.locator("#conflict-checks-0")).toHaveValue("");
-    await checks.screenshot({
-      path: join(directory, `merging-conflict-checks-empty-${width}.png`),
-    });
-    await page.locator("#conflict-checks-0").fill("lint\nType Check");
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.locator("#conflict-checks-0-error")).toContainText(
-      "Line 2 must be a Closeout check id",
-    );
-    await page.locator("#conflict-checks-0").fill("lint\ntypecheck");
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText("Merging settings saved.")).toBeVisible();
-    expect(
-      readMergeSettings(loadConfigFile(configPath)).repositories["acme/platform"]?.conflictChecks,
-    ).toEqual(["lint", "typecheck"]);
-    await expect(page.locator("#conflict-checks-0")).toHaveValue("lint\ntypecheck");
-    await checks.screenshot({ path: join(directory, `merging-conflict-checks-${width}.png`) });
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);
