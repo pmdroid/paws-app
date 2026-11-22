@@ -735,6 +735,19 @@ function replace(node: DOMNode): ReactElement | undefined {
             : "[&::-webkit-progress-value]:bg-foreground [&::-moz-progress-bar]:bg-foreground",
       ),
     );
+  if (has("failed-tests")) return styled("flex min-w-0 flex-col gap-1 [overflow-wrap:normal]");
+  if (has("failed-test", "failed-tests-more"))
+    return styled("min-w-0 border-t border-border pt-2 [&[open]>pre]:mt-2");
+  if (name === "summary" && node.parent instanceof Element && node.parent.name === "details") {
+    const parent = (node.parent.attribs.class ?? "").split(/\s+/);
+    if (parent.includes("failed-test"))
+      return styled("flex min-w-0 cursor-pointer flex-col gap-1 pb-2 text-sm");
+    if (parent.includes("failed-tests-more"))
+      return styled("cursor-pointer pb-2 text-sm font-bold underline-offset-4 hover:underline");
+  }
+  if (has("failed-test-head"))
+    return styled("flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 break-all");
+  if (has("failed-test-line")) return styled("min-w-0 truncate text-sm text-muted-foreground");
   if (has("acct-token"))
     return styled(
       name === "details"
