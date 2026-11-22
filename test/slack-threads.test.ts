@@ -1532,7 +1532,7 @@ test("a redeemed link code stores the verified direct message, and only that DM 
   expect(gone).toEqual({ kind: "ignore" });
 });
 
-test("a linked member's first ordinary DM verifies its channel once, and a DM Slack doesn't confirm stores nothing", async () => {
+test("a linked member's first ordinary DM verifies its channel once and is answered there, and a DM Slack doesn't confirm stores nothing", async () => {
   const f = await linked(["um", "SMEMBER"]);
   await forgetDirect(f, "SMEMBER");
   const elsewhere = f.dm("SMEMBER", "hello", { channel: "DELSEWHERE" });
@@ -1544,17 +1544,31 @@ test("a linked member's first ordinary DM verifies its channel once, and a DM Sl
   const first = f.dm("SMEMBER", "what is a monad?");
   await f.deliver(first);
   await f.settle();
-  expect(f.posted.map((post) => post.body)).toEqual([{ users: "SMEMBER" }]);
+  expect(f.posted[0]!.body).toEqual({ users: "SMEMBER" });
   expect((await storedLink(f, "SMEMBER"))!.dmChannelId).toBe("DSMEMBER");
   expect(await conversations(f, first.ts)).toEqual([
     expect.objectContaining({ channelId: "DSMEMBER", threadTs: first.ts }),
   ]);
-  f.posted.length = 0;
   await f.pair("SMEMBER", "and a functor?", { thread_ts: first.ts });
-  await f.pair("SOTHER", "hello there");
-  expect(f.posted).toEqual([]);
-  expect(f.prompts).toEqual([]);
+  expect(f.posts("conversations.open")).toHaveLength(1);
+  expect(f.posts("conversations.info")).toEqual([]);
+  expect(f.posts("chat.postMessage").map((post) => post.body)).toEqual([
+    expect.objectContaining({ channel: "DSMEMBER", thread_ts: first.ts, text: "answer 1" }),
+    expect.objectContaining({ channel: "DSMEMBER", thread_ts: first.ts, text: "answer 2" }),
+  ]);
+  expect(f.prompts.map((turn) => turn.userId)).toEqual(["um", "um"]);
+  const prompt = lastPrompt(f);
+  expect(prompt).toContain("You are Paws, answering in a Slack direct message.");
+  expect(prompt).not.toContain("Slack channel thread");
+  expect(prompt).toContain("what is a monad?\n[Paws]: answer 1");
+  expect(f.sent.at(-1)!.tools).toBeUndefined();
   expect(await conversations(f, first.ts)).toHaveLength(1);
+  f.posted.length = 0;
+  await f.pair("SOTHER", "hello there");
+  await f.pair("SMEMBER", "from elsewhere", { channel: "DELSEWHERE" });
+  await f.pair("SADMIN", "and from the admin", { channel: "DSMEMBER" });
+  expect(f.posted).toEqual([]);
+  expect(f.prompts).toHaveLength(2);
   expect(await f.sideEffects()).toEqual(NONE);
 });
 
