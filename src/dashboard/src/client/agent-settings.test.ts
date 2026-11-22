@@ -57,13 +57,6 @@ describe("agent settings", () => {
     expect(html).not.toContain("merge-closeout-after-update");
   });
 
-  test("a retired saved section shows with a Remove button", () => {
-    const html = renderAgentSettings(view({ ...settings(), retiredSections: ["agents.grok"] }));
-    expect(html).toContain("<code>[agents.grok]</code>");
-    expect(html).toContain('data-settings="remove-retired" data-section="agents.grok"');
-    expect(renderAgentSettings(view())).not.toContain("remove-retired");
-  });
-
   test("the Agents page leaves Pull request checks to Settings → Merging", () => {
     const data = { ...settings(), merge: { ciFixAttempts: 11 } };
     const html = renderAgentSettings(view(data));
@@ -271,6 +264,7 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
     ...settings(),
     grok: { path: "/opt/grok", allowApiKey: true },
     opencode: { path: null },
+    retiredSections: ["project_memory"],
     presets: {
       Opus: {
         implementer: { agent: "claude" as const, model: "sonnet", effort: "high" },
@@ -280,7 +274,9 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
   };
   let body: AgentSettings | undefined;
   let error: string | undefined;
+  const methods: string[] = [];
   globalThis.fetch = (async (url, init) => {
+    methods.push(init?.method ?? "GET");
     if (String(url).includes("/models")) return Response.json({ catalogs: view().catalogs });
     if (init?.method === "PUT") {
       body = JSON.parse(String(init.body));
@@ -297,6 +293,7 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
     root.remove();
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Opus");
     expect(root.textContent).not.toContain("Agent commands");
+    expect(root.textContent).not.toContain("project_memory");
     expect(root.querySelector('[name="grok-path"], [name="opencode-path"]')).toBeNull();
     expect(root.querySelector("#preset-0-implementer-effort")?.innerHTML).toContain("high");
     expect(root.querySelector<HTMLSelectElement>("#preset-0-reviewer-model")?.value).toBe(
@@ -325,6 +322,7 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
     expect(body).not.toHaveProperty("projects");
     expect(body).not.toHaveProperty("grok");
     expect(body).not.toHaveProperty("opencode");
+    expect(body).not.toHaveProperty("retiredSections");
     click("remove-preset");
     expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Codex");
     const agent = root.querySelector<HTMLSelectElement>("#preset-0-reviewer-agent")!;
@@ -351,6 +349,7 @@ test("preset rows render both roles, add, remove, save and show errors on the ro
     submit();
     await settle();
     expect(root.querySelector('[data-preset-row="0"] [role="alert"]')?.textContent).toBe(error);
+    expect(methods).not.toContain("DELETE");
   } finally {
     globalThis.fetch = originalFetch;
     for (const [key, value] of previous) host[key] = value;
