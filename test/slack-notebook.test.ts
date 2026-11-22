@@ -1,5 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import type { Db } from "../src/db";
+
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 import { readNotebook } from "../src/notebook";
 import { slackNotebookTools } from "../src/slack";
 import { withoutForeignKeys } from "./pglite-fixtures";
@@ -89,7 +91,7 @@ test("a direct turn offers only its member's own notebook, and another member's 
   expect(bob.instructions).toContain("Your notebook:\nNo entries yet.");
   expect(bob.instructions).not.toContain("canary-ann");
   for (const args of [
-    { notebook: "user", id: "ann" },
+    { notebook: "user", id: "ann" } as Record<string, Json>,
     { ...add("user", "canary-bob"), id: "ann" },
     { notebook: "user", operations: [{ action: "remove", old_text: "canary-ann" }] },
   ])
