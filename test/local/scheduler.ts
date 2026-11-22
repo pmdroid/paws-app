@@ -93,79 +93,83 @@ export async function contenderExited(child: ReturnType<typeof spawnContender>):
   );
 }
 
-export async function probeScheduler(
-  root: string,
-  observe: (name: string, passed: boolean, observed: unknown) => void,
-) {
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const observed = (name: string, value: unknown) => observe(name, true, value);
-  const onlyStarts = (db: Db, only: string) => {
-    const admission = workspaceAdmission(db);
-    const decide = (itemId: string) =>
-      itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const);
-    return {
-      ...admission,
-      canStart: async (itemId: string) => decide(itemId),
-      steps: {
-        ...admission.steps,
-        canStart: (_q: Q, itemId: string) => syncSteps(() => decide(itemId)),
-      },
-    };
+type Observe = (name: string, passed: boolean, observed: unknown) => void;
+const observer = (observe: Observe) => (name: string, value: unknown) => observe(name, true, value);
+const onlyStarts = (db: Db, only: string) => {
+  const admission = workspaceAdmission(db);
+  const decide = (itemId: string) =>
+    itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const);
+  return {
+    ...admission,
+    canStart: async (itemId: string) => decide(itemId),
+    steps: {
+      ...admission.steps,
+      canStart: (_q: Q, itemId: string) => syncSteps(() => decide(itemId)),
+    },
   };
-  const fill = async (
-    db: Db,
-    name: string,
-    count: number,
-    paths: (index: number) => string[] = (index) => [`src/task-${index}`],
-  ) => {
-    const ids = Array.from({ length: count }, (_, index) => `${name}-${index}`);
-    for (const [index, id] of ids.entries()) {
-      await insertQueuedItem(db, { id, now: index });
-      await bindWorkItemRepository(db, id, repository);
-      await db.run((q) =>
-        saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: paths(index) }),
-      );
-    }
-    return ids;
-  };
-  const setup = async (name: string, count: number, paths?: (index: number) => string[]) => {
-    const { db, close } = await tempStore();
-    return { db, close, ids: await fill(db, name, count, paths) };
-  };
-  const count = (db: Db, table: "job" | "schedulerAdmission") =>
-    db.run(function* (q) {
-      const [row] = yield* q.all(q.orm.select({ n: rows() }).from(q.t[table]));
-      return row!.n;
-    });
-  const jobStatus = (db: Db) =>
-    db.run(function* (q) {
-      return (yield* q.one(q.orm.select({ status: q.t.job.status }).from(q.t.job)))!.status;
-    });
-  const setState = (db: Db, id: string, state: WorkItemState) =>
-    db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id))));
-  const insertWorkspace = (db: Db) =>
-    db.run((q) =>
-      q.exec(
-        q.orm.insert(q.t.workspace).values({
-          id: "workspace",
-          linearOrganizationId: "org",
-          name: "Workspace",
-          createdAt: 1000,
-        }),
-      ),
+};
+const fill = async (
+  db: Db,
+  name: string,
+  count: number,
+  paths: (index: number) => string[] = (index) => [`src/task-${index}`],
+) => {
+  const ids = Array.from({ length: count }, (_, index) => `${name}-${index}`);
+  for (const [index, id] of ids.entries()) {
+    await insertQueuedItem(db, { id, now: index });
+    await bindWorkItemRepository(db, id, repository);
+    await db.run((q) =>
+      saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: paths(index) }),
     );
-  const execute = (db: Db, query: SQL) => (db as PgDb).orm.execute(query);
-  const failedWith = (pattern: RegExp) => (error: unknown) => {
-    assert.match(`${String(error)} ${String((error as Error).cause)}`, pattern);
-    return true;
-  };
+  }
+  return ids;
+};
+const setup = async (name: string, count: number, paths?: (index: number) => string[]) => {
+  const { db, close } = await tempStore();
+  return { db, close, ids: await fill(db, name, count, paths) };
+};
+const count = (db: Db, table: "job" | "schedulerAdmission") =>
+  db.run(function* (q) {
+    const [row] = yield* q.all(q.orm.select({ n: rows() }).from(q.t[table]));
+    return row!.n;
+  });
+const jobStatus = (db: Db) =>
+  db.run(function* (q) {
+    return (yield* q.one(q.orm.select({ status: q.t.job.status }).from(q.t.job)))!.status;
+  });
+const setState = (db: Db, id: string, state: WorkItemState) =>
+  db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id))));
+const insertWorkspace = (db: Db) =>
+  db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
+    ),
+  );
+const execute = (db: Db, query: SQL) => (db as PgDb).orm.execute(query);
+const failedWith = (pattern: RegExp) => (error: unknown) => {
+  assert.match(`${String(error)} ${String((error as Error).cause)}`, pattern);
+  return true;
+};
+const competingServer = async () => {
+  const server = await pgliteServer(process.env, { maxConnections: 32 });
+  const ids = await fill(server.store, "competing", 20);
+  for (const id of ids) await joinFakeWorkspacePg(server.store, `epic-${id}`);
+  return server;
+};
+
+export async function probeSchedulerAdmission(root: string, observe: Observe) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const observed = observer(observe);
   {
     const directory = join(root, "competing");
     mkdirSync(directory, { recursive: true });
-    const server = await pgliteServer(process.env, { maxConnections: 32 });
+    const server = await competingServer();
     const db = server.store;
-    const ids = await fill(db, "competing", 20);
-    for (const id of ids) await joinFakeWorkspacePg(db, `epic-${id}`);
     writeFileSync(join(directory, "database-url"), server.url);
     const children = Array.from({ length: 20 }, (_, index) => spawnContender(directory, index));
     try {
@@ -184,48 +188,66 @@ export async function probeScheduler(
         admissions: await count(db, "schedulerAdmission"),
         jobs: await count(db, "job"),
       });
-      const first = (await claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] }))!;
-      assert(first);
-      await applyWorkItemEvent(db, (first.payload as { itemId: string }).itemId, "dispatched");
-      const { store: secondDb, close: closeSecond } = await openPawsStore({
-        url: server.url,
-        pgliteDir: "",
-      });
-      const second = (await claimNextJob(secondDb, {
-        now: 1000,
-        queues: [JOB_KIND.start],
-      }))!;
-      assert(second);
-      assert.notEqual(second.id, first.id);
-      const firstId = (first.payload as { itemId: string }).itemId;
-      const resume = await enqueueJob(db, {
-        queue: JOB_KIND.resume,
-        payload: { itemId: firstId },
-        now: 1000,
-      });
-      assert.equal(await claimNextJob(secondDb, { now: 1000, queues: [JOB_KIND.resume] }), null);
-      observed("Reserved jobs claim concurrently but the same item cannot resume twice", {
-        first: first.id,
-        second: second.id,
-        resume,
-      });
-      await closeSecond();
-      const { store: reopened, close: closeReopened } = await openPawsStore({
-        url: server.url,
-        pgliteDir: "",
-      });
-      assert.deepEqual(await workspaceDispatchPg(reopened, { now: 1001 }), []);
-      assert.equal(await count(reopened, "schedulerAdmission"), 20);
-      observed("Restart retains queued or active reservations", {
-        admissions: await count(reopened, "schedulerAdmission"),
-      });
-      await closeReopened();
     } finally {
       for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
       await Promise.all(children.map((child) => child.exited));
       await server.close();
     }
   }
+}
+
+export async function probeSchedulerReservations(observe: Observe) {
+  const observed = observer(observe);
+  const server = await competingServer();
+  const db = server.store;
+  try {
+    assert.equal(
+      (await dispatch(db, { now: 1000, admission: createAdmission({ db }) })).length,
+      20,
+    );
+    const first = (await claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] }))!;
+    assert(first);
+    await applyWorkItemEvent(db, (first.payload as { itemId: string }).itemId, "dispatched");
+    const { store: secondDb, close: closeSecond } = await openPawsStore({
+      url: server.url,
+      pgliteDir: "",
+    });
+    const second = (await claimNextJob(secondDb, {
+      now: 1000,
+      queues: [JOB_KIND.start],
+    }))!;
+    assert(second);
+    assert.notEqual(second.id, first.id);
+    const firstId = (first.payload as { itemId: string }).itemId;
+    const resume = await enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      payload: { itemId: firstId },
+      now: 1000,
+    });
+    assert.equal(await claimNextJob(secondDb, { now: 1000, queues: [JOB_KIND.resume] }), null);
+    observed("Reserved jobs claim concurrently but the same item cannot resume twice", {
+      first: first.id,
+      second: second.id,
+      resume,
+    });
+    await closeSecond();
+    const { store: reopened, close: closeReopened } = await openPawsStore({
+      url: server.url,
+      pgliteDir: "",
+    });
+    assert.deepEqual(await workspaceDispatchPg(reopened, { now: 1001 }), []);
+    assert.equal(await count(reopened, "schedulerAdmission"), 20);
+    observed("Restart retains queued or active reservations", {
+      admissions: await count(reopened, "schedulerAdmission"),
+    });
+    await closeReopened();
+  } finally {
+    await server.close();
+  }
+}
+
+export async function probeSchedulerFootprints(observe: Observe) {
+  const observed = observer(observe);
   for (const [name, paths] of [
     ["overlap", (index: number) => [index ? "src/shared/file.ts" : "src/shared/**"]],
     ["hot", (index: number) => [index ? "packages/other/package.json" : "bun.lock"]],
@@ -255,6 +277,10 @@ export async function probeScheduler(
       globs: ["src*", "package*.json", "ab*"],
     });
   }
+}
+
+export async function probeSchedulerLocks(observe: Observe) {
+  const observed = observer(observe);
   {
     const { db, ids, close } = await setup("claimed-retraction", 2, () => ["src/shared"]);
     assert.deepEqual(await workspaceDispatchPg(db, { now: 1000 }), ids);
@@ -304,6 +330,10 @@ export async function probeScheduler(
       expired: true,
     });
   }
+}
+
+export async function probeSchedulerMerges(observe: Observe) {
+  const observed = observer(observe);
   {
     const { db, ids, close } = await setup("idle-merge", 2, () => ["src/shared"]);
     await db.run((q) =>
@@ -376,15 +406,6 @@ export async function probeScheduler(
     });
   }
   {
-    const { db, ids, close } = await setup("waiting-independent", 3, () => []);
-    await setState(db, ids[0]!, "awaiting_input");
-    assert.deepEqual(await workspaceDispatchPg(db, { now: 1000 }), ids.slice(1));
-    observed("A waiting task without live work releases capacity for two independent tasks", {
-      ids,
-    });
-    await close();
-  }
-  {
     const { db, ids, close } = await setup("duplicate-issue", 2, () => []);
     await assert.rejects(
       db.run((q) =>
@@ -398,6 +419,19 @@ export async function probeScheduler(
       failedWith(/duplicate key value violates unique constraint/),
     );
     observed("Separate sessions cannot execute the same Linear issue concurrently", { ids });
+    await close();
+  }
+}
+
+export async function probeSchedulerRest(observe: Observe) {
+  const observed = observer(observe);
+  {
+    const { db, ids, close } = await setup("waiting-independent", 3, () => []);
+    await setState(db, ids[0]!, "awaiting_input");
+    assert.deepEqual(await workspaceDispatchPg(db, { now: 1000 }), ids.slice(1));
+    observed("A waiting task without live work releases capacity for two independent tasks", {
+      ids,
+    });
     await close();
   }
   {
@@ -693,6 +727,15 @@ export async function probeScheduler(
     });
     await close();
   }
+}
+
+export async function probeScheduler(root: string, observe: Observe) {
+  await probeSchedulerAdmission(root, observe);
+  await probeSchedulerReservations(observe);
+  await probeSchedulerFootprints(observe);
+  await probeSchedulerLocks(observe);
+  await probeSchedulerMerges(observe);
+  await probeSchedulerRest(observe);
 }
 
 if (import.meta.main && process.argv[2] !== "--contender") {
