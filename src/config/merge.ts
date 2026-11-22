@@ -85,7 +85,6 @@ export type MergeRepositories = Record<
     highRiskPaths?: string[];
     suggestedFindings?: SuggestedFindingsMode;
     parallelFiles?: string[];
-    conflictChecks?: string[];
   }
 >;
 export type MergeSettings = Pick<MergePolicy, "default"> & {
@@ -180,19 +179,6 @@ const parallelFilesSchema = z
   .max(1000)
   .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
-const conflictChecksSchema = z
-  .array(
-    z
-      .string()
-      .max(200, "must be at most 200 characters")
-      .regex(
-        /^[a-z][a-z0-9]*(-[a-z0-9]+)*(\/[a-z][a-z0-9]*(-[a-z0-9]+)*)*$/,
-        "must be a Closeout check id such as lint or shared/lint",
-      ),
-  )
-  .max(50, "lists more than 50 checks")
-  .refine((list) => new Set(list).size === list.length, { message: "lists a check twice" });
-
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
 const tomlSchema = z.object({
   merge: z
@@ -222,7 +208,7 @@ const tomlSchema = z.object({
             high_risk_paths: highRiskGlobs.optional(),
             suggested_findings: z.enum(SUGGESTED_FINDINGS).optional(),
             parallel_files: parallelFilesSchema.optional(),
-            conflict_checks: conflictChecksSchema.optional(),
+            conflict_checks: z.unknown().optional(),
           }),
         )
         .optional(),
@@ -506,14 +492,6 @@ export function parallelFiles(settings: MergeSettings, repository: string): stri
   );
 }
 
-export function conflictChecks(settings: MergeSettings, repository: string): string[] {
-  const wanted = repository.toLowerCase();
-  return (
-    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
-      .conflictChecks ?? []
-  );
-}
-
 /**
  * The Settings › Merging › High-risk paths body: `[{ repository, paths }]`. It replaces every
  * repository's list; a repository left out has none.
@@ -526,26 +504,15 @@ export function parseParallelFileSettings(value: unknown): Record<string, string
   return parseRepositoryLists("parallelFiles", value, parallelFilesSchema);
 }
 
-export function parseConflictCheckSettings(value: unknown): Record<string, string[]> {
-  return parseRepositoryLists("conflictChecks", value, conflictChecksSchema, "ids");
-}
-
 function parseRepositoryLists(
   field: string,
   value: unknown,
   schema: z.ZodType<string[], string[]>,
-  listKey: "paths" | "ids" = "paths",
 ): Record<string, string[]> {
   const repository = z.string().regex(REPOSITORY, "must be owner/repo");
   const items = z.array(z.string().trim()).pipe(schema);
   const result = z
-    .array(
-      listKey === "ids"
-        ? z
-            .strictObject({ repository, ids: items })
-            .transform((parsed) => ({ repository: parsed.repository, paths: parsed.ids }))
-        : z.strictObject({ repository, paths: items }),
-    )
+    .array(z.strictObject({ repository, paths: items }))
     .max(100)
     .refine(
       (list) => new Set(list.map((entry) => entry.repository.toLowerCase())).size === list.length,
@@ -566,7 +533,7 @@ function parseRepositoryLists(
 /** `repositories` with each repository's `key` list replaced by `lists`. */
 function withRepositoryLists(
   repositories: MergeRepositories,
-  key: "highRiskPaths" | "parallelFiles" | "conflictChecks",
+  key: "highRiskPaths" | "parallelFiles",
   lists: Record<string, string[]>,
 ): MergeRepositories {
   const next: MergeRepositories = {};
@@ -637,9 +604,6 @@ export function parseMergeTables(
                 ...(value.parallel_files === undefined
                   ? {}
                   : { parallelFiles: value.parallel_files }),
-                ...(value.conflict_checks === undefined
-                  ? {}
-                  : { conflictChecks: value.conflict_checks }),
               },
             ]),
           ),
@@ -759,10 +723,6 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.parallelFiles === undefined
             ? ""
             : `parallel_files = [${value.parallelFiles.map((path) => JSON.stringify(path)).join(", ")}]\n`
-        }${
-          value.conflictChecks === undefined
-            ? ""
-            : `conflict_checks = [${value.conflictChecks.map((id) => JSON.stringify(id)).join(", ")}]\n`
         }`,
     ),
   ].join("");
@@ -797,7 +757,6 @@ export function writeMergePolicy(
   wait?: CommentWaitInput,
   ignored?: Record<string, IgnoredComments>,
   parallel?: Record<string, string[]>,
-  checks?: Record<string, string[]>,
 ): Promise<void> {
   if (policy.projects !== undefined) {
     current = {
@@ -845,14 +804,10 @@ export function writeMergePolicy(
       : withRepositoryLists(current.repositories ?? {}, "highRiskPaths", riskPaths);
   const withIgnored =
     ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
-  const withParallel =
+  const repositories =
     parallel === undefined
       ? withIgnored
       : withRepositoryLists(withIgnored ?? {}, "parallelFiles", parallel);
-  const repositories =
-    checks === undefined
-      ? withParallel
-      : withRepositoryLists(withParallel ?? {}, "conflictChecks", checks);
   return updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,

@@ -107,8 +107,6 @@ export {
   parseMergeSettings,
   parallelFiles,
   parseParallelFileSettings,
-  conflictChecks,
-  parseConflictCheckSettings,
   mergeLaneKey,
   readMergeSettings,
   repositoryPackages,
