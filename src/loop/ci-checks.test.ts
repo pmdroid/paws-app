@@ -12,7 +12,7 @@ const FAILED = "f".repeat(40);
 const HEAD = "c".repeat(40);
 const COMMANDS: RerunCommand[] = [
   { id: "lint", ci: "lint, format, types, test, dashboard build" },
-  { id: "test", ci: "test (*)", since: ["bun", "scripts/affected-tests.ts", "{since}"] },
+  { id: "test", ci: "test (*)", since: ["bun", "scripts/test-since.ts", "{since}"] },
   { id: "knip" },
   { id: "proof", paths: ["src/loop/**"] },
 ];
@@ -155,7 +155,7 @@ const CI: CiChecks = {
 };
 const pass = (policyDigest = "policy"): TurnPass => ({
   id: "test",
-  command: `bun scripts/affected-tests.ts ${FAILED}`,
+  command: `bun scripts/test-since.ts ${FAILED}`,
   head: HEAD,
   base: "b".repeat(40),
   policyDigest,

@@ -742,7 +742,7 @@ try {
                 {
                   id: "test",
                   ci: "test (*",
-                  since: ["bun", "scripts/affected-tests.ts", "{since}"],
+                  since: ["bun", "scripts/test-since.ts", "{since}"],
                   select: {
                     runner: "bun",
                     always: ["test/boundaries.test.ts"],
