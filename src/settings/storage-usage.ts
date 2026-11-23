@@ -6,7 +6,11 @@ export const STORAGE_USAGE_PATH = "/api/settings/storage-usage";
 export const STORAGE_USAGE_REFRESH_PATH = "/api/settings/storage-usage/refresh";
 
 export type StorageUsageSettingsOptions = {
-  usage: { read(): Promise<unknown>; refresh(): Promise<void> | null };
+  usage: {
+    read(): Promise<unknown>;
+    refresh(): Promise<void> | null;
+    refreshMachine?(machine: string): Promise<"started" | "busy" | "unavailable">;
+  };
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -34,7 +38,23 @@ export async function handleStorageUsageRequest(
   }
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
-  if (options.usage.refresh() === null)
-    return json({ error: "A storage scan is already running." }, 409);
+  let machine: unknown;
+  try {
+    const text = await request.text();
+    machine = text.trim() === "" ? undefined : (JSON.parse(text) as { machine?: unknown }).machine;
+  } catch {
+    return json({ error: "The request body must be JSON." }, 400);
+  }
+  if (machine !== undefined && (typeof machine !== "string" || !options.usage.refreshMachine))
+    return json({ error: "machine must name the server or a runner." }, 400);
+  const outcome =
+    machine === undefined
+      ? options.usage.refresh() === null
+        ? "busy"
+        : "started"
+      : await options.usage.refreshMachine!(machine);
+  if (outcome === "busy") return json({ error: "A storage scan is already running." }, 409);
+  if (outcome === "unavailable")
+    return json({ error: "That runner is offline or too old to report its storage." }, 404);
   return json({ started: true }, 202);
 }

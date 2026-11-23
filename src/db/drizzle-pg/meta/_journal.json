@@ -190,6 +190,13 @@
       "when": 1795397075144,
       "tag": "0026_storage_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1795401537995,
+      "tag": "0027_runner_command_storage_report",
+      "breakpoints": true
     }
   ]
 }

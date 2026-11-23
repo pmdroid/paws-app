@@ -39,6 +39,7 @@ import {
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
+  RunnerStorageReportSchema,
   RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
   RunnerRetroInputRequestSchema,
@@ -52,6 +53,7 @@ import {
   type RunnerCommandVerification,
   type RunnerHealthResult,
   type RunnerHelperResult,
+  type RunnerStorageReport,
   type RunnerAgentUser,
   type RunnerHostStatus,
   type RunnerRepositoryCommand,
@@ -1012,6 +1014,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async postHealth(result: RunnerHealthResult) {
       const body = RunnerHealthResultSchema.parse(result);
       return RunnerEventReceiptSchema.parse(await authenticated("/v1/health", "POST", body));
+    },
+    async postStorageReport(report: RunnerStorageReport) {
+      const body = RunnerStorageReportSchema.parse(report);
+      return z
+        .strictObject({ duplicate: z.boolean() })
+        .parse(await authenticated("/v1/storage-report", "POST", body));
     },
     async uploadArtifact(runId: string, chunk: RunnerArtifactChunk, grantToken: string) {
       identifier.parse(runId);

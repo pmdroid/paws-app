@@ -381,6 +381,7 @@ export const RunnerCommandSchema = z
     }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent, account: work.account }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
+    z.strictObject({ ...common, type: z.literal("storage.report") }),
     /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
     z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
     /** Publish the run's worktree as a WIP commit now, without stopping its agent. */

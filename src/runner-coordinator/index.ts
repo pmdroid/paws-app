@@ -121,6 +121,7 @@ export async function openRunnerCoordinator(options: {
   publicUrl?: string | null;
   runnerUrl?: string | null;
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
+  storageReports?: (request: Request, runnerId: string) => Promise<Response | null>;
   hostWarnings?: (runnerId: string) => readonly string[];
   slackReplyAuthority?: SlackReplyAuthority;
   repositorySummaryAuthority?: Parameters<typeof createRunnerHelpers>[0]["summary"];
@@ -264,6 +265,7 @@ export async function openRunnerCoordinator(options: {
         (await transcriptsHttp?.(request, runnerId)) ??
         (await agentSessionsHttp?.(request, runnerId)) ??
         (await options.retros?.()?.(request, runnerId)) ??
+        (await options.storageReports?.(request, runnerId)) ??
         new Response(null, { status: 404 })
       );
     },

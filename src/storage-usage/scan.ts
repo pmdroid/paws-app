@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, statfsSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PawsPaths } from "../config";
+import { RUNNER_STORAGE_CATEGORIES } from "../runner-protocol";
 
 export const STORAGE_CATEGORIES = [
   "transcripts",
@@ -32,11 +33,13 @@ export type FilesystemUsage = {
 
 export type StorageFilesystems = { home: FilesystemUsage | null; tmp: FilesystemUsage | null };
 
-export type StorageScan = {
+export type StorageScan<C extends string = StorageCategory> = {
   partial: boolean;
   filesystems: StorageFilesystems;
-  categories: Partial<Record<StorageCategory, CategoryUsage>>;
+  categories: Partial<Record<C, CategoryUsage>>;
 };
+
+export type RunnerStorageCategory = (typeof RUNNER_STORAGE_CATEGORIES)[number];
 
 const FILESYSTEM_TYPES: Record<number, string> = {
   0x01021994: "tmpfs",
@@ -96,16 +99,18 @@ export function measureFilesystems(home: string, tmp = "/tmp"): StorageFilesyste
   return { home: filesystemUsage(home), tmp: filesystemUsage(tmp) };
 }
 
+function matching(dir: string, pattern: RegExp): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => pattern.test(name))
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
 function categoryRoots(paths: PawsPaths): Record<Exclude<StorageCategory, "other">, string[]> {
-  const top = (() => {
-    try {
-      return readdirSync(paths.home);
-    } catch {
-      return [];
-    }
-  })();
-  const inHome = (pattern: RegExp) =>
-    top.filter((name) => pattern.test(name)).map((name) => join(paths.home, name));
+  const inHome = (pattern: RegExp) => matching(paths.home, pattern);
   return {
     transcripts: [join(paths.home, "runner-transcripts")],
     run_files: [paths.runsDir],
@@ -130,14 +135,55 @@ export type ScanOptions = {
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-export async function scanStorage(paths: PawsPaths, options: ScanOptions): Promise<StorageScan> {
+function directoriesUnder(root: string, parts: string[]): boolean {
+  let path = root;
+  for (const part of parts) {
+    path = join(path, part);
+    if (!lstatOrNull(path)?.isDirectory()) return false;
+  }
+  return true;
+}
+
+function runnerRoots(root: string): Record<Exclude<RunnerStorageCategory, "other">, string[]> {
+  const executions = join(root, "runtime", "executions.db");
+  return {
+    repositories: [join(root, "repositories")],
+    worker_logs: ["runtime", "health", "retro"].flatMap((name) =>
+      directoriesUnder(root, [name, "workers"])
+        ? matching(join(root, name, "workers"), /\.log$/)
+        : [],
+    ),
+    executions: directoriesUnder(root, ["runtime"])
+      ? [executions, `${executions}-wal`, `${executions}-shm`]
+      : [],
+    health: [join(root, "health")],
+    tool_caches: [".bun", ".nvm", ".claude", ".grok", ".cache"].map((name) => join(root, name)),
+  };
+}
+
+export function scanStorage(paths: PawsPaths, options: ScanOptions): Promise<StorageScan> {
+  return scanCategories(paths.home, STORAGE_CATEGORIES, categoryRoots(paths), options);
+}
+
+export function scanRunnerStorage(
+  root: string,
+  options: ScanOptions,
+): Promise<StorageScan<RunnerStorageCategory>> {
+  return scanCategories(root, RUNNER_STORAGE_CATEGORIES, runnerRoots(root), options);
+}
+
+async function scanCategories<C extends string>(
+  top: string,
+  order: readonly C[],
+  roots: Record<Exclude<C, "other">, string[]>,
+  options: ScanOptions,
+): Promise<StorageScan<C>> {
   const now = options.now ?? Date.now;
-  const filesystems = measureFilesystems(paths.home, options.tmp);
-  const categories: StorageScan["categories"] = {};
-  const home = lstatOrNull(paths.home);
+  const filesystems = measureFilesystems(top, options.tmp);
+  const categories: StorageScan<C>["categories"] = {};
+  const home = lstatOrNull(top);
   if (!home?.isDirectory()) return { partial: false, filesystems, categories };
-  const roots = categoryRoots(paths);
-  const claimed = new Set(Object.values(roots).flat());
+  const claimed = new Set(Object.values<string[]>(roots).flat());
   const seen = new Set<string>();
   const measure = async (starts: string[], skip: Set<string>): Promise<CategoryUsage | null> => {
     const usage = { bytes: 0, files: 0 };
@@ -169,11 +215,11 @@ export async function scanStorage(paths: PawsPaths, options: ScanOptions): Promi
     }
     return usage;
   };
-  for (const category of STORAGE_CATEGORIES) {
+  for (const category of order) {
     const usage =
       category === "other"
-        ? await measure([paths.home], claimed)
-        : await measure(roots[category], new Set());
+        ? await measure([top], claimed)
+        : await measure(roots[category as Exclude<C, "other">], new Set());
     if (!usage) return { partial: true, filesystems, categories };
     categories[category] = usage;
   }

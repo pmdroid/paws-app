@@ -1176,6 +1176,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     catalogs: retroCatalog,
   });
   const runnerHostRefusals = createRunnerHostRefusals();
+  const storageUsage = createStorageUsage({ paths, store, runners: async () => runner?.work });
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -1207,6 +1208,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           runnerUrl: runnerConfig.url,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
+          storageReports: storageUsage.fetch,
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
         }).then(async (value) => {
@@ -1478,7 +1480,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
-  const storageUsage = createStorageUsage({ paths, store });
   const storageCleanup = createStorageCleanup({
     paths,
     store,
